@@ -7,11 +7,19 @@
 //! measured round trip. Their publishers are declared when a participant
 //! attaches, so the echo path never resolves a key per message.
 //!
-//! The host also keeps the session's **history store**: for every declared
-//! sense or aux channel it subscribes to the samples and keeps the newest
-//! `history_depth` frames, served on `history/{channel}` so a late joiner or a
-//! swapped-in controller warms its windows from the session instead of from
-//! the publisher.
+//! The host also keeps the session's **history store** (§8.8): for every
+//! declared stream (bulk streams only when configured) it subscribes to the
+//! samples and keeps a bounded ring per stream, in the current epoch only,
+//! served on `h/{robot}/{path}`. A controller queries it on attach, on a
+//! standby swap and to recover a gap, never per tick: steady-state windows
+//! are assembled from the live stream. A query names the epoch, an exclusive
+//! `after_seq`, an inclusive `until_seq` watermark taken from the live
+//! stream and a limit; the reply is one or more [`SampleBatch`] pages, the
+//! first carrying `truncated` (retention ran out before the range) and the
+//! gaps the store knows of.
+//!
+//! In a virtual-clock session the host also runs the tick barrier (§11.3)
+//! and publishes its ticks on `host/tick`.
 //!
 //! The host is a library ([`SessionHost::start`] on any [`Transport`]) and a
 //! binary (`rlmesh-session-host`).
@@ -21,10 +29,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use bytes::Bytes;
 use rlmesh_wire::codec;
+use rlmesh_wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
 use rlmesh_wire::{
-    AuthoritySnapshot, ChannelId, ChannelPriority, CtlError, CtlReply, CtlStatus, Direction, Epoch,
-    HeartbeatEcho, ParticipantId, SessionId, SessionKeys, TenantId,
+    Applied, AuthoritySnapshot, ChannelId, ChannelPriority, CtlError, CtlReply, CtlStatus, Epoch,
+    HeartbeatEcho, HistoryQuery, ParticipantId, SampleBatch, SampleMeta, SeqRange, SessionId,
+    SessionKeys, StreamSpec, TenantId,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -32,32 +43,35 @@ use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zenoh::Wait;
-use zenoh::bytes::ZBytes;
 use zenoh::query::Query;
 use zenoh::sample::SampleKind;
 
-use crate::authority::{Applied, Authority, AuthorityConfig, AuthorityEvent};
+use crate::authority::{Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent};
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
 use crate::error::SessionError;
 use crate::metrics::{LinkStats, ParticipantHealth, Report};
 use crate::transport::{
     CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, TrafficClass, Transport,
+    frame_zbytes, payload_bytes,
 };
+use crate::virtual_clock::VirtualConfig;
 
 /// Heartbeats queued between the Zenoh callback and the host task. Beyond
 /// this the host is overloaded and drops them (the echo was already sent).
 const HEARTBEAT_QUEUE: usize = 4096;
+/// The most gap ranges a stream's history remembers.
+const MAX_GAPS: usize = 64;
 
 /// What the history store keeps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryConfig {
-    /// Keep windows at all.
+    /// Keep histories at all.
     pub enabled: bool,
-    /// Keep BULK channels (cameras) too. Off by default: a raw camera window
-    /// is large, and BULK channels are latest-value by nature.
+    /// Keep bulk streams (cameras) too. Off by default: a raw camera ring is
+    /// large, and windows on bulk streams are rare.
     pub bulk: bool,
-    /// The deepest window kept, whatever a channel declares.
-    pub max_depth: usize,
+    /// Samples kept per stream: the policy-side history cap (§3.4).
+    pub depth: usize,
 }
 
 impl Default for HistoryConfig {
@@ -65,7 +79,7 @@ impl Default for HistoryConfig {
         Self {
             enabled: true,
             bulk: false,
-            max_depth: 1024,
+            depth: 1024,
         }
     }
 }
@@ -91,15 +105,17 @@ pub struct HostConfig {
     pub health_log: Option<Duration>,
     /// How participants' clock offsets are filtered.
     pub offset: OffsetEstimatorConfig,
-    /// Capabilities this session supports.
-    pub capabilities: Vec<String>,
+    /// Features this session implements.
+    pub supports: Vec<String>,
     /// The history store.
     pub history: HistoryConfig,
+    /// Virtual clock mode (§11.3); `None` is wall mode.
+    pub virtual_clock: Option<VirtualConfig>,
 }
 
 impl HostConfig {
-    /// Defaults for `session` in `tenant`: a 250 ms lease grace, a 10 ms
-    /// expiry tick, a 500 ms republish and a 1 s health log.
+    /// Defaults for `session` in `tenant`: wall mode, a 250 ms lease grace,
+    /// a 10 ms expiry tick, a 500 ms republish and a 1 s health log.
     pub fn new(tenant: TenantId, session: SessionId) -> Self {
         Self {
             tenant,
@@ -110,11 +126,12 @@ impl HostConfig {
             republish: Duration::from_millis(500),
             health_log: Some(Duration::from_secs(1)),
             offset: OffsetEstimatorConfig::default(),
-            capabilities: rlmesh_wire::version::CAPABILITIES
+            supports: rlmesh_wire::version::FEATURES
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
             history: HistoryConfig::default(),
+            virtual_clock: None,
         }
     }
 
@@ -126,6 +143,9 @@ impl HostConfig {
             return Err(SessionError::Config(
                 "tick and republish must be positive".into(),
             ));
+        }
+        if self.virtual_clock.is_some_and(|v| v.tick_ns == 0) {
+            return Err(SessionError::Config("tick_ns must be positive".into()));
         }
         Ok(())
     }
@@ -141,8 +161,9 @@ impl std::fmt::Debug for HostConfig {
             .field("republish", &self.republish)
             .field("health_log", &self.health_log)
             .field("offset", &self.offset)
-            .field("capabilities", &self.capabilities)
+            .field("supports", &self.supports)
             .field("history", &self.history)
+            .field("virtual_clock", &self.virtual_clock)
             .finish_non_exhaustive()
     }
 }
@@ -169,7 +190,8 @@ impl SessionHost {
             config.session,
             AuthorityConfig {
                 lease_grace_ns: u64::try_from(config.lease_grace.as_nanos()).unwrap_or(u64::MAX),
-                capabilities: config.capabilities.clone(),
+                supports: config.supports.clone(),
+                virtual_clock: config.virtual_clock,
             },
         );
         let epoch = Arc::new(AtomicU64::new(authority.epoch().0));
@@ -205,10 +227,20 @@ impl SessionHost {
             .congestion_control(CONTROL_CONGESTION)
             .express(true)
             .await?;
-        let store = HistoryStore::default();
+        let ticks = control
+            .declare_publisher(keys.host_tick())
+            .priority(CONTROL_PRIORITY)
+            .congestion_control(CONTROL_CONGESTION)
+            .express(true)
+            .await?;
+        let store = HistoryStore {
+            depth: config.history.depth.max(1),
+            clock: Some(config.clock.clone()),
+            rings: Arc::default(),
+        };
         let history = transport
             .session(TrafficClass::Data)
-            .declare_queryable(format!("{}/history/*", keys.prefix()))
+            .declare_queryable(keys.histories())
             .callback({
                 let (store, keys) = (store.clone(), keys.clone());
                 move |query| store.serve(&keys, &query)
@@ -237,10 +269,12 @@ impl SessionHost {
             links: BTreeMap::new(),
             epoch,
             publisher,
+            ticks,
             snapshot_tx,
             health_tx,
             events: events.clone(),
             store,
+            recorded: HashMap::new(),
         };
         actor.publish().await;
         info!(session = %actor.config.session, key = actor.keys.prefix(), "session host up");
@@ -254,6 +288,7 @@ impl SessionHost {
                 drop(token);
                 drop(heartbeats);
                 drop(history);
+                actor.recorded.clear();
                 actor.store.clear();
             }
         });
@@ -368,68 +403,240 @@ fn on_heartbeat_sample(
     }
 }
 
-/// The newest frames of one channel.
-struct Window {
-    depth: usize,
-    frames: Mutex<VecDeque<ZBytes>>,
+/// One stored sample.
+#[derive(Clone)]
+struct Stored {
+    seq: u64,
+    capture_ns: i64,
+    tick: u64,
+    applied: Option<Applied>,
+    payload: Bytes,
 }
 
-struct Recorded {
-    window: Arc<Window>,
-    _subscriber: zenoh::pubsub::Subscriber<()>,
+/// One stream's ring, in its newest epoch.
+struct RingState {
+    epoch: Epoch,
+    /// The first seq seen in this epoch: anything older was never here.
+    first_seq: u64,
+    samples: VecDeque<Stored>,
+    gaps: VecDeque<SeqRange>,
 }
 
-/// History windows by channel, shared with the history queryable.
-#[derive(Clone, Default)]
+struct Ring {
+    spec: StreamSpec,
+    state: Mutex<RingState>,
+}
+
+impl Ring {
+    fn record(&self, payload: &zenoh::bytes::ZBytes, depth: usize) {
+        let Ok(sample) = codec::decode_sample(payload_bytes(payload)) else {
+            return;
+        };
+        if sample.channel != self.spec.channel || self.spec.check_payload(&sample.payload).is_err()
+        {
+            return;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if sample.epoch > state.epoch {
+            // A new epoch never seeds from an older one.
+            *state = RingState {
+                epoch: sample.epoch,
+                first_seq: sample.seq,
+                samples: VecDeque::with_capacity(depth.min(1024)),
+                gaps: VecDeque::new(),
+            };
+        } else if sample.epoch < state.epoch {
+            return;
+        }
+        let last = state.samples.back().map(|s| s.seq);
+        match last {
+            Some(last) if sample.seq <= last => return,
+            Some(last) if sample.seq > last + 1 => {
+                if state.gaps.len() == MAX_GAPS {
+                    state.gaps.pop_front();
+                }
+                state.gaps.push_back(SeqRange {
+                    first: last + 1,
+                    last: sample.seq - 1,
+                });
+            }
+            _ => {}
+        }
+        if state.samples.len() >= depth {
+            state.samples.pop_front();
+        }
+        state.samples.push_back(Stored {
+            seq: sample.seq,
+            capture_ns: sample.capture_ns,
+            tick: sample.tick,
+            applied: sample.applied,
+            payload: sample.payload,
+        });
+        let oldest = state.samples.front().map_or(0, |s| s.seq);
+        while state.gaps.front().is_some_and(|g| g.last < oldest) {
+            state.gaps.pop_front();
+        }
+    }
+
+    /// The pages answering `query`.
+    fn pages(&self, query: &HistoryQuery, cap: usize, now_ns: i64) -> Vec<SampleBatch> {
+        let Ok(state) = self.state.lock() else {
+            return Vec::new();
+        };
+        let empty = |epoch| SampleBatch {
+            channel: self.spec.channel,
+            epoch,
+            publish_ns: now_ns,
+            samples: Vec::new(),
+            payload: Bytes::new(),
+            truncated: false,
+            gaps: Vec::new(),
+        };
+        if query.epoch != state.epoch {
+            // Another epoch's samples are never served: an empty page says
+            // which epoch the store is in.
+            return vec![empty(state.epoch)];
+        }
+        let until = query.until_seq.unwrap_or(u64::MAX);
+        let limit = query
+            .limit
+            .map_or(cap, |l| usize::try_from(l).unwrap_or(cap).min(cap));
+        let selected: Vec<&Stored> = state
+            .samples
+            .iter()
+            .filter(|s| s.seq > query.after_seq && s.seq <= until)
+            .collect();
+        let selected = &selected[selected.len().saturating_sub(limit)..];
+        let oldest = state.samples.front().map_or(u64::MAX, |s| s.seq);
+        // Retention ran out: the range starts before the oldest sample kept,
+        // and that sample is not the epoch's first.
+        let truncated = query.after_seq.saturating_add(1) < oldest && oldest > state.first_seq;
+        let (low, high) = (
+            selected.first().map_or(query.after_seq, |s| s.seq),
+            selected.last().map_or(until, |s| s.seq),
+        );
+        let gaps: Vec<SeqRange> = state
+            .gaps
+            .iter()
+            .filter(|g| g.last >= low && g.first <= high)
+            .copied()
+            .collect();
+        let per_page = self
+            .spec
+            .layout
+            .stride()
+            .filter(|_| self.spec.batchable())
+            .and_then(|stride| MAX_CHUNK_BYTES.checked_div(stride))
+            .map_or(1, |n| n.clamp(1, MAX_BATCH));
+        let mut pages: Vec<SampleBatch> = selected
+            .chunks(per_page)
+            .map(|chunk| {
+                let mut payload = Vec::with_capacity(chunk.iter().map(|s| s.payload.len()).sum());
+                for s in chunk {
+                    payload.extend_from_slice(&s.payload);
+                }
+                SampleBatch {
+                    samples: chunk
+                        .iter()
+                        .map(|s| SampleMeta {
+                            seq: s.seq,
+                            capture_ns: s.capture_ns,
+                            tick: s.tick,
+                            applied: s.applied,
+                        })
+                        .collect(),
+                    payload: Bytes::from(payload),
+                    ..empty(state.epoch)
+                }
+            })
+            .collect();
+        if pages.is_empty() {
+            pages.push(empty(state.epoch));
+        }
+        pages[0].truncated = truncated;
+        pages[0].gaps = gaps;
+        pages
+    }
+}
+
+/// History rings by `(robot, stream path)`, shared with the history
+/// queryable.
+/// A stream by `(robot, key path)`.
+type StreamKey = (ParticipantId, String);
+
+#[derive(Clone)]
 struct HistoryStore {
-    windows: Arc<RwLock<HashMap<ChannelId, Arc<Window>>>>,
+    depth: usize,
+    clock: Option<Arc<dyn Clock>>,
+    rings: Arc<RwLock<HashMap<StreamKey, Arc<Ring>>>>,
 }
 
 impl HistoryStore {
-    /// Replies to a `history/{channel}` query with the window, oldest first.
+    /// Replies to an `h/{robot}/{path}` query with its pages.
     fn serve(&self, keys: &SessionKeys, query: &Query) {
         let key = query.key_expr().as_str();
-        let channel = key
-            .strip_prefix(keys.prefix())
-            .and_then(|rest| rest.strip_prefix("/history/"))
-            .and_then(|id| id.parse::<u32>().ok())
-            .map(ChannelId);
-        let Some(channel) = channel else {
+        let Some((robot, path)) = keys.history_of(key) else {
             return;
         };
-        let window = self
-            .windows
+        let ring = self
+            .rings
             .read()
             .ok()
-            .and_then(|w| w.get(&channel).cloned());
-        let frames: Vec<ZBytes> = window
-            .and_then(|w| w.frames.lock().ok().map(|f| f.iter().cloned().collect()))
-            .unwrap_or_default();
-        for frame in frames {
+            .and_then(|r| r.get(&(robot, path.to_string())).cloned());
+        let Some(ring) = ring else {
+            return;
+        };
+        let request = match query.payload() {
+            Some(payload) => match codec::decode_history_query(&payload.to_bytes()) {
+                Ok(request) => request,
+                Err(err) => {
+                    warn!(%key, %err, "undecodable history query");
+                    return;
+                }
+            },
+            None => HistoryQuery::default(),
+        };
+        let now = self.clock.as_ref().map_or(0, |c| c.now_ns());
+        for page in ring.pages(&request, self.depth, now) {
+            let frame = match codec::encode_batch(&page) {
+                Ok(encoded) => frame_zbytes(encoded),
+                Err(err) => {
+                    warn!(%key, %err, "history page");
+                    return;
+                }
+            };
             if let Err(err) = query.reply(key, frame).wait() {
-                warn!(%channel, %err, "history reply failed");
+                warn!(%key, %err, "history reply failed");
                 return;
             }
         }
     }
 
-    fn insert(&self, channel: ChannelId, window: Arc<Window>) {
-        if let Ok(mut windows) = self.windows.write() {
-            windows.insert(channel, window);
+    fn insert(&self, key: StreamKey, ring: Arc<Ring>) {
+        if let Ok(mut rings) = self.rings.write() {
+            rings.insert(key, ring);
         }
     }
 
-    fn remove(&self, channel: ChannelId) {
-        if let Ok(mut windows) = self.windows.write() {
-            windows.remove(&channel);
+    fn remove(&self, key: &StreamKey) {
+        if let Ok(mut rings) = self.rings.write() {
+            rings.remove(key);
         }
     }
 
     fn clear(&self) {
-        if let Ok(mut windows) = self.windows.write() {
-            windows.clear();
+        if let Ok(mut rings) = self.rings.write() {
+            rings.clear();
         }
     }
+}
+
+/// A recorded stream: its ring and the subscription feeding it.
+struct Recorded {
+    channel: ChannelId,
+    _subscriber: zenoh::pubsub::Subscriber<()>,
 }
 
 /// A participant's timing link, as the host measures it.
@@ -452,10 +659,12 @@ struct HostActor {
     /// Shared with the echo callback.
     epoch: Arc<AtomicU64>,
     publisher: zenoh::pubsub::Publisher<'static>,
+    ticks: zenoh::pubsub::Publisher<'static>,
     snapshot_tx: watch::Sender<AuthoritySnapshot>,
     health_tx: watch::Sender<Vec<ParticipantHealth>>,
     events: broadcast::Sender<AuthorityEvent>,
     store: HistoryStore,
+    recorded: HashMap<StreamKey, Recorded>,
 }
 
 impl HostActor {
@@ -476,7 +685,6 @@ impl HostActor {
         let mut republish = interval(self.config.republish);
         let health_log = self.config.health_log;
         let mut health = interval(health_log.unwrap_or(Duration::from_secs(1)));
-        let mut recorded: HashMap<ChannelId, Recorded> = HashMap::new();
 
         loop {
             tokio::select! {
@@ -484,7 +692,7 @@ impl HostActor {
                 query = ctl.recv_async() => match query {
                     Ok(query) => {
                         self.on_ctl(query).await;
-                        self.sync_history(&mut recorded).await;
+                        self.sync_history().await;
                     }
                     Err(_) => break,
                 },
@@ -498,7 +706,7 @@ impl HostActor {
                 sample = presence.recv_async() => match sample {
                     Ok(sample) => {
                         self.on_presence(&sample).await;
-                        self.sync_history(&mut recorded).await;
+                        self.sync_history().await;
                     }
                     Err(_) => break,
                 },
@@ -526,69 +734,73 @@ impl HostActor {
         self.config.clock.now_ns()
     }
 
-    /// Keeps one history subscription per recordable declared channel.
-    async fn sync_history(&self, recorded: &mut HashMap<ChannelId, Recorded>) {
+    /// Keeps one history subscription per recordable stream, re-subscribing
+    /// when a path's stream id changes.
+    async fn sync_history(&mut self) {
         if !self.config.history.enabled {
             return;
         }
-        let wanted: BTreeMap<ChannelId, (ParticipantId, ChannelPriority, usize)> = self
+        let wanted: BTreeMap<StreamKey, StreamSpec> = self
             .authority
-            .channels()
-            .filter(|c| c.direction != Direction::Actuate)
-            .filter(|c| self.config.history.bulk || c.qos.priority != ChannelPriority::Bulk)
-            .filter_map(|c| {
-                let owner = c.owner.clone()?;
-                let depth = c.qos.history.depth().min(self.config.history.max_depth);
-                Some((c.id, (owner, c.qos.priority, depth)))
+            .parts()
+            .flat_map(|part| {
+                [
+                    part.stream().ok(),
+                    part.applied_stream().and_then(Result::ok),
+                ]
             })
+            .flatten()
+            .filter(|s| self.config.history.bulk || s.priority != ChannelPriority::Bulk)
+            .map(|s| ((s.owner.clone(), s.path.clone()), s))
             .collect();
-        recorded.retain(|id, _| {
-            let keep = wanted.contains_key(id);
+        let store = &self.store;
+        self.recorded.retain(|key, recorded| {
+            let keep = wanted
+                .get(key)
+                .is_some_and(|s| s.channel == recorded.channel);
             if !keep {
-                self.store.remove(*id);
+                store.remove(key);
             }
             keep
         });
-        for (id, (owner, priority, depth)) in wanted {
-            if recorded.contains_key(&id) {
+        for (key, spec) in wanted {
+            if self.recorded.contains_key(&key) {
                 continue;
             }
-            let window = Arc::new(Window {
-                depth: depth.max(1),
-                frames: Mutex::new(VecDeque::with_capacity(depth.max(1))),
+            let ring = Arc::new(Ring {
+                state: Mutex::new(RingState {
+                    epoch: Epoch(0),
+                    first_seq: 0,
+                    samples: VecDeque::new(),
+                    gaps: VecDeque::new(),
+                }),
+                spec: spec.clone(),
             });
+            let depth = self.store.depth;
             let subscriber = self
                 .transport
-                .for_priority(priority)
-                .declare_subscriber(self.keys.samples(&owner, id))
+                .for_priority(spec.priority)
+                .declare_subscriber(self.keys.data(&spec.owner, &spec.path))
                 .callback({
-                    let window = window.clone();
-                    move |sample| {
-                        if let Ok(mut frames) = window.frames.lock() {
-                            if frames.len() >= window.depth {
-                                frames.pop_front();
-                            }
-                            frames.push_back(sample.payload().clone());
-                        }
-                    }
+                    let ring = ring.clone();
+                    move |sample| ring.record(sample.payload(), depth)
                 })
                 .await;
             match subscriber {
                 Ok(subscriber) => {
-                    debug!(channel = %id, depth, "history window");
-                    self.store.insert(id, window.clone());
-                    recorded.insert(
-                        id,
+                    debug!(channel = %spec.channel, path = %spec.path, "history ring");
+                    self.store.insert(key.clone(), ring);
+                    self.recorded.insert(
+                        key,
                         Recorded {
-                            window,
+                            channel: spec.channel,
                             _subscriber: subscriber,
                         },
                     );
                 }
-                Err(err) => warn!(channel = %id, %err, "history subscription failed"),
+                Err(err) => warn!(channel = %spec.channel, %err, "history subscription failed"),
             }
         }
-        debug_assert!(recorded.values().all(|r| r.window.depth > 0));
     }
 
     async fn on_ctl(&mut self, query: Query) {
@@ -607,20 +819,23 @@ impl HostActor {
             }
             Err(err) => Err(err),
         };
-        let (result, lease) = match result {
-            Ok(Applied { lease, events }) => {
+        let (result, leases) = match result {
+            Ok(Accepted { leases, events }) => {
                 self.record(events).await;
-                (Ok(()), lease)
+                (Ok(()), leases)
             }
             Err(err) => {
                 info!(status = ?err.status, "ctl refused: {}", err.message);
-                (Err(err), None)
+                (Err(err), Vec::new())
             }
         };
+        // Ticks go out before the reply: a `Ready` that completed a step
+        // returns after the step is published.
+        self.publish_ticks().await;
         let reply = CtlReply {
             result,
             state: self.snapshot(),
-            lease,
+            leases,
         };
         Self::reply(query, codec::encode_reply(&reply)).await;
     }
@@ -672,8 +887,9 @@ impl HostActor {
             SampleKind::Put => debug!(%id, "participant present"),
             SampleKind::Delete => {
                 info!(%id, "participant liveliness lost");
-                let events = self.authority.participant_lost(&id);
+                let events = self.authority.participant_lost(&id, self.now());
                 self.record(events).await;
+                self.publish_ticks().await;
             }
         }
     }
@@ -711,6 +927,14 @@ impl HostActor {
         self.epoch
             .store(self.authority.epoch().0, Ordering::Relaxed);
         self.publish().await;
+    }
+
+    async fn publish_ticks(&mut self) {
+        for tick in self.authority.take_ticks() {
+            if let Err(err) = self.ticks.put(codec::encode_tick(&tick)).await {
+                warn!(%err, "tick publish failed");
+            }
+        }
     }
 
     fn snapshot(&self) -> AuthoritySnapshot {
@@ -778,5 +1002,118 @@ impl HostActor {
         if let Err(err) = self.publisher.put(bytes).await {
             warn!(%err, "authority publish failed");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rlmesh_wire::{Encoding, FieldSpec, Layout, Sample};
+
+    fn ring(fields: Vec<FieldSpec>) -> Ring {
+        Ring {
+            spec: StreamSpec {
+                channel: ChannelId(3),
+                owner: ParticipantId::new("robot").expect("id"),
+                path: "ft".into(),
+                layout: Layout::of(&fields).expect("layout"),
+                fields,
+                encoding: Encoding::Raw,
+                priority: ChannelPriority::Realtime,
+                event: false,
+                max_age: None,
+                applied: false,
+            },
+            state: Mutex::new(RingState {
+                epoch: Epoch(0),
+                first_seq: 0,
+                samples: VecDeque::new(),
+                gaps: VecDeque::new(),
+            }),
+        }
+    }
+
+    fn put(ring: &Ring, epoch: u64, seq: u64, depth: usize) {
+        let sample = Sample {
+            channel: ChannelId(3),
+            epoch: Epoch(epoch),
+            seq,
+            capture_ns: 0,
+            publish_ns: 0,
+            tick: 0,
+            payload: Bytes::from(seq.to_le_bytes().to_vec()),
+            applied: None,
+        };
+        ring.record(&frame_zbytes(codec::encode_sample(&sample)), depth);
+    }
+
+    fn seqs(pages: &[SampleBatch]) -> Vec<u64> {
+        pages
+            .iter()
+            .flat_map(|p| p.samples.iter().map(|s| s.seq))
+            .collect()
+    }
+
+    #[test]
+    fn the_store_pages_by_epoch_watermark_and_limit_with_gaps_and_truncation() {
+        let ring = ring(vec![FieldSpec::new("x", rlmesh_wire::DType::U64, &[])]);
+        for seq in [1, 2, 3, 6, 7, 8, 9, 10] {
+            put(&ring, 2, seq, 6);
+        }
+        put(&ring, 1, 11, 6);
+        let query = |after, until, limit| HistoryQuery {
+            epoch: Epoch(2),
+            after_seq: after,
+            until_seq: until,
+            limit,
+        };
+        // Kept: 3, 6..=10 (depth 6), with 4..=5 known missing.
+        let pages = ring.pages(&query(0, None, None), 1024, 0);
+        assert_eq!(seqs(&pages), vec![3, 6, 7, 8, 9, 10]);
+        assert!(pages[0].truncated, "1 and 2 were evicted");
+        assert_eq!(pages[0].gaps, vec![SeqRange { first: 4, last: 5 }]);
+        let split = pages[0].split(Some(8)).expect("split");
+        assert_eq!(&split[1].payload[..], &6_u64.to_le_bytes());
+        // A watermark and a limit: the newest of the range.
+        let pages = ring.pages(&query(5, Some(9), Some(2)), 1024, 0);
+        assert_eq!(seqs(&pages), vec![8, 9]);
+        assert!(!pages[0].truncated && pages[0].gaps.is_empty());
+        // Another epoch: an empty page naming the store's epoch.
+        let pages = ring.pages(&HistoryQuery::default(), 1024, 0);
+        assert!(pages[0].samples.is_empty());
+        assert_eq!(pages[0].epoch, Epoch(2));
+        // A new epoch empties the ring; it never seeds from the old one.
+        put(&ring, 3, 1, 6);
+        let pages = ring.pages(
+            &HistoryQuery {
+                epoch: Epoch(3),
+                ..HistoryQuery::default()
+            },
+            1024,
+            0,
+        );
+        assert_eq!(seqs(&pages), vec![1]);
+        assert!(!pages[0].truncated);
+    }
+
+    #[test]
+    fn large_ranges_split_into_pages() {
+        let ring = ring(vec![FieldSpec::new("x", rlmesh_wire::DType::U64, &[])]);
+        for seq in 1..=600 {
+            put(&ring, 1, seq, 1024);
+        }
+        let pages = ring.pages(
+            &HistoryQuery {
+                epoch: Epoch(1),
+                ..HistoryQuery::default()
+            },
+            1024,
+            0,
+        );
+        assert_eq!(
+            pages.iter().map(|p| p.samples.len()).collect::<Vec<_>>(),
+            vec![MAX_BATCH, MAX_BATCH, 600 - 2 * MAX_BATCH]
+        );
+        assert_eq!(seqs(&pages), (1..=600).collect::<Vec<_>>());
     }
 }

@@ -49,12 +49,13 @@ fn config(
 fn sample(seq: u64) -> Sample {
     Sample {
         channel: ChannelId(1),
-        seq,
         epoch: Epoch(1),
+        seq,
         capture_ns: 0,
         publish_ns: 0,
         tick: seq,
-        leaves: vec![Bytes::from(vec![0_u8; 72])],
+        payload: Bytes::from(vec![0_u8; 72]),
+        applied: None,
     }
 }
 

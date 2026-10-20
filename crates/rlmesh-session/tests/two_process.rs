@@ -10,10 +10,7 @@ use rlmesh_session::transport::free_local_base;
 use rlmesh_session::{
     Participant, ParticipantConfig, SessionError, SubscribeOptions, Transport, TransportConfig,
 };
-use rlmesh_wire::{
-    ChannelId, ChannelPriority, ChannelQos, ChannelSpec, Direction, Mode, ParticipantId,
-    PriorityClass, Role, SessionId, TenantId, TensorLayout,
-};
+use rlmesh_wire::{Fingerprint, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
 /// Participants listen too (the OS picks the ports): in peer mode, data
 /// flows peer to peer once gossip tells peers where to connect.
@@ -22,8 +19,6 @@ fn any_local_port() -> std::net::SocketAddr {
 }
 
 const WAIT: Duration = Duration::from_secs(10);
-const CMD: ChannelId = ChannelId(1);
-const FT: ChannelId = ChannelId(2);
 
 /// The host process; killed on drop whatever the test did.
 struct HostProcess {
@@ -114,28 +109,11 @@ async fn join(
         .expect("attach")
 }
 
-fn channels() -> Vec<ChannelSpec> {
-    vec![
-        ChannelSpec::new(
-            CMD,
-            "cmd",
-            Direction::Actuate,
-            "action/joint_pos",
-            vec![TensorLayout::f32(&[6])],
-            1000.0,
-            ChannelQos::realtime(ChannelPriority::Control),
-        ),
-        ChannelSpec::new(
-            FT,
-            "ft",
-            Direction::Sense,
-            "proprio/eef_wrench",
-            vec![TensorLayout::f32(&[6])],
-            1000.0,
-            ChannelQos::realtime(ChannelPriority::Realtime),
-        ),
-    ]
-}
+const ROBOT: &str = r#"{
+    "cmd": {"kind": "joints", "hz": 1000, "fields": {"pos": ["float32", [6]]},
+            "command": "position", "priority": "control"},
+    "ft": {"kind": "wrench", "hz": 1000, "fields": {"wrench": ["float32", [6]]}}
+}"#;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
@@ -147,7 +125,9 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
         PriorityClass::Scripted,
     )
     .await;
-    robot.declare_channels(channels()).await.expect("declare");
+    let view = robot.declare_parts(ROBOT).await.expect("declare");
+    let robot_id = robot.id().clone();
+    let cmd = view.part_at(&robot_id, "cmd").expect("cmd").channel;
     let policy = join(
         &host,
         "policy",
@@ -163,22 +143,32 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
     )
     .await;
 
-    // Verbs, leases and preemption are decided in the other process.
+    // Bindings, verbs, leases and preemption are decided in the other
+    // process.
+    for (p, fp) in [(&policy, 1), (&operator, 2)] {
+        p.wait_for("the robot's parts", WAIT, |s| s.part(cmd).is_some())
+            .await
+            .expect("parts");
+        p.declare_binding(Fingerprint::from(fp), "{}", vec![cmd], 0.0)
+            .await
+            .expect("bind");
+    }
     let armed = operator.arm().await.expect("arm");
     policy
         .wait_for("armed", WAIT, |s| s.epoch == armed.epoch)
         .await
         .expect("view");
-    let model = policy.grant_lease(CMD, None).await.expect("model lease");
-    let human = operator.grant_lease(CMD, None).await.expect("preempt");
+    let model = policy.grant_lease(cmd, None).await.expect("model lease");
+    let human = operator.grant_lease(cmd, None).await.expect("preempt");
     assert!(human.token > model.token);
+    assert_eq!(human.binding, Fingerprint::from(2));
     let view = robot
         .wait_for("the operator's lease", WAIT, |s| {
-            s.mode == Mode::Active && s.lease(CMD).is_some_and(|l| l.token == human.token)
+            s.mode == Mode::Active && s.lease(cmd).is_some_and(|l| l.token == human.token)
         })
         .await
         .expect("view");
-    assert!(view.check_fence(CMD, model.token, view.epoch).is_err());
+    assert!(view.check_fence(cmd, model.token, view.epoch).is_err());
 
     // Heartbeats cross the process boundary both ways: clock mappings.
     for p in [&robot, &policy, &operator] {
@@ -192,24 +182,26 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
 
     // Samples flow peer to peer and the host's history store, in the other
     // process, serves a late subscriber.
-    let ft = robot.publisher(FT).await.expect("publisher");
+    let ft = robot.publisher("ft").await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 0..3_u8 {
-        ft.publish(robot.clock().now_ns(), vec![Bytes::from(vec![i; 24])])
+        ft.publish(robot.clock().now_ns(), Bytes::from(vec![i; 24]))
             .expect("publish");
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     let sub = policy
         .subscribe(
-            FT,
+            &robot_id,
+            "ft",
             SubscribeOptions {
+                window: 1,
                 warm_from_history: true,
                 ..SubscribeOptions::default()
             },
         )
         .await
         .expect("subscribe");
-    assert_eq!(sub.stats().from_history, 1, "LATEST keeps one sample");
+    assert_eq!(sub.stats().from_history, 1, "a window of one");
     assert_eq!(sub.stats().last_seq, 3);
 
     // A crashed host: participants see its liveliness go, and verbs fail

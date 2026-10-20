@@ -1,5 +1,5 @@
-//! Identifiers: sessions, tenants, participants, channels, epochs and lease
-//! tokens.
+//! Identifiers: sessions, tenants, participants, channels, epochs, lease
+//! tokens and binding fingerprints.
 
 use std::fmt;
 use std::str::FromStr;
@@ -19,7 +19,7 @@ pub struct IdError {
 }
 
 impl IdError {
-    fn new(kind: &'static str, value: &str, reason: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: &'static str, value: &str, reason: impl Into<String>) -> Self {
         Self {
             kind,
             value: value.to_string(),
@@ -156,7 +156,9 @@ impl FromStr for TenantId {
     }
 }
 
-/// A channel, by its stable in-session id (chosen by the declarer).
+/// A stream, by its in-session id. The host assigns it when it normalises a
+/// declaration and never reuses it within the session, so an id names one
+/// immutable schema for the session's life. Zero is "none".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChannelId(pub u32);
 
@@ -190,12 +192,45 @@ impl fmt::Display for Epoch {
 
 /// A lease token: unique and increasing within a session, so a preemption
 /// always issues a token the old holder has never seen (a fencing token).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Zero is "none".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LeaseToken(pub u64);
 
 impl fmt::Display for LeaseToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "t{}", self.0)
+    }
+}
+
+/// A binding's 8-byte fingerprint: what a lease is bound to and every chunk
+/// under it carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Fingerprint(pub [u8; 8]);
+
+impl Fingerprint {
+    /// The fingerprint as wire bytes.
+    pub fn as_bytes(&self) -> &[u8; 8] {
+        &self.0
+    }
+
+    /// From wire bytes: exactly eight.
+    pub fn from_slice(bytes: &[u8]) -> Option<Self> {
+        bytes.try_into().ok().map(Self)
+    }
+}
+
+impl From<u64> for Fingerprint {
+    fn from(value: u64) -> Self {
+        Self(value.to_be_bytes())
+    }
+}
+
+impl fmt::Display for Fingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
     }
 }
 
@@ -227,6 +262,14 @@ mod tests {
         }
         let err = ParticipantId::new("a/b").expect_err("refused");
         assert_eq!(err.kind, "participant id");
+    }
+
+    #[test]
+    fn fingerprints_are_eight_bytes_shown_as_hex() {
+        let fp = Fingerprint::from(0x0102_0304_0506_0708);
+        assert_eq!(fp.to_string(), "0102030405060708");
+        assert_eq!(Fingerprint::from_slice(fp.as_bytes()), Some(fp));
+        assert_eq!(Fingerprint::from_slice(&[1, 2, 3]), None);
     }
 
     #[test]

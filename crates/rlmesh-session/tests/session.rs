@@ -11,14 +11,13 @@ use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
 use rlmesh_session::transport::free_local_base;
 use rlmesh_session::{
-    HostConfig, ImagePublisher, MonotonicClock, Participant, ParticipantConfig, SessionError,
-    SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig,
+    ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
+    SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig, VirtualConfig,
 };
 use rlmesh_wire::codec;
 use rlmesh_wire::{
-    ChannelId, ChannelPriority, ChannelQos, ChannelSpec, Congestion, CtlStatus, Delivery,
-    Direction, Encoding, Epoch, FenceError, History, Mode, ParticipantId, PriorityClass, Role,
-    Sample, SessionId, TenantId, TensorLayout,
+    ChannelId, ClockMode, CtlStatus, Encoding, Epoch, FenceError, Fingerprint, HistoryQuery, Mode,
+    ParticipantId, PriorityClass, Role, Sample, SessionId, TenantId, VirtualTick, Watermark,
 };
 
 /// Participants listen too (the OS picks the ports): in peer mode, data
@@ -29,61 +28,48 @@ fn any_local_port() -> std::net::SocketAddr {
 
 const WAIT: Duration = Duration::from_secs(5);
 const GRACE: Duration = Duration::from_millis(300);
-const JOINT_CMD: ChannelId = ChannelId(1);
-const FT: ChannelId = ChannelId(2);
-const CAMERA: ChannelId = ChannelId(3);
 const FT_MAX_AGE: Duration = Duration::from_millis(40);
 
-/// The robot's channels: commands in, force/torque and a camera out.
-fn robot_channels() -> Vec<ChannelSpec> {
-    let mut ft_qos = ChannelQos::realtime(ChannelPriority::Realtime);
-    ft_qos.max_age = Some(FT_MAX_AGE);
-    ft_qos.history = History::Window(4);
-    vec![
-        ChannelSpec::new(
-            JOINT_CMD,
-            "joint_cmd",
-            Direction::Actuate,
-            "action/joint_pos",
-            vec![TensorLayout::f32(&[6])],
-            1000.0,
-            ChannelQos::realtime(ChannelPriority::Control),
-        ),
-        ChannelSpec::new(
-            FT,
-            "ft",
-            Direction::Sense,
-            "proprio/eef_wrench",
-            vec![TensorLayout::f32(&[18])],
-            1000.0,
-            ft_qos,
-        ),
-        ChannelSpec::new(
-            CAMERA,
-            "wrist_cam",
-            Direction::Sense,
-            "image/wrist",
-            vec![TensorLayout::u8_image(8, 8, 3)],
-            30.0,
-            ChannelQos {
-                delivery: Delivery::BestEffort,
-                history: History::Latest,
-                max_age: None,
-                deadline: None,
-                priority: ChannelPriority::Bulk,
-                congestion: Congestion::Drop,
-                max_bitrate_bps: None,
-            },
-        ),
-    ]
+/// The robot: joint commands in (a group with a Cartesian alternative),
+/// force/torque and a camera out.
+fn robot_map(camera: &str) -> String {
+    format!(
+        r#"{{
+        "arm": {{"kind": "joints", "hz": 1000, "fields": {{"pos": ["float32", [6]]}},
+                "command": "position", "priority": "control", "group": "arm"}},
+        "arm/tcp": {{"kind": "pose", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
+                    "command": "delta", "group": "arm"}},
+        "ft": {{"kind": "wrench", "hz": 1000, "fields": {{"wrench": ["float32", [18]]}},
+               "max_age_ms": 40}},
+        "wrist/cam": {{"kind": "camera", "hz": 30, {camera}}}
+    }}"#
+    )
 }
 
-fn ft_leaves(value: f32) -> Vec<Bytes> {
-    vec![Bytes::from(
+fn raw_camera() -> String {
+    robot_map(r#""fields": {"image": ["uint8", [8, 8, 3]]}"#)
+}
+
+fn ft_payload(value: f32) -> Bytes {
+    Bytes::from(
         std::iter::repeat_n(value.to_le_bytes(), 18)
             .flatten()
             .collect::<Vec<u8>>(),
-    )]
+    )
+}
+
+fn robot_id() -> ParticipantId {
+    ParticipantId::new("robot").expect("id")
+}
+
+/// A fingerprint unique to a participant (the binder computes real ones).
+fn fingerprint_of(p: &Participant, revision: u64) -> Fingerprint {
+    let id = p
+        .id()
+        .as_str()
+        .bytes()
+        .fold(0_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
+    Fingerprint::from(id.wrapping_add(revision))
 }
 
 struct World {
@@ -96,6 +82,10 @@ struct World {
 
 impl World {
     async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    async fn start_with(configure: impl FnOnce(&mut HostConfig)) -> Self {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
@@ -115,6 +105,7 @@ impl World {
         config.clock = MonotonicClock::with_anchor(anchor, 0).shared();
         config.lease_grace = GRACE;
         config.health_log = Some(Duration::from_millis(100));
+        configure(&mut config);
         let host = SessionHost::start(transport, config).await.expect("host");
         Self {
             anchor,
@@ -169,32 +160,47 @@ impl World {
         .expect("attach")
     }
 
-    /// The embodiment, with its channels declared.
+    /// The embodiment, with its parts declared.
     async fn robot(&self) -> Participant {
         let robot = self
             .join("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0)
             .await;
+        robot.declare_parts(&raw_camera()).await.expect("declare");
         robot
-            .declare_channels(robot_channels())
+    }
+
+    /// A controller bound to every commandable part of the robot.
+    async fn controller(&self, id: &str, priority: PriorityClass) -> Participant {
+        let p = self.join(id, vec![Role::Controller], priority, 0).await;
+        let view = p
+            .wait_for("the robot's parts", WAIT, |s| {
+                s.part_at(&robot_id(), "arm").is_some()
+            })
             .await
-            .expect("declare");
-        robot
+            .expect("parts");
+        let channels = view
+            .parts
+            .iter()
+            .filter(|part| part.command.is_some())
+            .map(|part| part.channel)
+            .collect();
+        p.declare_binding(fingerprint_of(&p, 0), "{}", channels, 0.0)
+            .await
+            .expect("bind");
+        p
     }
 
     async fn policy(&self) -> Participant {
-        self.join("policy", vec![Role::Controller], PriorityClass::Model, 0)
-            .await
+        self.controller("policy", PriorityClass::Model).await
     }
 
     async fn operator(&self) -> Participant {
-        self.join(
-            "operator",
-            vec![Role::Controller],
-            PriorityClass::Operator,
-            0,
-        )
-        .await
+        self.controller("operator", PriorityClass::Operator).await
     }
+}
+
+fn channel(p: &Participant, path: &str) -> ChannelId {
+    p.part(&robot_id(), path).expect(path).channel
 }
 
 /// Arms through `by` and waits until `others` see the new epoch: a lease
@@ -229,6 +235,7 @@ async fn attach_arm_and_grant_a_lease() {
     let world = World::start().await;
     let robot = world.robot().await;
     let policy = world.policy().await;
+    let arm = channel(&policy, "arm");
 
     let roster = world.host.snapshot().roster;
     assert_eq!(roster.len(), 2);
@@ -236,28 +243,24 @@ async fn attach_arm_and_grant_a_lease() {
 
     let armed = policy.arm().await.expect("arm");
     assert_eq!((armed.mode, armed.epoch), (Mode::Armed, Epoch(2)));
-    let lease = policy.grant_lease(JOINT_CMD, None).await.expect("grant");
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
     assert_eq!(lease.holder, *policy.id());
+    assert_eq!(lease.binding, fingerprint_of(&policy, 0));
 
     // The embodiment learns of it through the published update.
     let view = robot
         .wait_for("lease visible to the robot", WAIT, |s| {
-            s.lease(JOINT_CMD).is_some()
+            s.lease(arm).is_some()
         })
         .await
         .expect("update");
     assert_eq!(view.mode, Mode::Active);
-    view.check_fence(JOINT_CMD, lease.token, view.epoch)
+    view.check_fence(arm, lease.token, view.epoch)
         .expect("fence");
 
     // An embodiment cannot take a lease.
     assert_eq!(
-        status(
-            robot
-                .grant_lease(JOINT_CMD, None)
-                .await
-                .expect_err("refused")
-        ),
+        status(robot.grant_lease(arm, None).await.expect_err("refused")),
         CtlStatus::Forbidden
     );
     policy.release_lease(&lease).await.expect("release");
@@ -273,31 +276,28 @@ async fn operator_preempts_the_model_and_fences_its_token() {
     let robot = world.robot().await;
     let policy = world.policy().await;
     let operator = world.operator().await;
+    let arm = channel(&policy, "arm");
 
     arm_seen_by(&operator, &[&policy]).await;
-    let model = policy.grant_lease(JOINT_CMD, None).await.expect("model");
-    let human = operator
-        .grant_lease(JOINT_CMD, None)
-        .await
-        .expect("preempt");
+    let model = policy.grant_lease(arm, None).await.expect("model");
+    let human = operator.grant_lease(arm, None).await.expect("preempt");
     assert!(human.token > model.token, "preemption bumps the token");
 
     let view = robot
         .wait_for("operator holds the lease", WAIT, |s| {
-            s.lease(JOINT_CMD)
-                .is_some_and(|l| l.holder == *operator.id())
+            s.lease(arm).is_some_and(|l| l.holder == *operator.id())
         })
         .await
         .expect("update");
     assert_eq!(
-        view.check_fence(JOINT_CMD, model.token, view.epoch),
+        view.check_fence(arm, model.token, view.epoch),
         Err(FenceError::StaleToken {
-            channel: JOINT_CMD,
+            channel: arm,
             current: human.token,
             got: model.token
         })
     );
-    view.check_fence(JOINT_CMD, human.token, view.epoch)
+    view.check_fence(arm, human.token, view.epoch)
         .expect("new token");
 
     // The model's stale token is refused, and it cannot take the lease back.
@@ -306,20 +306,98 @@ async fn operator_preempts_the_model_and_fences_its_token() {
         CtlStatus::StaleToken
     );
     assert_eq!(
-        status(policy.grant_lease(JOINT_CMD, None).await.expect_err("busy")),
+        status(policy.grant_lease(arm, None).await.expect_err("busy")),
         CtlStatus::LeaseBusy
     );
     policy
         .wait_for("model sees the handoff", WAIT, |s| {
-            s.lease(JOINT_CMD).is_some_and(|l| l.token == human.token)
+            s.lease(arm).is_some_and(|l| l.token == human.token)
         })
         .await
         .expect("model view");
 
     // Handing back: the operator releases and the model is granted anew.
     operator.release_lease(&human).await.expect("release");
-    let again = policy.grant_lease(JOINT_CMD, None).await.expect("again");
+    let again = policy.grant_lease(arm, None).await.expect("again");
     assert!(again.token > human.token);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rebinding_reissues_the_lease_under_a_fresh_token() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let policy = world.policy().await;
+    let arm = channel(&policy, "arm");
+    policy.arm().await.expect("arm");
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
+
+    // A new binding table (another fingerprint) over the same part.
+    let view = policy
+        .declare_binding(fingerprint_of(&policy, 1), r#"{"rev": 2}"#, vec![arm], 0.0)
+        .await
+        .expect("rebind");
+    let rebound = view.lease(arm).expect("kept").clone();
+    assert!(rebound.token > lease.token, "a fresh token");
+    assert_eq!(rebound.binding, fingerprint_of(&policy, 1));
+    assert_eq!(view.mode, Mode::Active, "mode unchanged");
+    let robot_view = robot
+        .wait_for("the robot sees the new token", WAIT, |s| {
+            s.lease(arm).is_some_and(|l| l.token == rebound.token)
+        })
+        .await
+        .expect("view");
+    assert!(matches!(
+        robot_view.check_fence(arm, lease.token, robot_view.epoch),
+        Err(FenceError::StaleToken { .. })
+    ));
+    assert_eq!(
+        robot_view
+            .binding(policy.id())
+            .map(|b| b.table_json.as_str()),
+        Some(r#"{"rev": 2}"#)
+    );
+    // A grant under the old fingerprint is no longer bound; a renewal under
+    // the new one keeps the fresh token.
+    let renewed = policy.grant_lease(arm, None).await.expect("renew");
+    assert_eq!(renewed.token, rebound.token);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_group_holds_one_member_and_switches_atomically() {
+    let world = World::start().await;
+    let _robot = world.robot().await;
+    let policy = world.policy().await;
+    let operator = world.operator().await;
+    let (arm, tcp) = (channel(&policy, "arm"), channel(&policy, "arm/tcp"));
+    arm_seen_by(&operator, &[&policy]).await;
+    let joint = policy.grant_lease(arm, None).await.expect("arm");
+    assert_eq!(
+        status(policy.grant_lease(tcp, None).await.expect_err("busy")),
+        CtlStatus::GroupBusy
+    );
+    assert_eq!(
+        status(
+            policy
+                .grant_leases(vec![arm, tcp], Vec::new(), None)
+                .await
+                .expect_err("both")
+        ),
+        CtlStatus::InvalidRequest
+    );
+    let switched = policy
+        .grant_leases(vec![tcp], vec![arm], None)
+        .await
+        .expect("switch");
+    assert!(switched[0].token > joint.token);
+    let view = policy.authority().expect("view");
+    assert!(view.lease(arm).is_none() && view.lease(tcp).is_some());
+    // The operator takes the joint member: the model's Cartesian lease goes
+    // in the same revision.
+    let revision = view.revision;
+    operator.grant_lease(arm, None).await.expect("preempt");
+    let view = operator.authority().expect("view");
+    assert_eq!(view.revision, revision + 1);
+    assert!(view.lease(tcp).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -327,8 +405,9 @@ async fn heartbeat_loss_lapses_the_lease_and_goes_safe() {
     let world = World::start().await;
     let robot = world.robot().await;
     let policy = world.policy().await;
+    let arm = channel(&policy, "arm");
     policy.arm().await.expect("arm");
-    let lease = policy.grant_lease(JOINT_CMD, None).await.expect("grant");
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
 
     // Heartbeats keep it alive well past the grace.
     tokio::time::sleep(GRACE * 3).await;
@@ -350,11 +429,7 @@ async fn heartbeat_loss_lapses_the_lease_and_goes_safe() {
     policy.set_heartbeats_enabled(true);
     let armed = policy.arm().await.expect("re-arm");
     assert_eq!(armed.epoch, view.epoch.next());
-    assert!(
-        armed
-            .check_fence(JOINT_CMD, lease.token, view.epoch)
-            .is_err()
-    );
+    assert!(armed.check_fence(arm, lease.token, view.epoch).is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -362,8 +437,9 @@ async fn a_vanished_holder_takes_the_session_safe() {
     let world = World::start().await;
     let robot = world.robot().await;
     let policy = world.policy().await;
+    let arm = channel(&policy, "arm");
     policy.arm().await.expect("arm");
-    policy.grant_lease(JOINT_CMD, None).await.expect("grant");
+    policy.grant_lease(arm, None).await.expect("grant");
 
     let gone = Instant::now();
     let id = policy.id().clone();
@@ -384,8 +460,9 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
     let robot = world.robot().await;
     let policy = world.policy().await;
     let operator = world.operator().await;
+    let arm = channel(&policy, "arm");
     arm_seen_by(&operator, &[&policy]).await;
-    policy.grant_lease(JOINT_CMD, None).await.expect("grant");
+    policy.grant_lease(arm, None).await.expect("grant");
 
     let stopped = policy.estop("test button").await.expect("estop");
     assert_eq!(stopped.mode, Mode::Estop);
@@ -402,12 +479,7 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
         );
     }
     assert_eq!(
-        status(
-            policy
-                .grant_lease(JOINT_CMD, None)
-                .await
-                .expect_err("estop")
-        ),
+        status(policy.grant_lease(arm, None).await.expect_err("estop")),
         CtlStatus::EstopLatched
     );
     assert_eq!(
@@ -429,8 +501,9 @@ async fn a_late_observer_gets_the_snapshot_by_query() {
     let world = World::start().await;
     let _robot = world.robot().await;
     let policy = world.policy().await;
+    let arm = channel(&policy, "arm");
     policy.arm().await.expect("arm");
-    let lease = policy.grant_lease(JOINT_CMD, None).await.expect("grant");
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
 
     // A fresh transport that never attaches.
     let transport = world.transport().await;
@@ -447,10 +520,7 @@ async fn a_late_observer_gets_the_snapshot_by_query() {
         (snapshot.epoch, snapshot.revision, snapshot.mode),
         (host.epoch, host.revision, host.mode)
     );
-    assert_eq!(
-        snapshot.lease(JOINT_CMD).map(|l| l.token),
-        Some(lease.token)
-    );
+    assert_eq!(snapshot.lease(arm).map(|l| l.token), Some(lease.token));
 
     // Attaching as an observer works the same way and is never a controller.
     let viewer = world
@@ -460,17 +530,12 @@ async fn a_late_observer_gets_the_snapshot_by_query() {
         viewer
             .authority()
             .expect("view")
-            .lease(JOINT_CMD)
+            .lease(arm)
             .map(|l| l.token),
         Some(lease.token)
     );
     assert_eq!(
-        status(
-            viewer
-                .grant_lease(JOINT_CMD, None)
-                .await
-                .expect_err("observer")
-        ),
+        status(viewer.grant_lease(arm, None).await.expect_err("observer")),
         CtlStatus::Forbidden
     );
 }
@@ -505,12 +570,6 @@ async fn heartbeats_estimate_each_participants_clock_offset_within_bound() {
             .expect("mapping");
         let mapping = snapshot.clock(participant.id()).expect("mapping").clone();
         let error = (mapping.offset_ns - true_offset).unsigned_abs();
-        tracing::info!(
-            "{}: offset {} ns ± {} ns (true {true_offset}, off by {error} ns)",
-            participant.id(),
-            mapping.offset_ns,
-            mapping.error_ns
-        );
         assert!(
             error <= mapping.error_ns,
             "{}: |{} - {true_offset}| > {}",
@@ -551,75 +610,96 @@ async fn heartbeats_estimate_each_participants_clock_offset_within_bound() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn channels_are_declared_through_the_host_and_late_joiners_see_them() {
+async fn parts_are_declared_through_the_host_and_late_joiners_see_them() {
     let world = World::start().await;
     let robot = world.robot().await;
-    // Re-declaring the same table is a no-op.
+    // Re-declaring the same map is a no-op.
     let revision = world.host.snapshot().revision;
-    robot
-        .declare_channels(robot_channels())
-        .await
-        .expect("redeclare");
+    robot.declare_parts(&raw_camera()).await.expect("redeclare");
     assert_eq!(world.host.snapshot().revision, revision);
 
-    // A late joiner learns the table with the rest of the snapshot.
+    // A late joiner learns the parts with the rest of the snapshot.
     let twin = world
         .join("twin", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
     let view = twin.authority().expect("view");
-    assert_eq!(view.channels.len(), 3);
-    let ft = view.channel(FT).expect("ft");
-    assert_eq!(ft.owner.as_ref(), Some(robot.id()));
-    assert_eq!(ft.layout, vec![TensorLayout::f32(&[18])]);
-    assert_eq!(ft.qos.max_age, Some(FT_MAX_AGE));
+    assert_eq!(view.parts.len(), 4);
+    let ft = view.part_at(&robot_id(), "ft").expect("ft");
+    assert_eq!(ft.owner, robot_id());
+    assert_eq!(ft.max_age, Some(FT_MAX_AGE));
+    assert_eq!(ft.stream().expect("stream").layout.stride(), Some(72));
+    let arm = view.part_at(&robot_id(), "arm").expect("arm");
+    assert!(
+        arm.applied_channel.is_some(),
+        "commandable: an applied stream"
+    );
 
-    // Another embodiment cannot take the id; an observer cannot own
-    // actuation; leases need a declared actuation channel.
-    let other = world
-        .join("other", vec![Role::Embodiment], PriorityClass::Scripted, 0)
-        .await;
-    let mut clash = robot_channels();
-    clash.truncate(1);
-    clash[0].name = "other_cmd".into();
+    // Only embodiments declare parts; a malformed map is refused with the
+    // path named; a core kind without fields waits for the kind table.
     assert_eq!(
         status(
-            other
-                .declare_channels(clash.clone())
+            twin.declare_parts(&raw_camera())
                 .await
-                .expect_err("clash")
+                .expect_err("observer")
         ),
-        CtlStatus::ChannelConflict
-    );
-    assert_eq!(
-        status(twin.declare_channels(clash).await.expect_err("observer")),
         CtlStatus::Forbidden
     );
+    let err = robot
+        .declare_parts(r#"{"ft": {"kind": "wrench", "hz": 1000, "fields": {"w": ["float32", [6]]}, "colour": 1}}"#)
+        .await
+        .expect_err("unknown key");
+    assert!(err.to_string().contains("ft"), "{err}");
+    assert_eq!(
+        status(
+            robot
+                .declare_parts(r#"{"arm": {"kind": "joints", "names": ["a"], "hz": 500}}"#)
+                .await
+                .expect_err("core kind")
+        ),
+        CtlStatus::Unsupported
+    );
+
+    // Leases need a commandable part inside the requester's binding.
     let policy = world.policy().await;
     policy.arm().await.expect("arm");
-    for channel in [FT, ChannelId(99)] {
-        assert_eq!(
-            status(
-                policy
-                    .grant_lease(channel, None)
-                    .await
-                    .expect_err("not actuation")
-            ),
-            CtlStatus::UnknownChannel
-        );
-    }
+    assert_eq!(
+        status(
+            policy
+                .grant_lease(ft.channel, None)
+                .await
+                .expect_err("sensor")
+        ),
+        CtlStatus::InvalidRequest
+    );
+    let unbound = world
+        .join("unbound", vec![Role::Controller], PriorityClass::Model, 0)
+        .await;
+    unbound
+        .wait_for("armed", WAIT, |s| s.mode == Mode::Armed)
+        .await
+        .expect("view");
+    assert_eq!(
+        status(
+            unbound
+                .grant_lease(arm.channel, None)
+                .await
+                .expect_err("no binding")
+        ),
+        CtlStatus::NotBound
+    );
 
-    // Detaching the owner removes its channels.
+    // Detaching the owner removes its parts.
     robot.detach().await.expect("detach");
-    twin.wait_for("channels removed", WAIT, |s| s.channels.is_empty())
+    twin.wait_for("parts removed", WAIT, |s| s.parts.is_empty())
         .await
         .expect("removed");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_participant_needing_a_capability_the_session_lacks_is_refused() {
+async fn a_participant_requiring_a_feature_the_session_lacks_is_refused() {
     let world = World::start().await;
     let mut config = world.config("future", vec![Role::Controller], PriorityClass::Model, 0);
-    config.capabilities = vec!["merge.blend".into()];
+    config.requires = vec!["merge.blend".into()];
     let err = Participant::attach(world.transport().await, config)
         .await
         .err()
@@ -629,22 +709,29 @@ async fn a_participant_needing_a_capability_the_session_lacks_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_host_history() {
+async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() {
     let world = World::start().await;
     let robot = world.robot().await;
-    let ft = robot.publisher(FT).await.expect("publisher");
+    let ft = robot.publisher("ft").await.expect("publisher");
     let early = world
         .join("early", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
     let early_ft = early
-        .subscribe(FT, SubscribeOptions::default())
+        .subscribe(
+            &robot_id(),
+            "ft",
+            SubscribeOptions {
+                window: 4,
+                ..SubscribeOptions::default()
+            },
+        )
         .await
         .expect("subscribe");
     // Let the subscriptions (the host's history store too) propagate.
     tokio::time::sleep(Duration::from_millis(200)).await;
     for i in 1..=6_u8 {
         let seq = ft
-            .publish(robot.clock().now_ns(), ft_leaves(f32::from(i)))
+            .publish(robot.clock().now_ns(), ft_payload(f32::from(i)))
             .expect("publish");
         assert_eq!(seq, u64::from(i));
     }
@@ -656,7 +743,7 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_host_history() {
     assert_eq!((stats.received, stats.lost), (6, 0));
     let latest = early_ft.latest().expect("latest");
     assert_eq!(latest.received.sample.epoch, world.host.snapshot().epoch);
-    assert_eq!(latest.received.sample.leaves, ft_leaves(6.0));
+    assert_eq!(latest.received.sample.payload, ft_payload(6.0));
     assert_eq!(
         early_ft
             .window()
@@ -664,22 +751,61 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_host_history() {
             .map(|r| r.sample.seq)
             .collect::<Vec<_>>(),
         vec![3, 4, 5, 6],
-        "WINDOW(4)"
+        "a window of four"
     );
-    // A value that does not fit the declaration is refused at the publisher.
+    // A value that does not fit the stride is refused at the publisher.
     assert!(matches!(
-        ft.publish(0, vec![Bytes::from(vec![0_u8; 8])]),
+        ft.publish(0, Bytes::from(vec![0_u8; 8])),
         Err(SessionError::InvalidValue { .. })
     ));
 
-    // A late joiner is served the host's window.
+    // The store pages by epoch, watermark and limit.
+    let stream = early
+        .part(&robot_id(), "ft")
+        .expect("ft")
+        .stream()
+        .expect("stream");
+    let epoch = world.host.snapshot().epoch;
+    let pages = early
+        .query_history(
+            &stream,
+            HistoryQuery {
+                epoch,
+                after_seq: 1,
+                until_seq: Some(5),
+                limit: Some(3),
+            },
+        )
+        .await
+        .expect("history");
+    let seqs: Vec<u64> = pages
+        .iter()
+        .flat_map(|p| p.samples.iter().map(|s| s.seq))
+        .collect();
+    assert_eq!(seqs, vec![3, 4, 5], "the newest three up to the watermark");
+    assert!(!pages[0].truncated && pages[0].gaps.is_empty());
+    let other_epoch = early
+        .query_history(
+            &stream,
+            HistoryQuery {
+                epoch: epoch.next(),
+                ..HistoryQuery::default()
+            },
+        )
+        .await
+        .expect("history");
+    assert!(other_epoch.iter().all(|p| p.samples.is_empty()));
+
+    // A late joiner is served the host's history, then live samples.
     let late = world
         .join("late", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
     let late_ft = late
         .subscribe(
-            FT,
+            &robot_id(),
+            "ft",
             SubscribeOptions {
+                window: 4,
                 warm_from_history: true,
                 ..SubscribeOptions::default()
             },
@@ -690,14 +816,22 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_host_history() {
     assert_eq!(stats.last_seq, 6);
     assert_eq!((stats.received, stats.from_history), (4, 4), "the window");
     assert_eq!(stats.lost, 0, "history starts the seq count");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    ft.publish(robot.clock().now_ns(), ft_payload(7.0))
+        .expect("publish");
+    wait_until("the live sample after history", || {
+        late_ft.stats().last_seq == 7
+    })
+    .await;
 
-    // Heartbeats report the newest seq seen per channel.
+    // Heartbeats report the newest seq seen per stream.
     let mut health = world.host.watch_health();
     tokio::time::timeout(
         WAIT,
         health.wait_for(|rows| {
-            rows.iter()
-                .any(|r| r.participant == *late.id() && r.report.last_seq_seen == vec![(FT, 6)])
+            rows.iter().any(|r| {
+                r.participant == *late.id() && r.report.last_seq_seen == vec![(stream.channel, 7)]
+            })
         }),
     )
     .await
@@ -715,7 +849,8 @@ async fn seq_gaps_count_as_losses_and_old_samples_go_stale() {
     let delays = Arc::new(AtomicU64::new(0));
     let ft = viewer
         .subscribe(
-            FT,
+            &robot_id(),
+            "ft",
             SubscribeOptions {
                 on_sample: Some({
                     let delays = delays.clone();
@@ -731,20 +866,22 @@ async fn seq_gaps_count_as_losses_and_old_samples_go_stale() {
         .expect("subscribe");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Raw frames on the channel's key, skipping seqs 3 and 4.
+    // Raw samples on the stream's key, skipping seqs 3 and 4.
     let raw = world.transport().await;
-    let key = robot.keys().samples(robot.id(), FT);
+    let key = robot.keys().data(robot.id(), "ft");
+    let channel = ft.spec().channel;
     let epoch = world.host.snapshot().epoch;
     tokio::time::sleep(Duration::from_millis(200)).await;
     for seq in [1_u64, 2, 5, 6] {
         let sample = Sample {
-            channel: FT,
-            seq,
+            channel,
             epoch,
+            seq,
             capture_ns: robot.clock().now_ns(),
             publish_ns: robot.clock().now_ns(),
             tick: 0,
-            leaves: ft_leaves(0.5),
+            payload: ft_payload(0.5),
+            applied: None,
         };
         let frame = codec::encode_sample(&sample).to_vec();
         raw.session(TrafficClass::Realtime)
@@ -771,15 +908,13 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
     let robot = world
         .join("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0)
         .await;
-    let mut channels = robot_channels();
-    let camera = channels
-        .iter_mut()
-        .find(|c| c.id == CAMERA)
-        .expect("camera");
-    camera.layout = vec![TensorLayout::u8_image(48, 64, 3)];
-    camera.encoding = Encoding::Jpeg { quality: 80 };
-    camera.qos.max_bitrate_bps = Some(4_000_000);
-    robot.declare_channels(channels).await.expect("declare");
+    robot
+        .declare_parts(&robot_map(
+            r#""fields": {"image": ["uint8", [48, 64, 3]]}, "encoding": "jpeg", "quality": 80,
+               "send": "latest(hz=30, max_mbps=4)""#,
+        ))
+        .await
+        .expect("declare");
     let policy = world.policy().await;
 
     // Four distinct Zenoh sessions, each linked to the host's session of the
@@ -800,7 +935,8 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
     let frames = Arc::new(std::sync::Mutex::new(Vec::new()));
     let cam_sub = policy
         .subscribe(
-            CAMERA,
+            &robot_id(),
+            "wrist/cam",
             SubscribeOptions {
                 on_sample: Some({
                     let frames = frames.clone();
@@ -815,7 +951,10 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
         )
         .await
         .expect("subscribe");
-    let images = ImagePublisher::new(robot.publisher(CAMERA).await.expect("publisher"))
+    assert_eq!(cam_sub.spec().encoding, Encoding::Jpeg { quality: 80 });
+    let images = robot
+        .image_publisher("wrist/cam")
+        .await
         .expect("image publisher");
     tokio::time::sleep(Duration::from_millis(300)).await;
     let mut frame = Vec::new();
@@ -831,7 +970,122 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
     let sample = frames.lock().expect("frames")[0].clone();
     let pixels = decode_image(cam_sub.spec(), &sample).expect("decode");
     assert_eq!(pixels.len(), 64 * 48 * 3);
-    assert!(sample.leaves[0].len() < pixels.len() / 2, "compressed");
+    assert!(sample.payload.len() < pixels.len() / 2, "compressed");
     let stats = images.stats();
     assert!(stats.sent >= 5 && stats.encoded == 10, "{stats:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_virtual_session_steps_through_the_tick_barrier() {
+    const TICK_NS: u64 = 1_000_000;
+    let world = World::start_with(|config| {
+        config.virtual_clock = Some(VirtualConfig {
+            tick_ns: TICK_NS,
+            latency_ticks: 1,
+            barrier_timeout_ns: 5_000_000_000,
+        });
+    })
+    .await;
+    let robot = world.robot().await;
+    let policy = world
+        .join("policy", vec![Role::Controller], PriorityClass::Model, 0)
+        .await;
+    let arm = channel(&policy, "arm");
+    // A 500 Hz policy on 1 ms ticks: due every second tick.
+    policy
+        .declare_binding(fingerprint_of(&policy, 0), "{}", vec![arm], 500.0)
+        .await
+        .expect("bind");
+    arm_seen_by(&policy, &[&robot]).await;
+    let view = policy.authority().expect("view");
+    assert_eq!(
+        (view.clock_mode, view.tick_ns),
+        (ClockMode::Virtual, TICK_NS)
+    );
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
+    let chunks = policy.chunk_publisher(&lease).await.expect("publisher");
+    let ft = robot.publisher("ft").await.expect("publisher");
+    let mut robot_ticks = robot.virtual_ticks().await.expect("ticks");
+    let mut policy_ticks = policy.virtual_ticks().await.expect("ticks");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let ft_channel = ft.spec().channel;
+
+    let controller = tokio::spawn(async move {
+        let mut decided = Vec::new();
+        while decided.len() < 3 {
+            let tick = policy_ticks
+                .wait_for(WAIT, |t| matches!(t, VirtualTick::Observe(_)))
+                .await
+                .expect("observe");
+            let VirtualTick::Observe(state) = tick else {
+                continue;
+            };
+            if !state.due.contains(policy.id()) {
+                continue;
+            }
+            let k = state.tick;
+            let t0 = i64::try_from((k + 1) * TICK_NS).expect("ns");
+            let seq = chunks
+                .send(ChunkDraft {
+                    t0_ns: t0,
+                    replace_from_ns: t0,
+                    valid_until_ns: t0 + 50_000_000,
+                    actions: Bytes::from(vec![0_u8; 24 * 4]),
+                    tick: k,
+                    ..ChunkDraft::default()
+                })
+                .expect("send");
+            let reference = rlmesh_wire::ChunkRef {
+                channel: arm,
+                lease_token: lease.token,
+                seq,
+            };
+            policy.decided(k, vec![reference]).await.expect("decided");
+            decided.push((k, reference));
+        }
+        (policy, decided)
+    });
+
+    // The embodiment: publish, ready, wait for the step, repeat.
+    let mut steps = Vec::new();
+    for k in 0..6_u64 {
+        let seq = ft
+            .publish_sample(
+                i64::try_from(k * TICK_NS).expect("ns"),
+                k,
+                ft_payload(k as f32),
+                None,
+            )
+            .expect("publish");
+        robot
+            .ready(
+                k,
+                vec![Watermark {
+                    channel: ft_channel,
+                    seq,
+                }],
+            )
+            .await
+            .expect("ready");
+        let step = robot_ticks
+            .wait_for(WAIT, |t| matches!(t, VirtualTick::Step(s) if s.tick == k))
+            .await
+            .expect("step");
+        let VirtualTick::Step(step) = step else {
+            unreachable!("matched a step");
+        };
+        steps.push((step.tick, step.chunks));
+    }
+    let (_policy, decided) = controller.await.expect("controller");
+    assert_eq!(
+        decided.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+        vec![0, 2, 4],
+        "due on even ticks"
+    );
+    // With one tick of latency, the decision of tick k is delivered at k + 1.
+    for (k, reference) in &decided {
+        let (_, chunks) = &steps[usize::try_from(k + 1).expect("tick")];
+        assert_eq!(chunks, &vec![*reference], "tick {}", k + 1);
+    }
+    assert!(steps[0].1.is_empty() && steps[2].1.is_empty());
 }

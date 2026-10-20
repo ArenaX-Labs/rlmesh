@@ -45,20 +45,15 @@ use rlmesh_edge::{Edge, EdgeConfig, EdgeMode};
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::transport::free_local_base;
 use rlmesh_session::{
-    AuthorityEvent, ChunkDraft, Clock, HostConfig, ImagePublisher, LeaseEnd, Offer, Participant,
-    ParticipantConfig, SessionHost, SubscribeOptions, SystemMonotonicClock, Transport,
-    TransportConfig,
+    AuthorityEvent, ChunkDraft, Clock, HostConfig, LeaseEnd, Offer, Participant, ParticipantConfig,
+    SessionHost, SubscribeOptions, SystemMonotonicClock, Transport, TransportConfig,
 };
 use rlmesh_wire::{
-    Actuation, ChannelId, ChannelPriority, ChannelQos, ChannelSpec, Congestion, Delivery,
-    Direction, Encoding, History, MergePolicy, Mode, ObservationRef, ParticipantId, PriorityClass,
-    Role, Sample, SessionId, TenantId, TensorLayout,
+    Fingerprint, InputRange, Mode, ParticipantId, PriorityClass, Role, Sample, SessionId, TenantId,
 };
 use serde_json::{Value, json};
 
-const CMD: ChannelId = ChannelId(1);
-const FT: ChannelId = ChannelId(2);
-const CAMERA: ChannelId = ChannelId(3);
+const ROBOT: &str = "ur10";
 const PERIOD_NS: i64 = 1_000_000;
 const RING: usize = 1 << 16;
 const FRAMES: u32 = 16;
@@ -169,61 +164,35 @@ fn transport_config(args: &Args, listen: bool) -> Result<TransportConfig, BoxErr
     })
 }
 
-fn channels(args: &Args) -> Vec<ChannelSpec> {
-    let mut cmd = ChannelSpec::new(
-        CMD,
-        "cmd",
-        Direction::Actuate,
-        "action/eef_wrench",
-        vec![TensorLayout::f32(&[6])],
-        1000.0,
-        ChannelQos::realtime(ChannelPriority::Control),
-    );
-    cmd.actuation = Some(Actuation {
-        merge: MergePolicy::Replace,
-        hold_max: Duration::from_millis(100),
-        safe_behavior: "stop".into(),
-        hold_last: false,
-    });
-    let mut specs = vec![
-        cmd,
-        ChannelSpec::new(
-            FT,
-            "ft",
-            Direction::Sense,
-            "proprio/eef_wrench",
-            vec![TensorLayout::f32(&[18])],
-            1000.0,
-            ChannelQos::realtime(ChannelPriority::Realtime),
-        ),
-    ];
-    if args.camera != "off" {
-        let mut camera = ChannelSpec::new(
-            CAMERA,
-            "camera",
-            Direction::Sense,
-            "image/wrist",
-            vec![TensorLayout::u8_image(480, 640, 3)],
-            f64::from(args.camera_hz),
-            ChannelQos {
-                delivery: Delivery::BestEffort,
-                history: History::Latest,
-                max_age: Some(Duration::from_millis(100)),
-                deadline: None,
-                priority: ChannelPriority::Bulk,
-                // The image publisher's one-frame mailbox drops: its sender
-                // blocks on a congested link and newer frames replace the
-                // unsent one.
-                congestion: Congestion::Block,
-                max_bitrate_bps: (args.camera == "jpeg").then_some(8_000_000),
-            },
-        );
-        if args.camera == "jpeg" {
-            camera.encoding = Encoding::Jpeg { quality: 75 };
+/// The robot map: wrench commands in (velocity-like: no hold), force/torque
+/// at 1 kHz and an optional 640x480 camera out.
+fn robot_map(args: &Args) -> String {
+    let camera = match args.camera.as_str() {
+        "off" => String::new(),
+        encoding => {
+            let (encoding, send) = if encoding == "jpeg" {
+                (
+                    r#", "encoding": "jpeg", "quality": 75"#,
+                    format!("latest(hz={}, max_mbps=8)", args.camera_hz),
+                )
+            } else {
+                ("", format!("latest(hz={})", args.camera_hz))
+            };
+            format!(
+                r#", "camera": {{"kind": "camera", "hz": {}, "fields": {{"image": ["uint8", [480, 640, 3]]}},
+                   "max_age_ms": 100, "send": "{send}"{encoding}}}"#,
+                args.camera_hz
+            )
         }
-        specs.push(camera);
-    }
-    specs
+    };
+    format!(
+        r#"{{
+        "cmd": {{"kind": "x/wrench_cmd", "hz": 1000, "fields": {{"wrench": ["float32", [6]]}},
+                "command": "wrench", "priority": "control", "hold_max_ms": 100, "safe": "stop"}},
+        "ft": {{"kind": "wrench", "hz": 1000, "fields": {{"wrench": ["float32", [18]]}},
+               "priority": "realtime"}}{camera}
+    }}"#
+    )
 }
 
 fn participant_config(
@@ -371,13 +340,15 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
         transport.clone(),
         participant_config(
             session,
-            "ur10",
+            ROBOT,
             vec![Role::Embodiment],
             PriorityClass::Scripted,
         )?,
     )
     .await?;
-    robot.declare_channels(channels(args)).await?;
+    let declared = robot.declare_parts(&robot_map(args)).await?;
+    let robot_id = robot.id().clone();
+    let cmd = declared.part_at(&robot_id, "cmd").ok_or("cmd")?.channel;
     if let Some(path) = &args.session_file {
         std::fs::write(path, session.to_string())?;
     }
@@ -389,7 +360,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     let edge = Arc::new(
         Edge::attach(
             &robot,
-            CMD,
+            "cmd",
             EdgeConfig {
                 log_capacity: 0,
                 ..EdgeConfig::default()
@@ -400,7 +371,8 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
                     let Some(based) = chunk.based_on.first() else {
                         return;
                     };
-                    let capture = ft_capture[based.seq as usize % RING].load(Ordering::Relaxed);
+                    let capture =
+                        ft_capture[based.seq_last as usize % RING].load(Ordering::Relaxed);
                     if let Ok(mut ages) = chunk_ages.lock() {
                         ages.push((capture, receive_ns - capture));
                     }
@@ -413,16 +385,14 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
         .wait_for(
             "the controller's lease and a clock mapping",
             Duration::from_secs(60),
-            |s| s.lease(CMD).is_some() && s.clock(robot.id()).is_some(),
+            |s| s.lease(cmd).is_some() && s.clock(robot.id()).is_some(),
         )
         .await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let ft = Arc::new(robot.publisher(FT).await?);
+    let ft = Arc::new(robot.publisher("ft").await?);
     let camera = match args.camera.as_str() {
         "off" => None,
-        _ => Some(Arc::new(ImagePublisher::new(
-            robot.publisher(CAMERA).await?,
-        )?)),
+        _ => Some(Arc::new(robot.image_publisher("camera").await?)),
     };
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -445,7 +415,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
                 let bytes: Vec<u8> = value.iter().flat_map(|v| v.to_le_bytes()).collect();
                 let seq = ft.last_seq() + 1;
                 ft_capture[seq as usize % RING].store(capture, Ordering::Relaxed);
-                if let Err(err) = ft.publish(capture, vec![Bytes::from(bytes)]) {
+                if let Err(err) = ft.publish(capture, Bytes::from(bytes)) {
                     eprintln!("ft publish: {err}");
                 }
                 let applied = edge.tick();
@@ -457,7 +427,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
                         .action
                         .as_ref()
                         .filter(|_| applied.mode == EdgeMode::Driving)
-                        .and_then(|a| a.chunk.based_on.first().map(|o| o.seq)),
+                        .and_then(|a| a.chunk.based_on.first().map(|o| o.seq_last)),
                 });
                 next += PERIOD_NS;
                 let now = clock.now_ns();
@@ -602,11 +572,17 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
         )?,
     )
     .await?;
+    let robot = ParticipantId::new(ROBOT)?;
+    let view = policy
+        .wait_for("parts", WAIT, |s| s.part_at(&robot, "ft").is_some())
+        .await?;
+    let cmd = view.part_at(&robot, "cmd").ok_or("cmd")?.channel;
+    let ft = view.part_at(&robot, "ft").ok_or("ft")?.channel;
     policy
-        .wait_for("channels", WAIT, |s| s.channel(FT).is_some())
+        .declare_binding(Fingerprint::from(1), "{}", vec![cmd], 0.0)
         .await?;
     policy.arm().await?;
-    let lease = policy.grant_lease(CMD, None).await?;
+    let lease = policy.grant_lease(cmd, None).await?;
     let cmd = Arc::new(policy.chunk_publisher(&lease).await?);
     let clock = SystemMonotonicClock;
     let last_rx = Arc::new(AtomicI64::new(0));
@@ -616,7 +592,8 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
     let (horizon, replan) = (args.horizon, args.replan);
     let _ft = policy
         .subscribe(
-            FT,
+            &robot,
+            "ft",
             SubscribeOptions {
                 on_sample: Some({
                     let (cmd, last_rx, errors, expected) = (
@@ -642,22 +619,20 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
                             return;
                         }
                         // The "model": hold the first six floats of the wrench.
-                        let action = r
-                            .sample
-                            .leaves
-                            .first()
-                            .map(|l| l.slice(..24.min(l.len())))
-                            .unwrap_or_default();
+                        let action = r.sample.payload.slice(..24.min(r.sample.payload.len()));
+                        let actions = if horizon == 1 {
+                            action
+                        } else {
+                            Bytes::from(action.repeat(horizon))
+                        };
                         let draft = ChunkDraft {
-                            based_on: vec![ObservationRef {
-                                channel: FT,
-                                seq: r.sample.seq,
-                            }],
+                            based_on: vec![InputRange::one(ft, r.sample.seq)],
                             t0_ns: capture + PERIOD_NS,
                             dt_ns: PERIOD_NS as u64,
                             replace_from_ns: r.receive_ns + expected.load(Ordering::Relaxed),
                             valid_until_ns: capture + 500_000_000,
-                            actions: vec![vec![action]; horizon],
+                            actions,
+                            tick: 0,
                         };
                         if cmd.send(draft).is_err() {
                             errors.fetch_add(1, Ordering::Relaxed);
@@ -674,7 +649,10 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
     let decoding = Arc::new(AtomicBool::new(true));
     let decoder = {
         let (decoded, decoding) = (decoded.clone(), decoding.clone());
-        let spec = policy.channel(CAMERA).ok();
+        let spec = policy
+            .part(&robot, "camera")
+            .ok()
+            .and_then(|part| part.stream().ok());
         std::thread::spawn(move || {
             let Some(spec) = spec else {
                 return;
@@ -696,7 +674,8 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
         _ => Some(
             policy
                 .subscribe(
-                    CAMERA,
+                    &robot,
+                    "camera",
                     SubscribeOptions {
                         on_sample: Some({
                             let frame_tx = Mutex::new(frame_tx);

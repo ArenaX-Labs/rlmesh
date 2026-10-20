@@ -1,14 +1,15 @@
-// RLMesh real-time session wire, generation 2: control messages.
+// RLMesh real-time session wire, generation 2 (the v0.2 spec, §10).
 //
 // Every message is plain protobuf, one message per Zenoh payload; the key
-// says which message it is. Samples and action chunks carry their tensors as
-// raw `bytes` leaves in a layout declared once per channel.
+// says which message it is. Samples, batches and action chunks carry their
+// values as one raw `bytes` payload, packed in the layout the host derived
+// from the part's declaration (§10.6).
 //
 // Compatibility: additive only. New fields, verbs and enum values; never
-// renumber or retype. A feature added in a protocol minor is a capability
-// string (see Attach.capabilities and AuthorityState.capabilities).
-//
-// Provisional until the v0.2 wire spec freezes.
+// renumber or retype. A feature added in a protocol minor is a feature
+// string (Attach.supports/requires, AuthorityState.supports,
+// PartSpec.requires). Field numbers the spec reserves for messages not built
+// yet (episodes, delivery contracts, demands) are left unused.
 syntax = "proto3";
 
 package rlmesh.session.v2;
@@ -16,7 +17,7 @@ package rlmesh.session.v2;
 // What a participant does in a session. One participant may hold several.
 enum Role {
   ROLE_UNSPECIFIED = 0;
-  // Publishes sensor channels and consumes actuation (real, sim or twin).
+  // Publishes a robot's parts and consumes their commands (real, sim or twin).
   ROLE_EMBODIMENT = 1;
   // Produces commands (model replica, operator or scripted controller).
   ROLE_CONTROLLER = 2;
@@ -44,6 +45,14 @@ enum PriorityClass {
   PRIORITY_CLASS_SAFETY = 4;
 }
 
+// How session time advances (§11.2).
+enum ClockMode {
+  CLOCK_MODE_UNSPECIFIED = 0;
+  CLOCK_MODE_WALL = 1;
+  CLOCK_MODE_VIRTUAL = 2;
+  CLOCK_MODE_LOCKSTEP = 3;
+}
+
 message ParticipantInfo {
   string id = 1;
   string name = 2;
@@ -52,21 +61,26 @@ message ParticipantInfo {
   // Host session clock when the participant (last) attached.
   int64 attached_ns = 5;
   uint32 protocol_minor = 6;
-  repeated string capabilities = 7;
+  // Features it implements and features it cannot run without.
+  repeated string supports = 7;
+  repeated string requires = 8;
 }
 
-// A time-bounded grant of command authority over one actuation channel.
+// A time-bounded grant of command authority over one commandable part,
+// bound to one binding.
 message Lease {
   uint32 channel = 1;
   string holder = 2;
   PriorityClass priority = 3;
-  // Unique and increasing per session: a preemption issues a new one, which
-  // fences the old holder's in-flight chunks.
+  // Unique and increasing per session: a preemption or a rebinding issues a
+  // new one, which fences the old holder's in-flight chunks.
   uint64 token = 4;
   uint64 ttl_ns = 5;
   // Host session clock.
   int64 granted_ns = 6;
   int64 expires_ns = 7;
+  // The binding fingerprint (8 bytes) every chunk under this lease carries.
+  bytes binding = 8;
 }
 
 // session_ns = participant_ns + offset_ns, within ± error_ns.
@@ -79,6 +93,18 @@ message ClockMapping {
   uint64 rtt_ns = 5;
   // Host session clock of that sample.
   int64 sample_ns = 6;
+}
+
+// A controller's declared binding, as the host recorded it.
+message BindingRecord {
+  string participant = 1;
+  bytes fingerprint = 2;
+  uint32 revision = 3;
+  string table_json = 4;
+  // The commandable parts it may lease.
+  repeated uint32 channels = 5;
+  // Its replan rate R: in virtual mode, the ticks it is due on.
+  double replan_hz = 6;
 }
 
 // The host's authority snapshot.
@@ -94,11 +120,16 @@ message AuthorityState {
   repeated ClockMapping clocks = 8;
   // Host session clock when this snapshot was taken.
   int64 host_ns = 9;
-  repeated ChannelSpec channels = 10;
+  // Every declared part, host-normalised.
+  repeated PartSpec parts = 10;
   // The host's protocol minor.
   uint32 protocol_minor = 11;
-  // Capabilities the session supports.
-  repeated string capabilities = 12;
+  // Features the host implements.
+  repeated string supports = 12;
+  ClockMode clock_mode = 13;
+  // Session time per tick (virtual and lockstep modes).
+  uint64 tick_ns = 14;
+  repeated BindingRecord bindings = 16;
 }
 
 // One NTP-style exchange: t1 and t4 in the participant's clock, t2 and t3 in
@@ -151,15 +182,107 @@ message HeartbeatEcho {
   uint64 epoch = 5;
 }
 
+// Parts (§3, §10.5).
+
+enum ChannelPriority {
+  CHANNEL_PRIORITY_UNSPECIFIED = 0;
+  CHANNEL_PRIORITY_CONTROL = 1;
+  CHANNEL_PRIORITY_REALTIME = 2;
+  CHANNEL_PRIORITY_DATA = 3;
+  CHANNEL_PRIORITY_BULK = 4;
+}
+
+enum MergePolicy {
+  MERGE_POLICY_UNSPECIFIED = 0;
+  MERGE_POLICY_REPLACE = 1;
+  MERGE_POLICY_BLEND = 2;
+  MERGE_POLICY_RTC_PREFIX = 3;
+}
+
+// One field of a sample or an action: a dense little-endian row-major
+// tensor.
+message FieldSpec {
+  string name = 1;
+  // v1 DType codes (rlmesh-spaces); utf8 = 32.
+  uint32 dtype = 2;
+  repeated uint32 shape = 3;
+  string unit = 4;
+  // The rotation encoding, for rotation fields.
+  string rotation = 5;
+}
+
+// Bounds on one command field: (low, high) broadcast or per element, or a
+// norm bound.
+message FieldLimit {
+  string field = 1;
+  repeated double low = 2;
+  repeated double high = 3;
+  double max_norm = 4;
+}
+
+// What a commandable part accepts.
+message Command {
+  string mode = 1;
+  // One action's layout.
+  repeated FieldSpec fields = 2;
+  repeated FieldLimit limits = 3;
+  string safe_behavior = 4;
+  uint64 hold_max_ns = 5;
+  uint64 max_action_age_ns = 6;
+  // REPLACE only.
+  MergePolicy merge = 7;
+  string reference = 8;
+  string group = 9;
+  bool binary = 10;
+  // During Hold, may the edge repeat the last dispatched target? Set for
+  // position-type modes (§9.5); otherwise it runs the safe behaviour.
+  bool hold_last = 11;
+}
+
+// A part as the host normalised it, in AuthorityState.
+message PartSpec {
+  string path = 1;
+  string kind = 2;
+  // Never reused within the session.
+  uint32 channel = 3;
+  // 0 unless commandable.
+  uint32 applied_channel = 4;
+  // The sample layout, in payload order.
+  repeated FieldSpec fields = 5;
+  // Source rate; 0 for events.
+  double hz = 6;
+  string send = 7;
+  string frame = 8;
+  repeated string names = 9;
+  // "raw" | "jpeg".
+  string encoding = 10;
+  uint32 quality = 11;
+  uint64 max_age_ns = 12;
+  Command command = 13;
+  map<string, string> attrs = 14;
+  ChannelPriority priority = 15;
+  // The robot: the embodiment that declared it.
+  string owner = 16;
+  bool event = 17;
+  // Features a consumer must implement to use it.
+  repeated string requires = 18;
+  // Edge control rate; commandable parts only.
+  double control_hz = 19;
+}
+
+// Control verbs.
+
 message Attach {
   string name = 1;
   repeated Role roles = 2;
   PriorityClass priority = 3;
   // The participant's protocol minor.
   uint32 protocol_minor = 4;
-  // Capabilities it requires of the session; the host refuses the attach
+  // Features this participant implements.
+  repeated string supports = 5;
+  // Features it cannot run without; the host refuses the attach
   // (CTL_STATUS_INCOMPATIBLE) when it lacks one.
-  repeated string capabilities = 5;
+  repeated string requires = 6;
 }
 
 message Detach {}
@@ -168,14 +291,38 @@ message Arm {}
 
 message Disarm {}
 
+// Embodiment -> host: the robot map; the host normalises it.
+message DeclareParts {
+  // The kind table version: 1.
+  uint32 spec_version = 1;
+  // The authored map, as JSON.
+  string robot_json = 2;
+}
+
+// Controller -> host.
+message DeclareBinding {
+  // 8 bytes.
+  bytes fingerprint = 1;
+  uint32 revision = 2;
+  string table_json = 3;
+  // The parts it will command.
+  repeated uint32 channels = 4;
+  // Its replan rate R (virtual mode: the ticks it is due on); 0 = never due.
+  double replan_hz = 6;
+}
+
+// All or none.
 message GrantLease {
-  uint32 channel = 1;
+  repeated uint32 channels = 1;
+  // Released in the same revision (a switch within a group).
+  repeated uint32 release = 2;
+  bytes binding = 3;
   // Zero takes the session's lease grace.
-  uint64 ttl_ns = 2;
+  uint64 ttl_ns = 4;
 }
 
 message ReleaseLease {
-  uint32 channel = 1;
+  repeated uint32 channels = 1;
   uint64 token = 2;
 }
 
@@ -190,8 +337,29 @@ message EnterSafe {
   string reason = 1;
 }
 
-message DeclareChannels {
-  repeated ChannelSpec channels = 1;
+message Watermark {
+  uint32 channel = 1;
+  uint64 seq = 2;
+}
+
+// One chunk, by identity.
+message ChunkRef {
+  uint32 channel = 1;
+  uint64 lease_token = 2;
+  uint64 seq = 3;
+}
+
+// Virtual mode (§11.3), embodiment -> host: tick k's samples are published.
+message Ready {
+  uint64 tick = 1;
+  // The last seq per stream.
+  repeated Watermark watermarks = 2;
+}
+
+// Virtual mode, due controller -> host: its decision for tick k.
+message Decided {
+  uint64 tick = 1;
+  repeated ChunkRef chunks = 2;
 }
 
 // A control verb, the payload of a query on `ctl`.
@@ -208,8 +376,11 @@ message CtlRequest {
     ReleaseLease release_lease = 15;
     Estop estop = 16;
     Clear clear = 17;
-    DeclareChannels declare_channels = 18;
+    DeclareParts declare_parts = 18;
     EnterSafe enter_safe = 19;
+    DeclareBinding declare_binding = 20;
+    Ready ready = 25;
+    Decided decided = 26;
   }
 }
 
@@ -224,11 +395,18 @@ enum CtlStatus {
   CTL_STATUS_STALE_EPOCH = 7;
   CTL_STATUS_STALE_TOKEN = 8;
   CTL_STATUS_LEASE_BUSY = 9;
-  CTL_STATUS_CHANNEL_CONFLICT = 10;
-  CTL_STATUS_UNKNOWN_CHANNEL = 11;
+  // A path declared by another owner.
+  CTL_STATUS_PATH_CONFLICT = 10;
+  // No such (commandable) part.
+  CTL_STATUS_UNKNOWN_PATH = 11;
   CTL_STATUS_UNSUPPORTED = 12;
-  // The sender requires a capability the session lacks.
+  // The sender requires a feature (or protocol) the session lacks.
   CTL_STATUS_INCOMPATIBLE = 13;
+  // A member of the part's command group is held by an equal or higher
+  // class (or by the requester, without releasing it).
+  CTL_STATUS_GROUP_BUSY = 14;
+  // A lease on a part outside the requester's binding.
+  CTL_STATUS_NOT_BOUND = 15;
 }
 
 message CtlReply {
@@ -236,171 +414,137 @@ message CtlReply {
   string message = 2;
   // The authority snapshot right after the verb, accepted or not.
   AuthorityState state = 3;
-  // The granted lease, for grant_lease.
-  Lease lease = 4;
+  // Granted leases, one per channel.
+  repeated Lease leases = 4;
 }
 
-// Channels.
-
-enum Direction {
-  DIRECTION_UNSPECIFIED = 0;
-  DIRECTION_SENSE = 1;
-  DIRECTION_ACTUATE = 2;
-  DIRECTION_AUX = 3;
+// Virtual mode, host -> participants on `host/tick` (§11.3).
+message TickState {
+  uint64 epoch = 1;
+  uint64 tick = 2;
+  repeated Watermark watermarks = 3;
+  // Controllers whose policy period falls on this tick.
+  repeated string due = 4;
 }
 
-enum Delivery {
-  DELIVERY_UNSPECIFIED = 0;
-  DELIVERY_BEST_EFFORT = 1;
-  DELIVERY_RELIABLE = 2;
+message Step {
+  uint64 epoch = 1;
+  uint64 tick = 2;
+  // The chunks scheduled for delivery at this tick.
+  repeated ChunkRef chunks = 3;
 }
 
-enum ChannelPriority {
-  CHANNEL_PRIORITY_UNSPECIFIED = 0;
-  CHANNEL_PRIORITY_CONTROL = 1;
-  CHANNEL_PRIORITY_REALTIME = 2;
-  CHANNEL_PRIORITY_DATA = 3;
-  CHANNEL_PRIORITY_BULK = 4;
+message VirtualTick {
+  oneof phase {
+    TickState observe = 1;
+    Step step = 2;
+  }
 }
 
-enum Congestion {
-  CONGESTION_UNSPECIFIED = 0;
-  CONGESTION_DROP = 1;
-  CONGESTION_BLOCK = 2;
+// Data (§10.6).
+
+// What the edge did on one control tick (the `_applied` streams).
+enum EdgeMode {
+  EDGE_MODE_UNSPECIFIED = 0;
+  EDGE_MODE_IDLE = 1;
+  EDGE_MODE_DRIVING = 2;
+  EDGE_MODE_HOLD = 3;
+  EDGE_MODE_SAFE = 4;
+  EDGE_MODE_ESTOP = 5;
 }
 
-message ChannelQos {
-  Delivery delivery = 1;
-  // 1 is LATEST, n > 1 is WINDOW(n).
-  uint32 history_depth = 2;
-  // Zero: none.
-  uint64 max_age_ns = 3;
-  // Zero: none.
-  uint64 deadline_ns = 4;
-  ChannelPriority priority = 5;
-  Congestion congestion = 6;
-  // Zero: none.
-  uint64 max_bitrate_bps = 7;
+message Applied {
+  EdgeMode mode = 1;
+  bool present = 2;
+  uint64 lease_token = 3;
+  uint64 chunk_seq = 4;
+  uint32 action_index = 5;
 }
 
-message Rate {
-  double nominal_hz = 1;
-  // Zero: none.
-  double min_hz = 2;
-}
-
-enum DType {
-  D_TYPE_UNSPECIFIED = 0;
-  D_TYPE_BOOL = 1;
-  D_TYPE_U8 = 2;
-  D_TYPE_I8 = 3;
-  D_TYPE_U16 = 4;
-  D_TYPE_I16 = 5;
-  D_TYPE_U32 = 6;
-  D_TYPE_I32 = 7;
-  D_TYPE_U64 = 8;
-  D_TYPE_I64 = 9;
-  D_TYPE_F16 = 10;
-  D_TYPE_BF16 = 11;
-  D_TYPE_F32 = 12;
-  D_TYPE_F64 = 13;
-}
-
-// One leaf of a channel's value: a dense little-endian row-major tensor.
-message TensorLayout {
-  string name = 1;
-  DType dtype = 2;
-  repeated uint64 shape = 3;
-}
-
-enum MergePolicy {
-  MERGE_POLICY_UNSPECIFIED = 0;
-  MERGE_POLICY_REPLACE = 1;
-  MERGE_POLICY_BLEND = 2;
-  MERGE_POLICY_RTC_PREFIX = 3;
-}
-
-message Actuation {
-  MergePolicy merge = 1;
-  // Zero: the default.
-  uint64 hold_max_ns = 2;
-  string safe_behavior = 3;
-  // May the edge repeat the last action while it waits for a valid one?
-  // Only for targets safe to hold (positions); off, it runs the safe
-  // behaviour while it waits.
-  bool hold_last = 4;
-}
-
-message ChannelSpec {
-  uint32 id = 1;
-  string name = 2;
-  Direction direction = 3;
-  string role = 4;
-  // One sample's value: one tensor per leaf, in order.
-  repeated TensorLayout layout = 5;
-  string units = 6;
-  string frame = 7;
-  // "raw" or "jpeg".
-  string encoding = 8;
-  Rate rate = 9;
-  ChannelQos qos = 10;
-  bool required = 11;
-  bool episodic = 12;
-  // Set by the host from the declaring participant.
-  string owner = 13;
-  uint32 encoding_quality = 14;
-  Actuation actuation = 15;
-}
-
-// Samples, on e/{owner}/c/{channel}.
-//
-// The leaves are raw little-endian row-major tensors in the channel's
-// declared layout (one JPEG for a JPEG channel). Senders may write them as
-// separate buffer segments, and receivers may slice them out of the received
-// buffer: neither needs a copy.
+// On d/{robot}/{path} (and d/{robot}/{path}/_applied).
 message Sample {
   uint32 channel = 1;
-  // Per channel per publisher, from 1; a gap is a loss.
-  uint64 seq = 2;
-  uint64 epoch = 3;
-  // Publisher's monotonic clock.
+  uint64 epoch = 2;
+  // Per stream, from 1; a gap is a loss.
+  uint64 seq = 3;
+  // Publisher clock (wall) or session time (virtual/lockstep).
   int64 capture_ns = 4;
   int64 publish_ns = 5;
-  repeated bytes leaves = 6;
-  // Virtual or lockstep tick; 0 in wall mode.
-  uint64 tick = 7;
+  // 0 in wall mode.
+  uint64 tick = 6;
+  // The packed fields, or one encoded image, or UTF-8.
+  bytes payload = 7;
+  // `_applied` streams only.
+  Applied applied = 8;
 }
 
-message ObservationRef {
+message SampleMeta {
+  uint64 seq = 1;
+  int64 capture_ns = 2;
+  uint64 tick = 3;
+  Applied applied = 4;
+}
+
+message SeqRange {
+  uint64 first = 1;
+  uint64 last = 2;
+}
+
+// History increments and history-store pages.
+message SampleBatch {
   uint32 channel = 1;
-  uint64 seq = 2;
+  uint64 epoch = 2;
+  int64 publish_ns = 3;
+  // One per sample, in seq order; gaps allowed.
+  repeated SampleMeta samples = 4;
+  // samples.size() x stride (one sample of an unbatchable stream).
+  bytes payload = 5;
+  // History replies: retention ran out before the requested range.
+  bool truncated = 6;
+  // History replies: seqs known missing.
+  repeated SeqRange gaps = 7;
 }
 
-// One action: one leaf per tensor of the channel's layout.
-message ActionValue {
-  repeated bytes leaves = 1;
+// The payload of a query on h/{robot}/{path}.
+message HistoryQuery {
+  uint64 epoch = 1;
+  // Samples with after_seq < seq <= until_seq; until_seq 0 is unbounded.
+  uint64 after_seq = 2;
+  uint64 until_seq = 3;
+  // At most this many samples (the newest of the range); 0 takes the
+  // store's cap.
+  uint32 limit = 4;
 }
 
-// Action chunks, on a/{owner}/c/{channel}. Times are session time.
+message InputRange {
+  uint32 channel = 1;
+  uint64 seq_first = 2;
+  uint64 seq_last = 3;
+}
+
+// On c/{robot}/{path}. Times are session time.
 message ActionChunk {
   uint32 channel = 1;
-  // The controller that computed it; the edge checks it is the lease holder.
-  string source = 2;
+  uint64 epoch = 2;
   // From the host; fences stale controllers.
   uint64 lease_token = 3;
-  uint64 epoch = 4;
   // Per lease token, increasing.
-  uint64 seq = 5;
-  repeated ObservationRef based_on = 6;
+  uint64 seq = 4;
+  // The binding fingerprint of the lease.
+  bytes binding = 5;
+  repeated InputRange based_on = 6;
   int64 t0_ns = 7;
-  // Zero takes the channel's declared period.
+  // Zero takes the part's control period.
   uint64 dt_ns = 8;
   int64 replace_from_ns = 9;
   // The whole chunk is void at and after this.
   int64 valid_until_ns = 10;
-  repeated ActionValue actions = 11;
-  // Sender's monotonic clock at publish.
-  int64 publish_ns = 12;
-  // Virtual or lockstep tick; 0 in wall mode.
-  uint64 tick = 13;
+  uint32 count = 11;
+  // count x command stride.
+  bytes actions = 12;
+  // Sender's clock at publish.
+  int64 publish_ns = 13;
+  uint64 tick = 14;
+  // The controller that computed it; the edge checks it holds the lease.
+  string source = 15;
 }

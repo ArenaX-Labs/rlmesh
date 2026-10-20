@@ -11,26 +11,32 @@
 //! [`TrafficClass`]**, each with its own listen and connect endpoints, so
 //! each class rides its own TCP connection and can only starve itself:
 //!
-//! | Class | Zenoh priority | Carries |
-//! |---|---|---|
-//! | [`TrafficClass::Control`] | RealTime | liveliness, `ctl`, authority state, heartbeats, CONTROL-priority channels (operator teleop commands) |
-//! | [`TrafficClass::Realtime`] | InteractiveHigh, express | REALTIME channels (joints, wrench, commands) |
-//! | [`TrafficClass::Data`] | Data | DATA channels, history-store queries |
-//! | [`TrafficClass::Bulk`] | DataLow | BULK channels (cameras) |
+//! | Class | Zenoh priority | Reliability | Congestion | Express | Carries |
+//! |---|---|---|---|---|---|
+//! | [`TrafficClass::Control`] | RealTime | reliable | BLOCK | yes | liveliness, `ctl`, authority state and ticks, heartbeats and echoes (DROP, see below), chunks of `priority: control` parts |
+//! | [`TrafficClass::Realtime`] | InteractiveHigh | best effort | DROP | yes | small state samples, chunks, `_applied` |
+//! | [`TrafficClass::Data`] | Data | best effort; reliable for events | DROP; BLOCK for events | no | small custom kinds, events, history replies |
+//! | [`TrafficClass::Bulk`] | DataLow | best effort | DROP | no | cameras, depth, large custom kinds |
+//!
+//! That is the v0.2 spec's §10.2 table, applied per publisher by
+//! [`stream_qos`]. Two refinements: in a virtual-clock session every data
+//! stream is reliable with BLOCK (the tick barrier counts on seqs, §11.3);
+//! and heartbeats and their echoes are DROP rather than BLOCK, because a
+//! stale timing sample is worthless and the echo is sent from a transport
+//! callback, which must never block. Zenoh 1.10 treats reliability as a
+//! marker that selects the link (a reliable link for reliable data, a
+//! best-effort link such as UDP when one exists); over the TCP and Unix
+//! socket links the session uses, every message rides a reliable link, so
+//! best-effort streams get their real-time behaviour from DROP congestion
+//! control and from never being retransmitted at the session level.
 //!
 //! [`Layout::Shared`] uses one session for every class instead: in-process
 //! tests, Unix sockets, and QUIC (whose multistream already gives every
 //! priority its own stream inside one connection). Both ends of a link must
-//! use the same layout.
+//! use the same layout. Priorities are still set on every message, so the
+//! shared layout keeps Zenoh's own ordering.
 //!
-//! Priorities are still set on every message, so the shared layout keeps
-//! Zenoh's own ordering.
-//!
-//! A channel's `Delivery` is not mapped onto Zenoh reliability: per-publisher
-//! reliability is an unstable Zenoh API in 1.10, and over the TCP links the
-//! session uses every message is delivered by the link anyway. Best-effort
-//! channels get their real-time behaviour from DROP congestion control and
-//! from never being retransmitted at the session level.
+//! The lockstep class (§10.2, §12.3) arrives with the Gym view (wave 5).
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -38,23 +44,23 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rlmesh_wire::codec::Encoded;
-use rlmesh_wire::{ChannelPriority, ChannelQos, Congestion};
+use rlmesh_wire::{ChannelPriority, ClockMode, StreamSpec};
 use tracing::debug;
 use zenoh::bytes::ZBytes;
-use zenoh::qos::{CongestionControl, Priority};
+use zenoh::qos::{CongestionControl, Priority, Reliability};
 
 use crate::error::SessionError;
 
 /// A traffic class: a separate Zenoh session in [`Layout::PerClass`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TrafficClass {
-    /// Session control and CONTROL-priority channels.
+    /// Session control and `priority: control` parts.
     Control,
-    /// REALTIME channels.
+    /// Small state samples, chunks and `_applied`.
     Realtime,
-    /// DATA channels and history.
+    /// Events, small custom kinds and history replies.
     Data,
-    /// BULK channels.
+    /// Cameras, depth and large custom kinds.
     Bulk,
 }
 
@@ -85,32 +91,97 @@ impl TrafficClass {
             Self::Bulk => "bulk",
         }
     }
+
+    /// The class's QoS (§10.2).
+    pub fn qos(self) -> ClassQos {
+        let (priority, reliability, congestion, express) = match self {
+            Self::Control => (
+                Priority::RealTime,
+                Reliability::Reliable,
+                CongestionControl::Block,
+                true,
+            ),
+            Self::Realtime => (
+                Priority::InteractiveHigh,
+                Reliability::BestEffort,
+                CongestionControl::Drop,
+                true,
+            ),
+            Self::Data => (
+                Priority::Data,
+                Reliability::BestEffort,
+                CongestionControl::Drop,
+                false,
+            ),
+            Self::Bulk => (
+                Priority::DataLow,
+                Reliability::BestEffort,
+                CongestionControl::Drop,
+                false,
+            ),
+        };
+        ClassQos {
+            priority,
+            reliability,
+            congestion,
+            express,
+        }
+    }
+}
+
+/// How one publisher's messages travel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClassQos {
+    /// The Zenoh priority.
+    pub priority: Priority,
+    /// Reliable or best effort.
+    pub reliability: Reliability,
+    /// What a full queue does.
+    pub congestion: CongestionControl,
+    /// Skip batching.
+    pub express: bool,
+}
+
+/// The QoS of a stream's publisher: its class's, except that events are
+/// reliable with BLOCK, and so is every stream in a virtual-clock session.
+pub fn stream_qos(spec: &StreamSpec, clock: ClockMode) -> ClassQos {
+    let mut qos = TrafficClass::of(spec.priority).qos();
+    if spec.event || clock == ClockMode::Virtual {
+        qos.reliability = Reliability::Reliable;
+        qos.congestion = CongestionControl::Block;
+    }
+    qos
+}
+
+/// Declares a publisher on `key` in `class`'s session with `qos`.
+pub(crate) async fn declare_publisher(
+    transport: &Transport,
+    class: TrafficClass,
+    key: String,
+    qos: ClassQos,
+) -> Result<zenoh::pubsub::Publisher<'static>, crate::SessionError> {
+    Ok(transport
+        .session(class)
+        .declare_publisher(key)
+        .priority(qos.priority)
+        .reliability(qos.reliability)
+        .congestion_control(qos.congestion)
+        .express(qos.express)
+        .await?)
 }
 
 /// Heartbeats and their echoes: dropped rather than queued under congestion
-/// (a stale timing sample is worthless), sent at once.
+/// (a stale timing sample is worthless, and the echo callback must never
+/// block), sent at once.
 pub(crate) const HEARTBEAT_CONGESTION: CongestionControl = CongestionControl::Drop;
-/// Control verbs, replies and authority updates: never dropped.
+/// Control verbs, replies, authority updates and ticks: never dropped.
 pub(crate) const CONTROL_CONGESTION: CongestionControl = CongestionControl::Block;
 /// The Zenoh priority of session control traffic.
 pub(crate) const CONTROL_PRIORITY: Priority = Priority::RealTime;
 
-/// The Zenoh priority a channel priority maps to.
+/// The Zenoh priority a stream's class maps to.
 pub fn zenoh_priority(priority: ChannelPriority) -> Priority {
-    match priority {
-        ChannelPriority::Control => Priority::RealTime,
-        ChannelPriority::Realtime => Priority::InteractiveHigh,
-        ChannelPriority::Data => Priority::Data,
-        ChannelPriority::Bulk => Priority::DataLow,
-    }
-}
-
-/// The Zenoh congestion control of a channel.
-pub fn zenoh_congestion(qos: &ChannelQos) -> CongestionControl {
-    match qos.congestion {
-        Congestion::Drop => CongestionControl::Drop,
-        Congestion::Block => CongestionControl::Block,
-    }
+    TrafficClass::of(priority).qos().priority
 }
 
 /// Where one session listens and what it dials.
@@ -511,6 +582,65 @@ mod tests {
         );
         assert_eq!(TrafficClass::of(ChannelPriority::Bulk), TrafficClass::Bulk);
         assert_eq!(zenoh_priority(ChannelPriority::Control), Priority::RealTime);
+    }
+
+    #[test]
+    fn each_class_maps_to_the_spec_qos_and_events_are_reliable() {
+        let stream = |priority| StreamSpec {
+            channel: rlmesh_wire::ChannelId(1),
+            owner: rlmesh_wire::ParticipantId::new("robot").expect("id"),
+            path: "x".into(),
+            fields: Vec::new(),
+            layout: rlmesh_wire::Layout::Text,
+            encoding: rlmesh_wire::Encoding::Raw,
+            priority,
+            event: false,
+            max_age: None,
+            applied: false,
+        };
+        let control = TrafficClass::Control.qos();
+        assert_eq!(
+            (control.reliability, control.congestion, control.express),
+            (Reliability::Reliable, CongestionControl::Block, true)
+        );
+        let realtime = TrafficClass::Realtime.qos();
+        assert_eq!(
+            (
+                realtime.priority,
+                realtime.reliability,
+                realtime.congestion,
+                realtime.express
+            ),
+            (
+                Priority::InteractiveHigh,
+                Reliability::BestEffort,
+                CongestionControl::Drop,
+                true
+            )
+        );
+        let bulk = TrafficClass::Bulk.qos();
+        assert_eq!((bulk.priority, bulk.express), (Priority::DataLow, false));
+        let mut event = stream(ChannelPriority::Data);
+        assert_eq!(
+            stream_qos(&event, ClockMode::Wall).reliability,
+            Reliability::BestEffort
+        );
+        event.event = true;
+        let qos = stream_qos(&event, ClockMode::Wall);
+        assert_eq!(
+            (qos.reliability, qos.congestion, qos.priority),
+            (
+                Reliability::Reliable,
+                CongestionControl::Block,
+                Priority::Data
+            )
+        );
+        let camera = stream(ChannelPriority::Bulk);
+        assert_eq!(
+            stream_qos(&camera, ClockMode::Virtual).congestion,
+            CongestionControl::Block,
+            "virtual sessions block"
+        );
     }
 
     #[test]

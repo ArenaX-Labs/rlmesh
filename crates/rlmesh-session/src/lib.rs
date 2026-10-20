@@ -6,17 +6,22 @@
 //! embodiment-side action queue in `rlmesh-edge`.
 //!
 //! - [`authority`]: epoch, roster, the DISARMED/ARMED/ACTIVE/SAFE/ESTOP mode
-//!   machine with a latched e-stop, and the lease table with priority classes
-//!   (`safety > operator > model > scripted`), TTLs, preemption and fencing
-//!   tokens. Sans-IO; the [`SessionHost`] is its single writer.
+//!   machine with a latched e-stop, the part table with host-assigned,
+//!   never-reused ids, bindings, and the lease table: all-or-none grants
+//!   bound to a binding, priority classes
+//!   (`safety > operator > model > scripted`), command groups, TTLs,
+//!   preemption and fencing tokens. Sans-IO; the [`SessionHost`] is its
+//!   single writer.
+//! - [`declare`]: the host's normaliser, robot map JSON to parts (§3).
+//! - [`virtual_clock`]: the virtual-mode tick barrier (§11.3), sans-IO.
 //! - [`clock`]: clock domains and NTP-style offset estimation with an error
 //!   bound, fed by heartbeats.
 //! - [`host`]: the [`SessionHost`]: `ctl` verbs, the published authority
-//!   snapshot, heartbeat echoes, lease expiry and the history store. A
-//!   library, and a binary (`rlmesh-session-host`).
+//!   snapshot, heartbeat echoes, lease expiry, virtual ticks and the history
+//!   store. A library, and a binary (`rlmesh-session-host`).
 //! - [`participant`]: the [`Participant`]: presence, heartbeats, the
-//!   authority view, verbs, and channel endpoints ([`sample`], [`chunk`],
-//!   [`media`]).
+//!   authority view, verbs, and endpoints by robot and path ([`sample`],
+//!   [`chunk`], [`media`]).
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
 //!   only starve its own class.
 //!
@@ -30,6 +35,7 @@
 pub mod authority;
 pub mod chunk;
 pub mod clock;
+pub mod declare;
 pub mod error;
 pub mod host;
 pub mod media;
@@ -37,6 +43,7 @@ pub mod metrics;
 pub mod participant;
 pub mod sample;
 pub mod transport;
+pub mod virtual_clock;
 
 pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, LeaseEnd};
 pub use chunk::{ChunkDraft, ChunkPublisher};
@@ -46,12 +53,13 @@ pub use host::{HistoryConfig, HostConfig, SessionHost};
 pub use media::{ImagePublisher, MediaStats, Offer};
 pub use metrics::ParticipantHealth;
 pub use participant::{
-    AuthorityView, EdgeReport, ManualView, Participant, ParticipantConfig, SafeReporter,
+    AuthorityView, EdgeReport, ManualView, Participant, ParticipantConfig, SafeReporter, TickStream,
 };
 pub use sample::{
     Fresh, Received, SamplePublisher, SampleStats, SampleSubscriber, SubscribeOptions,
 };
-pub use transport::{TrafficClass, Transport, TransportConfig, TransportTuning};
+pub use transport::{ClassQos, TrafficClass, Transport, TransportConfig, TransportTuning};
+pub use virtual_clock::VirtualConfig;
 
 /// The wire types, re-exported so users need one dependency.
 pub use rlmesh_wire as wire;

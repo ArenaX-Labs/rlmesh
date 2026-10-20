@@ -32,7 +32,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use rlmesh_wire::{Epoch, LeaseToken, ObservationRef, ParticipantId};
+use rlmesh_wire::{Epoch, InputRange, LeaseToken, ParticipantId};
 
 /// How each action reaches the embodiment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -56,8 +56,8 @@ pub struct ChunkMeta {
     pub lease_token: LeaseToken,
     /// Its seq under that token.
     pub seq: u64,
-    /// The observations it was computed from.
-    pub based_on: Vec<ObservationRef>,
+    /// The inputs it was computed from.
+    pub based_on: Vec<InputRange>,
     /// Edge clock at receipt.
     pub receive_ns: i64,
     /// `valid_until` in the edge clock, conservatively converted and clamped
@@ -76,8 +76,9 @@ pub struct QueuedAction {
     pub slot_ns: i64,
     /// Slot length.
     pub dt_ns: i64,
-    /// The action, one buffer per leaf.
-    pub leaves: Vec<Bytes>,
+    /// The packed action (after validation and clamping), a slice of the
+    /// chunk's payload when nothing was clamped.
+    pub value: Bytes,
     delivered: bool,
 }
 
@@ -108,8 +109,8 @@ pub struct Splice {
     pub dt_ns: i64,
     /// Replace queued actions from here.
     pub replace_from_ns: i64,
-    /// The actions.
-    pub actions: Vec<Vec<Bytes>>,
+    /// The packed actions, in order.
+    pub actions: Vec<Bytes>,
 }
 
 /// What one splice did, in actions.
@@ -149,6 +150,9 @@ pub struct QueueStats {
     pub skipped: u64,
     /// Reached `valid_until` while queued.
     pub expired: u64,
+    /// Dropped by a fallback (Safe, Estop) or because their command group
+    /// switched to another member.
+    pub purged: u64,
 }
 
 impl QueueStats {
@@ -218,10 +222,12 @@ impl ActionQueue {
         fenced
     }
 
-    /// Drops everything (ESTOP, SAFE); returns how many.
+    /// Drops everything (ESTOP, SAFE, an inactive group member); returns
+    /// how many.
     pub fn clear(&mut self) -> u64 {
         let cleared = self.items.len() as u64;
         self.items.clear();
+        self.stats.purged += cleared;
         cleared
     }
 
@@ -239,7 +245,7 @@ impl ActionQueue {
         };
         let dt = splice.dt_ns.max(1);
         let mut candidates = Vec::with_capacity(splice.actions.len());
-        for (i, leaves) in splice.actions.into_iter().enumerate() {
+        for (i, value) in splice.actions.into_iter().enumerate() {
             let i = i64::try_from(i).unwrap_or(i64::MAX);
             let slot_ns = splice.t0_ns.saturating_add(i.saturating_mul(dt));
             if slot_ns.saturating_add(dt) <= now_ns {
@@ -247,7 +253,7 @@ impl ActionQueue {
             } else if slot_ns >= splice.chunk.valid_until_ns {
                 outcome.dropped_void += 1;
             } else {
-                candidates.push((i, slot_ns, leaves));
+                candidates.push((i, slot_ns, value));
             }
         }
         let Some(first_ns) = candidates.first().map(|(_, slot, _)| *slot) else {
@@ -262,7 +268,7 @@ impl ActionQueue {
         outcome.replaced = (before - self.items.len()) as u64;
 
         let mut fresh = Vec::with_capacity(candidates.len());
-        for (i, slot_ns, leaves) in candidates {
+        for (i, slot_ns, value) in candidates {
             let end_ns = slot_ns.saturating_add(dt);
             if self.items.iter().any(|a| {
                 a.overlaps(slot_ns, end_ns) && (slot_ns < replace_from_ns || (once && a.delivered))
@@ -274,7 +280,7 @@ impl ActionQueue {
                     index: u32::try_from(i).unwrap_or(u32::MAX),
                     slot_ns,
                     dt_ns: dt,
-                    leaves,
+                    value,
                     delivered: false,
                 });
             }
@@ -346,10 +352,7 @@ mod tests {
             epoch: Epoch(1),
             lease_token: LeaseToken(token),
             seq,
-            based_on: vec![ObservationRef {
-                channel: ChannelId(1),
-                seq,
-            }],
+            based_on: vec![InputRange::one(ChannelId(1), seq)],
             receive_ns: 0,
             valid_until_ns,
         })
@@ -363,13 +366,13 @@ mod tests {
             dt_ns: MS,
             replace_from_ns: replace_from,
             actions: (0..n)
-                .map(|i| vec![Bytes::from(vec![tag.wrapping_add(i)])])
+                .map(|i| Bytes::from(vec![tag.wrapping_add(i)]))
                 .collect(),
         }
     }
 
     fn tag(due: &Due) -> u8 {
-        due.action.leaves[0][0]
+        due.action.value[0]
     }
 
     fn tags(q: &mut ActionQueue, ticks: std::ops::Range<i64>) -> Vec<u8> {

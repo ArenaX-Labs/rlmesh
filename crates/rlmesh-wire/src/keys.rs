@@ -1,22 +1,27 @@
-//! The Zenoh key layout of one session.
+//! The Zenoh key layout of one session (§10.3).
 //!
 //! ```text
-//! rlmesh/v2/{tenant}/s/{session}/host                     host liveliness
-//! rlmesh/v2/{tenant}/s/{session}/host/state               authority snapshot (queryable) + updates
-//! rlmesh/v2/{tenant}/s/{session}/ctl                      control verbs (query/reply)
-//! rlmesh/v2/{tenant}/s/{session}/p/{participant}          participant liveliness
-//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb       heartbeats (participant -> host)
-//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb/echo  heartbeat echoes (host -> participant)
-//! rlmesh/v2/{tenant}/s/{session}/e/{owner}/c/{channel}    samples
-//! rlmesh/v2/{tenant}/s/{session}/a/{owner}/c/{channel}    action chunks
-//! rlmesh/v2/{tenant}/s/{session}/history/{channel}        history windows (queryable, host)
+//! rlmesh/v2/{tenant}/s/{session}/host                          host liveliness
+//! rlmesh/v2/{tenant}/s/{session}/host/state                    authority snapshot (queryable) + updates
+//! rlmesh/v2/{tenant}/s/{session}/host/tick                     virtual-mode ticks (§11.3)
+//! rlmesh/v2/{tenant}/s/{session}/ctl                           control verbs (query/reply)
+//! rlmesh/v2/{tenant}/s/{session}/p/{participant}               participant liveliness
+//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb            heartbeats (participant -> host)
+//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb/echo       heartbeat echoes (host -> participant)
+//! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}           samples
+//! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}/_applied  applied samples
+//! rlmesh/v2/{tenant}/s/{session}/c/{robot}/{path...}           action chunks
+//! rlmesh/v2/{tenant}/s/{session}/h/{robot}/{path...}           history store (queryable, host)
+//! rlmesh/v2/{tenant}/s/{session}/l/{robot}                     lockstep step (queryable, §12)
 //! ```
 //!
 //! The `v2` chunk is the protocol generation
 //! ([`crate::version::GENERATION`]), so peers of different generations never
-//! route to each other.
+//! route to each other. `{robot}` is the embodiment's participant id, and
+//! each path segment is one key chunk, so `d/ur10e/wrist/**` subscribes to a
+//! subtree.
 
-use crate::ids::{ChannelId, ParticipantId, SessionId, TenantId};
+use crate::ids::{ParticipantId, SessionId, TenantId};
 use crate::version::GENERATION;
 
 /// Every key of one session.
@@ -46,6 +51,11 @@ impl SessionKeys {
     /// The authority snapshot: queryable, and published on every change.
     pub fn host_state(&self) -> String {
         format!("{}/host/state", self.prefix)
+    }
+
+    /// Virtual-mode ticks, published by the host.
+    pub fn host_tick(&self) -> String {
+        format!("{}/host/tick", self.prefix)
     }
 
     /// Control verbs (query/reply).
@@ -78,19 +88,30 @@ impl SessionKeys {
         format!("{}/p/{id}/hb/echo", self.prefix)
     }
 
-    /// Samples of `channel`, published by its owner.
-    pub fn samples(&self, owner: &ParticipantId, channel: ChannelId) -> String {
-        format!("{}/e/{owner}/c/{}", self.prefix, channel.0)
+    /// Samples of one stream: `path` is a part path, or a part path with
+    /// `/_applied` for its applied stream.
+    pub fn data(&self, robot: &ParticipantId, path: &str) -> String {
+        format!("{}/d/{robot}/{path}", self.prefix)
     }
 
-    /// Action chunks for `channel`, consumed by its owner's edge.
-    pub fn actions(&self, owner: &ParticipantId, channel: ChannelId) -> String {
-        format!("{}/a/{owner}/c/{}", self.prefix, channel.0)
+    /// Action chunks for a commandable part, consumed by its robot's edge.
+    pub fn commands(&self, robot: &ParticipantId, path: &str) -> String {
+        format!("{}/c/{robot}/{path}", self.prefix)
     }
 
-    /// The host's history window of `channel`.
-    pub fn history(&self, channel: ChannelId) -> String {
-        format!("{}/history/{}", self.prefix, channel.0)
+    /// The host's history of one stream.
+    pub fn history(&self, robot: &ParticipantId, path: &str) -> String {
+        format!("{}/h/{robot}/{path}", self.prefix)
+    }
+
+    /// Every history key (the host's queryable).
+    pub fn histories(&self) -> String {
+        format!("{}/h/**", self.prefix)
+    }
+
+    /// A robot's lockstep step (queryable).
+    pub fn lockstep(&self, robot: &ParticipantId) -> String {
+        format!("{}/l/{robot}", self.prefix)
     }
 
     /// The participant a `p/{participant}[/...]` key names.
@@ -98,6 +119,13 @@ impl SessionKeys {
         let rest = key.strip_prefix(&self.prefix)?.strip_prefix("/p/")?;
         let id = rest.split('/').next()?;
         ParticipantId::new(id).ok()
+    }
+
+    /// The robot and stream path a `h/{robot}/{path...}` key names.
+    pub fn history_of<'a>(&self, key: &'a str) -> Option<(ParticipantId, &'a str)> {
+        let rest = key.strip_prefix(&self.prefix)?.strip_prefix("/h/")?;
+        let (robot, path) = rest.split_once('/')?;
+        Some((ParticipantId::new(robot).ok()?, path))
     }
 }
 
@@ -111,6 +139,7 @@ mod tests {
         let session = SessionId::new();
         let keys = SessionKeys::new(&tenant, session);
         let me = ParticipantId::new("haply-emu").expect("id");
+        let ur = ParticipantId::new("ur10e").expect("id");
         assert_eq!(
             keys.heartbeat(&me),
             format!("rlmesh/v2/acme/s/{session}/p/haply-emu/hb")
@@ -126,17 +155,32 @@ mod tests {
         assert_eq!(keys.participant_of(&keys.ctl()), None);
         assert_eq!(keys.participant_of("elsewhere/p/x"), None);
         assert_eq!(
-            keys.samples(&me, ChannelId(3)),
-            format!("rlmesh/v2/acme/s/{session}/e/haply-emu/c/3")
+            keys.data(&ur, "wrist/cam"),
+            format!("rlmesh/v2/acme/s/{session}/d/ur10e/wrist/cam")
         );
         assert_eq!(
-            keys.history(ChannelId(3)),
-            format!("rlmesh/v2/acme/s/{session}/history/3")
+            keys.data(&ur, "arm/_applied"),
+            format!("rlmesh/v2/acme/s/{session}/d/ur10e/arm/_applied")
+        );
+        assert_eq!(
+            keys.commands(&ur, "arm"),
+            format!("rlmesh/v2/acme/s/{session}/c/ur10e/arm")
+        );
+        assert_eq!(
+            keys.history_of(&keys.history(&ur, "left/wrist/cam")),
+            Some((ur.clone(), "left/wrist/cam"))
+        );
+        assert_eq!(keys.history_of(&keys.data(&ur, "arm")), None);
+        assert_eq!(
+            keys.lockstep(&ur),
+            format!("rlmesh/v2/acme/s/{session}/l/ur10e")
         );
         for key in [
-            keys.samples(&me, ChannelId(3)),
-            keys.actions(&me, ChannelId(3)),
+            keys.data(&ur, "arm"),
+            keys.commands(&ur, "arm"),
+            keys.history(&ur, "arm"),
             keys.host_state(),
+            keys.host_tick(),
             keys.ctl(),
         ] {
             // Concrete keys: no empty chunks, no wildcards.

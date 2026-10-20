@@ -4,8 +4,9 @@
 //! for the host, subscribes to authority updates, attaches through `ctl` and
 //! starts heartbeating on the control class. From then on it keeps the
 //! newest authority snapshot (from updates and from every `ctl` reply) and
-//! hands out channel endpoints: sample publishers and subscribers, chunk
-//! publishers, and the hooks an edge runtime needs ([`AuthorityView`],
+//! hands out endpoints addressed by robot and path: sample publishers and
+//! subscribers, chunk publishers, history queries, the virtual-mode tick
+//! stream, and the hooks an edge runtime needs ([`AuthorityView`],
 //! [`EdgeReport`], [`Participant::report_safe`]).
 
 use std::collections::BTreeMap;
@@ -14,11 +15,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rlmesh_wire::codec;
-use rlmesh_wire::version::PROTOCOL_MINOR;
+use rlmesh_wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_wire::{
-    AuthoritySnapshot, ChannelId, ChannelSpec, Command, CtlReply, Direction, Epoch, Health,
-    Heartbeat, Lease, Mode, ParticipantId, PriorityClass, Request, Role, SessionId, SessionKeys,
-    TenantId, TimingSample,
+    AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlReply, Epoch, Fingerprint,
+    Health, Heartbeat, HistoryQuery, Lease, LeaseToken, Mode, PartSpec, ParticipantId,
+    PriorityClass, Request, Role, SampleBatch, SessionId, SessionKeys, StreamSpec, TenantId,
+    TimingSample, VirtualTick, Watermark,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -31,7 +33,10 @@ use zenoh::sample::SampleKind;
 use crate::chunk::ChunkPublisher;
 use crate::clock::{Clock, MonotonicClock};
 use crate::error::SessionError;
-use crate::sample::{SamplePublisher, SampleSubscriber, SubscribeContext, SubscribeOptions};
+use crate::media::ImagePublisher;
+use crate::sample::{
+    SamplePublisher, SampleSubscriber, SubscribeContext, SubscribeOptions, fetch_history,
+};
 use crate::transport::{CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, Transport};
 
 /// How a participant attaches.
@@ -57,8 +62,11 @@ pub struct ParticipantConfig {
     pub ctl_timeout: Duration,
     /// How long to wait for the host to appear.
     pub host_timeout: Duration,
-    /// Capabilities this participant requires of the session.
-    pub capabilities: Vec<String>,
+    /// Features this participant implements.
+    pub supports: Vec<String>,
+    /// Features it cannot run without (the attach is refused when the
+    /// session lacks one).
+    pub requires: Vec<String>,
 }
 
 impl ParticipantConfig {
@@ -82,7 +90,8 @@ impl ParticipantConfig {
             heartbeat_period: Duration::from_millis(50),
             ctl_timeout: Duration::from_secs(2),
             host_timeout: Duration::from_secs(10),
-            capabilities: Vec::new(),
+            supports: Vec::new(),
+            requires: Vec::new(),
         }
     }
 }
@@ -256,6 +265,8 @@ struct Shared {
     edge: Arc<EdgeReport>,
     /// Edges' requests that the session go SAFE, sent by the reporter task.
     reports: mpsc::UnboundedSender<SafeReport>,
+    /// This controller's binding revisions.
+    binding_revision: AtomicU32,
 }
 
 impl Shared {
@@ -310,13 +321,17 @@ impl Shared {
             .map_or((0, Mode::Disarmed), |s| (s.epoch.0, s.mode))
     }
 
+    fn clock_mode(&self) -> ClockMode {
+        self.view
+            .borrow()
+            .as_ref()
+            .map_or(ClockMode::Wall, |s| s.clock_mode)
+    }
+
     /// Sends one verb and waits for the host's reply. Every reply carries the
     /// host's snapshot, which updates this participant's view even when the
     /// verb was refused.
-    async fn ctl(
-        &self,
-        command: Command,
-    ) -> Result<(AuthoritySnapshot, Option<Lease>), SessionError> {
+    async fn ctl(&self, command: Command) -> Result<(AuthoritySnapshot, Vec<Lease>), SessionError> {
         let (epoch, _) = self.epoch_and_mode();
         let request = Request {
             from: self.id.clone(),
@@ -343,11 +358,11 @@ impl Shared {
         let CtlReply {
             result,
             state,
-            lease,
+            leases,
         } = codec::decode_reply(&sample.payload().to_bytes())?;
         self.observe(state.clone());
         result?;
-        Ok((state, lease))
+        Ok((state, leases))
     }
 }
 
@@ -398,6 +413,7 @@ impl Participant {
             seen: Mutex::new(BTreeMap::new()),
             edge: Arc::new(EdgeReport::default()),
             reports,
+            binding_revision: AtomicU32::new(0),
         });
 
         let state = control
@@ -475,7 +491,8 @@ impl Participant {
                 roles: config.roles.clone(),
                 priority: config.priority,
                 protocol_minor: PROTOCOL_MINOR,
-                capabilities: config.capabilities.clone(),
+                supports: config.supports.clone(),
+                requires: config.requires.clone(),
             })
             .await?;
 
@@ -593,53 +610,123 @@ impl Participant {
         Ok(self.shared.ctl(Command::Clear).await?.0)
     }
 
-    /// Requests (or renews) the lease on `channel`, preempting a holder of a
-    /// lower class. `ttl` defaults to the session's lease grace.
-    pub async fn grant_lease(
-        &self,
-        channel: ChannelId,
-        ttl: Option<Duration>,
-    ) -> Result<Lease, SessionError> {
-        let ttl_ns = ttl.map(|ttl| u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX));
-        let (_, lease) = self
-            .shared
-            .ctl(Command::GrantLease { channel, ttl_ns })
-            .await?;
-        lease.ok_or_else(|| {
-            SessionError::Wire(rlmesh_wire::WireError::Malformed {
-                message: "ctl reply",
-                reason: "a granted lease is missing".into(),
-            })
-        })
-    }
-
-    /// Gives a lease back.
-    pub async fn release_lease(&self, lease: &Lease) -> Result<AuthoritySnapshot, SessionError> {
+    /// Declares this embodiment's robot map (the authored JSON, §3): the
+    /// host normalises it and assigns channel ids. Re-declaring identically
+    /// is a no-op; the parts are part of the authority snapshot.
+    pub async fn declare_parts(&self, robot_json: &str) -> Result<AuthoritySnapshot, SessionError> {
         Ok(self
             .shared
-            .ctl(Command::ReleaseLease {
-                channel: lease.channel,
-                token: lease.token,
+            .ctl(Command::DeclareParts {
+                spec_version: SPEC_VERSION,
+                robot_json: robot_json.to_string(),
             })
             .await?
             .0)
     }
 
-    /// Declares channels this participant owns (publishes, or for an
-    /// embodiment, consumes actuation on). Re-declaring identically is a
-    /// no-op; the table is part of the authority snapshot.
-    pub async fn declare_channels(
+    /// Declares this controller's binding: the parts it will command, the
+    /// binding table (JSON, from the binder) and its fingerprint. A new
+    /// fingerprint re-issues this controller's leases under a fresh token.
+    pub async fn declare_binding(
         &self,
-        channels: Vec<ChannelSpec>,
+        fingerprint: Fingerprint,
+        table_json: &str,
+        channels: Vec<ChannelId>,
+        replan_hz: f64,
     ) -> Result<AuthoritySnapshot, SessionError> {
-        Ok(self.shared.ctl(Command::DeclareChannels(channels)).await?.0)
+        let revision = self.shared.binding_revision.fetch_add(1, Ordering::Relaxed) + 1;
+        Ok(self
+            .shared
+            .ctl(Command::DeclareBinding {
+                fingerprint,
+                revision,
+                table_json: table_json.to_string(),
+                channels,
+                replan_hz,
+            })
+            .await?
+            .0)
     }
 
-    /// A declared channel, from the current view.
-    pub fn channel(&self, id: ChannelId) -> Result<ChannelSpec, SessionError> {
+    /// Requests (or renews) leases on commandable parts, all or none, under
+    /// this controller's current binding, releasing `release` in the same
+    /// revision (a switch within a command group). `ttl` defaults to the
+    /// session's lease grace.
+    pub async fn grant_leases(
+        &self,
+        channels: Vec<ChannelId>,
+        release: Vec<ChannelId>,
+        ttl: Option<Duration>,
+    ) -> Result<Vec<Lease>, SessionError> {
+        let binding = self
+            .authority()
+            .and_then(|view| view.binding(&self.shared.id).map(|b| b.fingerprint))
+            .unwrap_or_default();
+        let ttl_ns = ttl.map(|ttl| u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX));
+        let (_, leases) = self
+            .shared
+            .ctl(Command::GrantLease {
+                channels,
+                release,
+                binding,
+                ttl_ns,
+            })
+            .await?;
+        Ok(leases)
+    }
+
+    /// [`Self::grant_leases`] for one part.
+    pub async fn grant_lease(
+        &self,
+        channel: ChannelId,
+        ttl: Option<Duration>,
+    ) -> Result<Lease, SessionError> {
+        self.grant_leases(vec![channel], Vec::new(), ttl)
+            .await?
+            .pop()
+            .ok_or_else(|| {
+                SessionError::Wire(rlmesh_wire::WireError::Malformed {
+                    message: "ctl reply",
+                    reason: "a granted lease is missing".into(),
+                })
+            })
+    }
+
+    /// Gives a lease back.
+    pub async fn release_lease(&self, lease: &Lease) -> Result<AuthoritySnapshot, SessionError> {
+        self.release_leases(vec![lease.channel], lease.token).await
+    }
+
+    /// Gives leases held under one token back.
+    pub async fn release_leases(
+        &self,
+        channels: Vec<ChannelId>,
+        token: LeaseToken,
+    ) -> Result<AuthoritySnapshot, SessionError> {
+        Ok(self
+            .shared
+            .ctl(Command::ReleaseLease { channels, token })
+            .await?
+            .0)
+    }
+
+    /// A part of `robot`, from the current view.
+    pub fn part(&self, robot: &ParticipantId, path: &str) -> Result<PartSpec, SessionError> {
         self.authority()
-            .and_then(|view| view.channel(id).cloned())
-            .ok_or(SessionError::UnknownChannel(id))
+            .and_then(|view| view.part_at(robot, path).cloned())
+            .ok_or_else(|| SessionError::UnknownPart(format!("{robot}/{path}")))
+    }
+
+    /// One of this embodiment's own parts.
+    pub fn own_part(&self, path: &str) -> Result<PartSpec, SessionError> {
+        self.part(&self.shared.id, path)
+    }
+
+    /// A part by its stream id, from the current view.
+    pub fn part_by_id(&self, channel: ChannelId) -> Result<PartSpec, SessionError> {
+        self.authority()
+            .and_then(|view| view.part(channel).cloned())
+            .ok_or_else(|| SessionError::UnknownPart(channel.to_string()))
     }
 
     /// This participant's clock.
@@ -672,89 +759,178 @@ impl Participant {
             .unwrap_or(0)
     }
 
-    /// A publisher for a sense or aux channel this participant declared.
-    pub async fn publisher(&self, channel: ChannelId) -> Result<SamplePublisher, SessionError> {
-        let spec = self.channel(channel)?;
-        if spec.owner.as_ref() != Some(&self.shared.id) || spec.direction == Direction::Actuate {
+    /// A publisher for one of this embodiment's own parts.
+    pub async fn publisher(&self, path: &str) -> Result<SamplePublisher, SessionError> {
+        let part = self.own_part(path)?;
+        let stream = part.stream().map_err(|reason| SessionError::WrongChannel {
+            channel: part.channel,
+            reason,
+        })?;
+        self.stream_publisher(stream).await
+    }
+
+    /// A publisher for one of this embodiment's streams (a part's, or a
+    /// commandable part's `_applied`).
+    pub async fn stream_publisher(
+        &self,
+        stream: StreamSpec,
+    ) -> Result<SamplePublisher, SessionError> {
+        if stream.owner != self.shared.id {
             return Err(SessionError::WrongChannel {
-                channel,
-                reason: format!("not a sense or aux channel of {}", self.shared.id),
+                channel: stream.channel,
+                reason: format!("published by {}, not {}", stream.owner, self.shared.id),
             });
         }
-        let key = self.shared.keys.samples(&self.shared.id, channel);
+        let key = self.shared.keys.data(&stream.owner, &stream.path);
         SamplePublisher::declare(
             &self.shared.transport,
             key,
-            spec,
+            stream,
+            self.shared.clock_mode(),
             self.shared.epoch.clone(),
             self.shared.clock.clone(),
         )
         .await
     }
 
-    /// Subscribes to a declared sense or aux channel.
+    /// An image publisher for one of this embodiment's image parts, with the
+    /// bitrate budget its `send` declares.
+    pub async fn image_publisher(&self, path: &str) -> Result<ImagePublisher, SessionError> {
+        let part = self.own_part(path)?;
+        let budget = part.send_policy().max_mbps.map(|mbps| (mbps * 1e6) as u64);
+        ImagePublisher::new(self.publisher(path).await?, budget)
+    }
+
+    /// Subscribes to a part of `robot`.
     pub async fn subscribe(
         &self,
-        channel: ChannelId,
+        robot: &ParticipantId,
+        path: &str,
         options: SubscribeOptions,
     ) -> Result<SampleSubscriber, SessionError> {
-        let spec = self.channel(channel)?;
-        let owner = spec
-            .owner
-            .clone()
+        let part = self.part(robot, path)?;
+        let stream = part.stream().map_err(|reason| SessionError::WrongChannel {
+            channel: part.channel,
+            reason,
+        })?;
+        self.subscribe_stream(stream, options).await
+    }
+
+    /// Subscribes to what the edge dispatched to a commandable part of
+    /// `robot` (its `_applied` stream, §9.4).
+    pub async fn subscribe_applied(
+        &self,
+        robot: &ParticipantId,
+        path: &str,
+        options: SubscribeOptions,
+    ) -> Result<SampleSubscriber, SessionError> {
+        let part = self.part(robot, path)?;
+        let stream = part
+            .applied_stream()
             .ok_or_else(|| SessionError::WrongChannel {
-                channel,
-                reason: "it has no owner".into(),
+                channel: part.channel,
+                reason: "not a commandable part".into(),
+            })?
+            .map_err(|reason| SessionError::WrongChannel {
+                channel: part.channel,
+                reason,
             })?;
-        if spec.direction == Direction::Actuate {
-            return Err(SessionError::WrongChannel {
-                channel,
-                reason: "it is an actuation channel".into(),
-            });
-        }
+        self.subscribe_stream(stream, options).await
+    }
+
+    /// Subscribes to a stream.
+    pub async fn subscribe_stream(
+        &self,
+        stream: StreamSpec,
+        options: SubscribeOptions,
+    ) -> Result<SampleSubscriber, SessionError> {
         let ctx = SubscribeContext {
-            key: self.shared.keys.samples(&owner, channel),
-            history_key: self.shared.keys.history(channel),
-            spec,
-            publisher: owner,
+            key: self.shared.keys.data(&stream.owner, &stream.path),
+            history_key: self.shared.keys.history(&stream.owner, &stream.path),
+            seen: self.shared.seen(stream.channel),
+            spec: stream,
             me: self.shared.id.clone(),
             clock: self.shared.clock.clone(),
             view: self.shared.view.subscribe(),
-            seen: self.shared.seen(channel),
             history_timeout: self.shared.history_timeout,
         };
         SampleSubscriber::declare(&self.shared.transport, ctx, options).await
     }
 
-    /// A chunk sender for an actuation channel under `lease`, fenced to the
+    /// Queries the host's history store for a stream (attach, swap and
+    /// recovery only, §8.8): every page of the reply, in seq order.
+    pub async fn query_history(
+        &self,
+        stream: &StreamSpec,
+        query: HistoryQuery,
+    ) -> Result<Vec<SampleBatch>, SessionError> {
+        fetch_history(
+            &self.shared.transport,
+            &self.shared.keys.history(&stream.owner, &stream.path),
+            &query,
+            self.shared.history_timeout,
+        )
+        .await
+    }
+
+    /// A chunk sender for a commandable part under `lease`, fenced to the
     /// view's current epoch.
     pub async fn chunk_publisher(&self, lease: &Lease) -> Result<ChunkPublisher, SessionError> {
-        let spec = self.channel(lease.channel)?;
-        let owner = spec
-            .owner
-            .clone()
-            .ok_or_else(|| SessionError::WrongChannel {
-                channel: lease.channel,
-                reason: "it has no owner".into(),
-            })?;
-        if spec.direction != Direction::Actuate {
-            return Err(SessionError::WrongChannel {
-                channel: lease.channel,
-                reason: "not an actuation channel".into(),
-            });
-        }
-        let key = self.shared.keys.actions(&owner, lease.channel);
+        let part = self.part_by_id(lease.channel)?;
+        let key = self.shared.keys.commands(&part.owner, part.path.as_str());
         let epoch = Epoch(self.shared.epoch.load(Ordering::Relaxed));
         ChunkPublisher::declare(
             &self.shared.transport,
             key,
-            spec,
+            part,
             self.shared.id.clone(),
             lease,
             epoch,
+            self.shared.clock_mode(),
             self.shared.clock.clone(),
         )
         .await
+    }
+
+    /// Virtual mode: this embodiment published tick `tick`'s samples, up to
+    /// `watermarks`.
+    pub async fn ready(&self, tick: u64, watermarks: Vec<Watermark>) -> Result<(), SessionError> {
+        self.shared
+            .ctl(Command::Ready { tick, watermarks })
+            .await
+            .map(|_| ())
+    }
+
+    /// Virtual mode: this controller's decision for tick `tick` (the chunks
+    /// it sent for it; none is "no action").
+    pub async fn decided(&self, tick: u64, chunks: Vec<ChunkRef>) -> Result<(), SessionError> {
+        self.shared
+            .ctl(Command::Decided { tick, chunks })
+            .await
+            .map(|_| ())
+    }
+
+    /// Virtual mode: the host's ticks from now on (`host/tick`).
+    pub async fn virtual_ticks(&self) -> Result<TickStream, SessionError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let subscriber = self
+            .shared
+            .transport
+            .control()
+            .declare_subscriber(self.shared.keys.host_tick())
+            .callback(
+                move |sample| match codec::decode_tick(&sample.payload().to_bytes()) {
+                    Ok(tick) => {
+                        let _ = tx.send(tick);
+                    }
+                    Err(err) => warn!(%err, "undecodable tick"),
+                },
+            )
+            .await?;
+        Ok(TickStream {
+            rx,
+            _subscriber: subscriber,
+        })
     }
 
     /// The report an edge on this participant updates; heartbeats carry it.
@@ -935,6 +1111,37 @@ async fn report_safe(
                 }
             }
         }
+    }
+}
+
+/// The host's virtual-mode ticks, as they arrive.
+pub struct TickStream {
+    rx: mpsc::UnboundedReceiver<VirtualTick>,
+    _subscriber: zenoh::pubsub::Subscriber<()>,
+}
+
+impl TickStream {
+    /// The next tick (`None` once the subscription is gone).
+    pub async fn next(&mut self) -> Option<VirtualTick> {
+        self.rx.recv().await
+    }
+
+    /// Waits for the next tick matching `predicate`, up to `timeout`.
+    pub async fn wait_for(
+        &mut self,
+        timeout: Duration,
+        mut predicate: impl FnMut(&VirtualTick) -> bool,
+    ) -> Result<VirtualTick, SessionError> {
+        tokio::time::timeout(timeout, async {
+            while let Some(tick) = self.rx.recv().await {
+                if predicate(&tick) {
+                    return Ok(tick);
+                }
+            }
+            Err(SessionError::Closed)
+        })
+        .await
+        .map_err(|_| SessionError::Timeout(timeout, "a virtual tick".into()))?
     }
 }
 

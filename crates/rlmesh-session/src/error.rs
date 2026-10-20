@@ -25,10 +25,10 @@ pub enum SessionError {
     /// Something expected did not happen in time.
     #[error("timed out after {0:?} waiting for {1}")]
     Timeout(Duration, String),
-    /// The channel is not in this participant's view of the table.
+    /// The part is not in this participant's view of the table.
     #[error("{0} is not declared")]
-    UnknownChannel(ChannelId),
-    /// The channel exists but cannot be used this way.
+    UnknownPart(String),
+    /// The stream exists but cannot be used this way.
     #[error("{channel}: {reason}")]
     WrongChannel {
         /// The channel.
@@ -36,7 +36,7 @@ pub enum SessionError {
         /// Why it cannot be used.
         reason: String,
     },
-    /// A value does not fit its channel.
+    /// A value does not fit its stream.
     #[error("{channel} value: {reason}")]
     InvalidValue {
         /// The channel.

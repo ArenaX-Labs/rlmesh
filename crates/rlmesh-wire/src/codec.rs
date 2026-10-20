@@ -1,4 +1,4 @@
-//! The byte encoding: protobuf, with tensors as raw `bytes` leaves.
+//! The byte encoding: protobuf envelopes with raw payloads.
 //!
 //! This is the only module that knows how messages look on the wire (see the
 //! crate docs for why). Everything else in the crate, and every crate above
@@ -8,38 +8,46 @@
 //! `proto/rlmesh/session/v2/session.proto`) per payload; the key says which.
 //!
 //! - Control messages ([`Request`], [`CtlReply`], [`AuthoritySnapshot`],
-//!   [`Heartbeat`], [`HeartbeatEcho`]) encode to one buffer and decode from
-//!   any byte slice.
-//! - [`Sample`]s and [`ActionChunk`]s carry their tensors as `bytes` leaves
-//!   in the channel's declared layout. [`encode_sample`] and
+//!   [`Heartbeat`], [`HeartbeatEcho`], [`VirtualTick`], [`HistoryQuery`])
+//!   encode to one buffer and decode from any byte slice.
+//! - [`Sample`]s, [`SampleBatch`]es and [`ActionChunk`]s carry their values
+//!   as one packed `bytes` payload. [`encode_sample`], [`encode_batch`] and
 //!   [`encode_chunk`] emit the message as [`Encoded`] segments: small
-//!   buffers for the fields and each leaf's tag and length, and every leaf as
-//!   its own [`Bytes`] segment, so a transport that gathers segments (Zenoh's
-//!   `ZBytes`) sends the leaves without a copy. The concatenation is ordinary
-//!   protobuf that any implementation decodes. [`decode_sample`] and
-//!   [`decode_chunk`] take the received buffer as [`Bytes`], and the leaves
-//!   slice it.
+//!   buffers for the fields and the payload's tag and length, and the
+//!   payload as its own [`Bytes`] segment, so a transport that gathers
+//!   segments (Zenoh's `ZBytes`) sends it without a copy. The concatenation
+//!   is ordinary protobuf. The decoders take the received buffer as
+//!   [`Bytes`], and the payload slices it.
 //!
-//! Leaf contents are not validated here; the layout check against the
-//! channel declaration is [`ChannelSpec::check_leaf_lens`].
+//! Payload contents are not validated here; the layout check against the
+//! declaration is [`StreamSpec::check_payload`] (samples) and the edge's
+//! intake (chunks). Lengths are bounded here: a chunk's action count and
+//! payload size, a batch's sample count.
+//!
+//! [`StreamSpec::check_payload`]: crate::part::StreamSpec::check_payload
+
+use std::collections::BTreeMap;
+use std::time::Duration;
 
 use bytes::Bytes;
 use prost::Message as _;
-use prost::encoding::{encode_varint, encoded_len_varint};
+use prost::encoding::encode_varint;
 
-use crate::action::{ActionChunk, ObservationRef};
+use crate::action::{ActionChunk, ChunkRef, InputRange};
 use crate::authority::{
-    AuthoritySnapshot, ClockMapping, Command, CtlError, CtlReply, CtlStatus, Lease, Mode,
-    ParticipantInfo, PriorityClass, Request, Role,
-};
-use crate::channel::{
-    Actuation, ChannelPriority, ChannelQos, ChannelSpec, Congestion, DType, Delivery, Direction,
-    Encoding, History, MergePolicy, Rate, TensorLayout,
+    AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
+    CtlStatus, Lease, Mode, ParticipantInfo, PriorityClass, Request, Role, Watermark,
 };
 use crate::error::WireError;
 use crate::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
-use crate::ids::{ChannelId, Epoch, LeaseToken, ParticipantId};
-use crate::sample::Sample;
+use crate::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
+use crate::part::{
+    ChannelPriority, CommandSpec, DType, Encoding, FieldLimit, FieldSpec, MAX_BATCH,
+    MAX_CHUNK_ACTIONS, MAX_CHUNK_BYTES, MergePolicy, PartSpec,
+};
+use crate::path::PartPath;
+use crate::sample::{Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange};
+use crate::tick::{Step, TickState, VirtualTick};
 
 /// Generated `rlmesh.session.v2` messages: private, so the schema can move
 /// without touching any public type.
@@ -70,7 +78,7 @@ pub fn encode_reply(reply: &CtlReply) -> Vec<u8> {
         status: status as i32,
         message,
         state: Some(state_to_pb(&reply.state)),
-        lease: reply.lease.as_ref().map(lease_to_pb),
+        leases: reply.leases.iter().map(lease_to_pb).collect(),
     }
     .encode_to_vec()
 }
@@ -84,7 +92,7 @@ pub fn decode_reply(buf: &[u8]) -> Result<CtlReply, WireError> {
     Ok(CtlReply {
         result: status_from_pb(reply.status, reply.message),
         state: state_from_pb(state)?,
-        lease: reply.lease.map(lease_from_pb).transpose()?,
+        leases: collect(reply.leases, lease_from_pb)?,
     })
 }
 
@@ -180,13 +188,74 @@ pub fn decode_echo(buf: &[u8]) -> Result<HeartbeatEcho, WireError> {
     })
 }
 
-// --- samples and chunks ------------------------------------------------------
+/// Encodes a virtual-mode tick.
+pub fn encode_tick(tick: &VirtualTick) -> Vec<u8> {
+    use pb::virtual_tick::Phase;
+    let phase = match tick {
+        VirtualTick::Observe(state) => Phase::Observe(pb::TickState {
+            epoch: state.epoch.0,
+            tick: state.tick,
+            watermarks: state.watermarks.iter().map(watermark_to_pb).collect(),
+            due: state.due.iter().map(ToString::to_string).collect(),
+        }),
+        VirtualTick::Step(step) => Phase::Step(pb::Step {
+            epoch: step.epoch.0,
+            tick: step.tick,
+            chunks: step.chunks.iter().map(chunk_ref_to_pb).collect(),
+        }),
+    };
+    pb::VirtualTick { phase: Some(phase) }.encode_to_vec()
+}
 
-/// The most actions one chunk may carry.
-pub const MAX_CHUNK_ACTIONS: usize = 1 << 16;
+/// Decodes a virtual-mode tick.
+pub fn decode_tick(buf: &[u8]) -> Result<VirtualTick, WireError> {
+    use pb::virtual_tick::Phase;
+    match pb::VirtualTick::decode(buf)?.phase {
+        Some(Phase::Observe(state)) => Ok(VirtualTick::Observe(TickState {
+            epoch: Epoch(state.epoch),
+            tick: state.tick,
+            watermarks: state
+                .watermarks
+                .into_iter()
+                .map(watermark_from_pb)
+                .collect(),
+            due: collect(state.due, ParticipantId::new)?,
+        })),
+        Some(Phase::Step(step)) => Ok(VirtualTick::Step(Step {
+            epoch: Epoch(step.epoch),
+            tick: step.tick,
+            chunks: step.chunks.into_iter().map(chunk_ref_from_pb).collect(),
+        })),
+        None => Err(WireError::malformed("virtual tick", "no phase")),
+    }
+}
+
+/// Encodes a history query.
+pub fn encode_history_query(query: &HistoryQuery) -> Vec<u8> {
+    pb::HistoryQuery {
+        epoch: query.epoch.0,
+        after_seq: query.after_seq,
+        until_seq: query.until_seq.unwrap_or(0),
+        limit: query.limit.unwrap_or(0),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes a history query.
+pub fn decode_history_query(buf: &[u8]) -> Result<HistoryQuery, WireError> {
+    let q = pb::HistoryQuery::decode(buf)?;
+    Ok(HistoryQuery {
+        epoch: Epoch(q.epoch),
+        after_seq: q.after_seq,
+        until_seq: (q.until_seq > 0).then_some(q.until_seq),
+        limit: (q.limit > 0).then_some(q.limit),
+    })
+}
+
+// --- samples, batches and chunks ---------------------------------------------
 
 /// An encoded message as buffer segments, to be sent in order. Gathering
-/// transports send the leaf segments without copying them.
+/// transports send the payload segment without copying it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Encoded {
     /// The segments, in order.
@@ -204,7 +273,7 @@ impl Encoded {
         self.len() == 0
     }
 
-    /// The message as one contiguous buffer. Copies the leaves: for
+    /// The message as one contiguous buffer. Copies the payload: for
     /// transports that cannot gather segments, and for tests.
     pub fn to_vec(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.len());
@@ -213,168 +282,239 @@ impl Encoded {
         }
         out
     }
-}
 
-/// A `bytes` field's tag (field number, wire type 2).
-const fn len_delimited_tag(field: u32) -> u64 {
-    ((field as u64) << 3) | 2
-}
-
-const SAMPLE_LEAVES: u32 = 6;
-const CHUNK_ACTIONS: u32 = 11;
-const ACTION_LEAVES: u32 = 1;
-
-/// Appends `tag | len` for one length-delimited field to `prefix`.
-fn put_field_header(prefix: &mut Vec<u8>, field: u32, len: usize) {
-    encode_varint(len_delimited_tag(field), prefix);
-    encode_varint(len as u64, prefix);
-}
-
-/// Bytes `leaves` take as repeated `bytes` field `field`.
-fn leaves_len(field: u32, leaves: &[Bytes]) -> usize {
-    leaves
-        .iter()
-        .map(|l| {
-            encoded_len_varint(len_delimited_tag(field))
-                + encoded_len_varint(l.len() as u64)
-                + l.len()
-        })
-        .sum()
-}
-
-/// Appends `leaves` as repeated `bytes` field `field`: each leaf's header
-/// joins `pending`, and each leaf becomes its own segment.
-fn push_leaves(segments: &mut Vec<Bytes>, pending: &mut Vec<u8>, field: u32, leaves: &[Bytes]) {
-    for leaf in leaves {
-        put_field_header(pending, field, leaf.len());
-        segments.push(Bytes::from(std::mem::take(pending)));
-        if !leaf.is_empty() {
-            segments.push(leaf.clone());
+    /// `head`, then `payload` as `bytes` field `field` (its own segment),
+    /// then `tail`.
+    fn around(mut head: Vec<u8>, field: u32, payload: &Bytes, tail: Vec<u8>) -> Self {
+        let mut segments = Vec::with_capacity(3);
+        if !payload.is_empty() {
+            encode_varint((u64::from(field) << 3) | 2, &mut head);
+            encode_varint(payload.len() as u64, &mut head);
+            segments.push(Bytes::from(head));
+            segments.push(payload.clone());
+        } else {
+            segments.push(Bytes::from(head));
         }
+        if !tail.is_empty() {
+            segments.push(Bytes::from(tail));
+        }
+        Self { segments }
     }
 }
 
-/// Encodes a sample. Its leaves become segments (refcount clones, no copy).
+const SAMPLE_PAYLOAD: u32 = 7;
+const BATCH_PAYLOAD: u32 = 5;
+const CHUNK_ACTIONS: u32 = 12;
+
+/// Encodes a sample. Its payload becomes a segment (a refcount clone, no
+/// copy).
 pub fn encode_sample(sample: &Sample) -> Encoded {
-    let fields = pb::Sample {
+    let head = pb::Sample {
         channel: sample.channel.0,
-        seq: sample.seq,
         epoch: sample.epoch.0,
+        seq: sample.seq,
         capture_ns: sample.capture_ns,
         publish_ns: sample.publish_ns,
-        leaves: Vec::new(),
         tick: sample.tick,
-    };
-    let mut segments = Vec::with_capacity(1 + 2 * sample.leaves.len());
-    let mut pending = fields.encode_to_vec();
-    push_leaves(&mut segments, &mut pending, SAMPLE_LEAVES, &sample.leaves);
-    if !pending.is_empty() {
-        segments.push(Bytes::from(pending));
+        payload: Bytes::new(),
+        applied: None,
     }
-    Encoded { segments }
+    .encode_to_vec();
+    let tail = pb::Sample {
+        applied: sample.applied.map(applied_to_pb),
+        ..pb::Sample::default()
+    }
+    .encode_to_vec();
+    Encoded::around(head, SAMPLE_PAYLOAD, &sample.payload, tail)
 }
 
-/// Decodes a sample. The leaves slice `buf` (no copy).
+/// Decodes a sample. The payload slices `buf` (no copy).
 pub fn decode_sample(buf: Bytes) -> Result<Sample, WireError> {
     let s = pb::Sample::decode(buf)?;
     Ok(Sample {
         channel: ChannelId(s.channel),
-        seq: s.seq,
         epoch: Epoch(s.epoch),
+        seq: s.seq,
         capture_ns: s.capture_ns,
         publish_ns: s.publish_ns,
         tick: s.tick,
-        leaves: s.leaves,
+        payload: s.payload,
+        applied: s.applied.map(applied_from_pb).transpose()?,
     })
 }
 
-/// Encodes an action chunk. Its leaves become segments (no copy).
-pub fn encode_chunk(chunk: &ActionChunk) -> Result<Encoded, WireError> {
-    if chunk.actions.len() > MAX_CHUNK_ACTIONS {
+/// Encodes a batch. Its payload becomes a segment (no copy).
+pub fn encode_batch(batch: &SampleBatch) -> Result<Encoded, WireError> {
+    if batch.samples.len() > MAX_BATCH {
+        return Err(WireError::malformed(
+            "sample batch",
+            format!("{} samples (at most {MAX_BATCH})", batch.samples.len()),
+        ));
+    }
+    let head = pb::SampleBatch {
+        channel: batch.channel.0,
+        epoch: batch.epoch.0,
+        publish_ns: batch.publish_ns,
+        samples: batch
+            .samples
+            .iter()
+            .map(|m| pb::SampleMeta {
+                seq: m.seq,
+                capture_ns: m.capture_ns,
+                tick: m.tick,
+                applied: m.applied.map(applied_to_pb),
+            })
+            .collect(),
+        payload: Bytes::new(),
+        truncated: batch.truncated,
+        gaps: batch
+            .gaps
+            .iter()
+            .map(|g| pb::SeqRange {
+                first: g.first,
+                last: g.last,
+            })
+            .collect(),
+    }
+    .encode_to_vec();
+    Ok(Encoded::around(
+        head,
+        BATCH_PAYLOAD,
+        &batch.payload,
+        Vec::new(),
+    ))
+}
+
+/// Decodes a batch. The payload slices `buf` (no copy).
+pub fn decode_batch(buf: Bytes) -> Result<SampleBatch, WireError> {
+    let b = pb::SampleBatch::decode(buf)?;
+    if b.samples.len() > MAX_BATCH {
+        return Err(WireError::malformed(
+            "sample batch",
+            format!("{} samples (at most {MAX_BATCH})", b.samples.len()),
+        ));
+    }
+    Ok(SampleBatch {
+        channel: ChannelId(b.channel),
+        epoch: Epoch(b.epoch),
+        publish_ns: b.publish_ns,
+        samples: collect(b.samples, |m| {
+            Ok::<_, WireError>(SampleMeta {
+                seq: m.seq,
+                capture_ns: m.capture_ns,
+                tick: m.tick,
+                applied: m.applied.map(applied_from_pb).transpose()?,
+            })
+        })?,
+        payload: b.payload,
+        truncated: b.truncated,
+        gaps: b
+            .gaps
+            .into_iter()
+            .map(|g| SeqRange {
+                first: g.first,
+                last: g.last,
+            })
+            .collect(),
+    })
+}
+
+fn check_chunk_size(count: u32, bytes: usize) -> Result<(), WireError> {
+    if count as usize > MAX_CHUNK_ACTIONS || bytes > MAX_CHUNK_BYTES {
         return Err(WireError::malformed(
             "action chunk",
             format!(
-                "{} actions (at most {MAX_CHUNK_ACTIONS})",
-                chunk.actions.len()
+                "{count} actions in {bytes} bytes (at most {MAX_CHUNK_ACTIONS} in {MAX_CHUNK_BYTES})"
             ),
         ));
     }
-    let fields = pb::ActionChunk {
+    Ok(())
+}
+
+/// Encodes an action chunk. Its actions become a segment (no copy).
+pub fn encode_chunk(chunk: &ActionChunk) -> Result<Encoded, WireError> {
+    check_chunk_size(chunk.count, chunk.actions.len())?;
+    let head = pb::ActionChunk {
         channel: chunk.channel.0,
-        source: chunk.source.to_string(),
-        lease_token: chunk.lease_token.0,
         epoch: chunk.epoch.0,
+        lease_token: chunk.lease_token.0,
         seq: chunk.seq,
+        binding: Bytes::copy_from_slice(chunk.binding.as_bytes()),
         based_on: chunk
             .based_on
             .iter()
-            .map(|o| pb::ObservationRef {
-                channel: o.channel.0,
-                seq: o.seq,
+            .map(|r| pb::InputRange {
+                channel: r.channel.0,
+                seq_first: r.seq_first,
+                seq_last: r.seq_last,
             })
             .collect(),
         t0_ns: chunk.t0_ns,
         dt_ns: chunk.dt_ns,
         replace_from_ns: chunk.replace_from_ns,
         valid_until_ns: chunk.valid_until_ns,
-        actions: Vec::new(),
+        count: chunk.count,
+        actions: Bytes::new(),
         publish_ns: chunk.publish_ns,
         tick: chunk.tick,
-    };
-    let leaves: usize = chunk.actions.iter().map(Vec::len).sum();
-    let mut segments = Vec::with_capacity(1 + chunk.actions.len() + 2 * leaves);
-    let mut pending = fields.encode_to_vec();
-    for action in &chunk.actions {
-        put_field_header(
-            &mut pending,
-            CHUNK_ACTIONS,
-            leaves_len(ACTION_LEAVES, action),
-        );
-        push_leaves(&mut segments, &mut pending, ACTION_LEAVES, action);
+        source: chunk.source.to_string(),
     }
-    if !pending.is_empty() {
-        segments.push(Bytes::from(pending));
-    }
-    Ok(Encoded { segments })
+    .encode_to_vec();
+    Ok(Encoded::around(
+        head,
+        CHUNK_ACTIONS,
+        &chunk.actions,
+        Vec::new(),
+    ))
 }
 
-/// Decodes an action chunk. The actions' leaves slice `buf` (no copy).
+/// Decodes an action chunk. The actions slice `buf` (no copy).
 pub fn decode_chunk(buf: Bytes) -> Result<ActionChunk, WireError> {
     let c = pb::ActionChunk::decode(buf)?;
-    if c.actions.len() > MAX_CHUNK_ACTIONS {
-        return Err(WireError::malformed(
-            "action chunk",
-            format!("{} actions (at most {MAX_CHUNK_ACTIONS})", c.actions.len()),
-        ));
-    }
+    check_chunk_size(c.count, c.actions.len())?;
     Ok(ActionChunk {
         channel: ChannelId(c.channel),
-        source: ParticipantId::new(c.source)?,
-        lease_token: LeaseToken(c.lease_token),
         epoch: Epoch(c.epoch),
+        lease_token: LeaseToken(c.lease_token),
         seq: c.seq,
-        publish_ns: c.publish_ns,
-        tick: c.tick,
+        source: ParticipantId::new(c.source)?,
+        binding: fingerprint_from_pb("action chunk", &c.binding)?,
         based_on: c
             .based_on
             .into_iter()
-            .map(|o| ObservationRef {
-                channel: ChannelId(o.channel),
-                seq: o.seq,
+            .map(|r| InputRange {
+                channel: ChannelId(r.channel),
+                seq_first: r.seq_first,
+                seq_last: r.seq_last,
             })
             .collect(),
         t0_ns: c.t0_ns,
         dt_ns: c.dt_ns,
         replace_from_ns: c.replace_from_ns,
         valid_until_ns: c.valid_until_ns,
-        actions: c.actions.into_iter().map(|a| a.leaves).collect(),
+        count: c.count,
+        actions: c.actions,
+        publish_ns: c.publish_ns,
+        tick: c.tick,
     })
 }
 
 // --- conversions -------------------------------------------------------------
 
+fn collect<T, U, E>(items: Vec<T>, f: impl FnMut(T) -> Result<U, E>) -> Result<Vec<U>, WireError>
+where
+    WireError: From<E>,
+{
+    Ok(items.into_iter().map(f).collect::<Result<Vec<U>, E>>()?)
+}
+
 fn bad_enum(what: &'static str, raw: i32) -> WireError {
     WireError::malformed(what, format!("unknown value {raw}"))
+}
+
+fn fingerprint_from_pb(what: &'static str, bytes: &[u8]) -> Result<Fingerprint, WireError> {
+    Fingerprint::from_slice(bytes)
+        .ok_or_else(|| WireError::malformed(what, format!("a {}-byte fingerprint", bytes.len())))
 }
 
 fn role_to_pb(role: Role) -> pb::Role {
@@ -415,6 +555,64 @@ fn mode_from_pb(raw: i32) -> Result<Mode, WireError> {
     }
 }
 
+fn clock_mode_to_pb(mode: ClockMode) -> pb::ClockMode {
+    match mode {
+        ClockMode::Wall => pb::ClockMode::Wall,
+        ClockMode::Virtual => pb::ClockMode::Virtual,
+        ClockMode::Lockstep => pb::ClockMode::Lockstep,
+    }
+}
+
+fn clock_mode_from_pb(raw: i32) -> Result<ClockMode, WireError> {
+    match pb::ClockMode::try_from(raw) {
+        Ok(pb::ClockMode::Wall | pb::ClockMode::Unspecified) => Ok(ClockMode::Wall),
+        Ok(pb::ClockMode::Virtual) => Ok(ClockMode::Virtual),
+        Ok(pb::ClockMode::Lockstep) => Ok(ClockMode::Lockstep),
+        Err(_) => Err(bad_enum("clock mode", raw)),
+    }
+}
+
+fn edge_mode_to_pb(mode: EdgeMode) -> pb::EdgeMode {
+    match mode {
+        EdgeMode::Idle => pb::EdgeMode::Idle,
+        EdgeMode::Driving => pb::EdgeMode::Driving,
+        EdgeMode::Hold => pb::EdgeMode::Hold,
+        EdgeMode::Safe => pb::EdgeMode::Safe,
+        EdgeMode::Estop => pb::EdgeMode::Estop,
+    }
+}
+
+fn edge_mode_from_pb(raw: i32) -> Result<EdgeMode, WireError> {
+    match pb::EdgeMode::try_from(raw) {
+        Ok(pb::EdgeMode::Idle) => Ok(EdgeMode::Idle),
+        Ok(pb::EdgeMode::Driving) => Ok(EdgeMode::Driving),
+        Ok(pb::EdgeMode::Hold) => Ok(EdgeMode::Hold),
+        Ok(pb::EdgeMode::Safe) => Ok(EdgeMode::Safe),
+        Ok(pb::EdgeMode::Estop) => Ok(EdgeMode::Estop),
+        _ => Err(bad_enum("edge mode", raw)),
+    }
+}
+
+fn applied_to_pb(a: Applied) -> pb::Applied {
+    pb::Applied {
+        mode: edge_mode_to_pb(a.mode) as i32,
+        present: a.present,
+        lease_token: a.lease_token.0,
+        chunk_seq: a.chunk_seq,
+        action_index: a.action_index,
+    }
+}
+
+fn applied_from_pb(a: pb::Applied) -> Result<Applied, WireError> {
+    Ok(Applied {
+        mode: edge_mode_from_pb(a.mode)?,
+        present: a.present,
+        lease_token: LeaseToken(a.lease_token),
+        chunk_seq: a.chunk_seq,
+        action_index: a.action_index,
+    })
+}
+
 fn priority_to_pb(priority: PriorityClass) -> pb::PriorityClass {
     match priority {
         PriorityClass::Scripted => pb::PriorityClass::Scripted,
@@ -444,10 +642,12 @@ fn status_to_pb(status: CtlStatus) -> pb::CtlStatus {
         CtlStatus::StaleEpoch => pb::CtlStatus::StaleEpoch,
         CtlStatus::StaleToken => pb::CtlStatus::StaleToken,
         CtlStatus::LeaseBusy => pb::CtlStatus::LeaseBusy,
-        CtlStatus::ChannelConflict => pb::CtlStatus::ChannelConflict,
-        CtlStatus::UnknownChannel => pb::CtlStatus::UnknownChannel,
+        CtlStatus::PathConflict => pb::CtlStatus::PathConflict,
+        CtlStatus::UnknownPath => pb::CtlStatus::UnknownPath,
         CtlStatus::Unsupported => pb::CtlStatus::Unsupported,
         CtlStatus::Incompatible => pb::CtlStatus::Incompatible,
+        CtlStatus::GroupBusy => pb::CtlStatus::GroupBusy,
+        CtlStatus::NotBound => pb::CtlStatus::NotBound,
     }
 }
 
@@ -463,10 +663,12 @@ fn status_from_pb(raw: i32, message: String) -> Result<(), CtlError> {
         Ok(pb::CtlStatus::StaleEpoch) => CtlStatus::StaleEpoch,
         Ok(pb::CtlStatus::StaleToken) => CtlStatus::StaleToken,
         Ok(pb::CtlStatus::LeaseBusy) => CtlStatus::LeaseBusy,
-        Ok(pb::CtlStatus::ChannelConflict) => CtlStatus::ChannelConflict,
-        Ok(pb::CtlStatus::UnknownChannel) => CtlStatus::UnknownChannel,
+        Ok(pb::CtlStatus::PathConflict) => CtlStatus::PathConflict,
+        Ok(pb::CtlStatus::UnknownPath) => CtlStatus::UnknownPath,
         Ok(pb::CtlStatus::Unsupported) => CtlStatus::Unsupported,
         Ok(pb::CtlStatus::Incompatible) => CtlStatus::Incompatible,
+        Ok(pb::CtlStatus::GroupBusy) => CtlStatus::GroupBusy,
+        Ok(pb::CtlStatus::NotBound) => CtlStatus::NotBound,
         Ok(pb::CtlStatus::InvalidRequest | pb::CtlStatus::Unspecified) | Err(_) => {
             CtlStatus::InvalidRequest
         }
@@ -482,7 +684,8 @@ fn participant_to_pb(p: &ParticipantInfo) -> pb::ParticipantInfo {
         priority: priority_to_pb(p.priority) as i32,
         attached_ns: p.attached_ns,
         protocol_minor: p.protocol_minor,
-        capabilities: p.capabilities.clone(),
+        supports: p.supports.clone(),
+        requires: p.requires.clone(),
     }
 }
 
@@ -490,15 +693,12 @@ fn participant_from_pb(p: pb::ParticipantInfo) -> Result<ParticipantInfo, WireEr
     Ok(ParticipantInfo {
         id: ParticipantId::new(p.id)?,
         name: p.name,
-        roles: p
-            .roles
-            .into_iter()
-            .map(role_from_pb)
-            .collect::<Result<_, _>>()?,
+        roles: collect(p.roles, role_from_pb)?,
         priority: priority_from_pb(p.priority)?,
         attached_ns: p.attached_ns,
         protocol_minor: p.protocol_minor,
-        capabilities: p.capabilities,
+        supports: p.supports,
+        requires: p.requires,
     })
 }
 
@@ -511,6 +711,7 @@ fn lease_to_pb(l: &Lease) -> pb::Lease {
         ttl_ns: l.ttl_ns,
         granted_ns: l.granted_ns,
         expires_ns: l.expires_ns,
+        binding: Bytes::copy_from_slice(l.binding.as_bytes()),
     }
 }
 
@@ -523,6 +724,7 @@ fn lease_from_pb(l: pb::Lease) -> Result<Lease, WireError> {
         ttl_ns: l.ttl_ns,
         granted_ns: l.granted_ns,
         expires_ns: l.expires_ns,
+        binding: fingerprint_from_pb("lease", &l.binding)?,
     })
 }
 
@@ -548,6 +750,28 @@ fn clock_from_pb(c: pb::ClockMapping) -> Result<ClockMapping, WireError> {
     })
 }
 
+fn binding_to_pb(b: &BindingRecord) -> pb::BindingRecord {
+    pb::BindingRecord {
+        participant: b.participant.to_string(),
+        fingerprint: Bytes::copy_from_slice(b.fingerprint.as_bytes()),
+        revision: b.revision,
+        table_json: b.table_json.clone(),
+        channels: b.channels.iter().map(|c| c.0).collect(),
+        replan_hz: b.replan_hz,
+    }
+}
+
+fn binding_from_pb(b: pb::BindingRecord) -> Result<BindingRecord, WireError> {
+    Ok(BindingRecord {
+        participant: ParticipantId::new(b.participant)?,
+        fingerprint: fingerprint_from_pb("binding record", &b.fingerprint)?,
+        revision: b.revision,
+        table_json: b.table_json,
+        channels: b.channels.into_iter().map(ChannelId).collect(),
+        replan_hz: b.replan_hz,
+    })
+}
+
 fn state_to_pb(s: &AuthoritySnapshot) -> pb::AuthorityState {
     pb::AuthorityState {
         session: s.session.to_string(),
@@ -559,9 +783,12 @@ fn state_to_pb(s: &AuthoritySnapshot) -> pb::AuthorityState {
         leases: s.leases.iter().map(lease_to_pb).collect(),
         clocks: s.clocks.iter().map(clock_to_pb).collect(),
         host_ns: s.host_ns,
-        channels: s.channels.iter().map(channel_to_pb).collect(),
+        parts: s.parts.iter().map(part_to_pb).collect(),
         protocol_minor: s.protocol_minor,
-        capabilities: s.capabilities.clone(),
+        supports: s.supports.clone(),
+        clock_mode: clock_mode_to_pb(s.clock_mode) as i32,
+        tick_ns: s.tick_ns,
+        bindings: s.bindings.iter().map(binding_to_pb).collect(),
     }
 }
 
@@ -572,29 +799,16 @@ fn state_from_pb(s: pb::AuthorityState) -> Result<AuthoritySnapshot, WireError> 
         revision: s.revision,
         mode: mode_from_pb(s.mode)?,
         estop_latched: s.estop_latched,
-        roster: s
-            .roster
-            .into_iter()
-            .map(participant_from_pb)
-            .collect::<Result<_, _>>()?,
-        leases: s
-            .leases
-            .into_iter()
-            .map(lease_from_pb)
-            .collect::<Result<_, _>>()?,
-        clocks: s
-            .clocks
-            .into_iter()
-            .map(clock_from_pb)
-            .collect::<Result<_, _>>()?,
+        roster: collect(s.roster, participant_from_pb)?,
+        leases: collect(s.leases, lease_from_pb)?,
+        clocks: collect(s.clocks, clock_from_pb)?,
         host_ns: s.host_ns,
-        channels: s
-            .channels
-            .into_iter()
-            .map(channel_from_pb)
-            .collect::<Result<_, _>>()?,
+        parts: collect(s.parts, part_from_pb)?,
         protocol_minor: s.protocol_minor,
-        capabilities: s.capabilities,
+        supports: s.supports,
+        clock_mode: clock_mode_from_pb(s.clock_mode)?,
+        tick_ns: s.tick_ns,
+        bindings: collect(s.bindings, binding_from_pb)?,
     })
 }
 
@@ -618,6 +832,40 @@ fn timing_from_pb(s: pb::TimingSample) -> TimingSample {
     }
 }
 
+fn watermark_to_pb(w: &Watermark) -> pb::Watermark {
+    pb::Watermark {
+        channel: w.channel.0,
+        seq: w.seq,
+    }
+}
+
+fn watermark_from_pb(w: pb::Watermark) -> Watermark {
+    Watermark {
+        channel: ChannelId(w.channel),
+        seq: w.seq,
+    }
+}
+
+fn chunk_ref_to_pb(c: &ChunkRef) -> pb::ChunkRef {
+    pb::ChunkRef {
+        channel: c.channel.0,
+        lease_token: c.lease_token.0,
+        seq: c.seq,
+    }
+}
+
+fn chunk_ref_from_pb(c: pb::ChunkRef) -> ChunkRef {
+    ChunkRef {
+        channel: ChannelId(c.channel),
+        lease_token: LeaseToken(c.lease_token),
+        seq: c.seq,
+    }
+}
+
+fn channels(ids: &[ChannelId]) -> Vec<u32> {
+    ids.iter().map(|c| c.0).collect()
+}
+
 fn request_to_pb(r: &Request) -> pb::CtlRequest {
     use pb::ctl_request::Verb;
     let verb = match &r.command {
@@ -626,34 +874,71 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             roles,
             priority,
             protocol_minor,
-            capabilities,
+            supports,
+            requires,
         } => Verb::Attach(pb::Attach {
             name: name.clone(),
             roles: roles.iter().map(|r| role_to_pb(*r) as i32).collect(),
             priority: priority_to_pb(*priority) as i32,
             protocol_minor: *protocol_minor,
-            capabilities: capabilities.clone(),
+            supports: supports.clone(),
+            requires: requires.clone(),
         }),
         Command::Detach => Verb::Detach(pb::Detach {}),
         Command::Arm => Verb::Arm(pb::Arm {}),
         Command::Disarm => Verb::Disarm(pb::Disarm {}),
-        Command::GrantLease { channel, ttl_ns } => Verb::GrantLease(pb::GrantLease {
-            channel: channel.0,
+        Command::DeclareParts {
+            spec_version,
+            robot_json,
+        } => Verb::DeclareParts(pb::DeclareParts {
+            spec_version: *spec_version,
+            robot_json: robot_json.clone(),
+        }),
+        Command::DeclareBinding {
+            fingerprint,
+            revision,
+            table_json,
+            channels: bound,
+            replan_hz,
+        } => Verb::DeclareBinding(pb::DeclareBinding {
+            fingerprint: Bytes::copy_from_slice(fingerprint.as_bytes()),
+            revision: *revision,
+            table_json: table_json.clone(),
+            channels: channels(bound),
+            replan_hz: *replan_hz,
+        }),
+        Command::GrantLease {
+            channels: grant,
+            release,
+            binding,
+            ttl_ns,
+        } => Verb::GrantLease(pb::GrantLease {
+            channels: channels(grant),
+            release: channels(release),
+            binding: Bytes::copy_from_slice(binding.as_bytes()),
             ttl_ns: ttl_ns.unwrap_or(0),
         }),
-        Command::ReleaseLease { channel, token } => Verb::ReleaseLease(pb::ReleaseLease {
-            channel: channel.0,
+        Command::ReleaseLease {
+            channels: release,
+            token,
+        } => Verb::ReleaseLease(pb::ReleaseLease {
+            channels: channels(release),
             token: token.0,
         }),
         Command::Estop { reason } => Verb::Estop(pb::Estop {
             reason: reason.clone(),
         }),
         Command::Clear => Verb::Clear(pb::Clear {}),
-        Command::DeclareChannels(specs) => Verb::DeclareChannels(pb::DeclareChannels {
-            channels: specs.iter().map(channel_to_pb).collect(),
-        }),
         Command::EnterSafe { reason } => Verb::EnterSafe(pb::EnterSafe {
             reason: reason.clone(),
+        }),
+        Command::Ready { tick, watermarks } => Verb::Ready(pb::Ready {
+            tick: *tick,
+            watermarks: watermarks.iter().map(watermark_to_pb).collect(),
+        }),
+        Command::Decided { tick, chunks } => Verb::Decided(pb::Decided {
+            tick: *tick,
+            chunks: chunks.iter().map(chunk_ref_to_pb).collect(),
         }),
     };
     pb::CtlRequest {
@@ -668,38 +953,55 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
     let verb = r.verb.ok_or_else(|| {
         WireError::malformed("ctl request", "no verb (or one this peer does not know)")
     })?;
+    let ids = |ids: Vec<u32>| ids.into_iter().map(ChannelId).collect::<Vec<_>>();
     let command = match verb {
         Verb::Attach(a) => Command::Attach {
             name: a.name,
-            roles: a
-                .roles
-                .into_iter()
-                .map(role_from_pb)
-                .collect::<Result<_, _>>()?,
+            roles: collect(a.roles, role_from_pb)?,
             priority: priority_from_pb(a.priority)?,
             protocol_minor: a.protocol_minor,
-            capabilities: a.capabilities,
+            supports: a.supports,
+            requires: a.requires,
         },
         Verb::Detach(_) => Command::Detach,
         Verb::Arm(_) => Command::Arm,
         Verb::Disarm(_) => Command::Disarm,
+        Verb::DeclareParts(d) => Command::DeclareParts {
+            spec_version: d.spec_version,
+            robot_json: d.robot_json,
+        },
+        Verb::DeclareBinding(b) => Command::DeclareBinding {
+            fingerprint: fingerprint_from_pb("declare binding", &b.fingerprint)?,
+            revision: b.revision,
+            table_json: b.table_json,
+            channels: ids(b.channels),
+            replan_hz: b.replan_hz,
+        },
         Verb::GrantLease(g) => Command::GrantLease {
-            channel: ChannelId(g.channel),
+            channels: ids(g.channels),
+            release: ids(g.release),
+            binding: fingerprint_from_pb("grant lease", &g.binding)?,
             ttl_ns: (g.ttl_ns > 0).then_some(g.ttl_ns),
         },
         Verb::ReleaseLease(rl) => Command::ReleaseLease {
-            channel: ChannelId(rl.channel),
+            channels: ids(rl.channels),
             token: LeaseToken(rl.token),
         },
         Verb::Estop(e) => Command::Estop { reason: e.reason },
         Verb::Clear(_) => Command::Clear,
-        Verb::DeclareChannels(d) => Command::DeclareChannels(
-            d.channels
-                .into_iter()
-                .map(channel_from_pb)
-                .collect::<Result<_, _>>()?,
-        ),
         Verb::EnterSafe(e) => Command::EnterSafe { reason: e.reason },
+        Verb::Ready(ready) => Command::Ready {
+            tick: ready.tick,
+            watermarks: ready
+                .watermarks
+                .into_iter()
+                .map(watermark_from_pb)
+                .collect(),
+        },
+        Verb::Decided(decided) => Command::Decided {
+            tick: decided.tick,
+            chunks: decided.chunks.into_iter().map(chunk_ref_from_pb).collect(),
+        },
     };
     Ok(Request {
         from: ParticipantId::new(r.participant)?,
@@ -708,233 +1010,190 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
     })
 }
 
-fn duration_ns(d: Option<std::time::Duration>) -> u64 {
-    d.map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+fn duration_ns(d: Duration) -> u64 {
+    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn ns_duration(ns: u64) -> Option<std::time::Duration> {
-    (ns > 0).then(|| std::time::Duration::from_nanos(ns))
-}
-
-fn dtype_to_pb(dtype: DType) -> pb::DType {
-    match dtype {
-        DType::Bool => pb::DType::Bool,
-        DType::U8 => pb::DType::U8,
-        DType::I8 => pb::DType::I8,
-        DType::U16 => pb::DType::U16,
-        DType::I16 => pb::DType::I16,
-        DType::U32 => pb::DType::U32,
-        DType::I32 => pb::DType::I32,
-        DType::U64 => pb::DType::U64,
-        DType::I64 => pb::DType::I64,
-        DType::F16 => pb::DType::F16,
-        DType::Bf16 => pb::DType::Bf16,
-        DType::F32 => pb::DType::F32,
-        DType::F64 => pb::DType::F64,
+fn field_to_pb(f: &FieldSpec) -> pb::FieldSpec {
+    pb::FieldSpec {
+        name: f.name.clone(),
+        dtype: f.dtype.code(),
+        shape: f.shape.clone(),
+        unit: f.unit.clone(),
+        rotation: f.rotation.clone(),
     }
 }
 
-fn dtype_from_pb(raw: i32) -> Result<DType, WireError> {
-    Ok(match pb::DType::try_from(raw) {
-        Ok(pb::DType::Bool) => DType::Bool,
-        Ok(pb::DType::U8) => DType::U8,
-        Ok(pb::DType::I8) => DType::I8,
-        Ok(pb::DType::U16) => DType::U16,
-        Ok(pb::DType::I16) => DType::I16,
-        Ok(pb::DType::U32) => DType::U32,
-        Ok(pb::DType::I32) => DType::I32,
-        Ok(pb::DType::U64) => DType::U64,
-        Ok(pb::DType::I64) => DType::I64,
-        Ok(pb::DType::F16) => DType::F16,
-        Ok(pb::DType::Bf16) => DType::Bf16,
-        Ok(pb::DType::F32) => DType::F32,
-        Ok(pb::DType::F64) => DType::F64,
-        _ => return Err(bad_enum("dtype", raw)),
+fn field_from_pb(f: pb::FieldSpec) -> Result<FieldSpec, WireError> {
+    Ok(FieldSpec {
+        dtype: DType::from_code(f.dtype).ok_or_else(|| {
+            WireError::malformed(
+                "field spec",
+                format!("field {:?} dtype {}", f.name, f.dtype),
+            )
+        })?,
+        name: f.name,
+        shape: f.shape,
+        unit: f.unit,
+        rotation: f.rotation,
     })
 }
 
-fn channel_to_pb(c: &ChannelSpec) -> pb::ChannelSpec {
-    pb::ChannelSpec {
-        id: c.id.0,
-        name: c.name.clone(),
-        direction: match c.direction {
-            Direction::Sense => pb::Direction::Sense,
-            Direction::Actuate => pb::Direction::Actuate,
-            Direction::Aux => pb::Direction::Aux,
-        } as i32,
-        role: c.role.clone(),
-        layout: c
-            .layout
+fn command_to_pb(c: &CommandSpec) -> pb::Command {
+    pb::Command {
+        mode: c.mode.clone(),
+        fields: c.fields.iter().map(field_to_pb).collect(),
+        limits: c
+            .limits
             .iter()
-            .map(|t| pb::TensorLayout {
-                name: t.name.clone(),
-                dtype: dtype_to_pb(t.dtype) as i32,
-                shape: t.shape.clone(),
+            .map(|l| pb::FieldLimit {
+                field: l.field.clone(),
+                low: l.low.clone(),
+                high: l.high.clone(),
+                max_norm: l.max_norm.unwrap_or(0.0),
             })
             .collect(),
-        units: c.units.clone(),
-        frame: c.frame.clone().unwrap_or_default(),
-        encoding: c.encoding.wire_name().into(),
-        encoding_quality: match c.encoding {
-            Encoding::Raw => 0,
-            Encoding::Jpeg { quality } => u32::from(quality),
-        },
-        rate: Some(pb::Rate {
-            nominal_hz: c.rate.nominal_hz,
-            min_hz: c.rate.min_hz.unwrap_or(0.0),
-        }),
-        qos: Some(pb::ChannelQos {
-            delivery: match c.qos.delivery {
-                Delivery::BestEffort => pb::Delivery::BestEffort,
-                Delivery::Reliable => pb::Delivery::Reliable,
-            } as i32,
-            history_depth: u32::try_from(c.qos.history.depth()).unwrap_or(u32::MAX),
-            max_age_ns: duration_ns(c.qos.max_age),
-            deadline_ns: duration_ns(c.qos.deadline),
-            priority: match c.qos.priority {
-                ChannelPriority::Control => pb::ChannelPriority::Control,
-                ChannelPriority::Realtime => pb::ChannelPriority::Realtime,
-                ChannelPriority::Data => pb::ChannelPriority::Data,
-                ChannelPriority::Bulk => pb::ChannelPriority::Bulk,
-            } as i32,
-            congestion: match c.qos.congestion {
-                Congestion::Drop => pb::Congestion::Drop,
-                Congestion::Block => pb::Congestion::Block,
-            } as i32,
-            max_bitrate_bps: c.qos.max_bitrate_bps.unwrap_or(0),
-        }),
-        required: c.required,
-        episodic: c.episodic,
-        owner: c
-            .owner
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
-        actuation: c.actuation.as_ref().map(|a| pb::Actuation {
-            merge: match a.merge {
-                MergePolicy::Replace => pb::MergePolicy::Replace,
-                MergePolicy::Blend => pb::MergePolicy::Blend,
-                MergePolicy::RtcPrefix => pb::MergePolicy::RtcPrefix,
-            } as i32,
-            hold_max_ns: duration_ns(Some(a.hold_max)),
-            safe_behavior: a.safe_behavior.clone(),
-            hold_last: a.hold_last,
-        }),
+        safe_behavior: c.safe_behavior.clone(),
+        hold_max_ns: duration_ns(c.hold_max),
+        max_action_age_ns: duration_ns(c.max_action_age),
+        merge: match c.merge {
+            MergePolicy::Replace => pb::MergePolicy::Replace,
+            MergePolicy::Blend => pb::MergePolicy::Blend,
+            MergePolicy::RtcPrefix => pb::MergePolicy::RtcPrefix,
+        } as i32,
+        reference: c.reference.clone(),
+        group: c.group.clone().unwrap_or_default(),
+        binary: c.binary,
+        hold_last: c.hold_last,
     }
 }
 
-fn channel_from_pb(c: pb::ChannelSpec) -> Result<ChannelSpec, WireError> {
-    let id = c.id;
-    let rate = c.rate.unwrap_or_default();
-    let qos = c
-        .qos
-        .ok_or_else(|| WireError::malformed("channel spec", format!("channel {id} has no qos")))?;
-    Ok(ChannelSpec {
-        id: ChannelId(id),
-        name: c.name,
-        direction: match pb::Direction::try_from(c.direction) {
-            Ok(pb::Direction::Sense) => Direction::Sense,
-            Ok(pb::Direction::Actuate) => Direction::Actuate,
-            Ok(pb::Direction::Aux) => Direction::Aux,
-            _ => return Err(bad_enum("direction", c.direction)),
-        },
-        role: c.role,
-        layout: c
-            .layout
+fn command_from_pb(c: pb::Command) -> Result<CommandSpec, WireError> {
+    Ok(CommandSpec {
+        mode: c.mode,
+        fields: collect(c.fields, field_from_pb)?,
+        limits: c
+            .limits
             .into_iter()
-            .map(|t| {
-                Ok(TensorLayout {
-                    name: t.name,
-                    dtype: dtype_from_pb(t.dtype)?,
-                    shape: t.shape,
-                })
+            .map(|l| FieldLimit {
+                field: l.field,
+                low: l.low,
+                high: l.high,
+                max_norm: (l.max_norm > 0.0).then_some(l.max_norm),
             })
-            .collect::<Result<_, WireError>>()?,
-        units: c.units,
-        frame: (!c.frame.is_empty()).then_some(c.frame),
-        encoding: match c.encoding.as_str() {
-            "" | "raw" => Encoding::Raw,
-            "jpeg" => Encoding::Jpeg {
-                quality: u8::try_from(c.encoding_quality).map_err(|_| {
-                    WireError::malformed(
-                        "channel spec",
-                        format!("jpeg quality {}", c.encoding_quality),
-                    )
+            .collect(),
+        safe_behavior: c.safe_behavior,
+        hold_max: Duration::from_nanos(c.hold_max_ns),
+        max_action_age: Duration::from_nanos(c.max_action_age_ns),
+        merge: match pb::MergePolicy::try_from(c.merge) {
+            Ok(pb::MergePolicy::Replace | pb::MergePolicy::Unspecified) => MergePolicy::Replace,
+            Ok(pb::MergePolicy::Blend) => MergePolicy::Blend,
+            Ok(pb::MergePolicy::RtcPrefix) => MergePolicy::RtcPrefix,
+            Err(_) => return Err(bad_enum("merge policy", c.merge)),
+        },
+        reference: c.reference,
+        group: (!c.group.is_empty()).then_some(c.group),
+        binary: c.binary,
+        hold_last: c.hold_last,
+    })
+}
+
+fn channel_priority_to_pb(p: ChannelPriority) -> pb::ChannelPriority {
+    match p {
+        ChannelPriority::Control => pb::ChannelPriority::Control,
+        ChannelPriority::Realtime => pb::ChannelPriority::Realtime,
+        ChannelPriority::Data => pb::ChannelPriority::Data,
+        ChannelPriority::Bulk => pb::ChannelPriority::Bulk,
+    }
+}
+
+fn channel_priority_from_pb(raw: i32) -> Result<ChannelPriority, WireError> {
+    match pb::ChannelPriority::try_from(raw) {
+        Ok(pb::ChannelPriority::Control) => Ok(ChannelPriority::Control),
+        Ok(pb::ChannelPriority::Realtime) => Ok(ChannelPriority::Realtime),
+        Ok(pb::ChannelPriority::Data) => Ok(ChannelPriority::Data),
+        Ok(pb::ChannelPriority::Bulk) => Ok(ChannelPriority::Bulk),
+        _ => Err(bad_enum("channel priority", raw)),
+    }
+}
+
+fn part_to_pb(p: &PartSpec) -> pb::PartSpec {
+    pb::PartSpec {
+        path: p.path.to_string(),
+        kind: p.kind.clone(),
+        channel: p.channel.0,
+        applied_channel: p.applied_channel.map_or(0, |c| c.0),
+        fields: p.fields.iter().map(field_to_pb).collect(),
+        hz: p.hz,
+        send: p.send.clone(),
+        frame: p.frame.clone(),
+        names: p.names.clone(),
+        encoding: p.encoding.wire_name().into(),
+        quality: match p.encoding {
+            Encoding::Raw => 0,
+            Encoding::Jpeg { quality } => u32::from(quality),
+        },
+        max_age_ns: p.max_age.map_or(0, duration_ns),
+        command: p.command.as_ref().map(command_to_pb),
+        attrs: p
+            .attrs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        priority: channel_priority_to_pb(p.priority) as i32,
+        owner: p.owner.to_string(),
+        event: p.event,
+        requires: p.requires.clone(),
+        control_hz: p.control_hz,
+    }
+}
+
+fn part_from_pb(p: pb::PartSpec) -> Result<PartSpec, WireError> {
+    let encoding = match p.encoding.as_str() {
+        "" | "raw" => Encoding::Raw,
+        "jpeg" => Encoding::Jpeg {
+            quality: u8::try_from(p.quality)
+                .ok()
+                .filter(|q| (1..=100).contains(q))
+                .ok_or_else(|| {
+                    WireError::malformed("part spec", format!("jpeg quality {}", p.quality))
                 })?,
-            },
-            other => {
-                return Err(WireError::malformed(
-                    "channel spec",
-                    format!("channel {id} encoding {other:?}"),
-                ));
-            }
         },
-        rate: Rate {
-            nominal_hz: rate.nominal_hz,
-            min_hz: (rate.min_hz > 0.0).then_some(rate.min_hz),
-        },
-        qos: ChannelQos {
-            delivery: match pb::Delivery::try_from(qos.delivery) {
-                Ok(pb::Delivery::BestEffort) => Delivery::BestEffort,
-                Ok(pb::Delivery::Reliable) => Delivery::Reliable,
-                _ => return Err(bad_enum("delivery", qos.delivery)),
-            },
-            history: History::from_depth(qos.history_depth),
-            max_age: ns_duration(qos.max_age_ns),
-            deadline: ns_duration(qos.deadline_ns),
-            priority: match pb::ChannelPriority::try_from(qos.priority) {
-                Ok(pb::ChannelPriority::Control) => ChannelPriority::Control,
-                Ok(pb::ChannelPriority::Realtime) => ChannelPriority::Realtime,
-                Ok(pb::ChannelPriority::Data) => ChannelPriority::Data,
-                Ok(pb::ChannelPriority::Bulk) => ChannelPriority::Bulk,
-                _ => return Err(bad_enum("channel priority", qos.priority)),
-            },
-            congestion: match pb::Congestion::try_from(qos.congestion) {
-                Ok(pb::Congestion::Drop) => Congestion::Drop,
-                Ok(pb::Congestion::Block) => Congestion::Block,
-                _ => return Err(bad_enum("congestion", qos.congestion)),
-            },
-            max_bitrate_bps: (qos.max_bitrate_bps > 0).then_some(qos.max_bitrate_bps),
-        },
-        required: c.required,
-        episodic: c.episodic,
-        owner: if c.owner.is_empty() {
-            None
-        } else {
-            Some(ParticipantId::new(c.owner)?)
-        },
-        actuation: c
-            .actuation
-            .map(|a| -> Result<Actuation, WireError> {
-                Ok(Actuation {
-                    merge: match pb::MergePolicy::try_from(a.merge) {
-                        Ok(pb::MergePolicy::Replace | pb::MergePolicy::Unspecified) => {
-                            MergePolicy::Replace
-                        }
-                        Ok(pb::MergePolicy::Blend) => MergePolicy::Blend,
-                        Ok(pb::MergePolicy::RtcPrefix) => MergePolicy::RtcPrefix,
-                        Err(_) => return Err(bad_enum("merge policy", a.merge)),
-                    },
-                    hold_max: ns_duration(a.hold_max_ns)
-                        .unwrap_or_else(|| Actuation::default().hold_max),
-                    safe_behavior: a.safe_behavior,
-                    hold_last: a.hold_last,
-                })
-            })
-            .transpose()?,
+        other => {
+            return Err(WireError::malformed(
+                "part spec",
+                format!("{} encoding {other:?}", p.path),
+            ));
+        }
+    };
+    Ok(PartSpec {
+        path: PartPath::new(p.path)?,
+        kind: p.kind,
+        channel: ChannelId(p.channel),
+        applied_channel: (p.applied_channel > 0).then_some(ChannelId(p.applied_channel)),
+        fields: collect(p.fields, field_from_pb)?,
+        hz: p.hz,
+        send: p.send,
+        frame: p.frame,
+        names: p.names,
+        encoding,
+        max_age: (p.max_age_ns > 0).then(|| Duration::from_nanos(p.max_age_ns)),
+        command: p.command.map(command_from_pb).transpose()?,
+        attrs: p.attrs.into_iter().collect::<BTreeMap<_, _>>(),
+        priority: channel_priority_from_pb(p.priority)?,
+        owner: ParticipantId::new(p.owner)?,
+        event: p.event,
+        requires: p.requires,
+        control_hz: p.control_hz,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::tests::{camera, joint_cmd};
     use crate::ids::SessionId;
+    use crate::part::tests::{arm, camera, pid};
     use crate::version::PROTOCOL_MINOR;
-
-    fn pid(id: &str) -> ParticipantId {
-        ParticipantId::new(id).expect("id")
-    }
 
     fn snapshot() -> AuthoritySnapshot {
         AuthoritySnapshot {
@@ -950,7 +1209,8 @@ mod tests {
                 priority: PriorityClass::Operator,
                 attached_ns: 12,
                 protocol_minor: PROTOCOL_MINOR,
-                capabilities: vec!["frame.batch".into()],
+                supports: vec!["frame.fixed".into()],
+                requires: vec!["merge.blend".into()],
             }],
             leases: vec![Lease {
                 channel: ChannelId(1),
@@ -960,6 +1220,7 @@ mod tests {
                 ttl_ns: 5,
                 granted_ns: 6,
                 expires_ns: 11,
+                binding: Fingerprint::from(77),
             }],
             clocks: vec![ClockMapping {
                 participant: pid("op"),
@@ -970,9 +1231,19 @@ mod tests {
                 drift_bound_ppm: 100.0,
             }],
             host_ns: 99,
-            channels: vec![camera(), joint_cmd(MergePolicy::Replace)],
+            parts: vec![camera(), arm()],
             protocol_minor: PROTOCOL_MINOR,
-            capabilities: Vec::new(),
+            supports: Vec::new(),
+            clock_mode: ClockMode::Virtual,
+            tick_ns: 1_000_000,
+            bindings: vec![BindingRecord {
+                participant: pid("op"),
+                fingerprint: Fingerprint::from(77),
+                revision: 2,
+                table_json: "{}".into(),
+                channels: vec![ChannelId(1)],
+                replan_hz: 20.0,
+            }],
         }
     }
 
@@ -984,23 +1255,38 @@ mod tests {
                 roles: vec![Role::Controller, Role::Observer, Role::Embodiment],
                 priority: PriorityClass::Operator,
                 protocol_minor: 3,
-                capabilities: vec!["merge.blend".into()],
+                supports: vec!["frame.fixed".into()],
+                requires: vec!["merge.blend".into()],
             },
-            Command::DeclareChannels(vec![camera(), joint_cmd(MergePolicy::Replace)]),
+            Command::DeclareParts {
+                spec_version: 1,
+                robot_json: r#"{"arm": {"kind": "x/arm"}}"#.into(),
+            },
+            Command::DeclareBinding {
+                fingerprint: Fingerprint::from(9),
+                revision: 4,
+                table_json: "{}".into(),
+                channels: vec![ChannelId(1), ChannelId(5)],
+                replan_hz: 20.0,
+            },
             Command::Arm,
             Command::Disarm,
             Command::Detach,
             Command::Clear,
             Command::GrantLease {
-                channel: ChannelId(4),
+                channels: vec![ChannelId(4), ChannelId(6)],
+                release: vec![ChannelId(5)],
+                binding: Fingerprint::from(9),
                 ttl_ns: Some(5),
             },
             Command::GrantLease {
-                channel: ChannelId(4),
+                channels: vec![ChannelId(4)],
+                release: Vec::new(),
+                binding: Fingerprint::from(9),
                 ttl_ns: None,
             },
             Command::ReleaseLease {
-                channel: ChannelId(4),
+                channels: vec![ChannelId(4)],
                 token: LeaseToken(2),
             },
             Command::Estop {
@@ -1008,6 +1294,21 @@ mod tests {
             },
             Command::EnterSafe {
                 reason: "queue dry".into(),
+            },
+            Command::Ready {
+                tick: 7,
+                watermarks: vec![Watermark {
+                    channel: ChannelId(2),
+                    seq: 8,
+                }],
+            },
+            Command::Decided {
+                tick: 7,
+                chunks: vec![ChunkRef {
+                    channel: ChannelId(1),
+                    lease_token: LeaseToken(3),
+                    seq: 9,
+                }],
             },
         ];
         for command in requests {
@@ -1026,12 +1327,13 @@ mod tests {
         assert_eq!(decode_state(&encode_state(&state)).expect("decode"), state);
         for result in [
             Ok(()),
-            Err(CtlError::new(CtlStatus::LeaseBusy, "busy")),
-            Err(CtlError::new(CtlStatus::Incompatible, "needs merge.blend")),
+            Err(CtlError::new(CtlStatus::GroupBusy, "busy")),
+            Err(CtlError::new(CtlStatus::NotBound, "not in the binding")),
+            Err(CtlError::new(CtlStatus::PathConflict, "another owner")),
         ] {
             let reply = CtlReply {
                 result,
-                lease: state.leases.first().cloned(),
+                leases: state.leases.clone(),
                 state: state.clone(),
             };
             assert_eq!(decode_reply(&encode_reply(&reply)).expect("decode"), reply);
@@ -1069,106 +1371,213 @@ mod tests {
         };
         assert_eq!(decode_echo(&encode_echo(&echo)).expect("decode"), echo);
         assert!(decode_state(b"\xff\xff\xff").is_err());
+
+        for tick in [
+            VirtualTick::Observe(TickState {
+                epoch: Epoch(2),
+                tick: 40,
+                watermarks: vec![Watermark {
+                    channel: ChannelId(1),
+                    seq: 41,
+                }],
+                due: vec![pid("policy")],
+            }),
+            VirtualTick::Step(Step {
+                epoch: Epoch(2),
+                tick: 40,
+                chunks: vec![ChunkRef {
+                    channel: ChannelId(1),
+                    lease_token: LeaseToken(3),
+                    seq: 2,
+                }],
+            }),
+        ] {
+            assert_eq!(decode_tick(&encode_tick(&tick)).expect("decode"), tick);
+        }
+        let query = HistoryQuery {
+            epoch: Epoch(2),
+            after_seq: 10,
+            until_seq: Some(20),
+            limit: None,
+        };
+        assert_eq!(
+            decode_history_query(&encode_history_query(&query)).expect("decode"),
+            query
+        );
     }
 
-    fn ft_sample() -> Sample {
+    #[test]
+    fn a_bad_fingerprint_or_part_is_malformed() {
+        let mut state = state_to_pb(&snapshot());
+        state.leases[0].binding = Bytes::from_static(&[1, 2, 3]);
+        assert!(state_from_pb(state).is_err());
+        let mut state = state_to_pb(&snapshot());
+        state.parts[0].path = "Wrist/Cam".into();
+        assert!(state_from_pb(state).is_err(), "an invalid path");
+        let mut state = state_to_pb(&snapshot());
+        state.parts[1].fields[0].dtype = 13;
+        assert!(
+            state_from_pb(state).is_err(),
+            "bfloat16 is not a v0.2 dtype"
+        );
+        let mut state = state_to_pb(&snapshot());
+        state.parts[0].quality = 0;
+        assert!(state_from_pb(state).is_err());
+    }
+
+    fn applied_sample() -> Sample {
         Sample {
             channel: ChannelId(2),
-            seq: 41,
             epoch: Epoch(3),
+            seq: 41,
             capture_ns: 100,
             publish_ns: 120,
             tick: 7,
-            leaves: vec![
-                Bytes::from(vec![7_u8; 72]),
-                Bytes::new(),
-                Bytes::from(vec![9_u8; 300]),
-            ],
+            payload: Bytes::from(vec![7_u8; 24]),
+            applied: Some(Applied {
+                mode: EdgeMode::Hold,
+                present: true,
+                lease_token: LeaseToken(4),
+                chunk_seq: 9,
+                action_index: 3,
+            }),
         }
     }
 
     #[test]
-    fn samples_are_plain_protobuf_with_leaves_neither_copied_on_send_nor_on_receipt() {
-        let sample = ft_sample();
+    fn samples_are_plain_protobuf_with_the_payload_neither_copied_on_send_nor_on_receipt() {
+        let sample = applied_sample();
         let encoded = encode_sample(&sample);
         assert!(
             encoded
                 .segments
                 .iter()
-                .any(|s| s.as_ptr() == sample.leaves[2].as_ptr()),
-            "the leaf is a segment of its own"
+                .any(|s| s.as_ptr() == sample.payload.as_ptr()),
+            "the payload is a segment of its own"
         );
         let buf = Bytes::from(encoded.to_vec());
         // Any protobuf implementation reads it.
         let plain = pb::Sample::decode(&buf[..]).expect("plain protobuf");
-        assert_eq!(plain.leaves.len(), 3);
-        assert_eq!((plain.seq, plain.tick), (41, 7));
+        assert_eq!((plain.seq, plain.tick, plain.payload.len()), (41, 7, 24));
+        assert_eq!(plain.applied.map(|a| a.chunk_seq), Some(9));
         let decoded = decode_sample(buf.clone()).expect("decode");
         assert_eq!(decoded, sample);
-        let range = buf.as_ptr_range();
         assert!(
-            range.contains(&decoded.leaves[2].as_ptr()),
-            "the leaf slices the received buffer"
+            buf.as_ptr_range().contains(&decoded.payload.as_ptr()),
+            "the payload slices the received buffer"
         );
-        assert_eq!(decoded.payload_len(), 372);
+        // An applied tick with nothing dispatched has no payload.
+        let absent = Sample {
+            payload: Bytes::new(),
+            applied: Some(Applied::absent(EdgeMode::Safe)),
+            ..sample
+        };
+        assert_eq!(
+            decode_sample(Bytes::from(encode_sample(&absent).to_vec())).expect("decode"),
+            absent
+        );
+        let mut bad = pb::Sample::decode(&buf[..]).expect("plain");
+        bad.applied = Some(pb::Applied {
+            mode: 99,
+            ..pb::Applied::default()
+        });
+        assert!(decode_sample(Bytes::from(bad.encode_to_vec())).is_err());
         assert!(decode_sample(Bytes::from_static(b"\xff\xff")).is_err());
+    }
+
+    #[test]
+    fn batches_round_trip_with_their_gaps() {
+        let batch = SampleBatch {
+            channel: ChannelId(2),
+            epoch: Epoch(3),
+            publish_ns: 5,
+            samples: vec![
+                SampleMeta {
+                    seq: 4,
+                    capture_ns: 1,
+                    tick: 0,
+                    applied: None,
+                },
+                SampleMeta {
+                    seq: 6,
+                    capture_ns: 2,
+                    tick: 0,
+                    applied: applied_sample().applied,
+                },
+            ],
+            payload: Bytes::from(vec![1_u8; 48]),
+            truncated: true,
+            gaps: vec![SeqRange { first: 5, last: 5 }],
+        };
+        let buf = Bytes::from(encode_batch(&batch).expect("encode").to_vec());
+        let decoded = decode_batch(buf.clone()).expect("decode");
+        assert_eq!(decoded, batch);
+        assert!(buf.as_ptr_range().contains(&decoded.payload.as_ptr()));
+        let mut huge = batch;
+        huge.samples = vec![huge.samples[0]; MAX_BATCH + 1];
+        assert!(encode_batch(&huge).is_err());
     }
 
     fn chunk() -> ActionChunk {
         ActionChunk {
             channel: ChannelId(1),
-            source: pid("policy"),
-            lease_token: LeaseToken(3),
             epoch: Epoch(2),
+            lease_token: LeaseToken(3),
             seq: 9,
-            publish_ns: 78,
-            tick: 0,
+            source: pid("policy"),
+            binding: Fingerprint::from(0xfeed),
             based_on: vec![
-                ObservationRef {
-                    channel: ChannelId(2),
-                    seq: 41,
-                },
-                ObservationRef {
+                InputRange::one(ChannelId(2), 41),
+                InputRange {
                     channel: ChannelId(5),
-                    seq: 7,
+                    seq_first: 7,
+                    seq_last: 10,
                 },
             ],
             t0_ns: 1_000,
             dt_ns: 1_000_000,
             replace_from_ns: 900,
             valid_until_ns: 500_000_000,
-            actions: (0..5_u8)
-                .map(|i| vec![Bytes::from(vec![i; 24]), Bytes::from(vec![i; 200])])
-                .collect(),
+            count: 5,
+            actions: Bytes::from((0..120_u8).collect::<Vec<_>>()),
+            publish_ns: 78,
+            tick: 0,
         }
     }
 
     #[test]
-    fn chunks_round_trip_through_plain_protobuf() {
+    fn chunks_round_trip_through_plain_protobuf_without_copying_the_actions() {
         let chunk = chunk();
         let encoded = encode_chunk(&chunk).expect("encode");
         let buf = Bytes::from(encoded.to_vec());
         let plain = pb::ActionChunk::decode(&buf[..]).expect("plain protobuf");
-        assert_eq!(plain.actions.len(), 5);
-        assert_eq!(plain.actions[3].leaves[1], vec![3_u8; 200]);
+        assert_eq!((plain.count, plain.actions.len()), (5, 120));
         let decoded = decode_chunk(buf.clone()).expect("decode");
         assert_eq!(decoded, chunk);
-        assert!(buf.as_ptr_range().contains(&decoded.actions[4][1].as_ptr()));
+        assert!(buf.as_ptr_range().contains(&decoded.actions.as_ptr()));
+        assert_eq!(
+            decoded.action(4, 24).map(|a| a[0]),
+            Some(96),
+            "action 4 at a 24-byte stride"
+        );
+        assert_eq!(decoded.action(5, 24), None);
+        assert_eq!(decoded.reference().seq, 9);
 
-        let mut empty = chunk.clone();
-        empty.actions.clear();
-        let decoded =
-            decode_chunk(Bytes::from(encode_chunk(&empty).expect("encode").to_vec())).expect("ok");
-        assert!(decoded.actions.is_empty());
-        let mut huge = chunk;
-        huge.actions = vec![Vec::new(); MAX_CHUNK_ACTIONS + 1];
+        let mut huge = chunk.clone();
+        huge.count = u32::try_from(MAX_CHUNK_ACTIONS + 1).expect("count");
         assert!(encode_chunk(&huge).is_err());
+        let mut no_binding = pb::ActionChunk::decode(&buf[..]).expect("plain");
+        no_binding.binding = Bytes::new();
+        assert!(decode_chunk(Bytes::from(no_binding.encode_to_vec())).is_err());
     }
 
     #[test]
     fn unknown_enum_values_are_refused_but_unknown_statuses_are_refusals() {
         assert!(mode_from_pb(0).is_err());
         assert!(mode_from_pb(99).is_err());
+        assert!(edge_mode_from_pb(0).is_err());
+        assert!(channel_priority_from_pb(0).is_err());
+        assert_eq!(clock_mode_from_pb(0).ok(), Some(ClockMode::Wall));
         assert_eq!(
             status_from_pb(pb::CtlStatus::LeaseBusy as i32, "busy".into()).map_err(|e| e.status),
             Err(CtlStatus::LeaseBusy)

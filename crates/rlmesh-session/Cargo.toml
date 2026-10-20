@@ -26,14 +26,20 @@ clap = { workspace = true, features = ["derive"] }
 image = { workspace = true, features = ["jpeg"] }
 jpeg-encoder = { workspace = true }
 rlmesh-wire = { workspace = true }
+# The robot map is authored JSON (§3); field order is payload order, so the
+# normaliser reads it with an order-keeping visitor.
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 # One Zenoh session per traffic class: no `transport_multilink` (it pulls
-# `rsa`, RUSTSEC-2023-0071) and no pubkey auth (also `rsa`).
-zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-stream"] }
+# `rsa`, RUSTSEC-2023-0071) and no pubkey auth (also `rsa`). `unstable` is
+# for per-publisher reliability, the only way Zenoh 1.10 sets it (§10.2).
+zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-stream", "unstable"] }
 
 [features]
 # QUIC links (one stream per Zenoh priority, so one connection can carry

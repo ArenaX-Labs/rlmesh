@@ -1,13 +1,15 @@
-//! Image channels: JPEG encoding, a bitrate cap and newest-wins skipping.
+//! Image parts: JPEG encoding, a bitrate budget and newest-wins skipping.
 //!
-//! An [`ImagePublisher`] wraps a [`SamplePublisher`] for a uint8 `[H, W, 3]`
-//! channel. Each [`ImagePublisher::offer`] of a captured frame:
+//! An [`ImagePublisher`] wraps a [`SamplePublisher`] for a part whose single
+//! field is a uint8 `[H, W, 3]` image. Each [`ImagePublisher::offer`] of a
+//! captured frame:
 //!
-//! 1. is skipped outright while the channel's `max_bitrate_bps` budget is
-//!    spent (a token bucket refilled at the cap, holding at most 100 ms of
-//!    budget; a frame may overdraw it once, and the next frames are skipped
-//!    until it refills), before any encoding work;
-//! 2. is encoded as the channel declares (`jpeg` at its quality, or `raw`);
+//! 1. is skipped outright while the bitrate budget (`send:
+//!    latest(max_mbps=…)`, §8.5) is spent, before any encoding work. The
+//!    bucket refills at the budget; its capacity is the larger of 100 ms of
+//!    budget and one maximum-size frame, a frame is admitted while the
+//!    bucket is positive, and its actual bytes are then subtracted (debt);
+//! 2. is encoded as the part declares (`jpeg` at its quality, or `raw`);
 //! 3. lands in a one-frame mailbox that a sender thread drains. When the
 //!    link is congested the sender is still blocked on the previous frame,
 //!    and the new frame replaces the unsent one: the newest frame wins and
@@ -21,7 +23,8 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use bytes::Bytes;
-use rlmesh_wire::{ChannelSpec, Encoding, Sample};
+use rlmesh_wire::part::MAX_ENCODED_OVERHEAD;
+use rlmesh_wire::{Encoding, Sample, StreamSpec};
 use tracing::warn;
 
 use crate::error::SessionError;
@@ -75,9 +78,10 @@ struct Bucket {
 }
 
 impl Bucket {
-    fn new(max_bitrate_bps: Option<u64>, now_ns: i64) -> Self {
+    /// A bucket for `max_bitrate_bps`, holding at least one `max_frame`.
+    fn new(max_bitrate_bps: Option<u64>, max_frame: usize, now_ns: i64) -> Self {
         let rate = max_bitrate_bps.map(|bps| bps as f64 / 8.0);
-        let capacity = rate.map_or(0.0, |r| r * BUCKET_NS as f64 / 1e9);
+        let capacity = rate.map_or(0.0, |r| (r * BUCKET_NS as f64 / 1e9).max(max_frame as f64));
         Self {
             rate,
             tokens: capacity,
@@ -162,13 +166,13 @@ impl Inner {
             let len = frame.bytes.len() as u64;
             // A BLOCK channel waits here while the link is congested; newer
             // frames meanwhile replace each other in the slot.
-            match self.publisher.publish(frame.capture_ns, vec![frame.bytes]) {
+            match self.publisher.publish(frame.capture_ns, frame.bytes) {
                 Ok(_) => self.bump(|s| {
                     s.sent += 1;
                     s.bytes_sent += len;
                 }),
                 Err(err) => {
-                    warn!(channel = %self.publisher.spec().id, %err, "frame send failed");
+                    warn!(channel = %self.publisher.spec().channel, %err, "frame send failed");
                     self.bump(|s| s.send_errors += 1);
                 }
             }
@@ -183,16 +187,20 @@ pub struct ImagePublisher {
 }
 
 impl ImagePublisher {
-    /// Wraps the publisher of a declared uint8 `[H, W, 3]` channel.
-    pub fn new(publisher: SamplePublisher) -> Result<Self, SessionError> {
+    /// Wraps the publisher of a uint8 `[H, W, 3]` image part, with its
+    /// bitrate budget (`None`: no budget).
+    pub fn new(
+        publisher: SamplePublisher,
+        max_bitrate_bps: Option<u64>,
+    ) -> Result<Self, SessionError> {
         let spec = publisher.spec();
         let (height, width) = image_dims(spec)?;
-        let max_bitrate = spec.qos.max_bitrate_bps;
+        let max_frame = usize::from(height) * usize::from(width) * 3 + MAX_ENCODED_OVERHEAD;
         let inner = Arc::new(Inner {
             width,
             height,
             epoch: Instant::now(),
-            bucket: Mutex::new(Bucket::new(max_bitrate, 0)),
+            bucket: Mutex::new(Bucket::new(max_bitrate_bps, max_frame, 0)),
             slot: Mutex::new(None),
             ready: Condvar::new(),
             stop: AtomicBool::new(false),
@@ -200,7 +208,7 @@ impl ImagePublisher {
             publisher,
         });
         let sender = std::thread::Builder::new()
-            .name(format!("rlmesh-media-{}", inner.publisher.spec().id))
+            .name(format!("rlmesh-media-{}", inner.publisher.spec().channel))
             .spawn({
                 let inner = inner.clone();
                 move || inner.send_loop()
@@ -212,8 +220,8 @@ impl ImagePublisher {
         })
     }
 
-    /// The channel.
-    pub fn spec(&self) -> &ChannelSpec {
+    /// The stream.
+    pub fn spec(&self) -> &StreamSpec {
         self.inner.publisher.spec()
     }
 
@@ -229,7 +237,7 @@ impl ImagePublisher {
         let expected = usize::from(inner.width) * usize::from(inner.height) * 3;
         if rgb.len() != expected {
             return Err(SessionError::InvalidValue {
-                channel: self.spec().id,
+                channel: self.spec().channel,
                 reason: format!("frame is {} bytes, not {expected}", rgb.len()),
             });
         }
@@ -291,16 +299,16 @@ impl Drop for ImagePublisher {
     }
 }
 
-fn image_dims(spec: &ChannelSpec) -> Result<(u16, u16), SessionError> {
-    let dims = match spec.layout.as_slice() {
-        [leaf] => leaf
+fn image_dims(spec: &StreamSpec) -> Result<(u16, u16), SessionError> {
+    let dims = match spec.fields.as_slice() {
+        [field] => field
             .rgb8_dims()
             .and_then(|(h, w)| Some((u16::try_from(h).ok()?, u16::try_from(w).ok()?))),
         _ => None,
     };
     dims.ok_or_else(|| SessionError::WrongChannel {
-        channel: spec.id,
-        reason: "not one uint8 [H, W, 3] image with 16-bit dimensions".into(),
+        channel: spec.channel,
+        reason: "not one uint8 [H, W, 3] image field with 16-bit dimensions".into(),
     })
 }
 
@@ -321,25 +329,20 @@ pub fn encode_jpeg(
     Ok(encoded)
 }
 
-/// A received image channel sample as `H * W * 3` RGB bytes: decoded from
-/// JPEG, or the raw leaf as is. Checks the declared dimensions.
-pub fn decode_image(spec: &ChannelSpec, sample: &Sample) -> Result<Vec<u8>, SessionError> {
+/// A received image sample as `H * W * 3` RGB bytes: decoded from JPEG, or
+/// the raw payload as is. Checks the declared dimensions (a mismatch is the
+/// spec's `decode_mismatch`).
+pub fn decode_image(spec: &StreamSpec, sample: &Sample) -> Result<Vec<u8>, SessionError> {
     let (height, width) = image_dims(spec)?;
-    let leaf = sample
-        .leaves
-        .first()
-        .ok_or_else(|| SessionError::InvalidValue {
-            channel: spec.id,
-            reason: "a sample with no leaf".into(),
-        })?;
+    let leaf = &sample.payload;
     let pixels = match spec.encoding {
         Encoding::Raw => leaf.to_vec(),
         Encoding::Jpeg { .. } => {
             let decoded = image::load_from_memory_with_format(leaf, image::ImageFormat::Jpeg)
-                .map_err(|err| SessionError::Media(format!("{} jpeg: {err}", spec.id)))?;
+                .map_err(|err| SessionError::Media(format!("{} jpeg: {err}", spec.channel)))?;
             if (decoded.width(), decoded.height()) != (u32::from(width), u32::from(height)) {
                 return Err(SessionError::InvalidValue {
-                    channel: spec.id,
+                    channel: spec.channel,
                     reason: format!(
                         "jpeg is {}x{}, declared {width}x{height}",
                         decoded.width(),
@@ -353,7 +356,7 @@ pub fn decode_image(spec: &ChannelSpec, sample: &Sample) -> Result<Vec<u8>, Sess
     let expected = usize::from(width) * usize::from(height) * 3;
     if pixels.len() != expected {
         return Err(SessionError::InvalidValue {
-            channel: spec.id,
+            channel: spec.channel,
             reason: format!("image is {} bytes, not {expected}", pixels.len()),
         });
     }
@@ -390,7 +393,7 @@ mod tests {
     #[test]
     fn the_bucket_skips_frames_over_budget_and_refills_at_the_cap() {
         // 8 Mbit/s = 1 MB/s; the bucket holds 100 kB.
-        let mut bucket = Bucket::new(Some(8_000_000), 0);
+        let mut bucket = Bucket::new(Some(8_000_000), 50_000, 0);
         let mut sent = 0_usize;
         // 50 kB frames offered at 100 Hz for one second: twice the budget.
         for i in 0..100_i64 {
@@ -401,8 +404,21 @@ mod tests {
         }
         let rate = sent * 50_000;
         assert!((1_000_000..=1_150_000).contains(&rate), "{sent} frames");
-        let mut free = Bucket::new(None, 0);
+        let mut free = Bucket::new(None, 0, 0);
         assert!(free.has_budget(0));
+        // A raw VGA frame (921 600 B) is larger than 100 ms at 8 Mbit/s: the
+        // bucket holds one anyway, so frames still flow at about 1 Hz.
+        let mut raw = Bucket::new(Some(8_000_000), 921_600, 0);
+        let sent = (0..300_i64)
+            .filter(|i| {
+                let ok = raw.has_budget(i * 10_000_000);
+                if ok {
+                    raw.spend(921_600);
+                }
+                ok
+            })
+            .count();
+        assert!((3..=5).contains(&sent), "{sent} raw frames in 3 s");
     }
 
     #[test]

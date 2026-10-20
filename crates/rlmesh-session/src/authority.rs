@@ -1,29 +1,57 @@
-//! Authority state (design §2, §7): epoch, roster, mode, e-stop latch and
-//! lease table, with the session host as its single writer.
+//! Authority state (§9.7, §10.5, §11): epoch, roster, mode, e-stop latch,
+//! the part table, bindings and the lease table, with the session host as
+//! its single writer.
 //!
 //! [`Authority`] is sans-IO: every method takes the host's session clock
-//! (`now_ns`) and returns the events it caused, so the state machine is tested
+//! (`now_ns`) and returns what it caused, so the state machine is tested
 //! without a network and the host only has to serialise calls into it.
 //!
-//! - Lease priority classes: `safety > operator > model > scripted`. A higher
-//!   class preempts a lower one and gets a fresh token, which fences the old
-//!   holder's in-flight chunks; an equal or lower class gets `LeaseBusy`.
+//! - **Parts** come from an embodiment's authored map, normalised by the
+//!   host ([`crate::declare`]). Channel ids are host-assigned and never
+//!   reused within the session: re-declaring a path with a changed schema
+//!   retires its id and assigns a new one. A commandable part is not
+//!   re-declared while ARMED or ACTIVE (`INVALID_TRANSITION`); sensor parts
+//!   can be added at any time.
+//! - **Leases** are per commandable part, granted all or none
+//!   ([`Command::GrantLease`]) and bound to the holder's current
+//!   **binding**: chunks must carry its fingerprint, and a rebinding
+//!   re-issues the holder's leases under a fresh token, so in-flight chunks
+//!   of the old binding are fenced (Codex finding 2).
+//! - Priority classes: `safety > operator > model > scripted`. A higher
+//!   class preempts a lower one and gets a fresh token; an equal or lower
+//!   class gets `LEASE_BUSY`.
+//! - **Command groups** are scoped `(robot, group)`: at most one member is
+//!   leased at a time. A member held by an equal or higher class, or by the
+//!   requester without releasing it in the same request, is `GROUP_BUSY`; a
+//!   lower class's member is preempted. `release` switches members
+//!   atomically (Codex finding 3).
 //! - Leases have a TTL, renewed by every heartbeat from the holder on the
 //!   current epoch; a lapse while ACTIVE takes the session SAFE.
 //! - ESTOP is accepted from anyone (refusing an e-stop is never safer) and
 //!   latches; only an embodiment's local clear releases the latch, and then a
 //!   disarm and an arm (a fresh epoch) are needed.
+//! - In **virtual** clock mode the authority also runs the tick barrier
+//!   ([`crate::virtual_clock`]); the ticks it emits are drained with
+//!   [`Authority::take_ticks`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use rlmesh_wire::authority::fence;
-use rlmesh_wire::version::{PROTOCOL_MINOR, missing_capabilities};
+use rlmesh_wire::part::PartSpec;
+use rlmesh_wire::tick::VirtualTick;
+use rlmesh_wire::version::{PROTOCOL_MINOR, missing_features};
 use rlmesh_wire::{
-    AuthoritySnapshot, ChannelId, ChannelSpec, ClockMapping, Command, CtlError, CtlStatus,
-    Direction, Epoch, FenceError, Lease, LeaseToken, Mode, ParticipantId, ParticipantInfo,
-    PriorityClass, Request, Role, SessionId,
+    AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command, CtlError,
+    CtlStatus, Epoch, FenceError, Fingerprint, Lease, LeaseToken, Mode, ParticipantId,
+    ParticipantInfo, PriorityClass, Request, Role, SessionId,
 };
+
+use crate::declare;
+use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
+
+/// The highest replan rate a binding declares.
+const MAX_REPLAN_HZ: f64 = 10_000.0;
 
 /// Why a participant left the roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,16 +65,16 @@ pub enum DetachReason {
 /// Why a lease ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LeaseEnd {
-    /// The holder released it (or detached).
+    /// The holder released it (or detached, or rebound without the part).
     Released,
     /// The holder's heartbeats stopped for longer than the lease's ttl.
     Lapsed,
-    /// The host took it back (disarm, e-stop, SAFE, channel removal).
+    /// The host took it back (disarm, e-stop, SAFE, part removal).
     Revoked(&'static str),
 }
 
 /// Something the authority state did, for publication, logging and evidence.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AuthorityEvent {
     /// A participant joined (or re-joined) the roster.
     Attached {
@@ -75,17 +103,25 @@ pub enum AuthorityEvent {
         /// Why.
         reason: String,
     },
-    /// A lease was granted on a free channel.
+    /// A lease was granted on a free part.
     LeaseGranted {
         /// The lease.
         lease: Lease,
     },
-    /// A higher class took a held lease.
+    /// A higher class took a held lease (on the part itself, or on another
+    /// member of its command group).
     LeasePreempted {
         /// The fenced lease.
         previous: Lease,
         /// The new lease.
         by: Lease,
+    },
+    /// A rebinding re-issued a lease under a fresh token.
+    LeaseRebound {
+        /// The fenced lease.
+        previous: Lease,
+        /// The lease under the new binding.
+        lease: Lease,
     },
     /// A lease ended.
     LeaseEnded {
@@ -106,19 +142,32 @@ pub enum AuthorityEvent {
         /// The embodiment.
         by: ParticipantId,
     },
-    /// Channels joined the table.
-    ChannelsDeclared {
-        /// Their owner.
+    /// Parts joined the table.
+    PartsDeclared {
+        /// Their robot.
         owner: ParticipantId,
-        /// The new channels.
+        /// Their new stream ids.
         channels: Vec<ChannelId>,
     },
-    /// Channels left the table (their owner detached).
-    ChannelsRemoved {
-        /// Their owner.
+    /// Parts left the table (removed, re-declared with another schema, or
+    /// their owner detached); their ids are retired.
+    PartsRemoved {
+        /// Their robot.
         owner: ParticipantId,
-        /// The removed channels.
+        /// The retired stream ids.
         channels: Vec<ChannelId>,
+    },
+    /// A controller declared a new binding.
+    BindingDeclared {
+        /// The controller.
+        participant: ParticipantId,
+        /// Its fingerprint.
+        fingerprint: Fingerprint,
+    },
+    /// The virtual-mode barrier waited past its timeout.
+    BarrierTimeout {
+        /// The tick it was on.
+        tick: u64,
     },
 }
 
@@ -142,19 +191,25 @@ impl fmt::Display for AuthorityEvent {
             } => write!(f, "mode {from} -> {to} at {epoch} ({reason})"),
             Self::LeaseGranted { lease } => write!(
                 f,
-                "lease {} granted to {} ({:?}) token {}",
-                lease.channel, lease.holder, lease.priority, lease.token
+                "lease {} granted to {} ({:?}) token {} binding {}",
+                lease.channel, lease.holder, lease.priority, lease.token, lease.binding
             ),
             Self::LeasePreempted { previous, by } => write!(
                 f,
-                "lease {} preempted: {} ({:?}, {}) -> {} ({:?}, {})",
-                by.channel,
+                "lease {} of {} ({:?}, {}) preempted by {} on {} ({:?}, {})",
+                previous.channel,
                 previous.holder,
                 previous.priority,
                 previous.token,
                 by.holder,
+                by.channel,
                 by.priority,
                 by.token
+            ),
+            Self::LeaseRebound { previous, lease } => write!(
+                f,
+                "lease {} of {} rebound: {} -> {} (binding {})",
+                lease.channel, lease.holder, previous.token, lease.token, lease.binding
             ),
             Self::LeaseEnded { lease, reason } => write!(
                 f,
@@ -163,44 +218,51 @@ impl fmt::Display for AuthorityEvent {
             ),
             Self::EstopLatched { by, reason } => write!(f, "ESTOP latched by {by}: {reason}"),
             Self::EstopCleared { by } => write!(f, "ESTOP latch cleared by {by}"),
-            Self::ChannelsDeclared { owner, channels } => {
-                write!(f, "{owner} declared channels {channels:?}")
+            Self::PartsDeclared { owner, channels } => {
+                write!(f, "{owner} declared parts {channels:?}")
             }
-            Self::ChannelsRemoved { owner, channels } => {
-                write!(f, "channels {channels:?} of {owner} removed")
+            Self::PartsRemoved { owner, channels } => {
+                write!(f, "parts {channels:?} of {owner} removed")
             }
+            Self::BindingDeclared {
+                participant,
+                fingerprint,
+            } => write!(f, "{participant} bound {fingerprint}"),
+            Self::BarrierTimeout { tick } => write!(f, "virtual barrier timed out at tick {tick}"),
         }
     }
 }
 
 /// The authority's rules.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AuthorityConfig {
     /// Default lease ttl: how long the holder's heartbeats may stop before
     /// its lease lapses.
     pub lease_grace_ns: u64,
-    /// The capabilities the session supports (see
-    /// [`rlmesh_wire::version`]).
-    pub capabilities: Vec<String>,
+    /// The features the session implements (see [`rlmesh_wire::version`]).
+    pub supports: Vec<String>,
+    /// Virtual clock mode (§11.3); `None` is wall mode.
+    pub virtual_clock: Option<VirtualConfig>,
 }
 
 impl Default for AuthorityConfig {
     fn default() -> Self {
         Self {
             lease_grace_ns: 250_000_000,
-            capabilities: rlmesh_wire::version::CAPABILITIES
+            supports: rlmesh_wire::version::FEATURES
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
+            virtual_clock: None,
         }
     }
 }
 
 /// What an accepted verb produced.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Applied {
-    /// The granted lease, for `GrantLease`.
-    pub lease: Option<Lease>,
+    /// The leases granted, for `GrantLease`.
+    pub leases: Vec<Lease>,
     /// What changed.
     pub events: Vec<AuthorityEvent>,
 }
@@ -216,30 +278,39 @@ pub struct Authority {
     estop_latched: bool,
     roster: BTreeMap<ParticipantId, ParticipantInfo>,
     leases: BTreeMap<ChannelId, Lease>,
-    channels: BTreeMap<ChannelId, ChannelSpec>,
-    /// Channels removed in this epoch: an id is never re-declared with a
-    /// different schema within one epoch, so an in-flight sample or chunk of
-    /// the old stream can never be read with the new layout.
-    retired: BTreeMap<ChannelId, ChannelSpec>,
+    /// Declared parts by stream id.
+    parts: BTreeMap<ChannelId, PartSpec>,
+    /// The last channel id assigned; ids only grow.
+    last_channel: u32,
+    bindings: BTreeMap<ParticipantId, BindingRecord>,
     last_token: u64,
+    clock: Option<VirtualClock>,
+    /// Virtual ticks to publish.
+    ticks: Vec<VirtualTick>,
 }
 
 impl Authority {
     /// A fresh session: DISARMED in epoch 1.
     pub fn new(session: SessionId, config: AuthorityConfig) -> Self {
+        // Epoch 0 means "unchecked" on the wire, so sessions start at 1.
+        let clock = config
+            .virtual_clock
+            .map(|virtual_clock| VirtualClock::new(virtual_clock, Epoch::FIRST, 0));
         Self {
             session,
             config,
-            // Epoch 0 means "unchecked" on the wire, so sessions start at 1.
             epoch: Epoch::FIRST,
             revision: 0,
             mode: Mode::Disarmed,
             estop_latched: false,
             roster: BTreeMap::new(),
             leases: BTreeMap::new(),
-            channels: BTreeMap::new(),
-            retired: BTreeMap::new(),
+            parts: BTreeMap::new(),
+            last_channel: 0,
+            bindings: BTreeMap::new(),
             last_token: 0,
+            clock,
+            ticks: Vec::new(),
         }
     }
 
@@ -278,14 +349,19 @@ impl Authority {
         self.leases.get(&channel)
     }
 
-    /// A declared channel.
-    pub fn channel(&self, id: ChannelId) -> Option<&ChannelSpec> {
-        self.channels.get(&id)
+    /// A declared part, by its stream id.
+    pub fn part(&self, channel: ChannelId) -> Option<&PartSpec> {
+        self.parts.get(&channel)
     }
 
-    /// Every declared channel.
-    pub fn channels(&self) -> impl Iterator<Item = &ChannelSpec> {
-        self.channels.values()
+    /// Every declared part.
+    pub fn parts(&self) -> impl Iterator<Item = &PartSpec> {
+        self.parts.values()
+    }
+
+    /// A controller's binding.
+    pub fn binding(&self, id: &ParticipantId) -> Option<&BindingRecord> {
+        self.bindings.get(id)
     }
 
     /// Leases held.
@@ -296,6 +372,11 @@ impl Authority {
     /// Whether `id` is in the roster.
     pub fn is_attached(&self, id: &ParticipantId) -> bool {
         self.roster.contains_key(id)
+    }
+
+    /// The virtual ticks emitted since the last call, in order.
+    pub fn take_ticks(&mut self) -> Vec<VirtualTick> {
+        std::mem::take(&mut self.ticks)
     }
 
     /// The host-side fence, expiry included.
@@ -325,9 +406,16 @@ impl Authority {
             leases: self.leases.values().cloned().collect(),
             clocks,
             host_ns: now_ns,
-            channels: self.channels.values().cloned().collect(),
+            parts: self.parts.values().cloned().collect(),
             protocol_minor: PROTOCOL_MINOR,
-            capabilities: self.config.capabilities.clone(),
+            supports: self.config.supports.clone(),
+            clock_mode: if self.clock.is_some() {
+                ClockMode::Virtual
+            } else {
+                ClockMode::Wall
+            },
+            tick_ns: self.config.virtual_clock.map_or(0, |c| c.tick_ns),
+            bindings: self.bindings.values().cloned().collect(),
         }
     }
 
@@ -341,7 +429,8 @@ impl Authority {
                 roles,
                 priority,
                 protocol_minor,
-                capabilities,
+                supports,
+                requires,
             } => {
                 if roles.is_empty() {
                     return Err(CtlError::new(
@@ -349,7 +438,7 @@ impl Authority {
                         "attach declares no role",
                     ));
                 }
-                let missing = missing_capabilities(&capabilities, &self.config.capabilities);
+                let missing = missing_features(&requires, &self.config.supports);
                 if !missing.is_empty() {
                     return Err(CtlError::new(
                         CtlStatus::Incompatible,
@@ -366,7 +455,8 @@ impl Authority {
                         priority,
                         attached_ns: now_ns,
                         protocol_minor,
-                        capabilities,
+                        supports,
+                        requires,
                     },
                 );
                 applied.events.push(AuthorityEvent::Attached {
@@ -378,20 +468,30 @@ impl Authority {
             Command::Detach => {
                 self.require_attached(&from)?;
                 self.end_leases_of(&from, LeaseEnd::Released, &mut applied.events);
-                self.remove_channels_of(&from, &mut applied.events);
+                let owned: Vec<ChannelId> = self
+                    .parts
+                    .values()
+                    .filter(|p| p.owner == from)
+                    .map(|p| p.channel)
+                    .collect();
+                self.remove_parts(&from, &owned, &mut applied.events);
+                self.bindings.remove(&from);
                 self.roster.remove(&from);
                 applied.events.push(AuthorityEvent::Detached {
-                    participant: from,
+                    participant: from.clone(),
                     reason: DetachReason::Requested,
                 });
                 self.settle_after_release("holder detached", &mut applied.events);
+                self.barrier_gone(&from, now_ns);
             }
             Command::Arm => {
                 self.require_attached(&from)?;
                 match self.mode {
                     Mode::Disarmed | Mode::Safe => {
                         self.epoch = self.epoch.next();
-                        self.retired.clear();
+                        if let Some(clock) = &mut self.clock {
+                            clock.reset(self.epoch, now_ns);
+                        }
                         self.set_mode(Mode::Armed, format!("armed by {from}"), &mut applied.events);
                     }
                     Mode::Estop if self.estop_latched => {
@@ -434,37 +534,48 @@ impl Authority {
                     }
                 }
             }
-            Command::GrantLease { channel, ttl_ns } => {
-                let lease =
-                    self.grant(&from, request.epoch, channel, ttl_ns, now_ns, &mut applied)?;
-                applied.lease = Some(lease);
+            Command::DeclareParts {
+                spec_version,
+                robot_json,
+            } => self.declare_parts(&from, spec_version, &robot_json, &mut applied.events)?,
+            Command::DeclareBinding {
+                fingerprint,
+                revision,
+                table_json,
+                channels,
+                replan_hz,
+            } => self.declare_binding(
+                BindingRecord {
+                    participant: from,
+                    fingerprint,
+                    revision,
+                    table_json,
+                    channels,
+                    replan_hz,
+                },
+                &mut applied.events,
+            )?,
+            Command::GrantLease {
+                channels,
+                release,
+                binding,
+                ttl_ns,
+            } => {
+                applied.leases = self.grant(
+                    &from,
+                    request.epoch,
+                    &Grant {
+                        channels,
+                        release,
+                        binding,
+                        ttl_ns,
+                    },
+                    now_ns,
+                    &mut applied.events,
+                )?;
             }
-            Command::ReleaseLease { channel, token } => {
-                match self.leases.get(&channel) {
-                    Some(lease) if lease.holder == from && lease.token == token => {}
-                    Some(lease) => {
-                        return Err(CtlError::new(
-                            CtlStatus::StaleToken,
-                            format!(
-                                "{channel} is held by {} with {}, not {from} with {token}",
-                                lease.holder, lease.token
-                            ),
-                        ));
-                    }
-                    None => {
-                        return Err(CtlError::new(
-                            CtlStatus::StaleToken,
-                            format!("no lease on {channel}"),
-                        ));
-                    }
-                }
-                if let Some(lease) = self.leases.remove(&channel) {
-                    applied.events.push(AuthorityEvent::LeaseEnded {
-                        lease,
-                        reason: LeaseEnd::Released,
-                    });
-                }
-                self.settle_after_release("last lease released", &mut applied.events);
+            Command::ReleaseLease { channels, token } => {
+                self.release(&from, &channels, token, &mut applied.events)?;
             }
             Command::Estop { reason } => {
                 // Accepted from anyone: refusing an e-stop is never safer.
@@ -487,8 +598,6 @@ impl Authority {
             Command::Clear => {
                 let info = self.require_attached(&from)?;
                 // "Local clear": only an embodiment may release its latch.
-                // TODO(step 2): the edge runtime also needs its local
-                // hardware clear before it sends this.
                 if !info.has_role(Role::Embodiment) {
                     return Err(CtlError::new(
                         CtlStatus::Forbidden,
@@ -506,9 +615,6 @@ impl Authority {
                     .events
                     .push(AuthorityEvent::EstopCleared { by: from });
             }
-            Command::DeclareChannels(specs) => {
-                self.declare(&from, specs, &mut applied.events)?;
-            }
             Command::EnterSafe { reason } => {
                 let info = self.require_attached(&from)?;
                 if !info.has_role(Role::Embodiment) {
@@ -519,6 +625,22 @@ impl Authority {
                 }
                 // Outside ACTIVE there is nothing to stop: a no-op.
                 self.enter_safe(&format!("{from} fell back: {reason}"), &mut applied.events);
+            }
+            Command::Ready { tick, watermarks } => {
+                self.require_tick_verb(&from, request.epoch)?;
+                let who = self.barrier_participants();
+                if let Some(clock) = &mut self.clock {
+                    let ticks = clock.on_ready(&from, tick, &watermarks, &who, now_ns)?;
+                    self.ticks.extend(ticks);
+                }
+            }
+            Command::Decided { tick, chunks } => {
+                self.require_tick_verb(&from, request.epoch)?;
+                let who = self.barrier_participants();
+                if let Some(clock) = &mut self.clock {
+                    let ticks = clock.on_decided(&from, tick, &chunks, &who, now_ns)?;
+                    self.ticks.extend(ticks);
+                }
             }
         }
         if !applied.events.is_empty() {
@@ -538,7 +660,8 @@ impl Authority {
         }
     }
 
-    /// Lapses leases whose holder stopped heartbeating; ACTIVE goes SAFE.
+    /// Lapses leases whose holder stopped heartbeating (ACTIVE goes SAFE),
+    /// and ends a virtual run whose barrier stalled.
     pub fn expire(&mut self, now_ns: i64) -> Vec<AuthorityEvent> {
         let mut events = Vec::new();
         let lapsed: Vec<ChannelId> = self
@@ -557,14 +680,23 @@ impl Authority {
         }
         if !lapsed.is_empty() {
             self.enter_safe("lease lapsed", &mut events);
+        }
+        if let Some(tick) = self.clock.as_mut().and_then(|c| c.check_timeout(now_ns)) {
+            events.push(AuthorityEvent::BarrierTimeout { tick });
+            self.enter_safe(
+                &format!("virtual barrier timed out at tick {tick}"),
+                &mut events,
+            );
+        }
+        if !events.is_empty() {
             self.revision += 1;
         }
         events
     }
 
     /// The participant's liveliness token went away: it is gone, and any
-    /// lease it held lapses.
-    pub fn participant_lost(&mut self, id: &ParticipantId) -> Vec<AuthorityEvent> {
+    /// lease it held lapses. Its parts and binding stay for a reconnect.
+    pub fn participant_lost(&mut self, id: &ParticipantId, now_ns: i64) -> Vec<AuthorityEvent> {
         let mut events = Vec::new();
         if self.roster.remove(id).is_none() {
             return events;
@@ -579,107 +711,9 @@ impl Authority {
         if lapsed {
             self.enter_safe("lease holder lost", &mut events);
         }
+        self.barrier_gone(id, now_ns);
         self.revision += 1;
         events
-    }
-
-    /// All-or-nothing: either every channel is declared, or none is.
-    fn declare(
-        &mut self,
-        from: &ParticipantId,
-        specs: Vec<ChannelSpec>,
-        events: &mut Vec<AuthorityEvent>,
-    ) -> Result<(), CtlError> {
-        let info = self.require_attached(from)?;
-        let is_embodiment = info.has_role(Role::Embodiment);
-        let mut fresh = Vec::new();
-        for mut spec in specs {
-            spec.validate()?;
-            if spec.direction == Direction::Actuate && !is_embodiment {
-                return Err(CtlError::new(
-                    CtlStatus::Forbidden,
-                    format!(
-                        "only an embodiment consumes actuation channels like {}",
-                        spec.id
-                    ),
-                ));
-            }
-            if fresh.iter().any(|f: &ChannelSpec| f.id == spec.id) {
-                return Err(CtlError::new(
-                    CtlStatus::InvalidRequest,
-                    format!("{} is declared twice", spec.id),
-                ));
-            }
-            spec.owner = Some(from.clone());
-            match self.channels.get(&spec.id) {
-                Some(existing)
-                    if existing.owner == spec.owner && existing.same_declaration(&spec) => {}
-                Some(existing) => {
-                    return Err(CtlError::new(
-                        CtlStatus::ChannelConflict,
-                        format!(
-                            "{} is already declared as {} by {}",
-                            spec.id,
-                            existing.name,
-                            existing.owner.as_ref().map_or("?", ParticipantId::as_str)
-                        ),
-                    ));
-                }
-                None => match self.retired.get(&spec.id) {
-                    Some(old) if !old.same_declaration(&spec) => {
-                        return Err(CtlError::new(
-                            CtlStatus::ChannelConflict,
-                            format!(
-                                "{} was declared differently earlier in this epoch; \
-                                 use a fresh id or re-arm",
-                                spec.id
-                            ),
-                        ));
-                    }
-                    _ => fresh.push(spec),
-                },
-            }
-        }
-        if !fresh.is_empty() {
-            events.push(AuthorityEvent::ChannelsDeclared {
-                owner: from.clone(),
-                channels: fresh.iter().map(|c| c.id).collect(),
-            });
-            for spec in fresh {
-                self.channels.insert(spec.id, spec);
-            }
-        }
-        Ok(())
-    }
-
-    /// A detaching owner takes its channels, and the leases on them, along.
-    /// Liveliness loss keeps them: a reconnecting embodiment re-attaches to
-    /// the same ids (its leases lapse as usual).
-    fn remove_channels_of(&mut self, owner: &ParticipantId, events: &mut Vec<AuthorityEvent>) {
-        let ids: Vec<ChannelId> = self
-            .channels
-            .values()
-            .filter(|c| c.owner.as_ref() == Some(owner))
-            .map(|c| c.id)
-            .collect();
-        if ids.is_empty() {
-            return;
-        }
-        for id in &ids {
-            if let Some(spec) = self.channels.remove(id) {
-                self.retired.insert(*id, spec);
-            }
-            if let Some(lease) = self.leases.remove(id) {
-                events.push(AuthorityEvent::LeaseEnded {
-                    lease,
-                    reason: LeaseEnd::Revoked("channel removed"),
-                });
-            }
-        }
-        events.push(AuthorityEvent::ChannelsRemoved {
-            owner: owner.clone(),
-            channels: ids,
-        });
     }
 
     fn require_attached(&self, id: &ParticipantId) -> Result<&ParticipantInfo, CtlError> {
@@ -688,38 +722,262 @@ impl Authority {
             .ok_or_else(|| CtlError::new(CtlStatus::NotAttached, format!("{id} is not attached")))
     }
 
+    fn require_role(&self, id: &ParticipantId, role: Role) -> Result<&ParticipantInfo, CtlError> {
+        let info = self.require_attached(id)?;
+        if info.has_role(role) {
+            Ok(info)
+        } else {
+            Err(CtlError::new(
+                CtlStatus::Forbidden,
+                format!("{id} is not a {role:?}"),
+            ))
+        }
+    }
+
+    fn next_token(&mut self) -> LeaseToken {
+        self.last_token += 1;
+        LeaseToken(self.last_token)
+    }
+
+    fn next_channel(&mut self) -> Result<ChannelId, CtlError> {
+        self.last_channel = self.last_channel.checked_add(1).ok_or_else(|| {
+            CtlError::new(
+                CtlStatus::Unsupported,
+                "this session has used every channel id",
+            )
+        })?;
+        Ok(ChannelId(self.last_channel))
+    }
+
+    /// The robot map of `from`, normalised and diffed against its current
+    /// parts: unchanged parts keep their ids, changed or new ones get fresh
+    /// ids, and missing ones are removed. All or nothing.
+    fn declare_parts(
+        &mut self,
+        from: &ParticipantId,
+        spec_version: u32,
+        robot_json: &str,
+        events: &mut Vec<AuthorityEvent>,
+    ) -> Result<(), CtlError> {
+        self.require_role(from, Role::Embodiment)?;
+        let declared = declare::normalise(from, spec_version, robot_json)?;
+        let current: BTreeMap<&str, &PartSpec> = self
+            .parts
+            .values()
+            .filter(|p| &p.owner == from)
+            .map(|p| (p.path.as_str(), p))
+            .collect();
+        let armed = matches!(self.mode, Mode::Armed | Mode::Active);
+        let refuse_armed = |path: &str| {
+            CtlError::new(
+                CtlStatus::InvalidTransition,
+                format!(
+                    "{path}: a commandable part is not re-declared while {}; disarm first",
+                    self.mode
+                ),
+            )
+        };
+        let mut keep = BTreeSet::new();
+        let mut fresh = Vec::new();
+        for mut spec in declared {
+            match current.get(spec.path.as_str()) {
+                Some(old) => {
+                    spec.channel = old.channel;
+                    spec.applied_channel = old.applied_channel;
+                    if spec == **old {
+                        keep.insert(old.channel);
+                        continue;
+                    }
+                    if armed && (old.command.is_some() || spec.command.is_some()) {
+                        return Err(refuse_armed(spec.path.as_str()));
+                    }
+                    fresh.push(spec);
+                }
+                None => {
+                    if armed && spec.command.is_some() {
+                        return Err(refuse_armed(spec.path.as_str()));
+                    }
+                    fresh.push(spec);
+                }
+            }
+        }
+        let removed: Vec<ChannelId> = current
+            .values()
+            .filter(|p| !keep.contains(&p.channel))
+            .map(|p| {
+                if armed && p.command.is_some() && !fresh.iter().any(|f| f.path == p.path) {
+                    Err(refuse_armed(p.path.as_str()))
+                } else {
+                    Ok(p.channel)
+                }
+            })
+            .collect::<Result<_, _>>()?;
+        // Validated: mutate.
+        let mut added = Vec::with_capacity(fresh.len());
+        for mut spec in fresh {
+            spec.channel = self.next_channel()?;
+            spec.applied_channel = match spec.command {
+                Some(_) => Some(self.next_channel()?),
+                None => None,
+            };
+            added.push(spec);
+        }
+        self.remove_parts(from, &removed, events);
+        if !added.is_empty() {
+            events.push(AuthorityEvent::PartsDeclared {
+                owner: from.clone(),
+                channels: added.iter().map(|p| p.channel).collect(),
+            });
+            for spec in added {
+                self.parts.insert(spec.channel, spec);
+            }
+        }
+        Ok(())
+    }
+
+    /// Retires parts (their ids are never reused) and ends their leases.
+    fn remove_parts(
+        &mut self,
+        owner: &ParticipantId,
+        channels: &[ChannelId],
+        events: &mut Vec<AuthorityEvent>,
+    ) {
+        if channels.is_empty() {
+            return;
+        }
+        for id in channels {
+            self.parts.remove(id);
+            if let Some(lease) = self.leases.remove(id) {
+                events.push(AuthorityEvent::LeaseEnded {
+                    lease,
+                    reason: LeaseEnd::Revoked("part removed"),
+                });
+            }
+        }
+        events.push(AuthorityEvent::PartsRemoved {
+            owner: owner.clone(),
+            channels: channels.to_vec(),
+        });
+    }
+
+    fn commandable(&self, channel: ChannelId) -> Option<&PartSpec> {
+        self.parts.get(&channel).filter(|p| p.command.is_some())
+    }
+
+    /// The `(robot, group)` of a commandable part.
+    fn group_of(&self, channel: ChannelId) -> Option<(&ParticipantId, &str)> {
+        let part = self.parts.get(&channel)?;
+        let group = part.command.as_ref()?.group.as_deref()?;
+        Some((&part.owner, group))
+    }
+
+    /// The other members of `channel`'s command group.
+    fn group_peers(&self, channel: ChannelId) -> Vec<ChannelId> {
+        let Some(group) = self.group_of(channel) else {
+            return Vec::new();
+        };
+        self.parts
+            .keys()
+            .copied()
+            .filter(|c| *c != channel && self.group_of(*c) == Some(group))
+            .collect()
+    }
+
+    fn declare_binding(
+        &mut self,
+        record: BindingRecord,
+        events: &mut Vec<AuthorityEvent>,
+    ) -> Result<(), CtlError> {
+        let from = record.participant.clone();
+        self.require_role(&from, Role::Controller)?;
+        let unique: BTreeSet<ChannelId> = record.channels.iter().copied().collect();
+        if unique.len() != record.channels.len() {
+            return Err(CtlError::new(
+                CtlStatus::InvalidRequest,
+                "a binding lists a part twice",
+            ));
+        }
+        if let Some(missing) = record
+            .channels
+            .iter()
+            .find(|c| self.commandable(**c).is_none())
+        {
+            return Err(CtlError::new(
+                CtlStatus::UnknownPath,
+                format!("{missing} is not a commandable part"),
+            ));
+        }
+        if !(record.replan_hz.is_finite() && (0.0..=MAX_REPLAN_HZ).contains(&record.replan_hz)) {
+            return Err(CtlError::new(
+                CtlStatus::InvalidRequest,
+                format!("replan rate {}", record.replan_hz),
+            ));
+        }
+        if let Some(current) = self.bindings.get(&from)
+            && current.fingerprint == record.fingerprint
+        {
+            let same: BTreeSet<ChannelId> = current.channels.iter().copied().collect();
+            if same != unique {
+                return Err(CtlError::new(
+                    CtlStatus::InvalidRequest,
+                    format!(
+                        "fingerprint {} already names a binding over other parts",
+                        record.fingerprint
+                    ),
+                ));
+            }
+            return Ok(());
+        }
+        // A new binding: the holder's leases are re-issued under a fresh
+        // token (or released when the new binding leaves their part out), so
+        // every in-flight chunk of the old binding is fenced.
+        let held: Vec<ChannelId> = self
+            .leases
+            .values()
+            .filter(|l| l.holder == from)
+            .map(|l| l.channel)
+            .collect();
+        let token = (!held.is_empty()).then(|| self.next_token());
+        for channel in held {
+            let Some(previous) = self.leases.remove(&channel) else {
+                continue;
+            };
+            match token.filter(|_| unique.contains(&channel)) {
+                Some(token) => {
+                    let lease = Lease {
+                        token,
+                        binding: record.fingerprint,
+                        ..previous.clone()
+                    };
+                    self.leases.insert(channel, lease.clone());
+                    events.push(AuthorityEvent::LeaseRebound { previous, lease });
+                }
+                None => events.push(AuthorityEvent::LeaseEnded {
+                    lease: previous,
+                    reason: LeaseEnd::Released,
+                }),
+            }
+        }
+        events.push(AuthorityEvent::BindingDeclared {
+            participant: from.clone(),
+            fingerprint: record.fingerprint,
+        });
+        self.bindings.insert(from, record);
+        self.settle_after_release("rebound without its parts", events);
+        Ok(())
+    }
+
+    /// Validates the whole request, then grants: all or none.
     fn grant(
         &mut self,
         from: &ParticipantId,
         epoch: Option<Epoch>,
-        channel: ChannelId,
-        ttl_ns: Option<u64>,
+        grant: &Grant,
         now_ns: i64,
-        applied: &mut Applied,
-    ) -> Result<Lease, CtlError> {
-        let info = self.require_attached(from)?;
-        if !info.has_role(Role::Controller) {
-            return Err(CtlError::new(
-                CtlStatus::Forbidden,
-                format!("{from} is not a controller"),
-            ));
-        }
-        let priority = info.priority;
-        match self.channels.get(&channel) {
-            Some(spec) if spec.direction == Direction::Actuate => {}
-            Some(_) => {
-                return Err(CtlError::new(
-                    CtlStatus::UnknownChannel,
-                    format!("{channel} is not an actuation channel"),
-                ));
-            }
-            None => {
-                return Err(CtlError::new(
-                    CtlStatus::UnknownChannel,
-                    format!("{channel} is not declared"),
-                ));
-            }
-        }
+        events: &mut Vec<AuthorityEvent>,
+    ) -> Result<Vec<Lease>, CtlError> {
+        let invalid = |message: String| CtlError::new(CtlStatus::InvalidRequest, message);
+        let priority = self.require_role(from, Role::Controller)?.priority;
         if let Some(epoch) = epoch
             && epoch != self.epoch
         {
@@ -743,59 +1001,274 @@ impl Authority {
                 ));
             }
         }
-        let ttl_ns = ttl_ns
+        if grant.channels.is_empty() {
+            return Err(invalid("a grant names no part".into()));
+        }
+        let mut named = BTreeSet::new();
+        for channel in grant.channels.iter().chain(&grant.release) {
+            if !named.insert(*channel) {
+                return Err(invalid(format!("{channel} is named twice")));
+            }
+        }
+        for channel in &grant.channels {
+            if self.commandable(*channel).is_none() {
+                return Err(invalid(format!("{channel} is not a commandable part")));
+            }
+        }
+        let record = self.bindings.get(from).ok_or_else(|| {
+            CtlError::new(
+                CtlStatus::NotBound,
+                format!("{from} has no binding: declare one first"),
+            )
+        })?;
+        if record.fingerprint != grant.binding {
+            return Err(CtlError::new(
+                CtlStatus::NotBound,
+                format!(
+                    "binding {} is not {from}'s current binding {}",
+                    grant.binding, record.fingerprint
+                ),
+            ));
+        }
+        if let Some(outside) = grant.channels.iter().find(|c| !record.channels.contains(c)) {
+            return Err(CtlError::new(
+                CtlStatus::NotBound,
+                format!("{outside} is outside binding {}", record.fingerprint),
+            ));
+        }
+        for channel in &grant.release {
+            if self.leases.get(channel).is_none_or(|l| &l.holder != from) {
+                return Err(invalid(format!("{channel} is not held by {from}")));
+            }
+        }
+        for (i, a) in grant.channels.iter().enumerate() {
+            if let Some(group) = self.group_of(*a)
+                && grant.channels[i + 1..]
+                    .iter()
+                    .any(|b| self.group_of(*b) == Some(group))
+            {
+                return Err(invalid(format!(
+                    "two members of command group {:?} in one request",
+                    group.1
+                )));
+            }
+        }
+        // Who the grant takes over: (preempted part, the requested part).
+        let mut preempted: Vec<(ChannelId, ChannelId)> = Vec::new();
+        for channel in &grant.channels {
+            match self.leases.get(channel) {
+                Some(l) if &l.holder == from => {}
+                Some(l) if l.priority < priority => {}
+                Some(l) => {
+                    return Err(CtlError::new(
+                        CtlStatus::LeaseBusy,
+                        format!(
+                            "{channel} is held by {} at {:?}; {from} at {priority:?} cannot preempt it",
+                            l.holder, l.priority
+                        ),
+                    ));
+                }
+                None => {}
+            }
+            for peer in self.group_peers(*channel) {
+                if grant.release.contains(&peer) {
+                    continue;
+                }
+                match self.leases.get(&peer) {
+                    Some(l) if &l.holder == from => {
+                        return Err(CtlError::new(
+                            CtlStatus::GroupBusy,
+                            format!(
+                                "{from} holds {peer} in the same command group: release it in the same request"
+                            ),
+                        ));
+                    }
+                    Some(l) if l.priority < priority => preempted.push((peer, *channel)),
+                    Some(l) => {
+                        return Err(CtlError::new(
+                            CtlStatus::GroupBusy,
+                            format!(
+                                "{peer}, in the command group of {channel}, is held by {} at {:?}",
+                                l.holder, l.priority
+                            ),
+                        ));
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        // Validated: mutate.
+        let ttl_ns = grant
+            .ttl_ns
             .filter(|ttl| *ttl > 0)
             .unwrap_or(self.config.lease_grace_ns);
         let expires_ns = now_ns.saturating_add_unsigned(ttl_ns);
-
-        let previous = match self.leases.get_mut(&channel) {
-            Some(lease) if &lease.holder == from => {
-                // Re-grant to the holder: a renewal under the same token.
+        for channel in &grant.release {
+            if let Some(lease) = self.leases.remove(channel) {
+                events.push(AuthorityEvent::LeaseEnded {
+                    lease,
+                    reason: LeaseEnd::Released,
+                });
+            }
+        }
+        let needs_token = grant
+            .channels
+            .iter()
+            .any(|c| self.leases.get(c).is_none_or(|l| &l.holder != from));
+        let token = needs_token.then(|| self.next_token());
+        let mut granted = Vec::with_capacity(grant.channels.len());
+        for channel in &grant.channels {
+            if let Some(lease) = self.leases.get_mut(channel)
+                && &lease.holder == from
+            {
+                // A renewal under the same token (and binding).
                 lease.ttl_ns = ttl_ns;
                 lease.expires_ns = expires_ns;
-                return Ok(lease.clone());
+                granted.push(lease.clone());
+                continue;
             }
-            Some(lease) if lease.priority < priority => Some(lease.clone()),
-            Some(lease) => {
-                return Err(CtlError::new(
-                    CtlStatus::LeaseBusy,
-                    format!(
-                        "{channel} is held by {} at {:?}; {from} at {priority:?} cannot preempt it",
-                        lease.holder, lease.priority
-                    ),
-                ));
-            }
-            None => None,
-        };
-
-        self.last_token += 1;
-        let lease = Lease {
-            channel,
-            holder: from.clone(),
-            priority,
-            token: LeaseToken(self.last_token),
-            ttl_ns,
-            granted_ns: now_ns,
-            expires_ns,
-        };
-        self.leases.insert(channel, lease.clone());
-        applied.events.push(match previous {
-            Some(previous) => AuthorityEvent::LeasePreempted {
-                previous,
-                by: lease.clone(),
-            },
-            None => AuthorityEvent::LeaseGranted {
-                lease: lease.clone(),
-            },
-        });
-        if self.mode == Mode::Armed {
-            self.set_mode(
-                Mode::Active,
-                format!("lease granted to {from}"),
-                &mut applied.events,
-            );
+            let lease = Lease {
+                channel: *channel,
+                holder: from.clone(),
+                priority,
+                token: token.unwrap_or_default(),
+                ttl_ns,
+                granted_ns: now_ns,
+                expires_ns,
+                binding: grant.binding,
+            };
+            events.push(match self.leases.insert(*channel, lease.clone()) {
+                Some(previous) => AuthorityEvent::LeasePreempted {
+                    previous,
+                    by: lease.clone(),
+                },
+                None => AuthorityEvent::LeaseGranted {
+                    lease: lease.clone(),
+                },
+            });
+            granted.push(lease);
         }
-        Ok(lease)
+        for (peer, by) in preempted {
+            if let (Some(previous), Some(by)) = (self.leases.remove(&peer), self.leases.get(&by)) {
+                events.push(AuthorityEvent::LeasePreempted {
+                    previous,
+                    by: by.clone(),
+                });
+            }
+        }
+        if self.mode == Mode::Armed && !self.leases.is_empty() {
+            self.set_mode(Mode::Active, format!("lease granted to {from}"), events);
+        }
+        Ok(granted)
+    }
+
+    fn release(
+        &mut self,
+        from: &ParticipantId,
+        channels: &[ChannelId],
+        token: LeaseToken,
+        events: &mut Vec<AuthorityEvent>,
+    ) -> Result<(), CtlError> {
+        if channels.is_empty() {
+            return Err(CtlError::new(
+                CtlStatus::InvalidRequest,
+                "a release names no part",
+            ));
+        }
+        let unique: BTreeSet<ChannelId> = channels.iter().copied().collect();
+        if unique.len() != channels.len() {
+            return Err(CtlError::new(
+                CtlStatus::InvalidRequest,
+                "a release names a part twice",
+            ));
+        }
+        for channel in channels {
+            match self.leases.get(channel) {
+                Some(lease) if &lease.holder == from && lease.token == token => {}
+                Some(lease) => {
+                    return Err(CtlError::new(
+                        CtlStatus::StaleToken,
+                        format!(
+                            "{channel} is held by {} with {}, not {from} with {token}",
+                            lease.holder, lease.token
+                        ),
+                    ));
+                }
+                None => {
+                    return Err(CtlError::new(
+                        CtlStatus::StaleToken,
+                        format!("no lease on {channel}"),
+                    ));
+                }
+            }
+        }
+        for channel in channels {
+            if let Some(lease) = self.leases.remove(channel) {
+                events.push(AuthorityEvent::LeaseEnded {
+                    lease,
+                    reason: LeaseEnd::Released,
+                });
+            }
+        }
+        self.settle_after_release("last lease released", events);
+        Ok(())
+    }
+
+    fn require_tick_verb(
+        &self,
+        from: &ParticipantId,
+        epoch: Option<Epoch>,
+    ) -> Result<(), CtlError> {
+        self.require_attached(from)?;
+        if self.clock.is_none() {
+            return Err(CtlError::new(
+                CtlStatus::Unsupported,
+                "tick verbs need a virtual-clock session",
+            ));
+        }
+        if epoch != Some(self.epoch) {
+            return Err(CtlError::new(
+                CtlStatus::StaleEpoch,
+                format!(
+                    "tick verb for epoch {}, current {}",
+                    epoch.unwrap_or_default(),
+                    self.epoch
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Who the virtual barrier waits for.
+    fn barrier_participants(&self) -> Participants {
+        let tick_ns = self.config.virtual_clock.map_or(1, |c| c.tick_ns.max(1));
+        Participants {
+            embodiments: self
+                .parts
+                .values()
+                .map(|p| &p.owner)
+                .filter(|owner| self.roster.contains_key(*owner))
+                .cloned()
+                .collect(),
+            controllers: self
+                .bindings
+                .values()
+                .filter(|b| self.roster.contains_key(&b.participant) && b.replan_hz > 0.0)
+                .map(|b| {
+                    let period = (1e9 / (b.replan_hz * tick_ns as f64)).round().max(1.0);
+                    (b.participant.clone(), period as u64)
+                })
+                .collect(),
+        }
+    }
+
+    fn barrier_gone(&mut self, id: &ParticipantId, now_ns: i64) {
+        let who = self.barrier_participants();
+        if let Some(clock) = &mut self.clock {
+            let ticks = clock.on_gone(id, &who, now_ns);
+            self.ticks.extend(ticks);
+        }
     }
 
     fn set_mode(&mut self, to: Mode, reason: String, events: &mut Vec<AuthorityEvent>) {
@@ -859,10 +1332,18 @@ impl Authority {
     }
 }
 
+/// A `GrantLease` verb's arguments.
+struct Grant {
+    channels: Vec<ChannelId>,
+    release: Vec<ChannelId>,
+    binding: Fingerprint,
+    ttl_ns: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_wire::{ChannelPriority, ChannelQos, TensorLayout};
+    use rlmesh_wire::version::SPEC_VERSION;
 
     const GRACE: u64 = 100;
 
@@ -870,12 +1351,35 @@ mod tests {
         ParticipantId::new(id).expect("id")
     }
 
+    /// Four ungrouped commandable parts, an `arm` group of two, and a
+    /// sensor.
+    fn robot_map(extra: &str) -> String {
+        let cmd = |path: &str, group: &str| {
+            format!(
+                r#""{path}": {{"kind": "joints", "hz": 500, "fields": {{"pos": ["float32", [6]]}},
+                   "command": "position"{group}}}"#
+            )
+        };
+        let parts = [
+            cmd("cmd1", ""),
+            cmd("cmd2", ""),
+            cmd("cmd3", ""),
+            cmd("cmd4", ""),
+            cmd("arm", r#", "group": "arm""#),
+            cmd("arm/tcp", r#", "group": "arm""#),
+            r#""ft": {"kind": "x/ft", "hz": 1000, "fields": {"wrench": ["float32", [6]]}}"#
+                .to_string(),
+        ];
+        format!("{{{}{extra}}}", parts.join(","))
+    }
+
     struct Fixture {
         auth: Authority,
     }
 
     impl Fixture {
-        /// robot (embodiment), policy (model), operator, script, viewer.
+        /// robot (embodiment), policy (model), operator, script, viewer; each
+        /// controller bound to every commandable part.
         fn new() -> Self {
             let mut auth = Authority::new(
                 SessionId::new(),
@@ -895,73 +1399,118 @@ mod tests {
                     Request {
                         from: pid(id),
                         epoch: None,
-                        command: Command::Attach {
-                            name: id.into(),
-                            roles,
-                            priority,
-                            protocol_minor: PROTOCOL_MINOR,
-                            capabilities: Vec::new(),
-                        },
+                        command: attach(id, roles, priority),
                     },
                     0,
                 )
                 .expect("attach");
             }
-            let channels = (1..=9)
-                .map(|id| {
-                    ChannelSpec::new(
-                        ChannelId(id),
-                        format!("cmd{id}"),
-                        Direction::Actuate,
-                        "action/joint_pos",
-                        vec![TensorLayout::f32(&[6])],
-                        500.0,
-                        ChannelQos::realtime(ChannelPriority::Control),
-                    )
-                })
-                .collect();
-            auth.apply(
-                Request {
-                    from: pid("robot"),
-                    epoch: None,
-                    command: Command::DeclareChannels(channels),
-                },
-                0,
-            )
-            .expect("declare");
-            Self { auth }
+            let mut f = Self { auth };
+            f.run("robot", declare(&robot_map("")), 0).expect("declare");
+            for (i, id) in ["policy", "operator", "script"].into_iter().enumerate() {
+                f.bind(
+                    id,
+                    i as u64 + 1,
+                    &["cmd1", "cmd2", "cmd3", "cmd4", "arm", "arm/tcp"],
+                )
+                .expect("bind");
+            }
+            f
+        }
+
+        fn ch(&self, path: &str) -> ChannelId {
+            self.auth
+                .parts()
+                .find(|p| p.path.as_str() == path)
+                .map(|p| p.channel)
+                .expect(path)
         }
 
         fn run(&mut self, from: &str, command: Command, now: i64) -> Result<Applied, CtlError> {
+            let epoch = Some(self.auth.epoch());
             self.auth.apply(
                 Request {
                     from: pid(from),
-                    epoch: None,
+                    epoch,
                     command,
                 },
                 now,
             )
         }
 
-        fn grant(&mut self, from: &str, channel: u32, now: i64) -> Result<Lease, CtlError> {
-            let epoch = Some(self.auth.epoch());
+        fn bind(&mut self, from: &str, fp: u64, paths: &[&str]) -> Result<Applied, CtlError> {
+            let channels = paths.iter().map(|p| self.ch(p)).collect();
+            self.run(
+                from,
+                Command::DeclareBinding {
+                    fingerprint: Fingerprint::from(fp),
+                    revision: 1,
+                    table_json: "{}".into(),
+                    channels,
+                    replan_hz: 0.0,
+                },
+                0,
+            )
+        }
+
+        fn fingerprint(&self, from: &str) -> Fingerprint {
             self.auth
-                .apply(
-                    Request {
-                        from: pid(from),
-                        epoch,
-                        command: Command::GrantLease {
-                            channel: ChannelId(channel),
-                            ttl_ns: None,
-                        },
-                    },
-                    now,
-                )
-                .map(|applied| applied.lease.expect("lease"))
+                .binding(&pid(from))
+                .map_or_else(Fingerprint::default, |b| b.fingerprint)
+        }
+
+        fn grant_with(
+            &mut self,
+            from: &str,
+            paths: &[&str],
+            release: &[&str],
+            now: i64,
+        ) -> Result<Vec<Lease>, CtlError> {
+            let command = Command::GrantLease {
+                channels: paths.iter().map(|p| self.ch(p)).collect(),
+                release: release.iter().map(|p| self.ch(p)).collect(),
+                binding: self.fingerprint(from),
+                ttl_ns: None,
+            };
+            self.run(from, command, now).map(|a| a.leases)
+        }
+
+        fn grant(&mut self, from: &str, path: &str, now: i64) -> Result<Lease, CtlError> {
+            self.grant_with(from, &[path], &[], now)
+                .map(|mut leases| leases.remove(0))
+        }
+
+        fn release(&mut self, from: &str, lease: &Lease, now: i64) -> Result<Applied, CtlError> {
+            self.run(
+                from,
+                Command::ReleaseLease {
+                    channels: vec![lease.channel],
+                    token: lease.token,
+                },
+                now,
+            )
         }
 
         fn status(result: Result<impl fmt::Debug, CtlError>) -> CtlStatus {
             result.expect_err("refused").status
+        }
+    }
+
+    fn attach(name: &str, roles: Vec<Role>, priority: PriorityClass) -> Command {
+        Command::Attach {
+            name: name.into(),
+            roles,
+            priority,
+            protocol_minor: PROTOCOL_MINOR,
+            supports: Vec::new(),
+            requires: Vec::new(),
+        }
+    }
+
+    fn declare(json: &str) -> Command {
+        Command::DeclareParts {
+            spec_version: SPEC_VERSION,
+            robot_json: json.into(),
         }
     }
 
@@ -990,48 +1539,311 @@ mod tests {
     }
 
     #[test]
+    fn the_host_assigns_part_ids_and_never_reuses_them() {
+        let mut f = Fixture::new();
+        let parts: Vec<&PartSpec> = f.auth.parts().collect();
+        assert_eq!(parts.len(), 7);
+        let arm = f.auth.part(f.ch("arm")).expect("arm").clone();
+        let applied = arm
+            .applied_channel
+            .expect("commandable parts get an applied id");
+        assert_ne!(applied, arm.channel);
+        assert!(
+            f.auth
+                .part(f.ch("ft"))
+                .expect("ft")
+                .applied_channel
+                .is_none()
+        );
+        let mut ids: Vec<u32> = f
+            .auth
+            .parts()
+            .flat_map(|p| [Some(p.channel), p.applied_channel])
+            .flatten()
+            .map(|c| c.0)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 7 + 6, "every stream id is distinct");
+
+        // An identical re-declaration is a no-op.
+        let revision = f.auth.revision();
+        f.run("robot", declare(&robot_map("")), 1)
+            .expect("redeclare");
+        assert_eq!(f.auth.revision(), revision);
+        assert_eq!(f.ch("arm"), arm.channel);
+
+        // A changed schema retires the id; armed, only sensors may change.
+        f.run("operator", Command::Arm, 1).expect("arm");
+        let ft = f.ch("ft");
+        let hot = robot_map(
+            r#", "wrist/cam": {"kind": "camera", "hz": 30, "fields": {"image": ["uint8", [4, 4, 3]]}}"#,
+        )
+        .replace(r#""hz": 1000"#, r#""hz": 500"#);
+        let applied = f.run("robot", declare(&hot), 2).expect("hot-plug");
+        assert!(matches!(
+            applied.events.as_slice(),
+            [AuthorityEvent::PartsRemoved { channels, .. }, AuthorityEvent::PartsDeclared { .. }]
+                if channels == &[ft]
+        ));
+        assert!(
+            f.ch("ft") > ft && f.ch("wrist/cam") > ft,
+            "fresh ids, never reused"
+        );
+        let changed = robot_map("").replace(
+            r#""cmd1": {"kind": "joints", "hz": 500"#,
+            r#""cmd1": {"kind": "joints", "hz": 250"#,
+        );
+        assert_eq!(
+            Fixture::status(f.run("robot", declare(&changed), 3)),
+            CtlStatus::InvalidTransition,
+            "a commandable part is not re-declared while armed"
+        );
+        f.run("operator", Command::Disarm, 4).expect("disarm");
+        let cmd1 = f.ch("cmd1");
+        f.run("robot", declare(&changed), 5).expect("disarmed");
+        assert!(f.ch("cmd1") > cmd1);
+        assert!(f.auth.part(cmd1).is_none());
+
+        // Only embodiments declare parts; a bad map changes nothing.
+        assert_eq!(
+            Fixture::status(f.run("viewer", declare(&robot_map("")), 6)),
+            CtlStatus::Forbidden
+        );
+        let before = f.auth.parts().count();
+        assert_eq!(
+            Fixture::status(f.run("robot", declare(r#"{"Bad": {}}"#), 6)),
+            CtlStatus::InvalidRequest
+        );
+        assert_eq!(f.auth.parts().count(), before);
+    }
+
+    #[test]
     fn first_lease_activates_and_releasing_the_last_rearms() {
         let mut f = Fixture::new();
         assert_eq!(
-            Fixture::status(f.grant("policy", 7, 0)),
+            Fixture::status(f.grant("policy", "cmd4", 0)),
             CtlStatus::InvalidTransition,
             "grant before arm"
         );
         f.run("operator", Command::Arm, 0).expect("arm");
         assert_eq!(
-            Fixture::status(f.grant("viewer", 7, 0)),
+            Fixture::status(f.grant("viewer", "cmd4", 0)),
             CtlStatus::Forbidden
         );
-        let lease = f.grant("policy", 7, 10).expect("grant");
+        let lease = f.grant("policy", "cmd4", 10).expect("grant");
         assert_eq!(f.auth.mode(), Mode::Active);
         assert_eq!(lease.expires_ns, 10 + GRACE as i64);
+        assert_eq!(lease.binding, f.fingerprint("policy"));
         f.auth
-            .check_fence(ChannelId(7), lease.token, f.auth.epoch(), 20)
+            .check_fence(f.ch("cmd4"), lease.token, f.auth.epoch(), 20)
             .expect("fence");
 
         let revision = f.auth.revision();
-        let renewed = f.grant("policy", 7, 50).expect("re-grant");
+        let renewed = f.grant("policy", "cmd4", 50).expect("re-grant");
+        assert_eq!(renewed.token, lease.token, "renewal keeps the token");
+        assert_eq!(f.auth.revision(), revision, "renewal is not structural");
+
+        f.release("policy", &lease, 60).expect("release");
+        assert_eq!(f.auth.mode(), Mode::Armed);
+        assert!(f.auth.lease(f.ch("cmd4")).is_none());
+    }
+
+    #[test]
+    fn a_multi_part_grant_is_all_or_none() {
+        let mut f = Fixture::new();
+        f.run("operator", Command::Arm, 0).expect("arm");
+        let script = f.grant("script", "cmd3", 0).expect("script lease");
+        f.grant("operator", "cmd2", 0).expect("operator lease");
+        // cmd2 is held by a higher class: nothing of the request is granted,
+        // not even the free cmd1, and the preemptible cmd3 is untouched.
         assert_eq!(
-            renewed.token, lease.token,
-            "re-grant renews under the same token"
+            Fixture::status(f.grant_with("policy", &["cmd1", "cmd3", "cmd2"], &[], 1)),
+            CtlStatus::LeaseBusy
         );
+        assert!(f.auth.lease(f.ch("cmd1")).is_none());
         assert_eq!(
-            f.auth.revision(),
-            revision,
-            "renewal is not a structural change"
+            f.auth.lease(f.ch("cmd3")).map(|l| l.token),
+            Some(script.token)
         );
 
+        let leases = f
+            .grant_with("policy", &["cmd1", "cmd3"], &[], 2)
+            .expect("all of it");
+        assert_eq!(leases.len(), 2);
+        assert_eq!(leases[0].token, leases[1].token, "one token per request");
+        assert!(leases[0].token > script.token);
+
+        let cmd1 = f.ch("cmd1");
+        for (paths, release) in [
+            (vec!["cmd4", "cmd4"], vec![]),
+            (vec!["cmd4"], vec!["cmd4"]),
+            (vec!["cmd4"], vec!["cmd2"]),
+            (vec!["ft"], vec![]),
+            (vec![], vec![]),
+        ] {
+            assert_eq!(
+                Fixture::status(f.grant_with("policy", &paths, &release, 3)),
+                CtlStatus::InvalidRequest,
+                "{paths:?} releasing {release:?}"
+            );
+        }
+        assert_eq!(
+            f.auth.lease(cmd1).map(|l| l.holder.clone()),
+            Some(pid("policy"))
+        );
+    }
+
+    #[test]
+    fn a_lease_needs_the_requesters_current_binding() {
+        let mut f = Fixture::new();
+        f.run("operator", Command::Arm, 0).expect("arm");
+        f.bind("script", 30, &["cmd1"]).expect("narrow binding");
+        assert_eq!(
+            Fixture::status(f.grant("script", "cmd2", 0)),
+            CtlStatus::NotBound,
+            "outside the binding"
+        );
+        let stale = Command::GrantLease {
+            channels: vec![f.ch("cmd1")],
+            release: Vec::new(),
+            binding: Fingerprint::from(3),
+            ttl_ns: None,
+        };
+        assert_eq!(
+            Fixture::status(f.run("script", stale, 0)),
+            CtlStatus::NotBound,
+            "a binding that is not current"
+        );
         f.run(
-            "policy",
-            Command::ReleaseLease {
-                channel: ChannelId(7),
-                token: lease.token,
-            },
-            60,
+            "robot",
+            attach("x", vec![Role::Controller], PriorityClass::Model),
+            0,
         )
-        .expect("release");
+        .expect("re-attach as a controller");
+        let unbound = Command::GrantLease {
+            channels: vec![f.ch("cmd1")],
+            release: Vec::new(),
+            binding: Fingerprint::from(1),
+            ttl_ns: None,
+        };
+        assert_eq!(
+            Fixture::status(f.run("robot", unbound, 0)),
+            CtlStatus::NotBound
+        );
+        assert_eq!(
+            Fixture::status(f.bind("script", 31, &["ft"])),
+            CtlStatus::UnknownPath
+        );
+        assert_eq!(
+            Fixture::status(f.bind("script", 31, &["cmd1", "cmd1"])),
+            CtlStatus::InvalidRequest
+        );
+        assert_eq!(
+            Fixture::status(f.bind("script", 30, &["cmd2"])),
+            CtlStatus::InvalidRequest,
+            "one fingerprint, one binding"
+        );
+        assert_eq!(
+            Fixture::status(f.bind("viewer", 40, &[])),
+            CtlStatus::Forbidden
+        );
+    }
+
+    #[test]
+    fn rebinding_reissues_the_holders_leases_under_a_fresh_token() {
+        let mut f = Fixture::new();
+        f.run("operator", Command::Arm, 0).expect("arm");
+        let old = f
+            .grant_with("policy", &["cmd1", "cmd2"], &[], 0)
+            .expect("leases");
+        let epoch = f.auth.epoch();
+        // The same binding again changes nothing.
+        let applied = f
+            .bind(
+                "policy",
+                1,
+                &["cmd1", "cmd2", "cmd3", "cmd4", "arm", "arm/tcp"],
+            )
+            .expect("same binding");
+        assert!(applied.events.is_empty());
+        // A new binding keeps cmd1 under a new token and drops cmd2.
+        let applied = f.bind("policy", 11, &["cmd1"]).expect("rebind");
+        let rebound = f.auth.lease(f.ch("cmd1")).expect("kept").clone();
+        assert!(rebound.token > old[0].token, "a fresh token");
+        assert_eq!(rebound.binding, Fingerprint::from(11));
+        assert!(
+            f.auth.lease(f.ch("cmd2")).is_none(),
+            "outside the new binding"
+        );
+        assert!(applied.events.iter().any(|e| matches!(
+            e,
+            AuthorityEvent::LeaseRebound { previous, .. } if previous.token == old[0].token
+        )));
+        assert!(matches!(
+            f.auth.check_fence(f.ch("cmd1"), old[0].token, epoch, 1),
+            Err(FenceError::StaleToken { .. })
+        ));
+        assert_eq!(f.auth.mode(), Mode::Active);
+        // Dropping every part settles back to ARMED.
+        f.bind("policy", 12, &["cmd4"]).expect("rebind");
         assert_eq!(f.auth.mode(), Mode::Armed);
-        assert!(f.auth.lease(ChannelId(7)).is_none());
+    }
+
+    #[test]
+    fn command_groups_hold_one_member_and_switch_atomically() {
+        let mut f = Fixture::new();
+        f.run("operator", Command::Arm, 0).expect("arm");
+        assert_eq!(
+            Fixture::status(f.grant_with("policy", &["arm", "arm/tcp"], &[], 0)),
+            CtlStatus::InvalidRequest,
+            "two members of one group in one request"
+        );
+        let joint = f.grant("policy", "arm", 0).expect("arm");
+        assert_eq!(
+            Fixture::status(f.grant("policy", "arm/tcp", 1)),
+            CtlStatus::GroupBusy,
+            "holding a member without releasing it"
+        );
+        assert_eq!(
+            Fixture::status(f.grant("script", "arm/tcp", 1)),
+            CtlStatus::GroupBusy,
+            "a member held by a higher class"
+        );
+        let applied = f
+            .run(
+                "policy",
+                Command::GrantLease {
+                    channels: vec![f.ch("arm/tcp")],
+                    release: vec![f.ch("arm")],
+                    binding: f.fingerprint("policy"),
+                    ttl_ns: None,
+                },
+                2,
+            )
+            .expect("switch");
+        let tcp = applied.leases[0].clone();
+        assert!(tcp.token > joint.token);
+        assert!(f.auth.lease(f.ch("arm")).is_none());
+        let revision = f.auth.revision();
+
+        // The operator takes the other member: the model's is preempted in
+        // the same revision.
+        let human = f
+            .grant("operator", "arm", 3)
+            .expect("preempt across the group");
+        assert_eq!(f.auth.revision(), revision + 1);
+        assert!(f.auth.lease(f.ch("arm/tcp")).is_none());
+        assert_eq!(
+            f.auth.lease(f.ch("arm")).map(|l| l.token),
+            Some(human.token)
+        );
+        assert_eq!(
+            Fixture::status(f.grant("policy", "arm/tcp", 4)),
+            CtlStatus::GroupBusy
+        );
+        // Other parts are independent of the group.
+        f.grant("policy", "cmd1", 4).expect("ungrouped");
     }
 
     #[test]
@@ -1043,7 +1855,9 @@ mod tests {
                 from: pid("policy"),
                 epoch: Some(Epoch(1)),
                 command: Command::GrantLease {
-                    channel: ChannelId(1),
+                    channels: vec![f.ch("cmd1")],
+                    release: Vec::new(),
+                    binding: f.fingerprint("policy"),
                     ttl_ns: None,
                 },
             },
@@ -1056,83 +1870,47 @@ mod tests {
     fn operator_preempts_model_and_the_old_token_is_fenced() {
         let mut f = Fixture::new();
         f.run("operator", Command::Arm, 0).expect("arm");
-        let model = f.grant("policy", 1, 0).expect("model lease");
-        let applied = f
-            .auth
-            .apply(
-                Request {
-                    from: pid("operator"),
-                    epoch: Some(f.auth.epoch()),
-                    command: Command::GrantLease {
-                        channel: ChannelId(1),
-                        ttl_ns: None,
-                    },
-                },
-                5,
-            )
-            .expect("preempt");
-        let operator = applied.lease.clone().expect("lease");
-        assert!(operator.token > model.token, "preemption bumps the token");
-        assert!(matches!(
-            applied.events.as_slice(),
-            [AuthorityEvent::LeasePreempted { previous, by }]
-                if previous.holder == pid("policy") && by.holder == pid("operator")
-        ));
+        let model = f.grant("policy", "cmd1", 0).expect("model lease");
+        let human = f.grant("operator", "cmd1", 5).expect("preempt");
+        assert!(human.token > model.token, "preemption bumps the token");
         assert_eq!(f.auth.mode(), Mode::Active);
 
         let epoch = f.auth.epoch();
+        let cmd1 = f.ch("cmd1");
         assert_eq!(
-            f.auth.check_fence(ChannelId(1), model.token, epoch, 6),
+            f.auth.check_fence(cmd1, model.token, epoch, 6),
             Err(FenceError::StaleToken {
-                channel: ChannelId(1),
-                current: operator.token,
+                channel: cmd1,
+                current: human.token,
                 got: model.token
             })
         );
         f.auth
-            .check_fence(ChannelId(1), operator.token, epoch, 6)
+            .check_fence(cmd1, human.token, epoch, 6)
             .expect("new token");
         assert_eq!(
-            Fixture::status(f.run(
-                "policy",
-                Command::ReleaseLease {
-                    channel: ChannelId(1),
-                    token: model.token
-                },
-                7
-            )),
+            Fixture::status(f.release("policy", &model, 7)),
             CtlStatus::StaleToken
         );
-        // The model cannot take it back, nor can an equal class steal it.
         assert_eq!(
-            Fixture::status(f.grant("policy", 1, 8)),
+            Fixture::status(f.grant("policy", "cmd1", 8)),
             CtlStatus::LeaseBusy
         );
-        // After the operator releases, the model may hold it again.
-        f.run(
-            "operator",
-            Command::ReleaseLease {
-                channel: ChannelId(1),
-                token: operator.token,
-            },
-            9,
-        )
-        .expect("release");
-        let again = f.grant("policy", 1, 10).expect("model again");
-        assert!(again.token > operator.token);
+        f.release("operator", &human, 9).expect("release");
+        let again = f.grant("policy", "cmd1", 10).expect("model again");
+        assert!(again.token > human.token);
     }
 
     #[test]
     fn equal_or_lower_classes_cannot_preempt() {
         let mut f = Fixture::new();
         f.run("operator", Command::Arm, 0).expect("arm");
-        f.grant("policy", 1, 0).expect("lease");
+        f.grant("policy", "cmd1", 0).expect("lease");
         assert_eq!(
-            Fixture::status(f.grant("script", 1, 1)),
+            Fixture::status(f.grant("script", "cmd1", 1)),
             CtlStatus::LeaseBusy
         );
-        // Other channels are independent.
-        f.grant("script", 2, 1).expect("other channel");
+        f.grant("script", "cmd2", 1).expect("other part");
     }
 
     #[test]
@@ -1141,11 +1919,10 @@ mod tests {
         let safe = |reason: &str| Command::EnterSafe {
             reason: reason.into(),
         };
-        // Outside ACTIVE: nothing to stop.
         f.run("robot", safe("idle"), 0).expect("no-op");
         assert_eq!(f.auth.mode(), Mode::Disarmed);
         f.run("operator", Command::Arm, 0).expect("arm");
-        f.grant("policy", 1, 0).expect("lease");
+        f.grant("policy", "cmd1", 0).expect("lease");
         assert_eq!(
             Fixture::status(f.run("policy", safe("not mine"), 1)),
             CtlStatus::Forbidden
@@ -1153,22 +1930,21 @@ mod tests {
         f.run("robot", safe("queue dry past hold_max"), 2)
             .expect("enter safe");
         assert_eq!(f.auth.mode(), Mode::Safe);
-        assert!(f.auth.lease(ChannelId(1)).is_none(), "SAFE revokes leases");
+        assert!(f.auth.lease(f.ch("cmd1")).is_none(), "SAFE revokes leases");
     }
 
     #[test]
     fn heartbeats_renew_and_their_absence_lapses_to_safe() {
         let mut f = Fixture::new();
         f.run("operator", Command::Arm, 0).expect("arm");
-        let a = f.grant("policy", 1, 0).expect("lease");
-        f.grant("script", 2, 0).expect("lease");
+        let a = f.grant("policy", "cmd1", 0).expect("lease");
+        f.grant("script", "cmd2", 0).expect("lease");
         let epoch = f.auth.epoch();
         for now in [50, 100, 150] {
             f.auth.heartbeat(&pid("policy"), epoch, now);
             f.auth.heartbeat(&pid("script"), epoch, now);
             assert!(f.auth.expire(now).is_empty());
         }
-        // A heartbeat from an older epoch renews nothing.
         f.auth.heartbeat(&pid("policy"), Epoch(1), 200);
         f.auth.heartbeat(&pid("script"), epoch, 200);
         let events = f.auth.expire(251);
@@ -1177,60 +1953,56 @@ mod tests {
             e,
             AuthorityEvent::LeaseEnded { lease, reason: LeaseEnd::Lapsed } if lease.token == a.token
         )));
-        assert!(
-            events.iter().any(|e| matches!(
-                e,
-                AuthorityEvent::LeaseEnded {
-                    reason: LeaseEnd::Revoked("safe"),
-                    ..
-                }
-            )),
-            "SAFE revokes the other leases"
-        );
-        assert!(f.auth.lease(ChannelId(2)).is_none());
+        assert!(f.auth.lease(f.ch("cmd2")).is_none());
         assert_eq!(
-            Fixture::status(f.grant("policy", 1, 260)),
+            Fixture::status(f.grant("policy", "cmd1", 260)),
             CtlStatus::InvalidTransition
         );
         f.run("operator", Command::Arm, 270)
             .expect("re-arm from SAFE");
         assert_eq!(f.auth.epoch(), epoch.next());
-        assert_eq!(
-            f.auth.check_fence(ChannelId(1), a.token, epoch, 270),
-            Err(FenceError::StaleEpoch {
-                current: epoch.next(),
-                got: epoch
-            })
-        );
     }
 
     #[test]
     fn losing_the_holder_goes_safe_and_losing_an_observer_does_not() {
         let mut f = Fixture::new();
         f.run("operator", Command::Arm, 0).expect("arm");
-        f.grant("policy", 1, 0).expect("lease");
-        f.auth.participant_lost(&pid("viewer"));
+        f.grant("policy", "cmd1", 0).expect("lease");
+        f.auth.participant_lost(&pid("viewer"), 0);
         assert_eq!(f.auth.mode(), Mode::Active);
-        f.auth.participant_lost(&pid("policy"));
+        f.auth.participant_lost(&pid("policy"), 0);
         assert_eq!(f.auth.mode(), Mode::Safe);
         assert!(!f.auth.is_attached(&pid("policy")));
+        assert!(
+            f.auth.binding(&pid("policy")).is_some(),
+            "kept for a reconnect"
+        );
     }
 
     #[test]
-    fn a_detaching_holder_releases_back_to_armed() {
+    fn a_detaching_owner_takes_its_parts_and_their_leases_along() {
         let mut f = Fixture::new();
         f.run("operator", Command::Arm, 0).expect("arm");
-        f.grant("policy", 1, 0).expect("lease");
-        f.run("policy", Command::Detach, 1).expect("detach");
+        f.grant("policy", "cmd1", 0).expect("lease");
+        let applied = f.run("robot", Command::Detach, 1).expect("detach");
+        assert!(applied.events.iter().any(|e| matches!(
+            e,
+            AuthorityEvent::LeaseEnded {
+                reason: LeaseEnd::Revoked("part removed"),
+                ..
+            }
+        )));
+        assert_eq!(f.auth.parts().count(), 0);
         assert_eq!(f.auth.mode(), Mode::Armed);
+        f.run("policy", Command::Detach, 2).expect("detach");
+        assert!(f.auth.binding(&pid("policy")).is_none());
     }
 
     #[test]
     fn estop_latches_and_needs_clear_disarm_arm() {
         let mut f = Fixture::new();
         f.run("operator", Command::Arm, 0).expect("arm");
-        let lease = f.grant("policy", 1, 0).expect("lease");
-        // Accepted even from a participant that never attached.
+        let lease = f.grant("policy", "cmd1", 0).expect("lease");
         f.run(
             "stranger",
             Command::Estop {
@@ -1241,14 +2013,12 @@ mod tests {
         .expect("estop");
         assert_eq!(f.auth.mode(), Mode::Estop);
         assert!(f.auth.estop_latched());
-        assert!(f.auth.lease(ChannelId(1)).is_none());
         let epoch = f.auth.epoch();
         assert!(
             f.auth
-                .check_fence(ChannelId(1), lease.token, epoch, 2)
+                .check_fence(f.ch("cmd1"), lease.token, epoch, 2)
                 .is_err()
         );
-
         let revision = f.auth.revision();
         f.run(
             "operator",
@@ -1259,197 +2029,159 @@ mod tests {
         )
         .expect("estop");
         assert_eq!(f.auth.revision(), revision, "a second estop is a no-op");
-
         assert_eq!(
             Fixture::status(f.run("operator", Command::Arm, 3)),
             CtlStatus::EstopLatched
         );
         assert_eq!(
-            Fixture::status(f.run("operator", Command::Disarm, 3)),
-            CtlStatus::EstopLatched
-        );
-        assert_eq!(
-            Fixture::status(f.grant("operator", 1, 3)),
+            Fixture::status(f.grant("operator", "cmd1", 3)),
             CtlStatus::EstopLatched
         );
         assert_eq!(
             Fixture::status(f.run("operator", Command::Clear, 3)),
             CtlStatus::Forbidden
         );
-
         f.run("robot", Command::Clear, 4).expect("local clear");
-        assert_eq!(
-            f.auth.mode(),
-            Mode::Estop,
-            "clear alone does not leave ESTOP"
-        );
         assert_eq!(
             Fixture::status(f.run("operator", Command::Arm, 5)),
             CtlStatus::InvalidTransition
         );
         f.run("operator", Command::Disarm, 6).expect("disarm");
         f.run("operator", Command::Arm, 7).expect("arm");
-        assert_eq!(f.auth.mode(), Mode::Armed);
         assert_eq!(f.auth.epoch(), epoch.next());
     }
 
     #[test]
-    fn tokens_are_unique_and_increasing_across_channels() {
+    fn an_attach_requiring_a_missing_feature_is_incompatible() {
         let mut f = Fixture::new();
-        f.run("operator", Command::Arm, 0).expect("arm");
-        let tokens: Vec<LeaseToken> = (1..5)
-            .map(|ch| f.grant("policy", ch, 0).expect("lease").token)
-            .collect();
-        assert!(tokens.windows(2).all(|w| w[0] < w[1]));
-    }
-
-    #[test]
-    fn channels_need_a_consistent_owner_and_leases_need_actuation() {
-        let mut f = Fixture::new();
-        let sense = ChannelSpec::new(
-            ChannelId(20),
-            "ft",
-            Direction::Sense,
-            "proprio/eef_wrench",
-            vec![TensorLayout::f32(&[6])],
-            1000.0,
-            ChannelQos::realtime(ChannelPriority::Realtime),
-        );
-        let applied = f
-            .run("robot", Command::DeclareChannels(vec![sense.clone()]), 0)
-            .expect("declare");
-        assert_eq!(applied.events.len(), 1);
-        let applied = f
-            .run("robot", Command::DeclareChannels(vec![sense.clone()]), 0)
-            .expect("redeclare");
-        assert!(applied.events.is_empty(), "identical re-declaration");
-        let mut changed = sense.clone();
-        changed.rate.nominal_hz = 500.0;
+        let future = |requires: Vec<String>| Command::Attach {
+            name: "future".into(),
+            roles: vec![Role::Controller],
+            priority: PriorityClass::Model,
+            protocol_minor: PROTOCOL_MINOR + 1,
+            supports: vec!["merge.blend".into()],
+            requires,
+        };
         assert_eq!(
-            Fixture::status(f.run("robot", Command::DeclareChannels(vec![changed]), 0)),
-            CtlStatus::ChannelConflict
+            Fixture::status(f.run("future", future(vec!["merge.blend".into()]), 0)),
+            CtlStatus::Incompatible
         );
+        assert!(!f.auth.is_attached(&pid("future")));
+        f.run("future", future(Vec::new()), 0)
+            .expect("a newer minor with no requirement attaches");
+        let snap = f.auth.snapshot(Vec::new(), 0);
         assert_eq!(
-            Fixture::status(f.run("viewer", Command::DeclareChannels(vec![sense]), 0)),
-            CtlStatus::ChannelConflict,
-            "another owner"
+            snap.participant(&pid("future")).map(|p| p.supports.clone()),
+            Some(vec!["merge.blend".to_string()])
         );
-        let mut actuate = f.auth.channel(ChannelId(1)).expect("cmd1").clone();
-        actuate.id = ChannelId(21);
-        assert_eq!(
-            Fixture::status(f.run("viewer", Command::DeclareChannels(vec![actuate]), 0)),
-            CtlStatus::Forbidden,
-            "only an embodiment consumes actuation"
-        );
-
-        f.run("operator", Command::Arm, 0).expect("arm");
-        for channel in [20, 99] {
-            assert_eq!(
-                Fixture::status(f.grant("policy", channel, 0)),
-                CtlStatus::UnknownChannel
-            );
-        }
-        f.grant("policy", 1, 0)
-            .expect("lease on an actuation channel");
-
-        // The owner detaching takes its channels and their leases along.
-        let applied = f.run("robot", Command::Detach, 0).expect("detach");
-        assert!(applied.events.iter().any(|e| matches!(
-            e,
-            AuthorityEvent::LeaseEnded {
-                reason: LeaseEnd::Revoked("channel removed"),
-                ..
-            }
-        )));
-        assert!(f.auth.snapshot(Vec::new(), 0).channels.is_empty());
-        assert_eq!(f.auth.mode(), Mode::Armed);
     }
 
     #[test]
     fn the_snapshot_fence_matches_the_host() {
         let mut f = Fixture::new();
         f.run("operator", Command::Arm, 0).expect("arm");
-        let lease = f.grant("policy", 3, 0).expect("lease");
+        let lease = f.grant("policy", "cmd3", 0).expect("lease");
         let snap = f.auth.snapshot(Vec::new(), 1);
-        snap.check_fence(ChannelId(3), lease.token, snap.epoch)
+        snap.check_fence(f.ch("cmd3"), lease.token, snap.epoch)
             .expect("fence");
         assert_eq!(snap.protocol_minor, PROTOCOL_MINOR);
+        assert_eq!(snap.clock_mode, ClockMode::Wall);
         assert_eq!(
-            snap.check_fence(ChannelId(4), lease.token, snap.epoch),
-            Err(FenceError::NoLease {
-                channel: ChannelId(4)
-            })
+            snap.part_at(&pid("robot"), "cmd3").map(|p| p.channel),
+            Some(f.ch("cmd3"))
         );
+        assert_eq!(snap.group_members(&pid("robot"), "arm").count(), 2);
+        let applied = snap
+            .part(f.ch("cmd3"))
+            .and_then(|p| p.applied_channel)
+            .expect("applied");
+        assert_eq!(snap.stream(applied).map(|s| s.applied), Some(true));
+        assert!(snap.binding(&pid("policy")).is_some());
         let later = f.auth.snapshot(Vec::new(), 2);
         assert!(later.is_newer_than(&snap));
     }
 
     #[test]
-    fn an_attach_requiring_a_missing_capability_is_incompatible() {
-        let mut f = Fixture::new();
-        let attach = |capabilities: Vec<String>| Command::Attach {
-            name: "future".into(),
-            roles: vec![Role::Controller],
-            priority: PriorityClass::Model,
-            protocol_minor: PROTOCOL_MINOR + 1,
-            capabilities,
+    fn a_virtual_session_ticks_through_the_barrier() {
+        let mut auth = Authority::new(
+            SessionId::new(),
+            AuthorityConfig {
+                virtual_clock: Some(VirtualConfig::default()),
+                ..AuthorityConfig::default()
+            },
+        );
+        let mut f = {
+            for (id, roles, priority) in [
+                ("robot", vec![Role::Embodiment], PriorityClass::Scripted),
+                ("policy", vec![Role::Controller], PriorityClass::Model),
+            ] {
+                auth.apply(
+                    Request {
+                        from: pid(id),
+                        epoch: None,
+                        command: attach(id, roles, priority),
+                    },
+                    0,
+                )
+                .expect("attach");
+            }
+            Fixture { auth }
         };
+        f.run("robot", declare(&robot_map("")), 0).expect("declare");
+        let channels = vec![f.ch("cmd1")];
+        f.run(
+            "policy",
+            Command::DeclareBinding {
+                fingerprint: Fingerprint::from(5),
+                revision: 1,
+                table_json: "{}".into(),
+                channels,
+                replan_hz: 500.0,
+            },
+            0,
+        )
+        .expect("bind at 500 Hz: every second 1 ms tick");
+        f.run("policy", Command::Arm, 0).expect("arm");
         assert_eq!(
-            Fixture::status(f.run("future", attach(vec!["merge.blend".into()]), 0)),
-            CtlStatus::Incompatible
+            f.auth.snapshot(Vec::new(), 0).clock_mode,
+            ClockMode::Virtual
         );
-        assert!(!f.auth.is_attached(&pid("future")));
-        f.run("future", attach(Vec::new()), 0)
-            .expect("a newer minor with no requirement attaches");
-        let snap = f.auth.snapshot(Vec::new(), 0);
-        assert_eq!(
-            snap.participant(&pid("future")).map(|p| p.protocol_minor),
-            Some(PROTOCOL_MINOR + 1)
+        let ready = |tick| Command::Ready {
+            tick,
+            watermarks: Vec::new(),
+        };
+        f.run("robot", ready(0), 1).expect("ready");
+        let ticks = f.auth.take_ticks();
+        assert!(matches!(ticks.as_slice(), [VirtualTick::Observe(s)] if s.due == [pid("policy")]));
+        let revision = f.auth.revision();
+        f.run(
+            "policy",
+            Command::Decided {
+                tick: 0,
+                chunks: Vec::new(),
+            },
+            2,
+        )
+        .expect("decided");
+        assert!(matches!(f.auth.take_ticks().as_slice(), [VirtualTick::Step(s)] if s.tick == 0));
+        assert_eq!(f.auth.revision(), revision, "ticks are not structural");
+        f.run("robot", ready(1), 3).expect("ready");
+        assert_eq!(f.auth.take_ticks().len(), 2, "not due: observe and step");
+        let stale = f.auth.apply(
+            Request {
+                from: pid("robot"),
+                epoch: Some(Epoch(1)),
+                command: ready(2),
+            },
+            4,
         );
-    }
+        assert_eq!(Fixture::status(stale), CtlStatus::StaleEpoch);
 
-    #[test]
-    fn a_removed_channel_id_is_not_reused_with_another_schema_in_the_epoch() {
-        let mut f = Fixture::new();
-        let mut spec = f.auth.channel(ChannelId(1)).expect("cmd1").clone();
-        spec.owner = None;
-        f.run("robot", Command::Detach, 0).expect("detach");
-        f.run(
-            "robot",
-            Command::Attach {
-                name: "robot".into(),
-                roles: vec![Role::Embodiment],
-                priority: PriorityClass::Scripted,
-                protocol_minor: PROTOCOL_MINOR,
-                capabilities: Vec::new(),
-            },
-            1,
-        )
-        .expect("re-attach");
-        let mut changed = spec.clone();
-        changed.layout = vec![TensorLayout::f32(&[7])];
+        // A wall-clock session refuses tick verbs.
+        let mut wall = Fixture::new();
         assert_eq!(
-            Fixture::status(f.run("robot", Command::DeclareChannels(vec![changed.clone()]), 1)),
-            CtlStatus::ChannelConflict
+            Fixture::status(wall.run("robot", ready(0), 0)),
+            CtlStatus::Unsupported
         );
-        f.run("robot", Command::DeclareChannels(vec![spec]), 1)
-            .expect("the same schema comes back");
-        f.run("robot", Command::Detach, 2).expect("detach");
-        f.run(
-            "robot",
-            Command::Attach {
-                name: "robot".into(),
-                roles: vec![Role::Embodiment],
-                priority: PriorityClass::Scripted,
-                protocol_minor: PROTOCOL_MINOR,
-                capabilities: Vec::new(),
-            },
-            3,
-        )
-        .expect("re-attach");
-        f.run("operator", Command::Arm, 3)
-            .expect("arm: a fresh epoch");
-        f.run("robot", Command::DeclareChannels(vec![changed]), 4)
-            .expect("a new schema in a new epoch");
     }
 }
