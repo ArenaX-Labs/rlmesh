@@ -289,6 +289,33 @@ internal static class CallbackContext
     internal static long EnteredFrames;
     internal static void Enter() { Interlocked.Increment(ref ActiveFrames); Interlocked.Increment(ref EnteredFrames); Depth++; }
     internal static void Exit() { Depth--; Interlocked.Decrement(ref ActiveFrames); }
+
+    // For synchronous host dispatch only: the originating trampoline MUST remain
+    // blocked until the dispatched scope exits. It continues to count the native
+    // frame and root while its context is installed on the host thread. This is
+    // explicit (not ExecutionContext/AsyncLocal), including on Mono and IL2CPP.
+    internal static Snapshot Capture() => new(Depth, libraryThread, HostedBy);
+    internal readonly struct Snapshot(int depth, bool worker, NativeHandle? host)
+    {
+        internal Scope Enter() => new(depth, worker, host);
+    }
+    internal readonly struct Scope : IDisposable
+    {
+        private readonly int previousDepth;
+        private readonly bool previousWorker;
+        private readonly NativeHandle? previousHost;
+        internal Scope(int depth, bool worker, NativeHandle? host)
+        {
+            previousDepth = Depth; previousWorker = libraryThread; previousHost = HostedBy;
+            Depth = Math.Max(Depth, depth);
+            libraryThread |= worker;
+            if (depth > 0) HostedBy = host;
+        }
+        public void Dispose()
+        {
+            Depth = previousDepth; libraryThread = previousWorker; HostedBy = previousHost;
+        }
+    }
 }
 
 internal sealed class CleanupRecord

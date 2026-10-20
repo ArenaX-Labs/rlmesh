@@ -26,6 +26,9 @@ public sealed class BarrierTests
     [InlineData("collector")]
     [InlineData("restart")]
     [InlineData("teardown-retry")]
+    [InlineData("dispatch-dispose")]
+    [InlineData("dispatch-refusal")]
+    [InlineData("dispatch-result-during-shutdown")]
     public void CollectibleContextCompletesItsPreflightThenUnloads(string scenario)
     {
         WeakReference context = RunIsolated(scenario);
@@ -86,6 +89,9 @@ public static class BarrierFixtures
             case "collector": Collector(); break;
             case "restart": Restart(); break;
             case "teardown-retry": TeardownRetry(); break;
+            case "dispatch-dispose": DispatchContextFixtures.Run("dispose"); break;
+            case "dispatch-refusal": DispatchContextFixtures.Run("refusal"); break;
+            case "dispatch-result-during-shutdown": DispatchContextFixtures.Run("result"); break;
             default: throw new ArgumentException(scenario);
         }
         Assert.True(Lifetime.Shutdown(Deadline), string.Join("; ", Lifetime.Pending()));
