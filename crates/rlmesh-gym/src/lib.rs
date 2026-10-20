@@ -51,6 +51,6 @@ pub use lockstep::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, Zen
 pub use map::{GymEnvInfo, GymMap};
 pub use session::{
     ConnectOptions, Declared, LockstepAddress, LockstepBinding, ServeOptions, bind, connect,
-    connect_view, is_lockstep_address,
+    connect_view, connect_view_in, is_lockstep_address,
 };
 pub use view::{Frame, GymView};

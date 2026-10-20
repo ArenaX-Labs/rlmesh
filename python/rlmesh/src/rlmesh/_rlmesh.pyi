@@ -74,7 +74,9 @@ __all__ = [
     "Tensor",
     "V2Controller",
     "V2Due",
+    "V2GymView",
     "V2Host",
+    "V2LockstepRobot",
     "V2Observation",
     "V2Rate",
     "V2Recorder",
@@ -886,6 +888,43 @@ class V2Due:
         """
 
 @typing.final
+class V2GymView:
+    r"""
+    A Gym env over a v2-native lockstep robot (§12.6).
+    """
+    def __new__(cls, address: builtins.str, robot: typing.Optional[builtins.str] = None, policy_json: typing.Optional[builtins.str] = None, name: builtins.str = ..., timeout_s: builtins.float = ...) -> V2GymView:
+        r"""
+        Attaches to the session at `address` (`{ip}:{port}/{tenant}/{session}`)
+        and takes one lease on `robot` (`None`: the session's only robot),
+        through `policy_json` (`None`: every part, by path).
+        """
+    def observation_entries(self) -> builtins.list[tuple[builtins.str, tuple[typing.Any, ...]]]:
+        r"""
+        `[(name, ("array", dtype, shape) | ("text", "utf8", []) | ("dict", [(field, dtype, shape)]))]`.
+        """
+    def action_entries(self) -> builtins.list[tuple[builtins.str, tuple[typing.Any, ...]]]:
+        r"""
+        The action entries, as [`Self::observation_entries`].
+        """
+    def table(self) -> typing.Optional[builtins.str]:
+        r"""
+        The binding table, with a policy.
+        """
+    def reset(self, seed: typing.Optional[builtins.int] = None, options_json: builtins.str = ...) -> typing.Any:
+        r"""
+        `(obs, reward, terminated, truncated, info, robot_info_json)`.
+        """
+    def step(self, actions: typing.Any) -> typing.Any:
+        r"""
+        One view step: `actions` keyed by action entry (an array as
+        `(dtype, shape, buffer)`, or a dict of them).
+        """
+    def close(self) -> None:
+        r"""
+        Releases the lease and detaches.
+        """
+
+@typing.final
 class V2Host:
     r"""
     A session host in this process, on local per-class TCP ports.
@@ -899,6 +938,43 @@ class V2Host:
     def close(self) -> None:
         r"""
         Stops the host (participants see it leave).
+        """
+
+@typing.final
+class V2LockstepRobot:
+    r"""
+    A v2 robot that serves the lockstep exchange (§12): every step is one
+    call of its Python `step(commands)`, which publishes the robot's parts.
+    """
+    @property
+    def name(self) -> builtins.str:
+        r"""
+        The robot's participant id.
+        """
+    def __new__(cls, address: builtins.str, name: builtins.str, robot_json: builtins.str) -> V2LockstepRobot:
+        r"""
+        Binds the robot `name` in the session at `address`
+        (`{ip}:{port}/{tenant}/{session}`) with the map `robot_json`; it
+        declares and arms when it starts serving.
+        """
+    def parts(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        The parts as normalised, in authored order.
+        """
+    def serve(self, step: typing.Any, reset: typing.Any, background: builtins.bool = ..., timeout_s: builtins.float = ...) -> None:
+        r"""
+        Declares, arms and serves: `step(commands)` and `reset(seed,
+        options_json)` each return `(reward, terminated, truncated,
+        info_json)`. With `background`, returns once serving.
+        """
+    def publish(self, path: builtins.str, fields: typing.Sequence[typing.Any]) -> None:
+        r"""
+        Inside a callback: publishes `path`'s fields (bytes-likes in field
+        order, or a `str` for text) into this step's reply.
+        """
+    def close(self) -> None:
+        r"""
+        Stops serving and detaches.
         """
 
 @typing.final

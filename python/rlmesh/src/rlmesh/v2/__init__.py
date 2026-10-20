@@ -17,6 +17,11 @@ as written::
         # robot loop: robot.publish("arm", pos=q, vel=dq); due = robot.due("arm")
         policy.run(lambda obs: {"arm": obs["q"][None]}, duration=5.0)
 
+A robot can also run in lockstep (``Robot(..., clock="lockstep")``, §12):
+each step is one call of its ``step(commands)``, and :class:`GymView` drives
+it as a Gymnasium env. Existing Gym envs and v1 models reach lockstep
+through their own servers and runs, unchanged, at ``lockstep://`` addresses.
+
 Every rule (normalisation, binding, conversions, leases, the edge, the run
 loop) runs in Rust; this module converts NumPy arrays at the boundary.
 Observations are read-only arrays over the runtime's buffers (no copy when
@@ -45,7 +50,9 @@ from .._rlmesh import (
     Tensor,
     V2Controller,
     V2Due,
+    V2GymView,
     V2Host,
+    V2LockstepRobot,
     V2Observation,
     V2Rate,
     V2Recorder,
@@ -65,6 +72,7 @@ __all__ = [
     "Binding",
     "BindingRefused",
     "Due",
+    "GymView",
     "Host",
     "Meta",
     "Observation",
@@ -283,10 +291,16 @@ class Robot:
         session: Host | str,
         timeout: float = 10.0,
         on_handover: Callable[[str, str, str], None] | None = None,
+        clock: str = "wall",
     ) -> None:
-        self._native: V2Robot = V2Robot(
-            _address(session), name, json.dumps(parts), timeout
-        )
+        if clock not in ("wall", "lockstep"):
+            raise ValueError(f"clock {clock!r}: wall or lockstep")
+        self._lockstep: V2LockstepRobot | None = None
+        if clock == "lockstep":
+            self._lockstep = V2LockstepRobot(_address(session), name, json.dumps(parts))
+            self._native = cast("V2Robot", self._lockstep)
+        else:
+            self._native = V2Robot(_address(session), name, json.dumps(parts), timeout)
         self._on_handover = on_handover
         self._fields: dict[str, tuple[_Field, ...]] = {}
         self._kinds: dict[str, str] = {}
@@ -366,7 +380,59 @@ class Robot:
                 buffers.append(item)
             else:
                 buffers.append(_bytes(path, field, item))
+        if self._lockstep is not None:
+            self._lockstep.publish(path, buffers)
+            return None
         return self._native.publish(path, buffers, capture_ns)
+
+    def serve_lockstep(
+        self,
+        step: Callable[[dict[str, Any]], Any],
+        reset: Callable[[int | None, dict[str, Any] | None], Any] | None = None,
+        *,
+        background: bool = False,
+        timeout: float = 10.0,
+    ) -> None:
+        """Serve the lockstep exchange (§12): one ``step(commands)`` per step.
+
+        ``commands`` maps each commanded part to its command (the array of a
+        single-field command, else a dict of fields). Inside ``step`` and
+        ``reset(seed, options)`` the robot :meth:`publish`es its parts; each
+        returns ``None`` or ``(reward, terminated, truncated[, info])``
+        (``reset`` may return just ``info``). Declares and arms first; with
+        ``background``, returns once serving (stop with :meth:`close`).
+        """
+        if self._lockstep is None:
+            raise RuntimeError(
+                f"{self.name} runs on the wall clock: Robot(..., clock='lockstep')"
+            )
+
+        def outcome(result: Any) -> tuple[float, bool, bool, str]:
+            if result is None:
+                return (0.0, False, False, "")
+            if isinstance(result, Mapping):
+                return (0.0, False, False, json.dumps(result) if result else "")
+            reward, terminated, truncated, *rest = result
+            info = rest[0] if rest else None
+            return (
+                float(reward),
+                bool(terminated),
+                bool(truncated),
+                json.dumps(info) if info else "",
+            )
+
+        def on_step(commands: dict[str, Any]) -> tuple[float, bool, bool, str]:
+            return outcome(
+                step({path: _value(value) for path, value in commands.items()})
+            )
+
+        def on_reset(
+            seed: int | None, options_json: str
+        ) -> tuple[float, bool, bool, str]:
+            options = json.loads(options_json) if options_json else None
+            return outcome(reset(seed, options) if reset is not None else None)
+
+        self._lockstep.serve(on_step, on_reset, background, timeout)
 
     def due(self, path: str) -> Due | None:
         """Tick the edge serving ``path`` (and its command group): what to dispatch now.
@@ -684,6 +750,114 @@ class Policy:
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+
+try:
+    import gymnasium as _gym
+except ImportError:  # pragma: no cover - optional
+    _gym = None
+
+if TYPE_CHECKING:
+    from gymnasium import Env as _GymBase
+
+    _GymEnv: TypeAlias = _GymBase[dict[str, Any], dict[str, Any]]
+else:
+    _GymEnv = _gym.Env if _gym is not None else object
+
+
+def _space(kind: str, *described: Any) -> Any:
+    assert _gym is not None
+    spaces = _gym.spaces
+    if kind == "text":
+        return spaces.Text(max_length=4096)
+    if kind == "dict":
+        return spaces.Dict(
+            {name: _space("array", d, sh) for name, d, sh in described[0]}
+        )
+    dtype, shape = np.dtype(described[0]), tuple(int(d) for d in described[1])
+    box: Any = spaces.Box
+    if dtype == np.bool_:
+        return box(0, 1, shape, dtype=np.bool_)
+    if dtype.kind == "f":
+        return box(-np.inf, np.inf, shape, dtype=dtype)
+    info = np.iinfo(dtype)
+    return box(info.min, info.max, shape, dtype=dtype)
+
+
+class GymView(_GymEnv):
+    """A v2-native lockstep robot as a Gymnasium env (§12.6).
+
+    ``policy`` (a policy map) keys the observation space by its input names
+    and the action space by its action names (``[horizon, ...]``, squeezed
+    when the horizon is 1); without one, every part is keyed by its path
+    (``/`` as ``.``): a single-field part is its field, a multi-field part a
+    dict of fields. One :meth:`step` with horizon H plays H lockstep steps
+    (stopping at the episode's end), rewards summed. ``info`` carries
+    ``ages_ns``, ``stale`` and ``edge_modes``, plus the robot's own info.
+    The robot must serve lockstep (``Robot(..., clock="lockstep")``).
+    """
+
+    def __init__(
+        self,
+        session: Host | str,
+        policy: Mapping[str, Any] | None = None,
+        *,
+        robot: str | None = None,
+        name: str = "gym",
+        timeout: float = 10.0,
+    ) -> None:
+        if _gym is None:
+            raise ImportError("GymView requires gymnasium. Install gymnasium.")
+        self._native = V2GymView(
+            _address(session),
+            robot,
+            json.dumps(policy) if policy is not None else None,
+            name,
+            timeout,
+        )
+        spaces = _gym.spaces
+        observations = self._native.observation_entries()
+        actions = self._native.action_entries()
+        self.observation_space = spaces.Dict(
+            {entry: _space(*described) for entry, described in observations}
+        )
+        self.action_space = spaces.Dict(
+            {entry: _space(*described) for entry, described in actions}
+        )
+
+    @property
+    def table(self) -> str | None:
+        """The binding table (§6.8), with a policy."""
+        return self._native.table()
+
+    @staticmethod
+    def _out(raw: Any) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+        obs, reward, terminated, truncated, info, robot_info = raw
+        observation = {entry: _value(value) for entry, value in obs.items()}
+        merged = dict(info)
+        if robot_info:
+            merged.update(json.loads(robot_info))
+        return observation, float(reward), bool(terminated), bool(truncated), merged
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Reset the robot (``seed`` and ``options`` reach its reset callback)."""
+        super().reset(seed=seed)
+        obs, _, _, _, info = self._out(
+            self._native.reset(seed, json.dumps(options) if options else "")
+        )
+        return obs, info
+
+    def step(
+        self, action: Mapping[str, Any]
+    ) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+        """One step: ``action`` keyed by action entry (one horizon's chunk each)."""
+        return self._out(self._native.step(_actions(action)))
+
+    def close(self) -> None:
+        """Release the lease and detach."""
+        self._native.close()
 
 
 class Recorder:

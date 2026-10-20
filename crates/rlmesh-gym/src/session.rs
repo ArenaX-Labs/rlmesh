@@ -627,6 +627,54 @@ pub async fn connect_view(
         s.parts.iter().any(|p| p.owner == robot)
     })
     .await?;
+    view_of(attached, robot, policy, options).await
+}
+
+/// [`connect_view`] by session address (`{ip}:{port}/{tenant}/{session}`,
+/// a v2 host's address) and robot; `None` takes the session's only robot.
+pub async fn connect_view_in(
+    session: &str,
+    robot: Option<&str>,
+    policy: Option<(&rlmesh_spec::Policy, &str)>,
+    options: ConnectOptions,
+) -> Result<GymView, GymError> {
+    if let Some(robot) = robot {
+        return connect_view(&format!("{SCHEME}{session}/{robot}"), policy, options).await;
+    }
+    // Any robot: attach under a placeholder, then take the one owner.
+    let placeholder = format!("{SCHEME}{session}/any");
+    let mut attached = attach_driver(&placeholder, &options, |s| !s.parts.is_empty()).await?;
+    let snapshot = attached
+        .participant
+        .authority()
+        .ok_or_else(|| GymError::Config("no authority view".into()))?;
+    let mut owners: Vec<ParticipantId> = snapshot.parts.iter().map(|p| p.owner.clone()).collect();
+    owners.sort();
+    owners.dedup();
+    let robot = match owners.as_slice() {
+        [one] => one.clone(),
+        many => {
+            return Err(GymError::Config(format!(
+                "the session has {} robots ({}): name one",
+                many.len(),
+                many.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+    };
+    attached.address.robot = robot.clone();
+    attached.parts = own_parts(&snapshot, &robot);
+    view_of(attached, robot, policy, options).await
+}
+
+async fn view_of(
+    attached: Attached,
+    robot: ParticipantId,
+    policy: Option<(&rlmesh_spec::Policy, &str)>,
+    options: ConnectOptions,
+) -> Result<GymView, GymError> {
     let parts = attached.parts.clone();
     let (table, fingerprint, channels) = match policy {
         Some((policy, name)) => {

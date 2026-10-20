@@ -2,6 +2,7 @@ mod adapters;
 mod client;
 mod hooks;
 mod lifecycle;
+mod lockstep;
 mod model;
 mod peer_info;
 mod sandbox;

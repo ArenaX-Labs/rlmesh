@@ -87,11 +87,12 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyObservation>()?;
     m.add_class::<PyRate>()?;
     m.add_class::<PyRecorder>()?;
+    crate::lockstep::register(m)?;
     Ok(())
 }
 
 /// The runtime every session object of this process runs on.
-fn runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -104,7 +105,10 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 
 /// Runs `work` on the session runtime with the GIL released, polling
 /// Python signals so Ctrl-C interrupts a wait.
-fn block_on<T>(py: Python<'_>, work: impl Future<Output = PyResult<T>> + Send) -> PyResult<T>
+pub(crate) fn block_on<T>(
+    py: Python<'_>,
+    work: impl Future<Output = PyResult<T>> + Send,
+) -> PyResult<T>
 where
     T: Send,
 {
@@ -135,7 +139,7 @@ fn screaming(status: CtlStatus) -> String {
     out
 }
 
-fn session_err(err: SessionError) -> PyErr {
+pub(crate) fn session_err(err: SessionError) -> PyErr {
     match err {
         SessionError::Rejected(refusal) => Python::attach(|py| {
             let err = SessionRefused::new_err(refusal.message.clone());
@@ -155,7 +159,7 @@ fn session_err(err: SessionError) -> PyErr {
     }
 }
 
-fn bind_err(err: BindError) -> PyErr {
+pub(crate) fn bind_err(err: BindError) -> PyErr {
     Python::attach(|py| {
         let problems: Vec<(String, String, String)> = match &err {
             BindError::Refused(refusal) => refusal
@@ -290,7 +294,7 @@ impl Address {
     }
 }
 
-fn timeout(seconds: f64) -> PyResult<Duration> {
+pub(crate) fn timeout(seconds: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(seconds)
         .map_err(|_| PyValueError::new_err(format!("timeout {seconds} is not a duration")))
 }
@@ -381,7 +385,7 @@ fn fields_info(fields: &[rlmesh_wire::FieldSpec]) -> Vec<FieldInfo> {
         .collect()
 }
 
-fn part_dict<'py>(py: Python<'py>, part: &PartSpec) -> PyResult<Bound<'py, PyDict>> {
+pub(crate) fn part_dict<'py>(py: Python<'py>, part: &PartSpec) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("path", part.path.as_str())?;
     d.set_item("kind", &part.kind)?;
@@ -406,7 +410,7 @@ fn part_dict<'py>(py: Python<'py>, part: &PartSpec) -> PyResult<Bound<'py, PyDic
 
 /// An `rlmesh_spec` tensor as a native `Tensor` (zero-copy when its buffer
 /// is 8-byte aligned, §8.11; one copy otherwise).
-fn tensor_to_py<'py>(py: Python<'py>, tensor: Tensor) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn tensor_to_py<'py>(py: Python<'py>, tensor: Tensor) -> PyResult<Bound<'py, PyAny>> {
     let dtype = rlmesh_spaces::DType::from_name(tensor.dtype.name()).ok_or_else(|| {
         SessionException::new_err(format!("no tensor dtype for {}", tensor.dtype.name()))
     })?;
@@ -420,7 +424,7 @@ fn tensor_to_py<'py>(py: Python<'py>, tensor: Tensor) -> PyResult<Bound<'py, PyA
     wrap_native_tensor(py, native)
 }
 
-fn value_to_py<'py>(py: Python<'py>, value: Value) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn value_to_py<'py>(py: Python<'py>, value: Value) -> PyResult<Bound<'py, PyAny>> {
     match value {
         Value::Tensor(tensor) => tensor_to_py(py, tensor),
         Value::Dict(fields) => {
@@ -435,7 +439,7 @@ fn value_to_py<'py>(py: Python<'py>, value: Value) -> PyResult<Bound<'py, PyAny>
 }
 
 /// One array from Python: `(dtype, shape, bytes-like)`.
-fn tensor_from_py(entry: &str, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+pub(crate) fn tensor_from_py(entry: &str, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     let (dtype, shape, data): (String, Vec<u32>, PyBuffer<u8>) = obj.extract().map_err(|_| {
         PyValueError::new_err(format!(
             "{entry}: expected an array, got {}",
@@ -460,7 +464,7 @@ fn tensor_from_py(entry: &str, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
 }
 
 /// What `predict` returned, by action entry: an array, or a dict of arrays.
-fn values_from_py(output: &Bound<'_, PyAny>) -> PyResult<Vec<(String, Value)>> {
+pub(crate) fn values_from_py(output: &Bound<'_, PyAny>) -> PyResult<Vec<(String, Value)>> {
     let dict = output
         .cast::<PyDict>()
         .map_err(|_| PyValueError::new_err("predict must return a dict keyed by action name"))?;
