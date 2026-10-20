@@ -457,6 +457,18 @@ pub struct Inputs {
     view: AuthorityView,
     me: rlmesh_wire::ParticipantId,
     streams: Vec<SampleSubscriber>,
+    /// Per input, the last decoded value of an encoded stream and the
+    /// samples it came from: a 30 fps JPEG camera read by a 100 Hz policy
+    /// is decoded and converted once per frame, not once per start.
+    decoded: Mutex<Vec<Option<(Decoded, Value)>>>,
+}
+
+/// Which samples a decoded value came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Decoded {
+    epoch: Epoch,
+    seqs: Vec<u64>,
+    padded: u32,
 }
 
 impl Inputs {
@@ -511,6 +523,7 @@ impl Inputs {
             streams.push(participant.subscribe_stream(stream, options).await?);
         }
         Ok(Self {
+            decoded: Mutex::new(vec![None; binding.inputs.len()]),
             binding: binding.clone(),
             cache,
             view,
@@ -525,14 +538,31 @@ impl Inputs {
         let meta = self
             .snapshot(now_session_ns)
             .map_err(ObserveError::Skipped)?;
+        let epoch = self.view.epoch();
+        let mut memo = self
+            .decoded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut values = Vec::with_capacity(meta.inputs.len());
-        for (row, input) in self.binding.inputs.iter().zip(&meta.inputs) {
+        for (i, (row, input)) in self.binding.inputs.iter().zip(&meta.inputs).enumerate() {
             let stream = row
                 .channel
                 .and_then(|c| self.streams.iter().find(|s| s.spec().channel == c))
                 .map(SampleSubscriber::spec);
-            let decoded: Vec<Bytes> = match stream {
-                Some(spec) if spec.encoding != rlmesh_wire::Encoding::Raw => input
+            let encoded = stream.filter(|spec| spec.encoding != rlmesh_wire::Encoding::Raw);
+            let key = (encoded.is_some() && !input.samples.is_empty()).then(|| Decoded {
+                epoch,
+                seqs: input.samples.iter().map(|s| s.seq).collect(),
+                padded: input.padded,
+            });
+            if let (Some(key), Some(Some((seen, value)))) = (&key, memo.get(i))
+                && key == seen
+            {
+                values.push((row.entry.clone(), value.clone()));
+                continue;
+            }
+            let decoded: Vec<Bytes> = match encoded {
+                Some(spec) => input
                     .samples
                     .iter()
                     .map(|s| decode_payload(spec, &s.payload).map(Bytes::from))
@@ -541,15 +571,19 @@ impl Inputs {
                         entry: row.entry.clone(),
                         source,
                     })?,
-                _ => input.samples.iter().map(|s| s.payload.clone()).collect(),
+                None => input.samples.iter().map(|s| s.payload.clone()).collect(),
             };
             let refs: Vec<&[u8]> = decoded.iter().map(|b| b.as_ref()).collect();
             let value = row.apply(&refs).map_err(|source| ObserveError::Apply {
                 entry: row.entry.clone(),
                 source,
             })?;
+            if let (Some(key), Some(slot)) = (key, memo.get_mut(i)) {
+                *slot = Some((key, value.clone()));
+            }
             values.push((row.entry.clone(), value));
         }
+        drop(memo);
         Ok(Observation { values, meta })
     }
 
