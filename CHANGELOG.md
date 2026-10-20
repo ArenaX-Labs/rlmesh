@@ -168,8 +168,6 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 
 #### Python
 
-- Native remote env calls check whether a client is closed before subscribing to cancellation: a closed client reports `RuntimeError` and leaves any idle firing pending. Native factory-backed sessions now check busy state and cancellation before lazy `make`: a pending firing skips construction, and reentrant calls during `make` report busy `RuntimeError`.
-
 - Internal and server-side failures raise `RLMeshException`, and protocol failures (a failed handshake, a malformed message, an invalid contract from the peer) raise `ProtocolException`, instead of a bare `RuntimeError`; a render frame that does not decode raises `ProtocolException` too. Both subclass `RuntimeError`, so existing catches keep matching.
 - An env code `UNSUPPORTED` reaches Python as `"UNSUPPORTED"` instead of `"INTERNAL"`.
 - A Python env server treats a raised exception as recoverable only when it is an `EnvironmentException` with a truthy `is_recoverable`; another exception carrying the attribute, such as `ModelException(is_recoverable=True)`, now ends the session like any other failure.
@@ -195,7 +193,17 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 #### Rust
 
 - Remote env calls check closed state before subscribing to cancellation, returning `RuntimeError` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` return busy `RuntimeError`.
-- Remote and session calls, including run completion hooks, synchronously check cancellation when completing their result processing. A firing before completion returns `Cancelled`, even when the polling watcher has not run; a firing after completion remains pending when the token is idle.
+- Remote and session calls, including run completion hooks, synchronously check cancellation when completing their result processing. A firing before completion returns `Cancelled`, even when the polling watcher has not run; a retained run hook error still wins. A firing after completion remains pending when the token is idle.
+
+#### C
+
+- Remote env calls check closed state before subscribing to cancellation, returning `RLMESH_ERR_RUNTIME` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` return `RLMESH_ERR_RUNTIME`.
+- Session and remote calls synchronously check cancellation through result processing, including the original calls using handle tokens and the explicit per-call variants. A firing before completion returns `RLMESH_ERR_CANCELLED`, subject to run hook error precedence; an idle firing after completion remains pending.
+
+#### C++
+
+- Remote env calls check closed state before subscribing to cancellation, throwing `RuntimeError` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` throw `RuntimeError`.
+- Session and remote calls synchronously check cancellation through result processing, including the original calls using handle tokens and the `rlmesh::ext` per-call overloads. A firing before completion throws `ext::CancelledError`, subject to run hook error precedence; an idle firing after completion remains pending.
 
 #### All languages
 

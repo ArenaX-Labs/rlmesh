@@ -310,11 +310,20 @@ impl CancelSubscription {
                     != self.generation)
     }
 
-    pub(crate) fn unsubscribe(&self) {
+    /// Observe the final generation and detach under the same token lock.
+    /// A firing after this boundary is idle (or reaches other subscribers).
+    pub(crate) fn finish(&self) -> bool {
         let mut state = self.token.0.lock().unwrap_or_else(|err| err.into_inner());
         if self.active.swap(false, std::sync::atomic::Ordering::SeqCst) {
             state.subscribers -= 1;
+            self.pending || state.generation != self.generation
+        } else {
+            false
         }
+    }
+
+    pub(crate) fn unsubscribe(&self) {
+        self.finish();
     }
 }
 
@@ -353,6 +362,21 @@ pub const MODEL_ENDPOINT_TOKEN_ENV: &str = "RLMESH_MODEL_ENDPOINT_TOKEN";
 #[cfg(test)]
 mod cancellation_regressions {
     use super::*;
+
+    #[test]
+    fn completion_observes_a_firing_without_polling_and_detaches_atomically() {
+        let token = CancelToken::new();
+        let watch = crate::run::drive::CancelWatch::start(
+            vec![token.clone()],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        token.cancel();
+        assert_eq!(watch.finish(Ok(42)), Err(crate::Error::Cancelled));
+        token.cancel();
+        assert!(token.take());
+        assert!(!token.take());
+    }
 
     #[test]
     fn admission_subscription_retains_a_firing_before_watcher_creation() {
