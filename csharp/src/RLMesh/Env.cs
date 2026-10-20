@@ -40,6 +40,7 @@ public sealed unsafe class Env : IDisposable
     internal static Env ForServer(IEnv env, out bool owns) => Resolve(env, true, out owns);
     private static Env Resolve(IEnv env, bool server, out bool owns)
     {
+        using var operation = Admission.Enter("Env.For");
         if (env == null) throw new ArgumentNullException(nameof(env));
         NativeGate.Ensure();
         owns = false;
@@ -128,13 +129,13 @@ public sealed unsafe class Env : IDisposable
         attributes.action_space = act.Space;
         var vtable = Callbacks.EnvVtable(env is IClose);
         var root = new Root(env, entry);
-        var data = GCHandle.Alloc(root);
+        var data = ManagedRoots.Allocate(root, "Env vtable");
         RLMeshEnv* output = null;
         try
         {
             Status.Check(Native.rlmesh_env_new(&vtable, (void*)GCHandle.ToIntPtr(data), &attributes, &output));
         }
-        catch { data.Free(); throw; }
+        catch { ManagedRoots.Free(data); throw; }
         var record = new NativeHandle((IntPtr)output, HandleKind.Env, () => Retire(env, entry));
         return new Env(record, 0);
     });

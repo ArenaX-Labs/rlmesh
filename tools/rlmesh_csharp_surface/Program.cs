@@ -104,6 +104,14 @@ foreach (var h in reader.TypeDefinitions)
     }
 }
 
+bool net10 = reader.GetAssemblyDefinition().GetCustomAttributes().Any(h =>
+{
+    var a = reader.GetCustomAttribute(h);
+    return a.Constructor.Kind == HandleKind.MemberReference &&
+        Name(reader.GetMemberReference((MemberReferenceHandle)a.Constructor).Parent) == "System.Runtime.Versioning.TargetFrameworkAttribute" &&
+        System.Text.Encoding.UTF8.GetString(reader.GetBlobBytes(a.Value)).Contains(".NETCoreApp,Version=v10.0", StringComparison.Ordinal);
+});
+
 // Check references, imports and reverse-call addresses without loading the assembly.
 foreach (var h in reader.MemberReferences)
 {
@@ -111,7 +119,7 @@ foreach (var h in reader.MemberReferences)
     string parent = Name(m.Parent), member = Text(m.Name);
     if (parent.StartsWith("System.Reflection.Emit", StringComparison.Ordinal) || parent.StartsWith("Microsoft.CSharp", StringComparison.Ordinal)
         || parent == "System.Activator" || (parent.StartsWith("System.Linq.Expressions", StringComparison.Ordinal) && member == "Compile")
-        || (parent == "System.Type" && member is not ("GetTypeFromHandle" or "IsAssignableFrom" or "get_Name")))
+        || (parent == "System.Type" && member is not ("GetTypeFromHandle" or "IsAssignableFrom" or "get_Name") && !(net10 && member == "get_Assembly")))
         violations.Add("Forbidden reference: " + parent + "." + member);
 }
 foreach (var h in reader.MethodDefinitions)

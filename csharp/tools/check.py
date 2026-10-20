@@ -27,7 +27,7 @@ def public_text(surface):
     """Render the metadata snapshot as a readable declared-member inventory."""
     lines = [
         "RLMesh Experimental public API",
-        "R-28 serving surface; shutdown barrier and cancellation are deferred.",
+        "R-28 v0.2 environment-serving foundation.",
         "Declared members; nullability and custom attributes are recorded in v0.2.json.",
         "",
     ]
@@ -107,10 +107,10 @@ def main():
         raise SystemExit("C# readable public inventory is stale")
     if not snapshot.exists() or json.loads(snapshot.read_text()) != dumps[0]:
         raise SystemExit(
-            "C# surface differs from R-28's wave A inventory (csharp/surface/v0.2.json)"
+            "C# surface differs from R-28's v0.2 inventory (csharp/surface/v0.2.json)"
         )
     print(
-        f"C# assembly checks: {len(dumps[0])} public items; both targets match the wave A inventory"
+        f"C# assembly checks: {len(dumps[0])} public items; both targets match the v0.2 inventory"
     )
 
 

@@ -1,14 +1,15 @@
 using System;
 using System.Runtime.CompilerServices;
+using RLMesh.Internal;
 
 namespace RLMesh.Interop;
 
 internal static unsafe class NativeGate
 {
     internal const string Library = Native.LibraryName;
-    private static readonly RuntimeError? Failure;
+    private static readonly Lazy<RuntimeError?> Failure = new(Validate);
 
-    static NativeGate()
+    private static RuntimeError? Validate()
     {
         try
         {
@@ -24,18 +25,28 @@ internal static unsafe class NativeGate
             if (version != Initializers.PackageVersion)
                 throw new RuntimeError($"rlmesh_capi build version {version}; expected {Initializers.PackageVersion}");
         }
-        catch (RuntimeError e) { Failure = e; }
-        catch (Exception e) when (IsLoadFailure(e)) { Failure = LoadError(e, "ABI gate"); }
+        catch (RuntimeError e) { return e; }
+        catch (Exception e) when (IsLoadFailure(e)) { return LoadError(e, "ABI gate"); }
+        return null;
     }
 
-    internal static void Ensure() { if (Failure != null) throw Failure; }
+    internal static void Ensure() { var failure = Failure.Value; if (failure != null) throw failure; }
     internal static bool IsLoadFailure(Exception e) => e is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException;
     internal static RuntimeError LoadError(Exception e, string symbol) => new($"{Library} ({symbol}): {e.Message}", e);
     internal static T Call<T>(Func<T> call, [CallerMemberName] string symbol = "")
     {
+        using var operation = Admission.Enter(symbol);
+        return Continue(call, symbol);
+    }
+    // Already-admitted workers and teardown must preserve load diagnostics
+    // without asking the terminal gate to admit the operation a second time.
+    internal static T Continue<T>(Func<T> call, [CallerMemberName] string symbol = "")
+    {
         Ensure();
+        using var nativeReturn = new NativeReturnScope();
         try { return call(); }
         catch (Exception e) when (IsLoadFailure(e)) { throw LoadError(e, symbol); }
     }
+    internal static void Continue(Action call, [CallerMemberName] string symbol = "") => Continue(() => { call(); return 0; }, symbol);
     internal static void Call(Action call, [CallerMemberName] string symbol = "") => Call(() => { call(); return 0; }, symbol);
 }

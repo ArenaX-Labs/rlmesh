@@ -14,22 +14,30 @@ public sealed class EnvServerOptions
 }
 
 /// <summary>Experimental. Binds at construction and serves on native library threads.</summary>
-public sealed unsafe class EnvServer : IDisposable
+public sealed unsafe partial class EnvServer : IDisposable
 {
     internal readonly NativeHandle Record;
     private readonly OwnerToken owner;
-    public EnvServer(Env env, EnvServerOptions? options = null) : this(env, options, false) { }
-    public EnvServer(IEnv env, EnvServerOptions? options = null) : this(Resolve(env), options) { }
-    private EnvServer((Env env, bool owns) resolved, EnvServerOptions? options) : this(resolved.env, options, resolved.owns) { }
-    private static (Env env, bool owns) Resolve(IEnv env) { Env wrapper = Env.ForServer(env, out bool owns); return (wrapper, owns); }
-    private EnvServer(Env env, EnvServerOptions? options, bool owns)
+    public EnvServer(Env env, EnvServerOptions? options = null)
     {
+        using var operation = Admission.Enter("EnvServer constructor");
+        (Record, owner) = Create(env, options, false);
+    }
+    public EnvServer(IEnv env, EnvServerOptions? options = null)
+    {
+        using var operation = Admission.Enter("EnvServer constructor");
+        Env wrapper = Env.ForServer(env, out bool owns);
+        (Record, owner) = Create(wrapper, options, owns);
+    }
+    private static (NativeHandle, OwnerToken) Create(Env env, EnvServerOptions? options, bool owns)
+    {
+        NativeHandle? record = null;
         if (env == null) throw new ArgumentNullException(nameof(env));
         HandleLease borrow = default;
         bool acquired = false;
         try
         {
-            Record = NativeGate.Call(() =>
+            record = NativeGate.Call(() =>
             {
                 // Encode before acquiring; an invalid option must still release
                 // the library-owned env through the constructor's outer catch.
@@ -49,20 +57,23 @@ public sealed unsafe class EnvServer : IDisposable
                     RLMeshEnv* nativeEnv = borrow.Env;
                     Status.Check(Native.rlmesh_env_server_new(&nativeEnv, (UIntPtr)1, &init, &output));
                 }
-                return new NativeHandle((IntPtr)output, HandleKind.EnvServer, () =>
+                var created = new NativeHandle((IntPtr)output, HandleKind.EnvServer, () =>
                 {
                     // The borrow and wrapper remain rooted through native free.
+                    System.Threading.Interlocked.CompareExchange(ref env.Record.HostedBy, null, record);
                     borrow.Dispose();
                     if (owns) env.Dispose();
                 });
+                System.Threading.Volatile.Write(ref env.Record.HostedBy, created);
+                return created;
             });
-            owner = new OwnerToken(Record, 0);
+            return (record, new OwnerToken(record, 0));
         }
         catch
         {
             // Once the record owns the borrow, release the server first. This
             // also covers OwnerToken allocation failure after native creation.
-            if (Record != null) Record.CloseOwner(0, true);
+            if (record != null) record.CloseOwner(0, true);
             else
             {
                 if (acquired) borrow.Dispose();

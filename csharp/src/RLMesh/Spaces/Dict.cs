@@ -12,7 +12,10 @@ public sealed unsafe class Dict : Space, IReadOnlyDictionary<string, Space>
 {
     private readonly List<KeyValuePair<string, Space>> entries = new();
     private readonly Dictionary<string, Space> children = new(StringComparer.Ordinal);
-    public Dict(IEnumerable<KeyValuePair<string, Space>> spaces) : this(Create(spaces)) { }
+    public Dict(IEnumerable<KeyValuePair<string, Space>> spaces) : this(Prepare(spaces)) { }
+    private Dict(Dict prepared) : base(prepared.Handle) { entries = prepared.entries; children = prepared.children; }
+    private static Dict Prepare(IEnumerable<KeyValuePair<string, Space>> spaces) =>
+        NativeGate.Call(() => new Dict(Create(spaces)), "Dict constructor");
     internal Dict(NativeHandle handle) : base(handle)
     {
         try

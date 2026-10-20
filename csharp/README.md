@@ -68,8 +68,26 @@ operations throw `ObjectDisposedException`. Dispose servers before borrowed
 An engine can start the server and poll from its tick. Callbacks execute on
 native library threads. Dispatch to an engine's main thread in the integration
 when necessary; avoid blocking that main thread on a call waiting for the same
-callback. Shutdown is synchronous. Runtime reload and unload are unsupported;
-keep the managed runtime alive until all servers have been disposed.
+callback. `ShutdownAsync(cancellationToken)` drains on a library worker. Cancelling
+its token stops waiting with `RLMesh.Ext.CancelledError`; the drain continues.
+An already-cancelled token leaves the server untouched.
+
+## Shutdown before unloading
+
+Before an engine host unloads its managed runtime or a collectible context, call
+`RLMesh.Ext.Lifetime.Shutdown(TimeSpan.FromSeconds(5))` outside a callback.
+Unload only when it returns `true`. If it returns `false`, do not unload: inspect
+`Lifetime.Pending()`, release any blocked environment code, and retry. Shutdown
+is terminal; later native operations throw `ObjectDisposedException`.
+`Lifetime.ShuttingDown` lets a host fail queued main-thread dispatch requests
+before the drain waits for them. Its registrations run on a library thread, so
+marshal any engine work to the appropriate thread.
+
+`Lifetime.WaitFreed(envOrServer, timeout)` waits for native release after disposal.
+The unload and process-exit hooks provide diagnostics and best-effort cleanup;
+they do not replace the host’s preflight.
+
+## Authoring values
 
 `Env.For(obj)` returns the unique caller-owned wrapper for that object. A
 server constructed from `IEnv` borrows an existing caller wrapper or owns a new

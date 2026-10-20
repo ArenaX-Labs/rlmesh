@@ -1,5 +1,5 @@
 RLMesh Experimental public API
-R-28 serving surface; shutdown barrier and cancellation are deferred.
+R-28 v0.2 environment-serving foundation.
 Declared members; nullability and custom attributes are recorded in v0.2.json.
 
 class RLMesh.ConnectionError : RLMesh.OSError
@@ -32,6 +32,7 @@ class RLMesh.EnvServer
   #ctor(RLMesh.IEnv,RLMesh.EnvServerOptions) : System.Void
   Dispose() : System.Void
   Shutdown() : System.Void
+  ShutdownAsync(System.Threading.CancellationToken) : System.Threading.Tasks.Task
   Start() : System.Void
   Wait(System.Nullable`1{System.TimeSpan}) : System.Boolean
   Address : System.String { get; }
@@ -47,9 +48,28 @@ class RLMesh.EnvironmentException : RLMesh.RLMeshException
   #ctor(System.String,System.Exception) : System.Void
   IsRecoverable : System.Boolean { get; }
 
+class RLMesh.Ext.CancelledError : System.OperationCanceledException
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
 class RLMesh.Ext.EnvServerOptions
   #ctor() : System.Void
   HostRuntimeJson : System.String { get; set; }
+
+class RLMesh.Ext.Lifetime
+  Pending() : System.Collections.Generic.IReadOnlyList`1{System.String}
+  Shutdown(System.TimeSpan) : System.Boolean
+  WaitFreed(RLMesh.Env,System.TimeSpan) : System.Boolean
+  WaitFreed(RLMesh.EnvServer,System.TimeSpan) : System.Boolean
+  ShuttingDown : System.Threading.CancellationToken { get; }
+  State : RLMesh.Ext.LifetimeState { get; }
+
+enum RLMesh.Ext.LifetimeState
+  Completed : 2
+  Incomplete : 3
+  Open : 0
+  ShuttingDown : 1
+  value__ : None
 
 interface RLMesh.IClose
   Close() : System.Void

@@ -1,12 +1,13 @@
 using System;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace RLMesh.Interop;
 
 internal static unsafe class Status
 {
-    internal static void Check(RLMeshStatus status)
+    internal static void Check(RLMeshStatus status, CancellationToken cancellationToken = default)
     {
         if (status == RLMeshStatus.RLMESH_OK) return;
         // Copy TLS text first, on this thread. These getters do not clear TLS.
@@ -25,7 +26,7 @@ internal static unsafe class Status
                 var handle = GCHandle.FromIntPtr((IntPtr)payload);
                 ExceptionDispatchInfo? exception;
                 try { exception = handle.Target as ExceptionDispatchInfo; }
-                finally { handle.Free(); }
+                finally { RLMesh.Internal.ManagedRoots.Free(handle); }
                 if (exception != null) exception.Throw();
             }
             else if (deleter != IntPtr.Zero)
@@ -33,6 +34,7 @@ internal static unsafe class Status
         }
         string prefix = "[" + code + "] ";
         string raw = message.StartsWith(prefix, StringComparison.Ordinal) ? message.Substring(prefix.Length) : message;
+        if (status == RLMeshStatus.RLMESH_ERR_CANCELLED) throw new Ext.CancelledError(cancellationToken);
         throw cls switch
         {
             RLMeshErrorClass.RLMESH_ERROR_CLASS_PROTOCOL_EXCEPTION => new ProtocolException(message),

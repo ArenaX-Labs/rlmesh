@@ -18,6 +18,11 @@ internal sealed unsafe class NativeHandle : SafeHandle
     private readonly bool strong;
     private Action? afterFree;
     internal readonly HandleKind Kind;
+    internal string? WaitingIn;
+    internal NativeHandle? HostedBy;
+    // Completed only after server_free returns, which joins native actor and
+    // abandoned close threads. Env free alone is never a thread join.
+    internal readonly NativeReturnScope JoinedNativeReturn = new(attached: false);
     internal CleanupRecord? Cleanup;
     private ManualResetEventSlim? completion;
     internal bool IsFreed => State(Word) == OwnershipState.Freed;
@@ -40,6 +45,7 @@ internal sealed unsafe class NativeHandle : SafeHandle
     internal static readonly ConcurrentQueue<Exception> CleanupFailures = new();
     internal static Action<NativeHandle>? BeforeFree;
     internal static Action<OwnerToken>? BeforeFinalize;
+    internal static Action<NativeHandle>? BeforePublication;
 
     internal NativeHandle(IntPtr pointer, HandleKind kind, Action? afterFree = null, bool finalizable = true) : base(IntPtr.Zero, finalizable && kind is not (HandleKind.Env or HandleKind.EnvServer))
     {
@@ -47,7 +53,15 @@ internal sealed unsafe class NativeHandle : SafeHandle
         Kind = kind;
         strong = kind is HandleKind.Env or HandleKind.EnvServer;
         this.afterFree = afterFree;
-        if (strong) StrongTable.TryAdd(this, 0);
+        if (strong) Admission.Publish(this);
+    }
+    internal void Publish()
+    {
+        BeforePublication?.Invoke(this);
+        StrongTable.TryAdd(this, 0);
+        // A failing constructor may already have freed it, including racing a
+        // finalizer. Pair this check with Destroy's removal after native return.
+        if (IsFreed) StrongTable.TryRemove(this, out _);
     }
     public override bool IsInvalid => handle == IntPtr.Zero;
     internal long Word => Volatile.Read(ref word);
@@ -57,16 +71,16 @@ internal sealed unsafe class NativeHandle : SafeHandle
     private static long Pack(OwnershipState state, int count, uint generation) => unchecked((long)((ulong)generation << 32)) | ((long)count << 3) | (long)state;
     private bool Change(long before, OwnershipState state, int count, uint generation) => Interlocked.CompareExchange(ref word, Pack(state, count, generation), before) == before;
 
-    internal HandleLease Acquire(object? keepAlive = null)
+    internal HandleLease Acquire(object? keepAlive = null, bool teardown = false)
     {
         NativeGate.Ensure();
         while (true)
         {
             long value = Word;
-            if (State(value) is not (OwnershipState.Idle or OwnershipState.InUse)) throw new ObjectDisposedException(Kind.ToString());
+            if (State(value) is not (OwnershipState.Idle or OwnershipState.InUse) && !(teardown && State(value) == OwnershipState.Closing)) throw new ObjectDisposedException(Kind.ToString());
             int count = Count(value);
             if (count == 0x1fffffff) throw new RuntimeError("too many outstanding native references");
-            if (!Change(value, OwnershipState.InUse, count + 1, Generation(value))) continue;
+            if (!Change(value, State(value) == OwnershipState.Closing ? OwnershipState.Closing : OwnershipState.InUse, count + 1, Generation(value))) continue;
             bool added = false;
             try
             {
@@ -151,8 +165,10 @@ internal sealed unsafe class NativeHandle : SafeHandle
     }
     private void Destroy()
     {
+        using var nativeReturn = new NativeReturnScope();
         try
         {
+            Volatile.Write(ref WaitingIn, Kind == HandleKind.EnvServer ? "rlmesh_env_server_free" : "rlmesh_env_free");
             BeforeFree?.Invoke(this);
             switch (Kind)
             {
@@ -160,7 +176,7 @@ internal sealed unsafe class NativeHandle : SafeHandle
                 case HandleKind.Tensor: Native.rlmesh_tensor_free((RLMeshTensor*)handle); break;
                 case HandleKind.Space: Native.rlmesh_space_free((RLMeshSpace*)handle); break;
                 case HandleKind.Env: Native.rlmesh_env_free((RLMeshEnv*)handle); break;
-                case HandleKind.EnvServer: Native.rlmesh_env_server_free((RLMeshEnvServer*)handle); break;
+                case HandleKind.EnvServer: Native.rlmesh_env_server_free((RLMeshEnvServer*)handle); JoinedNativeReturn.CompleteJoin(); break;
             }
             // Native free has returned. Managed cleanup diagnostics must never
             // strand the record (or its registry tombstone) in Freeing.
@@ -172,6 +188,7 @@ internal sealed unsafe class NativeHandle : SafeHandle
                 if (!Change(value, OwnershipState.Freed, 0, Generation(value)))
                     CleanupFailures.Enqueue(new InvalidOperationException("invalid free transition"));
                 StrongTable.TryRemove(this, out _);
+                Volatile.Write(ref WaitingIn, null);
                 Volatile.Read(ref completion)?.Set();
             }
         }
@@ -251,26 +268,28 @@ internal static class CallbackContext
 {
     [ThreadStatic] internal static int Depth;
     [ThreadStatic] private static bool libraryThread;
+    [ThreadStatic] internal static NativeHandle? HostedBy;
     internal static bool LibraryThread
     {
         get => libraryThread;
         set => libraryThread = value;
     }
     internal static long ActiveFrames;
-    internal static void Enter() { Interlocked.Increment(ref ActiveFrames); Depth++; }
+    internal static long EnteredFrames;
+    internal static void Enter() { Interlocked.Increment(ref ActiveFrames); Interlocked.Increment(ref EnteredFrames); Depth++; }
     internal static void Exit() { Depth--; Interlocked.Decrement(ref ActiveFrames); }
 }
 
 internal sealed class CleanupRecord
 {
     private int claim;
-    private readonly Action free;
+    private Action? free;
     internal CleanupRecord(Action free) { this.free = free; }
     internal bool TryRun()
     {
         if (Interlocked.CompareExchange(ref claim, 1, 0) != 0) return false;
-        try { free(); }
-        finally { Volatile.Write(ref claim, 2); }
+        try { Interlocked.Exchange(ref free, null)!(); }
+        finally { Volatile.Write(ref claim, 2); CleanupWorkers.Records.TryRemove(this, out _); }
         return true;
     }
     internal int Claim => Volatile.Read(ref claim);
@@ -278,45 +297,18 @@ internal sealed class CleanupRecord
 
 internal static class CleanupWorkers
 {
-    private static readonly object Sync = new();
-    private static readonly Queue<CleanupRecord> Queue = new();
-    private static int idle;
+    internal static readonly ConcurrentDictionary<CleanupRecord, byte> Records = new();
     internal static Func<object, bool>? WaitForWork;
+    private static readonly TrackedPool Pool = new("RLMesh cleanup", sync => WaitForWork?.Invoke(sync) ?? Monitor.Wait(sync, TimeSpan.FromSeconds(30)));
     internal static void Enqueue(CleanupRecord record)
     {
-        lock (Sync)
+        Records.TryAdd(record, 0);
+        Pool.Enqueue(() =>
         {
-            Queue.Enqueue(record);
-            if (idle == 0)
-            {
-                idle++;
-                new Thread(Work) { IsBackground = true, Name = "RLMesh cleanup" }.Start();
-            }
-            Monitor.Pulse(Sync);
-        }
-    }
-    private static void Work()
-    {
-        CallbackContext.LibraryThread = true;
-        while (true)
-        {
-            CleanupRecord record;
-            lock (Sync)
-            {
-                while (Queue.Count == 0)
-                    if (!(WaitForWork?.Invoke(Sync) ?? Monitor.Wait(Sync, TimeSpan.FromSeconds(30))) && Queue.Count == 0)
-                    { idle--; return; }
-                idle--;
-                record = Queue.Dequeue();
-                // Ensure queued records can progress even if this free blocks.
-                if (Queue.Count > 0 && idle == 0)
-                {
-                    idle++;
-                    new Thread(Work) { IsBackground = true, Name = "RLMesh cleanup" }.Start();
-                }
-            }
             record.TryRun();
-            lock (Sync) idle++;
-        }
+            if (record.Claim == 2) Records.TryRemove(record, out _);
+        });
     }
+    internal static void StopAndJoin() => Pool.StopAndJoin();
+    internal static int Workers => Pool.Workers;
 }

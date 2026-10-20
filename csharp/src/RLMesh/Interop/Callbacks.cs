@@ -2,6 +2,7 @@ using System;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using AOT;
 using RLMesh.Internal;
 
@@ -27,6 +28,12 @@ internal static unsafe class Callbacks
     private static readonly IntPtr FallbackText = AllocateFallback();
     private static readonly IntPtr FreePayloadPointer = Marshal.GetFunctionPointerForDelegate(FreePayloadDelegate);
     internal static Action<IntPtr>? CleanupHook;
+    internal static void ReleaseResources()
+    {
+        // Called once, after every native holder and callback frame is joined.
+        Marshal.FreeHGlobal(PayloadTag);
+        Marshal.FreeHGlobal(FallbackText);
+    }
 
     private static IntPtr AllocateFallback()
     {
@@ -45,6 +52,11 @@ internal static unsafe class Callbacks
         return table;
     }
     private static Env.Root Root(IntPtr data) => (Env.Root)GCHandle.FromIntPtr(data).Target!;
+    private static NativeHandle? Host(Env.Root root)
+    {
+        var record = Volatile.Read(ref root.Entry.Record);
+        return record == null ? null : Volatile.Read(ref record.HostedBy);
+    }
     private static void Write(Value? observation, Metadata? info, RLMeshValue** outObservation, RLMeshValue** outInfo)
     {
         if (observation is null || info is null) throw new TypeError("environment returned a default result or null observation/info");
@@ -65,12 +77,15 @@ internal static unsafe class Callbacks
     [MonoPInvokeCallback(typeof(ResetFn))]
     private static RLMeshStatus Reset(IntPtr data, long* seed, RLMeshValue* options, RLMeshValue** observation, RLMeshValue** info)
     {
+        NativeHandle? previousHost = null;
         bool entered = false;
         try
         {
             CallbackContext.Enter(); entered = true;
+            previousHost = CallbackContext.HostedBy;
             *observation = null; *info = null;
             var root = Root(data);
+            CallbackContext.HostedBy = Host(root);
             Value? input = options == null ? null : Value.Borrow(options);
             Metadata? metadata = input?.AsDict();
             var result = root.Authored.Reset(seed == null ? null : *seed, metadata);
@@ -79,17 +94,20 @@ internal static unsafe class Callbacks
             return RLMeshStatus.RLMESH_OK;
         }
         catch (Exception e) { return Report(e); }
-        finally { if (entered) CallbackContext.Exit(); }
+        finally { if (entered) { CallbackContext.HostedBy = previousHost; CallbackContext.Exit(); } }
     }
     [MonoPInvokeCallback(typeof(StepFn))]
     private static RLMeshStatus Step(IntPtr data, RLMeshValue* action, RLMeshValue** observation, double* reward, byte* terminated, byte* truncated, RLMeshValue** info)
     {
+        NativeHandle? previousHost = null;
         bool entered = false;
         try
         {
             CallbackContext.Enter(); entered = true;
+            previousHost = CallbackContext.HostedBy;
             *observation = null; *info = null;
             var root = Root(data);
+            CallbackContext.HostedBy = Host(root);
             Value? input = action == null ? null : Value.Borrow(action);
             var result = root.Authored.Step(input);
             Write(result.Observation, result.Info, observation, info);
@@ -100,20 +118,24 @@ internal static unsafe class Callbacks
             return RLMeshStatus.RLMESH_OK;
         }
         catch (Exception e) { return Report(e); }
-        finally { if (entered) CallbackContext.Exit(); }
+        finally { if (entered) { CallbackContext.HostedBy = previousHost; CallbackContext.Exit(); } }
     }
     [MonoPInvokeCallback(typeof(CloseFn))]
     private static RLMeshStatus Close(IntPtr data)
     {
+        NativeHandle? previousHost = null;
         bool entered = false;
         try
         {
             CallbackContext.Enter(); entered = true;
-            ((IClose)Root(data).Authored).Close();
+            previousHost = CallbackContext.HostedBy;
+            var root = Root(data);
+            CallbackContext.HostedBy = Host(root);
+            ((IClose)root.Authored).Close();
             return RLMeshStatus.RLMESH_OK;
         }
         catch (Exception e) { return Report(e); }
-        finally { if (entered) CallbackContext.Exit(); }
+        finally { if (entered) { CallbackContext.HostedBy = previousHost; CallbackContext.Exit(); } }
     }
     [MonoPInvokeCallback(typeof(FreeFn))]
     private static void FreeEnv(IntPtr data)
@@ -126,7 +148,7 @@ internal static unsafe class Callbacks
             var handle = GCHandle.FromIntPtr(data);
             var root = (Env.Root)handle.Target!;
             Env.RootReleased(root);
-            handle.Free();
+            ManagedRoots.FreeFromNative(handle, root.Entry.Record);
         }
         catch (Exception e) { NativeHandle.CleanupFailures.Enqueue(e); }
         finally { if (entered) CallbackContext.Exit(); }
@@ -139,7 +161,7 @@ internal static unsafe class Callbacks
         {
             CallbackContext.Enter(); entered = true;
             CleanupHook?.Invoke(data);
-            GCHandle.FromIntPtr(data).Free();
+            ManagedRoots.FreeFromNative(GCHandle.FromIntPtr(data));
         }
         catch (Exception e) { NativeHandle.CleanupFailures.Enqueue(e); }
         finally { if (entered) CallbackContext.Exit(); }
@@ -149,9 +171,9 @@ internal static unsafe class Callbacks
         try
         {
             // Attach first so a text failure preserves the original exception.
-            GCHandle payload = GCHandle.Alloc(ExceptionDispatchInfo.Capture(exception));
+            GCHandle payload = ManagedRoots.Allocate(ExceptionDispatchInfo.Capture(exception), "error payload", CallbackContext.HostedBy);
             try { Native.rlmesh_ext_callback_set_tagged_error_payload((void*)GCHandle.ToIntPtr(payload), FreePayloadPointer, (void*)PayloadTag); }
-            catch { payload.Free(); throw; }
+            catch { ManagedRoots.Free(payload); throw; }
             string text;
             try { text = exception is EnvironmentException environment ? environment.RawMessage : exception.Message; }
             catch { text = exception.GetType().Name + ": message unavailable"; }

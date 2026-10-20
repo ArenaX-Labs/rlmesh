@@ -90,6 +90,41 @@
     "value": null,
     "attributes": []
   },
+  "F:RLMesh.Ext.LifetimeState.Completed": {
+    "kind": "enum_value",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 2,
+    "attributes": []
+  },
+  "F:RLMesh.Ext.LifetimeState.Incomplete": {
+    "kind": "enum_value",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 3,
+    "attributes": []
+  },
+  "F:RLMesh.Ext.LifetimeState.Open": {
+    "kind": "enum_value",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 0,
+    "attributes": []
+  },
+  "F:RLMesh.Ext.LifetimeState.ShuttingDown": {
+    "kind": "enum_value",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 1,
+    "attributes": []
+  },
+  "F:RLMesh.Ext.LifetimeState.value__": {
+    "kind": "enum_value",
+    "signature": "System.Int32",
+    "flags": "Public, SpecialName, RTSpecialName",
+    "value": null,
+    "attributes": []
+  },
   "F:RLMesh.ValueKind.Bool": {
     "kind": "enum_value",
     "signature": "RLMesh.ValueKind",
@@ -300,6 +335,26 @@
     "generics": [],
     "attributes": []
   },
+  "M:RLMesh.EnvServer.ShutdownAsync(System.Threading.CancellationToken)": {
+    "kind": "method",
+    "signature": "System.Threading.Tasks.Task",
+    "flags": "Public, HideBySig",
+    "params": [
+      {
+        "name": "cancellationToken",
+        "sequence": 1,
+        "type": "System.Threading.CancellationToken",
+        "flags": "Optional, HasDefault",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": [
+      "System.Diagnostics.DebuggerStepThroughAttribute:01000000",
+      "System.Runtime.CompilerServices.AsyncStateMachineAttribute:010024524C4D6573682E456E765365727665722B3C53687574646F776E4173796E633E645F5F300000"
+    ]
+  },
   "M:RLMesh.EnvServer.Start()": {
     "kind": "method",
     "signature": "System.Void",
@@ -466,6 +521,48 @@
     "generics": [],
     "attributes": []
   },
+  "M:RLMesh.Ext.CancelledError.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.CancelledError.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
   "M:RLMesh.Ext.EnvServerOptions.#ctor()": {
     "kind": "method",
     "signature": "System.Void",
@@ -498,6 +595,97 @@
     ],
     "generics": [],
     "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.Ext.Lifetime.Pending()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.IReadOnlyList`1{System.String}",
+    "flags": "Public, Static, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.Shutdown(System.TimeSpan)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "timeout",
+        "sequence": 1,
+        "type": "System.TimeSpan",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.WaitFreed(RLMesh.Env,System.TimeSpan)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "env",
+        "sequence": 1,
+        "type": "RLMesh.Env",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "timeout",
+        "sequence": 2,
+        "type": "System.TimeSpan",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.WaitFreed(RLMesh.EnvServer,System.TimeSpan)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "server",
+        "sequence": 1,
+        "type": "RLMesh.EnvServer",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "timeout",
+        "sequence": 2,
+        "type": "System.TimeSpan",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.get_ShuttingDown()": {
+    "kind": "method",
+    "signature": "System.Threading.CancellationToken",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.get_State()": {
+    "kind": "method",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
   },
   "M:RLMesh.IClose.Close()": {
     "kind": "method",
@@ -1496,7 +1684,7 @@
     "params": [],
     "generics": [],
     "attributes": [
-      "System.Runtime.CompilerServices.IteratorStateMachineAttribute:010022524C4D6573682E5370616365732E446963742B3C6765745F4B6579733E645F5F31320000"
+      "System.Runtime.CompilerServices.IteratorStateMachineAttribute:010022524C4D6573682E5370616365732E446963742B3C6765745F4B6579733E645F5F31340000"
     ]
   },
   "M:RLMesh.Spaces.Dict.get_Values()": {
@@ -1506,7 +1694,7 @@
     "params": [],
     "generics": [],
     "attributes": [
-      "System.Runtime.CompilerServices.IteratorStateMachineAttribute:010024524C4D6573682E5370616365732E446963742B3C6765745F56616C7565733E645F5F31340000"
+      "System.Runtime.CompilerServices.IteratorStateMachineAttribute:010024524C4D6573682E5370616365732E446963742B3C6765745F56616C7565733E645F5F31360000"
     ]
   },
   "M:RLMesh.Spaces.Discrete.#ctor(System.Int64,RLMesh.Spaces.DiscreteOptions)": {
@@ -2625,6 +2813,22 @@
     "set": true,
     "attributes": []
   },
+  "P:RLMesh.Ext.Lifetime.ShuttingDown": {
+    "kind": "property",
+    "signature": "System.Threading.CancellationToken",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Ext.Lifetime.State": {
+    "kind": "property",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
   "P:RLMesh.IEnv.ActionSpace": {
     "kind": "property",
     "signature": "RLMesh.Spaces.Space",
@@ -2920,6 +3124,17 @@
       "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
     ]
   },
+  "T:RLMesh.Ext.CancelledError": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "System.OperationCanceledException",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
   "T:RLMesh.Ext.EnvServerOptions": {
     "kind": "class",
     "signature": "Public, Sealed, BeforeFieldInit",
@@ -2930,6 +3145,25 @@
       "System.Runtime.CompilerServices.NullableAttribute:0100000000",
       "System.Runtime.CompilerServices.NullableContextAttribute:0100020000"
     ]
+  },
+  "T:RLMesh.Ext.Lifetime": {
+    "kind": "class",
+    "signature": "Public, Abstract, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.Ext.LifetimeState": {
+    "kind": "enum",
+    "signature": "Public, Sealed",
+    "base": "System.Enum",
+    "protocols": [],
+    "generics": [],
+    "attributes": []
   },
   "T:RLMesh.IClose": {
     "kind": "interface",

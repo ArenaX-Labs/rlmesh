@@ -56,8 +56,7 @@ and `_INIT` factories live in the hand-written layer.
 
 The metadata-only tool in `tools/rlmesh_csharp_surface` compares both assemblies
 with [the serving inventory](../csharp/surface/v0.2.json). That inventory is R-28's v0.2
-surface with `ShutdownAsync`, `Ext.CancelledError` and `Ext.Lifetime` deferred to
-wave B. The human-readable [public API dump](../csharp/surface/public-api.txt) lists its
+surface, including `ShutdownAsync`, `Ext.CancelledError` and `Ext.Lifetime`. The human-readable [public API dump](../csharp/surface/public-api.txt) lists its
 types and declared members. `Space` and the `Box`/`Discrete` constructors live
 in `RLMesh.Spaces`; `DType`, `Tensor`, values and authoring live in `RLMesh`.
 
@@ -74,11 +73,8 @@ inherited shared-lock descriptor. Test scratch lives under `~/.cache`.
 
 ## Specification integration notes
 
-- Wave A omits the three wave B areas explicitly requested by the task:
-  `ShutdownAsync`, `Ext.Lifetime` (including public `WaitFreed`), and cancellation.
-  The record-level completion wait, cleanup diagnostics and callback depth stay
-  internal for that work. The optional .NET-only loader resolver is omitted;
-  ordinary platform loader resolution works for this source foundation.
+- The optional .NET-only loader resolver is omitted; ordinary platform loader
+  resolution works for this source foundation.
 - `host_runtime_json` changes the served describe envelope in the real ABI 5.
   It does **not** change handshake `PeerInfo`, contrary to E-3's fixture wording.
   Tests check the envelope's C# language and `framework_versions`, and the wire
@@ -105,3 +101,77 @@ inherited shared-lock descriptor. Test scratch lives under `~/.cache`.
   underlying error while retaining authored text for other classes. A Rust
   regression test covers attached recoverable, ordinary environment and value
   failures, and both C# target suites verify the result through Python.
+
+## Cancellation and shutdown
+
+`ShutdownAsync` enters admission and takes its counted server reference before
+scheduling. A growing library pool performs the blocking drain, including when
+the caller cancels its wait. It releases the reference and admission only after
+native return and output adoption. Ordinary .NET pool threads are callers;
+R-28/E-3's refused pool context means RLMesh's own worker pool.
+
+The internal cancellation bridge allocates one ABI 5 token for each operation.
+It registers the caller token, passes the pointer explicitly, then disposes the
+registration after native return and frees the reference last. Shutdown also
+fires these live tokens, including those published by an already-admitted
+operation after shutdown began. Tests use `rlmesh_run`'s cancel field because
+this branch's ABI does not yet have X-12's per-call remote-step entry point.
+There is no public run, remote environment or native cancel-token wrapper.
+
+The terminal gate counts constructors through record publication and workers
+through output adoption and reference release. The shutdown coordinator and
+its tracked teardown threads stop servers independently. A constructor publishes its
+new strong records only after adopting its outputs and dependency references;
+the admitted count covers this interval. This protects an EnvServer constructor
+between resolving its new env and borrowing it, while teardown still closes
+every published owner immediately. Servers stop to release admitted blocking
+Wait calls. Native frees
+retain dependencies until return. Managed GCHandle roots and active trampoline
+frames are counted separately; an empty ownership table alone is insufficient.
+A free callback retires its root until the surrounding native call returns or
+the server free that covers its thread has joined. A return with no known join
+remains diagnostic and prevents completion, even after its GCHandle was freed.
+The coordinator joins all frees, cleanup and operation workers before its own
+join permits Completed. GC/finalizer rounds use a separate tracked thread, so an
+unrelated blocked finalizer cannot stop independent teardown or late record
+publication. A collection round gates completion only while strong ownership
+records remain; it remains visible in Pending while running. A failed coordinator
+can be restarted by the next Shutdown call. That retry also reschedules records
+whose teardown thread threw; successful and still-running attempts stay claimed.
+Only timed joins run on the caller, under one absolute deadline. Incomplete retains all roots and continues draining for a later retry.
+
+Every terminal-barrier fixture uses a fresh collectible context, then checks
+that the context is collected. This also catches AppDomain diagnostic handlers
+that accidentally keep the context alive: successful teardown removes them.
+The net10 context hook uses only RLMesh's own assembly, so the static assembly
+checker allows Type.Assembly only for the net10.0 target's infrastructure lookup; no authored types
+are reflected over. Unload notifications diagnose unsafe unload and attempt a
+bounded drain, but cannot make an unload already in progress safe.
+
+Native drain observers share a single join notification without taking the live
+serve_async future's result. Repeated shutdown during a live serve_async only
+signals, while wait joins without taking that future's result. Async wait uses
+completion notifications, including for never-started close drains; it creates
+no recurring polling threads. A suspended shutdown_async future retains no drain
+lock, so a synchronous shutdown can join it without needing that future polled.
+Close callbacks and env destruction carry the same reentrancy marker: shutdown
+from that server's callback only signals, and wait answers from state without
+waiting for its own drain.
+
+Shutdown's close timeout still bounds its close attempt. Rust facade Drop also
+stays bounded: it detaches close/actor threads beyond their timeout or lane grace.
+The C wrapper alone calls a binding-only join hook after its finish() calls, so
+rlmesh_env_server_free remains the unbounded native join point; no C ABI export
+is added. The managed record has an explicit native-return token completed only after this call returns; Freed on an Env record
+is never evidence that a foreign thread joined. A blocked native free is reported
+by Pending and remains on a tracked teardown worker, so the barrier caller still
+returns by its deadline. Unknown foreign returns remain diagnostic indefinitely.
+
+A callback must not hand a blocking shutdown to a helper thread and then join that
+helper: the helper cannot inherit the callback's thread-local reentrancy marker,
+and shutdown must join the callback. Signal shutdown directly inside the callback
+instead. Detecting this arbitrary cross-thread dependency would require changing
+the blocking contract for unrelated observers; it remains unsupported.
+
+ShutdownAsync uses ConfigureAwait(false) for all internal waits. Completion and
+cancellation do not depend on the caller pumping a SynchronizationContext.

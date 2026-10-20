@@ -628,6 +628,8 @@ public sealed unsafe class FoundationTests
             Assert.True(NativeGate.IsLoadFailure(error));
             var wrapped = NativeGate.LoadError(error, "fixture");
             Assert.Contains("rlmesh_capi", wrapped.Message); Assert.Contains(error.Message, wrapped.Message); Assert.Same(error, wrapped.InnerException);
+            wrapped = Assert.Throws<RuntimeError>(() => NativeGate.Continue((Action)(() => throw error), "worker fixture"));
+            Assert.Contains("worker fixture", wrapped.Message); Assert.Same(error, wrapped.InnerException);
         }
     }
 

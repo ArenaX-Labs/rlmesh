@@ -1720,7 +1720,9 @@ the remote clients, hooks, transforms), that part is design record.
   (`typeof(I).IsAssignableFrom(typeof(T))`) is allowed: it reads only the
   type's interface list, which IL2CPP and trimming preserve (Model's
   describe type form, MDL-23). So is `GetType().Name` for advisory text
-  (ADP-32). Nothing else on `System.Type` is used (E-2's reference check).
+  (ADP-32). The net10.0-only unload hook additionally reads
+  `typeof(LifetimeEngine).Assembly` to find its own AssemblyLoadContext. No
+  other `System.Type` member is used (E-2's reference check).
 - **Native library.** `[DllImport("rlmesh_capi", CallingConvention =
 CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
   platforms that link the C library statically (iOS) are built with
@@ -1734,7 +1736,8 @@ CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
 - **ABI gate.** `rlmesh_abi_check` is a `static inline` header helper
   (`h:397`), not an export, and netstandard2.1 offers no assembly-load hook
   that IL2CPP is known to honour, so the gate is a hand-written
-  `internal static class NativeGate` with an explicit static constructor.
+  `internal static class NativeGate` with a lazy, thread-safe validation result
+  (`Lazy<RuntimeError?>`), initialized after operation admission.
   It records the first failure of three checks as a RuntimeError class
   failure: loading the library (a `DllNotFoundException`,
   `BadImageFormatException` or `EntryPointNotFoundException` from the first
@@ -1749,7 +1752,7 @@ CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
   when installed as shipped. Both constants are hand-written, because D-18's
   generator flags emit no macro bindings; E-3's C sizing check compares
   them with the header. Every public entry point that reaches C calls
-  `NativeGate.Ensure()` first, which runs the constructor once and rethrows
+  `NativeGate.Ensure()` first, which evaluates validation once and rethrows
   the recorded failure on every later call, so no other C call is made
   against a library that failed it. An `EntryPointNotFoundException` that
   still escapes a later call (a library replaced by hand) is caught by the
@@ -3143,7 +3146,8 @@ bodies decoded by System.Reflection.Metadata (`MethodBodyBlock`,
   `GetProperty`, `GetField`, `GetMembers`, `MakeGenericType` or
   `MakeGenericMethod`; the only `System.Type` members referenced are
   `GetTypeFromHandle` (`typeof`), `IsAssignableFrom` and `get_Name`
-  (`GetType().Name`);
+  (`GetType().Name`), plus `get_Assembly` exclusively in the net10.0 unload
+  hook (never in netstandard2.1);
 - every `DllImport` names `rlmesh_capi` (or `__Internal` in the static
   build) with Cdecl and a blittable signature;
 - every method whose address is handed to C carries
