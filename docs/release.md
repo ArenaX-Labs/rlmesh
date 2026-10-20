@@ -166,7 +166,8 @@ Apple's `security` CLI takes the import/keychain passwords in argv. That is
 accepted only on these ephemeral, isolated release runners: never enable tracing,
 echo credentials, or reuse this flow on a shared persistent host.
 
-On `refs/tags/v*`, any missing Apple secret **fails** signing by default. The
+The user approved this release policy on 2026-10-20. On `refs/tags/v*`, any
+missing Apple secret **fails** signing by default. The
 explicit repository variable `RLMESH_ALLOW_UNSIGNED_MACOS=true` permits an
 exception: the workflow warns, ad-hoc signs with `codesign --force --sign -`,
 verifies that signature, and skips notarization. It produces **no Developer ID or

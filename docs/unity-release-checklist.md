@@ -140,7 +140,9 @@ asset or a short-lived artifact URL and never put credentials in workflow input.
 If any of `UNITY_LICENSE`, `UNITY_EMAIL` or `UNITY_PASSWORD` is absent, the
 workflow fails before checkout or Unity execution.
 
-The workflow has only `workflow_dispatch`, one job, no matrix, runner
+The user approved this dispatch-only GameCI mechanism and its
+`depot-ubuntu-24.04-8` runner on 2026-10-20. The workflow has only
+`workflow_dispatch`, one job, no matrix, runner
 `depot-ubuntu-24.04-8`, timeout 45 minutes and concurrency
 `unity-${{ github.ref }}` with `cancel-in-progress: true`. The pinned GameCI test
 runner executes EditMode and PlayMode; the pinned builder builds Linux IL2CPP;
