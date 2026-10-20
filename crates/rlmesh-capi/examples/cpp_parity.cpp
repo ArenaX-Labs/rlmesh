@@ -999,6 +999,19 @@ void adapters_readers_recorder() {
     registered.emplace([owner](const Value&) { return vector(static_cast<float>(*owner)); });
     owner.reset();
     ObsTransform previous([](const Value&) { return vector(1); });
+    const std::string embedded = std::string(name) + std::string("\0suffix", 7);
+    for (bool registering : {false, true}) {
+      bool rejected = false;
+      try {
+        if (registering)
+          ext::register_entrypoint(embedded, previous);
+        else
+          ext::unregister_entrypoint(embedded);
+      } catch (const ValueError&) {
+        rejected = true;
+      }
+      CHECK(rejected);
+    }
     ext::register_entrypoint(name, previous);
     ext::register_entrypoint(name, *registered);
     CHECK(!ext::unregister_entrypoint(name, &previous));
