@@ -53,6 +53,7 @@ rlmesh-session-core = { version = "=0.1.0", path = "crates/rlmesh-session-core" 
 rlmesh-spaces = { version = "=0.1.0", path = "crates/rlmesh-spaces" }
 rlmesh-spec = { version = "=0.1.0", path = "crates/rlmesh-spec" }
 rlmesh-viewer = { version = "=0.1.0", path = "crates/rlmesh-viewer" }
+rlmesh-wasm = { version = "=0.1.0", path = "crates/rlmesh-wasm" }
 rlmesh-wire = { version = "=0.1.0", path = "crates/rlmesh-wire" }
 
 # Protocol / Transport
@@ -157,6 +158,16 @@ rustls = { version = "0.23", default-features = false, features = [
   "tls12",
 ] }
 toml = "1.1"
+
+# Browser gateway (crates/rlmesh-gateway): static files with COOP/COEP, TLS
+# on the ring provider, and a WebSocket client for its tests.
+tokio-rustls = { version = "0.26", default-features = false, features = [
+  "logging",
+  "ring",
+  "tls12",
+] }
+tokio-tungstenite = "0.29"
+tower-http = "0.6"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
