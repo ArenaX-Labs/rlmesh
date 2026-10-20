@@ -691,6 +691,7 @@ impl EnvServer {
                 self.shared.shutdown.trigger("watcher startup failed");
                 self.set_stopped();
                 let _ = cleanup_ready(*resources, &self.shared);
+                self.shared.done.send_replace(true);
                 return Err(error);
             }
         };
@@ -788,7 +789,7 @@ impl EnvServer {
     /// the drain.
     pub fn shutdown(&self) -> Result<()> {
         refuse_in_async_context("shutdown")?;
-        self.shared.begin_shutdown("local shutdown");
+        self.shared.trigger_shutdown("local shutdown");
         if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
             let mut state = lock(&self.shared.state);
             if matches!(*state, State::Foreground) {
@@ -884,7 +885,7 @@ impl EnvServer {
     /// The async twin of [`shutdown`](Self::shutdown). Dropping it leaves the
     /// drain it triggered to finish detached.
     pub async fn shutdown_async(&self) -> Result<()> {
-        self.shared.begin_shutdown("local shutdown");
+        self.shared.trigger_shutdown("local shutdown");
         if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
             return Ok(());
         }
@@ -969,14 +970,14 @@ impl Drop for StopOnDrop<'_> {
         if let Some(drain) = lock(&self.0.detached).as_ref() {
             drain.serve_owned.store(false, Ordering::Release);
         }
-        self.0.begin_shutdown("dropped serve_async");
+        self.0.trigger_shutdown("dropped serve_async");
         *lock(&self.0.state) = State::Stopped;
     }
 }
 
 impl Drop for EnvServer {
     fn drop(&mut self) {
-        self.shared.begin_shutdown("drop");
+        self.shared.trigger_shutdown("drop");
         let previous = std::mem::replace(&mut *lock(&self.shared.state), State::Stopped);
         let detached = lock(&self.shared.detached).take();
         if in_async_context() || IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
@@ -1305,7 +1306,7 @@ impl CancelProbe {
     }
 }
 impl Shared {
-    fn begin_shutdown(&self, reason: &str) {
+    fn trigger_shutdown(&self, reason: &str) {
         // A firing before this call must compete synchronously, even between
         // watcher polls. Once another trigger wins, later firings cannot alter
         // the serve result, including firings during drain/close.
@@ -1866,9 +1867,11 @@ mod cancellation_tests {
         );
     }
     #[test]
-    fn watcher_startup_failure_closes_ready_envs_and_stops_the_server() {
+    fn watcher_startup_failure_closes_ready_envs_and_notifies_waiters() {
         let token = CancelToken::new();
         let (server, closes) = server(&token, false, true, false);
+        let mut done = server.shared.done.subscribe();
+        assert!(!*done.borrow_and_update());
         let result = server.spawn_background_with_watcher(
             "start",
             State::Starting,
@@ -1879,6 +1882,8 @@ mod cancellation_tests {
             matches!(result, Err(Error::Internal(message)) if message == "injected watcher spawn failure")
         );
         assert_eq!(closes.load(Ordering::SeqCst), 1);
+        assert!(done.has_changed().unwrap(), "wake wait_async after cleanup");
+        assert!(*done.borrow_and_update());
         assert!(server.wait(Some(Duration::ZERO)).unwrap());
         server.shutdown().unwrap();
         assert!(server.start().is_err());
