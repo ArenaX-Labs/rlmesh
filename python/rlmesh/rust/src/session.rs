@@ -24,7 +24,7 @@ use pyo3::types::{PyDict, PyList};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh_edge::{Due, EdgeConfig, EdgeMode, Robot};
-use rlmesh_session::schedule::sleep_until;
+use rlmesh_session::controller::sleep_until;
 use rlmesh_session::{
     Clock, Controller, ControllerConfig, ControllerError, HostConfig, Observation, ObserveError,
     Participant, ParticipantConfig, Predictor, RunError, RunEvent, SendError, Sent, SessionError,

@@ -1,4 +1,5 @@
-//! Policy starts (§8.9) and slowdown reporting (§8.10), sans-IO.
+//! Policy starts (§8.9) and slowdown reporting (§8.10), sans-IO: every
+//! time is passed in (`now_ns`), nothing sleeps or spawns.
 //!
 //! [`StartSchedule`] decides when a controller's policy starts:
 //!
@@ -388,22 +389,6 @@ impl StartSchedule {
             .filter(|r| counts[r.index()] > 0)
             .max_by_key(|r| counts[r.index()])
             .map_or("unknown", |r| r.cause())
-    }
-}
-
-/// Sleeps until `deadline_ns` on `now`'s clock: a coarse sleep, then a
-/// short spin, so a 1 kHz loop keeps its period.
-pub fn sleep_until(now: impl Fn() -> i64, deadline_ns: i64) {
-    loop {
-        let left = deadline_ns - now();
-        if left <= 0 {
-            return;
-        }
-        if left > 200_000 {
-            std::thread::sleep(Duration::from_nanos((left - 150_000).unsigned_abs()));
-        } else {
-            std::hint::spin_loop();
-        }
     }
 }
 

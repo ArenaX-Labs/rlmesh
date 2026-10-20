@@ -45,7 +45,7 @@ use crate::cache::{Inputs, Observation, ObserveError, Skip};
 use crate::chunk::{ChunkDraft, ChunkPublisher};
 use crate::error::SessionError;
 use crate::participant::Participant;
-use crate::schedule::{RunEvent, RunStats, SkipReason, StartSchedule, sleep_until};
+use crate::schedule::{RunEvent, RunStats, SkipReason, StartSchedule};
 
 /// Events kept for [`Controller::drain_events`].
 const EVENTS: usize = 256;
@@ -710,5 +710,21 @@ fn skip_reason(skip: &Skip) -> SkipReason {
         SkipReason::StaleInput
     } else {
         SkipReason::Waiting
+    }
+}
+
+/// Sleeps until `deadline_ns` on `now`'s clock: a coarse sleep, then a
+/// short spin, so a 1 kHz loop keeps its period.
+pub fn sleep_until(now: impl Fn() -> i64, deadline_ns: i64) {
+    loop {
+        let left = deadline_ns - now();
+        if left <= 0 {
+            return;
+        }
+        if left > 200_000 {
+            std::thread::sleep(Duration::from_nanos((left - 150_000).unsigned_abs()));
+        } else {
+            std::hint::spin_loop();
+        }
     }
 }
