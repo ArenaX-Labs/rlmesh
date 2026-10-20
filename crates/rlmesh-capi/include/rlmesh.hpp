@@ -7744,6 +7744,8 @@ inline std::string env_server_describe_json(const EnvServer& server) {
 }
 inline bool unregister_entrypoint(std::string_view name,
                                   const adapters::ObsTransform* expected = nullptr) {
+  if (name.find('\0') != std::string_view::npos)
+    throw ValueError("entrypoint contains an embedded NUL");
   bool removed = false;
   detail::check_status(rlmesh_ext_unregister_entrypoint(
       std::string(name).c_str(), expected ? expected->raw() : nullptr, &removed));
@@ -7751,6 +7753,8 @@ inline bool unregister_entrypoint(std::string_view name,
 }
 inline void register_entrypoint(std::string_view entrypoint,
                                 const adapters::ObsTransform& transform) {
+  if (entrypoint.find('\0') != std::string_view::npos)
+    throw ValueError("entrypoint contains an embedded NUL");
   detail::check_status(
       rlmesh_ext_register_entrypoint(std::string(entrypoint).c_str(), transform.raw()));
 }
