@@ -25,8 +25,10 @@
 //!   decoded latency;
 //! - `safety`: SAFE entries, hold and safe ticks, lease lapses at the host;
 //! - `cpu_skipped_ticks`: robot ticks more than 1 ms late;
-//! - `transit_ms`: chunk receipt minus its `t0` (with `--controller bound`,
-//!   the snapshot: inference, packing and the link).
+//! - `snapshot_age_ms`, `transit_ms`: `chunk_age_ms` split at the chunk's
+//!   `t0` as the edge converted it (with `--controller bound`, the policy's
+//!   snapshot): the ft sample's age at the snapshot, then inference,
+//!   packing and the link (per dispatched chunk).
 //!
 //! Options: `--camera off|raw|jpeg` (640x480 at `--camera-hz 20`; jpeg is
 //! q75 with an 8 Mbit/s cap), `--horizon N` actions at 1 ms re-planned every
@@ -327,6 +329,8 @@ struct TickRecord {
     lateness_ns: i64,
     mode: EdgeMode,
     based_on: Option<u64>,
+    /// The dispatched chunk: (token, seq, receipt, t0), edge clock.
+    chunk: Option<(u64, u64, i64, i64)>,
 }
 
 async fn embodiment(args: &Args) -> Result<Value, BoxError> {
@@ -376,9 +380,8 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
 
     let clock = SystemMonotonicClock;
     let ft_capture: Arc<Vec<AtomicI64>> = Arc::new((0..RING).map(|_| AtomicI64::new(0)).collect());
-    // (based-on capture, receipt - capture, receipt - t0) per accepted chunk.
-    let chunk_ages: Arc<Mutex<Vec<(i64, i64, i64)>>> =
-        Arc::new(Mutex::new(Vec::with_capacity(40_000)));
+    // (based-on capture, receipt - capture) per accepted chunk.
+    let chunk_ages: Arc<Mutex<Vec<(i64, i64)>>> = Arc::new(Mutex::new(Vec::with_capacity(40_000)));
     let edge = Arc::new(
         Edge::attach(
             &robot,
@@ -397,7 +400,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
                     let capture =
                         ft_capture[based.seq_last as usize % RING].load(Ordering::Relaxed);
                     if let Ok(mut ages) = chunk_ages.lock() {
-                        ages.push((capture, receive_ns - capture, receive_ns - chunk.t0_ns));
+                        ages.push((capture, receive_ns - capture));
                     }
                 })
             }),
@@ -447,15 +450,25 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
                     eprintln!("ft publish: {err}");
                 }
                 let applied = edge.tick();
+                let driving = applied
+                    .action
+                    .as_ref()
+                    .filter(|_| applied.mode == EdgeMode::Driving);
                 records.push(TickRecord {
                     capture_ns: capture,
                     lateness_ns: capture - next,
                     mode: applied.mode,
-                    based_on: applied
-                        .action
-                        .as_ref()
-                        .filter(|_| applied.mode == EdgeMode::Driving)
-                        .and_then(|a| a.chunk.based_on.first().map(|o| o.seq_last)),
+                    based_on: driving.and_then(|a| {
+                        a.chunk
+                            .based_on
+                            .iter()
+                            .find(|r| r.channel == ft_channel)
+                            .map(|r| r.seq_last)
+                    }),
+                    chunk: driving.map(|a| {
+                        let t0 = a.slot_ns - i64::from(a.index) * a.dt_ns;
+                        (a.chunk.lease_token.0, a.chunk.seq, a.chunk.receive_ns, t0)
+                    }),
                 });
                 next += PERIOD_NS;
                 let now = clock.now_ns();
@@ -536,17 +549,26 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
             .collect::<BTreeMap<_, _>>()
     });
     let all: Vec<&&TickRecord> = window.iter().collect();
-    let windowed: Vec<(i64, i64, i64)> = chunk_ages
+    let chunk_ages: Vec<i64> = chunk_ages
         .lock()
         .map(|a| {
             a.iter()
-                .filter(|(c, _, _)| in_window(*c))
-                .copied()
+                .filter(|(c, _)| in_window(*c))
+                .map(|(_, a)| *a)
                 .collect()
         })
         .unwrap_or_default();
-    let chunk_ages: Vec<i64> = windowed.iter().map(|(_, age, _)| *age).collect();
-    let transit: Vec<i64> = windowed.iter().map(|(_, _, t)| *t).collect();
+    // Each dispatched chunk once, split at its t0.
+    let mut seen = std::collections::BTreeSet::new();
+    let (mut snapshot_age, mut transit) = (Vec::new(), Vec::new());
+    for r in &window {
+        if let (Some((token, seq, receipt, t0)), Some(based)) = (r.chunk, r.based_on)
+            && seen.insert((token, seq))
+        {
+            snapshot_age.push(t0 - capture_of(based));
+            transit.push(receipt - t0);
+        }
+    }
     let stats = edge.stats();
     let result = json!({
         "config": {
@@ -559,6 +581,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
         "control_per_s": driving as f64 / duration_s,
         "loop_ms": percentiles(window.iter().filter_map(|r| age(r)).collect()),
         "chunk_age_ms": percentiles(chunk_ages),
+        "snapshot_age_ms": percentiles(snapshot_age),
         "transit_ms": percentiles(transit),
         "miss_pct": miss_pct(&all),
         "split": split,
