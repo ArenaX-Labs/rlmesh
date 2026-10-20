@@ -8,7 +8,9 @@
 //! - **Leases.** A background keeper holds the binding's leases while they
 //!   are wanted: it requests them, re-requests them after a preemption
 //!   ends, a lapse or a re-arm (each with a fresh token), and declares a
-//!   chunk sender per granted lease. [`Controller::acquire`] takes them at
+//!   chunk sender per granted lease. On the wall clock it waits until the
+//!   host has mapped this controller's clock and its robots' (an edge
+//!   rejects chunks until then). [`Controller::acquire`] takes them at
 //!   once (an operator taking over), [`Controller::release`] gives them
 //!   back.
 //! - [`Controller::send`] packs `predict`'s output per action entry
@@ -209,6 +211,27 @@ impl Leases {
         self.channels.iter().all(|c| held.contains_key(c))
     }
 
+    /// Whether the host has mapped this controller's clock and the clock of
+    /// every robot it commands. An edge rejects a chunk until both are
+    /// mapped (`NoClockMapping`), so leases taken earlier only produce
+    /// rejected chunks; a ticked session needs no mapping.
+    fn clocks_mapped(&self, participant: &Participant) -> bool {
+        let me = participant.id();
+        participant.authority_view().with(|view| {
+            let Some(view) = view else {
+                return false;
+            };
+            if view.clock_mode != ClockMode::Wall {
+                return true;
+            }
+            view.clock(me).is_some()
+                && self.channels.iter().all(|c| {
+                    view.part(*c)
+                        .is_some_and(|part| view.clock(&part.owner).is_some())
+                })
+        })
+    }
+
     /// Requests every lease, all or none, and declares a sender per new
     /// token.
     async fn grant(&self, participant: &Participant) -> Result<Vec<Lease>, SessionError> {
@@ -277,7 +300,11 @@ async fn keep_leases(
         leases.prune(&participant);
         let wanted = leases.want.load(Ordering::Relaxed);
         let mode = participant.authority().map(|v| v.mode);
-        if wanted && !leases.holds_all() && matches!(mode, Some(Mode::Armed | Mode::Active)) {
+        if wanted
+            && !leases.holds_all()
+            && matches!(mode, Some(Mode::Armed | Mode::Active))
+            && leases.clocks_mapped(&participant)
+        {
             match leases.grant(&participant).await {
                 Ok(_) => {}
                 Err(err) => {
