@@ -12,7 +12,8 @@
 //!   the compatibility rule (§10.7);
 //! - the message types: authority state and control verbs ([`authority`]),
 //!   heartbeats and clock pings ([`heartbeat`]), parts, streams and payload
-//!   packing ([`part`]), samples, batches and history queries ([`sample`]),
+//!   packing ([`part`]), delivery contracts, action grids and publication
+//!   plans ([`contract`]), samples, batches and history queries ([`sample`]),
 //!   timed action chunks ([`action`]), the virtual-mode tick protocol
 //!   ([`tick`]) and the lockstep fast path ([`lockstep`]);
 //! - [`codec`]: the one module that knows the byte encoding.
@@ -49,6 +50,7 @@
 pub mod action;
 pub mod authority;
 pub mod codec;
+pub mod contract;
 pub mod error;
 pub mod heartbeat;
 pub mod ids;
@@ -66,6 +68,7 @@ pub use authority::{
     CtlStatus, FenceError, Lease, Mode, ParticipantInfo, PriorityClass, Request, Role, Watermark,
 };
 pub use codec::Encoded;
+pub use contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 pub use error::WireError;
 pub use heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
 pub use ids::{

@@ -9,7 +9,7 @@
 // renumber or retype. A feature added in a protocol minor is a feature
 // string (Attach.supports/requires, AuthorityState.supports,
 // PartSpec.requires). Field numbers the spec reserves for messages not built
-// yet (episodes, delivery contracts, demands) are left unused.
+// yet (episodes) are left unused.
 syntax = "proto3";
 
 package rlmesh.session.v2;
@@ -95,6 +95,69 @@ message ClockMapping {
   int64 sample_ns = 6;
 }
 
+// How a subscriber is delivered one stream (§8.2).
+enum ContractMode {
+  CONTRACT_MODE_UNSPECIFIED = 0;
+  // The newest sample, at most delivery_hz times per second.
+  CONTRACT_MODE_LATEST = 1;
+  // Every sample, in increments flushed about every 1 / delivery_hz.
+  CONTRACT_MODE_HISTORY = 2;
+  // Every sample, as soon as it is published.
+  CONTRACT_MODE_EVERY = 3;
+}
+
+// One subscriber's delivery contract on one stream, fixed at attach.
+message StreamContract {
+  // A part's stream or a commandable part's _applied stream.
+  uint32 channel = 1;
+  ContractMode mode = 2;
+  // D.
+  double delivery_hz = 3;
+  // The deepest window on the stream; 1 is none.
+  uint32 history = 4;
+  // The effective freshness bound after precedence (§8.7); 0 for events.
+  uint64 max_age_ns = 5;
+  bool max_age_explicit = 6;
+}
+
+// The action grid a binding declared for one commanded part: a chunk with
+// dt_ns = 0 takes this dt.
+message ActionGrid {
+  uint32 channel = 1;
+  uint64 dt_ns = 2;
+}
+
+// How a publisher sends one stream.
+enum PlanKind {
+  PLAN_KIND_UNSPECIFIED = 0;
+  // Each sample immediately.
+  PLAN_KIND_EVERY = 1;
+  // Increments of new samples (SampleBatch).
+  PLAN_KIND_INCREMENTS = 2;
+  // The newest sample at latest_hz, coalescing older ones.
+  PLAN_KIND_LATEST = 3;
+}
+
+// A stream's publication plan, derived by the host from every admitted
+// contract on it. A stream with no demand publishes every sample within its
+// send ceiling.
+message Demand {
+  uint32 channel = 1;
+  // Bumps whenever the plan changes; from 1.
+  uint64 revision = 2;
+  PlanKind plan = 3;
+  // INCREMENTS: flush at least this often, and earlier at either cap.
+  uint64 flush_ns = 4;
+  uint32 max_records = 5;
+  uint64 max_bytes = 6;
+  // LATEST.
+  double latest_hz = 7;
+  // How long the publisher's ring retains samples.
+  uint64 retain_ns = 8;
+  // The newest revision the publisher acknowledged; 0 is none.
+  uint64 acked = 9;
+}
+
 // A controller's declared binding, as the host recorded it.
 message BindingRecord {
   string participant = 1;
@@ -105,6 +168,10 @@ message BindingRecord {
   repeated uint32 channels = 5;
   // Its replan rate R: in virtual mode, the ticks it is due on.
   double replan_hz = 6;
+  // One per bound input stream.
+  repeated StreamContract contracts = 7;
+  // One per commanded part.
+  repeated ActionGrid grids = 8;
 }
 
 // The host's authority snapshot.
@@ -133,6 +200,8 @@ message AuthorityState {
   // Robot -> its declaration fingerprint (8 bytes): BLAKE3 over the
   // canonical form of its normalised map (§3.3).
   map<string, bytes> contract = 17;
+  // The publication plan of every stream some binding has a contract on.
+  repeated Demand demands = 18;
 }
 
 // One NTP-style exchange: t1 and t4 in the participant's clock, t2 and t3 in
@@ -310,8 +379,12 @@ message DeclareBinding {
   string table_json = 3;
   // The parts it will command.
   repeated uint32 channels = 4;
+  // One per bound input stream.
+  repeated StreamContract contracts = 5;
   // Its replan rate R (virtual mode: the ticks it is due on); 0 = never due.
   double replan_hz = 6;
+  // One per commanded part.
+  repeated ActionGrid grids = 7;
 }
 
 // All or none.
@@ -343,6 +416,12 @@ message EnterSafe {
 message Watermark {
   uint32 channel = 1;
   uint64 seq = 2;
+}
+
+// Publisher -> host: the plan of demand revision `revision` is installed.
+message DemandAck {
+  uint32 channel = 1;
+  uint64 revision = 2;
 }
 
 // One chunk, by identity.
@@ -382,6 +461,7 @@ message CtlRequest {
     DeclareParts declare_parts = 18;
     EnterSafe enter_safe = 19;
     DeclareBinding declare_binding = 20;
+    DemandAck demand_ack = 24;
     Ready ready = 25;
     Decided decided = 26;
   }
@@ -410,6 +490,9 @@ enum CtlStatus {
   CTL_STATUS_GROUP_BUSY = 14;
   // A lease on a part outside the requester's binding.
   CTL_STATUS_NOT_BOUND = 15;
+  // A lease requested before every stream of the binding has installed a
+  // plan that includes its contract.
+  CTL_STATUS_NOT_READY = 16;
 }
 
 message CtlReply {

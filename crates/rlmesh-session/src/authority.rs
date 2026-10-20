@@ -18,6 +18,15 @@
 //!   **binding**: chunks must carry its fingerprint, and a rebinding
 //!   re-issues the holder's leases under a fresh token, so in-flight chunks
 //!   of the old binding are fenced (Codex finding 2).
+//! - **Delivery contracts** (§8.2) come with a binding, one per bound input
+//!   stream. The host admits them ([`rlmesh_spec::contract::admit`]), derives
+//!   one publication plan per stream from every attached controller's
+//!   contracts and publishes it as a [`Demand`]; the stream's publisher
+//!   installs it and acknowledges the revision ([`Command::DemandAck`]).
+//!   Install before authority: a lease is granted only once every stream of
+//!   the requester's binding has acknowledged a revision that includes its
+//!   contract (`NOT_READY`). Demand is recomputed on attach, detach,
+//!   participant loss, part removal and rebinding.
 //! - Priority classes: `safety > operator > model > scripted`. A higher
 //!   class preempts a lower one and gets a fresh token; an equal or lower
 //!   class gets `LEASE_BUSY`.
@@ -38,13 +47,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use rlmesh_spec::contract;
 use rlmesh_wire::authority::fence;
 use rlmesh_wire::part::PartSpec;
 use rlmesh_wire::tick::VirtualTick;
 use rlmesh_wire::version::{PROTOCOL_MINOR, missing_features};
 use rlmesh_wire::{
     AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command, CtlError,
-    CtlStatus, Epoch, FenceError, Fingerprint, Lease, LeaseToken, Mode, ParticipantId,
+    CtlStatus, Demand, Epoch, FenceError, Fingerprint, Lease, LeaseToken, Mode, ParticipantId,
     ParticipantInfo, PriorityClass, Request, Role, SessionId,
 };
 
@@ -52,6 +62,8 @@ use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
 
 /// The highest replan rate a binding declares.
 const MAX_REPLAN_HZ: f64 = 10_000.0;
+/// The longest action period a binding declares.
+const MAX_ACTION_DT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Why a participant left the roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,6 +176,20 @@ pub enum AuthorityEvent {
         /// Its fingerprint.
         fingerprint: Fingerprint,
     },
+    /// A stream's publication plan changed (or went away: `None`).
+    DemandChanged {
+        /// The stream.
+        channel: ChannelId,
+        /// Its new demand.
+        demand: Option<Demand>,
+    },
+    /// A publisher installed a stream's plan.
+    DemandInstalled {
+        /// The stream.
+        channel: ChannelId,
+        /// The installed revision.
+        revision: u64,
+    },
     /// The virtual-mode barrier waited past its timeout.
     BarrierTimeout {
         /// The tick it was on.
@@ -228,6 +254,17 @@ impl fmt::Display for AuthorityEvent {
                 participant,
                 fingerprint,
             } => write!(f, "{participant} bound {fingerprint}"),
+            Self::DemandChanged {
+                channel,
+                demand: Some(d),
+            } => write!(f, "demand {channel} revision {}: {:?}", d.revision, d.plan),
+            Self::DemandChanged {
+                channel,
+                demand: None,
+            } => write!(f, "demand {channel} withdrawn"),
+            Self::DemandInstalled { channel, revision } => {
+                write!(f, "demand {channel} revision {revision} installed")
+            }
             Self::BarrierTimeout { tick } => write!(f, "virtual barrier timed out at tick {tick}"),
         }
     }
@@ -285,6 +322,14 @@ pub struct Authority {
     bindings: BTreeMap<ParticipantId, BindingRecord>,
     /// Each robot's declaration fingerprint (§3.3).
     contract: BTreeMap<ParticipantId, Fingerprint>,
+    /// The publication plan per stream some attached binding contracts.
+    demands: BTreeMap<ChannelId, Demand>,
+    /// The last demand revision per stream, kept when a demand goes away so
+    /// a stale acknowledgement never satisfies a later one.
+    demand_revisions: BTreeMap<ChannelId, u64>,
+    /// Per controller and stream, the demand revision that first included
+    /// its contract: what its publisher must have acknowledged.
+    needed: BTreeMap<(ParticipantId, ChannelId), u64>,
     last_token: u64,
     clock: Option<VirtualClock>,
     /// Virtual ticks to publish.
@@ -311,6 +356,9 @@ impl Authority {
             last_channel: 0,
             bindings: BTreeMap::new(),
             contract: BTreeMap::new(),
+            demands: BTreeMap::new(),
+            demand_revisions: BTreeMap::new(),
+            needed: BTreeMap::new(),
             last_token: 0,
             clock,
             ticks: Vec::new(),
@@ -420,6 +468,7 @@ impl Authority {
             tick_ns: self.config.virtual_clock.map_or(0, |c| c.tick_ns),
             bindings: self.bindings.values().cloned().collect(),
             contract: self.contract.clone(),
+            demands: self.demands.values().cloned().collect(),
         }
     }
 
@@ -468,6 +517,7 @@ impl Authority {
                     roles,
                     priority,
                 });
+                self.recompute_demands(&mut applied.events);
             }
             Command::Detach => {
                 self.require_attached(&from)?;
@@ -482,6 +532,8 @@ impl Authority {
                 self.contract.remove(&from);
                 self.bindings.remove(&from);
                 self.roster.remove(&from);
+                self.needed.retain(|(p, _), _| p != &from);
+                self.recompute_demands(&mut applied.events);
                 applied.events.push(AuthorityEvent::Detached {
                     participant: from.clone(),
                     reason: DetachReason::Requested,
@@ -549,6 +601,8 @@ impl Authority {
                 table_json,
                 channels,
                 replan_hz,
+                contracts,
+                grids,
             } => self.declare_binding(
                 BindingRecord {
                     participant: from,
@@ -557,9 +611,14 @@ impl Authority {
                     table_json,
                     channels,
                     replan_hz,
+                    contracts,
+                    grids,
                 },
                 &mut applied.events,
             )?,
+            Command::DemandAck { channel, revision } => {
+                self.demand_ack(&from, channel, revision, &mut applied.events)?;
+            }
             Command::GrantLease {
                 channels,
                 release,
@@ -716,6 +775,8 @@ impl Authority {
         if lapsed {
             self.enter_safe("lease holder lost", &mut events);
         }
+        self.needed.retain(|(p, _), _| p != id);
+        self.recompute_demands(&mut events);
         self.barrier_gone(id, now_ns);
         self.revision += 1;
         events
@@ -853,7 +914,19 @@ impl Authority {
             return;
         }
         for id in channels {
-            self.parts.remove(id);
+            if let Some(part) = self.parts.remove(id) {
+                for stream in [Some(part.channel), part.applied_channel]
+                    .into_iter()
+                    .flatten()
+                {
+                    if self.demands.remove(&stream).is_some() {
+                        events.push(AuthorityEvent::DemandChanged {
+                            channel: stream,
+                            demand: None,
+                        });
+                    }
+                }
+            }
             if let Some(lease) = self.leases.remove(id) {
                 events.push(AuthorityEvent::LeaseEnded {
                     lease,
@@ -920,6 +993,7 @@ impl Authority {
                 format!("replan rate {}", record.replan_hz),
             ));
         }
+        self.admit_contracts(&record)?;
         if let Some(current) = self.bindings.get(&from)
             && current.fingerprint == record.fingerprint
         {
@@ -969,8 +1043,188 @@ impl Authority {
             participant: from.clone(),
             fingerprint: record.fingerprint,
         });
+        self.needed.retain(|(p, _), _| p != &from);
         self.bindings.insert(from, record);
+        self.recompute_demands(events);
         self.settle_after_release("rebound without its parts", events);
+        Ok(())
+    }
+
+    /// The part a stream belongs to, and whether it is the part's applied
+    /// stream.
+    fn stream_part(&self, channel: ChannelId) -> Option<(&PartSpec, bool)> {
+        self.parts.values().find_map(|p| {
+            if p.channel == channel {
+                Some((p, false))
+            } else if p.applied_channel == Some(channel) {
+                Some((p, true))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Admission (§8.2): every contract names a stream once and is one the
+    /// stream can meet, the rings fit the cap, and every grid is on a
+    /// commanded part.
+    fn admit_contracts(&self, record: &BindingRecord) -> Result<(), CtlError> {
+        let invalid = |message: String| CtlError::new(CtlStatus::InvalidRequest, message);
+        let mut seen = BTreeSet::new();
+        let mut rings = Vec::with_capacity(record.contracts.len());
+        for c in &record.contracts {
+            if !seen.insert(c.channel) {
+                return Err(invalid(format!("two contracts on {}", c.channel)));
+            }
+            let (part, applied) = self.stream_part(c.channel).ok_or_else(|| {
+                CtlError::new(
+                    CtlStatus::UnknownPath,
+                    format!("{} is not a declared stream", c.channel),
+                )
+            })?;
+            contract::admit(c, part, applied).map_err(invalid)?;
+            rings.push((c, part, applied));
+        }
+        let bytes = contract::ring_bytes(rings);
+        if bytes > contract::MAX_RING_BYTES {
+            return Err(invalid(format!(
+                "the binding's windows hold {} MiB (at most 512 MiB)",
+                bytes >> 20
+            )));
+        }
+        let mut gridded = BTreeSet::new();
+        for g in &record.grids {
+            if !record.channels.contains(&g.channel) || !gridded.insert(g.channel) {
+                return Err(invalid(format!(
+                    "an action grid on {}, which the binding does not command once",
+                    g.channel
+                )));
+            }
+            if g.dt.is_zero() || g.dt > MAX_ACTION_DT {
+                return Err(invalid(format!(
+                    "the action period on {} is {:?}",
+                    g.channel, g.dt
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-derives every stream's publication plan from the contracts of the
+    /// attached controllers; a changed plan bumps its demand's revision.
+    fn recompute_demands(&mut self, events: &mut Vec<AuthorityEvent>) {
+        let mut wanted: BTreeMap<ChannelId, Vec<&rlmesh_wire::StreamContract>> = BTreeMap::new();
+        for (participant, binding) in &self.bindings {
+            if !self.roster.contains_key(participant) {
+                continue;
+            }
+            for c in &binding.contracts {
+                wanted.entry(c.channel).or_default().push(c);
+            }
+        }
+        let mut next: BTreeMap<ChannelId, (rlmesh_wire::Plan, std::time::Duration)> =
+            BTreeMap::new();
+        for (channel, contracts) in wanted {
+            if let Some((part, applied)) = self.stream_part(channel)
+                && let Some(plan) = contract::plan(contracts, part, applied)
+            {
+                next.insert(channel, plan);
+            }
+        }
+        let gone: Vec<ChannelId> = self
+            .demands
+            .keys()
+            .filter(|c| !next.contains_key(c))
+            .copied()
+            .collect();
+        for channel in gone {
+            self.demands.remove(&channel);
+            events.push(AuthorityEvent::DemandChanged {
+                channel,
+                demand: None,
+            });
+        }
+        for (channel, (plan, retain)) in next {
+            let unchanged = self
+                .demands
+                .get(&channel)
+                .is_some_and(|d| d.plan == plan && d.retain == retain);
+            if unchanged {
+                continue;
+            }
+            let revision = self.demand_revisions.entry(channel).or_insert(0);
+            *revision += 1;
+            let acked = self.demands.get(&channel).map_or(0, |d| d.acked);
+            let demand = Demand {
+                channel,
+                revision: *revision,
+                plan,
+                retain,
+                acked,
+            };
+            self.demands.insert(channel, demand.clone());
+            events.push(AuthorityEvent::DemandChanged {
+                channel,
+                demand: Some(demand),
+            });
+        }
+        // Each attached binding's contracts are included from the current
+        // revision on, unless an earlier one already included them.
+        for (participant, binding) in &self.bindings {
+            if !self.roster.contains_key(participant) {
+                continue;
+            }
+            for c in &binding.contracts {
+                if let Some(demand) = self.demands.get(&c.channel) {
+                    self.needed
+                        .entry((participant.clone(), c.channel))
+                        .or_insert(demand.revision);
+                }
+            }
+        }
+    }
+
+    fn demand_ack(
+        &mut self,
+        from: &ParticipantId,
+        channel: ChannelId,
+        revision: u64,
+        events: &mut Vec<AuthorityEvent>,
+    ) -> Result<(), CtlError> {
+        self.require_role(from, Role::Embodiment)?;
+        let owner = self
+            .stream_part(channel)
+            .map(|(p, _)| p.owner.clone())
+            .ok_or_else(|| {
+                CtlError::new(
+                    CtlStatus::UnknownPath,
+                    format!("{channel} is not a declared stream"),
+                )
+            })?;
+        if &owner != from {
+            return Err(CtlError::new(
+                CtlStatus::Forbidden,
+                format!("{channel} is published by {owner}"),
+            ));
+        }
+        let demand = self.demands.get_mut(&channel).ok_or_else(|| {
+            CtlError::new(
+                CtlStatus::InvalidRequest,
+                format!("{channel} has no demand"),
+            )
+        })?;
+        if revision > demand.revision {
+            return Err(CtlError::new(
+                CtlStatus::InvalidRequest,
+                format!(
+                    "{channel}: revision {revision} is ahead of the demand's {}",
+                    demand.revision
+                ),
+            ));
+        }
+        if revision > demand.acked {
+            demand.acked = revision;
+            events.push(AuthorityEvent::DemandInstalled { channel, revision });
+        }
         Ok(())
     }
 
@@ -1042,6 +1296,34 @@ impl Authority {
                 CtlStatus::NotBound,
                 format!("{outside} is outside binding {}", record.fingerprint),
             ));
+        }
+        // Install before authority (§8.2).
+        for c in &record.contracts {
+            let needed = self.needed.get(&(from.clone(), c.channel)).copied();
+            let installed = self
+                .demands
+                .get(&c.channel)
+                .is_some_and(|d| needed.is_some_and(|n| d.installed(n)));
+            if !installed {
+                let path = self
+                    .stream_part(c.channel)
+                    .map(|(p, applied)| {
+                        if applied {
+                            p.path.applied()
+                        } else {
+                            p.path.to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| c.channel.to_string());
+                return Err(CtlError::new(
+                    CtlStatus::NotReady,
+                    format!(
+                        "{path} has not installed the delivery plan for {from}'s binding \
+                         (demand revision {}); retry once its publisher acknowledges it",
+                        needed.unwrap_or(0)
+                    ),
+                ));
+            }
         }
         for channel in &grant.release {
             if self.leases.get(channel).is_none_or(|l| &l.holder != from) {
@@ -1455,6 +1737,8 @@ mod tests {
                     table_json: "{}".into(),
                     channels,
                     replan_hz: 0.0,
+                    contracts: Vec::new(),
+                    grids: Vec::new(),
                 },
                 0,
             )
@@ -1770,6 +2054,246 @@ mod tests {
             Fixture::status(f.bind("viewer", 40, &[])),
             CtlStatus::Forbidden
         );
+    }
+
+    fn contract(
+        channel: ChannelId,
+        mode: rlmesh_wire::ContractMode,
+        delivery_hz: f64,
+        history: u32,
+        max_age_ms: Option<u64>,
+    ) -> rlmesh_wire::StreamContract {
+        rlmesh_wire::StreamContract {
+            channel,
+            mode,
+            delivery_hz,
+            history,
+            max_age: Some(std::time::Duration::from_millis(max_age_ms.unwrap_or(150))),
+            max_age_explicit: max_age_ms.is_some(),
+        }
+    }
+
+    impl Fixture {
+        fn bind_with(
+            &mut self,
+            from: &str,
+            fp: u64,
+            paths: &[&str],
+            contracts: Vec<rlmesh_wire::StreamContract>,
+        ) -> Result<Applied, CtlError> {
+            let channels: Vec<ChannelId> = paths.iter().map(|p| self.ch(p)).collect();
+            let grids = channels
+                .iter()
+                .map(|c| rlmesh_wire::ActionGrid {
+                    channel: *c,
+                    dt: std::time::Duration::from_millis(10),
+                })
+                .collect();
+            self.run(
+                from,
+                Command::DeclareBinding {
+                    fingerprint: Fingerprint::from(fp),
+                    revision: 2,
+                    table_json: "{}".into(),
+                    channels,
+                    replan_hz: 20.0,
+                    contracts,
+                    grids,
+                },
+                0,
+            )
+        }
+
+        fn demand(&self, path: &str) -> Option<Demand> {
+            self.auth.demands.get(&self.ch(path)).cloned()
+        }
+
+        fn ack(&mut self, path: &str, revision: u64) -> Result<Applied, CtlError> {
+            let channel = self.ch(path);
+            self.run("robot", Command::DemandAck { channel, revision }, 0)
+        }
+    }
+
+    #[test]
+    fn a_lease_waits_until_every_bound_stream_installed_its_plan() {
+        use rlmesh_wire::{ContractMode, Plan};
+        let mut f = Fixture::new();
+        f.run("operator", Command::Arm, 0).expect("arm");
+        let ft = f.ch("ft");
+        let window = contract(ft, ContractMode::History, 20.0, 50, None);
+        f.bind_with("policy", 20, &["cmd1"], vec![window])
+            .expect("bind");
+        let demand = f.demand("ft").expect("a demand on ft");
+        assert_eq!((demand.revision, demand.acked), (1, 0));
+        assert_eq!(
+            demand.plan,
+            Plan::Increments {
+                flush: std::time::Duration::from_millis(50),
+                max_records: 256,
+                max_bytes: 4 << 20
+            }
+        );
+        let err = f.grant("policy", "cmd1", 0).expect_err("not installed");
+        assert_eq!(err.status, CtlStatus::NotReady);
+        assert!(
+            err.message.contains("ft has not installed"),
+            "{}",
+            err.message
+        );
+        assert_eq!(
+            Fixture::status(f.run(
+                "policy",
+                Command::DemandAck {
+                    channel: ft,
+                    revision: 1
+                },
+                0
+            )),
+            CtlStatus::Forbidden,
+            "only the stream's publisher acknowledges"
+        );
+        assert_eq!(Fixture::status(f.ack("ft", 2)), CtlStatus::InvalidRequest);
+        let applied = f.ack("ft", 1).expect("ack");
+        assert!(matches!(
+            applied.events.as_slice(),
+            [AuthorityEvent::DemandInstalled { revision: 1, .. }]
+        ));
+        let lease = f.grant("policy", "cmd1", 0).expect("installed: granted");
+        assert_eq!(
+            f.auth.snapshot(Vec::new(), 0).demand(ft).map(|d| d.acked),
+            Some(1)
+        );
+
+        // A second controller wants ft faster: the plan (and its revision)
+        // changes, but the first binding stays served by revision 1.
+        let fast = contract(ft, ContractMode::Latest, 50.0, 1, None);
+        f.bind_with("operator", 21, &["cmd2"], vec![fast])
+            .expect("bind");
+        let demand = f.demand("ft").expect("demand");
+        assert_eq!((demand.revision, demand.acked), (2, 1));
+        assert!(
+            matches!(demand.plan, Plan::Increments { flush, .. } if flush == std::time::Duration::from_millis(20))
+        );
+        assert_eq!(
+            f.grant("policy", "cmd1", 0).expect("renewal").token,
+            lease.token
+        );
+        assert_eq!(
+            Fixture::status(f.grant("operator", "cmd2", 0)),
+            CtlStatus::NotReady
+        );
+        f.ack("ft", 2).expect("ack");
+        f.grant("operator", "cmd2", 0).expect("granted");
+
+        // A controller that goes away takes its contract along; the last
+        // one withdraws the demand.
+        f.auth.participant_lost(&pid("operator"), 1);
+        assert_eq!(f.demand("ft").map(|d| d.revision), Some(3));
+        f.run("policy", Command::Detach, 2).expect("detach");
+        assert_eq!(f.demand("ft"), None);
+    }
+
+    #[test]
+    fn contracts_a_stream_cannot_meet_are_refused_at_admission() {
+        use rlmesh_wire::ContractMode;
+        let mut f = Fixture::new();
+        let (ft, cmd1) = (f.ch("ft"), f.ch("cmd1"));
+        for (contracts, status, needle) in [
+            (
+                vec![contract(ft, ContractMode::History, 20.0, 50, Some(5))],
+                CtlStatus::InvalidRequest,
+                "below the 50 ms",
+            ),
+            (
+                vec![contract(
+                    ChannelId(999),
+                    ContractMode::Latest,
+                    20.0,
+                    1,
+                    None,
+                )],
+                CtlStatus::UnknownPath,
+                "not a declared stream",
+            ),
+            (
+                vec![
+                    contract(ft, ContractMode::Latest, 20.0, 1, None),
+                    contract(ft, ContractMode::Latest, 30.0, 1, None),
+                ],
+                CtlStatus::InvalidRequest,
+                "two contracts",
+            ),
+            (
+                vec![contract(ft, ContractMode::Latest, 20.0, 5, None)],
+                CtlStatus::InvalidRequest,
+                "no window",
+            ),
+        ] {
+            let err = f
+                .bind_with("policy", 30, &["cmd1"], contracts)
+                .expect_err("refused");
+            assert_eq!(err.status, status, "{}", err.message);
+            assert!(err.message.contains(needle), "{}", err.message);
+        }
+        // A window on a commandable part's applied stream is a stream too.
+        let applied = f
+            .auth
+            .part(cmd1)
+            .and_then(|p| p.applied_channel)
+            .expect("applied");
+        f.bind_with(
+            "policy",
+            31,
+            &["cmd1"],
+            vec![contract(applied, ContractMode::Latest, 20.0, 1, None)],
+        )
+        .expect("an applied stream");
+        assert!(f.auth.demands.contains_key(&applied));
+        // An action grid on a part the binding does not command.
+        let off_grid = Command::DeclareBinding {
+            fingerprint: Fingerprint::from(33),
+            revision: 3,
+            table_json: "{}".into(),
+            channels: vec![cmd1],
+            replan_hz: 20.0,
+            contracts: Vec::new(),
+            grids: vec![rlmesh_wire::ActionGrid {
+                channel: f.ch("cmd2"),
+                dt: std::time::Duration::from_millis(10),
+            }],
+        };
+        assert_eq!(
+            Fixture::status(f.run("policy", off_grid, 0)),
+            CtlStatus::InvalidRequest
+        );
+        assert_eq!(
+            f.auth.binding(&pid("policy")).and_then(|b| b.grid(cmd1)),
+            Some(std::time::Duration::from_millis(10))
+        );
+    }
+
+    #[test]
+    fn removing_a_stream_withdraws_its_demand() {
+        use rlmesh_wire::ContractMode;
+        let mut f = Fixture::new();
+        let ft = f.ch("ft");
+        f.bind_with(
+            "policy",
+            40,
+            &["cmd1"],
+            vec![contract(ft, ContractMode::Every, 1000.0, 1, Some(3))],
+        )
+        .expect("bind");
+        assert_eq!(
+            f.demand("ft").map(|d| d.plan),
+            Some(rlmesh_wire::Plan::Every)
+        );
+        let applied = f.run("robot", Command::Detach, 1).expect("detach");
+        assert!(applied.events.iter().any(|e| matches!(
+            e,
+            AuthorityEvent::DemandChanged { channel, demand: None } if *channel == ft
+        )));
+        assert!(f.auth.demands.is_empty());
     }
 
     #[test]
@@ -2160,6 +2684,8 @@ mod tests {
                 table_json: "{}".into(),
                 channels,
                 replan_hz: 500.0,
+                contracts: Vec::new(),
+                grids: Vec::new(),
             },
             0,
         )

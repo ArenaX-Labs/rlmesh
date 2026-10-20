@@ -9,11 +9,16 @@
 //!   [`PartSpec`](rlmesh_wire::PartSpec)s with the kind table's fields and
 //!   defaults, and fingerprints the canonical form (§3.3).
 //! - [`canonical`]: RFC 8785 JSON and the BLAKE3 fingerprints over it.
+//! - [`contract`]: delivery contracts, freshness bounds, admission and the
+//!   publication plan per stream (§8.2, §8.7), shared by the binder and the
+//!   host.
 //!
 //! The generic core (`rlmesh-wire`, `rlmesh-session`, `rlmesh-edge`) works on
 //! streams and never interprets kinds; only this crate does.
 
 pub mod canonical;
+pub mod contract;
+pub mod explain;
 pub mod kinds;
 pub mod normalise;
 pub mod rotation;

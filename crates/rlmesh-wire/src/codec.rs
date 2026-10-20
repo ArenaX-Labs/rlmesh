@@ -39,6 +39,7 @@ use crate::authority::{
     AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
     CtlStatus, Lease, Mode, ParticipantInfo, PriorityClass, Request, Role, Watermark,
 };
+use crate::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 use crate::error::WireError;
 use crate::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
 use crate::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
@@ -755,6 +756,7 @@ fn status_to_pb(status: CtlStatus) -> pb::CtlStatus {
         CtlStatus::Incompatible => pb::CtlStatus::Incompatible,
         CtlStatus::GroupBusy => pb::CtlStatus::GroupBusy,
         CtlStatus::NotBound => pb::CtlStatus::NotBound,
+        CtlStatus::NotReady => pb::CtlStatus::NotReady,
     }
 }
 
@@ -775,6 +777,7 @@ fn status_from_pb(raw: i32, message: String) -> Result<(), CtlError> {
         Ok(pb::CtlStatus::Incompatible) => CtlStatus::Incompatible,
         Ok(pb::CtlStatus::GroupBusy) => CtlStatus::GroupBusy,
         Ok(pb::CtlStatus::NotBound) => CtlStatus::NotBound,
+        Ok(pb::CtlStatus::NotReady) => CtlStatus::NotReady,
         Ok(pb::CtlStatus::InvalidRequest | pb::CtlStatus::Unspecified) | Err(_) => {
             CtlStatus::InvalidRequest
         }
@@ -856,6 +859,104 @@ fn clock_from_pb(c: pb::ClockMapping) -> Result<ClockMapping, WireError> {
     })
 }
 
+fn contract_to_pb(c: &StreamContract) -> pb::StreamContract {
+    pb::StreamContract {
+        channel: c.channel.0,
+        mode: match c.mode {
+            ContractMode::Latest => pb::ContractMode::Latest,
+            ContractMode::History => pb::ContractMode::History,
+            ContractMode::Every => pb::ContractMode::Every,
+        } as i32,
+        delivery_hz: c.delivery_hz,
+        history: c.history,
+        max_age_ns: c.max_age.map_or(0, duration_ns),
+        max_age_explicit: c.max_age_explicit,
+    }
+}
+
+fn contract_from_pb(c: pb::StreamContract) -> Result<StreamContract, WireError> {
+    Ok(StreamContract {
+        channel: ChannelId(c.channel),
+        mode: match pb::ContractMode::try_from(c.mode) {
+            Ok(pb::ContractMode::Latest) => ContractMode::Latest,
+            Ok(pb::ContractMode::History) => ContractMode::History,
+            Ok(pb::ContractMode::Every) => ContractMode::Every,
+            _ => {
+                return Err(WireError::malformed(
+                    "stream contract",
+                    format!("mode {}", c.mode),
+                ));
+            }
+        },
+        delivery_hz: c.delivery_hz,
+        history: c.history,
+        max_age: (c.max_age_ns > 0).then(|| Duration::from_nanos(c.max_age_ns)),
+        max_age_explicit: c.max_age_explicit,
+    })
+}
+
+fn grid_to_pb(g: &ActionGrid) -> pb::ActionGrid {
+    pb::ActionGrid {
+        channel: g.channel.0,
+        dt_ns: duration_ns(g.dt),
+    }
+}
+
+fn grid_from_pb(g: pb::ActionGrid) -> ActionGrid {
+    ActionGrid {
+        channel: ChannelId(g.channel),
+        dt: Duration::from_nanos(g.dt_ns),
+    }
+}
+
+fn demand_to_pb(d: &Demand) -> pb::Demand {
+    let mut out = pb::Demand {
+        channel: d.channel.0,
+        revision: d.revision,
+        retain_ns: duration_ns(d.retain),
+        acked: d.acked,
+        ..pb::Demand::default()
+    };
+    match d.plan {
+        Plan::Every => out.plan = pb::PlanKind::Every as i32,
+        Plan::Increments {
+            flush,
+            max_records,
+            max_bytes,
+        } => {
+            out.plan = pb::PlanKind::Increments as i32;
+            out.flush_ns = duration_ns(flush);
+            out.max_records = max_records;
+            out.max_bytes = max_bytes;
+        }
+        Plan::Latest { hz } => {
+            out.plan = pb::PlanKind::Latest as i32;
+            out.latest_hz = hz;
+        }
+    }
+    out
+}
+
+fn demand_from_pb(d: pb::Demand) -> Result<Demand, WireError> {
+    let plan = match pb::PlanKind::try_from(d.plan) {
+        Ok(pb::PlanKind::Every) => Plan::Every,
+        Ok(pb::PlanKind::Increments) => Plan::Increments {
+            flush: Duration::from_nanos(d.flush_ns),
+            max_records: d.max_records,
+            max_bytes: d.max_bytes,
+        },
+        Ok(pb::PlanKind::Latest) => Plan::Latest { hz: d.latest_hz },
+        _ => return Err(WireError::malformed("demand", format!("plan {}", d.plan))),
+    };
+    Ok(Demand {
+        channel: ChannelId(d.channel),
+        revision: d.revision,
+        plan,
+        retain: Duration::from_nanos(d.retain_ns),
+        acked: d.acked,
+    })
+}
+
 fn binding_to_pb(b: &BindingRecord) -> pb::BindingRecord {
     pb::BindingRecord {
         participant: b.participant.to_string(),
@@ -864,6 +965,8 @@ fn binding_to_pb(b: &BindingRecord) -> pb::BindingRecord {
         table_json: b.table_json.clone(),
         channels: b.channels.iter().map(|c| c.0).collect(),
         replan_hz: b.replan_hz,
+        contracts: b.contracts.iter().map(contract_to_pb).collect(),
+        grids: b.grids.iter().map(grid_to_pb).collect(),
     }
 }
 
@@ -875,6 +978,8 @@ fn binding_from_pb(b: pb::BindingRecord) -> Result<BindingRecord, WireError> {
         table_json: b.table_json,
         channels: b.channels.into_iter().map(ChannelId).collect(),
         replan_hz: b.replan_hz,
+        contracts: collect(b.contracts, contract_from_pb)?,
+        grids: b.grids.into_iter().map(grid_from_pb).collect(),
     })
 }
 
@@ -900,6 +1005,7 @@ fn state_to_pb(s: &AuthoritySnapshot) -> pb::AuthorityState {
             .iter()
             .map(|(robot, fp)| (robot.to_string(), Bytes::copy_from_slice(fp.as_bytes())))
             .collect(),
+        demands: s.demands.iter().map(demand_to_pb).collect(),
     }
 }
 
@@ -930,6 +1036,7 @@ fn state_from_pb(s: pb::AuthorityState) -> Result<AuthoritySnapshot, WireError> 
                 ))
             })
             .collect::<Result<_, WireError>>()?,
+        demands: collect(s.demands, demand_from_pb)?,
     })
 }
 
@@ -1021,12 +1128,20 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             table_json,
             channels: bound,
             replan_hz,
+            contracts,
+            grids,
         } => Verb::DeclareBinding(pb::DeclareBinding {
             fingerprint: Bytes::copy_from_slice(fingerprint.as_bytes()),
             revision: *revision,
             table_json: table_json.clone(),
             channels: channels(bound),
             replan_hz: *replan_hz,
+            contracts: contracts.iter().map(contract_to_pb).collect(),
+            grids: grids.iter().map(grid_to_pb).collect(),
+        }),
+        Command::DemandAck { channel, revision } => Verb::DemandAck(pb::DemandAck {
+            channel: channel.0,
+            revision: *revision,
         }),
         Command::GrantLease {
             channels: grant,
@@ -1097,6 +1212,12 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
             table_json: b.table_json,
             channels: ids(b.channels),
             replan_hz: b.replan_hz,
+            contracts: collect(b.contracts, contract_from_pb)?,
+            grids: b.grids.into_iter().map(grid_from_pb).collect(),
+        },
+        Verb::DemandAck(a) => Command::DemandAck {
+            channel: ChannelId(a.channel),
+            revision: a.revision,
         },
         Verb::GrantLease(g) => Command::GrantLease {
             channels: ids(g.channels),
@@ -1364,8 +1485,47 @@ mod tests {
                 table_json: "{}".into(),
                 channels: vec![ChannelId(1)],
                 replan_hz: 20.0,
+                contracts: vec![StreamContract {
+                    channel: ChannelId(3),
+                    mode: ContractMode::History,
+                    delivery_hz: 20.0,
+                    history: 50,
+                    max_age: Some(Duration::from_millis(150)),
+                    max_age_explicit: false,
+                }],
+                grids: vec![ActionGrid {
+                    channel: ChannelId(1),
+                    dt: Duration::from_millis(10),
+                }],
             }],
             contract: [(pid("ur10e"), Fingerprint::from(0xabcd))].into(),
+            demands: vec![
+                Demand {
+                    channel: ChannelId(3),
+                    revision: 2,
+                    plan: Plan::Increments {
+                        flush: Duration::from_millis(50),
+                        max_records: 256,
+                        max_bytes: 4 << 20,
+                    },
+                    retain: Duration::from_secs(2),
+                    acked: 1,
+                },
+                Demand {
+                    channel: ChannelId(4),
+                    revision: 1,
+                    plan: Plan::Latest { hz: 15.0 },
+                    retain: Duration::ZERO,
+                    acked: 0,
+                },
+                Demand {
+                    channel: ChannelId(5),
+                    revision: 1,
+                    plan: Plan::Every,
+                    retain: Duration::ZERO,
+                    acked: 1,
+                },
+            ],
         }
     }
 
@@ -1390,6 +1550,22 @@ mod tests {
                 table_json: "{}".into(),
                 channels: vec![ChannelId(1), ChannelId(5)],
                 replan_hz: 20.0,
+                contracts: vec![StreamContract {
+                    channel: ChannelId(2),
+                    mode: ContractMode::Latest,
+                    delivery_hz: 20.0,
+                    history: 1,
+                    max_age: None,
+                    max_age_explicit: false,
+                }],
+                grids: vec![ActionGrid {
+                    channel: ChannelId(5),
+                    dt: Duration::from_nanos(66_666_667),
+                }],
+            },
+            Command::DemandAck {
+                channel: ChannelId(3),
+                revision: 2,
             },
             Command::Arm,
             Command::Disarm,
@@ -1452,6 +1628,10 @@ mod tests {
             Err(CtlError::new(CtlStatus::GroupBusy, "busy")),
             Err(CtlError::new(CtlStatus::NotBound, "not in the binding")),
             Err(CtlError::new(CtlStatus::UnknownPath, "no such part")),
+            Err(CtlError::new(
+                CtlStatus::NotReady,
+                "wrist/cam has not installed its plan",
+            )),
         ] {
             let reply = CtlReply {
                 result,

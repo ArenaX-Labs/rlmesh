@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::action::ChunkRef;
+use crate::contract::{ActionGrid, Demand, StreamContract};
 use crate::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId, SessionId};
 use crate::part::{PartSpec, StreamSpec};
 
@@ -174,6 +175,20 @@ pub struct BindingRecord {
     /// Its replan rate R; in virtual mode, the ticks it is due on (0: never
     /// due).
     pub replan_hz: f64,
+    /// Its delivery contracts, one per bound input stream (§8.2).
+    pub contracts: Vec<StreamContract>,
+    /// Its action grids, one per commanded part (§9.2).
+    pub grids: Vec<ActionGrid>,
+}
+
+impl BindingRecord {
+    /// The action period it declared for `channel`.
+    pub fn grid(&self, channel: ChannelId) -> Option<std::time::Duration> {
+        self.grids
+            .iter()
+            .find(|g| g.channel == channel)
+            .map(|g| g.dt)
+    }
 }
 
 /// A chunk (or verb) failed the epoch/lease fence.
@@ -246,6 +261,8 @@ pub struct AuthoritySnapshot {
     pub bindings: Vec<BindingRecord>,
     /// Each robot's declaration fingerprint (§3.3).
     pub contract: BTreeMap<ParticipantId, Fingerprint>,
+    /// The publication plan of every stream some binding has a contract on.
+    pub demands: Vec<Demand>,
 }
 
 impl AuthoritySnapshot {
@@ -306,6 +323,11 @@ impl AuthoritySnapshot {
     /// A controller's binding.
     pub fn binding(&self, id: &ParticipantId) -> Option<&BindingRecord> {
         self.bindings.iter().find(|b| &b.participant == id)
+    }
+
+    /// The publication plan of stream `channel`.
+    pub fn demand(&self, channel: ChannelId) -> Option<&Demand> {
+        self.demands.iter().find(|d| d.channel == channel)
     }
 
     /// The fence an edge applies to an incoming chunk: right epoch, and the
@@ -406,6 +428,17 @@ pub enum Command {
         channels: Vec<ChannelId>,
         /// Its replan rate (virtual mode).
         replan_hz: f64,
+        /// One delivery contract per bound input stream.
+        contracts: Vec<StreamContract>,
+        /// One action grid per commanded part.
+        grids: Vec<ActionGrid>,
+    },
+    /// A publisher installed the plan of a stream's demand revision.
+    DemandAck {
+        /// The stream.
+        channel: ChannelId,
+        /// The installed revision.
+        revision: u64,
     },
     /// Request (or renew) leases on commandable parts, all or none.
     GrantLease {
@@ -496,6 +529,9 @@ pub enum CtlStatus {
     GroupBusy,
     /// A lease on a part outside the requester's binding.
     NotBound,
+    /// A lease requested before every stream of the requester's binding
+    /// installed a plan that includes its contract.
+    NotReady,
 }
 
 /// A refused control verb.

@@ -863,6 +863,8 @@ mod tests {
                         table_json: "{}".into(),
                         channels: channels.clone(),
                         replan_hz: 0.0,
+                        contracts: Vec::new(),
+                        grids: Vec::new(),
                     },
                 );
             }
@@ -1100,6 +1102,8 @@ mod tests {
                 table_json: "{}".into(),
                 channels,
                 replan_hz: 0.0,
+                contracts: Vec::new(),
+                grids: Vec::new(),
             },
         );
         f.publish(MS);

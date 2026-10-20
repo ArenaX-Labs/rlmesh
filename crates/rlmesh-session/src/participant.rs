@@ -643,6 +643,8 @@ impl Participant {
                 table_json: table_json.to_string(),
                 channels,
                 replan_hz,
+                contracts: Vec::new(),
+                grids: Vec::new(),
             })
             .await?
             .0)
