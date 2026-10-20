@@ -123,8 +123,8 @@ pub struct SeqRange {
     pub last: u64,
 }
 
-/// Several samples of one stream in one epoch: history increments and
-/// history-store pages. The payload holds `samples.len()` values at the
+/// Several samples of one stream in one epoch: a history-store page. The
+/// payload holds `samples.len()` values at the
 /// stream's stride (one value of an unbatchable stream).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SampleBatch {

@@ -711,9 +711,7 @@ async fn a_participant_requiring_a_feature_the_session_lacks_is_refused() {
     assert!(world.host.snapshot().roster.is_empty());
 }
 
-/// A policy windowing the force/torque stream and commanding the arm (at
-/// 50 Hz: the robot's 40 ms freshness bound on `ft` refuses a 20 Hz window,
-/// whose increments are 50 ms apart).
+/// A policy windowing the force/torque stream and commanding the arm.
 const WINDOWED: &str = r#"{
     "hz": 50,
     "inputs": {"ft": {"kind": "x/ft", "at": "ft", "fields": {"wrench": ["float32", [18]]},
@@ -722,7 +720,7 @@ const WINDOWED: &str = r#"{
 }"#;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bound_policy_waits_for_its_streams_plans_and_receives_increments() {
+async fn a_bound_policy_waits_for_its_streams_plans_and_receives_every_window_sample() {
     let world = World::start().await;
     let robot = world.robot().await;
     let policy = world
@@ -757,8 +755,10 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_increments() {
         .await
         .expect("acknowledged");
     let demand = view.demand(ft_channel).expect("demand");
-    assert!(
-        matches!(demand.plan, Plan::Increments { flush, .. } if flush == Duration::from_millis(20))
+    assert_eq!(
+        demand.plan,
+        Plan::Every,
+        "a window: each sample as published"
     );
     assert_eq!(ft.plan(), (Some(demand.plan), demand.revision));
     let lease = policy.grant_lease(arm, None).await.expect("ready: granted");
@@ -769,7 +769,7 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_increments() {
         "the action grid rides the binding record"
     );
 
-    // The window's samples travel as increments and arrive as samples.
+    // Every sample of the window travels at once, one per message.
     let sub = policy
         .subscribe(
             &robot_id(),
@@ -785,15 +785,13 @@ async fn a_bound_policy_waits_for_its_streams_plans_and_receives_increments() {
     for i in 1..=25_u8 {
         ft.publish(robot.clock().now_ns(), ft_payload(f32::from(i)))
             .expect("publish")
-            .expect("increments coalesce nothing");
+            .expect("a window coalesces nothing");
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     wait_until("all 25 samples", || sub.stats().last_seq == 25).await;
     let stats = sub.stats();
     assert_eq!((stats.received, stats.lost), (25, 0));
-    let (coalesced, batches) = ft.counts();
-    assert_eq!(coalesced, 0);
-    assert!((1..25).contains(&batches), "{batches} increments");
+    assert_eq!(ft.coalesced(), 0);
     assert_eq!(
         sub.window()
             .iter()

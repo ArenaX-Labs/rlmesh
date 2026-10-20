@@ -2125,14 +2125,7 @@ mod tests {
             .expect("bind");
         let demand = f.demand("ft").expect("a demand on ft");
         assert_eq!((demand.revision, demand.acked), (1, 0));
-        assert_eq!(
-            demand.plan,
-            Plan::Increments {
-                flush: std::time::Duration::from_millis(50),
-                max_records: 256,
-                max_bytes: 4 << 20
-            }
-        );
+        assert_eq!(demand.plan, Plan::Every, "a window needs every sample");
         let err = f.grant("policy", "cmd1", 0).expect_err("not installed");
         assert_eq!(err.status, CtlStatus::NotReady);
         assert!(
@@ -2164,16 +2157,15 @@ mod tests {
             Some(1)
         );
 
-        // A second controller wants ft faster: the plan (and its revision)
-        // changes, but the first binding stays served by revision 1.
-        let fast = contract(ft, ContractMode::Latest, 50.0, 1, None);
-        f.bind_with("operator", 21, &["cmd2"], vec![fast])
+        // A second controller wants a deeper window: the demand (and its
+        // revision) changes, but the first binding stays served by
+        // revision 1.
+        let deeper = contract(ft, ContractMode::History, 20.0, 100, None);
+        f.bind_with("operator", 21, &["cmd2"], vec![deeper])
             .expect("bind");
         let demand = f.demand("ft").expect("demand");
         assert_eq!((demand.revision, demand.acked), (2, 1));
-        assert!(
-            matches!(demand.plan, Plan::Increments { flush, .. } if flush == std::time::Duration::from_millis(20))
-        );
+        assert_eq!(demand.plan, Plan::Every);
         assert_eq!(
             f.grant("policy", "cmd1", 0).expect("renewal").token,
             lease.token
@@ -2200,7 +2192,7 @@ mod tests {
         let (ft, cmd1) = (f.ch("ft"), f.ch("cmd1"));
         for (contracts, status, needle) in [
             (
-                vec![contract(ft, ContractMode::History, 20.0, 50, Some(5))],
+                vec![contract(ft, ContractMode::Latest, 20.0, 1, Some(5))],
                 CtlStatus::InvalidRequest,
                 "below the 50 ms",
             ),

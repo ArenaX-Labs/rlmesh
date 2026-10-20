@@ -100,7 +100,7 @@ enum ContractMode {
   CONTRACT_MODE_UNSPECIFIED = 0;
   // The newest sample, at most delivery_hz times per second.
   CONTRACT_MODE_LATEST = 1;
-  // Every sample, in increments flushed about every 1 / delivery_hz.
+  // Every sample, as soon as it is published; the subscriber keeps the window.
   CONTRACT_MODE_HISTORY = 2;
   // Every sample, as soon as it is published.
   CONTRACT_MODE_EVERY = 3;
@@ -130,10 +130,11 @@ message ActionGrid {
 // How a publisher sends one stream.
 enum PlanKind {
   PLAN_KIND_UNSPECIFIED = 0;
-  // Each sample immediately.
+  // Each sample immediately (any every or history contract).
   PLAN_KIND_EVERY = 1;
-  // Increments of new samples (SampleBatch).
-  PLAN_KIND_INCREMENTS = 2;
+  // Was INCREMENTS: wire batching of history windows, removed.
+  reserved 2;
+  reserved "PLAN_KIND_INCREMENTS";
   // The newest sample at latest_hz, coalescing older ones.
   PLAN_KIND_LATEST = 3;
 }
@@ -146,10 +147,9 @@ message Demand {
   // Bumps whenever the plan changes; from 1.
   uint64 revision = 2;
   PlanKind plan = 3;
-  // INCREMENTS: flush at least this often, and earlier at either cap.
-  uint64 flush_ns = 4;
-  uint32 max_records = 5;
-  uint64 max_bytes = 6;
+  // Were the INCREMENTS flush interval and caps.
+  reserved 4, 5, 6;
+  reserved "flush_ns", "max_records", "max_bytes";
   // LATEST.
   double latest_hz = 7;
   // How long the publisher's ring retains samples.
@@ -576,7 +576,8 @@ message SeqRange {
   uint64 last = 2;
 }
 
-// History increments and history-store pages.
+// History-store pages (attach, swap and gap recovery); live samples travel
+// one per Sample.
 message SampleBatch {
   uint32 channel = 1;
   uint64 epoch = 2;

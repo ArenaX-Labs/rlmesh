@@ -9,16 +9,18 @@
 //!   explicit robot `max_age_ms`; otherwise `max(3000 / min(S, D), 5)` ms.
 //! - **Admission.** A window needs every sample, so `history` is refused on a
 //!   part whose `send` ceiling decimates. An explicit bound below the
-//!   contract's sample interval `1 / min(S, D)` cannot be met and is refused.
-//!   A window spans at most 10 s; a controller's rings hold at most 512 MiB.
+//!   contract's sample interval cannot be met and is refused: `1 / S` for a
+//!   window (each sample is published as it is measured), `1 / min(S, D)`
+//!   otherwise. A window spans at most 10 s; a controller's rings hold at
+//!   most 512 MiB.
 //! - **Plan.** One per stream, from every admitted contract on it: any
-//!   `every` publishes each sample; else any `history` publishes increments
-//!   flushed at `1 / max D` (earlier at 256 records or 4 MiB); else the
-//!   newest sample at `max D`. The plan never exceeds the `send` ceiling.
+//!   `every` or `history` publishes each sample at once (the subscriber's
+//!   cache builds the window); else the newest sample at `max D`. The plan
+//!   never exceeds the `send` ceiling.
 
 use std::time::Duration;
 
-use rlmesh_wire::part::{MAX_BATCH, MAX_CHUNK_BYTES, PartSpec, SendPolicy};
+use rlmesh_wire::part::{PartSpec, SendPolicy};
 use rlmesh_wire::{ContractMode, Plan, StreamContract};
 
 /// The longest window, in samples (§3.4).
@@ -135,7 +137,11 @@ pub fn admit(contract: &StreamContract, part: &PartSpec, applied: bool) -> Resul
     if contract.max_age_explicit
         && let Some(bound) = contract.max_age
     {
-        let interval = sample_interval(s, d);
+        let interval = if contract.mode == ContractMode::History {
+            sample_interval(s, s)
+        } else {
+            sample_interval(s, d)
+        };
         if bound < interval && !part.event {
             return Err(format!(
                 "{path}: max_age_ms {} is below the {} ms between samples of {}@{}",
@@ -198,22 +204,18 @@ pub fn plan<'a>(
         .filter(|c| c.history > 1)
         .map(|c| Duration::from_secs_f64(f64::from(c.history) / s.max(f64::MIN_POSITIVE)))
         .max();
-    let flush = Duration::from_secs_f64(1.0 / max_d);
-    let plan = if contracts.iter().any(|c| c.mode == ContractMode::Every) {
+    let plan = if contracts
+        .iter()
+        .any(|c| matches!(c.mode, ContractMode::Every | ContractMode::History))
+    {
         Plan::Every
-    } else if contracts.iter().any(|c| c.mode == ContractMode::History) {
-        Plan::Increments {
-            flush,
-            max_records: MAX_BATCH as u32,
-            max_bytes: MAX_CHUNK_BYTES as u64,
-        }
     } else {
         let ceiling = if applied { None } else { part.send_policy().hz };
         Plan::Latest {
             hz: ceiling.map_or(max_d, |c| c.min(max_d)),
         }
     };
-    let retain = window.map_or(Duration::ZERO, |w| w + flush + RECOVERY);
+    let retain = window.map_or(Duration::ZERO, |w| w + RECOVERY);
     Some((plan, retain))
 }
 
@@ -276,15 +278,35 @@ mod tests {
             )
             .is_ok()
         );
+        // A window's newest sample is at most 1 / S old: 5 ms is fine at
+        // 1 kHz, whatever the delivery rate.
+        assert!(
+            admit(
+                &contract(ContractMode::History, 20.0, 50, Some(5)),
+                &ft,
+                false
+            )
+            .is_ok()
+        );
         let err = admit(
-            &contract(ContractMode::History, 20.0, 50, Some(5)),
+            &contract(ContractMode::Latest, 20.0, 1, Some(5)),
             &ft,
             false,
         )
-        .expect_err("5 ms against a 50 ms flush");
+        .expect_err("5 ms against latest@20");
         assert_eq!(
             err,
-            "ft: max_age_ms 5 is below the 50 ms between samples of history@20"
+            "ft: max_age_ms 5 is below the 50 ms between samples of latest@20"
+        );
+        let slow_ft = part(r#"{"ft": {"kind": "wrench", "frame": "tool0", "hz": 100}}"#);
+        assert_eq!(
+            admit(
+                &contract(ContractMode::History, 20.0, 10, Some(5)),
+                &slow_ft,
+                false
+            ),
+            Err("ft: max_age_ms 5 is below the 10 ms between samples of history@20".into()),
+            "a window at 100 Hz: one sample every 10 ms"
         );
         assert!(
             admit(
@@ -336,17 +358,9 @@ mod tests {
             plan([&latest], &ft, false),
             Some((Plan::Latest { hz: 50.0 }, Duration::ZERO))
         );
-        let (increments, retain) = plan([&history, &latest], &ft, false).expect("plan");
-        assert_eq!(
-            increments,
-            Plan::Increments {
-                flush: Duration::from_millis(20),
-                max_records: 256,
-                max_bytes: 4 << 20
-            },
-            "flushed at 1 / max D"
-        );
-        assert_eq!(retain, Duration::from_millis(50 + 20) + RECOVERY);
+        let (merged, retain) = plan([&history, &latest], &ft, false).expect("plan");
+        assert_eq!(merged, Plan::Every, "a window: each sample as published");
+        assert_eq!(retain, Duration::from_millis(50) + RECOVERY);
         assert_eq!(
             plan([&history, &every], &ft, false).map(|p| p.0),
             Some(Plan::Every)

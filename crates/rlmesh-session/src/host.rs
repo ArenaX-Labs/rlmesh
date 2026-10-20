@@ -50,7 +50,7 @@ use crate::authority::{Applied as Accepted, Authority, AuthorityConfig, Authorit
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
 use crate::error::SessionError;
 use crate::metrics::{LinkStats, ParticipantHealth, Report};
-use crate::sample::{batch_encoding, decode_data};
+use crate::sample::decode_data;
 use crate::transport::{
     CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, TrafficClass, Transport,
     frame_zbytes,
@@ -429,12 +429,9 @@ struct Ring {
 }
 
 impl Ring {
-    /// Records a live sample, or each sample of a live increment.
-    fn record(&self, payload: &zenoh::bytes::ZBytes, batch: bool, depth: usize) {
-        let Ok(samples) = decode_data(payload, batch, &self.spec) else {
-            return;
-        };
-        for sample in samples {
+    /// Records a live sample.
+    fn record(&self, payload: &zenoh::bytes::ZBytes, depth: usize) {
+        if let Ok(sample) = decode_data(payload) {
             self.record_one(sample, depth);
         }
     }
@@ -791,8 +788,7 @@ impl HostActor {
                 .declare_subscriber(self.keys.data(&spec.owner, &spec.path))
                 .callback({
                     let ring = ring.clone();
-                    let batch = batch_encoding();
-                    move |sample| ring.record(sample.payload(), *sample.encoding() == batch, depth)
+                    move |sample| ring.record(sample.payload(), depth)
                 })
                 .await;
             match subscriber {
@@ -1053,7 +1049,7 @@ mod tests {
             payload: Bytes::from(seq.to_le_bytes().to_vec()),
             applied: None,
         };
-        ring.record(&frame_zbytes(codec::encode_sample(&sample)), false, depth);
+        ring.record(&frame_zbytes(codec::encode_sample(&sample)), depth);
     }
 
     fn seqs(pages: &[SampleBatch]) -> Vec<u64> {

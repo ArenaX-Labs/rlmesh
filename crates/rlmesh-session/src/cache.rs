@@ -17,7 +17,7 @@
 //! - **Never received** in this epoch: the start waits (`waiting_for`).
 //!   Blank inputs never wait.
 //! - **Windows** are the last `history` samples by seq, oldest first,
-//!   assembled from live increments. A seq gap inside the window skips
+//!   assembled from live samples. A seq gap inside the window skips
 //!   starts (`window_gap`) until the gap is filled (from the host store,
 //!   [`Inputs::recover`]) or a complete new window exists. An incomplete
 //!   window is never delivered: at episode start the start waits for a full

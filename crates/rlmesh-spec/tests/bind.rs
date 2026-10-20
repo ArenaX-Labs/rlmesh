@@ -604,10 +604,16 @@ fn mismatches_with_no_conversion_are_incompatible() {
             "the window was trained at 1000 Hz; wrist/ft publishes at 500 Hz",
         ),
         (
-            r#"{"hz": 20, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft", "history": 50,
+            r#"{"hz": 20, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft",
                 "max_age_ms": 5}}}"#,
             "ur10e",
-            "max_age_ms 5 is below the 50 ms between samples of history@20",
+            "max_age_ms 5 is below the 50 ms between samples of latest@20",
+        ),
+        (
+            r#"{"hz": 20, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft", "history": 50,
+                "max_age_ms": 1}}}"#,
+            "ur10e",
+            "max_age_ms 1 is below the 2 ms between samples of history@20",
         ),
         (
             r#"{"hz": 20, "inputs": {"c": {"kind": "camera", "at": "wrist/cam", "history": 4}}}"#,

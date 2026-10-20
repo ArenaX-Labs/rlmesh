@@ -947,16 +947,6 @@ fn demand_to_pb(d: &Demand) -> pb::Demand {
     };
     match d.plan {
         Plan::Every => out.plan = pb::PlanKind::Every as i32,
-        Plan::Increments {
-            flush,
-            max_records,
-            max_bytes,
-        } => {
-            out.plan = pb::PlanKind::Increments as i32;
-            out.flush_ns = duration_ns(flush);
-            out.max_records = max_records;
-            out.max_bytes = max_bytes;
-        }
         Plan::Latest { hz } => {
             out.plan = pb::PlanKind::Latest as i32;
             out.latest_hz = hz;
@@ -968,11 +958,6 @@ fn demand_to_pb(d: &Demand) -> pb::Demand {
 fn demand_from_pb(d: pb::Demand) -> Result<Demand, WireError> {
     let plan = match pb::PlanKind::try_from(d.plan) {
         Ok(pb::PlanKind::Every) => Plan::Every,
-        Ok(pb::PlanKind::Increments) => Plan::Increments {
-            flush: Duration::from_nanos(d.flush_ns),
-            max_records: d.max_records,
-            max_bytes: d.max_bytes,
-        },
         Ok(pb::PlanKind::Latest) => Plan::Latest { hz: d.latest_hz },
         _ => return Err(WireError::malformed("demand", format!("plan {}", d.plan))),
     };
@@ -1531,11 +1516,7 @@ mod tests {
                 Demand {
                     channel: ChannelId(3),
                     revision: 2,
-                    plan: Plan::Increments {
-                        flush: Duration::from_millis(50),
-                        max_records: 256,
-                        max_bytes: 4 << 20,
-                    },
+                    plan: Plan::Every,
                     retain: Duration::from_secs(2),
                     acked: 1,
                 },

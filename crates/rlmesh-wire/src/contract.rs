@@ -19,8 +19,8 @@ pub enum ContractMode {
     /// The newest sample, at most `delivery_hz` times per second (an input
     /// without `history`).
     Latest,
-    /// Every sample, in increments flushed about every `1 / delivery_hz`
-    /// (an input with `history`).
+    /// Every sample, as soon as it is published; the subscriber's cache
+    /// keeps the window (an input with `history`).
     History,
     /// Every sample, as soon as it is published (`delivery_hz` at or above
     /// the source rate, or a full-rate consumer).
@@ -61,17 +61,9 @@ pub struct ActionGrid {
 /// sample within its `send` ceiling.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Plan {
-    /// Some contract is `every`: publish each sample immediately.
+    /// Some contract is `every` or `history`: publish each sample
+    /// immediately.
     Every,
-    /// Some contract has a window: publish increments of new samples.
-    Increments {
-        /// Flush at least this often (`1 / max D`).
-        flush: Duration,
-        /// Flush earlier when this many samples are pending.
-        max_records: u32,
-        /// Flush earlier when this many payload bytes are pending.
-        max_bytes: u64,
-    },
     /// Only `latest` contracts: publish the newest sample at this rate,
     /// coalescing older ones.
     Latest {
@@ -89,8 +81,8 @@ pub struct Demand {
     pub revision: u64,
     /// The plan.
     pub plan: Plan,
-    /// How long the publisher's ring must retain samples (window plus flush
-    /// and recovery delay).
+    /// How long the publisher's ring must retain samples (window plus
+    /// recovery delay).
     pub retain: Duration,
     /// The newest revision the publisher acknowledged (0: none).
     pub acked: u64,

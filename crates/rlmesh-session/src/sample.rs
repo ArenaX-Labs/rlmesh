@@ -8,12 +8,9 @@
 //! every admitted delivery contract on the stream and publishes it as a
 //! `Demand`; the participant installs it here and acknowledges it:
 //!
-//! - **every** (the default, with no demand): each sample at once;
-//! - **latest**: the newest sample at the plan's rate, coalescing the rest;
-//! - **increments**: samples gathered into one [`SampleBatch`] flushed at the
-//!   plan's interval, and earlier when 256 records or 4 MiB are pending. A
-//!   batch never spans epochs. Unbatchable streams (JPEG, text) send each
-//!   sample at once.
+//! - **every** (the default, with no demand, and for any `every` or
+//!   `history` contract): each sample at once;
+//! - **latest**: the newest sample at the plan's rate, coalescing the rest.
 //!
 //! No plan exceeds the part's `send` rate ceiling (a token bucket with a
 //! burst of two, so jitter around the declared rate is not decimation). A
@@ -22,12 +19,11 @@
 //! on seqs), always send every sample; their plans are acknowledged all the
 //! same.
 //!
-//! A [`SampleSubscriber`] takes samples and increments alike, keeps the
-//! latest value and a bounded window, counts gaps in `seq` as losses, drops
-//! samples from an older epoch and samples that fail the layout check, and
-//! reports a sample's age against the stream's `max_age`, so a consumer never
-//! silently freezes on an old value. An increment on a data key carries the
-//! Zenoh encoding [`batch_encoding`]; a sample carries none.
+//! A [`SampleSubscriber`] takes each sample, keeps the latest value and a
+//! bounded window, counts gaps in `seq` as losses, drops samples from an
+//! older epoch and samples that fail the layout check, and reports a
+//! sample's age against the stream's `max_age`, so a consumer never silently
+//! freezes on an old value.
 //!
 //! Late joiners warm their window from the host's history store
 //! ([`SubscribeOptions::warm_from_history`]): the live subscription starts
@@ -43,15 +39,14 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rlmesh_wire::codec;
-use rlmesh_wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
 use rlmesh_wire::{
     Applied, AuthoritySnapshot, ClockMode, Epoch, HistoryQuery, ParticipantId, Plan, Sample,
-    SampleBatch, SampleMeta, StreamSpec,
+    SampleBatch, StreamSpec,
 };
 use tokio::sync::{Notify, watch};
 use tracing::{debug, warn};
 use zenoh::Wait;
-use zenoh::bytes::{Encoding, ZBytes};
+use zenoh::bytes::ZBytes;
 use zenoh::query::ConsolidationMode;
 
 use crate::clock::Clock;
@@ -60,21 +55,10 @@ use crate::transport::{
     TrafficClass, Transport, declare_publisher, frame_zbytes, payload_bytes, stream_qos,
 };
 
-/// The protobuf message an increment on a data key carries.
-pub const BATCH_SCHEMA: &str = "rlmesh.session.v2.SampleBatch";
-
-/// The Zenoh encoding that marks a [`SampleBatch`] on a data key (a plain
-/// [`Sample`] carries the default encoding).
-pub fn batch_encoding() -> Encoding {
-    Encoding::APPLICATION_PROTOBUF.with_schema(BATCH_SCHEMA)
-}
-
 /// Every sample at once, ungated.
 const FREE: u8 = 0;
 /// Every sample or the newest, under a token bucket.
 const GATED: u8 = 1;
-/// Increments.
-const INCREMENTS: u8 = 2;
 
 /// At most `hz` samples per second, with a burst of two.
 #[derive(Debug)]
@@ -110,15 +94,6 @@ impl Gate {
     }
 }
 
-/// Samples gathered for the next increment.
-#[derive(Debug, Default)]
-struct Pending {
-    epoch: Epoch,
-    samples: Vec<SampleMeta>,
-    payload: Vec<u8>,
-    first_ns: i64,
-}
-
 /// The installed plan.
 #[derive(Debug)]
 struct PlanState {
@@ -126,15 +101,12 @@ struct PlanState {
     revision: u64,
     plan: Option<Plan>,
     gate: Option<Gate>,
-    pending: Pending,
 }
 
-/// What publishing one stream shares with the plan installer and the
-/// increment flusher.
+/// What publishing one stream shares with the plan installer.
 pub(crate) struct Outlet {
     spec: StreamSpec,
     publisher: zenoh::pubsub::Publisher<'static>,
-    batch: Encoding,
     seq: AtomicU64,
     epoch: Arc<AtomicU64>,
     clock: Arc<dyn Clock>,
@@ -146,7 +118,6 @@ pub(crate) struct Outlet {
     state: Mutex<PlanState>,
     changed: Notify,
     coalesced: AtomicU64,
-    batches: AtomicU64,
 }
 
 impl Outlet {
@@ -155,58 +126,6 @@ impl Outlet {
             .put(frame_zbytes(codec::encode_sample(sample)))
             .wait()?;
         Ok(())
-    }
-
-    /// Publishes the pending increment, if any.
-    fn flush(&self, pending: &mut Pending) -> Result<(), SessionError> {
-        if pending.samples.is_empty() {
-            return Ok(());
-        }
-        let batch = SampleBatch {
-            channel: self.spec.channel,
-            epoch: pending.epoch,
-            publish_ns: self.clock.now_ns(),
-            samples: std::mem::take(&mut pending.samples),
-            payload: Bytes::from(std::mem::take(&mut pending.payload)),
-            truncated: false,
-            gaps: Vec::new(),
-        };
-        let encoded = codec::encode_batch(&batch).map_err(|err| SessionError::InvalidValue {
-            channel: self.spec.channel,
-            reason: err.to_string(),
-        })?;
-        self.batches.fetch_add(1, Ordering::Relaxed);
-        self.publisher
-            .put(frame_zbytes(encoded))
-            .encoding(self.batch.clone())
-            .wait()?;
-        Ok(())
-    }
-
-    /// The flush interval, while the plan is increments.
-    fn flush_interval(&self) -> Option<Duration> {
-        let state = self.state.lock().ok()?;
-        match state.plan {
-            Some(Plan::Increments { flush, .. }) if !self.fixed => Some(flush),
-            _ => None,
-        }
-    }
-
-    /// Flushes the pending increment once it has waited its interval.
-    fn flush_due(&self) {
-        let Ok(mut state) = self.state.lock() else {
-            return;
-        };
-        let Some(Plan::Increments { flush, .. }) = state.plan else {
-            return;
-        };
-        let waited = self.clock.now_ns().saturating_sub(state.pending.first_ns);
-        if !state.pending.samples.is_empty()
-            && u128::try_from(waited).unwrap_or(0) >= flush.as_nanos()
-            && let Err(err) = self.flush(&mut state.pending)
-        {
-            warn!(channel = %self.spec.channel, %err, "increment flush failed");
-        }
     }
 
     /// Installs demand revision `revision` (`None`: no demand, the default
@@ -218,21 +137,13 @@ impl Outlet {
         if state.revision == revision && state.plan == plan {
             return;
         }
-        if !matches!(plan, Some(Plan::Increments { .. }))
-            && let Err(err) = self.flush(&mut state.pending)
-        {
-            warn!(channel = %self.spec.channel, %err, "increment flush failed");
-        }
         let rate = match plan {
             Some(Plan::Latest { hz }) => Some(self.ceiling_hz.map_or(hz, |c| c.min(hz))),
-            Some(Plan::Increments { .. }) => None,
             Some(Plan::Every) | None => self.ceiling_hz,
         };
         state.gate = rate.map(Gate::new);
         let mode = if self.fixed {
             FREE
-        } else if matches!(plan, Some(Plan::Increments { .. })) {
-            INCREMENTS
         } else if state.gate.is_some() {
             GATED
         } else {
@@ -251,27 +162,9 @@ impl Outlet {
     }
 }
 
-/// Flushes increments that waited their interval, while the plan has them.
-async fn flush_loop(outlet: Arc<Outlet>) {
-    loop {
-        let changed = outlet.changed.notified();
-        match outlet.flush_interval() {
-            Some(interval) => {
-                tokio::select! {
-                    () = tokio::time::sleep(interval) => outlet.flush_due(),
-                    () = changed => {}
-                }
-            }
-            None => changed.await,
-        }
-    }
-}
-
-/// Publishes one stream. Cheap to share: `publish` takes `&self`. Dropping
-/// it sends any pending increment.
+/// Publishes one stream. Cheap to share: `publish` takes `&self`.
 pub struct SamplePublisher {
     outlet: Arc<Outlet>,
-    flusher: tokio::task::JoinHandle<()>,
 }
 
 impl SamplePublisher {
@@ -304,22 +197,16 @@ impl SamplePublisher {
                 revision: 0,
                 plan: None,
                 gate,
-                pending: Pending::default(),
             }),
             changed: Notify::new(),
             coalesced: AtomicU64::new(0),
-            batches: AtomicU64::new(0),
             spec,
             publisher,
-            batch: batch_encoding(),
             seq: AtomicU64::new(0),
             epoch,
             clock,
         });
-        Ok(Self {
-            flusher: tokio::spawn(flush_loop(outlet.clone())),
-            outlet,
-        })
+        Ok(Self { outlet })
     }
 
     pub(crate) fn outlet(&self) -> &Arc<Outlet> {
@@ -345,13 +232,9 @@ impl SamplePublisher {
             .map_or((None, 0), |s| (s.plan, s.revision))
     }
 
-    /// Samples the plan (or the `send` ceiling) coalesced, and increments
-    /// sent.
-    pub fn counts(&self) -> (u64, u64) {
-        (
-            self.outlet.coalesced.load(Ordering::Relaxed),
-            self.outlet.batches.load(Ordering::Relaxed),
-        )
+    /// Samples the plan (or the `send` ceiling) coalesced.
+    pub fn coalesced(&self) -> u64 {
+        self.outlet.coalesced.load(Ordering::Relaxed)
     }
 
     /// Now on this publisher's clock (the clock [`Self::due`] and the
@@ -378,7 +261,7 @@ impl SamplePublisher {
     /// Publishes one packed value, captured at `capture_ns` (this
     /// participant's clock): its seq, or `None` when the plan coalesced it.
     /// The payload is checked against the stream's layout and sent without
-    /// a copy (an increment gathers it); never blocks on a DROP stream.
+    /// a copy; never blocks on a DROP stream.
     pub fn publish(&self, capture_ns: i64, payload: Bytes) -> Result<Option<u64>, SessionError> {
         self.publish_sample(capture_ns, 0, payload, None)
     }
@@ -423,107 +306,26 @@ impl SamplePublisher {
             payload: payload.clone(),
             applied,
         };
-        match outlet.mode.load(Ordering::Acquire) {
-            FREE => {
-                let seq = outlet.seq.fetch_add(1, Ordering::Relaxed) + 1;
-                outlet.put_sample(&sample(seq))?;
-                Ok(Some(seq))
-            }
-            GATED => {
-                let now = outlet.clock.now_ns();
-                let admitted = outlet
-                    .state
-                    .lock()
-                    .map_or(true, |mut s| s.gate.as_mut().is_none_or(|g| g.admit(now)));
-                if !admitted {
-                    outlet.coalesced.fetch_add(1, Ordering::Relaxed);
-                    return Ok(None);
-                }
-                let seq = outlet.seq.fetch_add(1, Ordering::Relaxed) + 1;
-                outlet.put_sample(&sample(seq))?;
-                Ok(Some(seq))
-            }
-            _ => {
-                let Ok(mut state) = outlet.state.lock() else {
-                    return Err(invalid("publisher state poisoned".into()));
-                };
-                let seq = outlet.seq.fetch_add(1, Ordering::Relaxed) + 1;
-                if !outlet.spec.batchable() {
-                    drop(state);
-                    outlet.put_sample(&sample(seq))?;
-                    return Ok(Some(seq));
-                }
-                let Some(Plan::Increments {
-                    flush,
-                    max_records,
-                    max_bytes,
-                }) = state.plan
-                else {
-                    drop(state);
-                    outlet.put_sample(&sample(seq))?;
-                    return Ok(Some(seq));
-                };
-                let now = outlet.clock.now_ns();
-                if state.pending.epoch != epoch {
-                    // A batch never spans epochs.
-                    outlet.flush(&mut state.pending)?;
-                    state.pending.epoch = epoch;
-                }
-                let pending = &mut state.pending;
-                if pending.samples.is_empty() {
-                    pending.first_ns = now;
-                }
-                pending.samples.push(SampleMeta {
-                    seq,
-                    capture_ns,
-                    tick,
-                    applied,
-                });
-                pending.payload.extend_from_slice(&payload);
-                let cap_records = usize::try_from(max_records)
-                    .unwrap_or(MAX_BATCH)
-                    .clamp(1, MAX_BATCH);
-                let cap_bytes = usize::try_from(max_bytes)
-                    .unwrap_or(MAX_CHUNK_BYTES)
-                    .min(MAX_CHUNK_BYTES);
-                let waited = u128::try_from(now.saturating_sub(pending.first_ns)).unwrap_or(0);
-                if pending.samples.len() >= cap_records
-                    || pending.payload.len() + payload.len() > cap_bytes
-                    || waited >= flush.as_nanos()
-                {
-                    outlet.flush(pending)?;
-                }
-                Ok(Some(seq))
+        if outlet.mode.load(Ordering::Acquire) == GATED {
+            let now = outlet.clock.now_ns();
+            let admitted = outlet
+                .state
+                .lock()
+                .map_or(true, |mut s| s.gate.as_mut().is_none_or(|g| g.admit(now)));
+            if !admitted {
+                outlet.coalesced.fetch_add(1, Ordering::Relaxed);
+                return Ok(None);
             }
         }
+        let seq = outlet.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        outlet.put_sample(&sample(seq))?;
+        Ok(Some(seq))
     }
 }
 
-impl Drop for SamplePublisher {
-    fn drop(&mut self) {
-        self.flusher.abort();
-        if let Ok(mut state) = self.outlet.state.lock()
-            && let Err(err) = self.outlet.flush(&mut state.pending)
-        {
-            debug!(channel = %self.outlet.spec.channel, %err, "final increment lost");
-        }
-    }
-}
-
-/// The samples one data payload carries: one, or an increment's.
-pub(crate) fn decode_data(
-    payload: &ZBytes,
-    batch: bool,
-    spec: &StreamSpec,
-) -> Result<Vec<Sample>, String> {
-    if batch {
-        let batch = codec::decode_batch(payload_bytes(payload)).map_err(|e| e.to_string())?;
-        batch.split(spec.layout.stride().filter(|_| spec.batchable()))
-    } else {
-        codec::decode_sample(payload_bytes(payload))
-            .map(|s| vec![s])
-            .map_err(|e| e.to_string())
-    }
+/// The sample a data payload carries.
+pub(crate) fn decode_data(payload: &ZBytes) -> Result<Sample, String> {
+    codec::decode_sample(payload_bytes(payload)).map_err(|e| e.to_string())
 }
 
 /// A sample as received.
@@ -605,11 +407,8 @@ struct SubState {
     latest: Mutex<Option<Received>>,
     depth: usize,
     window: Mutex<VecDeque<Received>>,
-    /// While warming from history, live payloads (and whether each is an
-    /// increment) wait here.
-    warming: Mutex<Option<Vec<(ZBytes, bool)>>>,
-    /// What marks an increment.
-    batch: Encoding,
+    /// While warming from history, live payloads wait here.
+    warming: Mutex<Option<Vec<ZBytes>>>,
     /// Shared with the participant's heartbeat (`last_seq_seen`).
     seen: Arc<AtomicU64>,
     /// Publisher clock to subscriber clock, refreshed from the view.
@@ -618,24 +417,19 @@ struct SubState {
 }
 
 impl SubState {
-    fn on_live(&self, payload: &ZBytes, encoding: &Encoding) {
-        let batch = *encoding == self.batch;
+    fn on_live(&self, payload: &ZBytes) {
         if let Ok(mut warming) = self.warming.lock()
             && let Some(buffer) = warming.as_mut()
         {
-            buffer.push((payload.clone(), batch));
+            buffer.push(payload.clone());
             return;
         }
-        self.on_payload(payload, batch);
+        self.on_payload(payload);
     }
 
-    fn on_payload(&self, payload: &ZBytes, batch: bool) {
-        match decode_data(payload, batch, &self.spec) {
-            Ok(samples) => {
-                for sample in samples {
-                    self.on_sample(sample, false);
-                }
-            }
+    fn on_payload(&self, payload: &ZBytes) {
+        match decode_data(payload) {
+            Ok(sample) => self.on_sample(sample, false),
             Err(err) => {
                 debug!(channel = %self.spec.channel, %err, "undecodable sample");
                 self.bump(|s| s.undecodable += 1);
@@ -774,7 +568,6 @@ impl SampleSubscriber {
             depth,
             window: Mutex::new(VecDeque::with_capacity(depth.min(1024))),
             warming: Mutex::new(options.warm_from_history.then(Vec::new)),
-            batch: batch_encoding(),
             seen: ctx.seen,
             offset_ns: AtomicI64::new(0),
             on_sample: options.on_sample,
@@ -787,7 +580,7 @@ impl SampleSubscriber {
             .declare_subscriber(ctx.key)
             .callback({
                 let state = state.clone();
-                move |sample| state.on_live(sample.payload(), sample.encoding())
+                move |sample| state.on_live(sample.payload())
             })
             .await?;
         if options.warm_from_history {
@@ -796,8 +589,8 @@ impl SampleSubscriber {
                 .lock()
                 .ok()
                 .and_then(|w| w.as_ref()?.first().cloned())
-                .and_then(|(p, batch)| decode_data(&p, batch, &state.spec).ok())
-                .and_then(|samples| samples.first().map(|s| s.seq));
+                .and_then(|p| decode_data(&p).ok())
+                .map(|s| s.seq);
             let epoch = Epoch(state.view.borrow().as_ref().map_or(0, |v| v.epoch.0));
             let query = HistoryQuery {
                 epoch,
@@ -833,8 +626,8 @@ impl SampleSubscriber {
             // Hold the warming lock while flushing, so no live sample can
             // overtake the buffered ones.
             if let Ok(mut warming) = state.warming.lock() {
-                for (payload, batch) in warming.take().unwrap_or_default() {
-                    state.on_payload(&payload, batch);
+                for payload in warming.take().unwrap_or_default() {
+                    state.on_payload(&payload);
                 }
             }
         }
@@ -976,7 +769,6 @@ mod tests {
             depth,
             window: Mutex::new(VecDeque::new()),
             warming: Mutex::new(None),
-            batch: batch_encoding(),
             seen: Arc::new(AtomicU64::new(0)),
             offset_ns: AtomicI64::new(0),
             on_sample: None,
@@ -1002,7 +794,7 @@ mod tests {
         let (_tx, view) = watch::channel(None);
         let state = state(3, view);
         for seq in [1, 2, 5, 4, 6, 6, 10] {
-            state.on_payload(&payload(seq, 1, 24), false);
+            state.on_payload(&payload(seq, 1, 24));
         }
         let stats = *state.stats.lock().expect("stats");
         assert_eq!(stats.received, 5);
@@ -1030,50 +822,13 @@ mod tests {
         snapshot.epoch = Epoch(3);
         let (_tx, view) = watch::channel(Some(snapshot));
         let state = state(1, view);
-        state.on_payload(&payload(1, 2, 24), false);
-        state.on_payload(&payload(2, 3, 24), false);
-        state.on_payload(&payload(3, 3, 20), false);
-        state.on_payload(&ZBytes::from(vec![1_u8, 2, 3]), false);
+        state.on_payload(&payload(1, 2, 24));
+        state.on_payload(&payload(2, 3, 24));
+        state.on_payload(&payload(3, 3, 20));
+        state.on_payload(&ZBytes::from(vec![1_u8, 2, 3]));
         let stats = *state.stats.lock().expect("stats");
         assert_eq!((stats.stale_epoch, stats.received), (1, 1));
         assert_eq!((stats.malformed, stats.undecodable), (1, 1));
-    }
-
-    #[test]
-    fn increments_arrive_as_their_samples() {
-        let (_tx, view) = watch::channel(None);
-        let state = state(4, view);
-        let batch = SampleBatch {
-            channel: ChannelId(1),
-            epoch: Epoch(1),
-            publish_ns: 0,
-            samples: (1..=3)
-                .map(|seq| SampleMeta {
-                    seq,
-                    capture_ns: 0,
-                    tick: 0,
-                    applied: None,
-                })
-                .collect(),
-            payload: Bytes::from(vec![0_u8; 3 * 24]),
-            truncated: false,
-            gaps: Vec::new(),
-        };
-        let increment = frame_zbytes(codec::encode_batch(&batch).expect("encode"));
-        state.on_live(&increment, &batch_encoding());
-        // Unmarked, the same bytes are not a sample.
-        state.on_live(&increment, &Encoding::default());
-        state.on_live(&payload(4, 1, 24), &Encoding::default());
-        let stats = *state.stats.lock().expect("stats");
-        assert_eq!((stats.received, stats.lost, stats.undecodable), (4, 0, 1));
-        let window: Vec<u64> = state
-            .window
-            .lock()
-            .expect("window")
-            .iter()
-            .map(|r| r.sample.seq)
-            .collect();
-        assert_eq!(window, [1, 2, 3, 4]);
     }
 
     #[test]
@@ -1094,8 +849,8 @@ mod tests {
         let (_tx, view) = watch::channel(None);
         let state = state(8, view);
         *state.warming.lock().expect("lock") = Some(Vec::new());
-        state.on_live(&payload(5, 1, 24), &Encoding::default());
-        state.on_live(&payload(6, 1, 24), &Encoding::default());
+        state.on_live(&payload(5, 1, 24));
+        state.on_live(&payload(6, 1, 24));
         assert_eq!(state.stats.lock().expect("stats").received, 0, "buffered");
         // History up to the first live seq, overlapping it by one.
         for seq in [3, 4, 5] {
@@ -1110,7 +865,7 @@ mod tests {
             .take()
             .unwrap_or_default()
         {
-            state.on_payload(&p.0, p.1);
+            state.on_payload(&p);
         }
         let stats = *state.stats.lock().expect("stats");
         assert_eq!(
