@@ -4,6 +4,7 @@ default-members = [
   "crates/rlmesh-adapters",
   "crates/rlmesh-capi",
   "crates/rlmesh-cli",
+  "crates/rlmesh-edge",
   "crates/rlmesh-grpc",
   "crates/rlmesh-proto",
   "crates/rlmesh-runtime",
@@ -35,6 +36,7 @@ publish = true
 rlmesh = { version = "=0.1.0", path = "crates/rlmesh" }
 rlmesh-adapters = { version = "=0.1.0", path = "crates/rlmesh-adapters" }
 rlmesh-cli = { version = "=0.1.0", path = "crates/rlmesh-cli" }
+rlmesh-edge = { version = "=0.1.0", path = "crates/rlmesh-edge" }
 rlmesh-grpc = { version = "=0.1.0", path = "crates/rlmesh-grpc" }
 rlmesh-proto = { version = "=0.1.0", path = "crates/rlmesh-proto" }
 rlmesh-runtime = { version = "=0.1.0", path = "crates/rlmesh-runtime" }

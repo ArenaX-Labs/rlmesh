@@ -3707,6 +3707,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlmesh-edge"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "rlmesh-session",
+ "rlmesh-wire",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zenoh",
+]
+
+[[package]]
 name = "rlmesh-grpc"
 version = "0.1.0"
 dependencies = [
