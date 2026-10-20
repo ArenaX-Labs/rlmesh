@@ -982,11 +982,12 @@ async fn cancellable<T>(
 ) -> Result<T> {
     let driver = CancellationToken::new();
     let _watch = CancelWatch::from_subscriptions(subscriptions, driver.clone())?;
-    tokio::select! {
+    let result = tokio::select! {
         biased;
         () = driver.cancelled() => Err(Error::Cancelled),
         out = future => out,
-    }
+    };
+    _watch.finish(result)
 }
 
 /// Close an unclosed core at scope exit: bounded on this thread outside a
@@ -1352,15 +1353,15 @@ impl RemoteEnv {
             None => self.admit(None)?,
         };
         let options = options.cloned();
-        let (lanes, info) = self
-            .io_subscribed(subscriptions, move |core| {
-                Box::pin(async move {
-                    core.reset_values(seed.into_iter().collect(), options.as_ref(), Vec::new())
-                        .await
-                })
+        self.io_subscribed(subscriptions, move |core| {
+            Box::pin(async move {
+                let (lanes, info) = core
+                    .reset_values(seed.into_iter().collect(), options.as_ref(), Vec::new())
+                    .await?;
+                Ok((lanes.into_iter().next().unwrap_or(Value::None), info))
             })
-            .await?;
-        Ok((lanes.into_iter().next().unwrap_or(Value::None), info))
+        })
+        .await
     }
 
     /// Apply one action: `(observation, reward, terminated, truncated,
@@ -1390,18 +1391,20 @@ impl RemoteEnv {
             Some(s) => s,
             None => self.admit(None)?,
         };
-        let (lanes, rewards, terminated, truncated, info) = self
-            .io_subscribed(subscriptions, move |core| {
-                Box::pin(core.step_values(vec![action]))
+        self.io_subscribed(subscriptions, move |core| {
+            Box::pin(async move {
+                let (lanes, rewards, terminated, truncated, info) =
+                    core.step_values(vec![action]).await?;
+                Ok((
+                    lanes.into_iter().next().unwrap_or(Value::None),
+                    rewards.first().copied().unwrap_or_default(),
+                    terminated.first().copied().unwrap_or_default(),
+                    truncated.first().copied().unwrap_or_default(),
+                    info,
+                ))
             })
-            .await?;
-        Ok((
-            lanes.into_iter().next().unwrap_or(Value::None),
-            rewards.first().copied().unwrap_or_default(),
-            terminated.first().copied().unwrap_or_default(),
-            truncated.first().copied().unwrap_or_default(),
-            info,
-        ))
+        })
+        .await
     }
 }
 
@@ -1529,15 +1532,15 @@ impl RemoteVectorEnv {
         };
         let options = options.cloned();
         let observation = self.shared.contract.observation_space().wire().clone();
-        let (lanes, info) = self
-            .io_subscribed(subscriptions, move |core| {
-                Box::pin(async move {
-                    core.reset_values(seeds, options.as_ref(), env_indices)
-                        .await
-                })
+        self.io_subscribed(subscriptions, move |core| {
+            Box::pin(async move {
+                let (lanes, info) = core
+                    .reset_values(seeds, options.as_ref(), env_indices)
+                    .await?;
+                Ok((super::batch::stack_lanes(&observation, lanes)?, info))
             })
-            .await?;
-        Ok((super::batch::stack_lanes(&observation, lanes)?, info))
+        })
+        .await
     }
 
     /// Apply one batched action: the batched observation, per-lane rewards,
@@ -1565,6 +1568,7 @@ impl RemoteVectorEnv {
         let action = self.shared.contract.action_space().wire().clone();
         super::batch::unstack_lanes(&action, actions, self.shared.num_envs as usize)
     }
+
     #[allow(clippy::type_complexity)]
     async fn step_in(
         &mut self,
@@ -1574,6 +1578,7 @@ impl RemoteVectorEnv {
         let subscriptions = self.admit(None)?;
         self.step_lanes_in(lanes, subscriptions).await
     }
+
     #[allow(clippy::type_complexity)]
     async fn step_lanes_in(
         &mut self,
@@ -1581,16 +1586,19 @@ impl RemoteVectorEnv {
         subscriptions: Vec<crate::ext::CancelSubscription>,
     ) -> Result<(Value, Vec<f64>, Vec<bool>, Vec<bool>, InfoDict)> {
         let observation = self.shared.contract.observation_space().wire().clone();
-        let (lanes, rewards, terminated, truncated, info) = self
-            .io_subscribed(subscriptions, move |core| Box::pin(core.step_values(lanes)))
-            .await?;
-        Ok((
-            super::batch::stack_lanes(&observation, lanes)?,
-            rewards,
-            terminated,
-            truncated,
-            info,
-        ))
+        self.io_subscribed(subscriptions, move |core| {
+            Box::pin(async move {
+                let (lanes, rewards, terminated, truncated, info) = core.step_values(lanes).await?;
+                Ok((
+                    super::batch::stack_lanes(&observation, lanes)?,
+                    rewards,
+                    terminated,
+                    truncated,
+                    info,
+                ))
+            })
+        })
+        .await
     }
 }
 
@@ -1623,6 +1631,22 @@ fn check_token(token: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_watch_keeps_a_firing_between_admission_and_first_poll() {
+        let token = crate::ext::CancelToken::new();
+        let subscriptions = vec![token.subscribe()];
+        // Deterministic hook at the exact handoff used by io_subscribed.
+        token.cancel();
+        let result = block_on_library(cancellable(subscriptions, async {
+            panic!("a fired admission must refuse before any I/O");
+            #[allow(unreachable_code)]
+            Ok(())
+        }));
+        assert_eq!(result, Err(Error::Cancelled));
+        token.cancel();
+        assert!(token.take());
+    }
 
     #[test]
     fn connect_address_follows_python_endpoint_rules() {
