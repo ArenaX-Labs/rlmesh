@@ -2,13 +2,15 @@
 // a host, robots and policies on Zenoh directly, the twin of Python's `rlmesh.v2`.
 //
 //   import { Host, Robot, Policy, Rate } from 'rlmesh';
-//   await using host = await Host.open();
-//   await using robot = await Robot.connect('ur10e', UR10E, { session: host });
+//   const host = await Host.open();  // Node 24: `await using host = ...` closes it for you
+//   const robot = await Robot.connect('ur10e', UR10E, { session: host });
 //   await robot.arm();
 //   const policy = new Policy(HOLD, { session: host, name: 'hold' });
 //   console.log(String(await policy.bind('ur10e')));               // the binding table
 //   // robot loop: robot.publish('arm', { pos, vel, effort }); const due = robot.due('arm'); await rate.sleep();
-//   await policy.run((obs) => ({ arm: { data: obs.inputs.q as Float32Array, shape: [1, 6] } }), { duration: 5 });
+//   await policy.run((obs) => ({ arm: { data: holdQ(obs), shape: [10, 6] } }), { duration: 5 });
+//
+// examples/node/hold.mjs runs this end to end.
 //
 // Every rule (normalisation, binding, conversions, leases, the edge, the run loop) runs in Rust;
 // this module converts typed arrays at the boundary. Times are `bigint` ns on

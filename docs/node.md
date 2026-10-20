@@ -16,55 +16,67 @@ A page cannot do this: it has no raw TCP or UDP. Browsers join through
 same package exports both, `connect` for a gateway and the classes below for
 the session itself.
 
+`examples/node/hold.mjs` runs it end to end (`node examples/node/hold.mjs`
+after `mise run build:js:native`): the conformance UR10e, faked, and a policy
+that holds the arm. Its core:
+
 ```js
 import { Host, Policy, Rate, Robot } from "rlmesh";
 
-await using host = await Host.open();
-await using robot = await Robot.connect("ur10e", UR10E, { session: host });
-await robot.arm();
-
-// The robot's control loop: publish its sensors, play what its edge says is due.
-const rate = new Rate(500);
-(async () => {
-  for (;;) {
-    robot.publish("arm", { pos: q, vel: dq, effort });
-    const due = robot.due("arm"); // { mode, value: { dtype, shape, data }, ... } or null
-    if (due?.value) q = due.value.data;
-    await rate.sleep();
-  }
-})();
-
-await using policy = new Policy(HOLD, { session: host, name: "hold" });
-console.log(String(await policy.bind("ur10e"))); // the binding table
-await policy.run(
-  async (obs) => {
-    const arm = new Float32Array(60);
-    for (let k = 0; k < 10; k++) arm.set(obs.inputs.q.data, k * 6);
-    return { arm: { data: arm, shape: [10, 6] } };
-  },
-  { duration: 5 },
-);
+const host = await Host.open();
+const robot = await Robot.connect("ur10e", UR10E, { session: host });
+const policy = new Policy(HOLD, { session: host, name: "hold" });
+try {
+  await robot.arm();
+  // The robot's control loop: publish its sensors, play what its edge says is due.
+  (async () => {
+    const rate = new Rate(500);
+    for (;;) {
+      robot.publish("arm", { pos: q, vel: dq, effort });
+      const due = robot.due("arm"); // { mode, value: { dtype, shape, data }, ... } or null
+      if (due?.value) q = due.value.data;
+      await rate.sleep();
+    }
+  })();
+  console.log(String(await policy.bind("ur10e"))); // the binding table
+  await policy.run(
+    async (obs) => {
+      const arm = new Float32Array(60); // [horizon 10, 6 joints]
+      for (let k = 0; k < 10; k++) arm.set(obs.inputs.q.data, k * 6);
+      return { arm: { data: arm, shape: [10, 6] } };
+    },
+    { duration: 5 },
+  );
+} finally {
+  await policy.close();
+  await robot.close();
+  await host.close();
+}
 ```
+
+On Node 24 and later, `await using host = await Host.open()` (and the same
+for `Robot`, `Policy` and `Recorder`) closes each one at the end of the
+block instead of the `finally`.
 
 ## How it maps to Python
 
-| Python (`rlmesh.v2`)                               | Node (`rlmesh`)                                                   |
-| -------------------------------------------------- | ----------------------------------------------------------------- |
-| `with Host() as host`                              | `await using host = await Host.open()`                            |
-| `Robot(name, parts, session=host)`                 | `await Robot.connect(name, parts, { session: host })`             |
-| `robot.publish("arm", pos=q, vel=dq)`              | `robot.publish('arm', { pos: q, vel: dq })`                       |
-| `robot.due("arm").value` (NumPy array)             | `robot.due('arm').value` (`{ dtype, shape, data }`)               |
-| `robot.arm()`, `estop(reason)`, `clear()`          | `await robot.arm()`, `estop(reason)`, `clear()`                   |
-| `robot.now_ns()` (`time.monotonic_ns()`)           | `robot.nowNs()` (`process.hrtime.bigint()`)                       |
-| `Policy(map, session=host).bind(robot, **opts)`    | `await new Policy(map, { session: host }).bind(robot, opts)`      |
-| `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                                 |
-| `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }`     |
-| `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                      |
-| `policy.acquire()` → `{"arm": token}`              | `await policy.acquire()` → `{ arm: token }` (`bigint`)            |
-| `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                     |
-| `with Recorder(path, session=host)`                | `await using rec = await Recorder.start(path, { session: host })` |
-| `read_recording(path)`                             | `await readRecording(path)`                                       |
-| `SessionRefused`, `BindingRefused`, `StartSkipped` | the same classes; `ValueError` is `RangeError`                    |
+| Python (`rlmesh.v2`)                               | Node (`rlmesh`)                                               |
+| -------------------------------------------------- | ------------------------------------------------------------- |
+| `with Host() as host`                              | `const host = await Host.open()` … `await host.close()`       |
+| `Robot(name, parts, session=host)`                 | `await Robot.connect(name, parts, { session: host })`         |
+| `robot.publish("arm", pos=q, vel=dq)`              | `robot.publish('arm', { pos: q, vel: dq })`                   |
+| `robot.due("arm").value` (NumPy array)             | `robot.due('arm').value` (`{ dtype, shape, data }`)           |
+| `robot.arm()`, `estop(reason)`, `clear()`          | `await robot.arm()`, `estop(reason)`, `clear()`               |
+| `robot.now_ns()` (`time.monotonic_ns()`)           | `robot.nowNs()` (`process.hrtime.bigint()`)                   |
+| `Policy(map, session=host).bind(robot, **opts)`    | `await new Policy(map, { session: host }).bind(robot, opts)`  |
+| `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                             |
+| `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }` |
+| `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                  |
+| `policy.acquire()` → `{"arm": token}`              | `await policy.acquire()` → `{ arm: token }` (`bigint`)        |
+| `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                 |
+| `with Recorder(path, session=host)`                | `const rec = await Recorder.start(path, { session: host })`   |
+| `read_recording(path)`                             | `await readRecording(path)`                                   |
+| `SessionRefused`, `BindingRefused`, `StartSkipped` | the same classes; `ValueError` is `RangeError`                |
 
 The rules are R-30 in the [parity spec](specs/language-parity/rules.md).
 

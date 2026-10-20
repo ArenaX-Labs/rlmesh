@@ -419,6 +419,7 @@ run = [
   "mise run build:js:native",
   "cd javascript/rlmesh && node build.mjs --node-only",
   "node javascript/rlmesh/test/run.mjs --native",
+  "node examples/node/hold.mjs > /dev/null",
 ]
 
 [tasks."bench:js:native"]
