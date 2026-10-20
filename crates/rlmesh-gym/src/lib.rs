@@ -4,15 +4,15 @@
 //! on v2, at v1 throughput.
 //!
 //! - [`lockstep`]: the exchange (one `LockstepStep`, one `LockstepReply`),
-//!   the env-side [`Gate`](lockstep::Gate) (epoch, lease token and e-stop
+//!   the env-side [`Gate`] (epoch, lease token and e-stop
 //!   checked locally per step) and the links: a direct call in one process,
 //!   a Zenoh query on `l/{robot}` otherwise.
 //! - [`map`]: a Gym env as a robot (§12.5): spaces and v1 tags to a robot
 //!   map, leaf slabs to part slabs and back, bit-exact.
 //! - [`compat`]: the v1 env behind the lockstep exchange
-//!   ([`GymEnv`](compat::GymEnv), on the v1 env service's own core), and a
+//!   ([`GymEnv`], on the v1 env service's own core), and a
 //!   lockstep env as a v1 [`RuntimeEnv`](rlmesh_runtime::RuntimeEnv)
-//!   ([`LockstepEnv`](compat::LockstepEnv)), so the v1 runtime's chunking,
+//!   ([`LockstepEnv`]), so the v1 runtime's chunking,
 //!   prefetch, batching, autoreset and episode ids run unchanged.
 //! - [`session`]: attach, declare, arm and one lease grant; addresses
 //!   (`lockstep://...`).

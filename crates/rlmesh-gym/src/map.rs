@@ -6,7 +6,7 @@
 //!
 //! | Gym leaf | Part |
 //! |---|---|
-//! | `Dict` key nesting, `Tuple` item i | path segments ([`escape`](crate::escape)) |
+//! | `Dict` key nesting, `Tuple` item i | path segments ([`escape`](mod@crate::escape)) |
 //! | untagged `Box` | `gym/box`, field `value` |
 //! | `Discrete`, `MultiDiscrete`, `MultiBinary` | `gym/discrete`, `gym/multi_discrete`, `gym/multi_binary`, field `value` |
 //! | `Text` | `text` (per step, as v1) |

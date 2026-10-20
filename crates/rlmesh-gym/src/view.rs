@@ -1,7 +1,7 @@
 //! The Gym view over a v2-native robot in lockstep (§12.6).
 //!
 //! [`GymView`] drives a robot that serves the lockstep exchange (a
-//! [`LockstepHandler`] behind [`serve_robot`](crate::LockstepBinding::serve_robot))
+//! [`LockstepHandler`](crate::LockstepHandler) behind [`serve_robot`](crate::LockstepBinding::serve_robot))
 //! and presents it as a Gymnasium env:
 //!
 //! - the observation space is keyed by the policy's input names, or by part

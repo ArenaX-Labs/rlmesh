@@ -20,7 +20,7 @@
 //!   by length.
 //! - **Info.** The v1 runtime reads `info` (success, final info), so the
 //!   compatibility path always records it: `info_json` carries the v1
-//!   `MetaMap` ([`meta_json`](crate::meta_json)); empty means unset.
+//!   `MetaMap` ([`meta_json`](mod@crate::meta_json)); empty means unset.
 //! - **Episode ids.** v1 mints UUIDv7 strings and pushes a fresh one down
 //!   on the step that rolls a NEXT_STEP autoreset; v2 ids are `u64` and a
 //!   `LockstepStep` has no id field. The driver numbers its ids (1, 2, ...)
