@@ -1,5 +1,9 @@
-// `rlmesh` for Node >= 22 (the `default` export condition): the same session, class Workers on
-// worker_threads, Node's global WebSocket, the wasm read from disk. Frames carry no ImageBitmap.
+// `rlmesh` for Node >= 22 (the `default` export condition), and Electron's main process:
+//
+// - `Host`, `Robot`, `Policy`, `Rate`: sessions in-process over the native addon (native.ts), the
+//   twin of Python's `rlmesh.v2`. Robots, policies and device loops belong here.
+// - `connect`: the browser's session through a gateway, class Workers on worker_threads, Node's
+//   global WebSocket, the wasm read from disk. Frames carry no ImageBitmap.
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +13,7 @@ import type { WorkerLike } from './supervisor.js';
 import type { ConnectOptions, TrafficClass } from './types.js';
 
 export * from './index.js';
+export * from './native.js';
 
 /** A worker_threads Worker behind the browser Worker shape the supervisor uses. */
 class NodeWorker implements WorkerLike {
