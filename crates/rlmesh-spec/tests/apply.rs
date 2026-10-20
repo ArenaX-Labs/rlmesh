@@ -284,3 +284,38 @@ fn a_blank_camera_is_black_after_preprocessing() {
     );
     assert!(low.data.iter().all(|v| *v == 0));
 }
+
+#[test]
+fn untouched_u8_images_pass_through_as_bytes_hwc_or_chw() {
+    let mut parts = normalise(
+        &ParticipantId::new("bot").expect("id"),
+        SPEC_VERSION,
+        r#"{"cam": {"kind": "camera", "width": 3, "height": 2, "hz": 10}}"#,
+    )
+    .expect("robot");
+    parts[0].channel = ChannelId(1);
+    let policy = Policy::parse(
+        r#"{"hz": 10, "inputs": {"hwc": {"kind": "camera", "at": "cam"},
+                                "chw": {"kind": "camera", "at": "cam", "layout": "chw"}}}"#,
+    )
+    .expect("policy");
+    let b = bind(&policy, &parts, &RunOptions::named("test")).expect("bound");
+    // Pixel (row, col) has channels (10 * row + col) + {0, 100, 200}.
+    let pixels: Vec<u8> = (0..2_u8)
+        .flat_map(|r| (0..3_u8).flat_map(move |c| [10 * r + c, 10 * r + c + 100, 10 * r + c + 200]))
+        .collect();
+    let hwc = tensor(b.input("hwc").expect("hwc").apply(&[&pixels]).expect("hwc"));
+    assert_eq!(
+        (hwc.dtype, hwc.shape.as_slice()),
+        (DType::U8, &[2_u32, 3, 3][..])
+    );
+    assert_eq!(hwc.data, pixels);
+    let chw = tensor(b.input("chw").expect("chw").apply(&[&pixels]).expect("chw"));
+    assert_eq!(chw.shape, [3, 2, 3]);
+    assert_eq!(
+        chw.data,
+        [
+            0, 1, 2, 10, 11, 12, 100, 101, 102, 110, 111, 112, 200, 201, 202, 210, 211, 212
+        ]
+    );
+}

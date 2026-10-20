@@ -584,6 +584,19 @@ impl InputRow {
                 _ => {}
             }
         }
+        // Pixels no arithmetic touched stay bytes: a u8 image is delivered
+        // without a float round trip.
+        if floats.is_none() && *dtype == DType::U8 {
+            if !chw {
+                return Ok(image.data);
+            }
+            let (plane, c) = (image.height * image.width, image.channels);
+            let mut out = vec![0_u8; image.data.len()];
+            for (i, v) in image.data.iter().enumerate() {
+                out[(i % c) * plane + i / c] = *v;
+            }
+            return Ok(out);
+        }
         let values = floats.unwrap_or_else(|| image.data.iter().map(|v| f64::from(*v)).collect());
         let values = if chw {
             let (plane, c) = (image.height * image.width, image.channels);
