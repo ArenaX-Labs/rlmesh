@@ -22,6 +22,9 @@ dev = [
   "rlmesh-system-fixtures",
   "trustme==1.2.1",
 ]
+# The MuJoCo UR10e session demo (examples/python/v2/ur10e_mujoco) and an
+# independent MCAP reader for its test: `uv sync --group mujoco`.
+mujoco = ["rlmesh[numpy]", "mujoco==3.16.0", "mcap==1.6.0"]
 
 [tool.basedpyright]
 include = [

@@ -8,10 +8,14 @@ fails CI. The rest of the set is typechecked but not executed:
 - ``sandbox/``: starts owned Docker containers.
 - ``vla_adapters/``: model x simulator study; real runs need weights and simulators.
 - ``v2/session_bench.py``: a latency benchmark (30 s per run by default).
+
+``v2/ur10e_mujoco`` runs only where MuJoCo is installed (``uv sync --group
+mujoco``).
 """
 
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
 import sys
@@ -150,3 +154,19 @@ def test_v2_loopback_robot_and_policy() -> None:
     _assert_ok(result)
     assert "binding sine on ur10e" in result.stdout
     assert "commands applied" in result.stdout
+
+
+def test_v2_ur10e_mujoco_teleop_and_mcap() -> None:
+    """The milestone demo, headless: policy, scripted takeover and hand-back, MCAP."""
+    pytest.importorskip("mujoco", reason="uv sync --group mujoco")
+    result = _run_example("v2/ur10e_mujoco/demo.py", "--seconds", "8", "--json")
+    _assert_ok(result)
+    report = json.loads(result.stdout)
+    assert all(report["checks"].values()), report["checks"]
+    assert report["checks"]["takeover"] and report["checks"]["hand_back"]
+    assert report["checks"].get("mcap_independent_read", True)
+    holders = [lease["holder"] for lease in report["lease_timeline"] if lease["holder"]]
+    assert holders[0] == "policy" and "operator" in holders and holders[-1] == "policy"
+    topics = report["recording"]["summary"]["topics"]
+    assert topics["/ur10e/wrist/cam"]["messages"] > 0
+    assert topics["/ur10e/arm/_applied"]["messages"] > 1000

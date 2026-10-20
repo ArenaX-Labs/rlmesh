@@ -9,4 +9,4 @@ Most server/client examples default to `127.0.0.1:5555`; start the server in one
 - [`byo_container/`](byo_container): hand-written Dockerfiles for an env and a model image (run the same image locally or on the hosted platform).
 - [`sandbox/`](sandbox): start an owned Docker-backed environment process (needs Docker).
 - [`vla_adapters/`](vla_adapters): tag-driven adapters across many model × env pairs.
-- [`v2/`](v2): real-time sessions (protocol v2): a Python robot and a Python policy on loopback (`loopback.py`), and the Python-in-the-loop latency bench (`session_bench.py`).
+- [`v2/`](v2): real-time sessions (protocol v2): a Python robot and a Python policy on loopback (`loopback.py`), the Python-in-the-loop latency bench (`session_bench.py`), and the milestone demo, a MuJoCo UR10e with a policy, keyboard teleop pre-emption and an MCAP recording ([`ur10e_mujoco/`](v2/ur10e_mujoco), needs `uv sync --group mujoco`).
