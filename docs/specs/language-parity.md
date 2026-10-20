@@ -1,6 +1,6 @@
 # Language parity
 
-Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (all **Approved by the user, 2026-10-19**). JS (browser) binding: Experimental, 2026-10-20; a client of the v2 session, not of this surface (R-29).
+Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (all **Approved by the user, 2026-10-19**). JS (browser) binding: Experimental, 2026-10-20; a client of the v2 session, not of this surface (R-29). JS (Node) binding: Experimental, 2026-10-20; Python's `rlmesh.v2` over a native addon (R-30).
 
 RLMesh is one library in five languages: Python (the reference), Rust (the
 `rlmesh` facade crate), C (`crates/rlmesh-capi/include/rlmesh.h`), C++
@@ -76,6 +76,14 @@ has a Stable surface.
   mapping. It joins [compatibility](../compatibility.md)'s list when it is
   published.
 
+The Node binding (R-30) is the same package's other half: in Node 22+ and
+Electron's main process, `Host`, `Robot`, `Policy` and `Rate` bind
+`rlmesh-session` and `rlmesh-edge` directly through a Node-API addon
+(`javascript/rlmesh/native`), one to one with Python's `rlmesh.v2` and
+async-first like the browser. Robots, edges and device loops run here, not in
+a page. Its gate is `mise run test:js:native` (docs: [the Node
+binding](../node.md)).
+
 ## How to read
 
 1. Start with [rules](language-parity/rules.md): the translation table, the
@@ -102,16 +110,16 @@ has a Stable surface.
 
 ## Files
 
-| File                                       | Covers                                                                                                                            |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| [rules.md](language-parity/rules.md)       | Rules (R-29: the browser binding), decisions, error matrix, warnings, Python changes, shapes, known gaps, enforcement             |
-| [core.md](language-parity/core.md)         | `Value`, `Metadata`, error detail fields, workflow editions, describe, build info                                                 |
-| [spaces.md](language-parity/spaces.md)     | Spaces, `SpaceSpec`, space values and `Tensor`                                                                                    |
-| [env.md](language-parity/env.md)           | Env authoring and serving: `Env`, `VectorEnv`, `EnvFactory`, `Variant`, `EnvServer`, `ServeOptions`, `EnvContract`, `trial_index` |
-| [model.md](language-parity/model.md)       | Model authoring: `Policy`, `Model`, `PredictContext`, `SpecArg`, `NO_ADAPTER`                                                     |
-| [running.md](language-parity/running.md)   | `run`, `session`, `Session`, run and env targets, `RunContext`, `RunHooks`, results, `View`, `Recorder`, `RANDOM_SAMPLE`          |
-| [remote.md](language-parity/remote.md)     | `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, their options, sandbox clients                                                     |
-| [adapters.md](language-parity/adapters.md) | `EnvTags`, `ModelSpec`, `ObservationRoles`, transforms, `tag`, `resolve`, `Adapter`                                               |
+| File                                       | Covers                                                                                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| [rules.md](language-parity/rules.md)       | Rules (R-29: the browser binding; R-30: the Node binding), decisions, error matrix, warnings, Python changes, shapes, known gaps, enforcement |
+| [core.md](language-parity/core.md)         | `Value`, `Metadata`, error detail fields, workflow editions, describe, build info                                                             |
+| [spaces.md](language-parity/spaces.md)     | Spaces, `SpaceSpec`, space values and `Tensor`                                                                                                |
+| [env.md](language-parity/env.md)           | Env authoring and serving: `Env`, `VectorEnv`, `EnvFactory`, `Variant`, `EnvServer`, `ServeOptions`, `EnvContract`, `trial_index`             |
+| [model.md](language-parity/model.md)       | Model authoring: `Policy`, `Model`, `PredictContext`, `SpecArg`, `NO_ADAPTER`                                                                 |
+| [running.md](language-parity/running.md)   | `run`, `session`, `Session`, run and env targets, `RunContext`, `RunHooks`, results, `View`, `Recorder`, `RANDOM_SAMPLE`                      |
+| [remote.md](language-parity/remote.md)     | `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, their options, sandbox clients                                                                 |
+| [adapters.md](language-parity/adapters.md) | `EnvTags`, `ModelSpec`, `ObservationRoles`, transforms, `tag`, `resolve`, `Adapter`                                                           |
 
 ## Decisions accepted by the user
 

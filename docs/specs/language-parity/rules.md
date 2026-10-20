@@ -2165,6 +2165,41 @@ surface the area tables map; it has no manifest column. Its constraints:
   R-28 rules out spans over native memory for C#; `latest` returns a copy the
   caller owns.
 
+### R-30 Node (JS) native binding
+
+The Node binding is the same `rlmesh` npm package's `default` export
+condition (Node 22+, Electron's main process): `Host`, `Robot`, `Policy`, `Rate` and
+`Recorder` over a Node-API addon (`javascript/rlmesh/native`, napi-rs) that
+binds `rlmesh-session` and `rlmesh-edge` directly, as PyO3 does. It is
+Experimental, binds the v2 session like R-29, and has no manifest column.
+
+- **Python's `rlmesh.v2`, one to one.** The same classes, verbs and
+  options, with JS names (`now_ns` is `nowNs`, `edge_stats` is `edgeStats`,
+  keyword arguments are an options object). Python's keyword fields
+  (`publish("arm", pos=q, vel=dq)`) are an object (`publish('arm', { pos, vel
+})`). It has the full capability profile: it hosts sessions, declares
+  robots, runs their edges and runs bound policies. Every rule stays in the
+  Rust crates; the wrapper only converts.
+- **Async-first, the exception to R-16**, as R-29. Calls that wait on the
+  network (`Host.open`, `Robot.connect`, `bind`, `arm`, `acquire`, `run`,
+  `close`) return a `Promise`; `publish`, `due`, `observe` and `send` do not
+  wait and return at once. `Rate.sleep` resolves off the JS thread. The run
+  loop runs on a native thread and hands each start to `predict` on the JS
+  thread; `predict` may return a `Promise`.
+- **Arrays.** A tensor is `{ dtype, shape, data }` with a typed array of the
+  dtype (`float16` as `Float16Array` where the runtime has one, else raw
+  `Uint16Array` bits); actions are `{ data, shape }`, the dtype following the
+  typed array. `publish` casts as NumPy's `same_kind` does and copies before
+  it returns. Observation arrays are the caller's.
+- **Times and numbers.** Times are `bigint` ns on `process.hrtime.bigint()`'s
+  clock (CLOCK_MONOTONIC, Python's `time.monotonic_ns()`), and lease tokens
+  are `bigint`; seqs and counters are `number`, exact below 2^53.
+- **Errors.** `SessionException` and its subclasses `SessionRefused`
+  (`status`), `BindingRefused` (`problems`), `StartSkipped` (`reason`,
+  `waiting`, `stale`, `gaps`) and `SessionTimeout`; Python's `ValueError` is
+  `RangeError` and its `TypeError` is `TypeError`. A run whose `predict`
+  throws rejects with that error.
+
 ## Decisions
 
 | ID   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Status                           |

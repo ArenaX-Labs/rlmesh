@@ -174,6 +174,10 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 - `rlmesh-gateway` bridges browsers to a session: each control connection is a session participant of its own, whose leases are the host's and whose heartbeats and chunks are the browser's, and samples are forwarded as published. It binds loopback by default, takes a bearer token as a WebSocket subprotocol (required off loopback), checks an Origin allowlist, caps message size, subscriptions and the attach class, and serves wss with `--tls-cert`/`--tls-key`.
 - `examples/web` runs a v2 session in the browser: a 7-joint arm robot with a 20 Hz camera and a model policy, which an operator preempts, drives and hands back (`mise run demo:web`).
 
+#### Node (JS)
+
+- The Experimental Node binding of real-time sessions (protocol v2), in the same `rlmesh` npm package: in Node 22+ and Electron's main process, `Host`, `Robot`, `Policy` and `Rate` run a session in-process, one to one with Python's `rlmesh.v2`, over a Node-API addon (`rlmesh-node`, napi-rs) that binds `rlmesh-session`, `rlmesh-edge` and `rlmesh-record` directly; `Recorder` and `readRecording` write and read MCAP recordings. Calls that wait return a `Promise`; the run loop runs on a native thread and calls `predict` (sync or async) on the JS thread. It adds no npm dependencies. See [the Node binding](docs/node.md).
+
 #### Packaging and examples
 
 - A universal macOS C/C++ release package, with Developer ID signing and Apple notarization in the existing tag-only release job, or an explicit unsigned-release opt-in.
