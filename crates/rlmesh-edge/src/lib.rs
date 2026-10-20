@@ -18,6 +18,9 @@
 //!   [`rlmesh_session::Participant`]: chunks arrive from the transport,
 //!   applied samples go out on `{path}/_applied`, falls are reported to the
 //!   host (`EnterSafe`), heartbeats carry the queue report.
+//! - [`robot`]: [`Robot`], the embodiment runtime bindings wrap: a robot map
+//!   declared, a publisher per part and an edge per command group, ticked
+//!   by the robot's own control loop ([`Robot::due`]).
 //!
 //! The fallback never waits for the host: it works with the host gone. A
 //! full process stall, though, cannot be bounded from inside the process:
@@ -31,6 +34,7 @@ pub mod core;
 pub mod error;
 pub mod fallback;
 pub mod queue;
+pub mod robot;
 pub mod runtime;
 
 pub use crate::core::{
@@ -41,4 +45,5 @@ pub use error::EdgeError;
 pub use fallback::{ModeStats, SafeCause};
 pub use queue::{Delivery, QueueStats, QueuedAction};
 pub use rlmesh_wire::EdgeMode;
+pub use robot::{Due, Handover, Robot};
 pub use runtime::{Edge, OnAccept};
