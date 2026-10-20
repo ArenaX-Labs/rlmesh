@@ -613,6 +613,8 @@ mod tests {
         frees: AtomicUsize,
         seed: Mutex<Option<i64>>,
         slow_close: AtomicBool,
+        close_entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        close_release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     }
     unsafe extern "C" fn reset(
         ud: *mut c_void,
@@ -671,6 +673,13 @@ mod tests {
         0
     }
     unsafe extern "C" fn close(ud: *mut c_void) -> i32 {
+        let probe = unsafe { &*ud.cast::<Probe>() };
+        if let Some(entered) = lock(&probe.close_entered).as_ref() {
+            let _ = entered.send(());
+        }
+        if let Some(release) = lock(&probe.close_release).as_ref() {
+            let _ = release.recv();
+        }
         if unsafe { &*ud.cast::<Probe>() }
             .slow_close
             .load(Ordering::Relaxed)
@@ -757,9 +766,12 @@ mod tests {
     }
     #[test]
     fn server_free_drains_a_callback_past_its_facade_close_deadline() {
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
         let p = Probe::default();
-        p.slow_close.store(true, Ordering::Relaxed);
+        let (closing, entered) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        *lock(&p.close_entered) = Some(closing);
+        *lock(&p.close_release) = Some(blocked);
         let env = new_env(&p);
         let serve = RLMeshServeOptions {
             struct_size: std::mem::size_of::<RLMeshServeOptions>(),
@@ -794,12 +806,25 @@ mod tests {
             unsafe { rlmesh_env_server_new(&env, 1, &opts, &mut server) },
             RLMeshStatus::Ok
         );
-        assert_eq!(rlmesh_env_server_start(server), RLMeshStatus::Ok);
-        let started = Instant::now();
-        unsafe {
-            rlmesh_env_server_free(server);
-        }
-        assert!(started.elapsed() >= Duration::from_millis(60));
+        // Never started: shutdown times out while the close stays wedged.
+        assert_ne!(rlmesh_env_server_shutdown(server), RLMeshStatus::Ok);
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let pointer = server as usize;
+        let (done, joined) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            unsafe {
+                rlmesh_env_server_free(pointer as *mut RLMeshEnvServer);
+            }
+            done.send(()).unwrap();
+        });
+        let early = joined.recv_timeout(Duration::from_millis(100));
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(
+            early.is_err(),
+            "C free must wait for the abandoned callback"
+        );
+        joined.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(p.closes.load(Ordering::Relaxed), 1);
         unsafe {
             rlmesh_env_free(env);
