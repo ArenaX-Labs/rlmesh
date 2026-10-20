@@ -179,7 +179,7 @@ fn robot_map(args: &Args) -> String {
                 ("", format!("latest(hz={})", args.camera_hz))
             };
             format!(
-                r#", "camera": {{"kind": "camera", "hz": {}, "fields": {{"image": ["uint8", [480, 640, 3]]}},
+                r#", "camera": {{"kind": "camera", "hz": {}, "width": 640, "height": 480,
                    "max_age_ms": 100, "send": "{send}"{encoding}}}"#,
                 args.camera_hz
             )
@@ -189,7 +189,7 @@ fn robot_map(args: &Args) -> String {
         r#"{{
         "cmd": {{"kind": "x/wrench_cmd", "hz": 1000, "fields": {{"wrench": ["float32", [6]]}},
                 "command": "wrench", "priority": "control", "hold_max_ms": 100, "safe": "stop"}},
-        "ft": {{"kind": "wrench", "hz": 1000, "fields": {{"wrench": ["float32", [18]]}},
+        "ft": {{"kind": "x/ft", "hz": 1000, "fields": {{"wrench": ["float32", [18]]}},
                "priority": "realtime"}}{camera}
     }}"#
     )

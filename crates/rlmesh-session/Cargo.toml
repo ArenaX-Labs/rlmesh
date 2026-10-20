@@ -25,12 +25,9 @@ clap = { workspace = true, features = ["derive"] }
 # zune-jpeg (the workspace's existing pair, as in rlmesh-adapters).
 image = { workspace = true, features = ["jpeg"] }
 jpeg-encoder = { workspace = true }
+# The shared normaliser (robot map JSON to parts) and the binder.
+rlmesh-spec = { workspace = true }
 rlmesh-wire = { workspace = true }
-# The robot map is authored JSON (§3); field order is payload order, so the
-# normaliser reads it with an order-keeping visitor.
-serde = { workspace = true }
-serde_json = { workspace = true }
-serde_path_to_error = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true }

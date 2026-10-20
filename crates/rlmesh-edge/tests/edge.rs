@@ -33,10 +33,11 @@ const ROBOT: &str = r#"{
     "cmd": {"kind": "x/joints", "hz": 1000, "fields": {"pos": ["float32", [6]]},
             "command": "position", "priority": "control", "hold_max_ms": 100,
             "max_action_age_ms": 2000},
-    "ft": {"kind": "wrench", "hz": 1000, "fields": {"wrench": ["float32", [18]]}},
-    "arm": {"kind": "joints", "hz": 1000, "fields": {"pos": ["float32", [6]]},
+    "ft": {"kind": "x/ft", "hz": 1000, "fields": {"wrench": ["float32", [18]]},
+           "priority": "realtime"},
+    "arm": {"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
             "command": "position", "group": "arm", "hold_max_ms": 100},
-    "arm/tcp": {"kind": "pose", "hz": 1000, "fields": {"dpos": ["float32", [6]]},
+    "arm/tcp": {"kind": "x/tcp", "hz": 1000, "fields": {"dpos": ["float32", [6]]},
                 "command": "delta", "group": "arm", "hold_max_ms": 100}
 }"#;
 

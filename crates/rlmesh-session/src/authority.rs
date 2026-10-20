@@ -7,11 +7,12 @@
 //! without a network and the host only has to serialise calls into it.
 //!
 //! - **Parts** come from an embodiment's authored map, normalised by the
-//!   host ([`crate::declare`]). Channel ids are host-assigned and never
-//!   reused within the session: re-declaring a path with a changed schema
-//!   retires its id and assigns a new one. A commandable part is not
-//!   re-declared while ARMED or ACTIVE (`INVALID_TRANSITION`); sensor parts
-//!   can be added at any time.
+//!   host with the shared normaliser ([`rlmesh_spec::normalise()`]); the
+//!   snapshot carries each robot's declaration fingerprint. Channel ids are
+//!   host-assigned and never reused within the session: re-declaring a path
+//!   with a changed schema retires its id and assigns a new one. A
+//!   commandable part is not re-declared while ARMED or ACTIVE
+//!   (`INVALID_TRANSITION`); sensor parts can be added at any time.
 //! - **Leases** are per commandable part, granted all or none
 //!   ([`Command::GrantLease`]) and bound to the holder's current
 //!   **binding**: chunks must carry its fingerprint, and a rebinding
@@ -47,7 +48,6 @@ use rlmesh_wire::{
     ParticipantInfo, PriorityClass, Request, Role, SessionId,
 };
 
-use crate::declare;
 use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
 
 /// The highest replan rate a binding declares.
@@ -283,6 +283,8 @@ pub struct Authority {
     /// The last channel id assigned; ids only grow.
     last_channel: u32,
     bindings: BTreeMap<ParticipantId, BindingRecord>,
+    /// Each robot's declaration fingerprint (§3.3).
+    contract: BTreeMap<ParticipantId, Fingerprint>,
     last_token: u64,
     clock: Option<VirtualClock>,
     /// Virtual ticks to publish.
@@ -308,6 +310,7 @@ impl Authority {
             parts: BTreeMap::new(),
             last_channel: 0,
             bindings: BTreeMap::new(),
+            contract: BTreeMap::new(),
             last_token: 0,
             clock,
             ticks: Vec::new(),
@@ -416,6 +419,7 @@ impl Authority {
             },
             tick_ns: self.config.virtual_clock.map_or(0, |c| c.tick_ns),
             bindings: self.bindings.values().cloned().collect(),
+            contract: self.contract.clone(),
         }
     }
 
@@ -475,6 +479,7 @@ impl Authority {
                     .map(|p| p.channel)
                     .collect();
                 self.remove_parts(&from, &owned, &mut applied.events);
+                self.contract.remove(&from);
                 self.bindings.remove(&from);
                 self.roster.remove(&from);
                 applied.events.push(AuthorityEvent::Detached {
@@ -760,7 +765,8 @@ impl Authority {
         events: &mut Vec<AuthorityEvent>,
     ) -> Result<(), CtlError> {
         self.require_role(from, Role::Embodiment)?;
-        let declared = declare::normalise(from, spec_version, robot_json)?;
+        let declared = rlmesh_spec::normalise(from, spec_version, robot_json)?;
+        let fingerprint = rlmesh_spec::normalise::fingerprint(&declared);
         let current: BTreeMap<&str, &PartSpec> = self
             .parts
             .values()
@@ -823,6 +829,7 @@ impl Authority {
             added.push(spec);
         }
         self.remove_parts(from, &removed, events);
+        self.contract.insert(from.clone(), fingerprint);
         if !added.is_empty() {
             events.push(AuthorityEvent::PartsDeclared {
                 owner: from.clone(),
@@ -1356,7 +1363,7 @@ mod tests {
     fn robot_map(extra: &str) -> String {
         let cmd = |path: &str, group: &str| {
             format!(
-                r#""{path}": {{"kind": "joints", "hz": 500, "fields": {{"pos": ["float32", [6]]}},
+                r#""{path}": {{"kind": "joints", "hz": 500, "count": 6, "fields": ["pos"],
                    "command": "position"{group}}}"#
             )
         };
@@ -1566,21 +1573,36 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), 7 + 6, "every stream id is distinct");
 
+        // The snapshot carries the declaration fingerprint (§3.3).
+        let contract = |f: &Fixture| {
+            f.auth
+                .snapshot(Vec::new(), 0)
+                .contract
+                .get(&pid("robot"))
+                .copied()
+        };
+        let declared = contract(&f).expect("a declaration fingerprint");
+
         // An identical re-declaration is a no-op.
         let revision = f.auth.revision();
         f.run("robot", declare(&robot_map("")), 1)
             .expect("redeclare");
         assert_eq!(f.auth.revision(), revision);
         assert_eq!(f.ch("arm"), arm.channel);
+        assert_eq!(contract(&f), Some(declared));
 
         // A changed schema retires the id; armed, only sensors may change.
         f.run("operator", Command::Arm, 1).expect("arm");
         let ft = f.ch("ft");
-        let hot = robot_map(
-            r#", "wrist/cam": {"kind": "camera", "hz": 30, "fields": {"image": ["uint8", [4, 4, 3]]}}"#,
-        )
-        .replace(r#""hz": 1000"#, r#""hz": 500"#);
+        let hot =
+            robot_map(r#", "wrist/cam": {"kind": "camera", "hz": 30, "width": 4, "height": 4}"#)
+                .replace(r#""hz": 1000"#, r#""hz": 500"#);
         let applied = f.run("robot", declare(&hot), 2).expect("hot-plug");
+        assert_ne!(
+            contract(&f),
+            Some(declared),
+            "a new schema, a new fingerprint"
+        );
         assert!(matches!(
             applied.events.as_slice(),
             [AuthorityEvent::PartsRemoved { channels, .. }, AuthorityEvent::PartsDeclared { .. }]
@@ -1993,6 +2015,7 @@ mod tests {
             }
         )));
         assert_eq!(f.auth.parts().count(), 0);
+        assert!(f.auth.snapshot(Vec::new(), 1).contract.is_empty());
         assert_eq!(f.auth.mode(), Mode::Armed);
         f.run("policy", Command::Detach, 2).expect("detach");
         assert!(f.auth.binding(&pid("policy")).is_none());

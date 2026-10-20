@@ -750,7 +750,6 @@ fn status_to_pb(status: CtlStatus) -> pb::CtlStatus {
         CtlStatus::StaleEpoch => pb::CtlStatus::StaleEpoch,
         CtlStatus::StaleToken => pb::CtlStatus::StaleToken,
         CtlStatus::LeaseBusy => pb::CtlStatus::LeaseBusy,
-        CtlStatus::PathConflict => pb::CtlStatus::PathConflict,
         CtlStatus::UnknownPath => pb::CtlStatus::UnknownPath,
         CtlStatus::Unsupported => pb::CtlStatus::Unsupported,
         CtlStatus::Incompatible => pb::CtlStatus::Incompatible,
@@ -771,7 +770,6 @@ fn status_from_pb(raw: i32, message: String) -> Result<(), CtlError> {
         Ok(pb::CtlStatus::StaleEpoch) => CtlStatus::StaleEpoch,
         Ok(pb::CtlStatus::StaleToken) => CtlStatus::StaleToken,
         Ok(pb::CtlStatus::LeaseBusy) => CtlStatus::LeaseBusy,
-        Ok(pb::CtlStatus::PathConflict) => CtlStatus::PathConflict,
         Ok(pb::CtlStatus::UnknownPath) => CtlStatus::UnknownPath,
         Ok(pb::CtlStatus::Unsupported) => CtlStatus::Unsupported,
         Ok(pb::CtlStatus::Incompatible) => CtlStatus::Incompatible,
@@ -897,6 +895,11 @@ fn state_to_pb(s: &AuthoritySnapshot) -> pb::AuthorityState {
         clock_mode: clock_mode_to_pb(s.clock_mode) as i32,
         tick_ns: s.tick_ns,
         bindings: s.bindings.iter().map(binding_to_pb).collect(),
+        contract: s
+            .contract
+            .iter()
+            .map(|(robot, fp)| (robot.to_string(), Bytes::copy_from_slice(fp.as_bytes())))
+            .collect(),
     }
 }
 
@@ -917,6 +920,16 @@ fn state_from_pb(s: pb::AuthorityState) -> Result<AuthoritySnapshot, WireError> 
         clock_mode: clock_mode_from_pb(s.clock_mode)?,
         tick_ns: s.tick_ns,
         bindings: collect(s.bindings, binding_from_pb)?,
+        contract: s
+            .contract
+            .into_iter()
+            .map(|(robot, fp)| {
+                Ok((
+                    ParticipantId::new(robot)?,
+                    fingerprint_from_pb("declaration fingerprint", &fp)?,
+                ))
+            })
+            .collect::<Result<_, WireError>>()?,
     })
 }
 
@@ -1352,6 +1365,7 @@ mod tests {
                 channels: vec![ChannelId(1)],
                 replan_hz: 20.0,
             }],
+            contract: [(pid("ur10e"), Fingerprint::from(0xabcd))].into(),
         }
     }
 
@@ -1437,7 +1451,7 @@ mod tests {
             Ok(()),
             Err(CtlError::new(CtlStatus::GroupBusy, "busy")),
             Err(CtlError::new(CtlStatus::NotBound, "not in the binding")),
-            Err(CtlError::new(CtlStatus::PathConflict, "another owner")),
+            Err(CtlError::new(CtlStatus::UnknownPath, "no such part")),
         ] {
             let reply = CtlReply {
                 result,

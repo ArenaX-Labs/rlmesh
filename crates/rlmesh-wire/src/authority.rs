@@ -2,6 +2,7 @@
 //! to bindings, clock mappings, the host's snapshot, and the `ctl`
 //! request/reply pair (§10.5).
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::action::ChunkRef;
@@ -243,6 +244,8 @@ pub struct AuthoritySnapshot {
     pub tick_ns: u64,
     /// Every controller's binding.
     pub bindings: Vec<BindingRecord>,
+    /// Each robot's declaration fingerprint (§3.3).
+    pub contract: BTreeMap<ParticipantId, Fingerprint>,
 }
 
 impl AuthoritySnapshot {
@@ -482,12 +485,9 @@ pub enum CtlStatus {
     StaleToken,
     /// Held by an equal or higher class.
     LeaseBusy,
-    /// The path is declared by another owner.
-    PathConflict,
     /// No such (commandable) part.
     UnknownPath,
-    /// Declared but not implemented (a merge policy, a core kind before the
-    /// kind table).
+    /// Declared but not implemented (a merge policy).
     Unsupported,
     /// The sender requires a feature (or protocol) the session lacks.
     Incompatible,

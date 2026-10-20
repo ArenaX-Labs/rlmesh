@@ -774,17 +774,21 @@ mod tests {
     /// `cmd`: 6 float joints at 1 kHz, hold 10 ms; `grip`: binary, limited;
     /// `arm` + `arm/tcp`: a group.
     fn robot_map(hold_last: bool) -> String {
-        let kind = if hold_last { "joints" } else { "x/joints" };
+        // A core joint set holds its target; a custom kind runs safe.
+        let kind = if hold_last {
+            r#""kind": "joints", "count": 6, "fields": ["pos"]"#
+        } else {
+            r#""kind": "x/joints", "fields": {"pos": ["float32", [6]]}"#
+        };
         format!(
             r#"{{
-            "cmd": {{"kind": "{kind}", "hz": 1000, "fields": {{"pos": ["float32", [6]]}},
+            "cmd": {{{kind}, "hz": 1000,
                     "command": "position", "hold_max_ms": 10, "safe": "brake",
                     "max_action_age_ms": 200}},
-            "grip": {{"kind": "gripper", "hz": 1000, "fields": {{"pos": ["float32", [1]]}},
-                     "command": "position", "binary": true}},
-            "arm": {{"kind": "joints", "hz": 1000, "fields": {{"pos": ["float32", [2]]}},
+            "grip": {{"kind": "gripper", "hz": 1000, "command": "position", "binary": true}},
+            "arm": {{"kind": "joints", "hz": 1000, "count": 2, "fields": ["pos"],
                     "command": "position", "group": "arm", "limits": {{"pos": [-1, 1]}}}},
-            "arm/tcp": {{"kind": "pose", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
+            "arm/tcp": {{"kind": "x/tcp", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
                         "command": "delta", "group": "arm"}}
         }}"#
         )

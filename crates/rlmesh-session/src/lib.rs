@@ -7,12 +7,12 @@
 //!
 //! - [`authority`]: epoch, roster, the DISARMED/ARMED/ACTIVE/SAFE/ESTOP mode
 //!   machine with a latched e-stop, the part table with host-assigned,
-//!   never-reused ids, bindings, and the lease table: all-or-none grants
+//!   never-reused ids (normalised by `rlmesh-spec`), bindings, and the
+//!   lease table: all-or-none grants
 //!   bound to a binding, priority classes
 //!   (`safety > operator > model > scripted`), command groups, TTLs,
 //!   preemption and fencing tokens. Sans-IO; the [`SessionHost`] is its
 //!   single writer.
-//! - [`declare`]: the host's normaliser, robot map JSON to parts (§3).
 //! - [`virtual_clock`]: the virtual-mode tick barrier (§11.3), sans-IO.
 //! - [`clock`]: clock domains and NTP-style offset estimation with an error
 //!   bound, fed by heartbeats.
@@ -35,7 +35,6 @@
 pub mod authority;
 pub mod chunk;
 pub mod clock;
-pub mod declare;
 pub mod error;
 pub mod host;
 pub mod media;

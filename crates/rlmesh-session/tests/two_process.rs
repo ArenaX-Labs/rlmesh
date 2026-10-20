@@ -110,9 +110,9 @@ async fn join(
 }
 
 const ROBOT: &str = r#"{
-    "cmd": {"kind": "joints", "hz": 1000, "fields": {"pos": ["float32", [6]]},
+    "cmd": {"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
             "command": "position", "priority": "control"},
-    "ft": {"kind": "wrench", "hz": 1000, "fields": {"wrench": ["float32", [6]]}}
+    "ft": {"kind": "wrench", "frame": "tool0", "hz": 1000}
 }"#;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -185,7 +185,7 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
     let ft = robot.publisher("ft").await.expect("publisher");
     tokio::time::sleep(Duration::from_millis(300)).await;
     for i in 0..3_u8 {
-        ft.publish(robot.clock().now_ns(), Bytes::from(vec![i; 24]))
+        ft.publish(robot.clock().now_ns(), Bytes::from(vec![i; 32]))
             .expect("publish");
     }
     tokio::time::sleep(Duration::from_millis(200)).await;

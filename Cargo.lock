@@ -526,6 +526,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake3"
+version = "1.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
+dependencies = [
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures 0.3.0",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -787,6 +800,12 @@ dependencies = [
  "quote",
  "unicode-xid",
 ]
+
+[[package]]
+name = "constant_time_eq"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "convert_case"
@@ -3833,10 +3852,8 @@ dependencies = [
  "image",
  "jpeg-encoder",
  "libc",
+ "rlmesh-spec",
  "rlmesh-wire",
- "serde",
- "serde_json",
- "serde_path_to_error",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -3854,6 +3871,17 @@ dependencies = [
  "proptest",
  "rand 0.10.1",
  "thiserror",
+]
+
+[[package]]
+name = "rlmesh-spec"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "rlmesh-wire",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
 ]
 
 [[package]]

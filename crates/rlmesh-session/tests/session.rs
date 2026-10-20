@@ -35,19 +35,19 @@ const FT_MAX_AGE: Duration = Duration::from_millis(40);
 fn robot_map(camera: &str) -> String {
     format!(
         r#"{{
-        "arm": {{"kind": "joints", "hz": 1000, "fields": {{"pos": ["float32", [6]]}},
+        "arm": {{"kind": "joints", "hz": 1000, "count": 6, "fields": ["pos"],
                 "command": "position", "priority": "control", "group": "arm"}},
-        "arm/tcp": {{"kind": "pose", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
+        "arm/tcp": {{"kind": "x/tcp", "hz": 1000, "fields": {{"dpos": ["float32", [3]]}},
                     "command": "delta", "group": "arm"}},
-        "ft": {{"kind": "wrench", "hz": 1000, "fields": {{"wrench": ["float32", [18]]}},
-               "max_age_ms": 40}},
+        "ft": {{"kind": "x/ft", "hz": 1000, "fields": {{"wrench": ["float32", [18]]}},
+               "priority": "realtime", "max_age_ms": 40}},
         "wrist/cam": {{"kind": "camera", "hz": 30, {camera}}}
     }}"#
     )
 }
 
 fn raw_camera() -> String {
-    robot_map(r#""fields": {"image": ["uint8", [8, 8, 3]]}"#)
+    robot_map(r#""width": 8, "height": 8"#)
 }
 
 fn ft_payload(value: f32) -> Bytes {
@@ -635,7 +635,7 @@ async fn parts_are_declared_through_the_host_and_late_joiners_see_them() {
     );
 
     // Only embodiments declare parts; a malformed map is refused with the
-    // path named; a core kind without fields waits for the kind table.
+    // path named; a merge policy that is Later is UNSUPPORTED.
     assert_eq!(
         status(
             twin.declare_parts(&raw_camera())
@@ -645,16 +645,19 @@ async fn parts_are_declared_through_the_host_and_late_joiners_see_them() {
         CtlStatus::Forbidden
     );
     let err = robot
-        .declare_parts(r#"{"ft": {"kind": "wrench", "hz": 1000, "fields": {"w": ["float32", [6]]}, "colour": 1}}"#)
+        .declare_parts(r#"{"ft": {"kind": "x/ft", "hz": 1000, "fields": {"w": ["float32", [6]]}, "colour": 1}}"#)
         .await
         .expect_err("unknown key");
     assert!(err.to_string().contains("ft"), "{err}");
     assert_eq!(
         status(
             robot
-                .declare_parts(r#"{"arm": {"kind": "joints", "names": ["a"], "hz": 500}}"#)
+                .declare_parts(
+                    r#"{"arm": {"kind": "joints", "names": ["a"], "hz": 500,
+                        "command": "position", "merge": "blend"}}"#
+                )
                 .await
-                .expect_err("core kind")
+                .expect_err("a merge policy that is Later")
         ),
         CtlStatus::Unsupported
     );
@@ -910,7 +913,7 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
         .await;
     robot
         .declare_parts(&robot_map(
-            r#""fields": {"image": ["uint8", [48, 64, 3]]}, "encoding": "jpeg", "quality": 80,
+            r#""width": 64, "height": 48, "encoding": "jpeg", "quality": 80,
                "send": "latest(hz=30, max_mbps=4)""#,
         ))
         .await

@@ -11,6 +11,7 @@ default-members = [
   "crates/rlmesh-sandbox",
   "crates/rlmesh-session",
   "crates/rlmesh-spaces",
+  "crates/rlmesh-spec",
   "crates/rlmesh-viewer",
   "crates/rlmesh-wire",
   "python/rlmesh/rust",
@@ -43,6 +44,7 @@ rlmesh-runtime = { version = "=0.1.0", path = "crates/rlmesh-runtime" }
 rlmesh-sandbox = { version = "=0.1.0", path = "crates/rlmesh-sandbox" }
 rlmesh-session = { version = "=0.1.0", path = "crates/rlmesh-session" }
 rlmesh-spaces = { version = "=0.1.0", path = "crates/rlmesh-spaces" }
+rlmesh-spec = { version = "=0.1.0", path = "crates/rlmesh-spec" }
 rlmesh-viewer = { version = "=0.1.0", path = "crates/rlmesh-viewer" }
 rlmesh-wire = { version = "=0.1.0", path = "crates/rlmesh-wire" }
 
@@ -95,6 +97,8 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Utilities
+# Declaration and binding fingerprints (protocol v2, §3.3).
+blake3 = "1"
 chacha20 = { version = "0.10", features = ["rng"] }
 half = "2"
 image = { version = "0.25", default-features = false }

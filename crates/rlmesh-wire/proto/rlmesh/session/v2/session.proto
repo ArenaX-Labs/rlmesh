@@ -130,6 +130,9 @@ message AuthorityState {
   // Session time per tick (virtual and lockstep modes).
   uint64 tick_ns = 14;
   repeated BindingRecord bindings = 16;
+  // Robot -> its declaration fingerprint (8 bytes): BLAKE3 over the
+  // canonical form of its normalised map (§3.3).
+  map<string, bytes> contract = 17;
 }
 
 // One NTP-style exchange: t1 and t4 in the participant's clock, t2 and t3 in
@@ -395,8 +398,8 @@ enum CtlStatus {
   CTL_STATUS_STALE_EPOCH = 7;
   CTL_STATUS_STALE_TOKEN = 8;
   CTL_STATUS_LEASE_BUSY = 9;
-  // A path declared by another owner.
-  CTL_STATUS_PATH_CONFLICT = 10;
+  // 10 was PATH_CONFLICT before v0.2 froze: paths are scoped per robot, so
+  // no declaration can conflict with another owner's. Never reuse it.
   // No such (commandable) part.
   CTL_STATUS_UNKNOWN_PATH = 11;
   CTL_STATUS_UNSUPPORTED = 12;
