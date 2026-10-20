@@ -24,12 +24,22 @@
 //! - `camera`: frames decoded per second at the controller and capture to
 //!   decoded latency;
 //! - `safety`: SAFE entries, hold and safe ticks, lease lapses at the host;
-//! - `cpu_skipped_ticks`: robot ticks more than 1 ms late.
+//! - `cpu_skipped_ticks`: robot ticks more than 1 ms late;
+//! - `transit_ms`: chunk receipt minus its `t0` (with `--controller bound`,
+//!   the snapshot: inference, packing and the link).
 //!
 //! Options: `--camera off|raw|jpeg` (640x480 at `--camera-hz 20`; jpeg is
 //! q75 with an 8 Mbit/s cap), `--horizon N` actions at 1 ms re-planned every
 //! `--replan-ms` (default 1 for N=1, else 10), `--links per-class|shared`,
 //! `--warmup-s 3`, `--duration-s 30`.
+//!
+//! `--controller raw` (the default) re-plans from the transport callback on
+//! every `replan`-th ft sample. `--controller bound` is a bound policy
+//! instead, the shape `rlmesh.v2` runs from Python: the binder's delivery
+//! contracts (ft `latest@R`, the camera an input too), the
+//! [`Controller`](rlmesh_session::Controller) run loop at the replan rate,
+//! and `t0` at the snapshot. It is the Rust baseline of
+//! `examples/python/v2/session_bench.py`.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -45,9 +55,12 @@ use rlmesh_edge::{Edge, EdgeConfig, EdgeMode};
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::transport::free_local_base;
 use rlmesh_session::{
-    AuthorityEvent, ChunkDraft, Clock, HostConfig, LeaseEnd, Offer, Participant, ParticipantConfig,
-    SessionHost, SubscribeOptions, SystemMonotonicClock, Transport, TransportConfig,
+    AuthorityEvent, ChunkDraft, Clock, Controller, ControllerConfig, HostConfig, LeaseEnd,
+    Observation, Offer, Participant, ParticipantConfig, Predictor, SessionHost, SubscribeOptions,
+    SystemMonotonicClock, Transport, TransportConfig,
 };
+use rlmesh_spec::apply::{Tensor, Value as ActionValue};
+use rlmesh_spec::{Policy, RunOptions};
 use rlmesh_wire::{
     Fingerprint, InputRange, Mode, ParticipantId, PriorityClass, Role, Sample, SessionId, TenantId,
 };
@@ -69,6 +82,7 @@ struct Args {
     horizon: usize,
     replan: u64,
     links: String,
+    controller: String,
     warmup_ns: i64,
     duration_ns: i64,
     base: Option<std::net::SocketAddr>,
@@ -106,6 +120,10 @@ fn parse_args() -> Result<Args, BoxError> {
             .get("links")
             .cloned()
             .unwrap_or_else(|| "per-class".into()),
+        controller: opts
+            .get("controller")
+            .cloned()
+            .unwrap_or_else(|| "raw".into()),
         warmup_ns: (num("warmup-s", 3.0)? * 1e9) as i64,
         duration_ns: (num("duration-s", 30.0)? * 1e9) as i64,
         base: opts.get("base").map(|b| b.parse()).transpose()?,
@@ -133,6 +151,8 @@ fn to_args(
         args.replan.to_string(),
         "--links".into(),
         args.links.clone(),
+        "--controller".into(),
+        args.controller.clone(),
         "--warmup-s".into(),
         (args.warmup_ns as f64 / 1e9).to_string(),
         "--duration-s".into(),
@@ -349,14 +369,16 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     let declared = robot.declare_parts(&robot_map(args)).await?;
     let robot_id = robot.id().clone();
     let cmd = declared.part_at(&robot_id, "cmd").ok_or("cmd")?.channel;
+    let ft_channel = declared.part_at(&robot_id, "ft").ok_or("ft")?.channel;
     if let Some(path) = &args.session_file {
         std::fs::write(path, session.to_string())?;
     }
 
     let clock = SystemMonotonicClock;
     let ft_capture: Arc<Vec<AtomicI64>> = Arc::new((0..RING).map(|_| AtomicI64::new(0)).collect());
-    // (based-on capture, receipt - capture) per accepted chunk.
-    let chunk_ages: Arc<Mutex<Vec<(i64, i64)>>> = Arc::new(Mutex::new(Vec::with_capacity(40_000)));
+    // (based-on capture, receipt - capture, receipt - t0) per accepted chunk.
+    let chunk_ages: Arc<Mutex<Vec<(i64, i64, i64)>>> =
+        Arc::new(Mutex::new(Vec::with_capacity(40_000)));
     let edge = Arc::new(
         Edge::attach(
             &robot,
@@ -368,13 +390,14 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
             Some({
                 let (ft_capture, chunk_ages) = (ft_capture.clone(), chunk_ages.clone());
                 Arc::new(move |chunk, receive_ns| {
-                    let Some(based) = chunk.based_on.first() else {
+                    let Some(based) = chunk.based_on.iter().find(|r| r.channel == ft_channel)
+                    else {
                         return;
                     };
                     let capture =
                         ft_capture[based.seq_last as usize % RING].load(Ordering::Relaxed);
                     if let Ok(mut ages) = chunk_ages.lock() {
-                        ages.push((capture, receive_ns - capture));
+                        ages.push((capture, receive_ns - capture, receive_ns - chunk.t0_ns));
                     }
                 })
             }),
@@ -383,9 +406,14 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     );
     robot
         .wait_for(
-            "the controller's lease and a clock mapping",
+            "the controller's binding and a clock mapping",
             Duration::from_secs(60),
-            |s| s.lease(cmd).is_some() && s.clock(robot.id()).is_some(),
+            // A bound controller leases only once its inputs are warm: the
+            // samples start at its binding.
+            |s| {
+                (s.lease(cmd).is_some() || s.bindings.iter().any(|b| b.channels.contains(&cmd)))
+                    && s.clock(robot.id()).is_some()
+            },
         )
         .await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -508,26 +536,30 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
             .collect::<BTreeMap<_, _>>()
     });
     let all: Vec<&&TickRecord> = window.iter().collect();
-    let chunk_ages: Vec<i64> = chunk_ages
+    let windowed: Vec<(i64, i64, i64)> = chunk_ages
         .lock()
         .map(|a| {
             a.iter()
-                .filter(|(c, _)| in_window(*c))
-                .map(|(_, a)| *a)
+                .filter(|(c, _, _)| in_window(*c))
+                .copied()
                 .collect()
         })
         .unwrap_or_default();
+    let chunk_ages: Vec<i64> = windowed.iter().map(|(_, age, _)| *age).collect();
+    let transit: Vec<i64> = windowed.iter().map(|(_, _, t)| *t).collect();
     let stats = edge.stats();
     let result = json!({
         "config": {
             "camera": args.camera, "camera_hz": args.camera_hz, "horizon": args.horizon,
             "replan_ms": args.replan, "links": args.links, "duration_s": duration_s,
+            "controller": args.controller,
         },
         "loadavg": std::fs::read_to_string("/proc/loadavg").unwrap_or_default().trim(),
         "ticks": window.len(),
         "control_per_s": driving as f64 / duration_s,
         "loop_ms": percentiles(window.iter().filter_map(|r| age(r)).collect()),
         "chunk_age_ms": percentiles(chunk_ages),
+        "transit_ms": percentiles(transit),
         "miss_pct": miss_pct(&all),
         "split": split,
         "mode_ticks": mode_ticks,
@@ -551,6 +583,99 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     Ok(result)
 }
 
+/// The bound policy of `--controller bound`: the ft wrench in (and the
+/// camera, so its frames cross the link), `horizon` 1 ms actions out.
+fn bound_policy(args: &Args) -> String {
+    let camera = if args.camera == "off" {
+        String::new()
+    } else {
+        r#", "camera": {"kind": "camera", "at": "camera"}"#.to_string()
+    };
+    format!(
+        r#"{{"hz": {hz},
+            "inputs": {{"ft": {{"kind": "x/ft", "at": "ft", "fields": {{"wrench": ["float32", [18]]}}}}{camera}}},
+            "actions": {{"cmd": {{"kind": "x/wrench_cmd", "at": "cmd", "command": "wrench",
+                                 "fields": {{"wrench": ["float32", [6]]}}, "hz": 1000, "horizon": {h}}}}}}}"#,
+        hz = 1000.0 / args.replan as f64,
+        h = args.horizon,
+    )
+}
+
+/// The "model" of `--controller bound`: hold the first six floats of the
+/// wrench for the whole horizon.
+struct HoldWrench {
+    horizon: u32,
+}
+
+impl Predictor for HoldWrench {
+    type Error = String;
+
+    fn predict(
+        &mut self,
+        observation: Observation,
+        _: i64,
+    ) -> Result<Vec<(String, ActionValue)>, String> {
+        let Some(ActionValue::Tensor(ft)) = observation.value("ft") else {
+            return Err("no ft".into());
+        };
+        let held = &ft.data[..24];
+        Ok(vec![(
+            "cmd".into(),
+            ActionValue::Tensor(Tensor {
+                dtype: ft.dtype,
+                shape: vec![self.horizon, 6],
+                data: held.repeat(self.horizon as usize),
+            }),
+        )])
+    }
+}
+
+async fn bound_controller(args: &Args, policy: Participant) -> Result<Value, BoxError> {
+    let options = RunOptions::named("policy").robot(ROBOT)?;
+    let controller = Arc::new(
+        Controller::bind(
+            Arc::new(policy),
+            &Policy::parse(&bound_policy(args))?,
+            &options,
+            ControllerConfig {
+                bind_timeout: WAIT,
+                ..ControllerConfig::default()
+            },
+        )
+        .await?,
+    );
+    controller.participant().arm().await?;
+    // The embodiment measures warmup + duration after its first sample.
+    let run_for = Duration::from_nanos((args.warmup_ns + args.duration_ns).unsigned_abs())
+        + Duration::from_secs(2);
+    let horizon = u32::try_from(args.horizon)?;
+    let runner = controller.clone();
+    tokio::task::spawn_blocking(move || {
+        runner
+            .run(&mut HoldWrench { horizon }, Some(run_for))
+            .map_err(|err| format!("{err:?}"))
+    })
+    .await??;
+    let stats = controller.stats();
+    let controller = Arc::try_unwrap(controller).map_err(|_| "controller still shared")?;
+    let participant = controller.close().await;
+    if let Ok(participant) = Arc::try_unwrap(participant) {
+        participant.close().await;
+    }
+    Ok(json!({
+        "run": {
+            "starts": stats.starts,
+            "completions": stats.completions,
+            "chunks_sent": stats.chunks_sent,
+            "skipped": rlmesh_session::SkipReason::ALL
+                .iter()
+                .map(|r| (r.name(), stats.skipped(*r)))
+                .collect::<BTreeMap<_, _>>(),
+            "latency_p99_ms": stats.latency_p99.map(|d| d.as_secs_f64() * 1e3),
+        },
+    }))
+}
+
 async fn controller(args: &Args) -> Result<Value, BoxError> {
     let transport = Transport::open(&transport_config(args, false)?).await?;
     let session_file = args.session_file.as_ref().ok_or("--session-file")?;
@@ -572,6 +697,11 @@ async fn controller(args: &Args) -> Result<Value, BoxError> {
         )?,
     )
     .await?;
+    if args.controller == "bound" {
+        let result = bound_controller(args, policy).await;
+        transport.close().await?;
+        return result;
+    }
     let robot = ParticipantId::new(ROBOT)?;
     let view = policy
         .wait_for("parts", WAIT, |s| s.part_at(&robot, "ft").is_some())
