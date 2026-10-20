@@ -21,6 +21,9 @@
 //!   before authority (leases are requested only once a first snapshot of
 //!   the required inputs is complete), window gaps recovered from the
 //!   host's history store, and §8.10 reporting through [`StartSchedule`].
+//!   On the wall clock the grid is phased just after the publication of
+//!   one sampled input ([`PhaseAlign`]), so a snapshot reads a sample about
+//!   a millisecond old rather than up to a full replan period old.
 //!   If `predict` fails, the controller stops sending and releases its
 //!   leases; the edge holds, then goes safe.
 //!
@@ -28,7 +31,7 @@
 //! plain thread, not from inside the async runtime.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -36,7 +39,9 @@ use bytes::Bytes;
 use rlmesh_spec::apply::{ApplyError, Value};
 use rlmesh_spec::policy::ChunkStart;
 use rlmesh_spec::{BindError, Binding, Policy, RunOptions};
-use rlmesh_wire::{ChannelId, Epoch, InputRange, Lease, Mode, ParticipantId};
+use rlmesh_wire::{
+    ChannelId, ClockMode, ContractMode, Epoch, InputRange, Lease, Mode, ParticipantId,
+};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -347,6 +352,8 @@ pub struct Controller {
     events: Arc<Mutex<VecDeque<RunEvent>>>,
     runtime: tokio::runtime::Handle,
     stop: AtomicBool,
+    /// The run loop's current phase offset (ns after the replan grid).
+    phase_offset_ns: AtomicI64,
     /// Bumped by every run, so a stop request reaches only the run it was
     /// meant for.
     runs: AtomicU64,
@@ -410,6 +417,7 @@ impl Controller {
             events,
             runtime: tokio::runtime::Handle::current(),
             stop: AtomicBool::new(false),
+            phase_offset_ns: AtomicI64::new(0),
             runs: AtomicU64::new(0),
             cancel,
             tasks,
@@ -574,15 +582,30 @@ impl Controller {
             duration.map(|d| now().saturating_add(i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)));
         let commands = !self.binding.channels().is_empty();
         let mut recovered_at: Option<i64> = None;
+        // Wall clock only: virtual and lockstep starts stay on their ticks.
+        let wall = self
+            .participant
+            .authority_view()
+            .with(|v| v.is_none_or(|v| v.clock_mode == ClockMode::Wall));
+        let mut phase = if wall {
+            PhaseAlign::for_binding(&self.binding)
+        } else {
+            None
+        };
+        // The schedule runs on `local − offset`: a phase offset delays the
+        // whole grid without touching the schedule.
+        let offset = |phase: &Option<PhaseAlign>| phase.as_ref().map_or(0, |p| p.offset_ns);
         let result = loop {
             if self.stop.load(Ordering::Relaxed) || self.runs.load(Ordering::Relaxed) != run {
                 break Ok(());
             }
+            let off = offset(&phase);
+            self.phase_offset_ns.store(off, Ordering::Relaxed);
             let t = now();
             if end.is_some_and(|end| t >= end) {
                 break Ok(());
             }
-            let next = self.schedule().next_start(t);
+            let next = self.schedule().next_start(t - off) + off;
             if next > t {
                 let wake = next.min(t + IDLE_SLICE_NS);
                 let wake = end.map_or(wake, |end| wake.min(end));
@@ -596,7 +619,7 @@ impl Controller {
                 Ok(observed) => observed,
                 Err(ObserveError::Skipped(skip)) => {
                     let reason = skip_reason(&skip);
-                    self.skip(t, reason);
+                    self.skip(t - off, reason);
                     // A gap inside a window: ask the host's store to fill it
                     // (§8.8 recovery), at most every 100 ms.
                     if reason == SkipReason::WindowGap
@@ -615,21 +638,30 @@ impl Controller {
                 }
                 Err(err) => {
                     warn!(%err, "start skipped");
-                    self.skip(t, SkipReason::Decode);
+                    self.skip(t - off, SkipReason::Decode);
                     continue;
                 }
             };
+            if let Some(phase) = phase.as_mut() {
+                phase.sample(&observation, snapshot_ns);
+            }
             // Warm before authority: the first complete snapshot asks for
             // the leases.
             self.want_leases();
             if commands && !self.holds() {
-                self.skip(t, SkipReason::NoLease);
+                self.skip(t - off, SkipReason::NoLease);
+                if let Some(phase) = phase.as_mut() {
+                    phase.update();
+                }
                 continue;
             }
-            self.schedule().start(now());
+            self.schedule().start(now() - off);
             let based_on = observation.meta.based_on.clone();
             let output = predictor.predict(observation, snapshot_ns);
-            let finished = self.schedule().finish(now());
+            let finished = self.schedule().finish(now() - off);
+            if let Some(phase) = phase.as_mut() {
+                phase.update();
+            }
             if let Some(event) = finished {
                 push_event(&self.events, event);
             }
@@ -680,6 +712,18 @@ impl Controller {
         self.stop.store(true, Ordering::Relaxed);
     }
 
+    /// How far the run loop's starts sit after the replan grid's first
+    /// slot, aligned to an input's publication (0 until aligned, and on
+    /// the virtual and lockstep clocks).
+    pub fn phase_offset(&self) -> Duration {
+        Duration::from_nanos(self.phase_offset_ns.load(Ordering::Relaxed).unsigned_abs())
+    }
+
+    /// The input the run loop's starts are aligned to, if any.
+    pub fn aligned_input(&self) -> Option<&str> {
+        PhaseAlign::input(&self.binding).map(|i| self.binding.inputs[i].entry.as_str())
+    }
+
     /// The start and completion counters.
     pub fn stats(&self) -> RunStats {
         self.schedule().stats()
@@ -699,6 +743,150 @@ impl Controller {
 impl Drop for Controller {
     fn drop(&mut self) {
         self.cancel.cancel();
+    }
+}
+
+/// Phases a clocked run loop's starts just after the publication of one
+/// sampled input (wall clock only; sans-IO, times injected).
+///
+/// A `latest` input is published at about the replan rate, at a phase set
+/// by its publisher, and the start grid's phase is set by when the run
+/// began: the two lock wherever they happen to fall, often with each start
+/// just before the next sample, so every snapshot reads a sample nearly a
+/// full replan period old. The aligner measures the phase of the aligned
+/// input's newest sample at each snapshot (`(snapshot − capture) mod P`),
+/// takes the freshest tenth over a window of starts and moves the
+/// grid so that phase is [`Self::margin`]: once in full (always later, so no slot
+/// is skipped), then by half the remaining error per window, at most a
+/// quarter period, to follow slow drift between the publisher's clock and
+/// this one.
+///
+/// The aligned input is the first bound input with a `latest` contract
+/// (its publication follows the replan rate). `every` and `history`
+/// inputs are already fresh at any phase, and events have none.
+#[derive(Clone, Debug)]
+pub struct PhaseAlign {
+    input: usize,
+    period_ns: i64,
+    /// How far starts sit after the schedule's grid.
+    pub offset_ns: i64,
+    errors: Vec<i64>,
+    aligned: bool,
+}
+
+impl PhaseAlign {
+    /// Starts per estimate.
+    pub const WINDOW: usize = 32;
+    /// Starts before the first estimate.
+    pub const FIRST: usize = 8;
+    /// The target sample age at a start: transit plus the publisher's
+    /// loop jitter (`min(1 ms, P / 4)`).
+    const MARGIN_NS: i64 = 1_000_000;
+    /// Corrections smaller than this are left alone.
+    const DEADBAND_NS: i64 = 50_000;
+
+    /// The input `binding`'s starts align to, by index.
+    pub fn input(binding: &Binding) -> Option<usize> {
+        binding.inputs.iter().position(|row| {
+            row.channel.is_some_and(|channel| {
+                binding
+                    .contracts
+                    .iter()
+                    .any(|c| c.channel == channel && c.mode == ContractMode::Latest)
+            })
+        })
+    }
+
+    /// An aligner for `binding`, or `None` when no input sets a phase.
+    pub fn for_binding(binding: &Binding) -> Option<Self> {
+        let input = Self::input(binding)?;
+        let hz = if binding.replan_hz.is_finite() && binding.replan_hz > 0.0 {
+            binding.replan_hz
+        } else {
+            return None;
+        };
+        Some(Self::new(input, ((1e9 / hz).round() as i64).max(1)))
+    }
+
+    /// Aligns to input `input` on a grid of period `period_ns`.
+    pub fn new(input: usize, period_ns: i64) -> Self {
+        Self {
+            input,
+            period_ns,
+            offset_ns: 0,
+            errors: Vec::with_capacity(Self::WINDOW),
+            aligned: false,
+        }
+    }
+
+    /// The target phase.
+    pub fn margin(&self) -> i64 {
+        Self::MARGIN_NS.min(self.period_ns / 4)
+    }
+
+    /// Records the phase of the aligned input's newest sample at a snapshot
+    /// taken at `snapshot_ns` (session time).
+    pub fn sample(&mut self, observation: &Observation, snapshot_ns: i64) {
+        let capture = observation
+            .meta
+            .inputs
+            .get(self.input)
+            .and_then(|i| i.samples.last())
+            .and_then(|s| s.capture_ns);
+        if let Some(capture) = capture {
+            self.record(snapshot_ns - capture);
+        }
+    }
+
+    /// Records one sample age (snapshot minus capture).
+    pub fn record(&mut self, age_ns: i64) {
+        let phase = age_ns.rem_euclid(self.period_ns);
+        self.errors.push(self.centered(phase - self.margin()));
+    }
+
+    /// Moves the grid once a window is full; returns the change.
+    pub fn update(&mut self) -> i64 {
+        let window = if self.aligned {
+            Self::WINDOW
+        } else {
+            Self::FIRST
+        };
+        if self.errors.len() < window {
+            return 0;
+        }
+        self.errors.sort_unstable();
+        // The freshest tenth: the samples that land latest set the phase,
+        // so jitter in their arrival never puts one after the start.
+        let error = self.errors[self.errors.len() / 10];
+        self.errors.clear();
+        // A phase above the margin: start that much earlier, which is the
+        // same as starting `P − error` later on the next sample.
+        let change = if self.aligned {
+            if error < 0 {
+                // Samples landing after the start (the publisher's phase
+                // moved later): follow at once, since each such start reads
+                // a sample almost a period old.
+                -error
+            } else {
+                // Starts later than they need be: close in by halves.
+                (-error / 2).max(-self.period_ns / 4)
+            }
+        } else {
+            self.aligned = true;
+            (-error).rem_euclid(self.period_ns)
+        };
+        if change.abs() < Self::DEADBAND_NS {
+            return 0;
+        }
+        self.offset_ns += change;
+        change
+    }
+
+    /// `x` wrapped into `(−P/2, P/2]`.
+    fn centered(&self, x: i64) -> i64 {
+        let p = self.period_ns;
+        let w = x.rem_euclid(p);
+        if w > p / 2 { w - p } else { w }
     }
 }
 
@@ -725,6 +913,102 @@ pub fn sleep_until(now: impl Fn() -> i64, deadline_ns: i64) {
             std::thread::sleep(Duration::from_nanos((left - 150_000).unsigned_abs()));
         } else {
             std::hint::spin_loop();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PhaseAlign;
+
+    const MS: i64 = 1_000_000;
+
+    /// Starts on a 10 ms grid shifted by `offset`; samples published every
+    /// 10 ms at `publish_phase` (+ `jitter(k)`): the newest sample's age at
+    /// each start.
+    fn ages(
+        offset: i64,
+        publish_phase: i64,
+        jitter: impl Fn(i64) -> i64,
+        from: i64,
+    ) -> impl Iterator<Item = i64> {
+        (from..).map(move |k| {
+            let start = k * 10 * MS + offset;
+            // The newest publication at or before the start.
+            let mut j = (start - publish_phase).div_euclid(10 * MS) + 1;
+            while j * 10 * MS + publish_phase + jitter(j) > start {
+                j -= 1;
+            }
+            start - (j * 10 * MS + publish_phase + jitter(j))
+        })
+    }
+
+    #[test]
+    fn a_start_just_before_each_sample_moves_to_just_after_it() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        // Published 0.4 ms after each start: snapshots read a 9.6 ms old sample.
+        for age in ages(0, 400_000, |_| 0, 1).take(PhaseAlign::FIRST) {
+            assert_eq!(age, 9_600_000);
+            align.record(age);
+        }
+        let change = align.update();
+        assert_eq!(change, 1_400_000, "later, never earlier, the first time");
+        for age in ages(align.offset_ns, 400_000, |_| 0, 100).take(PhaseAlign::WINDOW) {
+            assert_eq!(age, MS, "one margin old");
+            align.record(age);
+        }
+        assert_eq!(align.update(), 0, "aligned: nothing to correct");
+    }
+
+    #[test]
+    fn jitter_is_ignored_and_slow_drift_is_followed() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        // ±0.5 ms publication jitter around a 3 ms phase.
+        let jitter = |j: i64| if j % 2 == 0 { 500_000 } else { -500_000 };
+        for age in ages(0, 3 * MS, jitter, 1).take(PhaseAlign::WINDOW) {
+            align.record(age);
+        }
+        align.update();
+        let mut worst = 0;
+        // The publisher drifts 20 µs per window; the aligner keeps up.
+        for round in 0..50 {
+            let phase = 3 * MS + round * 20_000;
+            let from = 1000 + round * 100;
+            for age in ages(align.offset_ns, phase, jitter, from).take(PhaseAlign::WINDOW) {
+                worst = worst.max(age);
+                align.record(age);
+            }
+            align.update();
+        }
+        assert!(worst < 3 * MS, "ages stay near the margin, worst {worst}");
+    }
+
+    #[test]
+    fn nothing_moves_before_a_window_is_full() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        for _ in 0..PhaseAlign::FIRST - 1 {
+            align.record(9 * MS);
+        }
+        assert_eq!(align.update(), 0);
+        assert_eq!(align.offset_ns, 0);
+    }
+
+    #[test]
+    fn a_publisher_that_jumps_later_is_followed_within_one_window() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        for age in ages(0, 3 * MS, |_| 0, 1).take(PhaseAlign::FIRST) {
+            align.record(age);
+        }
+        align.update();
+        // The publisher's loop slips 2 ms: every start now reads the
+        // previous sample, 8 ms old.
+        for age in ages(align.offset_ns, 5 * MS, |_| 0, 100).take(PhaseAlign::WINDOW) {
+            assert_eq!(age, 9 * MS);
+            align.record(age);
+        }
+        assert_eq!(align.update(), 2 * MS, "later, in full");
+        for age in ages(align.offset_ns, 5 * MS, |_| 0, 200).take(PhaseAlign::WINDOW) {
+            assert_eq!(age, MS);
         }
     }
 }

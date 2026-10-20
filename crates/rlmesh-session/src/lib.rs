@@ -63,7 +63,7 @@ pub use cache::{
 pub use chunk::{ChunkDraft, ChunkPublisher};
 pub use clock::{Clock, MonotonicClock, OffsetEstimate, SystemMonotonicClock};
 pub use controller::{
-    Controller, ControllerConfig, ControllerError, Predictor, RunError, SendError, Sent,
+    Controller, ControllerConfig, ControllerError, PhaseAlign, Predictor, RunError, SendError, Sent,
 };
 pub use error::SessionError;
 pub use host::{HistoryConfig, HostConfig, SessionHost};
