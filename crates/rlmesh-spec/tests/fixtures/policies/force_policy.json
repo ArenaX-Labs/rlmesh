@@ -1,0 +1,48 @@
+{
+  "hz": 50,
+  "inputs": {
+    "ft": {
+      "kind": "wrench",
+      "at": "wrist/ft",
+      "frame": "tool0",
+      "history": 50
+    },
+    "q": {
+      "kind": "joints",
+      "at": "arm",
+      "fields": ["pos", "vel"],
+      "names": [
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint"
+      ]
+    },
+    "wrist": {
+      "kind": "camera",
+      "at": "wrist/cam",
+      "size": [96, 96],
+      "layout": "chw",
+      "range": [0, 1]
+    },
+    "last": {
+      "kind": "joints",
+      "at": "arm",
+      "source": "applied",
+      "fields": ["pos"]
+    }
+  },
+  "actions": {
+    "arm": {
+      "kind": "joints",
+      "at": "arm",
+      "command": "position",
+      "hz": 100,
+      "horizon": 20,
+      "ttl_ms": 150
+    }
+  },
+  "allow": ["resize", "crop", "warmup"]
+}

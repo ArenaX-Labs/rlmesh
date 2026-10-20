@@ -1,0 +1,5 @@
+binding refused: force_policy on ur10e_rtde (1 problem)
+
+  [incompatible] input "ft" wants frame tool0; wrist/ft is in frame base.
+    RLMesh does not transform frames. Publish the wrench in tool0 (as "wrist/ft",
+    frame "tool0"), or use a policy trained on base-frame wrenches.

@@ -1,0 +1,16 @@
+{
+  "hz": 15,
+  "inputs": {
+    "image": {
+      "kind": "camera",
+      "at": "*/cam",
+      "size": [224, 224]
+    },
+    "wrist_image": {
+      "kind": "camera",
+      "at": "wrist/cam",
+      "size": [224, 224]
+    }
+  },
+  "actions": {}
+}

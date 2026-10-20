@@ -1,0 +1,16 @@
+binding haply_operator on ur10e_sim: 3 inputs, 1 action, fingerprint cb3d4902bc7954aa
+replan 1000 Hz
+
+  entry  dir  part       status  plan                         delivers
+  ft     in   wrist/ft   bound   fields force, torque         f32 [6]
+  cam    in   wrist/cam  bound   decode(jpeg)                 u8 [480, 640, 3]
+  q      in   arm        bound   fields pos; names identical  f32 [6]
+  arm    out  arm        bound   none; names identical        f32 [1, 6]
+
+  input  contract  source   delivery  freshness
+  ft     every     1000 Hz  1000 Hz   3 ms
+  cam    every     30 Hz    1000 Hz   100 ms (derived)
+  q      every     1000 Hz  1000 Hz   5 ms (derived)
+
+  action  grid     chunk            valid  edge               age cap
+  arm     1000 Hz  1 × 1 ms = 1 ms  1 ms   1000 Hz (default)  1000 ms

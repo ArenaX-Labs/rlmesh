@@ -1,0 +1,10 @@
+binding refused: my_vla on ur10e (2 problems)
+
+  [ambiguous] input "image" (kind camera, at "*/cam") matches 2 parts:
+      wrist/cam   camera 640x480 @30 Hz
+      scene/cam   camera 1280x720 @15 Hz
+    fix: rlmesh.run(..., at={"image": "scene/cam"})
+
+  [not_allowed] input "wrist_image": wrist/cam is 640x480 (4:3), the model wants 224x224 (1:1)
+    needs: resize, plus one of crop | pad | stretch to change the aspect ratio
+    fix: add "resize" and "pad" (or "crop") to allow

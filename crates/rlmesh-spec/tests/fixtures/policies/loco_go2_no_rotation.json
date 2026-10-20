@@ -1,0 +1,115 @@
+{
+  "hz": 50,
+  "inputs": {
+    "gravity": {
+      "kind": "imu",
+      "at": "base/imu",
+      "fields": ["orientation"],
+      "rotation": "gravity_xyz",
+      "frame": "base",
+      "max_age_ms": 30
+    },
+    "ang_vel": {
+      "kind": "imu",
+      "at": "base/imu",
+      "fields": ["ang_vel"],
+      "frame": "base",
+      "scale": 0.25
+    },
+    "command": {
+      "kind": "velocity",
+      "at": "goal/cmd_vel"
+    },
+    "q": {
+      "kind": "joints",
+      "at": "legs",
+      "fields": ["pos"],
+      "names": [
+        "FL_hip_joint",
+        "FR_hip_joint",
+        "RL_hip_joint",
+        "RR_hip_joint",
+        "FL_thigh_joint",
+        "FR_thigh_joint",
+        "RL_thigh_joint",
+        "RR_thigh_joint",
+        "FL_calf_joint",
+        "FR_calf_joint",
+        "RL_calf_joint",
+        "RR_calf_joint"
+      ],
+      "offset": [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5],
+      "max_age_ms": 30
+    },
+    "dq": {
+      "kind": "joints",
+      "at": "legs",
+      "fields": ["vel"],
+      "names": [
+        "FL_hip_joint",
+        "FR_hip_joint",
+        "RL_hip_joint",
+        "RR_hip_joint",
+        "FL_thigh_joint",
+        "FR_thigh_joint",
+        "RL_thigh_joint",
+        "RR_thigh_joint",
+        "FL_calf_joint",
+        "FR_calf_joint",
+        "RL_calf_joint",
+        "RR_calf_joint"
+      ],
+      "scale": 0.05
+    },
+    "last": {
+      "kind": "joints",
+      "at": "legs",
+      "source": "applied",
+      "fields": ["pos"],
+      "names": [
+        "FL_hip_joint",
+        "FR_hip_joint",
+        "RL_hip_joint",
+        "RR_hip_joint",
+        "FL_thigh_joint",
+        "FR_thigh_joint",
+        "RL_thigh_joint",
+        "RR_thigh_joint",
+        "FL_calf_joint",
+        "FR_calf_joint",
+        "RL_calf_joint",
+        "RR_calf_joint"
+      ],
+      "offset": [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5],
+      "scale": 4.0
+    }
+  },
+  "actions": {
+    "legs": {
+      "kind": "joints",
+      "at": "legs",
+      "command": "position",
+      "names": [
+        "FL_hip_joint",
+        "FR_hip_joint",
+        "RL_hip_joint",
+        "RR_hip_joint",
+        "FL_thigh_joint",
+        "FR_thigh_joint",
+        "RL_thigh_joint",
+        "RR_thigh_joint",
+        "FL_calf_joint",
+        "FR_calf_joint",
+        "RL_calf_joint",
+        "RR_calf_joint"
+      ],
+      "scale": 0.25,
+      "offset": [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5],
+      "hz": 50,
+      "horizon": 1,
+      "t0": "send",
+      "ttl_ms": 20
+    }
+  },
+  "allow": []
+}

@@ -1,0 +1,49 @@
+{
+  "hz": 10,
+  "inputs": {
+    "observation/image": {
+      "kind": "camera",
+      "at": "scene/cam",
+      "size": [224, 224]
+    },
+    "observation/wrist_image": {
+      "kind": "camera",
+      "at": "wrist/cam",
+      "size": [224, 224]
+    },
+    "eef": {
+      "kind": "pose",
+      "at": "arm/tcp",
+      "fields": ["pos", "rot"],
+      "rotation": "axis_angle"
+    },
+    "fingers": {
+      "kind": "joints",
+      "at": "gripper/fingers",
+      "fields": ["pos"],
+      "count": 2
+    },
+    "prompt": {
+      "kind": "text",
+      "at": "task"
+    }
+  },
+  "actions": {
+    "eef": {
+      "kind": "pose",
+      "at": "arm/tcp",
+      "command": "delta",
+      "reference": "current",
+      "horizon": 10
+    },
+    "gripper": {
+      "kind": "gripper",
+      "at": "gripper",
+      "command": "position",
+      "open": -1.0,
+      "closed": 1.0,
+      "horizon": 10
+    }
+  },
+  "allow": ["resize", "rotate180", "rotation", "rescale"]
+}

@@ -1,0 +1,19 @@
+binding dex_grasp on g1 with side="left": 3 inputs, 1 action, fingerprint 16dea3e53d7802e7
+replan 30 Hz
+
+  entry  dir  part               status  plan                                                                delivers
+  hand   in   left/hand          bound   fields pos → positional                                             f32 [7]
+  touch  in   left/hand/tactile  bound   none                                                                f32 [9, 12]
+  image  in   head/cam           bound   decode(jpeg) → crop(640x480 → 480x480) → resize(bilinear, 224x224)  u8 [224, 224, 3]
+  hand   out  left/hand          bound   positional                                                          f32 [8, 7]
+
+  input  contract   source  delivery  freshness
+  hand   latest@30  100 Hz  30 Hz     100 ms (derived)
+  touch  latest@30  100 Hz  30 Hz     100 ms (derived)
+  image  every      30 Hz   30 Hz     100 ms (derived)
+
+  action  grid             chunk                 valid   edge              age cap
+  hand    30 Hz (default)  8 × 33.3 ms = 267 ms  267 ms  100 Hz (default)  200 ms (default)
+
+  warnings
+    action "hand": a chunk covers 267 ms, but left/hand's edge plays at most 200 ms of it (max_action_age_ms); the rest is never dispatched.

@@ -159,6 +159,18 @@ pub fn ring_bytes<'a>(
         .fold(0, u64::saturating_add)
 }
 
+/// A contract as tables show it: `latest@20`, `history@20`, `every`.
+pub fn label(contract: &StreamContract) -> String {
+    match contract.mode {
+        ContractMode::Every => "every".into(),
+        mode => format!(
+            "{}@{}",
+            mode_name(mode),
+            crate::explain::hz(contract.delivery_hz)
+        ),
+    }
+}
+
 /// A contract mode's name (`latest`, `history`, `every`).
 pub fn mode_name(mode: ContractMode) -> &'static str {
     match mode {

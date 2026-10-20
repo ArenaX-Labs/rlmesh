@@ -1,0 +1,6 @@
+binding refused: dex_grasp on g1 (1 problem)
+
+  [ambiguous_capture] {side} has 2 values that bind every required entry:
+      side="left"   -> left/hand, left/hand/tactile
+      side="right"  -> right/hand, right/hand/tactile
+    fix: rlmesh.run(..., side="left")

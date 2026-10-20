@@ -1,0 +1,16 @@
+binding refused: force_policy on aloha2 (5 problems)
+
+  [unbound] input "ft" (kind wrench, at "wrist/ft"): aloha2 has no wrench part.
+    fix: this policy needs a force/torque sensor; it cannot run on aloha2.
+
+  [unbound] input "q" (kind joints, at "arm"): no part matches; aloha2's joints parts: left/arm, right/arm.
+    fix: if one of them is meant, rlmesh.run(..., at={"q": "left/arm"})
+
+  [unbound] input "wrist" (kind camera, at "wrist/cam"): no part matches; aloha2's camera parts: left/wrist/cam, right/wrist/cam, scene/cam, scene/cam_low.
+    fix: if one of them is meant, rlmesh.run(..., at={"wrist": "left/wrist/cam"})
+
+  [unbound] input "last" (kind joints, at "arm"): no part matches; aloha2's joints parts: left/arm, right/arm.
+    fix: if one of them is meant, rlmesh.run(..., at={"last": "left/arm"})
+
+  [unbound] action "arm" (kind joints, at "arm"): no part matches; aloha2's joints parts: left/arm, right/arm.
+    fix: if one of them is meant, rlmesh.run(..., at={"arm": "left/arm"})

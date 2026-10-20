@@ -1,0 +1,18 @@
+binding force_policy_20hz on ur10e_sim: 4 inputs, 1 action, fingerprint 4c2c3c0f08170f41
+replan 20 Hz
+
+  entry  dir  part          status  plan                                                                                                           delivers
+  ft     in   wrist/ft      bound   fields force, torque → window(50 by seq); warmup at episode start                                              f32 [50, 6]
+  q      in   arm           bound   fields pos, vel; names identical                                                                               f32 [12]
+  wrist  in   wrist/cam     bound   decode(jpeg) → crop(640x480 → 480x480) → resize(bilinear, 96x96) → auto layout(chw) → normalise(u8 → 0…1 f32)  f32 [3, 96, 96]
+  last   in   arm/_applied  bound   none                                                                                                           f32 [6]
+  arm    out  arm           bound   none                                                                                                           f32 [20, 6]
+
+  input  contract    source   delivery  freshness
+  ft     history@20  1000 Hz  20 Hz     150 ms (derived)
+  q      latest@20   1000 Hz  20 Hz     150 ms (derived)
+  wrist  latest@20   30 Hz    20 Hz     150 ms (derived)
+  last   latest@20   1000 Hz  20 Hz     150 ms (derived)
+
+  action  grid    chunk                valid   edge               age cap
+  arm     100 Hz  20 × 10 ms = 200 ms  150 ms  1000 Hz (default)  1000 ms

@@ -1,0 +1,63 @@
+{
+  "hz": 15,
+  "inputs": {
+    "image": {
+      "kind": "camera",
+      "at": "/scene/cam",
+      "size": [224, 224]
+    },
+    "wrist_image": {
+      "kind": "camera",
+      "at": "wrist/cam",
+      "size": [224, 224]
+    },
+    "state": {
+      "kind": "joints",
+      "at": "arm",
+      "fields": ["pos"],
+      "names": [
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint"
+      ]
+    },
+    "gripper": {
+      "kind": "gripper",
+      "at": "gripper"
+    },
+    "prompt": {
+      "kind": "text",
+      "at": "/task"
+    }
+  },
+  "actions": {
+    "arm": {
+      "kind": "joints",
+      "at": "arm",
+      "command": "position",
+      "names": [
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint"
+      ],
+      "hz": 15,
+      "horizon": 10
+    },
+    "gripper": {
+      "kind": "gripper",
+      "at": "gripper",
+      "command": "position",
+      "hz": 15,
+      "horizon": 10,
+      "open": 1.0,
+      "closed": -1.0
+    }
+  },
+  "allow": ["resize", "pad", "rescale"]
+}

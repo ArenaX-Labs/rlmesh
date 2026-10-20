@@ -1,0 +1,6 @@
+binding refused: pi05_libero on libero_joint_only (1 problem)
+
+  [incompatible] action "eef" wants pose command "delta" (reference current) at "arm/tcp":
+      arm/tcp is a pose part without a command.
+    RLMesh does not do IK (scope rule). Declare "arm/tcp" with "command": "delta"
+    and serve it from your robot or controller.

@@ -1,0 +1,22 @@
+binding pi05_libero on libero: 5 inputs, 2 actions, fingerprint 06a09606f956e352
+replan 10 Hz
+
+  entry                    dir  part             status  plan                                                    delivers
+  observation/image        in   scene/cam        bound   rotate180 → resize(bilinear, 224x224)                   u8 [224, 224, 3]
+  observation/wrist_image  in   wrist/cam        bound   rotate180 → resize(bilinear, 224x224)                   u8 [224, 224, 3]
+  eef                      in   arm/tcp          bound   fields pos, rot → rotation(rot quat_xyzw → axis_angle)  f32 [6]
+  fingers                  in   gripper/fingers  bound   positional                                              f32 [2]
+  prompt                   in   task             bound   none                                                    str
+  eef                      out  arm/tcp          bound   none                                                    f32 [10, 6]
+  gripper                  out  gripper          bound   rescale(1…-1 → 0…1)                                     f32 [10, 1]
+
+  input                    contract   source  delivery  freshness
+  observation/image        latest@10  20 Hz   10 Hz     300 ms (derived)
+  observation/wrist_image  latest@10  20 Hz   10 Hz     300 ms (derived)
+  eef                      latest@10  20 Hz   10 Hz     300 ms (derived)
+  fingers                  latest@10  20 Hz   10 Hz     300 ms (derived)
+  prompt                   every      event   10 Hz     -
+
+  action   grid             chunk                  valid    edge             age cap
+  eef      10 Hz (default)  10 × 100 ms = 1000 ms  1000 ms  20 Hz (default)  1000 ms
+  gripper  10 Hz (default)  10 × 100 ms = 1000 ms  1000 ms  20 Hz (default)  1000 ms

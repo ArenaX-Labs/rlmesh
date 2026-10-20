@@ -1,0 +1,16 @@
+binding refused: force_policy on go2 (5 problems)
+
+  [unbound] input "ft" (kind wrench, at "wrist/ft"): go2 has no wrench part.
+    fix: this policy needs a force/torque sensor; it cannot run on go2.
+
+  [unbound] input "q" (kind joints, at "arm"): no part matches; go2's joints parts: legs.
+    fix: if one of them is meant, rlmesh.run(..., at={"q": "legs"})
+
+  [unbound] input "wrist" (kind camera, at "wrist/cam"): no part matches; go2's camera parts: front/cam.
+    fix: if one of them is meant, rlmesh.run(..., at={"wrist": "front/cam"})
+
+  [unbound] input "last" (kind joints, at "arm"): no part matches; go2's joints parts: legs.
+    fix: if one of them is meant, rlmesh.run(..., at={"last": "legs"})
+
+  [unbound] action "arm" (kind joints, at "arm"): no part matches; go2's joints parts: legs.
+    fix: if one of them is meant, rlmesh.run(..., at={"arm": "legs"})

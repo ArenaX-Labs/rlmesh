@@ -1,0 +1,17 @@
+{
+  "hz": 2,
+  "inputs": {
+    "image": {
+      "kind": "camera",
+      "at": "front/cam",
+      "max_age_ms": 750
+    },
+    "q": {
+      "kind": "joints",
+      "at": "legs",
+      "fields": ["pos"],
+      "max_age_ms": 750
+    }
+  },
+  "actions": {}
+}

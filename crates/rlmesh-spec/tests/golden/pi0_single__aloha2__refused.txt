@@ -1,0 +1,8 @@
+binding refused: pi0_single on aloha2 under "right" (2 problems)
+
+  [incompatible] input "state" and action "arm" -> right/arm:
+      model names: shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint
+      robot names: waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate
+    no name in common, so they cannot be reordered.
+    fix: if index i means the same joint on both, bind both positionally:
+         rlmesh.run(..., under="right", names={"state": "positional", "arm": "positional"})

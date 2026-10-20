@@ -1,0 +1,16 @@
+binding vla_20hz on ur10e_sim: 3 inputs, 1 action, fingerprint 6f8bbb5c29126086
+replan 20 Hz
+
+  entry  dir  part       status  plan                                      delivers
+  image  in   wrist/cam  bound   decode(jpeg)                              u8 [480, 640, 3]
+  q      in   arm        bound   fields pos, vel, effort                   f32 [18]
+  force  in   wrist/ft   bound   fields force, torque → window(50 by seq)  f32 [50, 6]
+  arm    out  arm        bound   none                                      f32 [20, 6]
+
+  input  contract    source   delivery  freshness
+  image  latest@20   30 Hz    20 Hz     150 ms
+  q      latest@20   1000 Hz  20 Hz     100 ms
+  force  history@20  1000 Hz  20 Hz     100 ms
+
+  action  grid    chunk                valid   edge               age cap
+  arm     100 Hz  20 × 10 ms = 200 ms  200 ms  1000 Hz (default)  1000 ms

@@ -1,0 +1,32 @@
+{
+  "hz": 20,
+  "inputs": {
+    "image": {
+      "kind": "camera",
+      "at": "wrist/cam",
+      "max_age_ms": 150
+    },
+    "q": {
+      "kind": "joints",
+      "at": "arm",
+      "max_age_ms": 100
+    },
+    "force": {
+      "kind": "wrench",
+      "at": "wrist/ft",
+      "history": 50,
+      "history_hz": 1000,
+      "max_age_ms": 100
+    }
+  },
+  "actions": {
+    "arm": {
+      "kind": "joints",
+      "at": "arm",
+      "command": "position",
+      "hz": 100,
+      "horizon": 20,
+      "ttl_ms": 200
+    }
+  }
+}
