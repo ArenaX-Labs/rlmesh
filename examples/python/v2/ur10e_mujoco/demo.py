@@ -6,17 +6,21 @@ The v0.2 milestone demo (protocol v2), three processes over one session:
   (``ur10e.xml``, derived from MuJoCo Menagerie). Physics and the edge run
   at 1 kHz: each tick publishes ``arm`` (pos/vel/effort) and ``wrist/ft``,
   asks ``robot.due("arm")`` what to apply and steps the physics. A second
-  thread renders the wrist camera offscreen at 30 Hz.
+  thread renders the wrist camera offscreen at 20 Hz.
 - ``policy``: a scripted reach (a slow sweep of two joints, rate limited
-  from the measured pose) that reads the joints and the wrist camera, and
-  sends 12 x 1 ms chunks at 100 Hz through ``Policy.run``.
+  from the measured pose) that reads the joints, a 10 ms window of the
+  1 kHz wrist force/torque and the wrist camera, and sends 12 x 1 ms chunks
+  at 100 Hz through ``Policy.run`` (``--policy force``, the default;
+  ``--policy reach`` drops the force window).
 - ``operator``: a teleop participant at ``operator`` class. ``t`` takes the
   ``arm`` lease (pre-empting the policy: the edge fences the policy's
   chunks and holds its last target until the operator's first chunk), the
   digits ``1``-``6`` pick a joint, ``+``/``-`` jog it, ``t`` again hands
   back (the policy re-requests and resumes under a fresh lease token), ``q``
   quits. Keys come from the terminal (``--keys interactive``) or from a
-  script of ``seconds:key`` events (the default).
+  script of ``seconds:key`` events (the default). ``--operator haptic``
+  makes it the §15.6 shape: 1 kHz, reading the wrench every sample,
+  one-action chunks with a 5 ms life.
 
 ``all`` (the default) runs the robot here and the policy and the operator
 as child processes, then reads the recording back and prints a report:
@@ -41,6 +45,7 @@ import importlib
 import json
 import os
 import queue
+import resource
 import signal
 import subprocess
 import sys
@@ -75,6 +80,7 @@ UR_JOINTS = [
 HOME = np.array([-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0])
 OPERATOR_HZ = 50
 OPERATOR_HORIZON = 40  # 40 x 1 ms: twice the operator's replan period
+FT_WINDOW = 10  # 10 ms of the 1 kHz wrench
 JOG_RAD = 0.1
 MAX_SPEED = 1.0  # rad/s, policy and operator alike
 
@@ -90,6 +96,9 @@ def robot_map(args: argparse.Namespace) -> dict[str, Any]:
         "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": CONTROL_HZ},
         "task": {"kind": "text"},
     }  # fmt: skip
+    for i in range(args.extra_streams):  # synthetic 1 kHz load
+        parts[f"extra/s{i}"] = {"kind": "x/load", "hz": CONTROL_HZ,
+                                "fields": {"v": ["float32", [6]]}}  # fmt: skip
     if args.camera != "off":
         camera: dict[str, Any] = {"kind": "camera", "width": args.width, "height": args.height,
                                   "hz": args.camera_hz, "frame": "wrist_cam_optical"}  # fmt: skip
@@ -103,6 +112,13 @@ def policy_map(args: argparse.Namespace) -> dict[str, Any]:
     inputs: dict[str, Any] = {
         "q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
     }
+    if args.policy == "force":
+        # §15.3 at 100 Hz: the newest 10 ms of the wrench, every sample.
+        inputs["ft"] = {"kind": "wrench", "at": "wrist/ft", "frame": "tool0",
+                        "history": FT_WINDOW}  # fmt: skip
+        for i in range(args.extra_streams):
+            inputs[f"x{i}"] = {"kind": "x/load", "at": f"extra/s{i}",
+                               "fields": {"v": ["float32", [6]]}, "history": FT_WINDOW}  # fmt: skip
     if args.camera != "off":
         inputs["cam"] = {
             "kind": "camera",
@@ -119,7 +135,16 @@ def policy_map(args: argparse.Namespace) -> dict[str, Any]:
     }  # fmt: skip
 
 
-def operator_map() -> dict[str, Any]:
+def operator_map(args: argparse.Namespace) -> dict[str, Any]:
+    if args.operator == "haptic":
+        # §15.6: 1 kHz, the wrench every sample, one-action chunks, 5 ms life.
+        return {
+            "hz": CONTROL_HZ,
+            "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
+                       "ft": {"kind": "wrench", "at": "wrist/ft", "frame": "tool0", "max_age_ms": 3}},
+            "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
+                                "names": UR_JOINTS, "hz": CONTROL_HZ, "horizon": 1, "ttl_ms": 5}},
+        }  # fmt: skip
     return {
         "hz": OPERATOR_HZ,
         "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS}},
@@ -132,6 +157,18 @@ def ramp(start: np.ndarray, target: np.ndarray, n: int, dt: float) -> np.ndarray
     """``n`` actions from ``start`` toward ``target`` at most MAX_SPEED rad/s."""
     step = MAX_SPEED * dt * np.arange(1, n + 1)[:, None]
     return start + np.clip(target - start, -step, step)
+
+
+def cpu_share(before: resource.struct_rusage, wall0: float) -> dict[str, float]:
+    """CPU seconds (user + system) of this process since ``before``, and the share of one core."""
+    after = resource.getrusage(resource.RUSAGE_SELF)
+    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+    wall = time.monotonic() - wall0
+    return {
+        "cpu_s": round(cpu, 3),
+        "wall_s": round(wall, 3),
+        "cores": round(cpu / wall, 3),
+    }
 
 
 def percentiles(ns: list[int]) -> dict[str, float] | None:
@@ -164,6 +201,7 @@ class Sim:
         self.qadr = [int(self.model.joint(j).qposadr[0]) for j in UR_JOINTS]
         self.dadr = [int(self.model.joint(j).dofadr[0]) for j in UR_JOINTS]
         self.substeps = max(1, round(1.0 / (self.model.opt.timestep * CONTROL_HZ)))
+        self.extras = [f"extra/s{i}" for i in range(args.extra_streams)]
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.robot = rlmesh.Robot(ROBOT, robot_map(args), session=session)
@@ -232,6 +270,8 @@ class Sim:
                 torque=data.sensordata[3:6],
                 capture_ns=capture,
             )
+            for path in self.extras:
+                robot.publish(path, data.sensordata, capture_ns=capture)
             due = robot.due("arm")
             mode, token = "idle", None
             if due is not None:
@@ -330,7 +370,8 @@ def report(
     children: dict[str, Any],
 ) -> dict[str, Any]:
     by_token, timeline = holders(recording)
-    period = {"policy": 1e9 / args.replan_hz, "operator": 1e9 / OPERATOR_HZ}
+    operator_hz = CONTROL_HZ if args.operator == "haptic" else OPERATOR_HZ
+    period = {"policy": 1e9 / args.replan_hz, "operator": 1e9 / operator_hz}
     dt_ns = 1e9 / CONTROL_HZ
 
     # Chunk ages per holder (receipt at the edge minus the capture of the arm
@@ -554,7 +595,16 @@ def child(
 ) -> subprocess.Popen[bytes]:
     forwarded = [
         f"--{key.replace('_', '-')}={getattr(args, key)}"
-        for key in ("seconds", "camera", "replan_hz", "horizon", "keys")
+        for key in (
+            "seconds",
+            "camera",
+            "replan_hz",
+            "horizon",
+            "keys",
+            "policy",
+            "operator",
+            "extra_streams",
+        )
     ]
     return subprocess.Popen(
         [
@@ -575,6 +625,7 @@ def run_robot(args: argparse.Namespace) -> int:
     record = Path(
         args.record or Path(tempfile.mkdtemp(prefix="rlmesh-ur10e-")) / "session.mcap"
     )
+    cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
     with rlmesh.Host() as host:
         recorder = rlmesh.Recorder(record, session=host)
         sim = Sim(args, host)
@@ -616,9 +667,15 @@ def run_robot(args: argparse.Namespace) -> int:
             except KeyboardInterrupt:
                 pass
         edge = sim.finish()
+        robot_cpu = cpu_share(cpu0, wall0)
         recorded = recorder.close()
     recording = rlmesh.read_recording(record)
     out = report(args, sim, edge, recorded, recording, children)
+    out["cpu"] = {
+        "robot_process": robot_cpu,
+        "policy_process": (children.get("policy") or {}).get("cpu"),
+        "loadavg_after": Path("/proc/loadavg").read_text().split()[:3],
+    }
     out["recording"]["path"] = str(record)
     out["recording"]["independent"] = read_independently(record)
     out["checks"] = checks(args, out)
@@ -657,6 +714,16 @@ def print_summary(out: dict[str, Any]) -> None:
         lines.append(
             f"{t['from']} -> {t['to']} (token {t['token']}): {t['gap_ms']} ms, {t['gap_modes']}"
         )
+    policy = out["children"].get("policy") or {}
+    for entry, age in (policy.get("window_age_ms") or {}).items():
+        if age:
+            lines.append(
+                f"newest {entry} sample at a start: p50 {age['p50']} / p99 {age['p99']} ms old"
+            )
+    cpu = out["cpu"]
+    lines.append(
+        f"cpu (cores): robot {cpu['robot_process']['cores']}, policy {(cpu['policy_process'] or {}).get('cores')}"
+    )
     lines.append(f"checks: {out['checks']}")
     print("\n".join(lines), file=sys.stderr)
 
@@ -676,8 +743,13 @@ def run_policy(args: argparse.Namespace) -> int:
     horizon, dt = args.horizon, 1.0 / CONTROL_HZ
     brightness: list[float] = []
     origin: list[float] = []
+    # Per start, the age of the newest sample in each window input.
+    window_ages: dict[str, list[int]] = {}
 
     def predict(obs: rlmesh.Observation) -> dict[str, Any]:
+        for entry, age in obs.meta.ages_ns.items():
+            if age is not None and (entry == "ft" or entry.startswith("x")):
+                window_ages.setdefault(entry, []).append(age)
         now = obs.meta.time_ns / 1e9
         if not origin:
             origin.append(now)
@@ -695,11 +767,17 @@ def run_policy(args: argparse.Namespace) -> int:
     with rlmesh.Policy(policy_map(args), session=args.address, name="policy") as policy:
         binding = policy.bind(ROBOT)
         print(binding, file=sys.stderr, flush=True)
+        cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
         try:
             stats = policy.run(predict, duration=args.seconds)
         except KeyboardInterrupt:
             stats = policy.stats()
+        cpu = cpu_share(cpu0, wall0)
         out = {
+            "cpu": cpu,
+            "window_age_ms": {
+                entry: percentiles(ages) for entry, ages in window_ages.items()
+            },
             "binding": binding.json,
             "warnings": binding.warnings,
             "run": stats,
@@ -763,8 +841,11 @@ def run_operator(args: argparse.Namespace) -> int:
     stop = threading.Event()
     events: list[tuple[float, str]] = []
     chunks = 0
+    haptic = args.operator == "haptic"
+    hz = CONTROL_HZ if haptic else OPERATOR_HZ
+    horizon = 1 if haptic else OPERATOR_HORIZON
     with rlmesh.Policy(
-        operator_map(), session=args.address, name="operator", priority="operator"
+        operator_map(args), session=args.address, name="operator", priority="operator"
     ) as op:
         op.bind(ROBOT)
         start = time.monotonic()
@@ -786,7 +867,7 @@ def run_operator(args: argparse.Namespace) -> int:
                 target=feed_script, args=(script, keys, start), daemon=True
             )
         feeder.start()
-        rate = rlmesh.Rate(OPERATOR_HZ)
+        rate = rlmesh.Rate(hz)
         active, joint = False, 0
         # The jog target and the last commanded pose, set from the measured
         # pose on the first start after a takeover (`fresh`).
@@ -830,11 +911,11 @@ def run_operator(args: argparse.Namespace) -> int:
                 if fresh:
                     cmd = np.asarray(obs["q"], dtype=np.float64).copy()
                     target, fresh = cmd.copy(), False
-                chunk = ramp(cmd, target, OPERATOR_HORIZON, 1.0 / CONTROL_HZ)
+                chunk = ramp(cmd, target, horizon, 1.0 / CONTROL_HZ)
                 sent = op.send({"arm": chunk.astype(np.float32)}, obs)
                 if sent.get("arm") is not None:
                     chunks += 1
-                cmd = ramp(cmd, target, 1, 1.0 / OPERATOR_HZ)[0]
+                cmd = ramp(cmd, target, 1, 1.0 / hz)[0]
             rate.sleep()
         stop.set()
         if active:
@@ -854,7 +935,25 @@ def main() -> None:
         "--seconds", type=float, default=10.0, help="how long the policy runs"
     )
     parser.add_argument("--camera", choices=["jpeg", "raw", "off"], default="jpeg")
-    parser.add_argument("--camera-hz", type=float, default=30.0)
+    parser.add_argument("--camera-hz", type=float, default=20.0)
+    parser.add_argument(
+        "--policy",
+        choices=["force", "reach"],
+        default="force",
+        help="force (default): joints, a 10 ms force window and the camera",
+    )
+    parser.add_argument(
+        "--operator",
+        choices=["keys", "haptic"],
+        default="keys",
+        help="haptic: the §15.6 1 kHz operator",
+    )
+    parser.add_argument(
+        "--extra-streams",
+        type=int,
+        default=0,
+        help="synthetic 1 kHz streams the force policy also windows",
+    )
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--replan-hz", type=float, default=100.0)
