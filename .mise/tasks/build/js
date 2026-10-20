@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build crates/rlmesh-wasm for the browser (cargo --profile wasm, wasm-bindgen --target web, wasm-opt -Oz) and bundle javascript/rlmesh (dist/, .d.ts)"
+#MISE description="Build javascript/rlmesh/wasm (rlmesh-wasm) for the browser (cargo --profile wasm, wasm-bindgen --target web, wasm-opt -Oz) and bundle javascript/rlmesh (dist/, .d.ts)"
 #MISE dir="{{ config_root }}"
 #MISE depends=["setup:js"]
 #USAGE flag "--demo" help="Also bundle the browser example (examples/web) into examples/web/dist"

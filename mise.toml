@@ -358,7 +358,7 @@ description = "Run the headless example programs end to end"
 run = "uv run pytest python/rlmesh/tests/examples -q"
 
 # ──────────────────────────────────────────────
-# Browser binding: crates/rlmesh-wasm + javascript/rlmesh
+# Browser binding: javascript/rlmesh and its wasm core, javascript/rlmesh/wasm
 # ──────────────────────────────────────────────
 # Not in check, typecheck or test: those run in the `fast` CI job, which would
 # then install the wasm toolchain and node_modules on every PR. The `browser`

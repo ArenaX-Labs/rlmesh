@@ -7,7 +7,7 @@
 // stops the Worker's sockets and timers and posts `fatal`, so the supervisor on the main thread respawns
 // it from the compiled Module.
 //
-// Every binary frame is a real v2 message behind a one-byte tag (crates/rlmesh-wasm/src/frame.rs); the
+// Every binary frame is a real v2 message behind a one-byte tag (wasm/src/frame.rs); the
 // wasm encodes and decodes them with rlmesh-wire. Text frames are the gateway's JSON.
 
 import { initSync, Streams, ControlSession, build_info, web_time_now_ms, std_instant_now_panics } from '../pkg/rlmesh.js';

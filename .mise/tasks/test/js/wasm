@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Run crates/rlmesh-wasm's tests on wasm32-unknown-unknown under Node (wasm-bindgen-test, no browser)"
+#MISE description="Run javascript/rlmesh/wasm's tests on wasm32-unknown-unknown under Node (wasm-bindgen-test, no browser)"
 #MISE dir="{{ config_root }}"
 #MISE depends=["setup:js"]
 

@@ -7,7 +7,7 @@ A browser page cannot open a v2 session's own transport: it has no raw TCP
 or UDP, so neither Zenoh nor gRPC can run there. The browser binding is
 three pieces instead:
 
-- **The sans-IO core in wasm.** `crates/rlmesh-wasm` wraps `rlmesh-wire` (the
+- **The sans-IO core in wasm.** `javascript/rlmesh/wasm` (`rlmesh-wasm`) wraps `rlmesh-wire` (the
   v2 messages) and `rlmesh-session-core` (the state machines: the clock
   offset estimator, the holder side of a lease, the receive rules) with
   wasm-bindgen. One wasm Module is compiled once and instantiated in three
@@ -74,7 +74,7 @@ answers with the participant id. From then on:
   is a new participant, and `arm()` then `lease()` take control again.
 
 Every binary frame is one tag byte and a v2 message
-(`crates/rlmesh-wasm/src/frame.rs` has the table); text frames are the
+(`javascript/rlmesh/wasm/src/frame.rs` has the table); text frames are the
 gateway's JSON (hello, subscribe, errors, fence reports).
 
 ## The browser capability profile

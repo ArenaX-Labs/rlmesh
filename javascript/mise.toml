@@ -1,9 +1,9 @@
-# The browser binding's tools (crates/rlmesh-wasm -> javascript/rlmesh),
+# The browser binding's tools (javascript/rlmesh/wasm -> javascript/rlmesh),
 # installed only when a browser task runs (`mise run build:js`, `test:js`,
 # `check:sans-io`, the CI `browser` job): unrelated checks need neither.
 #
 # The wasm-bindgen CLI must equal the wasm-bindgen crate pin exactly
-# (crates/rlmesh-wasm/Cargo.toml), or the generated glue does not match the
+# (javascript/rlmesh/wasm/Cargo.toml), or the generated glue does not match the
 # module. binaryen is wasm-opt.
 [tools]
 "github:wasm-bindgen/wasm-bindgen" = "0.2.129"
