@@ -1,6 +1,6 @@
 # Language parity
 
-Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (all **Approved by the user, 2026-10-19**).
+Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (all **Approved by the user, 2026-10-19**). JS (browser) binding: Experimental, 2026-10-20; a client of the v2 session, not of this surface (R-29).
 
 RLMesh is one library in five languages: Python (the reference), Rust (the
 `rlmesh` facade crate), C (`crates/rlmesh-capi/include/rlmesh.h`), C++
@@ -50,6 +50,32 @@ v0.2 ships on the current wire; v2 is a clean break after it. So:
 - [Lessons for the v2 C ABI](#lessons-for-the-v2-c-abi) states what the
   core's C ABI must design for from day one.
 
+## JS (browser) and the v2 protocol
+
+The browser binding is the first binding of the v2 session (protocol
+generation 2), not of the v1 surface this spec maps, so it has no column in
+the area tables or the manifest. It is introduced the way C# was: labelled
+Experimental, with its constraints written down as a rule (R-29), before it
+has a Stable surface.
+
+- **What it is.** The `rlmesh` npm package (`javascript/rlmesh`, not
+  published yet) over `crates/rlmesh-wasm`: `rlmesh-wire` and
+  `rlmesh-session-core`, the sans-IO core every v2 binding shares, compiled
+  to `wasm32-unknown-unknown`, one instance per traffic class Worker. A page
+  has no raw TCP or UDP, so `rlmesh-gateway` bridges it to the session: each
+  browser connection is a session participant of its own, and the host
+  stays the only authority (docs: [the browser binding](../browser.md)).
+- **What it binds** (R-29): sessions, streams, leases and the session verbs
+  (`arm`, `disarm`, `estop`). It serves no environments and runs no edge.
+- **R-16 does not apply.** It is async-first: every call that waits on the
+  network returns a `Promise`, and there are no sync twins (a browser main
+  thread must not block). R-29 records this exception.
+- **Enforcement.** None of E-1 to E-3 reads it. Its own gates are the
+  browser checks (`mise run test:js`, `check:sans-io`) and the CI `browser`
+  job; a JS column joins this spec when the v2 surfaces get their parity
+  mapping. It joins [compatibility](../compatibility.md)'s list when it is
+  published.
+
 ## How to read
 
 1. Start with [rules](language-parity/rules.md): the translation table, the
@@ -78,7 +104,7 @@ v0.2 ships on the current wire; v2 is a clean break after it. So:
 
 | File                                       | Covers                                                                                                                            |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| [rules.md](language-parity/rules.md)       | Rules, decisions, error matrix, warnings, Python changes, shapes, known gaps, enforcement                                         |
+| [rules.md](language-parity/rules.md)       | Rules (R-29: the browser binding), decisions, error matrix, warnings, Python changes, shapes, known gaps, enforcement             |
 | [core.md](language-parity/core.md)         | `Value`, `Metadata`, error detail fields, workflow editions, describe, build info                                                 |
 | [spaces.md](language-parity/spaces.md)     | Spaces, `SpaceSpec`, space values and `Tensor`                                                                                    |
 | [env.md](language-parity/env.md)           | Env authoring and serving: `Env`, `VectorEnv`, `EnvFactory`, `Variant`, `EnvServer`, `ServeOptions`, `EnvContract`, `trial_index` |

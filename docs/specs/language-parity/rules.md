@@ -662,7 +662,8 @@ Metadata Info)`), which deconstructs the same way. Hand-written structs
 
 ### R-16 Sync first, async twins
 
-- Every language's primary API blocks, as Python does (D-1).
+- Every language's primary API blocks, as Python does (D-1). The one
+  exception is the browser binding (R-29), which is async-first.
 - Rust adds `<name>_async` for each blocking call that waits on I/O or the
   model. The twin has the same parameters, types, borrows and ownership as the
   sync call, and the same return type wrapped in a future. Both accept the
@@ -2126,6 +2127,44 @@ CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
   `ref` fields. The implementation may use newer syntax that compiles to
   netstandard2.1, with internal polyfills (`IsExternalInit`).
 
+### R-29 Browser (JS) runtime constraints
+
+The browser binding (the `rlmesh` npm package, `javascript/rlmesh`) is
+Experimental and binds the v2 session (protocol generation 2), not the v1
+surface the area tables map; it has no manifest column. Its constraints:
+
+- **Async-first, the exception to R-16.** Every call that waits on the
+  network returns a `Promise` (`connect`, `lease`, `send`, `arm`, `disarm`,
+  `estop`), and `subscribe` is an async iterator. There are no sync twins: a
+  browser main thread must never block, and a Worker's loop must keep
+  draining its socket. Calls that do not wait (`latest`, `peek`, `status`,
+  `held`, `drive`, `release`) return at once.
+- **Capability profile.** A browser is a client of a session: it observes,
+  holds leases on commandable parts and commands them, arms, disarms and
+  e-stops, and estimates its clock. It serves no environments, declares no
+  robot parts, publishes no samples and runs no edge for hardware (an edge
+  must run next to its robot, where a process stall can be bounded). Its
+  binding is the gateway's identity binding over the commandable parts, not
+  a bound policy map.
+- **One core.** It runs `rlmesh-wire` and `rlmesh-session-core`, the sans-IO
+  core shared with the native session, compiled to
+  `wasm32-unknown-unknown`: messages are the v2 wire's, and the lease, clock
+  and receive rules are the core's. It adds no state machine of its own
+  beyond delivery measurement.
+- **Through a gateway, as a participant.** It reaches a session only
+  through `rlmesh-gateway`, one WebSocket per traffic class. Each control
+  connection is a participant of its own: the host grants and lapses its
+  leases and maps its clock from its own heartbeats, and a disconnect ends
+  the participant. Nothing is resumed by a reconnect.
+- **Times and numbers at the boundary.** Times cross as `f64` milliseconds
+  since the UNIX epoch (`i64` ns inside); lease tokens and seqs as `f64`,
+  exact below 2^53. Modes, priorities and kinds are lowercase strings with
+  no wire prefixes.
+- **Borrowing.** A borrowed value (`peek`, the `frame` event) is a
+  `Disposable` valid until released, and reading it afterwards throws, as
+  R-28 rules out spans over native memory for C#; `latest` returns a copy the
+  caller owns.
+
 ## Decisions
 
 | ID   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Status                           |
@@ -2807,6 +2846,9 @@ partial), `—` matched already or does not apply, `open` not yet closed. File r
 | G-27 | Binding plumbing at the crate root and in the prelude (R-25)                                                                                                                                                                                                                                                                             | —           | ✓    | —   | —   | —                    |
 | G-28 | `RLMESH_ABI_VERSION_MAJOR/MINOR/PATCH` carry the package semver (`h:44-52`); `RLMeshContract` not `RLMeshEnvContract`                                                                                                                                                                                                                    | —           | —    | ✓   | ✓   | —                    |
 | G-29 | No v1-shaped C# library: the C# column of every area is a design record, superseded by v2, not a backlog (D-17, D-45); v0.2 ships the C# foundation and R-28's Experimental env-serving surface                                                                                                                                          | —           | —    | —   | —   | design record (D-45) |
+
+The browser binding (R-29) has no column here: it binds the v2 session,
+not the surface these gaps describe.
 
 ## Enforcement
 

@@ -168,6 +168,12 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 - NuGet and Unity UPM distributions of the Experimental C# foundation, with portable symbols and native Linux x64, Windows x64 and universal macOS libraries. Foundation checks now include a fresh package consumer, NativeAOT serving, and allocation/leak budgets.
 - The Experimental `com.rlmesh.unity` integration: main-thread environment callbacks, reload preflight, a Reach Target sample and dispatch-only Unity release gates. Unity support is not yet verified on IL2CPP.
 
+#### Browser (JS)
+
+- The Experimental browser binding of real-time sessions (protocol v2), not yet published: the `rlmesh` npm package (`javascript/rlmesh`) joins a session from a page or Node 22+ through `rlmesh-gateway`, with one Worker and one WebSocket per traffic class. It subscribes (`subscribe`, `latest`, `peek`), leases and drives commandable parts (`lease`, `drive`, `send`, `release`), arms, disarms and e-stops, and reports the clock, statuses and edge modes; a trapped Worker is respawned and a dropped socket reconnects, and a lease lost either way is reported revoked and never resumed. It runs the session's own wire and state machines in wasm (`rlmesh-wasm` over `rlmesh-wire` and the new sans-IO `rlmesh-session-core`). See [the browser binding](docs/browser.md).
+- `rlmesh-gateway` bridges browsers to a session: each control connection is a session participant of its own, whose leases are the host's and whose heartbeats and chunks are the browser's, and samples are forwarded as published. It binds loopback by default, takes a bearer token as a WebSocket subprotocol (required off loopback), checks an Origin allowlist, caps message size, subscriptions and the attach class, and serves wss with `--tls-cert`/`--tls-key`.
+- `examples/web` runs a v2 session in the browser: a 7-joint arm robot with a 20 Hz camera and a model policy, which an operator preempts, drives and hands back (`mise run demo:web`).
+
 #### Packaging and examples
 
 - A universal macOS C/C++ release package, with Developer ID signing and Apple notarization in the existing tag-only release job, or an explicit unsigned-release opt-in.
