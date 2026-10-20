@@ -344,8 +344,12 @@ pub fn encode_jpeg(
 /// the raw payload as is. Checks the declared dimensions (a mismatch is the
 /// spec's `decode_mismatch`).
 pub fn decode_image(spec: &StreamSpec, sample: &Sample) -> Result<Vec<u8>, SessionError> {
+    decode_payload(spec, &sample.payload)
+}
+
+/// [`decode_image`] on a payload.
+pub fn decode_payload(spec: &StreamSpec, leaf: &[u8]) -> Result<Vec<u8>, SessionError> {
     let (height, width) = image_dims(spec)?;
-    let leaf = &sample.payload;
     let pixels = match spec.encoding {
         Encoding::Raw => leaf.to_vec(),
         Encoding::Jpeg { .. } => {

@@ -21,7 +21,11 @@
 //!   store. A library, and a binary (`rlmesh-session-host`).
 //! - [`participant`]: the [`Participant`]: presence, heartbeats, the
 //!   authority view, verbs, and endpoints by robot and path ([`sample`],
-//!   [`chunk`], [`media`]).
+//!   [`chunk`], [`media`]); an embodiment's publishers follow their
+//!   streams' publication plans.
+//! - [`cache`]: the controller's input cache and history windows (§8.8):
+//!   the snapshot at each policy start, freshness, hold, warmup, gaps and
+//!   provenance, fed by [`Inputs`].
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
 //!   only starve its own class.
 //!
@@ -33,6 +37,7 @@
 #![warn(missing_docs)]
 
 pub mod authority;
+pub mod cache;
 pub mod chunk;
 pub mod clock;
 pub mod error;
@@ -45,6 +50,9 @@ pub mod transport;
 pub mod virtual_clock;
 
 pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, LeaseEnd};
+pub use cache::{
+    Cached, InputCache, InputSnapshot, Inputs, Observation, ObserveError, Skip, Snapshot,
+};
 pub use chunk::{ChunkDraft, ChunkPublisher};
 pub use clock::{Clock, MonotonicClock, OffsetEstimate, SystemMonotonicClock};
 pub use error::SessionError;
