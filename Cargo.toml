@@ -8,6 +8,7 @@ default-members = [
   "crates/rlmesh-proto",
   "crates/rlmesh-runtime",
   "crates/rlmesh-sandbox",
+  "crates/rlmesh-session",
   "crates/rlmesh-spaces",
   "crates/rlmesh-viewer",
   "crates/rlmesh-wire",
@@ -38,6 +39,7 @@ rlmesh-grpc = { version = "=0.1.0", path = "crates/rlmesh-grpc" }
 rlmesh-proto = { version = "=0.1.0", path = "crates/rlmesh-proto" }
 rlmesh-runtime = { version = "=0.1.0", path = "crates/rlmesh-runtime" }
 rlmesh-sandbox = { version = "=0.1.0", path = "crates/rlmesh-sandbox" }
+rlmesh-session = { version = "=0.1.0", path = "crates/rlmesh-session" }
 rlmesh-spaces = { version = "=0.1.0", path = "crates/rlmesh-spaces" }
 rlmesh-viewer = { version = "=0.1.0", path = "crates/rlmesh-viewer" }
 rlmesh-wire = { version = "=0.1.0", path = "crates/rlmesh-wire" }
@@ -62,6 +64,11 @@ http-body-util = "0.1"
 # Test-only: a throwaway CA and server certificate for TLS tests.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 zstd = "0.13"
+# Real-time session transport (protocol v2). Pinned exactly: liveliness, query
+# and priority semantics are part of the session contract. Default features
+# stay off: `transport_multilink` pulls `rsa` (RUSTSEC-2023-0071), and the
+# session opens one Zenoh session per traffic class instead.
+zenoh = { version = "=1.10.1", default-features = false }
 # Shared, sliceable buffers for zero-copy tensor payloads (`Bytes::from_owner`).
 bytes = "1.9"
 

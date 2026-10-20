@@ -1,0 +1,47 @@
+[package]
+name = "rlmesh-session"
+description = "Internal RLMesh crate (unstable Rust API): real-time sessions (protocol v2) on Zenoh: the session host, participants, clock offsets and per-class transport."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+# Not released until the v0.2 wire spec freezes.
+publish = false
+
+[[bin]]
+name = "rlmesh-session-host"
+path = "src/bin/rlmesh-session-host.rs"
+
+[dependencies]
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+# JPEG camera channels: encode with jpeg-encoder, decode with image's
+# zune-jpeg (the workspace's existing pair, as in rlmesh-adapters).
+image = { workspace = true, features = ["jpeg"] }
+jpeg-encoder = { workspace = true }
+rlmesh-wire = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+# One Zenoh session per traffic class: no `transport_multilink` (it pulls
+# `rsa`, RUSTSEC-2023-0071) and no pubkey auth (also `rsa`).
+zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-stream"] }
+
+[features]
+# QUIC links (one stream per Zenoh priority, so one connection can carry
+# every class across NAT); needs TLS certificates.
+quic = ["zenoh/transport_quic"]
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[lints]
+workspace = true
