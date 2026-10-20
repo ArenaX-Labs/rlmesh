@@ -361,24 +361,34 @@ pub fn decode_scalars(bytes: &[u8], dtype: DType) -> Result<Vec<Scalar>, ScalarE
             dtype,
         });
     }
-    let decode_one = |chunk: &[u8]| -> Scalar {
-        match dtype {
-            DType::Bool => Scalar::Bool(chunk[0] != 0),
-            DType::Uint8 => Scalar::Int(chunk[0] as i64),
-            DType::Int8 => Scalar::Int(chunk[0] as i8 as i64),
-            DType::Int16 => Scalar::Int(i16::from_le_bytes(le_bytes(chunk)) as i64),
-            DType::Uint16 => Scalar::Int(u16::from_le_bytes(le_bytes(chunk)) as i64),
-            DType::Int32 => Scalar::Int(i32::from_le_bytes(le_bytes(chunk)) as i64),
-            DType::Uint32 => Scalar::Int(u32::from_le_bytes(le_bytes(chunk)) as i64),
-            DType::Int64 => Scalar::Int(i64::from_le_bytes(le_bytes(chunk))),
-            DType::Uint64 => Scalar::Int(u64::from_le_bytes(le_bytes(chunk)) as i64),
-            DType::Float16 => Scalar::Float(f16::from_le_bytes(le_bytes(chunk)).to_f64()),
-            DType::Float32 => Scalar::Float(f32::from_le_bytes(le_bytes(chunk)) as f64),
-            DType::Float64 => Scalar::Float(f64::from_le_bytes(le_bytes(chunk))),
-            DType::Unspecified => unreachable!("checked above"),
-        }
-    };
-    Ok(bytes.chunks_exact(elem).map(decode_one).collect())
+    Ok(bytes
+        .chunks_exact(elem)
+        .map(|chunk| decode_scalar(chunk, dtype))
+        .collect())
+}
+
+/// Decode one little-endian element of `dtype` (`chunk` is exactly
+/// `dtype_size(dtype)` bytes) with [`decode_scalars`]' semantics.
+///
+/// # Panics
+///
+/// On `Unspecified` or a chunk of the wrong length; callers check both.
+pub(crate) fn decode_scalar(chunk: &[u8], dtype: DType) -> Scalar {
+    match dtype {
+        DType::Bool => Scalar::Bool(chunk[0] != 0),
+        DType::Uint8 => Scalar::Int(chunk[0] as i64),
+        DType::Int8 => Scalar::Int(chunk[0] as i8 as i64),
+        DType::Int16 => Scalar::Int(i16::from_le_bytes(le_bytes(chunk)) as i64),
+        DType::Uint16 => Scalar::Int(u16::from_le_bytes(le_bytes(chunk)) as i64),
+        DType::Int32 => Scalar::Int(i32::from_le_bytes(le_bytes(chunk)) as i64),
+        DType::Uint32 => Scalar::Int(u32::from_le_bytes(le_bytes(chunk)) as i64),
+        DType::Int64 => Scalar::Int(i64::from_le_bytes(le_bytes(chunk))),
+        DType::Uint64 => Scalar::Int(u64::from_le_bytes(le_bytes(chunk)) as i64),
+        DType::Float16 => Scalar::Float(f16::from_le_bytes(le_bytes(chunk)).to_f64()),
+        DType::Float32 => Scalar::Float(f32::from_le_bytes(le_bytes(chunk)) as f64),
+        DType::Float64 => Scalar::Float(f64::from_le_bytes(le_bytes(chunk))),
+        DType::Unspecified => unreachable!("decode_scalar called with an unspecified dtype"),
+    }
 }
 
 fn le_bytes<const N: usize>(chunk: &[u8]) -> [u8; N] {
