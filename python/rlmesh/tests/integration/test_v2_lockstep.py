@@ -264,6 +264,40 @@ def test_the_gym_view_drives_a_lockstep_robot() -> None:
             robot.close()
 
 
+def test_a_gym_view_step_is_not_delayed_by_the_signal_poll() -> None:
+    # Blocked calls poll for Ctrl-C on a timer. Its first tick used to be
+    # awaited before the call started, and it waited for the timer's next
+    # millisecond, so every Gym step took over 1 ms in-process.
+    import statistics
+    import time
+
+    with v2.Host() as host:
+        robot = v2.Robot("arm1", ARM, session=host, clock="lockstep")
+        q = np.zeros(2, np.float32)
+
+        def step(commands: dict[str, Any]) -> Any:
+            robot.publish("arm", pos=q)
+            return 0.0, False, False, {}
+
+        def reset(seed: int | None, options: Any) -> None:
+            robot.publish("arm", pos=q)
+
+        robot.serve_lockstep(step, reset, background=True)
+        env = v2.GymView(host)
+        try:
+            env.reset(seed=0)
+            action = {"arm": np.ones(2, np.float32)}
+            latencies = []
+            for _ in range(300):
+                started = time.perf_counter()
+                env.step(action)
+                latencies.append(time.perf_counter() - started)
+        finally:
+            env.close()
+            robot.close()
+    assert statistics.median(latencies) < 0.0005
+
+
 def test_the_gym_view_keys_a_policy_s_entries_and_plays_its_chunks() -> None:
     policy = {
         "hz": 25,

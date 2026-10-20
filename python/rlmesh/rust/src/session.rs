@@ -39,7 +39,7 @@ use rlmesh_wire::{
     CtlStatus, DType, PartSpec, ParticipantId, PriorityClass, Role, SessionId, TenantId,
 };
 
-use crate::client::{SIGNAL_POLL_INTERVAL, check_signals};
+use crate::client::{check_signals, signal_poll};
 use crate::spaces::wrap_native_tensor;
 use crate::types::RLMeshException;
 
@@ -115,8 +115,7 @@ where
     py.detach(|| {
         runtime().block_on(async move {
             let mut work = std::pin::pin!(work);
-            let mut poll = tokio::time::interval(SIGNAL_POLL_INTERVAL);
-            poll.tick().await;
+            let mut poll = signal_poll();
             loop {
                 tokio::select! {
                     result = &mut work => return result,
