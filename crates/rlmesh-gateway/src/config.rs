@@ -2,13 +2,21 @@
 //!
 //! The token comes from `RLMESH_GATEWAY_TOKEN` or `--token-file`, never from
 //! a command-line value (argv is world-readable). A non-loopback `--bind`
-//! refuses to start without one. `--allow-origin '*'` allows any origin;
-//! without it, only the origins this gateway serves its own page from.
+//! refuses to start without one, and without TLS (the token would cross the
+//! network in the clear) unless `--insecure-http` says so. `--allow-origin
+//! '*'` allows any origin and needs a token; without it, only the origins
+//! this gateway serves its own page from. Browsers attach at `model` at
+//! most unless `--max-priority` raises it.
+//!
+//! The session is the address its host prints (`--address
+//! 127.0.0.1:7447/local/<id>`), or its parts (`--connect` with `--session`
+//! or `--session-file`).
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use clap::Parser;
+use rlmesh_session::SessionAddress;
 use rlmesh_wire::{PriorityClass, SessionId, TenantId};
 
 use crate::security::{self, Origins, Policy};
@@ -19,10 +27,14 @@ use crate::security::{self, Origins, Policy};
 #[derive(Clone, Debug, Parser)]
 #[command(name = "rlmesh-gateway", version, about)]
 pub struct Args {
+    /// The session's address as its host prints it:
+    /// `{ip}:{port}/{tenant}/{session}`.
+    #[arg(long, conflicts_with_all = ["connect", "session", "session_file", "tenant"])]
+    pub address: Option<String>,
     /// The session host's per-class TCP base (class i on this port + i:
     /// control, realtime, data, bulk).
-    #[arg(long)]
-    pub connect: SocketAddr,
+    #[arg(long, required_unless_present = "address")]
+    pub connect: Option<SocketAddr>,
     /// Where the gateway's own session endpoints listen (port 0: one picked
     /// per class), so peers can dial it. Defaults to the host's IP when that
     /// is loopback, else every interface.
@@ -35,7 +47,7 @@ pub struct Args {
     #[arg(
         long,
         conflicts_with = "session_file",
-        required_unless_present = "session_file"
+        required_unless_present_any = ["session_file", "address"]
     )]
     pub session: Option<String>,
     /// Read the session id from this file (`rlmesh-session-host
@@ -65,9 +77,13 @@ pub struct Args {
     #[arg(long, default_value_t = security::DEFAULT_MAX_SUBSCRIPTIONS)]
     pub max_subscriptions: usize,
     /// The highest lease class a browser may attach at (scripted, model,
-    /// operator, safety).
-    #[arg(long, default_value = "operator")]
+    /// operator, safety). `operator` lets a page take over from a model.
+    #[arg(long, default_value = "model")]
     pub max_priority: String,
+    /// Serve a non-loopback `--bind` over plain HTTP anyway (the token
+    /// crosses the network in the clear).
+    #[arg(long)]
+    pub insecure_http: bool,
     /// A PEM certificate chain: serve https/wss.
     #[arg(long, requires = "tls_key")]
     pub tls_cert: Option<PathBuf>,
@@ -132,7 +148,19 @@ impl Config {
         }
         security::validate_bind(args.bind, token.as_deref())?;
         let tls = args.tls_cert.clone().zip(args.tls_key.clone());
+        if !args.bind.is_loopback() && tls.is_none() && !args.insecure_http {
+            return Err(format!(
+                "--bind {} without TLS would send the token in the clear: pass --tls-cert and --tls-key (or --insecure-http)",
+                args.bind
+            ));
+        }
         let origins = if args.allow_origin.iter().any(|o| o == "*") {
+            if token.is_none() {
+                return Err(
+                    "--allow-origin '*' lets any page drive the session: it needs a token (RLMESH_GATEWAY_TOKEN or --token-file)"
+                        .into(),
+                );
+            }
             Origins::Any
         } else {
             let mut list = security::default_origins(args.bind, args.port, tls.is_some());
@@ -143,29 +171,47 @@ impl Config {
             );
             Origins::List(list)
         };
-        let session = match (&args.session, &args.session_file) {
-            (Some(id), _) => id.clone(),
-            (None, Some(file)) => std::fs::read_to_string(file)
-                .map_err(|e| format!("--session-file {}: {e}", file.display()))?
-                .trim()
-                .to_string(),
-            (None, None) => return Err("pass --session or --session-file".into()),
+        let address = match &args.address {
+            Some(text) => text
+                .parse::<SessionAddress>()
+                .map_err(|e| format!("--address: {e}"))?,
+            None => {
+                let session = match (&args.session, &args.session_file) {
+                    (Some(id), _) => id.clone(),
+                    (None, Some(file)) => std::fs::read_to_string(file)
+                        .map_err(|e| format!("--session-file {}: {e}", file.display()))?
+                        .trim()
+                        .to_string(),
+                    (None, None) => {
+                        return Err(
+                            "pass --address, or --connect with --session or --session-file".into(),
+                        );
+                    }
+                };
+                SessionAddress {
+                    base: args
+                        .connect
+                        .ok_or("pass --address, or --connect with --session or --session-file")?,
+                    tenant: TenantId::new(args.tenant).map_err(|e| e.to_string())?,
+                    session: session
+                        .parse()
+                        .map_err(|e: rlmesh_wire::IdError| e.to_string())?,
+                }
+            }
         };
         let zenoh_listen = args.zenoh_listen.unwrap_or_else(|| {
-            let ip = if args.connect.ip().is_loopback() {
-                args.connect.ip()
+            let ip = if address.base.ip().is_loopback() {
+                address.base.ip()
             } else {
                 std::net::Ipv4Addr::UNSPECIFIED.into()
             };
             SocketAddr::new(ip, 0)
         });
         Ok(Self {
-            connect: args.connect,
+            connect: address.base,
             zenoh_listen,
-            tenant: TenantId::new(args.tenant).map_err(|e| e.to_string())?,
-            session: session
-                .parse()
-                .map_err(|e: rlmesh_wire::IdError| e.to_string())?,
+            tenant: address.tenant,
+            session: address.session,
             bind: args.bind,
             port: args.port,
             static_dir: args.static_dir,
@@ -199,7 +245,7 @@ mod tests {
         assert!(c.policy.token.is_none());
         assert!(c.tls.is_none());
         assert_eq!(c.policy.max_message_bytes, 65536);
-        assert_eq!(c.max_priority, PriorityClass::Operator);
+        assert_eq!(c.max_priority, PriorityClass::Model, "operator is opt-in");
         assert_eq!(c.session.to_string(), SESSION);
     }
 
@@ -207,8 +253,11 @@ mod tests {
     fn a_non_loopback_bind_needs_a_token() {
         let err = Config::from_args(args("--bind 0.0.0.0"), None).expect_err("refused");
         assert!(err.contains("without a token"), "{err}");
+        let err = Config::from_args(args("--bind 0.0.0.0"), Some("0123456789abcdefXYZ".into()))
+            .expect_err("no TLS");
+        assert!(err.contains("in the clear"), "{err}");
         let c = Config::from_args(
-            args("--bind 0.0.0.0 --allow-origin https://ops.example/"),
+            args("--bind 0.0.0.0 --insecure-http --allow-origin https://ops.example/"),
             Some("0123456789abcdefXYZ".into()),
         )
         .expect("config");
@@ -225,8 +274,10 @@ mod tests {
             )
             .is_err()
         );
+        let err = Config::from_args(args("--allow-origin *"), None).expect_err("no token");
+        assert!(err.contains("needs a token"), "{err}");
         assert!(matches!(
-            Config::from_args(args("--allow-origin *"), None)
+            Config::from_args(args("--allow-origin *"), Some("0123456789abcdefXYZ".into()))
                 .expect("config")
                 .policy
                 .origins,
@@ -234,5 +285,22 @@ mod tests {
         ));
         assert!(Config::from_args(args(""), Some("short".into())).is_err());
         assert!(Config::from_args(args("--max-priority root"), None).is_err());
+    }
+
+    #[test]
+    fn the_printed_session_address_is_accepted() {
+        let line = format!("rlmesh-gateway --address 10.0.0.5:7447/lab/{SESSION}");
+        let c = Config::from_args(
+            Args::try_parse_from(line.split_whitespace()).expect("args"),
+            Some("0123456789abcdefXYZ".into()),
+        )
+        .expect("config");
+        assert_eq!(c.connect.to_string(), "10.0.0.5:7447");
+        assert_eq!(c.tenant.as_str(), "lab");
+        assert_eq!(c.session.to_string(), SESSION);
+        assert_eq!(c.zenoh_listen.ip().to_string(), "0.0.0.0");
+        let both =
+            format!("rlmesh-gateway --address 10.0.0.5:7447/lab/{SESSION} --connect 10.0.0.5:7447");
+        assert!(Args::try_parse_from(both.split_whitespace()).is_err());
     }
 }

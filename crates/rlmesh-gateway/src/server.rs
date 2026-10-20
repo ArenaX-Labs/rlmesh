@@ -2,7 +2,7 @@
 //! layer, and the static page with COOP/COEP.
 //!
 //! - `/control`: the first message is a JSON hello (`{"type": "hello",
-//!   "priority": "operator"}`); the gateway attaches a participant for the
+//!   "priority": "model"}`); the gateway attaches a participant for the
 //!   connection and answers with its id, then the authority snapshot. From
 //!   then on binary frames carry `ctl` requests and replies, heartbeats and
 //!   echoes, chunks and authority updates ([`crate::frame`]).
@@ -17,13 +17,13 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderName, HeaderValue};
 use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tower_http::services::ServeDir;
@@ -77,15 +77,42 @@ pub fn router(state: AppState, static_dir: Option<&std::path::Path>) -> Router {
         .with_state(state)
 }
 
+/// The close code of a session that ended (its host is gone).
+pub const SESSION_ENDED: u16 = 4410;
+
 fn to_message(out: Outbound) -> Message {
     match out {
         Outbound::Binary(b) => Message::Binary(b),
         Outbound::Text(t) => Message::Text(t.into()),
+        Outbound::Close(code, reason) => Message::Close(Some(CloseFrame {
+            code,
+            reason: reason.into(),
+        })),
+    }
+}
+
+/// A new connection to a session that already ended is closed at once.
+fn refusal(st: &AppState) -> Option<(u16, String)> {
+    (*st.gateway.ended().borrow()).then(|| (SESSION_ENDED, "the session ended".to_string()))
+}
+
+async fn close_with(mut socket: WebSocket, code: u16, reason: String) {
+    let _ = socket.send(to_message(Outbound::Close(code, reason))).await;
+}
+
+/// Resolves once the session ended.
+async fn session_ended(mut ended: tokio::sync::watch::Receiver<bool>) {
+    if ended.wait_for(|e| *e).await.is_err() {
+        std::future::pending::<()>().await;
     }
 }
 
 async fn control(ws: WebSocketUpgrade, State(st): State<AppState>) -> impl IntoResponse {
-    security::limit(ws, &st.policy).on_upgrade(move |socket| control_conn(socket, st))
+    let ws = security::limit(ws, &st.policy);
+    match refusal(&st) {
+        Some((code, reason)) => ws.on_upgrade(move |socket| close_with(socket, code, reason)),
+        None => ws.on_upgrade(move |socket| control_conn(socket, st)),
+    }
 }
 
 async fn control_conn(socket: WebSocket, st: AppState) {
@@ -114,7 +141,7 @@ async fn control_conn(socket: WebSocket, st: AppState) {
     let priority = match hello
         .as_ref()
         .filter(|h| h["type"] == "hello")
-        .map(|h| parse_priority(h["priority"].as_str().unwrap_or("operator")))
+        .map(|h| parse_priority(h["priority"].as_str().unwrap_or("model")))
     {
         Some(Ok(priority)) => priority,
         Some(Err(err)) => {
@@ -151,7 +178,17 @@ async fn control_conn(socket: WebSocket, st: AppState) {
         warn!(participant = %link.id(), %err, "binding");
         let _ = out.send(report("error", format!("binding: {err}"))).await;
     }
-    while let Some(Ok(m)) = rx.next().await {
+    let ended = session_ended(st.gateway.ended());
+    tokio::pin!(ended);
+    loop {
+        let m = tokio::select! {
+            m = rx.next() => m,
+            () = &mut ended => {
+                let _ = out.send(Outbound::Close(SESSION_ENDED, "the session ended".into())).await;
+                break;
+            }
+        };
+        let Some(Ok(m)) = m else { break };
         match m {
             Message::Binary(b) => {
                 if let Some(reply) = link.on_frame(b).await
@@ -166,7 +203,8 @@ async fn control_conn(socket: WebSocket, st: AppState) {
     }
     drop(link);
     drop(out);
-    writer.abort();
+    // Let a queued close frame go out.
+    let _ = tokio::time::timeout(Duration::from_millis(500), writer).await;
 }
 
 async fn data(
@@ -175,18 +213,27 @@ async fn data(
     socket: &'static str,
 ) -> impl IntoResponse {
     let State(st) = st;
-    security::limit(ws, &st.policy).on_upgrade(move |s| data_conn(s, st, socket))
+    let ws = security::limit(ws, &st.policy);
+    match refusal(&st) {
+        Some((code, reason)) => ws.on_upgrade(move |s| close_with(s, code, reason)),
+        None => ws.on_upgrade(move |s| data_conn(s, st, socket)),
+    }
 }
 
 async fn data_conn(socket: WebSocket, st: AppState, class: &'static str) {
     let (mut tx, mut rx) = socket.split();
     let (frames, mut frames_rx) = mpsc::channel::<Bytes>(if class == "state" { 64 } else { 4 });
     let (replies, mut replies_rx) = mpsc::channel::<String>(32);
+    let mut ended = st.gateway.ended();
     let writer = tokio::spawn(async move {
         loop {
             let m = tokio::select! {
                 Some(b) = frames_rx.recv() => Message::Binary(b),
                 Some(t) = replies_rx.recv() => Message::Text(t.into()),
+                Ok(()) = ended.wait_for(|e| *e).map(|r| r.map(|_| ())) => {
+                    let _ = tx.send(to_message(Outbound::Close(SESSION_ENDED, "the session ended".into()))).await;
+                    break;
+                }
                 else => break,
             };
             if tx.send(m).await.is_err() {

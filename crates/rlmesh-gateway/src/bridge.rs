@@ -43,7 +43,7 @@ use rlmesh_wire::{
     Fingerprint, PartSpec, ParticipantId, PriorityClass, Role, SessionId, SessionKeys, TenantId,
 };
 use serde_json::json;
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use zenoh::Wait;
@@ -59,7 +59,13 @@ pub enum Outbound {
     Binary(Bytes),
     /// A gateway JSON message.
     Text(String),
+    /// Close the socket with this code and reason (the session ended).
+    Close(u16, String),
 }
+
+/// How long the host may be gone before the gateway calls its session
+/// ended (a blip, such as a host restart in place, is not an end).
+pub const HOST_GONE_GRACE: Duration = Duration::from_secs(2);
 
 /// Forwarding counters, by socket.
 #[derive(Debug, Default)]
@@ -84,11 +90,29 @@ pub struct Gateway {
     /// Control socket counters.
     pub control: Counters,
     _state: zenoh::pubsub::Subscriber<()>,
+    /// Set once the session host has been gone for [`HOST_GONE_GRACE`].
+    ended: watch::Receiver<bool>,
 }
 
 fn random_id(prefix: &str) -> Result<ParticipantId, SessionError> {
     let bits: u64 = rand::random();
     Ok(ParticipantId::new(format!("{prefix}-{:08x}", bits as u32))?)
+}
+
+/// Marks the session ended once the host's liveliness token has been gone
+/// for [`HOST_GONE_GRACE`].
+async fn watch_host(mut present: watch::Receiver<bool>, end: watch::Sender<bool>) {
+    loop {
+        if present.wait_for(|p| !*p).await.is_err() {
+            break;
+        }
+        match tokio::time::timeout(HOST_GONE_GRACE, present.wait_for(|p| *p)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    warn!("the session host is gone: the session ended");
+    let _ = end.send(true);
 }
 
 /// The class a data socket carries: `state` (control, realtime and data
@@ -131,6 +155,8 @@ impl Gateway {
         config.name = "rlmesh-gateway".into();
         let observer = Participant::attach(transport.clone(), config).await?;
         info!(gateway = %observer.id(), %session, "attached");
+        let (end, ended) = watch::channel(false);
+        tokio::spawn(watch_host(observer.host_present(), end));
         Ok(Arc::new(Self {
             transport,
             keys,
@@ -142,7 +168,14 @@ impl Gateway {
             data: Default::default(),
             control: Counters::default(),
             _state: raw_state,
+            ended,
         }))
+    }
+
+    /// Becomes true once the session ended: its host has been gone for
+    /// [`HOST_GONE_GRACE`]. This gateway serves one session, so it is done.
+    pub fn ended(&self) -> watch::Receiver<bool> {
+        self.ended.clone()
     }
 
     /// The host's latest snapshot, as the gateway's observer holds it.

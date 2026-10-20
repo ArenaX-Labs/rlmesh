@@ -22,7 +22,7 @@ gateway=
 trap 'kill $robot $gateway 2>/dev/null || true' EXIT INT TERM
 for _ in $(seq 100); do [ -s "$logs/session.id" ] && break; sleep 0.1; done
 [ -s "$logs/session.id" ] || { cat "$logs/robot.log" >&2; exit 1; }
-timeout "$dur" "$target/rlmesh-gateway" --connect "127.0.0.1:$rb" --session-file "$logs/session.id" \
+timeout "$dur" "$target/rlmesh-gateway" --connect "127.0.0.1:$rb" --session-file "$logs/session.id" --max-priority operator \
   --bind "${BIND:-127.0.0.1}" --port "$hp" --static examples/web/dist >"$logs/gateway.log" 2>&1 &
 gateway=$!
 echo "open http://127.0.0.1:$hp/   (logs in $logs; Ctrl-C to stop)"

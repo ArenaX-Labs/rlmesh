@@ -74,10 +74,16 @@ fn request(url: &str, origin: Option<&str>, protocols: Option<&str>) -> http::Re
     r
 }
 
-fn status_of(e: tg::Error) -> u16 {
-    match e {
-        tg::Error::Http(r) => r.status().as_u16(),
-        other => panic!("expected an HTTP rejection, got {other}"),
+/// The close code a refused upgrade is closed with: the handshake succeeds
+/// (a browser could not read a refused one's status), then the gateway
+/// closes before any route sees the connection.
+async fn refused_with(req: http::Request<()>) -> u16 {
+    let (mut ws, _) = tokio_tungstenite::connect_async(req)
+        .await
+        .expect("the upgrade completes, to carry the reason");
+    match ws.next().await {
+        Some(Ok(tg::Message::Close(Some(frame)))) => u16::from(frame.code),
+        other => panic!("expected a close frame, got {other:?}"),
     }
 }
 
@@ -90,15 +96,15 @@ async fn rejected_without_token() {
     let (addr, _) = serve(Some(TOKEN)).await;
     let url = format!("ws://{addr}/control");
     let good_origin = format!("http://127.0.0.1:{}", addr.port());
-    let e = tokio_tungstenite::connect_async(request(&url, Some(&good_origin), Some(SUBPROTOCOL)))
-        .await
-        .unwrap_err();
-    assert_eq!(status_of(e), 401);
+    assert_eq!(
+        refused_with(request(&url, Some(&good_origin), Some(SUBPROTOCOL))).await,
+        4401
+    );
     let wrong = format!("{SUBPROTOCOL}, {TOKEN_PREFIX}not-the-right-token-000");
-    let e = tokio_tungstenite::connect_async(request(&url, Some(&good_origin), Some(&wrong)))
-        .await
-        .unwrap_err();
-    assert_eq!(status_of(e), 401);
+    assert_eq!(
+        refused_with(request(&url, Some(&good_origin), Some(&wrong))).await,
+        4401
+    );
     // The page itself is not behind the token.
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -118,22 +124,24 @@ async fn rejected_from_bad_origin() {
     let (addr, _) = serve(Some(TOKEN)).await;
     let url = format!("ws://{addr}/control");
     // DNS-rebinding shape: right port, hostile name.
-    let e = tokio_tungstenite::connect_async(request(
-        &url,
-        Some(&format!("http://evil.example:{}", addr.port())),
-        Some(&with_token()),
-    ))
-    .await
-    .unwrap_err();
-    assert_eq!(status_of(e), 403);
-    let e = tokio_tungstenite::connect_async(request(
-        &url,
-        Some("https://127.0.0.1"),
-        Some(&with_token()),
-    ))
-    .await
-    .unwrap_err();
-    assert_eq!(status_of(e), 403);
+    assert_eq!(
+        refused_with(request(
+            &url,
+            Some(&format!("http://evil.example:{}", addr.port())),
+            Some(&with_token()),
+        ))
+        .await,
+        4403
+    );
+    assert_eq!(
+        refused_with(request(
+            &url,
+            Some("https://127.0.0.1"),
+            Some(&with_token()),
+        ))
+        .await,
+        4403
+    );
 }
 
 #[tokio::test]
@@ -176,14 +184,15 @@ async fn loopback_without_token_accepts_non_browser_clients() {
     .await
     .unwrap();
     // Without a token, Origin is still enforced for browser pages.
-    let e = tokio_tungstenite::connect_async(request(
-        &format!("ws://{addr}/control"),
-        Some("http://evil.example"),
-        None,
-    ))
-    .await
-    .unwrap_err();
-    assert_eq!(status_of(e), 403);
+    assert_eq!(
+        refused_with(request(
+            &format!("ws://{addr}/control"),
+            Some("http://evil.example"),
+            None,
+        ))
+        .await,
+        4403
+    );
 }
 
 #[tokio::test]

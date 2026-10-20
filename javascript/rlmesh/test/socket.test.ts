@@ -110,3 +110,18 @@ test('reconnects with backoff, reports open/reconnect/close, resets after a stab
   await tick();
   assert.equal(log.at(-1), 'close a0 100ms');
 });
+
+test('a fatal close (bad token, bad origin, session ended) is reported once and never retried', async () => {
+  const h = harness(0);
+  const closes: { code?: number; fatal?: boolean }[] = [];
+  const sock = new ReconnectingSocket('ws://x/control', ['rlmesh.v2'], {
+    onOpen: () => {},
+    onMessage: () => {},
+    onClose: (i) => closes.push({ code: i.code, fatal: i.fatal }),
+  }, h.opts);
+  await tick();
+  h.sockets.at(-1)!.serverClose(4401);
+  assert.deepEqual(closes, [{ code: 4401, fatal: true }]);
+  assert.equal(h.timers.length, 0, 'no retry scheduled');
+  assert.equal(sock.isOpen, false);
+});

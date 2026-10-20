@@ -22,6 +22,7 @@ import type {
   Priority,
   Revocation,
   Sample,
+  SessionEnded,
   SessionEvents,
   SessionState,
   Status,
@@ -172,6 +173,16 @@ export class Session {
   private gotClock!: () => void;
   private readonly declsP = new Promise<void>((r) => (this.gotDecls = r));
   private readonly clockP = new Promise<void>((r) => (this.gotClock = r));
+  private refused!: (e: Error) => void;
+  /** Rejects when the gateway ends the connection for good before connect resolves. */
+  private readonly refusedP = (() => {
+    const p = new Promise<never>((_, rej) => (this.refused = rej));
+    p.catch(() => {}); // only connect awaits it; afterwards the `ended` event reports the same
+    return p;
+  })();
+  /** Set once the gateway ended the connection for good. */
+  ended: SessionEnded | null = null;
+  private robots = new Set<string>();
   private readonly pins = new FinalizationRegistry<PinToken>((t) => {
     if (!t.done) {
       t.done = true;
@@ -187,7 +198,7 @@ export class Session {
     private opts: ConnectOptions = {},
   ) {
     this.url = url.replace(/\/$/, '');
-    this.priority = opts.priority ?? 'operator';
+    this.priority = opts.priority ?? 'model';
     this.sup = new Supervisor(
       {
         spawn: (cls) => this.platform.createWorker(cls),
@@ -329,7 +340,8 @@ export class Session {
     if (!set) this.subs.set(path, (set = new Set()));
     const q: BoundedQueue<Sample<T>> = new BoundedQueue<Sample<T>>(opts.maxQueue ?? 1024, () => {
       set.delete(q);
-      if (!this.closed) this.ensureSub(path);
+      // A stream whose robot left is gone: nothing to re-subscribe.
+      if (!this.closed && this.streams.some((d) => d.path === path)) this.ensureSub(path);
     });
     set.add(q);
     this.ensureSub(path);
@@ -491,6 +503,37 @@ export class Session {
     },
   };
 
+  /** Robots come and go with their parts: report each change, and end the leases and streams of one that left. */
+  private trackRobots() {
+    const now = new Set([...this.streams.map((s) => s.robot), ...this.controls.map((c) => c.robot)]);
+    for (const robot of this.robots) {
+      if (now.has(robot)) continue;
+      for (const path of [...this.leases.keys(), ...this.pending.keys()]) {
+        if (path.startsWith(`${robot}/`)) this.endLease(path, { cause: 'robot_left', reason: `robot ${robot} left the session` });
+      }
+      for (const [path, set] of this.subs) {
+        if (!path.startsWith(`${robot}/`)) continue;
+        for (const q of [...set]) q.close();
+        this.subs.delete(path);
+        this.wanted.delete(path);
+      }
+      this.emit('robot', { robot, present: false });
+    }
+    for (const robot of now) if (!this.robots.has(robot)) this.emit('robot', { robot, present: true });
+    this.robots = now;
+  }
+
+  /** The gateway ended the connection for good: fail a pending connect, or end the session. */
+  private end(e: SessionEnded) {
+    if (this.ended) return;
+    this.ended = e;
+    const why = e.code === 4401 ? 'the token was refused' : e.code === 4403 ? 'this page origin is not allowed' : e.code === 4410 ? 'the session ended' : 'the gateway closed';
+    this.refused(new Error(`${this.url}: ${why} (${e.code}${e.reason ? `: ${e.reason}` : ''})`));
+    for (const path of [...this.leases.keys(), ...this.pending.keys()]) this.endLease(path, { cause: 'session_ended', reason: why });
+    for (const set of this.subs.values()) for (const q of [...set]) q.close();
+    this.emit('ended', e);
+  }
+
   private endLease(path: string, r: Omit<Revocation, 'path' | 'token'>) {
     const p = this.pending.get(path);
     if (p) {
@@ -558,6 +601,7 @@ export class Session {
       case 'decls':
         this.streams = m.decls.streams;
         this.controls = m.decls.controls;
+        this.trackRobots();
         this.sessionId = m.decls.session ?? this.sessionId;
         this.state = m.state;
         this.emit('state', this.state);
@@ -587,8 +631,9 @@ export class Session {
           this.forwardClock('bulk');
           break;
         }
-        const e = { cls, attempt: m.attempt ?? 0, ...(m.code != null ? { code: m.code } : {}), ...(m.reason ? { reason: m.reason } : {}) };
+        const e = { cls, attempt: m.attempt ?? 0, ...(m.code != null ? { code: m.code } : {}), ...(m.reason ? { reason: m.reason } : {}), ...(m.fatal ? { fatal: true } : {}) };
         if (m.state === 'closed') this.emit('disconnected', e);
+        if (m.state === 'closed' && m.fatal) this.end({ code: m.code, reason: m.reason || `closed with ${m.code}` });
         else if (m.reconnect) this.emit('reconnected', e);
         break;
       }
@@ -734,6 +779,7 @@ export class Session {
     try {
       await Promise.race([
         Promise.all([this.declsP, this.clockP]),
+        this.refusedP,
         new Promise((_, rej) => {
           timer = setTimeout(() => rej(new Error(`no declarations and clock from ${this.url} within ${ms} ms (unreachable, no session, or token/origin rejected?)`)), ms);
         }),

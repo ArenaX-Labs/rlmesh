@@ -52,7 +52,7 @@ function start(name, path, args) {
 }
 
 const startGateway = () =>
-  start('rlmesh-gateway', bin.gateway, ['--connect', `127.0.0.1:${ROBOT_BASE}`, '--session-file', sessionFile, '--port', String(HTTP_PORT)]);
+  start('rlmesh-gateway', bin.gateway, ['--connect', `127.0.0.1:${ROBOT_BASE}`, '--session-file', sessionFile, '--port', String(HTTP_PORT), '--max-priority', 'operator']);
 const waitFor = (session, type, pred = () => true, ms = 10000) =>
   new Promise((resolve, reject) => {
     const t = setTimeout(() => { off(); reject(new Error(`no ${type} event within ${ms} ms`)); }, ms);
@@ -95,7 +95,7 @@ let robot, gateway, session;
 before(async () => {
   robot = await start('web_robot', bin.robot, ['--listen-base', `127.0.0.1:${ROBOT_BASE}`, '--session-file', sessionFile]);
   gateway = await startGateway();
-  session = await connect(`ws://127.0.0.1:${HTTP_PORT}`, { backoff: { initialMs: 50, maxMs: 400 }, timeoutMs: 10000 });
+  session = await connect(`ws://127.0.0.1:${HTTP_PORT}`, { priority: 'operator', backoff: { initialMs: 50, maxMs: 400 }, timeoutMs: 10000 });
 });
 after(() => {
   session?.close();
@@ -181,4 +181,18 @@ test('gateway killed: sockets report down, the lease is revoked (disconnected); 
   console.log(`  gateway: ${down.size} sockets down, reconnected after ${back} ms; gripper seq ${s0.seq} -> ${s1.seq}; host SAFE -> ACTIVE with token ${again.token}`);
   again.release();
   sub.close();
+});
+
+test('session host killed: the gateway ends the session (4410), the page is told once, and the gateway exits', async () => {
+  const sub = session.subscribe('arm7/gripper', { maxQueue: 64 });
+  await nextAfter(sub, 0);
+  const ended = new Promise((r) => session.on('ended', r));
+  const exited = new Promise((r) => gateway.once('exit', (code) => r(code)));
+  const t0 = Date.now();
+  robot.kill('SIGKILL');
+  const e = await ended;
+  assert.equal(e.code, 4410);
+  assert.equal((await sub.next()).done, true, 'subscriptions end with the session');
+  assert.equal(await exited, 0, 'a gateway serves one session: it exits when that ends');
+  console.log(`  host killed: ended (${e.code}: ${e.reason}) after ${Date.now() - t0} ms; gateway exited`);
 });

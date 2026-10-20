@@ -33,9 +33,10 @@ three pieces instead:
 ## What the browser is to the session
 
 Each control connection is a participant of its own. On the hello
-(`{"type": "hello", "priority": "operator"}`) the gateway attaches a
-controller at that class (capped by `--max-priority`, `operator` by
-default), declares an identity binding over every commandable part, and
+(`{"type": "hello", "priority": "model"}`) the gateway attaches a
+controller at that class (capped by `--max-priority`, `model` by default;
+a page that takes over from a model asks for `operator`, which the gateway
+must allow with `--max-priority operator`), declares an identity binding over every commandable part, and
 answers with the participant id. From then on:
 
 - **Leases are the host's.** `lease(path)` sends a real `GrantLease` (with
@@ -93,13 +94,26 @@ The binding is a client of a session, not a full participant runtime:
   `Promise`, an exception to the parity rule R-16 (sync first): a browser
   main thread cannot block.
 
+## When a robot or the session goes away
+
+A robot that detaches takes its parts with it: the page gets a `robot`
+event (`{robot, present: false}`), its leases end (`cause: 'robot_left'`)
+and its subscriptions close; when it declares again, `robot` reports it
+back. When the session's host is gone for 2 s, the session has ended: the
+gateway closes every socket with `4410`, the page gets one `ended` event
+(its leases end with `cause: 'session_ended'`), and `rlmesh-gateway`, which
+serves one session, exits. The gateway takes the session as its host
+prints it, `--address {ip}:{port}/{tenant}/{session}`, or as `--connect`
+with `--session`/`--session-file`.
+
 ## Security model
 
 `rlmesh-gateway` exposes a robot session to web pages, so it is locked down
 by default (`crates/rlmesh-gateway/src/security.rs`):
 
 - **Bind:** `127.0.0.1` by default. A non-loopback `--bind` refuses to start
-  without a token.
+  without a token, and without TLS (the token would cross the network in
+  the clear) unless `--insecure-http` says so.
 - **Token:** from `RLMESH_GATEWAY_TOKEN` or `--token-file`, never a
   command-line value (argv is world-readable). The client offers the
   WebSocket subprotocols `rlmesh.v2, rlmesh.token.<token>`; the gateway
@@ -113,15 +127,20 @@ by default (`crates/rlmesh-gateway/src/security.rs`):
   own page from, computed from the bind address and port, never from the
   request's `Host` (so DNS rebinding, `evil.example` resolving to
   127.0.0.1, does not pass). `--allow-origin` adds origins and `'*'` allows
-  any. A request without an `Origin` is not a browser page (Node's
+  any, which needs a token. A request without an `Origin` is not a browser page (Node's
   `WebSocket` sends none); the token still applies to it.
 - **What a connection may do:** at most `--max-message-bytes` per inbound
   message and frame (64 KiB) and `--max-subscriptions` per data connection
   (32; duplicates ignored). Its participant attaches at most at
-  `--max-priority`. Heartbeats and chunks must name the connection's own
+  `--max-priority` (`model` by default). Heartbeats and chunks must name the connection's own
   participant, and only `GrantLease`, `ReleaseLease`, `Arm`, `Disarm` and
   `Estop` are forwarded (declaring parts, bindings or acknowledgements is
   refused).
+- **Refusals carry their reason.** A browser cannot read the status of a
+  refused WebSocket upgrade, so the gateway completes a refused upgrade and
+  closes it at once, before any route sees it: `4401` for the token, `4403`
+  for the origin. `connect()` rejects with that reason instead of waiting
+  out its timeout, and the socket does not retry.
 - **TLS:** `--tls-cert` and `--tls-key` serve https and wss with rustls (the
   ring provider) on the same port; handshakes run off the accept loop with a
   10 s timeout. A page is cross-origin isolated (COOP/COEP/CORP are always

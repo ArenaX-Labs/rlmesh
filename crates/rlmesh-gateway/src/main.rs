@@ -1,7 +1,7 @@
 //! `rlmesh-gateway`: serves browsers a session until interrupted.
 //!
 //! ```text
-//! rlmesh-gateway --connect 127.0.0.1:17600 --session-file session.id --static examples/web/dist
+//! rlmesh-gateway --address 127.0.0.1:17600/local/<session> --static examples/web/dist
 //! ```
 //!
 //! It logs to stderr (`RUST_LOG`) and prints `READY <url>` once it serves.
@@ -40,8 +40,8 @@ async fn run(args: Args) -> Result<(), String> {
         Some((cert, key)) => Some(tls::load_config(cert, key)?),
         None => None,
     };
-    let transport =
-        TransportConfig::per_class_tcp(None, Some(config.connect)).map_err(|e| e.to_string())?;
+    let transport = TransportConfig::per_class_tcp(Some(config.zenoh_listen), Some(config.connect))
+        .map_err(|e| e.to_string())?;
     let transport = Transport::open(&transport)
         .await
         .map_err(|e| e.to_string())?;
@@ -57,6 +57,7 @@ async fn run(args: Args) -> Result<(), String> {
         gateway,
         policy: Arc::new(config.policy.clone()),
     };
+    let ended = state.gateway.ended();
     let app = router(state, config.static_dir.as_deref());
     let tcp = tokio::net::TcpListener::bind((config.bind, config.port))
         .await
@@ -84,7 +85,7 @@ async fn run(args: Args) -> Result<(), String> {
         Some(tls) => {
             let listener = tls::TlsListener::new(tcp, tls).map_err(|e| e.to_string())?;
             axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown())
+                .with_graceful_shutdown(shutdown(ended))
                 .await
         }
         None => {
@@ -92,14 +93,24 @@ async fn run(args: Args) -> Result<(), String> {
                 let _ = tcp.set_nodelay(true);
             });
             axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown())
+                .with_graceful_shutdown(shutdown(ended))
                 .await
         }
     };
     served.map_err(|e| e.to_string())
 }
 
-async fn shutdown() {
+/// Until interrupted, or until the session ends: this gateway serves one
+/// session, so it exits with it (after its sockets got their close frames).
+async fn shutdown(mut ended: tokio::sync::watch::Receiver<bool>) {
+    let session_ended = async {
+        if ended.wait_for(|e| *e).await.is_ok() {
+            info!("the session ended; exiting");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -107,9 +118,13 @@ async fn shutdown() {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {}
                 _ = term.recv() => {}
+                () = session_ended => {}
             }
             return;
         }
     }
-    let _ = tokio::signal::ctrl_c().await;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        () = session_ended => {}
+    }
 }

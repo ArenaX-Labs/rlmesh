@@ -15,7 +15,8 @@
 //! - **Limits per connection:** a maximum inbound message (and frame) size, and a cap on stream
 //!   subscriptions. Over-cap and duplicate subscriptions are ignored and logged.
 
-use axum::extract::{Request, State};
+use axum::extract::ws::{CloseFrame, Message, WebSocketUpgrade};
+use axum::extract::{FromRequestParts, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -72,6 +73,12 @@ impl Reject {
             Reject::MissingToken | Reject::BadToken => StatusCode::UNAUTHORIZED,
             Reject::BadOrigin(_) => StatusCode::FORBIDDEN,
         }
+    }
+
+    /// The WebSocket close code: 4401 for the token, 4403 for the origin
+    /// (a browser cannot read the status of a refused upgrade).
+    pub fn close_code(&self) -> u16 {
+        4000 + self.status().as_u16()
     }
 }
 
@@ -190,18 +197,35 @@ impl Policy {
 
 /// Middleware for the WebSocket routes: rejects before the upgrade, with 401 or 403.
 pub async fn guard(State(policy): State<Arc<Policy>>, req: Request, next: Next) -> Response {
-    match policy.check(req.headers()) {
-        Ok(()) => next.run(req).await,
-        Err(r) => {
-            let peer = req
-                .headers()
-                .get(header::ORIGIN)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("-")
-                .to_string();
-            warn!(path = %req.uri().path(), origin = %peer, "rejected: {r}");
-            (r.status(), r.to_string()).into_response()
+    let Err(r) = policy.check(req.headers()) else {
+        return next.run(req).await;
+    };
+    let peer = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+    warn!(path = %req.uri().path(), origin = %peer, "rejected: {r}");
+    // A browser cannot read the status of a refused upgrade, so a WebSocket
+    // is accepted here, never reaching the route, and closed with the
+    // reason (4401, 4403) for the page to report at once.
+    let (mut parts, _) = req.into_parts();
+    match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
+        Ok(ws) => {
+            let (code, reason) = (r.close_code(), r.to_string());
+            ws.protocols([SUBPROTOCOL])
+                .on_upgrade(move |mut socket| async move {
+                    let _ = socket
+                        .send(Message::Close(Some(CloseFrame {
+                            code,
+                            reason: reason.into(),
+                        })))
+                        .await;
+                })
+                .into_response()
         }
+        Err(_) => (r.status(), r.to_string()).into_response(),
     }
 }
 

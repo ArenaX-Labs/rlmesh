@@ -435,7 +435,7 @@ function runControl(init: InitMsg) {
 
   const onOpen = () => {
     // The hello attaches this connection's participant; the answer names it.
-    sock.send(JSON.stringify({ type: 'hello', priority: init.priority ?? 'operator' }));
+    sock.send(JSON.stringify({ type: 'hello', priority: init.priority ?? 'model' }));
   };
 
   const onText = (text: string) => {

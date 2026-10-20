@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { connectWith } from '../src/session.js';
 import type { Frame, Sample, Status, WorkerRestart } from '../src/types.js';
-import { controlScript, fakePlatform, until } from './fakes.js';
+import { CONTROLS, STATE, STREAMS, controlScript, fakePlatform, until } from './fakes.js';
 
 async function open(opts: Parameters<typeof fakePlatform>[0] = {}, connect: Parameters<typeof connectWith>[2] = {}) {
   const f = fakePlatform(opts);
@@ -23,7 +23,7 @@ test('connect: one Worker per class, module compiled once, declarations, partici
     assert.equal(w.init.module, f.module);
     assert.equal(w.init.url, `ws://gw/${w.cls}`);
     assert.deepEqual(w.init.protocols, ['rlmesh.v2']);
-    assert.equal(w.init.priority, 'operator');
+    assert.equal(w.init.priority, 'model', 'a page attaches at model unless it asks for more');
   }
   assert.deepEqual(s.controls.map((c) => c.path), ['arm7/arm', 'arm7/gripper']);
   assert.deepEqual(s.streams.map((c) => c.path), ['arm7/arm', 'arm7/skin', 'arm7/arm/_applied', 'arm7/scene/cam']);
@@ -133,7 +133,7 @@ test('peek(): a borrowed frame is not recycled while held, and is unusable after
 });
 
 test('lease on any commandable part; drive/send; statuses carry the host mode and the edge mode', async (t) => {
-  const { s, f } = await open();
+  const { s, f } = await open({}, { priority: 'operator' });
   t.after(() => s.close());
   await assert.rejects(s.lease('arm7/scene/cam'), /no commandable part/);
   const g = await s.lease('arm7/gripper', { ttlMs: 500 });
@@ -274,4 +274,40 @@ test('close() releases held leases and stops every Worker', async () => {
   assert.equal(f.latest('control').ops('release').length, 1);
   await new Promise((r) => setTimeout(r, 80));
   assert.ok(f.spawned.every((w) => w.terminated));
+});
+
+test('a robot that leaves ends its leases and subscriptions, and is reported', async (t) => {
+  const { s, f } = await open();
+  t.after(() => s.close());
+  const robots: [string, boolean][] = [];
+  s.on('robot', (e) => robots.push([e.robot, e.present]));
+  const lease = await s.lease('arm7/arm');
+  const sub = s.subscribe('arm7/arm');
+  f.latest('control').emit({ op: 'decls', decls: { session: STATE.session, streams: [], controls: [] }, state: STATE });
+  const r = await lease.revoked;
+  assert.equal(r.cause, 'robot_left');
+  assert.equal((await sub.next()).done, true, 'the subscription ended');
+  assert.deepEqual(robots, [['arm7', false]]);
+  f.latest('control').emit({ op: 'decls', decls: { session: STATE.session, streams: STREAMS, controls: CONTROLS }, state: STATE });
+  assert.deepEqual(robots.at(-1), ['arm7', true]);
+});
+
+test('a refused token fails connect at once with the reason, not after the timeout', async () => {
+  const refuse = (w: any, m: any) => {
+    if (m.op === 'init') queueMicrotask(() => w.emit({ op: 'socket', state: 'closed', attempt: 0, code: 4401, reason: 'token does not match', fatal: true }));
+  };
+  const started = performance.now();
+  await assert.rejects(open({ control: refuse }, { timeoutMs: 5000 }), /the token was refused \(4401: token does not match\)/);
+  assert.ok(performance.now() - started < 1000);
+});
+
+test('a session that ends is reported once; leases end with it', async (t) => {
+  const { s, f } = await open();
+  t.after(() => s.close());
+  const lease = await s.lease('arm7/arm');
+  const ended = new Promise<any>((r) => s.on('ended', r));
+  f.latest('control').emit({ op: 'socket', state: 'closed', attempt: 0, code: 4410, reason: 'the session host is gone', fatal: true });
+  assert.deepEqual(await ended, { code: 4410, reason: 'the session host is gone' });
+  assert.equal((await lease.revoked).cause, 'session_ended');
+  assert.deepEqual(s.ended, { code: 4410, reason: 'the session host is gone' });
 });

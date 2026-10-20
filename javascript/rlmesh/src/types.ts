@@ -152,7 +152,7 @@ export interface Revocation {
    * socket dropped, so the token is abandoned; it is never resumed, take a new lease. `worker_restart`: the
    * control Worker was respawned after a trap. `closed`: the session was closed.
    */
-  cause: 'host' | 'disconnected' | 'worker_restart' | 'closed';
+  cause: 'host' | 'disconnected' | 'worker_restart' | 'closed' | 'robot_left' | 'session_ended';
 }
 
 export interface LeaseEvent {
@@ -190,6 +190,23 @@ export interface SocketEvent {
   attempt: number;
   code?: number;
   reason?: string;
+  /** The gateway refused or ended the connection for good (`code` says why): no reconnect follows. */
+  fatal?: boolean;
+}
+
+/** A robot joined (`present`) or left the session: its parts and streams come and go with it. */
+export interface RobotEvent {
+  robot: string;
+  present: boolean;
+}
+
+/**
+ * The connection ended for good: `4410` the session ended (its host is gone), `4401` the token was
+ * refused, `4403` the page origin was. Leases end and subscriptions close; connect again to continue.
+ */
+export interface SessionEnded {
+  code: number;
+  reason: string;
 }
 
 export interface ConsoleLine {
@@ -215,6 +232,8 @@ export interface SessionEvents {
   reconnected: SocketEvent;
   console: ConsoleLine;
   lease_state: LeaseStateEvent;
+  robot: RobotEvent;
+  ended: SessionEnded;
 }
 
 export interface BackoffOptions {
@@ -231,7 +250,7 @@ export interface BackoffOptions {
 export interface ConnectOptions {
   /** Bearer token, sent as the `rlmesh.token.<token>` WebSocket subprotocol next to `rlmesh.v2`. */
   token?: string;
-  /** The class this connection's participant attaches at, and its leases are arbitrated at. Default `operator`. */
+  /** The class this connection's participant attaches at, and its leases are arbitrated at. Default `model`; `operator` (taking over from a model) needs a gateway started with `--max-priority operator`. */
   priority?: Priority;
   /** The declarations and a first clock estimate must arrive within this (ms). Default 5000. */
   timeoutMs?: number;

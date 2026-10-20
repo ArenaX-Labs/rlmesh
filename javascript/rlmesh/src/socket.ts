@@ -41,7 +41,7 @@ export interface SocketHandlers {
   /** A text frame (the gateway's JSON). */
   onText?(text: string): void;
   /** The socket closed (or failed to open); a retry is scheduled after `delayMs` unless closed by us. */
-  onClose(info: { code?: number; reason?: string; attempt: number; delayMs: number; wasOpen: boolean }): void;
+  onClose(info: { code?: number; reason?: string; attempt: number; delayMs: number; wasOpen: boolean; fatal?: boolean }): void;
 }
 
 export interface SocketOptions {
@@ -54,6 +54,9 @@ export interface SocketOptions {
   now?: () => number;
   random?: () => number;
 }
+
+/** Close codes the gateway ends a connection with for good: a bad token, a bad origin, the session ended. */
+export const FATAL_CLOSE = new Set([4401, 4403, 4410]);
 
 export class ReconnectingSocket {
   private ws: WebSocketLike | null = null;
@@ -150,6 +153,12 @@ export class ReconnectingSocket {
       if (this.ws !== ws) return;
       this.ws = null;
       if (wasOpen && this.now() - this.opened >= (this.opts.stableMs ?? 2000)) this.attempt = 0;
+      if (e.code != null && FATAL_CLOSE.has(e.code)) {
+        // Retrying cannot help: report it and stop.
+        this.stopped = true;
+        this.h.onClose({ attempt: this.attempt, delayMs: 0, wasOpen, code: e.code, reason: e.reason ?? '', fatal: true });
+        return;
+      }
       this.scheduleRetry(e, wasOpen);
     };
   }
