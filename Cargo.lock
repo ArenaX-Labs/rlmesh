@@ -5331,6 +5331,7 @@ dependencies = [
  "image",
  "jpeg-encoder",
  "libc",
+ "rlmesh-session-core",
  "rlmesh-spec",
  "rlmesh-wire",
  "thiserror 2.0.18",
@@ -5339,6 +5340,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zenoh",
+]
+
+[[package]]
+name = "rlmesh-session-core"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "rlmesh-spec",
+ "rlmesh-wire",
 ]
 
 [[package]]

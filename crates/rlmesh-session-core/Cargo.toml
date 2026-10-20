@@ -1,0 +1,27 @@
+[package]
+name = "rlmesh-session-core"
+description = "Internal RLMesh crate (unstable Rust API): the sans-IO state machines of a real-time session (protocol v2): authority, leases, the virtual clock, clock offsets, input caches, start schedules and stream receive rules."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+# Not released until the v0.2 wire spec freezes.
+publish = false
+
+# Sans-IO: no runtime, sockets, threads, clock reads or RNG. It builds for
+# wasm32-unknown-unknown, and `mise run check:sans-io` keeps it that way
+# (clippy.toml here bans the clock and thread calls).
+[dependencies]
+bytes = { workspace = true }
+# Delivery contracts (authority) and bindings (input cache).
+rlmesh-spec = { workspace = true }
+rlmesh-wire = { workspace = true }
+
+[lints]
+workspace = true

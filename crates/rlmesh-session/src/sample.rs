@@ -51,9 +51,12 @@ use zenoh::query::ConsolidationMode;
 
 use crate::clock::Clock;
 use crate::error::SessionError;
+
 use crate::transport::{
     TrafficClass, Transport, declare_publisher, frame_zbytes, payload_bytes, stream_qos,
 };
+pub use rlmesh_session_core::stream::SampleStats;
+use rlmesh_session_core::stream::{check_sample, is_stale};
 
 /// Every sample at once, ungated.
 const FREE: u8 = 0;
@@ -367,31 +370,6 @@ pub struct Fresh {
     pub stale: bool,
 }
 
-/// Loss and freshness counters for one subscription.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SampleStats {
-    /// Samples accepted.
-    pub received: u64,
-    /// Samples skipped over by `seq` gaps.
-    pub lost: u64,
-    /// Arrived with a seq at or below one already seen (reordered,
-    /// duplicated, or already served from history); dropped.
-    pub out_of_order: u64,
-    /// From an older epoch than the subscriber's view; dropped.
-    pub stale_epoch: u64,
-    /// Not a decodable sample.
-    pub undecodable: u64,
-    /// A sample that does not fit the stream (`malformed`: the layout
-    /// check, a wrong channel).
-    pub malformed: u64,
-    /// Reads of [`SampleSubscriber::latest`] that found the value stale.
-    pub stale_reads: u64,
-    /// Samples served from the host's history store.
-    pub from_history: u64,
-    /// The newest seq accepted.
-    pub last_seq: u64,
-}
-
 /// Called with every accepted sample.
 pub type OnSample = Arc<dyn Fn(&Received) + Send + Sync>;
 
@@ -450,22 +428,7 @@ impl SubState {
         let receive_ns = self.clock.now_ns();
         // The key's stream, and the payload against the declared layout
         // (O(fields), before any view of the value).
-        let fits = if sample.channel != self.spec.channel {
-            Err(format!("{} on {}'s key", sample.channel, self.spec.channel))
-        } else {
-            match (self.spec.applied, sample.applied) {
-                (true, Some(a)) if !a.present => {
-                    if sample.payload.is_empty() {
-                        Ok(())
-                    } else {
-                        Err("an absent applied value with a payload".into())
-                    }
-                }
-                (true, None) => Err("an applied sample without metadata".into()),
-                _ => self.spec.check_payload(&sample.payload),
-            }
-        };
-        if let Err(reason) = fits {
+        if let Err(reason) = check_sample(&self.spec, &sample) {
             debug!(channel = %self.spec.channel, reason, "malformed sample");
             self.bump(|s| s.malformed += 1);
             return;
@@ -475,23 +438,7 @@ impl SubState {
             let Ok(mut stats) = self.stats.lock() else {
                 return;
             };
-            if sample.epoch.0 < view_epoch {
-                stats.stale_epoch += 1;
-                false
-            } else if stats.last_seq > 0 && sample.seq <= stats.last_seq {
-                stats.out_of_order += 1;
-                false
-            } else {
-                if stats.last_seq > 0 {
-                    stats.lost += sample.seq - stats.last_seq - 1;
-                }
-                stats.last_seq = sample.seq;
-                stats.received += 1;
-                if from_history {
-                    stats.from_history += 1;
-                }
-                true
-            }
+            stats.accept(sample.seq, sample.epoch, Epoch(view_epoch), from_history)
         };
         if !accepted {
             return;
@@ -675,11 +622,7 @@ impl SampleSubscriber {
             .clock
             .now_ns()
             .saturating_sub(received.capture_local_ns);
-        let stale = self
-            .state
-            .spec
-            .max_age
-            .is_some_and(|max| u128::try_from(age_ns).is_ok_and(|age| age > max.as_nanos()));
+        let stale = is_stale(age_ns, self.state.spec.max_age);
         if stale {
             self.state.bump(|s| s.stale_reads += 1);
         }

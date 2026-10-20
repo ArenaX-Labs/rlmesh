@@ -5,6 +5,11 @@
 //! and its network ends; the wire format lives in [`rlmesh_wire`] and the
 //! embodiment-side action queue in `rlmesh-edge`.
 //!
+//! The sans-IO state machines live in `rlmesh-session-core` and are
+//! re-exported here under the same paths ([`authority`], [`virtual_clock`],
+//! [`schedule`], the offset estimator in [`clock`], the input cache in
+//! [`cache`] and the receive rules in [`sample`]).
+//!
 //! - [`address`]: a session's `{ip}:{port}/{tenant}/{session}` address,
 //!   and joining it from another process.
 //! - [`authority`]: epoch, roster, the DISARMED/ARMED/ACTIVE/SAFE/ESTOP mode
@@ -46,7 +51,7 @@
 #![warn(missing_docs)]
 
 pub mod address;
-pub mod authority;
+pub use rlmesh_session_core::authority;
 pub mod cache;
 pub mod chunk;
 pub mod clock;
@@ -58,9 +63,9 @@ pub mod metrics;
 pub mod participant;
 pub mod report;
 pub mod sample;
-pub mod schedule;
+pub use rlmesh_session_core::schedule;
 pub mod transport;
-pub mod virtual_clock;
+pub use rlmesh_session_core::virtual_clock;
 
 pub use address::SessionAddress;
 pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, LeaseEnd};

@@ -13,6 +13,7 @@ default-members = [
   "crates/rlmesh-runtime",
   "crates/rlmesh-sandbox",
   "crates/rlmesh-session",
+  "crates/rlmesh-session-core",
   "crates/rlmesh-spaces",
   "crates/rlmesh-spec",
   "crates/rlmesh-viewer",
@@ -48,6 +49,7 @@ rlmesh-record = { version = "=0.1.0", path = "crates/rlmesh-record" }
 rlmesh-runtime = { version = "=0.1.0", path = "crates/rlmesh-runtime" }
 rlmesh-sandbox = { version = "=0.1.0", path = "crates/rlmesh-sandbox" }
 rlmesh-session = { version = "=0.1.0", path = "crates/rlmesh-session" }
+rlmesh-session-core = { version = "=0.1.0", path = "crates/rlmesh-session-core" }
 rlmesh-spaces = { version = "=0.1.0", path = "crates/rlmesh-spaces" }
 rlmesh-spec = { version = "=0.1.0", path = "crates/rlmesh-spec" }
 rlmesh-viewer = { version = "=0.1.0", path = "crates/rlmesh-viewer" }
