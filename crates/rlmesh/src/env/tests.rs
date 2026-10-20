@@ -244,6 +244,40 @@ fn an_authored_failure_reads_op_failed_at_the_client() {
 }
 
 #[test]
+fn attached_authored_failures_keep_their_wire_class_and_raw_text() {
+    for (error, class, text) in [
+        (
+            Error::environment_recoverable("try again"),
+            ErrorClass::RecoverableEnvironmentException,
+            "[INTERNAL] step failed: try again",
+        ),
+        (
+            Error::environment("failed"),
+            ErrorClass::EnvironmentException,
+            "[INTERNAL] step failed: failed",
+        ),
+        (
+            Error::invalid_argument("bad value"),
+            ErrorClass::EnvironmentException,
+            "[INTERNAL] step failed: bad value",
+        ),
+    ] {
+        let counters = Arc::new(Counters::default());
+        let mut env = Counter::new(&counters);
+        env.fail_step = Some(crate::binding::AttachedError::attach(error, ()));
+        let server = EnvServer::new(env, quick()).unwrap();
+        server.start().unwrap();
+        let mut remote = dial(server.address()).unwrap();
+        reset(&mut remote, None);
+        let err = step(&mut remote, 0).unwrap_err();
+        assert_eq!(err.class(), class);
+        assert_eq!(err.to_string(), text);
+        drop(remote);
+        server.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn lanes_serve_one_endpoint_and_must_agree() {
     let counters = Arc::new(Counters::default());
     let server = EnvServer::lanes(
