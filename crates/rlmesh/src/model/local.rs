@@ -89,24 +89,7 @@ pub(crate) async fn drive_local<H>(
 where
     H: ModelHandler + 'static,
 {
-    // An address carries what a RemoteEnv dialed with no api_key would
-    // (RLMESH_API_KEY over https://, RMT-22); a loopback server's token wins.
-    let auth = crate::credentials::resolve(&options.address, None, None, false)?;
-    let credentials = rlmesh_grpc::Credentials {
-        token: if options.token.is_empty() {
-            auth.token().to_string()
-        } else {
-            options.token.clone()
-        },
-        trust: auth.trust().clone(),
-    };
-    let mut env = rlmesh_grpc::EnvClient::connect_with(&options.address, &credentials)
-        .await
-        .map_err(Error::from_grpc)?;
-    // The runtime tier's WANT rides this leg's handshake and caps the env-leg
-    // negotiation, so it has to be declared before the handshake goes out.
-    env.declare_workflow_edition(options.workflow_edition.clone());
-    let handshake = env.handshake().await.map_err(Error::from_grpc)?;
+    let (env, handshake) = connect_env(&options).await?;
     let env_ceiling = env_ceiling(&handshake);
     // A lane endpoint steps/resets lanes individually, so a num_envs > 1
     // session can run driver-owned (DISABLED) resets lane by lane.
@@ -187,13 +170,98 @@ where
         env_ceiling: Some(env_ceiling),
         model_ceiling: None,
     };
-    let env = EnvClientRuntimeEnv::new(env);
     let model = ModelHandlerRuntimeModel::new(handler, env_contract).with_history(wants_history);
     RuntimeDriver::new(spec, env, model, hooks)
         .with_prefetch(options.prefetch_lead)
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await
         .map_err(run_error)
+}
+
+/// Dials the env and handshakes: over gRPC, or (with the `lockstep`
+/// feature) as a v2 lockstep driver (`lockstep://...`, §12), whose
+/// handshake the env's declaration answers.
+async fn connect_env(options: &LocalRun) -> Result<(DrivenEnv, rlmesh_grpc::EnvHandshake)> {
+    if options.address.starts_with("lockstep://") {
+        #[cfg(feature = "lockstep")]
+        {
+            let env = rlmesh_gym::connect(&options.address, Default::default())
+                .await
+                .map_err(|err| Error::Connection(err.to_string()))?;
+            let handshake = env
+                .handshake(options.workflow_edition.as_deref())
+                .map_err(|err| Error::Protocol(err.to_string()))?;
+            return Ok((DrivenEnv::Lockstep(env), handshake));
+        }
+        #[cfg(not(feature = "lockstep"))]
+        return Err(Error::invalid_argument(format!(
+            "{}: this build has no v2 lockstep transport (the `lockstep` feature)",
+            options.address
+        )));
+    }
+    // An address carries what a RemoteEnv dialed with no api_key would
+    // (RLMESH_API_KEY over https://, RMT-22); a loopback server's token wins.
+    let auth = crate::credentials::resolve(&options.address, None, None, false)?;
+    let credentials = rlmesh_grpc::Credentials {
+        token: if options.token.is_empty() {
+            auth.token().to_string()
+        } else {
+            options.token.clone()
+        },
+        trust: auth.trust().clone(),
+    };
+    let mut env = rlmesh_grpc::EnvClient::connect_with(&options.address, &credentials)
+        .await
+        .map_err(Error::from_grpc)?;
+    // The runtime tier's WANT rides this leg's handshake and caps the env-leg
+    // negotiation, so it has to be declared before the handshake goes out.
+    env.declare_workflow_edition(options.workflow_edition.clone());
+    let handshake = env.handshake().await.map_err(Error::from_grpc)?;
+    Ok((
+        DrivenEnv::Grpc(Box::new(EnvClientRuntimeEnv::new(env))),
+        handshake,
+    ))
+}
+
+/// The env a local run drives.
+#[derive(Clone)]
+enum DrivenEnv {
+    Grpc(Box<EnvClientRuntimeEnv>),
+    #[cfg(feature = "lockstep")]
+    Lockstep(rlmesh_gym::LockstepEnv),
+}
+
+#[async_trait]
+impl RuntimeEnv for DrivenEnv {
+    async fn reset(
+        &mut self,
+        request: rlmesh_proto::env::v1::ResetRequest,
+    ) -> std::result::Result<RuntimeEnvReset, rlmesh_runtime::RuntimeError> {
+        match self {
+            Self::Grpc(env) => env.reset(request).await,
+            #[cfg(feature = "lockstep")]
+            Self::Lockstep(env) => env.reset(request).await,
+        }
+    }
+
+    async fn step(
+        &mut self,
+        request: rlmesh_proto::env::v1::StepRequest,
+    ) -> std::result::Result<RuntimeEnvStep, rlmesh_runtime::RuntimeError> {
+        match self {
+            Self::Grpc(env) => env.step(request).await,
+            #[cfg(feature = "lockstep")]
+            Self::Lockstep(env) => env.step(request).await,
+        }
+    }
+
+    async fn close(&mut self, timeout: Duration) -> std::result::Result<(), String> {
+        match self {
+            Self::Grpc(env) => env.close(timeout).await,
+            #[cfg(feature = "lockstep")]
+            Self::Lockstep(env) => env.close(timeout).await,
+        }
+    }
 }
 
 /// The report of a zero-episode run: nothing ran, nothing was measured.

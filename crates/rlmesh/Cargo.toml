@@ -25,6 +25,8 @@ async-trait = { workspace = true }
 rlmesh-spaces = { workspace = true }
 rlmesh-adapters = { workspace = true }
 rlmesh-grpc = { workspace = true }
+# The v2 lockstep transport (`lockstep://` env addresses, protocol v2 §12).
+rlmesh-gym = { workspace = true, optional = true }
 rlmesh-proto = { workspace = true }
 rlmesh-runtime = { workspace = true }
 rlmesh-viewer = { workspace = true }
@@ -54,6 +56,10 @@ tokio = { workspace = true, features = ["macros"] }
 tonic-health = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[features]
+# Serve envs and drive models over the v2 lockstep path (`lockstep://`).
+lockstep = ["dep:rlmesh-gym"]
 
 [lints]
 workspace = true

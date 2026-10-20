@@ -3769,6 +3769,7 @@ dependencies = [
  "rayon",
  "rlmesh-adapters",
  "rlmesh-grpc",
+ "rlmesh-gym",
  "rlmesh-proto",
  "rlmesh-runtime",
  "rlmesh-spaces",

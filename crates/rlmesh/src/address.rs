@@ -25,6 +25,9 @@ pub enum ConnectAddress {
         /// The server port.
         port: u16,
     },
+    /// A v2 lockstep robot, `lockstep://{ip}:{port}/{tenant}/{session}/{robot}`
+    /// (protocol v2 §12; driven only in builds with the `lockstep` feature).
+    Lockstep(String),
 }
 
 /// A server-side address to bind a listener to.
@@ -58,6 +61,9 @@ impl ConnectAddress {
     /// recognized address (including a `unix://` path on Windows, where Unix
     /// sockets are unsupported, and an `https://` address with a path).
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
+        if value.as_ref().starts_with("lockstep://") {
+            return Ok(Self::Lockstep(value.as_ref().to_string()));
+        }
         let target = parse_env_connect_target(value.as_ref()).map_err(Error::from_grpc)?;
         if let Some((host, port)) = target.tls_server() {
             return Ok(Self::Https {
@@ -79,6 +85,7 @@ impl ConnectAddress {
             Self::Unix(path) => format!("unix://{}", path.display()),
             Self::Https { host, port } if host.contains(':') => format!("https://[{host}]:{port}"),
             Self::Https { host, port } => format!("https://{host}:{port}"),
+            Self::Lockstep(value) => value.clone(),
         }
     }
 }

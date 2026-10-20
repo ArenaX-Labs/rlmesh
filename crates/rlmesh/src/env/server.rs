@@ -146,10 +146,48 @@ enum Served {
     Vector(Box<dyn VectorEnv + Send>),
 }
 
+/// Where a server listens: a gRPC listener, or (with the `lockstep`
+/// feature) a v2 lockstep robot in a session (`lockstep://...`, §12).
+enum Listener {
+    Grpc(BoundListener),
+    #[cfg(feature = "lockstep")]
+    Lockstep(rlmesh_gym::LockstepBinding),
+}
+
+impl Listener {
+    fn bind(address: &str, runtime: &tokio::runtime::Runtime) -> Result<(Self, String)> {
+        if address.starts_with("lockstep://") {
+            #[cfg(feature = "lockstep")]
+            {
+                let binding = runtime
+                    .block_on(rlmesh_gym::bind(address))
+                    .map_err(|err| Error::invalid_argument(err.to_string()))?;
+                let bound = binding.address();
+                return Ok((Self::Lockstep(binding), bound));
+            }
+            #[cfg(not(feature = "lockstep"))]
+            return Err(Error::invalid_argument(format!(
+                "{address}: this build has no v2 lockstep transport (the `lockstep` feature)"
+            )));
+        }
+        let listener = BoundListener::bind_sync(BindAddress::parse(address)?, runtime.handle())?;
+        let bound = listener.local_addr()?.to_string();
+        Ok((Self::Grpc(listener), bound))
+    }
+
+    fn release(self) {
+        match self {
+            Self::Grpc(listener) => listener.release(),
+            #[cfg(feature = "lockstep")]
+            Self::Lockstep(_) => {}
+        }
+    }
+}
+
 struct Resources {
     served: Served,
     runtime: tokio::runtime::Runtime,
-    listener: BoundListener,
+    listener: Listener,
     grpc: rlmesh_grpc::ServeOptions,
     idle_timeout: Option<Duration>,
     drain_timeout: Duration,
@@ -570,8 +608,7 @@ impl EnvServer {
             .thread_name("rlmesh-env-server")
             .build()
             .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;
-        let listener = BoundListener::bind_sync(BindAddress::parse(&address)?, runtime.handle())?;
-        let address = listener.local_addr()?.to_string();
+        let (listener, address) = Listener::bind(&address, &runtime)?;
 
         let idle_timeout = serve.idle_timeout;
         let drain_timeout = serve.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE);
@@ -1444,7 +1481,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
 /// What the transport needs to serve one env.
 struct ServeParts {
     runtime: tokio::runtime::Runtime,
-    listener: BoundListener,
+    listener: Listener,
     grpc: rlmesh_grpc::ServeOptions,
     idle_timeout: Option<Duration>,
     drain_timeout: Duration,
@@ -1473,20 +1510,48 @@ fn drive<E: Environment + Send + Sync + 'static>(
     let serve = move || -> Result<()> {
         runtime.block_on(async move {
             let environment = Arc::new(environment);
-            let activity_tx = start_idle_shutdown(idle_timeout, shutdown.clone());
-            let service = rlmesh_grpc::env::env_service_from_shared(
-                Arc::clone(&environment),
-                shutdown.clone(),
-                grpc,
-                activity_tx,
-            );
-            let (_health, health_service) = rlmesh_grpc::health::serving_health_service().await;
-            let router = rlmesh_grpc::lifecycle::server_builder()
-                .add_service(health_service)
-                .add_service(service);
-            let serve_result = listener
-                .serve(router, shutdown.clone(), Some(drain_timeout))
-                .await;
+            let serve_result = match listener {
+                Listener::Grpc(listener) => {
+                    let activity_tx = start_idle_shutdown(idle_timeout, shutdown.clone());
+                    let service = rlmesh_grpc::env::env_service_from_shared(
+                        Arc::clone(&environment),
+                        shutdown.clone(),
+                        grpc,
+                        activity_tx,
+                    );
+                    let (_health, health_service) =
+                        rlmesh_grpc::health::serving_health_service().await;
+                    let router = rlmesh_grpc::lifecycle::server_builder()
+                        .add_service(health_service)
+                        .add_service(service);
+                    listener
+                        .serve(router, shutdown.clone(), Some(drain_timeout))
+                        .await
+                }
+                #[cfg(feature = "lockstep")]
+                Listener::Lockstep(binding) => {
+                    let _ = (idle_timeout, drain_timeout);
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    let stop = {
+                        let (shutdown, cancel) = (shutdown.clone(), cancel.clone());
+                        tokio::spawn(async move {
+                            shutdown.cancelled().await;
+                            cancel.cancel();
+                        })
+                    };
+                    let options = rlmesh_gym::ServeOptions {
+                        workflow_edition: grpc.workflow_edition.clone(),
+                        record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
+                        timeout: None,
+                    };
+                    let served = binding
+                        .serve(Arc::clone(&environment), options, cancel)
+                        .await
+                        .map_err(|err| Error::server(err.to_string()));
+                    stop.abort();
+                    served
+                }
+            };
             // A transport failure also begins stopping before close callbacks.
             // Later token firings cannot replace that selected serve error.
             shutdown.trigger("serve ended");
