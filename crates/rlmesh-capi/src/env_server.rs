@@ -165,6 +165,7 @@ pub struct RLMeshEnvServer {
     vector: Option<BorrowedVectorEnv>,
     _claims: Vec<Claim>,
     close_env_on_shutdown: bool,
+    _factory_drain: Option<crate::env_factory::ServeDrain>,
 }
 impl RLMeshEnvServer {
     pub(crate) fn facade(&self) -> &EnvServer {
@@ -213,6 +214,41 @@ fn output(
                 vector,
                 _claims: claims,
                 close_env_on_shutdown,
+                _factory_drain: None,
+            })),
+        )
+    }
+}
+/// Transfer an already-started factory server and its independent env drain.
+pub(crate) fn factory_output(
+    server: EnvServer,
+    drain: crate::env_factory::ServeDrain,
+    out: *mut *mut RLMeshEnvServer,
+) -> Result<(), CapiError> {
+    let contract = match rlmesh::binding::env_contract_to_wire(server.env_contract()) {
+        Ok(contract) => RLMeshEnvContract::new(contract),
+        Err(error) => {
+            // Stop/join serving and any timed-out actor before the independent
+            // C drain closes its envs. Rust Drop itself remains bounded.
+            let _ = server.shutdown();
+            rlmesh::binding::env_server_join_abandoned(&server);
+            drop(server);
+            return Err(error.into());
+        }
+    };
+    // SAFETY: the start entry point validated writable output storage.
+    unsafe {
+        write_out(
+            out,
+            Box::into_raw(Box::new(RLMeshEnvServer {
+                server,
+                contract,
+                stopped: Arc::new(AtomicBool::new(false)),
+                lanes: Vec::new(),
+                vector: None,
+                _claims: Vec::new(),
+                close_env_on_shutdown: true,
+                _factory_drain: Some(drain),
             })),
         )
     }

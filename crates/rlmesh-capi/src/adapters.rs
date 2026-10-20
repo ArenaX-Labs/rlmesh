@@ -729,6 +729,23 @@ pub unsafe extern "C" fn rlmesh_ext_register_entrypoint(
     })
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_unregister_entrypoint(
+    name: *const c_char,
+    expected: *const RLMeshObsTransform,
+    out_removed: *mut bool,
+) -> RLMeshStatus {
+    guard(|| {
+        unsafe { write_out(out_removed, false) }?;
+        if name.is_null() {
+            return Err(CapiError::invalid_arg("null entrypoint"));
+        }
+        let name = unsafe { required(name, "entrypoint") }?;
+        let expected = unsafe { expected.as_ref() }.map(|transform| &transform.0);
+        let removed = rlmesh::ext::unregister_entrypoint(&name, expected)?;
+        unsafe { write_out(out_removed, removed) }
+    })
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_adapters_tag(
     p: *mut crate::env_api::RLMeshEnv,
     tags: *const RLMeshEnvTags,

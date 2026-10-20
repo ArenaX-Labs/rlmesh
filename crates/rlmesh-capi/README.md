@@ -276,6 +276,10 @@ An env is an `RLMeshEnvVtable` (`reset` and `step` are required; `render`, `clos
 
 `RLMeshEnvFactory` (`rlmesh_env_factory_new`) builds envs on demand, with discriminant parameters (`RLMeshTagParam`), a catalog of named variants, and `rlmesh_env_factory_serve`. See [`examples/c_env_api.c`](examples/c_env_api.c) and [`examples/c_factory.c`](examples/c_factory.c).
 
+`rlmesh_ext_env_factory_start(factory, address, options, &server)` prepares the factory, makes and stamps its envs, publishes the describe envelope, and starts serving in the background without installing signal handlers. Control the returned server with `rlmesh_env_server_wait`, `_shutdown` and `_free`. It owns its envs; the factory may be reused or freed immediately after start returns. A start overlapping a session borrow or another factory hook returns `RLMESH_ERR_RUNTIME`. Failed starts close and free all envs made so far and leave the factory reusable. Start subscribes to the cancellation token after factory admission and carries that subscription through preparation and serving; the caller may free its token handle after start returns. Cancelling drains and closes the envs; whichever of wait or shutdown first observes the stop reports cancellation, and later calls succeed. A shutdown without a firing succeeds. A firing during drain or close after another stop has begun cannot change its result.
+
+Both factory serve calls accept `RLMeshEnvFactoryServeOptions.ext`, pointing to an `RLMeshExtEnvFactoryServeOptions` initialized with `RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_INIT`. Its `host_runtime_json` declares optional `language`, `language_version`, `framework_versions` and `toolchain` host fields for the handshake PeerInfo and its published describe envelope. Unknown fields are refused. A supplied toolchain must name `gcc`, `clang` or `msvc` and a `major.minor` version. NULL keeps the legacy C runtime. Older ABI-5 options allocations are accepted; appended fields default to zero.
+
 ### Models
 
 An `RLMeshModelVtable` fills in any of four prediction corners: `predict` (one observation to one action), `predict_batch`, `predict_chunk` (one observation to several actions) and `predict_chunk_batch`. Optional slots cover `load`, `on_episode_end` and `close`, and fields declare a `spec` for adapters, a `workflow_edition`, `load_keys` and a static `native_chunk`. `rlmesh_model_new` builds a model and `rlmesh_model_from_config` builds one from a config dict passed to `load`.
@@ -297,7 +301,7 @@ vtable.predict = predict;
 vtable.context_corners = RLMESH_CORNER_PREDICT;
 ```
 
-`rlmesh_model_serve` serves a model as an endpoint other runs can use. See [`examples/c_policy.c`](examples/c_policy.c).
+`rlmesh_model_serve` serves a model as an endpoint other runs can use. Set `RLMeshExtModelServeOptions.no_signal_handlers` through the serve options' `ext` pointer when the host owns signal handling. The call still blocks and can be stopped with its cancellation token or `rlmesh_model_close`. The default false installs and restores SIGINT/SIGTERM handlers. See [`examples/c_policy.c`](examples/c_policy.c).
 
 ### Running and sessions
 
@@ -463,3 +467,41 @@ The header is C11 and also compiles warning-free as C++98, C++17 and C++20. It b
 - C++ API: [README-cpp.md](README-cpp.md)
 - Rust crate: https://crates.io/crates/rlmesh
 - Python package: https://pypi.org/project/rlmesh/
+
+## Per-call cancellation
+
+`rlmesh_ext_session_reset`, `rlmesh_ext_session_predict`,
+`rlmesh_ext_session_step`, `rlmesh_ext_remote_env_reset`,
+`rlmesh_ext_remote_env_step`, `rlmesh_ext_remote_vector_env_reset` and
+`rlmesh_ext_remote_vector_env_step` take a borrowed
+`const RLMeshExtCancelToken* cancel` immediately before the first output.
+Pass NULL for the ordinary call's behavior. The vector step retains its
+`capacity` argument after the numeric output buffers.
+
+Fire the token from another thread to cancel the operation with
+`RLMESH_ERR_CANCELLED`; the handle stays usable. An idle firing fails the next
+admitted call using that token once. Busy, closed or overlapping calls consume
+no firing. Each admitted call watches both this token and its handle token,
+including lazy session factory creation. The caller can free the token after
+the call returns. One token can cancel multiple calls and a started server.
+
+## Entrypoint registration lifetime
+
+`rlmesh_ext_unregister_entrypoint(name, expected, &removed)` removes a trusted
+entrypoint only when its registered transform has `expected`'s construction
+identity. Pass NULL for `expected` to remove any registration. The caller keeps
+owning the expected handle. `removed` is false for an unknown name or identity
+mismatch. NULL or empty names and NULL `out_removed` are invalid arguments.
+
+An existing resolved route retains its transform and completes normally after
+unregistration. New resolves fail with `AdapterResolutionError` until another
+transform is registered. A transform's deleter runs when its final reference is
+released. Both unregistration and replacement release the registry lock before
+running deleters, so deleters may register or unregister entrypoints themselves.
+
+Cancellation is checked synchronously after native result processing and each
+subscription is detached under its token lock. A firing before that completion
+boundary reports cancellation even if the polling watcher has not run. With an
+idle token, a firing after completion remains pending for its next call.
+Vector-step actions are validated before subscribing; malformed actions leave
+an idle firing pending.

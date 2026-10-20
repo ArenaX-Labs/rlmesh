@@ -8,10 +8,12 @@ maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]
 dependencies = ["rlmesh"]
 
 [dependency-groups]
+csharp = ["rlmesh[numpy]", "grpcio==1.75.1", "pyyaml==6.0.3"]
 dev = [
   "basedpyright==1.36.1",
   "ruff==0.14.9",
   "pytest==8.4.2",
+  "grpcio==1.75.1",
   "pillow",
   "opencv-python-headless==5.0.0.93",
   "rlmesh[gymnasium,numpy,torch,jax]",
@@ -67,6 +69,8 @@ include = [
   "examples/**/*.py",
   "tests/**/*.py",
   "tools/**/*.py",
+  "csharp/**/*.py",
+  "integrations/unity/**/*.py",
 ]
 extend-exclude = ["python/rlmesh/src/rlmesh/_rlmesh.pyi"]
 target-version = "py310"
@@ -96,6 +100,7 @@ ignore = [
 "python/rlmesh/tests/type_contract/fixtures/**" = ["D"]
 "tests/system/**" = ["B017", "D"]
 "tests/parity/**" = ["B017", "D"]
+"csharp/tests/**" = ["B017", "D"]
 "tools/rlmesh_api_surface/**" = ["D"]
 "tools/rlmesh_system/**" = ["B017", "D"]
 "tools/rlmesh_system_fixtures/**" = ["B017", "D"]

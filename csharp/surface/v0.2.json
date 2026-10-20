@@ -1,0 +1,3433 @@
+{
+  "F:RLMesh.DType.Bool": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 1,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Float16": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 10,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Float32": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 11,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Float64": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 12,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Int16": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 7,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Int32": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 8,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Int64": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 9,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Int8": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 6,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Uint16": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 3,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Uint32": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 4,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Uint64": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 5,
+    "attributes": []
+  },
+  "F:RLMesh.DType.Uint8": {
+    "kind": "enum_value",
+    "signature": "RLMesh.DType",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 2,
+    "attributes": []
+  },
+  "F:RLMesh.DType.value__": {
+    "kind": "enum_value",
+    "signature": "System.Int32",
+    "flags": "Public, SpecialName, RTSpecialName",
+    "value": null,
+    "attributes": []
+  },
+  "F:RLMesh.Ext.LifetimeState.Completed": {
+    "kind": "enum_value",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 2,
+    "attributes": []
+  },
+  "F:RLMesh.Ext.LifetimeState.Incomplete": {
+    "kind": "enum_value",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 3,
+    "attributes": []
+  },
+  "F:RLMesh.Ext.LifetimeState.Open": {
+    "kind": "enum_value",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 0,
+    "attributes": []
+  },
+  "F:RLMesh.Ext.LifetimeState.ShuttingDown": {
+    "kind": "enum_value",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 1,
+    "attributes": []
+  },
+  "F:RLMesh.Ext.LifetimeState.value__": {
+    "kind": "enum_value",
+    "signature": "System.Int32",
+    "flags": "Public, SpecialName, RTSpecialName",
+    "value": null,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.Bool": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 2,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.Bytes": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 6,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.Dict": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 10,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.Float": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 4,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.Int": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 3,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.List": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 8,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.None": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 1,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.Tensor": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 7,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.Text": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 5,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.Tuple": {
+    "kind": "enum_value",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, Static, Literal, HasDefault",
+    "value": 9,
+    "attributes": []
+  },
+  "F:RLMesh.ValueKind.value__": {
+    "kind": "enum_value",
+    "signature": "System.Int32",
+    "flags": "Public, SpecialName, RTSpecialName",
+    "value": null,
+    "attributes": []
+  },
+  "M:RLMesh.ConnectionError.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.ConnectionError.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Env.Dispose()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Env.For(RLMesh.IEnv)": {
+    "kind": "method",
+    "signature": "RLMesh.Env",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "env",
+        "sequence": 1,
+        "type": "RLMesh.IEnv",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvServer.#ctor(RLMesh.Env,RLMesh.EnvServerOptions)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "env",
+        "sequence": 1,
+        "type": "RLMesh.Env",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "options",
+        "sequence": 2,
+        "type": "RLMesh.EnvServerOptions",
+        "flags": "Optional, HasDefault",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvServer.#ctor(RLMesh.IEnv,RLMesh.EnvServerOptions)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "env",
+        "sequence": 1,
+        "type": "RLMesh.IEnv",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "options",
+        "sequence": 2,
+        "type": "RLMesh.EnvServerOptions",
+        "flags": "Optional, HasDefault",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvServer.Dispose()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvServer.Shutdown()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvServer.ShutdownAsync(System.Threading.CancellationToken)": {
+    "kind": "method",
+    "signature": "System.Threading.Tasks.Task",
+    "flags": "Public, HideBySig",
+    "params": [
+      {
+        "name": "cancellationToken",
+        "sequence": 1,
+        "type": "System.Threading.CancellationToken",
+        "flags": "Optional, HasDefault",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": [
+      "System.Diagnostics.DebuggerStepThroughAttribute:01000000",
+      "System.Runtime.CompilerServices.AsyncStateMachineAttribute:010024524C4D6573682E456E765365727665722B3C53687574646F776E4173796E633E645F5F300000"
+    ]
+  },
+  "M:RLMesh.EnvServer.Start()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvServer.Wait(System.Nullable`1{System.TimeSpan})": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, HideBySig",
+    "params": [
+      {
+        "name": "timeout",
+        "sequence": 1,
+        "type": "System.Nullable`1{System.TimeSpan}",
+        "flags": "Optional, HasDefault",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvServer.get_Address()": {
+    "kind": "method",
+    "signature": "System.String",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvServerOptions.#ctor()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvServerOptions.get_Address()": {
+    "kind": "method",
+    "signature": "System.String",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.EnvServerOptions.get_CloseEnvOnShutdown()": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.EnvServerOptions.get_Ext()": {
+    "kind": "method",
+    "signature": "RLMesh.Ext.EnvServerOptions",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.EnvServerOptions.set_Address(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "value",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.EnvServerOptions.set_CloseEnvOnShutdown(System.Boolean)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "value",
+        "sequence": 1,
+        "type": "System.Boolean",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.EnvServerOptions.set_Ext(RLMesh.Ext.EnvServerOptions)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "value",
+        "sequence": 1,
+        "type": "RLMesh.Ext.EnvServerOptions",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.EnvironmentException.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvironmentException.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.EnvironmentException.get_IsRecoverable()": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.CancelledError.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.CancelledError.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.EnvServerOptions.#ctor()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.EnvServerOptions.get_HostRuntimeJson()": {
+    "kind": "method",
+    "signature": "System.String",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.Ext.EnvServerOptions.set_HostRuntimeJson(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "value",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.Ext.Lifetime.Pending()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.IReadOnlyList`1{System.String}",
+    "flags": "Public, Static, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.Shutdown(System.TimeSpan)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "timeout",
+        "sequence": 1,
+        "type": "System.TimeSpan",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.WaitFreed(RLMesh.Env,System.TimeSpan)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "env",
+        "sequence": 1,
+        "type": "RLMesh.Env",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "timeout",
+        "sequence": 2,
+        "type": "System.TimeSpan",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.WaitFreed(RLMesh.EnvServer,System.TimeSpan)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "server",
+        "sequence": 1,
+        "type": "RLMesh.EnvServer",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "timeout",
+        "sequence": 2,
+        "type": "System.TimeSpan",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.get_ShuttingDown()": {
+    "kind": "method",
+    "signature": "System.Threading.CancellationToken",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Ext.Lifetime.get_State()": {
+    "kind": "method",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.IClose.Close()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, Virtual, HideBySig, VtableLayoutMask, Abstract",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.IEnv.Reset(System.Nullable`1{System.Int64},RLMesh.Metadata)": {
+    "kind": "method",
+    "signature": "RLMesh.ResetResult",
+    "flags": "Public, Virtual, HideBySig, VtableLayoutMask, Abstract",
+    "params": [
+      {
+        "name": "seed",
+        "sequence": 1,
+        "type": "System.Nullable`1{System.Int64}",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "options",
+        "sequence": 2,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.IEnv.Step(RLMesh.Value)": {
+    "kind": "method",
+    "signature": "RLMesh.StepResult",
+    "flags": "Public, Virtual, HideBySig, VtableLayoutMask, Abstract",
+    "params": [
+      {
+        "name": "action",
+        "sequence": 1,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.IEnv.get_ActionSpace()": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Space",
+    "flags": "Public, Virtual, HideBySig, VtableLayoutMask, Abstract, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.IEnv.get_ObservationSpace()": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Space",
+    "flags": "Public, Virtual, HideBySig, VtableLayoutMask, Abstract, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.#ctor()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.#ctor(System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}})": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "pairs",
+        "sequence": 1,
+        "type": "System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:010004000000010001010000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.Add(System.String,RLMesh.Value)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "key",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "value",
+        "sequence": 2,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.ContainsKey(System.String)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "key",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.Equals(RLMesh.Metadata)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "other",
+        "sequence": 1,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.Metadata.Equals(System.Object)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Virtual, HideBySig",
+    "params": [
+      {
+        "name": "obj",
+        "sequence": 1,
+        "type": "System.Object",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.Metadata.GetEnumerator()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.IEnumerator`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "",
+        "sequence": 0,
+        "type": "System.Collections.Generic.IEnumerator`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:010004000000010001010000"]
+      }
+    ],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.IteratorStateMachineAttribute:010024524C4D6573682E4D657461646174612B3C476574456E756D657261746F723E645F5F31380000"
+    ]
+  },
+  "M:RLMesh.Metadata.GetHashCode()": {
+    "kind": "method",
+    "signature": "System.Int32",
+    "flags": "Public, Virtual, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.Remove(System.String)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "key",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.TryGetValue(System.String,RLMesh.Value@)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "key",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "value",
+        "sequence": 2,
+        "type": "RLMesh.Value@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.get_Count()": {
+    "kind": "method",
+    "signature": "System.Int32",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.get_Item(System.String)": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask, SpecialName",
+    "params": [
+      {
+        "name": "key",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.get_Keys()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.ICollection`1{System.String}",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.get_Values()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.ICollection`1{RLMesh.Value}",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Metadata.op_Equality(RLMesh.Metadata,RLMesh.Metadata)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "left",
+        "sequence": 1,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "right",
+        "sequence": 2,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.Metadata.op_Inequality(RLMesh.Metadata,RLMesh.Metadata)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "left",
+        "sequence": 1,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "right",
+        "sequence": 2,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.Metadata.set_Item(System.String,RLMesh.Value)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask, SpecialName",
+    "params": [
+      {
+        "name": "key",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "value",
+        "sequence": 2,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.OSError.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.OSError.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.ProtocolException.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.ProtocolException.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.RLMeshException.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.RLMeshException.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.RecoverableEnvironmentException.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.RecoverableEnvironmentException.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.ResetResult.#ctor(RLMesh.Value,RLMesh.Metadata)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "observation",
+        "sequence": 1,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "info",
+        "sequence": 2,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.ResetResult.Deconstruct(RLMesh.Value@,RLMesh.Metadata@)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig",
+    "params": [
+      {
+        "name": "observation",
+        "sequence": 1,
+        "type": "RLMesh.Value@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "info",
+        "sequence": 2,
+        "type": "RLMesh.Metadata@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.ResetResult.get_Info()": {
+    "kind": "method",
+    "signature": "RLMesh.Metadata",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.ResetResult.get_Observation()": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.RuntimeError.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.RuntimeError.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.Boolean)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Boolean",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.Byte)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Byte",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.Double)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Double",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.Int16)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Int16",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.Int32)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Int32",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.Int64)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Int64",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.SByte)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.SByte",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.Single)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Single",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.UInt16)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.UInt16",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.UInt32)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.UInt32",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Bound.op_Implicit(System.UInt64)~RLMesh.Spaces.Bound": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Bound",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.UInt64",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Box.#ctor(RLMesh.Spaces.Bound,RLMesh.Spaces.Bound,System.Collections.Generic.IReadOnlyList`1{System.Int64},RLMesh.Spaces.BoxOptions)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "low",
+        "sequence": 1,
+        "type": "RLMesh.Spaces.Bound",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "high",
+        "sequence": 2,
+        "type": "RLMesh.Spaces.Bound",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "shape",
+        "sequence": 3,
+        "type": "System.Collections.Generic.IReadOnlyList`1{System.Int64}",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "options",
+        "sequence": 4,
+        "type": "RLMesh.Spaces.BoxOptions",
+        "flags": "Optional, HasDefault",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.BoxOptions.#ctor()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.BoxOptions.get_Dtype()": {
+    "kind": "method",
+    "signature": "RLMesh.DType",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.Spaces.BoxOptions.set_Dtype(RLMesh.DType)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "value",
+        "sequence": 1,
+        "type": "RLMesh.DType",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.Spaces.Dict.#ctor(System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}})": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "spaces",
+        "sequence": 1,
+        "type": "System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}}",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:010004000000010001010000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Dict.ContainsKey(System.String)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "key",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Dict.GetEnumerator()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.IEnumerator`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}}",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "",
+        "sequence": 0,
+        "type": "System.Collections.Generic.IEnumerator`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}}",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:010004000000010001010000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Dict.TryGetValue(System.String,RLMesh.Spaces.Space@)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "key",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "value",
+        "sequence": 2,
+        "type": "RLMesh.Spaces.Space@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Dict.get_Count()": {
+    "kind": "method",
+    "signature": "System.Int32",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Dict.get_Item(System.String)": {
+    "kind": "method",
+    "signature": "RLMesh.Spaces.Space",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask, SpecialName",
+    "params": [
+      {
+        "name": "key",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.Dict.get_Keys()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.IEnumerable`1{System.String}",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.IteratorStateMachineAttribute:010022524C4D6573682E5370616365732E446963742B3C6765745F4B6579733E645F5F31340000"
+    ]
+  },
+  "M:RLMesh.Spaces.Dict.get_Values()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.IEnumerable`1{RLMesh.Spaces.Space}",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.IteratorStateMachineAttribute:010024524C4D6573682E5370616365732E446963742B3C6765745F56616C7565733E645F5F31360000"
+    ]
+  },
+  "M:RLMesh.Spaces.Discrete.#ctor(System.Int64,RLMesh.Spaces.DiscreteOptions)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "n",
+        "sequence": 1,
+        "type": "System.Int64",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "options",
+        "sequence": 2,
+        "type": "RLMesh.Spaces.DiscreteOptions",
+        "flags": "Optional, HasDefault",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.Spaces.DiscreteOptions.#ctor()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Spaces.DiscreteOptions.get_Dtype()": {
+    "kind": "method",
+    "signature": "RLMesh.DType",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.Spaces.DiscreteOptions.get_Start()": {
+    "kind": "method",
+    "signature": "System.Int64",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.Spaces.DiscreteOptions.set_Dtype(RLMesh.DType)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "value",
+        "sequence": 1,
+        "type": "RLMesh.DType",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.Spaces.DiscreteOptions.set_Start(System.Int64)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "value",
+        "sequence": 1,
+        "type": "System.Int64",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.StepResult.#ctor(RLMesh.Value,System.Double,System.Boolean,System.Boolean,RLMesh.Metadata)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "observation",
+        "sequence": 1,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "reward",
+        "sequence": 2,
+        "type": "System.Double",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "terminated",
+        "sequence": 3,
+        "type": "System.Boolean",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "truncated",
+        "sequence": 4,
+        "type": "System.Boolean",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "info",
+        "sequence": 5,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.StepResult.Deconstruct(RLMesh.Value@,System.Double@,System.Boolean@,System.Boolean@,RLMesh.Metadata@)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig",
+    "params": [
+      {
+        "name": "observation",
+        "sequence": 1,
+        "type": "RLMesh.Value@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "reward",
+        "sequence": 2,
+        "type": "System.Double@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "terminated",
+        "sequence": 3,
+        "type": "System.Boolean@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "truncated",
+        "sequence": 4,
+        "type": "System.Boolean@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "info",
+        "sequence": 5,
+        "type": "RLMesh.Metadata@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.StepResult.get_Info()": {
+    "kind": "method",
+    "signature": "RLMesh.Metadata",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.StepResult.get_Observation()": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.StepResult.get_Reward()": {
+    "kind": "method",
+    "signature": "System.Double",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.StepResult.get_Terminated()": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.StepResult.get_Truncated()": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.CompilerGeneratedAttribute:01000000"]
+  },
+  "M:RLMesh.Tensor.#ctor(System.ReadOnlySpan`1{System.Byte},System.Collections.Generic.IReadOnlyList`1{System.Int64},RLMesh.DType)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "buffer",
+        "sequence": 1,
+        "type": "System.ReadOnlySpan`1{System.Byte}",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "shape",
+        "sequence": 2,
+        "type": "System.Collections.Generic.IReadOnlyList`1{System.Int64}",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100010000"]
+      },
+      {
+        "name": "dtype",
+        "sequence": 3,
+        "type": "RLMesh.DType",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100000000"]
+  },
+  "M:RLMesh.Tensor.Buffer()": {
+    "kind": "method",
+    "signature": "RLMesh.TensorLease`1{System.Byte}",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Tensor.Dispose()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Tensor.Tobytes()": {
+    "kind": "method",
+    "signature": "System.Byte[]",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Tensor.get_Dtype()": {
+    "kind": "method",
+    "signature": "RLMesh.DType",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Tensor.get_Shape()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.IReadOnlyList`1{System.Int64}",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.TensorLease`1.Dispose()": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.TensorLease`1.get_Memory()": {
+    "kind": "method",
+    "signature": "System.ReadOnlyMemory`1{`0}",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.TensorLease`1.get_Span()": {
+    "kind": "method",
+    "signature": "System.ReadOnlySpan`1{`0}",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.TimeoutError.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.TimeoutError.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.TypeError.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.TypeError.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.AsBool()": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.AsBytes()": {
+    "kind": "method",
+    "signature": "System.Byte[]",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.AsDict()": {
+    "kind": "method",
+    "signature": "RLMesh.Metadata",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.AsFloat()": {
+    "kind": "method",
+    "signature": "System.Double",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.AsInt()": {
+    "kind": "method",
+    "signature": "System.Int64",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.AsList()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.IReadOnlyList`1{RLMesh.Value}",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.AsTensor()": {
+    "kind": "method",
+    "signature": "RLMesh.Tensor",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.AsText()": {
+    "kind": "method",
+    "signature": "System.String",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.AsTuple()": {
+    "kind": "method",
+    "signature": "System.Collections.Generic.IReadOnlyList`1{RLMesh.Value}",
+    "flags": "Public, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.Bytes(System.ReadOnlySpan`1{System.Byte})": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "",
+        "sequence": 0,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100010000"]
+      },
+      {
+        "name": "data",
+        "sequence": 1,
+        "type": "System.ReadOnlySpan`1{System.Byte}",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100000000"]
+  },
+  "M:RLMesh.Value.Dict(RLMesh.Metadata)": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "items",
+        "sequence": 1,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.Equals(RLMesh.Value)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Final, Virtual, HideBySig, VtableLayoutMask",
+    "params": [
+      {
+        "name": "other",
+        "sequence": 1,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.Value.Equals(System.Object)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Virtual, HideBySig",
+    "params": [
+      {
+        "name": "obj",
+        "sequence": 1,
+        "type": "System.Object",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.Value.FromUInt64(System.UInt64)": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.UInt64",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.GetHashCode()": {
+    "kind": "method",
+    "signature": "System.Int32",
+    "flags": "Public, Virtual, HideBySig",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.List(RLMesh.Value[])": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "items",
+        "sequence": 1,
+        "type": "RLMesh.Value[]",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.ParamArrayAttribute:01000000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.List(System.Collections.Generic.IEnumerable`1{RLMesh.Value})": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "items",
+        "sequence": 1,
+        "type": "System.Collections.Generic.IEnumerable`1{RLMesh.Value}",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.TryGet(System.Int32,RLMesh.Value@)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, HideBySig",
+    "params": [
+      {
+        "name": "index",
+        "sequence": 1,
+        "type": "System.Int32",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "item",
+        "sequence": 2,
+        "type": "RLMesh.Value@",
+        "flags": "Out",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.Value.Tuple(RLMesh.Value[])": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "items",
+        "sequence": 1,
+        "type": "RLMesh.Value[]",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.ParamArrayAttribute:01000000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.Tuple(System.Collections.Generic.IEnumerable`1{RLMesh.Value})": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig",
+    "params": [
+      {
+        "name": "items",
+        "sequence": 1,
+        "type": "System.Collections.Generic.IEnumerable`1{RLMesh.Value}",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.get_Count()": {
+    "kind": "method",
+    "signature": "System.Int32",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.get_IsNone()": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.get_Item(System.Int32)": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "index",
+        "sequence": 1,
+        "type": "System.Int32",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.get_Kind()": {
+    "kind": "method",
+    "signature": "RLMesh.ValueKind",
+    "flags": "Public, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.get_None()": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Equality(RLMesh.Value,RLMesh.Value)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "left",
+        "sequence": 1,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "right",
+        "sequence": 2,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.Value.op_Implicit(RLMesh.Metadata)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "RLMesh.Metadata",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(RLMesh.Tensor)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "RLMesh.Tensor",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.Boolean)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Boolean",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.Byte)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Byte",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.Char)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Char",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": [
+      "System.ObsoleteAttribute:01004563686172206973206E6F7420612056616C75653B20636F6E76657274206578706C696369746C7920746F20737472696E67206F722061207369676E656420696E7465676572010000"
+    ]
+  },
+  "M:RLMesh.Value.op_Implicit(System.Double)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Double",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.Int16)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Int16",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.Int32)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Int32",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.Int64)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Int64",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.SByte)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.SByte",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.Single)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.Single",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.String)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.UInt16)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.UInt16",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.UInt32)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.UInt32",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.Value.op_Implicit(System.UInt64)~RLMesh.Value": {
+    "kind": "method",
+    "signature": "RLMesh.Value",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "v",
+        "sequence": 1,
+        "type": "System.UInt64",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": [
+      "System.ObsoleteAttribute:0100357573652056616C75652E46726F6D55496E74363420666F72206120636865636B656420696E746567657220636F6E76657273696F6E010000"
+    ]
+  },
+  "M:RLMesh.Value.op_Inequality(RLMesh.Value,RLMesh.Value)": {
+    "kind": "method",
+    "signature": "System.Boolean",
+    "flags": "Public, Static, HideBySig, SpecialName",
+    "params": [
+      {
+        "name": "left",
+        "sequence": 1,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "right",
+        "sequence": 2,
+        "type": "RLMesh.Value",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100020000"]
+  },
+  "M:RLMesh.ValueError.#ctor(System.String)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "M:RLMesh.ValueError.#ctor(System.String,System.Exception)": {
+    "kind": "method",
+    "signature": "System.Void",
+    "flags": "Public, HideBySig, SpecialName, RTSpecialName",
+    "params": [
+      {
+        "name": "message",
+        "sequence": 1,
+        "type": "System.String",
+        "flags": "None",
+        "default": null,
+        "attributes": []
+      },
+      {
+        "name": "innerException",
+        "sequence": 2,
+        "type": "System.Exception",
+        "flags": "None",
+        "default": null,
+        "attributes": ["System.Runtime.CompilerServices.NullableAttribute:0100020000"]
+      }
+    ],
+    "generics": [],
+    "attributes": []
+  },
+  "P:RLMesh.EnvServer.Address": {
+    "kind": "property",
+    "signature": "System.String",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.EnvServerOptions.Address": {
+    "kind": "property",
+    "signature": "System.String",
+    "params": [],
+    "get": true,
+    "set": true,
+    "attributes": []
+  },
+  "P:RLMesh.EnvServerOptions.CloseEnvOnShutdown": {
+    "kind": "property",
+    "signature": "System.Boolean",
+    "params": [],
+    "get": true,
+    "set": true,
+    "attributes": []
+  },
+  "P:RLMesh.EnvServerOptions.Ext": {
+    "kind": "property",
+    "signature": "RLMesh.Ext.EnvServerOptions",
+    "params": [],
+    "get": true,
+    "set": true,
+    "attributes": []
+  },
+  "P:RLMesh.EnvironmentException.IsRecoverable": {
+    "kind": "property",
+    "signature": "System.Boolean",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Ext.EnvServerOptions.HostRuntimeJson": {
+    "kind": "property",
+    "signature": "System.String",
+    "params": [],
+    "get": true,
+    "set": true,
+    "attributes": []
+  },
+  "P:RLMesh.Ext.Lifetime.ShuttingDown": {
+    "kind": "property",
+    "signature": "System.Threading.CancellationToken",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Ext.Lifetime.State": {
+    "kind": "property",
+    "signature": "RLMesh.Ext.LifetimeState",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.IEnv.ActionSpace": {
+    "kind": "property",
+    "signature": "RLMesh.Spaces.Space",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.IEnv.ObservationSpace": {
+    "kind": "property",
+    "signature": "RLMesh.Spaces.Space",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Metadata.Count": {
+    "kind": "property",
+    "signature": "System.Int32",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Metadata.Item": {
+    "kind": "property",
+    "signature": "RLMesh.Value",
+    "params": ["System.String"],
+    "get": true,
+    "set": true,
+    "attributes": []
+  },
+  "P:RLMesh.Metadata.Keys": {
+    "kind": "property",
+    "signature": "System.Collections.Generic.ICollection`1{System.String}",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Metadata.Values": {
+    "kind": "property",
+    "signature": "System.Collections.Generic.ICollection`1{RLMesh.Value}",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.ResetResult.Info": {
+    "kind": "property",
+    "signature": "RLMesh.Metadata",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.ResetResult.Observation": {
+    "kind": "property",
+    "signature": "RLMesh.Value",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Spaces.BoxOptions.Dtype": {
+    "kind": "property",
+    "signature": "RLMesh.DType",
+    "params": [],
+    "get": true,
+    "set": true,
+    "attributes": []
+  },
+  "P:RLMesh.Spaces.Dict.Count": {
+    "kind": "property",
+    "signature": "System.Int32",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Spaces.Dict.Item": {
+    "kind": "property",
+    "signature": "RLMesh.Spaces.Space",
+    "params": ["System.String"],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Spaces.Dict.Keys": {
+    "kind": "property",
+    "signature": "System.Collections.Generic.IEnumerable`1{System.String}",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Spaces.Dict.Values": {
+    "kind": "property",
+    "signature": "System.Collections.Generic.IEnumerable`1{RLMesh.Spaces.Space}",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Spaces.DiscreteOptions.Dtype": {
+    "kind": "property",
+    "signature": "RLMesh.DType",
+    "params": [],
+    "get": true,
+    "set": true,
+    "attributes": []
+  },
+  "P:RLMesh.Spaces.DiscreteOptions.Start": {
+    "kind": "property",
+    "signature": "System.Int64",
+    "params": [],
+    "get": true,
+    "set": true,
+    "attributes": []
+  },
+  "P:RLMesh.StepResult.Info": {
+    "kind": "property",
+    "signature": "RLMesh.Metadata",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.StepResult.Observation": {
+    "kind": "property",
+    "signature": "RLMesh.Value",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.StepResult.Reward": {
+    "kind": "property",
+    "signature": "System.Double",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.StepResult.Terminated": {
+    "kind": "property",
+    "signature": "System.Boolean",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.StepResult.Truncated": {
+    "kind": "property",
+    "signature": "System.Boolean",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Tensor.Dtype": {
+    "kind": "property",
+    "signature": "RLMesh.DType",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Tensor.Shape": {
+    "kind": "property",
+    "signature": "System.Collections.Generic.IReadOnlyList`1{System.Int64}",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.TensorLease`1.Memory": {
+    "kind": "property",
+    "signature": "System.ReadOnlyMemory`1{`0}",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.TensorLease`1.Span": {
+    "kind": "property",
+    "signature": "System.ReadOnlySpan`1{`0}",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Value.Count": {
+    "kind": "property",
+    "signature": "System.Int32",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Value.IsNone": {
+    "kind": "property",
+    "signature": "System.Boolean",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Value.Item": {
+    "kind": "property",
+    "signature": "RLMesh.Value",
+    "params": ["System.Int32"],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Value.Kind": {
+    "kind": "property",
+    "signature": "RLMesh.ValueKind",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "P:RLMesh.Value.None": {
+    "kind": "property",
+    "signature": "RLMesh.Value",
+    "params": [],
+    "get": true,
+    "set": false,
+    "attributes": []
+  },
+  "T:RLMesh.ConnectionError": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "RLMesh.OSError",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.DType": {
+    "kind": "enum",
+    "signature": "Public, Sealed",
+    "base": "System.Enum",
+    "protocols": [],
+    "generics": [],
+    "attributes": []
+  },
+  "T:RLMesh.Env": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": ["System.IDisposable"],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.EnvServer": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": ["System.IDisposable"],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.EnvServerOptions": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100020000"
+    ]
+  },
+  "T:RLMesh.EnvironmentException": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "RLMesh.RLMeshException",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.Ext.CancelledError": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "System.OperationCanceledException",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.Ext.EnvServerOptions": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100020000"
+    ]
+  },
+  "T:RLMesh.Ext.Lifetime": {
+    "kind": "class",
+    "signature": "Public, Abstract, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.Ext.LifetimeState": {
+    "kind": "enum",
+    "signature": "Public, Sealed",
+    "base": "System.Enum",
+    "protocols": [],
+    "generics": [],
+    "attributes": []
+  },
+  "T:RLMesh.IClose": {
+    "kind": "interface",
+    "signature": "Public, ClassSemanticsMask, Abstract, BeforeFieldInit",
+    "base": "",
+    "protocols": [],
+    "generics": [],
+    "attributes": []
+  },
+  "T:RLMesh.IEnv": {
+    "kind": "interface",
+    "signature": "Public, ClassSemanticsMask, Abstract, BeforeFieldInit",
+    "base": "",
+    "protocols": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.NullableContextAttribute:0100010000"]
+  },
+  "T:RLMesh.Metadata": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": [
+      "System.Collections.Generic.ICollection`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}",
+      "System.Collections.Generic.IDictionary`2{System.String,RLMesh.Value}",
+      "System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}",
+      "System.Collections.Generic.IReadOnlyCollection`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}",
+      "System.Collections.Generic.IReadOnlyDictionary`2{System.String,RLMesh.Value}",
+      "System.Collections.IEnumerable",
+      "System.IEquatable`1{RLMesh.Metadata}"
+    ],
+    "generics": [],
+    "attributes": [
+      "System.Reflection.DefaultMemberAttribute:0100044974656D0000",
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.OSError": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "System.IO.IOException",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.ProtocolException": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "RLMesh.RLMeshException",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.RLMeshException": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "RLMesh.RuntimeError",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.RecoverableEnvironmentException": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "RLMesh.EnvironmentException",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.ResetResult": {
+    "kind": "struct",
+    "signature": "Public, SequentialLayout, Sealed, BeforeFieldInit",
+    "base": "System.ValueType",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.IsReadOnlyAttribute:01000000",
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.RuntimeError": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "System.InvalidOperationException",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.Spaces.Bound": {
+    "kind": "struct",
+    "signature": "Public, SequentialLayout, Sealed, BeforeFieldInit",
+    "base": "System.ValueType",
+    "protocols": [],
+    "generics": [],
+    "attributes": ["System.Runtime.CompilerServices.IsReadOnlyAttribute:01000000"]
+  },
+  "T:RLMesh.Spaces.Box": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "RLMesh.Spaces.Space",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.Spaces.BoxOptions": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": [],
+    "generics": [],
+    "attributes": []
+  },
+  "T:RLMesh.Spaces.Dict": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "RLMesh.Spaces.Space",
+    "protocols": [
+      "System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}}",
+      "System.Collections.Generic.IReadOnlyCollection`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}}",
+      "System.Collections.Generic.IReadOnlyDictionary`2{System.String,RLMesh.Spaces.Space}",
+      "System.Collections.IEnumerable"
+    ],
+    "generics": [],
+    "attributes": [
+      "System.Reflection.DefaultMemberAttribute:0100044974656D0000",
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.Spaces.Discrete": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "RLMesh.Spaces.Space",
+    "protocols": [],
+    "generics": [],
+    "attributes": []
+  },
+  "T:RLMesh.Spaces.DiscreteOptions": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": [],
+    "generics": [],
+    "attributes": []
+  },
+  "T:RLMesh.Spaces.Space": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.StepResult": {
+    "kind": "struct",
+    "signature": "Public, SequentialLayout, Sealed, BeforeFieldInit",
+    "base": "System.ValueType",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.IsReadOnlyAttribute:01000000",
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.Tensor": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": ["System.IDisposable"],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.TensorLease`1": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": ["System.IDisposable"],
+    "generics": [
+      {
+        "name": "T",
+        "flags": "NotNullableValueTypeConstraint, DefaultConstructorConstraint",
+        "constraints": ["System.ValueType modreq(System.Runtime.InteropServices.UnmanagedType)"],
+        "attributes": ["System.Runtime.CompilerServices.IsUnmanagedAttribute:01000000"]
+      }
+    ],
+    "attributes": []
+  },
+  "T:RLMesh.TimeoutError": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "RLMesh.OSError",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.TypeError": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "System.InvalidCastException",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.Value": {
+    "kind": "class",
+    "signature": "Public, Sealed, BeforeFieldInit",
+    "base": "System.Object",
+    "protocols": ["System.IEquatable`1{RLMesh.Value}"],
+    "generics": [],
+    "attributes": [
+      "System.Reflection.DefaultMemberAttribute:0100044974656D0000",
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.ValueError": {
+    "kind": "class",
+    "signature": "Public, BeforeFieldInit",
+    "base": "System.ArgumentException",
+    "protocols": [],
+    "generics": [],
+    "attributes": [
+      "System.Runtime.CompilerServices.NullableAttribute:0100000000",
+      "System.Runtime.CompilerServices.NullableContextAttribute:0100010000"
+    ]
+  },
+  "T:RLMesh.ValueKind": {
+    "kind": "enum",
+    "signature": "Public, Sealed",
+    "base": "System.Enum",
+    "protocols": [],
+    "generics": [],
+    "attributes": []
+  }
+}

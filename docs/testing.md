@@ -25,6 +25,23 @@ Run only what a change can affect (changed crates since `origin/main`, their dep
 mise run test:affected
 ```
 
+Locally, C# tests run only for direct changes under `csharp/`,
+`integrations/unity/`, `tools/rlmesh_csharp_surface/` or `crates/rlmesh-capi/`
+(including `rlmesh.h`), changes to `scripts/dev/affected.py`, or changes to the
+`csharp` Python dependency group in `pyproject.toml` / `uv.lock`. The group
+comparison includes resolved transitive dependencies and selected extras;
+unrelated Python dependency edits do not require dotnet. Transitive Rust core
+changes still select the affected Rust and Python tests, without installing
+dotnet locally. Use `mise run test:csharp` to request the managed suite directly.
+
+CI invokes the planner with `--ci` and deliberately selects C# more broadly:
+any crate reaching `rlmesh-capi`, workspace build inputs, either Python manifest
+or lockfile, `python/rlmesh/**` (the interoperability client), the C/C++ package
+task, the planner and `.github/workflows/ci.yml` all select it. The existing
+Linux job installs the scoped C# toolchain only when selected, then runs interop
+staleness, managed tests, NativeAOT and package checks. `test:ci` itself does not
+install dotnet.
+
 Rust tests run under [cargo-nextest](https://nexte.st) (configured in `.config/nextest.toml`); doctests still run through `cargo test --doc`.
 
 Rerun a task whenever a file changes:
@@ -44,7 +61,7 @@ mise run test:ci
 
 To run the whole CI job on Depot compute instead of locally, including uncommitted changes, use `mise run ci:remote` (see [local development](local-dev.md#worktrees-and-limited-compute)).
 
-CI uses one required job, `Fast Checks`, on pull requests, pushes to `main`, and manual runs. It runs `check` and `test:ci`, reuses the resulting wheels for cross-version compatibility, verifies Rust and C/C++ packages, and repeats the C/C++ smoke under clang and gcc. Package and compatibility failures therefore fail the same required check as the rest of CI; there are no event-specific skipped jobs.
+CI uses one required job, `Fast Checks`, on pull requests, pushes to `main`, and manual runs. It runs `check` and `test:ci`, reuses the resulting wheels for cross-version compatibility, verifies Rust and C/C++ packages, and repeats the C/C++ smoke under gcc (pull requests) or under both gcc and clang (pushes to `main` and manual runs); `test` itself already covers zig's clang with libc++. Package and compatibility failures therefore fail the same required check as the rest of CI; there are no event-specific skipped jobs.
 
 Toolchain setup installs the committed `mise.lock` with `--locked`; CI does not regenerate it against changing upstream dependency metadata. Refresh the lock explicitly when updating tools.
 

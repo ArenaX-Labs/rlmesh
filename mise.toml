@@ -134,11 +134,11 @@ run = "uv run ruff format --check"
 
 [tasks."fmt:cxx"]
 description = "Format the C/C++ bindings and examples (clang-format)"
-run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp"
 
 [tasks."fmt:check:cxx"]
 description = "Check the C/C++ binding and example formatting"
-run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"
@@ -540,3 +540,55 @@ run = [
   "uv run pytest tools/rlmesh_api_surface/tests -q",
   "uv run python -m rlmesh_api_surface.parity",
 ]
+
+[tasks."csharp:interop:generate"]
+description = "Generate internal C# P/Invoke declarations from rlmesh.h"
+run = "mise run dev:heavy -- python csharp/tools/run.py generate"
+
+[tasks."csharp:interop:check"]
+description = "Check the generated C# interop for staleness"
+run = "mise run dev:heavy -- python csharp/tools/run.py interop-check"
+
+[tasks."csharp:generate"]
+description = "Generate C# interop (accepts --check)"
+run = 'mise run dev:heavy -- python csharp/tools/run.py generate {{arg(name="args", var=true, required=false)}}'
+
+[tasks."check:csharp"]
+description = "Check generated interop and both C# assembly surfaces"
+run = "mise run dev:heavy -- python csharp/tools/run.py check"
+
+[tasks."csharp:check"]
+description = "Alias for check:csharp"
+depends = ["check:csharp"]
+
+[tasks."test:csharp"]
+description = "Check C# interop and run ABI, ownership and Python interoperability tests"
+run = "mise run dev:heavy -- python csharp/tools/run.py test"
+
+[tasks."csharp:pack"]
+description = "Build NuGet and symbol packages from available release native assets"
+usage = 'flag "--require-all" help="Require every released native RID"'
+run = '''
+if [ "${usage_require_all:-false}" = true ]; then set -- --require-all; else set --; fi
+mise run dev:heavy -- python csharp/tools/run.py pack "$@"
+'''
+
+[tasks."csharp:upm"]
+description = "Assemble the prebuilt Unity UPM package"
+usage = 'flag "--require-all" help="Require every released native RID"'
+run = '''
+if [ "${usage_require_all:-false}" = true ]; then set -- --require-all; else set --; fi
+mise run dev:heavy -- python csharp/tools/run.py upm "$@"
+'''
+
+[tasks."test:csharp:package"]
+description = "Verify package structure and a fresh NuGet consumer driven by Python"
+run = "mise run dev:heavy -- python csharp/tools/run.py package-test"
+
+[tasks."test:csharp:aot"]
+description = "Publish the serving harness with NativeAOT and drive it from Python"
+run = "mise run dev:heavy -- python csharp/tools/run.py aot"
+
+[tasks."bench:csharp"]
+description = "Measure C# allocation gates and five interleaved advisory C++ timing batches"
+run = "mise run dev:heavy -- python csharp/tools/run.py bench --timing"

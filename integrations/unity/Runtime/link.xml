@@ -1,0 +1,5 @@
+<linker>
+  <!-- Keep the core's reverse P/Invoke trampolines and internal dispatch scopes
+       in IL2CPP players, including under the verification build's High stripping. -->
+  <assembly fullname="RLMesh" preserve="all" />
+</linker>

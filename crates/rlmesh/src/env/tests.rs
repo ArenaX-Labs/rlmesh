@@ -1432,3 +1432,85 @@ fn foreground_callback_shutdown_marks_the_server_stopped_at_once() {
     remote.close().unwrap();
     thread.join().unwrap().unwrap();
 }
+
+#[test]
+fn closed_client_refusal_keeps_its_idle_firing_pending() {
+    let counters = Arc::new(Counters::default());
+    let server = EnvServer::new(Counter::new(&counters), quick()).unwrap();
+    server.start().unwrap();
+    let mut remote = dial(server.address()).unwrap();
+    let token = remote.cancel_handle();
+    remote.close().unwrap();
+    token.cancel();
+    assert_eq!(
+        remote.reset(None, None).unwrap_err().class(),
+        ErrorClass::RuntimeError
+    );
+    assert_eq!(
+        remote.step(Value::Int(0)).unwrap_err().class(),
+        ErrorClass::RuntimeError
+    );
+    assert_eq!(
+        remote.render(None).unwrap_err().class(),
+        ErrorClass::RuntimeError
+    );
+    assert!(token.take());
+    assert!(!token.take());
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn immediate_remote_completion_observes_handle_cancellation() {
+    struct Fire {
+        token: Arc<Mutex<Option<crate::ext::CancelToken>>>,
+    }
+    impl crate::Env for Fire {
+        fn observation_space(&self) -> crate::spaces::Space {
+            Discrete::new(4, DiscreteOptions::default()).unwrap().into()
+        }
+        fn action_space(&self) -> crate::spaces::Space {
+            self.observation_space()
+        }
+        fn reset(
+            &mut self,
+            _: Option<i64>,
+            _: Option<&crate::InfoDict>,
+        ) -> crate::Result<(crate::Value, crate::InfoDict)> {
+            Ok((crate::Value::Int(0), crate::InfoDict::new()))
+        }
+        fn step(
+            &mut self,
+            _: Option<crate::Value>,
+        ) -> crate::Result<(crate::Value, f64, bool, bool, crate::InfoDict)> {
+            if let Some(token) = self.token.lock().unwrap().take() {
+                token.cancel();
+            }
+            Ok((
+                crate::Value::Int(1),
+                1.,
+                false,
+                false,
+                crate::InfoDict::new(),
+            ))
+        }
+    }
+    let token = Arc::new(Mutex::new(None));
+    let server = EnvServer::new(
+        Fire {
+            token: token.clone(),
+        },
+        quick(),
+    )
+    .unwrap();
+    server.start().unwrap();
+    let mut remote = dial(server.address()).unwrap();
+    remote.reset(None, None).unwrap();
+    *token.lock().unwrap() = Some(remote.cancel_handle());
+    assert_eq!(
+        remote.step(crate::Value::Int(0)).unwrap_err(),
+        crate::Error::Cancelled
+    );
+    remote.step(crate::Value::Int(0)).unwrap();
+    remote.close().unwrap();
+    server.shutdown().unwrap();
+}

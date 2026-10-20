@@ -215,6 +215,9 @@ struct Core {
     last_step_ms: f64,
     last_pace: Duration,
     last_view_failed: bool,
+    /// Whether the retained run error came from a caller hook. That first
+    /// error wins over cancellation observed at the completion boundary.
+    hook_error: bool,
 }
 
 /// Fail `future` with the cancellation class once `cancel` fires.
@@ -816,13 +819,16 @@ impl Core {
 
     /// Run `call` on the caller's hooks.
     async fn hook(
-        &self,
+        &mut self,
         call: impl FnOnce(&mut dyn RunHooks) -> Result<()> + Send + 'static,
     ) -> Result<()> {
         let id = self.context.id;
-        self.port
+        let result = self
+            .port
             .call(move |side| side.hook(id, call).map(|_| ()))
-            .await
+            .await;
+        self.hook_error |= result.is_err();
+        result
     }
 
     async fn run(&mut self, plan: RunPlan) -> Result<RunResult> {
@@ -832,6 +838,7 @@ impl Core {
         self.telemetry = Some(Telemetry::default());
         let mut results = Vec::new();
         let outcome = self.run_episodes(&plan, &mut results).await;
+        let outcome_hook_error = self.hook_error;
         let telemetry = self.telemetry.take().map(|t| t.rows()).unwrap_or_default();
         let result = RunResult {
             advisories: self.context.advisories(),
@@ -847,6 +854,13 @@ impl Core {
             Ok(())
         };
         let ended = self.end_episode().await;
+        // A later on_run_end failure must not promote an earlier engine
+        // error above cancellation; only the retained hook error has priority.
+        self.hook_error = if outcome.is_err() {
+            outcome_hook_error
+        } else {
+            run_end.is_err()
+        };
         self.last_view_failed = outcome.is_err() || run_end.is_err() || ended.is_err();
         outcome?;
         run_end?;
@@ -1266,6 +1280,7 @@ impl<'a> Session<'a> {
                 last_step_ms: 0.0,
                 last_pace: Duration::ZERO,
                 last_view_failed: false,
+                hook_error: false,
             },
             env: caller_env,
             queue,
@@ -1334,185 +1349,192 @@ impl<'a> Session<'a> {
         let cancel = cancel.unwrap_or_default();
         let dial_cancel = CancellationToken::new();
         let _watch = CancelWatch::start(vec![cancel.clone()], dial_cancel.clone())?;
-        // What the session's env is, and the contract and offer the model is
-        // bound with.
-        let mut lent = None;
-        let mut server = None;
-        // A local env is stepped on the caller's side; its contract is
-        // derived here, before the model is dialed, and a factory's env is
-        // built now (and closed by the session, or here if creation fails).
-        let mut caller_env = CallerEnv::None;
-        let mut pending_factory = None;
-        let (env_port, contract, env_offer) = match env.0 {
-            EnvKind::Vector(_) => {
-                return Err(local_vector_refusal());
-            }
-            EnvKind::Env(env) => {
-                let contract = mode.call(|| crate::env::sync_wire::env_contract_of(&*env))?;
-                single_lane(contract.num_envs())?;
-                let wire = contract.to_wire()?;
-                caller_env = CallerEnv::Borrowed(LocalEnv::Env(env));
-                (EnvPort::Local, wire, None)
-            }
-            EnvKind::Factory(mut factory) => {
-                // The guard closes the made env if creation fails or its
-                // future is dropped mid-dial; it moves into the session only
-                // once the session exists.
-                let made = super::native::OwnedMadeEnv(Some(mode.call(|| factory.make())?), false);
-                let wire = match &made.0 {
-                    Some(MadeEnv::Env(env)) => {
-                        let contract =
-                            mode.call(|| crate::env::sync_wire::env_contract_of(&**env))?;
-                        single_lane(contract.num_envs())?;
-                        contract.to_wire()?
+        let outcome = async {
+            // What the session's env is, and the contract and offer the model is
+            // bound with.
+            let mut lent = None;
+            let mut server = None;
+            // A local env is stepped on the caller's side; its contract is
+            // derived here, before the model is dialed, and a factory's env is
+            // built now (and closed by the session, or here if creation fails).
+            let mut caller_env = CallerEnv::None;
+            let mut pending_factory = None;
+            let (env_port, contract, env_offer) = match env.0 {
+                EnvKind::Vector(_) => {
+                    return Err(local_vector_refusal());
+                }
+                EnvKind::Env(env) => {
+                    let contract = mode.call(|| crate::env::sync_wire::env_contract_of(&*env))?;
+                    single_lane(contract.num_envs())?;
+                    let wire = contract.to_wire()?;
+                    caller_env = CallerEnv::Borrowed(LocalEnv::Env(env));
+                    (EnvPort::Local, wire, None)
+                }
+                EnvKind::Factory(mut factory) => {
+                    // The guard closes the made env if creation fails or its
+                    // future is dropped mid-dial; it moves into the session only
+                    // once the session exists.
+                    let made =
+                        super::native::OwnedMadeEnv(Some(mode.call(|| factory.make())?), false);
+                    let wire = match &made.0 {
+                        Some(MadeEnv::Env(env)) => {
+                            let contract =
+                                mode.call(|| crate::env::sync_wire::env_contract_of(&**env))?;
+                            single_lane(contract.num_envs())?;
+                            contract.to_wire()?
+                        }
+                        _ => return Err(local_vector_refusal()),
+                    };
+                    pending_factory = Some((factory, made));
+                    (EnvPort::Local, wire, None)
+                }
+                EnvKind::Server(served) => {
+                    let contract = served.env_contract();
+                    single_lane(contract.num_envs())?;
+                    server = Some(served);
+                    (
+                        EnvPort::Remote {
+                            address: served.address().to_string(),
+                            token: served.token().unwrap_or_default().to_string(),
+                            client: None,
+                            borrowed: false,
+                        },
+                        contract.to_wire()?,
+                        None,
+                    )
+                }
+                EnvKind::Remote(handle) => {
+                    let core = handle.lend()?;
+                    if let Err(err) = single_lane(core.num_envs() as u64) {
+                        handle.give_back(core);
+                        return Err(err);
                     }
-                    _ => return Err(local_vector_refusal()),
-                };
-                pending_factory = Some((factory, made));
-                (EnvPort::Local, wire, None)
-            }
-            EnvKind::Server(served) => {
-                let contract = served.env_contract();
-                single_lane(contract.num_envs())?;
-                server = Some(served);
-                (
-                    EnvPort::Remote {
-                        address: served.address().to_string(),
-                        token: served.token().unwrap_or_default().to_string(),
-                        client: None,
-                        borrowed: false,
-                    },
-                    contract.to_wire()?,
-                    None,
-                )
-            }
-            EnvKind::Remote(handle) => {
-                let core = handle.lend()?;
-                if let Err(err) = single_lane(core.num_envs() as u64) {
-                    handle.give_back(core);
-                    return Err(err);
+                    let contract = core.env_contract().clone();
+                    let offer = core.session_offer().clone();
+                    lent = Some(handle);
+                    (
+                        EnvPort::Remote {
+                            address: core.address().to_string(),
+                            token: String::new(),
+                            client: Some(core),
+                            borrowed: true,
+                        },
+                        contract,
+                        Some(offer),
+                    )
                 }
-                let contract = core.env_contract().clone();
-                let offer = core.session_offer().clone();
-                lent = Some(handle);
-                (
-                    EnvPort::Remote {
-                        address: core.address().to_string(),
-                        token: String::new(),
-                        client: Some(core),
-                        borrowed: true,
-                    },
-                    contract,
-                    Some(offer),
-                )
-            }
-            EnvKind::Address(address) => {
-                // An https:// env address carries RLMESH_API_KEY, as a
-                // RemoteEnv dialed with no api_key does.
-                let auth = crate::credentials::resolve(&address, None, None, false)?;
-                let connected = EnvClientCore::connect_with(
-                    &address,
-                    CoreConnect {
-                        token: auth.token(),
-                        trust: auth.trust().clone(),
-                        declared: edition.as_deref(),
-                        ..CoreConnect::default()
-                    },
-                )
-                .await;
-                if _watch.fired() {
-                    return Err(Error::Cancelled);
+                EnvKind::Address(address) => {
+                    // An https:// env address carries RLMESH_API_KEY, as a
+                    // RemoteEnv dialed with no api_key does.
+                    let auth = crate::credentials::resolve(&address, None, None, false)?;
+                    let connected = EnvClientCore::connect_with(
+                        &address,
+                        CoreConnect {
+                            token: auth.token(),
+                            trust: auth.trust().clone(),
+                            declared: edition.as_deref(),
+                            ..CoreConnect::default()
+                        },
+                    )
+                    .await;
+                    if _watch.fired() {
+                        return Err(Error::Cancelled);
+                    }
+                    let mut core = connected?;
+                    if let Err(err) = core.require_single() {
+                        let _ = core.close().await;
+                        return Err(err);
+                    }
+                    let contract = core.env_contract().clone();
+                    let offer = core.session_offer().clone();
+                    (
+                        EnvPort::Remote {
+                            address,
+                            token: auth.token().to_string(),
+                            client: Some(Box::new(core)),
+                            borrowed: false,
+                        },
+                        contract,
+                        Some(offer),
+                    )
                 }
-                let mut core = connected?;
-                if let Err(err) = core.require_single() {
-                    let _ = core.close().await;
-                    return Err(err);
-                }
-                let contract = core.env_contract().clone();
-                let offer = core.session_offer().clone();
-                (
-                    EnvPort::Remote {
-                        address,
-                        token: auth.token().to_string(),
-                        client: Some(Box::new(core)),
-                        borrowed: false,
-                    },
-                    contract,
-                    Some(offer),
-                )
+            };
+            let mut lease = EnvLease {
+                env: Some(env_port),
+                lent,
+            };
+            // Resolved fresh at each session dial (RMT-22).
+            let model_auth = model.auth()?;
+            let dialed = ModelClient::connect_with(
+                model.address(),
+                contract,
+                ModelConnect {
+                    token: model_auth.token(),
+                    trust: model_auth.trust().clone(),
+                    env_offer,
+                    declared: edition.as_deref(),
+                    connect_timeout: model.connect_timeout(),
+                    request_timeout: model.request_timeout(),
+                },
+            )
+            .await;
+            // A cancel fired during the uncancellable dial fails this call once
+            // it returns (RMT-6).
+            let cancelled = dial_cancel.is_cancelled() || _watch.fired();
+            // A firing wins over either dial outcome and is consumed by this call.
+            let dialed = if cancelled {
+                Err(Error::Cancelled)
+            } else {
+                dialed
+            };
+            // On an error, an env built here is closed by its guard, not leaked.
+            let mut client = dialed?;
+            if let Some((factory, mut made)) = pending_factory {
+                caller_env = CallerEnv::Factory(factory, made.0.take());
             }
-        };
-        let mut lease = EnvLease {
-            env: Some(env_port),
-            lent,
-        };
-        // Resolved fresh at each session dial (RMT-22).
-        let model_auth = model.auth()?;
-        let dialed = ModelClient::connect_with(
-            model.address(),
-            contract,
-            ModelConnect {
-                token: model_auth.token(),
-                trust: model_auth.trust().clone(),
-                env_offer,
-                declared: edition.as_deref(),
-                connect_timeout: model.connect_timeout(),
-                request_timeout: model.request_timeout(),
-            },
-        )
-        .await;
-        // A cancel fired during the uncancellable dial fails this call once
-        // it returns (RMT-6).
-        let cancelled = dial_cancel.is_cancelled() || _watch.fired();
-        // A firing wins over either dial outcome and is consumed by this call.
-        let dialed = if cancelled {
-            Err(Error::Cancelled)
-        } else {
-            dialed
-        };
-        // On an error, an env built here is closed by its guard, not leaked.
-        let mut client = dialed?;
-        if let Some((factory, mut made)) = pending_factory {
-            caller_env = CallerEnv::Factory(factory, made.0.take());
+            let env_port = lease
+                .env
+                .take()
+                .expect("the pending env is owned until transfer");
+            let lent = lease.lent.take();
+            client.set_execution_horizon(execution_horizon);
+            let (port, queue) = caller_channel();
+            Ok(Session {
+                core: Core {
+                    model: ModelPort::Remote(Box::new(client)),
+                    env: env_port,
+                    port,
+                    context: LibraryContext::new(),
+                    edition,
+                    connected: None,
+                    episode: Episode::default(),
+                    telemetry: None,
+                    cancel: CancellationToken::new(),
+                    subscriptions: Arc::default(),
+                    viewer: view.map(|v| {
+                        Arc::new(std::sync::Mutex::new(crate::view::ViewerDriver::new(v)))
+                    }),
+                    episode_started: Instant::now(),
+                    run_episode: 0,
+                    run_episodes: 0,
+                    last_predict_ms: 0.0,
+                    last_step_ms: 0.0,
+                    last_pace: Duration::ZERO,
+                    last_view_failed: false,
+                    hook_error: false,
+                },
+                env: caller_env,
+                queue,
+                server,
+                lent,
+                close_env,
+                closed: false,
+                cancel,
+                _model: PhantomData,
+            })
         }
-        let env_port = lease
-            .env
-            .take()
-            .expect("the pending env is owned until transfer");
-        let lent = lease.lent.take();
-        client.set_execution_horizon(execution_horizon);
-        let (port, queue) = caller_channel();
-        Ok(Session {
-            core: Core {
-                model: ModelPort::Remote(Box::new(client)),
-                env: env_port,
-                port,
-                context: LibraryContext::new(),
-                edition,
-                connected: None,
-                episode: Episode::default(),
-                telemetry: None,
-                cancel: CancellationToken::new(),
-                subscriptions: Arc::default(),
-                viewer: view
-                    .map(|v| Arc::new(std::sync::Mutex::new(crate::view::ViewerDriver::new(v)))),
-                episode_started: Instant::now(),
-                run_episode: 0,
-                run_episodes: 0,
-                last_predict_ms: 0.0,
-                last_step_ms: 0.0,
-                last_pace: Duration::ZERO,
-                last_view_failed: false,
-            },
-            env: caller_env,
-            queue,
-            server,
-            lent,
-            close_env,
-            closed: false,
-            cancel,
-            _model: PhantomData,
-        })
+        .await;
+        _watch.finish(outcome)
     }
 
     /// Return a caller's lent remote client core (at close or drop).
@@ -1540,14 +1562,28 @@ impl<'a> Session<'a> {
         if self.closed {
             return Err(closed_error());
         }
-        if let CallerEnv::Factory(factory, made @ None) = &mut self.env {
-            *made = Some(mode.call(|| factory.make())?);
-        }
         let _context_busy = self.core.context.busy()?;
+        let tokens: Vec<_> = std::iter::once(&self.cancel)
+            .chain(cancel.as_ref())
+            .map(crate::ext::CancelToken::subscribe)
+            .collect();
+        if tokens.iter().any(crate::ext::CancelSubscription::fired) {
+            return Err(Error::Cancelled);
+        }
+        // Factory callbacks can block or fail. Admission and subscriptions must
+        // precede them, and survive until the call's watcher takes ownership.
+        let made_result = if let CallerEnv::Factory(factory, made @ None) = &mut self.env {
+            mode.call(|| factory.make()).map(|env| *made = Some(env))
+        } else {
+            Ok(())
+        };
         self.core.cancel = CancellationToken::new();
-        let tokens = std::iter::once(self.cancel.clone()).chain(cancel).collect();
-        let _watch = CancelWatch::start(tokens, self.core.cancel.clone())?;
+        let _watch = CancelWatch::from_subscriptions(tokens, self.core.cancel.clone())?;
+        if let Err(error) = made_result {
+            return _watch.finish(Err(error));
+        }
         self.core.subscriptions = _watch.subscriptions();
+        self.core.hook_error = false;
         let Session {
             core, env, queue, ..
         } = self;
@@ -1558,7 +1594,49 @@ impl<'a> Session<'a> {
         let out = mode.drive(op(core), queue, &mut side).await;
         // A job left queued by an abandoned call never runs later.
         while queue.try_recv().is_ok() {}
-        out
+        let fired = _watch.finish(Ok(())).is_err();
+        if core.hook_error && out.is_err() {
+            out
+        } else if fired {
+            Err(Error::Cancelled)
+        } else {
+            out
+        }
+    }
+
+    pub(crate) fn reset_cancel(
+        &mut self,
+        seed: Option<i64>,
+        trial_index: Option<i64>,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<(Value, InfoDict)> {
+        refuse_in_async_context("Session::reset")?;
+        run_sync(self.call(Mode::Sync, None, cancel, move |core| {
+            Box::pin(core.reset(seed, trial_index))
+        }))
+    }
+
+    pub(crate) fn predict_cancel(
+        &mut self,
+        observation: Value,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<Value> {
+        refuse_in_async_context("Session::predict")?;
+        run_sync(self.call(Mode::Sync, None, cancel, move |core| {
+            Box::pin(core.predict(observation))
+        }))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn step_cancel(
+        &mut self,
+        action: Value,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<(Value, f64, bool, bool, InfoDict)> {
+        refuse_in_async_context("Session::step")?;
+        run_sync(self.call(Mode::Sync, None, cancel, move |core| {
+            Box::pin(core.step(action))
+        }))
     }
 
     /// Begin an episode: end the open one (the model's `on_episode_end`),
@@ -1922,6 +2000,7 @@ impl Drop for Session<'_> {
                     last_step_ms: 0.0,
                     last_pace: Duration::ZERO,
                     last_view_failed: false,
+                    hook_error: false,
                 },
             );
             let close_env = self.close_env;

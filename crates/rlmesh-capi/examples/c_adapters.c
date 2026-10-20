@@ -26,6 +26,20 @@ static RLMeshStatus identity(void* user, const RLMeshValue* value, RLMeshValue**
   return *out ? RLMESH_OK : RLMESH_ERR_TYPE;
 }
 static void counted_free(void* user) { ++*(int*)user; }
+static RLMeshStatus copy_transform(void* user, const RLMeshValue* value, RLMeshValue** out) {
+  (void)user;
+  return identity(NULL, value, out);
+}
+static void reentrant_free(void* user) {
+  ++*(int*)user;
+  RLMeshObsTransform* nested = NULL;
+  bool removed = false;
+  CHECK(rlmesh_obs_transform_new(copy_transform, NULL, NULL, &nested) == RLMESH_OK);
+  CHECK(rlmesh_ext_register_entrypoint("abi5:reentrant:nested", nested) == RLMESH_OK);
+  rlmesh_obs_transform_free(nested);
+  CHECK(rlmesh_ext_unregister_entrypoint("abi5:reentrant:nested", NULL, &removed) == RLMESH_OK &&
+        removed);
+}
 static RLMeshStatus fail_transform(void* user, const RLMeshValue* value, RLMeshValue** out) {
   (void)user;
   *out = rlmesh_value_clone(value);
@@ -364,7 +378,66 @@ int main(void) {
   CHECK(rlmesh_obs_transform_new(identity, NULL, NULL, &replacement) == RLMESH_OK);
   CHECK(rlmesh_ext_register_entrypoint("abi5:identity", replacement) == RLMESH_OK &&
         transform_frees == 3);
+  bool removed = true;
+  CHECK(rlmesh_ext_unregister_entrypoint(NULL, NULL, &removed) == RLMESH_ERR_INVALID_ARGUMENT &&
+        !removed);
+  removed = true;
+  CHECK(rlmesh_ext_unregister_entrypoint("", NULL, &removed) == RLMESH_ERR_INVALID_ARGUMENT &&
+        !removed);
+  CHECK(rlmesh_ext_unregister_entrypoint("abi5:identity", NULL, NULL) ==
+        RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(rlmesh_ext_unregister_entrypoint("abi5:unknown", NULL, &removed) == RLMESH_OK && !removed);
+  RLMeshObsTransform* wrong = NULL;
+  CHECK(rlmesh_obs_transform_new(copy_transform, NULL, NULL, &wrong) == RLMESH_OK);
+  CHECK(rlmesh_ext_unregister_entrypoint("abi5:identity", wrong, &removed) == RLMESH_OK &&
+        !removed);
+  rlmesh_obs_transform_free(wrong);
+  RLMeshObsTransform* expected = rlmesh_obs_transform_clone(replacement);
+  CHECK(rlmesh_ext_unregister_entrypoint("abi5:identity", expected, &removed) == RLMESH_OK &&
+        removed);
+  rlmesh_obs_transform_free(expected);
+  CHECK(rlmesh_ext_unregister_entrypoint("abi5:identity", replacement, &removed) == RLMESH_OK &&
+        !removed);
   rlmesh_obs_transform_free(replacement);
+
+  /* A route owns its transform after unregister; new resolves refuse the name. */
+  int route_frees = 0;
+  CHECK(rlmesh_obs_transform_new(copy_transform, &route_frees, counted_free, &transform) ==
+        RLMESH_OK);
+  CHECK(rlmesh_ext_register_entrypoint("abi5:route", transform) == RLMESH_OK);
+  rlmesh_obs_transform_free(transform);
+  custom.entrypoint = "abi5:route";
+  CHECK(rlmesh_model_spec_new(&custom_input, &action, &custom_spec) == RLMESH_OK);
+  CHECK(rlmesh_adapters_resolve(tags, rlmesh_space_spec(space), rlmesh_space_spec(space),
+                                custom_spec, &trusted, &alias) == RLMESH_OK);
+  CHECK(rlmesh_ext_unregister_entrypoint("abi5:route", NULL, &removed) == RLMESH_OK && removed);
+  CHECK(route_frees == 0);
+  RLMeshAdapter* absent = NULL;
+  CHECK(rlmesh_adapters_resolve(tags, rlmesh_space_spec(space), rlmesh_space_spec(space),
+                                custom_spec, &trusted, &absent) == RLMESH_ERR_INVALID_ARGUMENT &&
+        !absent && rlmesh_last_error_class() == RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR);
+  CHECK(rlmesh_adapter_transform_obs(alias, raw, &converted) == RLMESH_OK);
+  rlmesh_value_free(converted);
+  rlmesh_adapter_free(alias);
+  rlmesh_model_spec_free(custom_spec);
+  CHECK(route_frees == 1);
+  int reentrant_frees = 0;
+  for (int replace = 0; replace < 2; ++replace) {
+    CHECK(rlmesh_obs_transform_new(copy_transform, &reentrant_frees, reentrant_free, &transform) ==
+          RLMESH_OK);
+    CHECK(rlmesh_ext_register_entrypoint("abi5:reentrant", transform) == RLMESH_OK);
+    rlmesh_obs_transform_free(transform);
+    if (replace) {
+      CHECK(rlmesh_obs_transform_new(copy_transform, NULL, NULL, &transform) == RLMESH_OK);
+      CHECK(rlmesh_ext_register_entrypoint("abi5:reentrant", transform) == RLMESH_OK);
+      rlmesh_obs_transform_free(transform);
+    } else {
+      CHECK(rlmesh_ext_unregister_entrypoint("abi5:reentrant", NULL, &removed) == RLMESH_OK &&
+            removed);
+    }
+  }
+  CHECK(reentrant_frees == 2);
+  CHECK(rlmesh_ext_unregister_entrypoint("abi5:reentrant", NULL, &removed) == RLMESH_OK && removed);
 
   /* Real model attachment and tag mutate the original env; NO_ADAPTER bypasses. */
   RLMeshEnvVtable ev = RLMESH_ENV_VTABLE_INIT;

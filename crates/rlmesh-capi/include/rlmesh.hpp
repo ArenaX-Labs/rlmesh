@@ -4266,6 +4266,15 @@ struct EnvServerOptions {
 struct ModelServeOptions {
   std::optional<std::string> token{};
   std::optional<size_t> predict_concurrency{};
+  bool no_signal_handlers = false;
+  ModelServeOptions& with_no_signal_handlers(bool value) & {
+    no_signal_handlers = value;
+    return *this;
+  }
+  ModelServeOptions with_no_signal_handlers(bool value) && {
+    no_signal_handlers = value;
+    return std::move(*this);
+  }
   ModelServeOptions& with_token(std::optional<std::string> value) & {
     token = std::move(value);
     return *this;
@@ -4366,7 +4375,15 @@ struct EnvServerOptions {
     return std::move(*this);
   }
 };
+class EnvServer;
+class EnvFactoryBase;
+struct EnvFactoryServeOptions;
+namespace ext {
+EnvServer start(EnvFactoryBase& factory, std::string_view address,
+                const EnvFactoryServeOptions& options);
+}
 class EnvServer {
+  friend EnvServer ext::start(EnvFactoryBase&, std::string_view, const EnvFactoryServeOptions&);
   friend class EnvTarget;
   struct State {
     // The server handle is destroyed before its borrowed lanes.
@@ -4416,6 +4433,13 @@ class EnvServer {
     }
     state_->handle.reset(p);
     state_->contract = specs::EnvContract::copy_of(rlmesh_env_server_env_contract(p));
+  }
+
+  explicit EnvServer(detail::Owned<RLMeshEnvServer, rlmesh_env_server_free> server,
+                     detail::FromLibrary)
+      : state_(std::make_shared<State>(Env(static_cast<RLMeshEnv*>(nullptr)))) {
+    state_->handle = std::move(server);
+    state_->contract = specs::EnvContract::copy_of(rlmesh_env_server_env_contract(raw()));
   }
 
  public:
@@ -4591,9 +4615,32 @@ class EnvFactoryBase {
     c.workflow_edition = detail::ptr(options.workflow_edition);
     c.make_kwargs = k.raw();
     if (options.cancel) c.cancel = options.cancel->raw();
+    RLMeshExtEnvFactoryServeOptions extra = RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_INIT;
+    c.ext = &extra;
     detail::check_status(rlmesh_env_factory_serve(handle(), std::string(address).c_str(), &c));
   }
 };
+namespace ext {
+/// Prepare and start a factory server without signal handlers. The factory may
+/// be reused or destroyed on return; the returned server owns its made envs.
+inline EnvServer start(EnvFactoryBase& factory, std::string_view address,
+                       const EnvFactoryServeOptions& options = {}) {
+  Value k(options.make_kwargs);
+  RLMeshEnvFactoryServeOptions c = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
+  c.num_envs = options.num_envs;
+  c.workflow_edition = detail::ptr(options.workflow_edition);
+  c.make_kwargs = k.raw();
+  if (options.cancel) c.cancel = options.cancel->raw();
+  RLMeshExtEnvFactoryServeOptions extra = RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_INIT;
+  c.ext = &extra;
+  RLMeshEnvServer* server = nullptr;
+  detail::check_status(
+      rlmesh_ext_env_factory_start(factory.handle(), std::string(address).c_str(), &c, &server));
+  return EnvServer(detail::own<RLMeshEnvServer, rlmesh_env_server_free>(server),
+                   detail::FromLibrary{});
+}
+}  // namespace ext
+
 template <class F>
 class EnvFactory : public EnvFactoryBase {
   static RLMeshEnvFactory* build(EnvFactoryBase& base) {
@@ -5368,6 +5415,7 @@ class Model {
     RLMeshExtModelServeOptions extra = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;
     if (options.ext) {
       extra.token = detail::ptr(options.ext->token);
+      extra.no_signal_handlers = options.ext->no_signal_handlers;
       extra.has_predict_concurrency = options.ext->predict_concurrency.has_value();
       if (options.ext->predict_concurrency)
         extra.predict_concurrency = *options.ext->predict_concurrency;
@@ -5592,6 +5640,16 @@ struct RemoteModelOptions {
     return std::move(*this);
   }
 };
+namespace detail {
+// Own every C output before shared_ptr adoption can allocate or throw.
+inline std::pair<Value, Value> adopt_values(RLMeshValue* observation, RLMeshValue* info) {
+  auto observation_owner = own<RLMeshValue, rlmesh_value_free>(observation);
+  auto info_owner = own<RLMeshValue, rlmesh_value_free>(info);
+  auto first = Value::adopt(observation_owner.release());
+  auto second = Value::adopt(info_owner.release());
+  return {std::move(first), std::move(second)};
+}
+}  // namespace detail
 class RemoteEnv {
   detail::Owned<RLMeshRemoteEnv, rlmesh_remote_env_free> handle_{nullptr, rlmesh_remote_env_free};
   std::optional<specs::EnvContract> contract_{};
@@ -5656,8 +5714,7 @@ class RemoteEnv {
     RLMeshValue* info = nullptr;
     detail::check_status(
         rlmesh_remote_env_reset(raw(), detail::ptr(seed), v ? v->raw() : nullptr, &o, &info));
-    auto observation = Value::adopt(o);
-    auto i = Value::adopt(info);
+    auto [observation, i] = detail::adopt_values(o, info);
     return {std::move(observation), i.as_dict()};
   }
   StepResult step(const Value& action) {
@@ -5666,8 +5723,7 @@ class RemoteEnv {
     double r = 0;
     bool t = false, tr = false;
     detail::check_status(rlmesh_remote_env_step(raw(), action.raw(), &o, &r, &t, &tr, &info));
-    auto observation = Value::adopt(o);
-    auto i = Value::adopt(info);
+    auto [observation, i] = detail::adopt_values(o, info);
     return {std::move(observation), r, t, tr, i.as_dict()};
   }
 };
@@ -5749,8 +5805,7 @@ class RemoteVectorEnv {
     detail::check_status(rlmesh_remote_vector_env_reset(
         raw(), seed ? (seeds.empty() ? &empty : seeds.data()) : nullptr, seeds.size(),
         v ? v->raw() : nullptr, &o, &info));
-    auto observation = Value::adopt(o);
-    auto i = Value::adopt(info);
+    auto [observation, i] = detail::adopt_values(o, info);
     return {std::move(observation), i.as_dict()};
   }
   uint64_t num_envs() const { return rlmesh_remote_vector_env_num_envs(raw()); }
@@ -5766,8 +5821,7 @@ class RemoteVectorEnv {
     size_t len = 0;
     detail::check_status(rlmesh_remote_vector_env_step(raw(), actions.raw(), &o, rewards.data(),
                                                        t.get(), tr.get(), n, &len, &info));
-    auto observation = Value::adopt(o);
-    auto i = Value::adopt(info);
+    auto [observation, i] = detail::adopt_values(o, info);
     return {std::move(observation), std::move(rewards), std::vector<bool>(t.get(), t.get() + len),
             std::vector<bool>(tr.get(), tr.get() + len), i.as_dict()};
   }
@@ -6756,8 +6810,7 @@ class Session {
     RLMeshValue* i = nullptr;
     detail::check_status(
         rlmesh_session_reset(raw(), detail::ptr(seed), detail::ptr(trial_index), &o, &i));
-    auto obs = Value::adopt(o);
-    auto info = Value::adopt(i);
+    auto [obs, info] = detail::adopt_values(o, i);
     return {std::move(obs), info.as_dict()};
   }
   Value predict(const Value& observation) {
@@ -6771,8 +6824,7 @@ class Session {
     double r = 0;
     bool t = false, tr = false;
     detail::check_status(rlmesh_session_step(raw(), action.raw(), &o, &r, &t, &tr, &i));
-    auto obs = Value::adopt(o);
-    auto info = Value::adopt(i);
+    auto [obs, info] = detail::adopt_values(o, i);
     return {std::move(obs), r, t, tr, info.as_dict()};
   }
   RunResult run(const SessionRunOptions& options = {}) {
@@ -7598,12 +7650,111 @@ inline std::string_view to_string(ViewFormat v) {
   }
   return {};
 }
+
+namespace ext {
+inline ResetResult reset(Session& handle, const CancelToken& cancel,
+                         std::optional<int64_t> seed = {},
+                         std::optional<int64_t> trial_index = {}) {
+  RLMeshValue* o = nullptr;
+  RLMeshValue* i = nullptr;
+  detail::check_status(rlmesh_ext_session_reset(handle.raw(), detail::ptr(seed),
+                                                detail::ptr(trial_index), cancel.raw(), &o, &i));
+  auto [obs, info] = detail::adopt_values(o, i);
+  return {std::move(obs), info.as_dict()};
+}
+inline Value predict(Session& handle, const CancelToken& cancel, const Value& observation) {
+  RLMeshValue* p = nullptr;
+  detail::check_status(
+      rlmesh_ext_session_predict(handle.raw(), observation.raw(), cancel.raw(), &p));
+  return Value::adopt(p);
+}
+inline StepResult step(Session& handle, const CancelToken& cancel, const Value& action) {
+  RLMeshValue* o = nullptr;
+  RLMeshValue* i = nullptr;
+  double r = 0;
+  bool t = false, tr = false;
+  detail::check_status(
+      rlmesh_ext_session_step(handle.raw(), action.raw(), cancel.raw(), &o, &r, &t, &tr, &i));
+  auto [obs, info] = detail::adopt_values(o, i);
+  return {std::move(obs), r, t, tr, info.as_dict()};
+}
+inline ResetResult reset(RemoteEnv& handle, const CancelToken& cancel,
+                         std::optional<int64_t> seed = {},
+                         const std::optional<InfoDict>& options = {}) {
+  std::optional<Value> v;
+  if (options) v = Value(*options);
+  RLMeshValue* o = nullptr;
+  RLMeshValue* info = nullptr;
+  detail::check_status(rlmesh_ext_remote_env_reset(
+      handle.raw(), detail::ptr(seed), v ? v->raw() : nullptr, cancel.raw(), &o, &info));
+  auto [observation, i] = detail::adopt_values(o, info);
+  return {std::move(observation), i.as_dict()};
+}
+inline StepResult step(RemoteEnv& handle, const CancelToken& cancel, const Value& action) {
+  RLMeshValue* o = nullptr;
+  RLMeshValue* info = nullptr;
+  double r = 0;
+  bool t = false, tr = false;
+  detail::check_status(
+      rlmesh_ext_remote_env_step(handle.raw(), action.raw(), cancel.raw(), &o, &r, &t, &tr, &info));
+  auto [observation, i] = detail::adopt_values(o, info);
+  return {std::move(observation), r, t, tr, i.as_dict()};
+}
+inline ResetResult reset(RemoteVectorEnv& handle, const CancelToken& cancel,
+                         std::optional<VectorSeed> seed = {},
+                         const std::optional<InfoDict>& options = {}) {
+  std::optional<Value> v;
+  if (options) v = Value(*options);
+  RLMeshValue* o = nullptr;
+  RLMeshValue* info = nullptr;
+  std::vector<int64_t> seeds;
+  if (seed) {
+    if (auto p = std::get_if<int64_t>(&*seed))
+      seeds.push_back(*p);
+    else
+      seeds = std::get<std::vector<int64_t>>(*seed);
+  }
+  int64_t empty = 0;
+  detail::check_status(rlmesh_ext_remote_vector_env_reset(
+      handle.raw(), seed ? (seeds.empty() ? &empty : seeds.data()) : nullptr, seeds.size(),
+      v ? v->raw() : nullptr, cancel.raw(), &o, &info));
+  auto [observation, i] = detail::adopt_values(o, info);
+  return {std::move(observation), i.as_dict()};
+}
+inline VectorStepResult step(RemoteVectorEnv& handle, const CancelToken& cancel,
+                             const Value& actions) {
+  const auto n = static_cast<size_t>(handle.num_envs());
+  std::vector<double> rewards(n);
+  auto t = std::make_unique<bool[]>(n);
+  auto tr = std::make_unique<bool[]>(n);
+  RLMeshValue* o = nullptr;
+  RLMeshValue* info = nullptr;
+  size_t len = 0;
+  detail::check_status(rlmesh_ext_remote_vector_env_step(handle.raw(), actions.raw(), cancel.raw(),
+                                                         &o, rewards.data(), t.get(), tr.get(), n,
+                                                         &len, &info));
+  auto [observation, i] = detail::adopt_values(o, info);
+  return {std::move(observation), std::move(rewards), std::vector<bool>(t.get(), t.get() + len),
+          std::vector<bool>(tr.get(), tr.get() + len), i.as_dict()};
+}
+}  // namespace ext
 namespace ext {
 inline std::string env_server_describe_json(const EnvServer& server) {
   return detail::text(rlmesh_ext_env_server_describe_json, server.raw());
 }
+inline bool unregister_entrypoint(std::string_view name,
+                                  const adapters::ObsTransform* expected = nullptr) {
+  if (name.find('\0') != std::string_view::npos)
+    throw ValueError("entrypoint contains an embedded NUL");
+  bool removed = false;
+  detail::check_status(rlmesh_ext_unregister_entrypoint(
+      std::string(name).c_str(), expected ? expected->raw() : nullptr, &removed));
+  return removed;
+}
 inline void register_entrypoint(std::string_view entrypoint,
                                 const adapters::ObsTransform& transform) {
+  if (entrypoint.find('\0') != std::string_view::npos)
+    throw ValueError("entrypoint contains an embedded NUL");
   detail::check_status(
       rlmesh_ext_register_entrypoint(std::string(entrypoint).c_str(), transform.raw()));
 }

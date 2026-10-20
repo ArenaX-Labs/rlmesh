@@ -1,5 +1,7 @@
 // Executable ABI 5 C++17 parity fixtures. Built with GCC and Clang by test:cxx.
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <iostream>
@@ -7,6 +9,16 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_set>
+#if defined(__unix__) || defined(__APPLE__)
+#include <signal.h>
+#endif
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); \
+      std::abort();                                                        \
+    }                                                                      \
+  } while (false)
 using namespace rlmesh;
 using namespace rlmesh::spaces;
 namespace {
@@ -329,9 +341,15 @@ void session_target_lifetimes() {
     return reservation.address();
   }();
   ext::CancelToken stop;
+#if defined(__unix__) || defined(__APPLE__)
+  struct sigaction before_int{}, before_term{}, during{};
+  assert(sigaction(SIGINT, nullptr, &before_int) == 0);
+  assert(sigaction(SIGTERM, nullptr, &before_term) == 0);
+#endif
   auto server = std::async(std::launch::async, [&] {
     try {
-      served.serve(address, rlmesh::ModelServeOptions{}.with_cancel(stop));
+      served.serve(address, rlmesh::ModelServeOptions{}.with_cancel(stop).with_ext(
+                                ext::ModelServeOptions{}.with_no_signal_handlers(true)));
     } catch (const ext::CancelledError&) {
     }
   });
@@ -347,6 +365,12 @@ void session_target_lifetimes() {
       (void)info;
       assert(s.predict(obs) == Value(0));
       assert(std::get<1>(s.step(0)) == 1);
+#if defined(__unix__) || defined(__APPLE__)
+      assert(sigaction(SIGINT, nullptr, &during) == 0);
+      assert(during.sa_handler == before_int.sa_handler);
+      assert(sigaction(SIGTERM, nullptr, &during) == 0);
+      assert(during.sa_handler == before_term.sa_handler);
+#endif
     }
     {
       auto s =
@@ -633,6 +657,13 @@ void factories_remote_describe() {
   Factory factory;
   auto made = factory.make_env();
   assert(factory.builds == 1);
+  auto factory_server = ext::start(factory, "tcp://127.0.0.1:0");
+  assert(ext::env_server_describe_json(factory_server).find("c++") != std::string::npos);
+  auto second_server = ext::start(factory, "tcp://127.0.0.1:0");
+  assert(rlmesh::run(RANDOM_SAMPLE, factory_server).total_steps() == 2);
+  factory_server.shutdown();
+  assert(rlmesh::run(RANDOM_SAMPLE, second_server).total_steps() == 2);
+  second_server.shutdown();
   Model model(Greedy{});
   assert(model.run(factory).num_episodes() == 1);
   auto description = describe<Greedy>();
@@ -958,6 +989,62 @@ void adapters_readers_recorder() {
     assert(false);
   } catch (const AdapterResolutionError& e) {
     assert(std::string(e.what()).find("unregistered custom input entrypoint") != std::string::npos);
+  }
+  // X-16: owner identity, retained routes, and a live model using that route.
+  {
+    const auto name = "cpp:unregistered:input";
+    auto owner = std::make_shared<int>(42);
+    std::weak_ptr<int> weak = owner;
+    std::optional<ObsTransform> registered;
+    registered.emplace([owner](const Value&) { return vector(static_cast<float>(*owner)); });
+    owner.reset();
+    ObsTransform previous([](const Value&) { return vector(1); });
+    const std::string embedded = std::string(name) + std::string("\0suffix", 7);
+    for (bool registering : {false, true}) {
+      bool rejected = false;
+      try {
+        if (registering)
+          ext::register_entrypoint(embedded, previous);
+        else
+          ext::unregister_entrypoint(embedded);
+      } catch (const ValueError&) {
+        rejected = true;
+      }
+      CHECK(rejected);
+    }
+    ext::register_entrypoint(name, previous);
+    ext::register_entrypoint(name, *registered);
+    CHECK(!ext::unregister_entrypoint(name, &previous));
+    CHECK(!ext::unregister_entrypoint("cpp:unknown"));
+    {
+      Env live(Tagged{});
+      tag(live, tags);
+      Model model([](const Value&) { return vector(0); },
+                  rlmesh::ModelOptions{}.with_spec(missing));
+      auto session = model.session(live, rlmesh::SessionOptions{}.with_trust_entrypoints(true));
+      auto observation = std::get<0>(session.reset());
+      session.predict(observation);  // Resolve before removing the registry's reference.
+      {
+        auto expected = *registered;
+        CHECK(ext::unregister_entrypoint(name, &expected));
+        CHECK(!ext::unregister_entrypoint(name, &expected));
+      }
+      registered.reset();
+      session.predict(observation);
+      CHECK(!weak.expired());
+      try {
+        resolve(tags, space.spec(), space.spec(), missing,
+                rlmesh::adapters::ResolveOptions{}.with_trust_entrypoints(true));
+        CHECK(false);
+      } catch (const AdapterResolutionError&) {
+      }
+    }
+    CHECK(weak.expired());
+    try {
+      ext::unregister_entrypoint("");
+      CHECK(false);
+    } catch (const ValueError&) {
+    }
   }
   auto adapter = resolve(tags, space.spec(), space.spec(), spec);
   auto wrapped = adapter.wrap_predict([](const Value& v) { return v; });

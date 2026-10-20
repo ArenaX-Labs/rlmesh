@@ -1,0 +1,8 @@
+{
+  "name": "RLMesh.Unity.Editor",
+  "rootNamespace": "RLMesh.Unity.Editor",
+  "references": ["RLMesh.Unity"],
+  "includePlatforms": ["Editor"],
+  "overrideReferences": true,
+  "precompiledReferences": ["RLMesh.dll"]
+}

@@ -177,6 +177,10 @@ model.serve("127.0.0.1:50051");  // a model endpoint any RLMesh run can use (blo
 
 Optional members cover `load(const rlmesh::Kwargs&)` (with `rlmesh::Model::from_config<Policy>(config)` to build from a config map), `on_episode_end`, `close`, and static declarations for an adapter `spec`, `load_keys`, `native_chunk` and `workflow_edition`. `rlmesh::ModelOptions` adds hooks and a spec for a lambda.
 
+`rlmesh::ext::start(factory, address, options)` prepares a factory and returns an already-started `EnvServer` with its describe envelope published. It installs no signal handlers. The server owns the made envs; the factory may be reused or destroyed when start returns. Use `wait`, `shutdown` and the server's destructor to control its lifetime. An overlapping session borrow or factory hook throws `RuntimeError`. A failed start closes and releases every made env and leaves the factory reusable. The server keeps watching its cancellation token until it stops; cancellation drains and closes the envs and whichever of `wait` or `shutdown` first observes the stop throws `ext::CancelledError`, once. A shutdown without a firing succeeds. Firings during cleanup after another stop has begun cannot change its result. Both foreground factory `serve` and `ext::start` report the calling C++ host's runtime in PeerInfo and its runtime and compiler in the describe envelope.
+
+For a host that owns process signals, set `rlmesh::ext::ModelServeOptions{}.with_no_signal_handlers(true)` as `ModelServeOptions::ext` before calling `Model::serve`. It still blocks until cancellation or shutdown. The default false installs and restores the foreground SIGINT/SIGTERM handlers.
+
 ### Running and sessions
 
 `model.run(env, options)` and the free function `rlmesh::run(model, env, options)` drive whole episodes and return an `rlmesh::RunResult`: `episodes` (each an `EpisodeResult`), `telemetry`, and `num_episodes()`, `total_steps()`, `mean_reward()` and `success_rate()`. The env argument is an `rlmesh::EnvTarget`, which converts from an address string, a running `EnvServer`, a `RemoteEnv` or `RemoteVectorEnv`, or a local `rlmesh::Env`, `rlmesh::VectorEnv` or factory (served on a private loopback for the run). `rlmesh::run` also takes a `RemoteModel` or `rlmesh::RANDOM_SAMPLE`, a baseline that samples the action space. A run borrows its model and env: it never closes the model, and closes the env only when `close_env` is set.
@@ -288,3 +292,51 @@ The C++ API is **Experimental**. It is header-only and compiled into your progra
 - C API: [README.md](README.md)
 - Rust crate: https://crates.io/crates/rlmesh
 - Python package: https://pypi.org/project/rlmesh/
+
+## Per-call cancellation
+
+`rlmesh::ext::reset(handle, token, ...)` and
+`rlmesh::ext::step(handle, token, action)` accept `Session`, `RemoteEnv` and
+`RemoteVectorEnv` handles and a borrowed `const ext::CancelToken&`.
+`rlmesh::ext::predict(session, token, observation)` cancels a session prediction.
+Reset's seed, trial index and options have the same defaults as the handle's
+ordinary methods. These overloads throw `ext::CancelledError` when either the
+per-call token or the handle token fires; subsequent calls remain allowed.
+
+```cpp
+rlmesh::ext::CancelToken cancel;
+auto result = rlmesh::ext::reset(session, cancel);
+// Another thread may call cancel.cancel() during this operation.
+auto step = rlmesh::ext::step(session, cancel, action);
+```
+
+An idle firing fails the next admitted call using the same token once. A call
+with another token is unaffected, and a call refused as busy or closed leaves
+the firing pending. Each call releases its subscription on return, including
+exceptional returns. The token must live until the call returns.
+
+## Entrypoint registration lifetime
+
+`rlmesh::ext::unregister_entrypoint(name, &transform)` returns true only when it
+removes the registration belonging to that transform. Copies share the same
+construction identity. Omitting the expected transform removes any registration;
+an unknown name or identity mismatch returns false. Empty names throw `ValueError`.
+
+```cpp
+rlmesh::ext::register_entrypoint("plugin:input", transform);
+bool removed = rlmesh::ext::unregister_entrypoint("plugin:input", &transform);
+```
+
+Resolved model and adapter routes retain their own transform references and
+continue working after removal. Subsequent resolves report
+`AdapterResolutionError`. The last reference releases the callable, outside the
+registry lock; a deleter can safely register or unregister another entrypoint.
+Rust exposes the same ownership rule through
+`rlmesh::ext::unregister_entrypoint(name, Some(&transform)) -> Result<bool>`.
+
+Cancellation is checked synchronously after native result processing and each
+subscription is detached under its token lock. A firing before that completion
+boundary reports cancellation even if the polling watcher has not run. With an
+idle token, a firing after completion remains pending for its next call.
+Vector-step actions are validated before subscribing; malformed actions leave
+an idle firing pending.

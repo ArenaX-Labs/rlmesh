@@ -74,6 +74,7 @@ impl ServeOptions {
                 .filter(|edition| !edition.is_empty()),
             compress_responses: self.compress_responses,
             peer_info_extra: extras.peer_info_extra,
+            peer_runtime: None,
         }
     }
 }

@@ -2501,6 +2501,13 @@ RLMESH_API RLMeshStatus rlmesh_adapters_tag(RLMeshEnv* env, const RLMeshEnvTags*
                                             const RLMeshTagOptions* options);
 RLMESH_API RLMeshStatus rlmesh_adapters_tag_vector(RLMeshVectorEnv* env, const RLMeshEnvTags* tags,
                                                    const RLMeshTagOptions* options);
+/* Remove only expected's registration (NULL = any). Existing routes keep theirs.
+ * Writes false to out_removed before validation when it is non-NULL.
+ * Empty/NULL names and NULL out_removed are invalid. Foreign deleters run after
+ * releasing the registry lock. */
+RLMESH_API RLMeshStatus rlmesh_ext_unregister_entrypoint(const char* entrypoint,
+                                                         const RLMeshObsTransform* expected,
+                                                         bool* out_removed);
 RLMESH_API RLMeshStatus rlmesh_ext_register_entrypoint(const char* entrypoint,
                                                        const RLMeshObsTransform* transform);
 
@@ -2771,15 +2778,36 @@ RLMESH_API RLMeshStatus rlmesh_ext_cancel_token_clone(const RLMeshExtCancelToken
 RLMESH_API RLMeshStatus rlmesh_ext_cancel_token_cancel(RLMeshExtCancelToken* ext_cancel_token);
 RLMESH_API void rlmesh_ext_cancel_token_free(RLMeshExtCancelToken* ext_cancel_token);
 
+/* Optional host fields for foreground and background factory serves. NULL keeps
+ * the legacy C identity. Each JSON field is optional; unknown fields fail. */
+typedef struct RLMeshExtEnvFactoryServeOptions {
+  size_t struct_size;
+  const char* host_runtime_json;
+} RLMeshExtEnvFactoryServeOptions;
+/* Supplies the caller's host runtime; on MSVC valid only for automatic storage. */
+#define RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_INIT \
+  {sizeof(RLMeshExtEnvFactoryServeOptions), RLMESH_HOST_RUNTIME_JSON}
+#define RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshExtEnvFactoryServeOptions)
+
 typedef struct RLMeshEnvFactoryServeOptions {
   size_t struct_size;
-  int64_t num_envs;               /* 1; <= 1 serves one env */
-  const char* workflow_edition;   /* NULL/""/blank = None */
-  const RLMeshValue* make_kwargs; /* DICT; NULL = {} */
-  RLMeshExtCancelToken* cancel;   /* NULL = none, borrowed for the call */
+  int64_t num_envs;                           /* 1; <= 1 serves one env */
+  const char* workflow_edition;               /* NULL/""/blank = None */
+  const RLMeshValue* make_kwargs;             /* DICT; NULL = {} */
+  RLMeshExtCancelToken* cancel;               /* NULL = none, borrowed for the call */
+  uint64_t _reserved;                         /* 0; appended at the ABI-5 sizeof */
+  const RLMeshExtEnvFactoryServeOptions* ext; /* NULL = legacy C runtime */
+#if UINTPTR_MAX == UINT32_MAX
+  uint8_t _reserved1[4]; /* Explicit tail for 32-bit ABIs with 8-byte uint64 alignment. */
+#endif
 } RLMeshEnvFactoryServeOptions;
+#if UINTPTR_MAX == UINT32_MAX
 #define RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT \
-  {sizeof(RLMeshEnvFactoryServeOptions), 1, NULL, NULL, NULL}
+  {sizeof(RLMeshEnvFactoryServeOptions), 1, NULL, NULL, NULL, 0, NULL, {0}}
+#else
+#define RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT \
+  {sizeof(RLMeshEnvFactoryServeOptions), 1, NULL, NULL, NULL, 0, NULL}
+#endif
 
 typedef struct RLMeshTagParam {
   size_t struct_size;
@@ -2841,6 +2869,18 @@ RLMESH_API RLMeshStatus rlmesh_env_factory_close(RLMeshEnvFactory* factory);
 RLMESH_API RLMeshStatus
 rlmesh_env_factory_serve(RLMeshEnvFactory* factory, const char* address,
                          const RLMeshEnvFactoryServeOptions* options /* NULL = INIT */);
+/* Runs preparation, make/stamping, binding and describe publication on this
+ * thread, then starts all lanes on library threads without signal handlers.
+ * On success the caller owns *out and may immediately reuse/free the factory.
+ * The server closes made envs on shutdown; free it to release them. It watches
+ * a clone of cancel until serving stops; wait or shutdown reports cancellation
+ * once, whichever observes it first. A session borrow or another hook in
+ * progress refuses with RLMESH_ERR_RUNTIME. On failure *out is NULL and made
+ * envs are closed and freed. The factory itself is never closed. */
+RLMESH_API RLMeshStatus rlmesh_ext_env_factory_start(
+    RLMeshEnvFactory* factory, const char* address,
+    const RLMeshEnvFactoryServeOptions* options /* NULL = INIT */, RLMeshEnvServer** out);
+
 /* Factory describe functions build metadata envelopes;
  * rlmesh_ext_env_server_describe_json reads the server's resolved env. */
 
@@ -2897,7 +2937,7 @@ RLMESH_API RLMeshStatus rlmesh_variant_set_metadata(RLMeshVariant* variant,
  * frees it. */
 RLMESH_API RLMeshStatus rlmesh_variant_sink_push(RLMeshVariantSink* sink, RLMeshVariant* variant);
 
-#define RLMESH_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshEnvFactoryServeOptions)
+#define RLMESH_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE offsetof(RLMeshEnvFactoryServeOptions, _reserved)
 
 #define RLMESH_TAG_PARAM_MIN_SIZE sizeof(RLMeshTagParam)
 
@@ -3029,9 +3069,11 @@ typedef struct RLMeshExtModelServeOptions {
   size_t predict_concurrency;
   bool has_predict_concurrency;
   uint8_t _reserved[sizeof(size_t) - 1];
+  bool no_signal_handlers; /* false installs handlers; appended at ABI-5 sizeof */
+  uint8_t _reserved1[sizeof(size_t) - 1];
 } RLMeshExtModelServeOptions;
 #define RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT \
-  {sizeof(RLMeshExtModelServeOptions), NULL, 0, false, {0}}
+  {sizeof(RLMeshExtModelServeOptions), NULL, 0, false, {0}, false, {0}}
 
 typedef struct RLMeshModelServeOptions {
   size_t struct_size;
@@ -3068,7 +3110,8 @@ RLMESH_API int64_t rlmesh_predict_seed(int64_t episode_seed, uint64_t predict_in
 
 #define RLMESH_MODEL_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshModelServeOptions)
 
-#define RLMESH_EXT_MODEL_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshExtModelServeOptions)
+#define RLMESH_EXT_MODEL_SERVE_OPTIONS_MIN_SIZE \
+  offsetof(RLMeshExtModelServeOptions, no_signal_handlers)
 
 /* ---- Describe (facade) -------------------------------------------------- */
 typedef enum RLMeshDescribeKind {
@@ -3532,6 +3575,48 @@ RLMESH_API void rlmesh_session_free(RLMeshSession* session);
 /* ---- Remote clients ----------------------------------------------------- */
 typedef struct RLMeshRemoteEnv RLMeshRemoteEnv;
 typedef struct RLMeshRemoteVectorEnv RLMeshRemoteVectorEnv;
+
+/* Per-call cancellation: NULL matches the ordinary call. Borrowed for the call. */
+RLMESH_API RLMeshStatus rlmesh_ext_session_reset(RLMeshSession* session, const int64_t* seed,
+                                                 const int64_t* trial_index,
+                                                 const RLMeshExtCancelToken* cancel,
+                                                 RLMeshValue** out_observation,
+                                                 RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_ext_session_predict(RLMeshSession* session,
+                                                   const RLMeshValue* observation,
+                                                   const RLMeshExtCancelToken* cancel,
+                                                   RLMeshValue** out_action);
+RLMESH_API RLMeshStatus rlmesh_ext_session_step(RLMeshSession* session, const RLMeshValue* action,
+                                                const RLMeshExtCancelToken* cancel,
+                                                RLMeshValue** out_observation, double* out_reward,
+                                                bool* out_terminated, bool* out_truncated,
+                                                RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_ext_remote_env_reset(RLMeshRemoteEnv* remote_env,
+                                                    const int64_t* seed, const RLMeshValue* options,
+                                                    const RLMeshExtCancelToken* cancel,
+                                                    RLMeshValue** out_observation,
+                                                    RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_ext_remote_env_step(RLMeshRemoteEnv* remote_env,
+                                                   const RLMeshValue* action,
+                                                   const RLMeshExtCancelToken* cancel,
+                                                   RLMeshValue** out_observation,
+                                                   double* out_reward, bool* out_terminated,
+                                                   bool* out_truncated, RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_reset(RLMeshRemoteVectorEnv* remote_vector_env,
+                                                           const int64_t* seed, size_t seed_len,
+                                                           const RLMeshValue* options,
+                                                           const RLMeshExtCancelToken* cancel,
+                                                           RLMeshValue** out_observation,
+                                                           RLMeshValue** out_info);
+/* A short capacity fails before I/O and leaves ALL outputs untouched. */
+RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_step(RLMeshRemoteVectorEnv* remote_vector_env,
+                                                          const RLMeshValue* actions,
+                                                          const RLMeshExtCancelToken* cancel,
+                                                          RLMeshValue** out_observation,
+                                                          double* out_rewards, bool* out_terminated,
+                                                          bool* out_truncated, size_t capacity,
+                                                          size_t* out_len, RLMeshValue** out_info);
+
 typedef struct RLMeshRemoteModel RLMeshRemoteModel;
 typedef struct RLMeshRemoteEnvOptions {
   size_t struct_size;

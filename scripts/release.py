@@ -176,16 +176,38 @@ def publish_crates(version: str) -> None:
     print(f"crates.io publish complete for {version}")
 
 
-def capi_tarballs(version: str) -> list[Path]:
-    """The C/C++ package tarballs `release:cxx:package` built for this version."""
-    pkg = ROOT / "target" / "capi-pkg"
-    tarballs = sorted(pkg.glob(f"rlmesh-{version}-*.tar.gz"))
-    if not tarballs:
-        sys.exit(
-            f"no C/C++ package for {version} in {pkg}: run `mise run release:cxx:package` "
-            "(CI downloads it from the wheels-linux job)"
+def distribution_assets(version: str, root: Path = ROOT) -> list[Path]:
+    """Require all release distributions before creating or updating a Release."""
+    paths = [
+        root / "target/capi-pkg" / f"rlmesh-{version}-{triple}.tar.gz"
+        for triple in (
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "universal-apple-darwin",
         )
-    return tarballs
+    ]
+    paths += [
+        root / "target/csharp-pkg" / name
+        for name in (
+            f"RLMesh.{version}.nupkg",
+            f"RLMesh.{version}.snupkg",
+            f"com.rlmesh.rlmesh-{version}.tgz",
+        )
+    ]
+    missing = [str(path) for path in paths if not path.is_file()]
+    if missing:
+        sys.exit(
+            "missing release distributions (download both capi builds and run csharp:pack/upm --require-all): "
+            + ", ".join(missing)
+        )
+    return paths
+
+
+def release_scratch() -> Path:
+    """Keep release-driver scratch under the user's cache, including self-checks."""
+    path = Path.home() / ".cache/rlmesh-release/tmp"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _sha256(path: Path) -> str:
@@ -202,12 +224,12 @@ def _write_checksum(tarball: Path, digest: str) -> Path:
     return checksum
 
 
-def capi_uploads(
+def distribution_uploads(
     tarball: Path, present: set[str], fetch_published: Callable[[str], Path]
 ) -> list[Path]:
-    """What a re-run uploads for one tarball so the release's tarball and checksum agree.
+    """Return missing asset/checksum halves without replacing published bytes.
 
-    A published tarball is never replaced (FetchContent users pin its SHA-256), and
+    A published distribution is never replaced (consumers pin its SHA-256), and
     this run's tarball is a rebuild whose bytes can differ (archive timestamps), so
     a missing half is derived from the published half, never from the rebuild.
     """
@@ -232,7 +254,7 @@ def capi_uploads(
 
 def github_release(version: str) -> None:
     tag = f"v{version}"
-    tarballs = capi_tarballs(version)
+    tarballs = distribution_assets(version)
     if (
         subprocess.run(
             ["gh", "release", "view", tag], cwd=ROOT, capture_output=True
@@ -245,7 +267,7 @@ def github_release(version: str) -> None:
                 "gh", "release", "view", tag, "--json", "assets", "-q", ".assets[].name"
             ).split()
         )
-        with tempfile.TemporaryDirectory() as downloads:
+        with tempfile.TemporaryDirectory(dir=release_scratch()) as downloads:
 
             def fetch_published(name: str) -> Path:
                 run("gh", "release", "download", tag, "--pattern", name, "--dir", downloads)
@@ -254,7 +276,7 @@ def github_release(version: str) -> None:
             missing = [
                 str(asset)
                 for tarball in tarballs
-                for asset in capi_uploads(tarball, present, fetch_published)
+                for asset in distribution_uploads(tarball, present, fetch_published)
             ]
         if missing:
             run("gh", "release", "upload", tag, *missing)
@@ -281,7 +303,41 @@ def github_release(version: str) -> None:
     print(f"cut GitHub Release {tag}")
 
 
+def check_capi_artifact_paths(workflow: str) -> list[str]:
+    """C API uploads must extract directly into publish's target/capi-pkg."""
+    errors = []
+    for step in re.split(r"^      - name:", workflow, flags=re.MULTILINE)[1:]:
+        if not re.search(
+            r"^        uses: actions/upload-artifact@", step, re.MULTILINE
+        ):
+            continue
+        name = re.search(r"^          name: (capi-[^\n]+)$", step, re.MULTILINE)
+        if not name:
+            continue
+        paths = re.search(
+            r"^          path: \|\n((?:            [^\n]+\n)+)", step, re.MULTILINE
+        )
+        if not paths or any(
+            not line.strip().startswith("target/capi-pkg/")
+            or "/" in line.strip()[len("target/capi-pkg/") :]
+            for line in paths[1].splitlines()
+        ):
+            errors.append(
+                f"{name[1]} must upload only direct children of target/capi-pkg; mixed roots nest assets on download"
+            )
+    return errors
+
+
 def selfcheck() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text()
+    assert not check_capi_artifact_paths(workflow), check_capi_artifact_paths(workflow)
+    broken = workflow.replace(
+        "            target/capi-pkg/*.tar.gz.sha256",
+        "            target/capi-pkg/*.tar.gz.sha256\n            target/macos-universal/notarization.json",
+        1,
+    )
+    assert check_capi_artifact_paths(broken), "mixed upload roots must be refused"
+    run(sys.executable, "scripts/test_release_macos.py")
     text = "## [1.0.0]\n- a change\n\n[Unreleased]: http://x\n[1.0.0]: http://x\n"
     m = re.search(
         r"^## \[1\.0\.0\][^\n]*\n(.*?)(?=^## |^\[[^\]]+\]: http|\Z)",
@@ -289,12 +345,49 @@ def selfcheck() -> None:
         re.DOTALL | re.MULTILINE,
     )
     assert "http" not in m.group(1), "changelog_section leaked link-reference lines"
-    _selfcheck_capi_uploads()
+    _selfcheck_distribution_uploads()
+    with tempfile.TemporaryDirectory(dir=release_scratch()) as tmp:
+        root = Path(tmp)
+        try:
+            distribution_assets("1.0.0", root)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("missing release distributions must be refused")
+        for directory, names in {
+            "capi-pkg": [
+                f"rlmesh-1.0.0-{triple}.tar.gz"
+                for triple in (
+                    "x86_64-unknown-linux-gnu",
+                    "x86_64-pc-windows-msvc",
+                    "universal-apple-darwin",
+                )
+            ],
+            "csharp-pkg": [
+                "RLMesh.1.0.0.nupkg",
+                "RLMesh.1.0.0.snupkg",
+                "com.rlmesh.rlmesh-1.0.0.tgz",
+            ],
+        }.items():
+            path = root / "target" / directory
+            path.mkdir(parents=True)
+            for name in names:
+                (path / name).write_bytes(b"release fixture")
+        assets = distribution_assets("1.0.0", root)
+        assert len(assets) == 6
+        for asset in assets:
+            uploads = distribution_uploads(asset, set(), lambda _: asset)
+            assert uploads == [asset, _checksum_path(asset)]
+            assert _checksum_path(asset).read_text().split()[0] == _sha256(asset)
+            assert (
+                distribution_uploads(asset, {p.name for p in uploads}, lambda _: asset)
+                == []
+            )
     print("release self-check passed")
 
 
-def _selfcheck_capi_uploads() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+def _selfcheck_distribution_uploads() -> None:
+    with tempfile.TemporaryDirectory(dir=release_scratch()) as tmp:
         root = Path(tmp)
         tarball = root / "rlmesh-1.0.0-x.tar.gz"
         tarball.write_bytes(b"rebuilt bytes")
@@ -307,18 +400,18 @@ def _selfcheck_capi_uploads() -> None:
             return published / name
 
         name, checksum = tarball.name, f"{tarball.name}.sha256"
-        assert capi_uploads(tarball, {name, checksum}, fetch) == []
+        assert distribution_uploads(tarball, {name, checksum}, fetch) == []
         # Tarball published, checksum lost: the checksum describes the published bytes.
-        (uploaded,) = capi_uploads(tarball, {name}, fetch)
+        (uploaded,) = distribution_uploads(tarball, {name}, fetch)
         assert uploaded.read_text().split()[0] == hashlib.sha256(b"published bytes").hexdigest()
         # Checksum published for other bytes: refuse rather than pair it with a rebuild.
         try:
-            capi_uploads(tarball, {checksum}, fetch)
+            distribution_uploads(tarball, {checksum}, fetch)
         except SystemExit:
             pass
         else:
             raise AssertionError("a mismatched published checksum must be refused")
-        both = capi_uploads(tarball, set(), fetch)
+        both = distribution_uploads(tarball, set(), fetch)
         assert both[0] == tarball
         assert both[1].read_text().split()[0] == hashlib.sha256(b"rebuilt bytes").hexdigest()
 

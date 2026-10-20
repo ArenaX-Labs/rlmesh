@@ -1,9 +1,8 @@
 name: Release
 
-# Tag push vX.Y.Z -> build the full wheel matrix (Linux + macOS runners), system-test
-# the built artifacts on each platform, then publish: crates.io + PyPI via OIDC
-# trusted publishing, and the GitHub Release with the C/C++ packages (Linux and Windows) attached. workflow_dispatch on a tag re-runs it;
-# the ref guard keeps branch dispatches from burning the wheel matrix for nothing.
+# Tags build Linux/Windows/macOS wheels, C/C++ tarballs and NuGet/Unity packages.
+# Publish crates.io, PyPI and configured nuget.org via OIDC, plus GitHub assets.
+# workflow_dispatch only runs on tags; re-run failed jobs to preserve built bytes.
 
 on:
   workflow_dispatch:
@@ -18,6 +17,7 @@ permissions:
 # that developer machines also write to (RUSTC_WRAPPER in mise.toml).
 env:
   RLMESH_SCCACHE: "0"
+  RLMESH_RELEASE_BUILD: "1"
 
 jobs:
   wheels-linux:
@@ -61,6 +61,12 @@ jobs:
       # Cross-built from Linux, like the Windows wheels: no Windows runner.
       - name: Package the C/C++ library for Windows (MSVC)
         run: mise run --skip-tools release:cxx:package --target windows
+
+      - name: Build preliminary NuGet and Unity packages
+        timeout-minutes: 10
+        run: |
+          mise run --skip-tools csharp:pack
+          mise run --skip-tools csharp:upm
 
       - name: Upload the C/C++ package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -110,12 +116,81 @@ jobs:
           path: python/rlmesh/dist/*.whl
           if-no-files-found: error
 
+      - name: Build universal macOS C library
+        timeout-minutes: 40
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build -p rlmesh-capi --release --lib --target aarch64-apple-darwin
+          cargo build -p rlmesh-capi --release --lib --target x86_64-apple-darwin
+          mkdir -p target/macos-universal
+          lipo -create target/aarch64-apple-darwin/release/librlmesh_capi.dylib target/x86_64-apple-darwin/release/librlmesh_capi.dylib -output target/macos-universal/librlmesh_capi.dylib
+          lipo -create target/aarch64-apple-darwin/release/librlmesh_capi.a target/x86_64-apple-darwin/release/librlmesh_capi.a -output target/macos-universal/librlmesh_capi.a
+          library=target/macos-universal/librlmesh_capi.dylib
+          if [[ "$(otool -D "$library" | tail -1)" != '@rpath/librlmesh_capi.dylib' ]]; then
+            install_name_tool -id @rpath/librlmesh_capi.dylib "$library"
+          fi
+
+      - name: Sign the universal macOS library
+        id: macos-sign
+        timeout-minutes: 5
+        env:
+          RLMESH_ALLOW_UNSIGNED_MACOS: ${{ vars.RLMESH_ALLOW_UNSIGNED_MACOS }}
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/release-macos-sign.sh sign
+
+      - name: Notarize the universal macOS library
+        if: steps.macos-sign.outputs.notarize == 'true'
+        timeout-minutes: 17
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/release-macos-sign.sh notarize
+
+      - name: Upload macOS notarization evidence
+        if: always() && steps.macos-sign.outputs.notarize == 'true'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-notarization
+          path: target/macos-universal/notarization*.json
+          if-no-files-found: warn
+
+      - name: Delete the temporary signing keychain
+        if: always()
+        timeout-minutes: 2
+        run: bash scripts/release-macos-sign.sh cleanup
+
+      - name: Package the macOS C/C++ library
+        timeout-minutes: 5
+        run: mise run --skip-tools release:cxx:package --target macos
+
+      - name: Smoke test the macOS C/C++ package
+        timeout-minutes: 5
+        run: bash scripts/release-macos-smoke.sh
+
+      - name: Upload the macOS C/C++ package
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: capi-macos
+          path: |
+            target/capi-pkg/*.tar.gz
+            target/capi-pkg/*.tar.gz.sha256
+          if-no-files-found: error
+
       - name: Minimize uv cache
         if: always()
         run: uv cache prune --ci
 
   publish:
-    name: Publish crates.io + PyPI + GitHub Release
+    name: Publish crates.io + PyPI + NuGet + GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: depot-ubuntu-24.04-4
     needs: [wheels-linux, wheels-macos]
@@ -144,8 +219,17 @@ jobs:
       - name: Download the C/C++ package
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: capi-linux
+          pattern: capi-*
+          merge-multiple: true
           path: target/capi-pkg
+
+      # Both builders have completed: require all four RIDs and preserve the
+      # signed/notarized macOS bytes from the C tarball.
+      - name: Assemble final NuGet and Unity release packages
+        timeout-minutes: 10
+        run: |
+          mise run --skip-tools csharp:pack --require-all
+          mise run --skip-tools csharp:upm --require-all
 
       - name: Package crates
         run: mise run --skip-tools release:rust:package
@@ -160,7 +244,6 @@ jobs:
       - name: Publish crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
-          RLMESH_RELEASE_BUILD: "1"
         run: python scripts/release.py "${GITHUB_REF_NAME#v}" --publish-crates
 
       - name: Publish wheels to PyPI
@@ -168,6 +251,29 @@ jobs:
         with:
           packages-dir: python/rlmesh/dist
           skip-existing: true
+
+      - name: Authenticate to nuget.org with trusted publishing
+        id: nuget-login
+        if: vars.NUGET_USER != ''
+        timeout-minutes: 2
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: Publish NuGet package and symbols
+        if: vars.NUGET_USER != ''
+        timeout-minutes: 5
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: |
+          # Keep the temporary key in the environment; do not enable tracing.
+          mise -C csharp exec -- dotnet nuget push "$GITHUB_WORKSPACE/target/csharp-pkg/*.nupkg" --no-symbols --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          mise -C csharp exec -- dotnet nuget push "$GITHUB_WORKSPACE/target/csharp-pkg/*.snupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Note nuget.org publishing is not configured
+        if: vars.NUGET_USER == ''
+        timeout-minutes: 1
+        run: echo '::notice::nuget.org publishing skipped; configure the trusted publishing policy and NUGET_USER repository variable to enable it.'
 
       - name: Create GitHub Release
         env:

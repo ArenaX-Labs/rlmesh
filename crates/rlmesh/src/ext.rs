@@ -310,11 +310,20 @@ impl CancelSubscription {
                     != self.generation)
     }
 
-    pub(crate) fn unsubscribe(&self) {
+    /// Observe the final generation and detach under the same token lock.
+    /// A firing after this boundary is idle (or reaches other subscribers).
+    pub(crate) fn finish(&self) -> bool {
         let mut state = self.token.0.lock().unwrap_or_else(|err| err.into_inner());
         if self.active.swap(false, std::sync::atomic::Ordering::SeqCst) {
             state.subscribers -= 1;
+            self.pending || state.generation != self.generation
+        } else {
+            false
         }
+    }
+
+    pub(crate) fn unsubscribe(&self) {
+        self.finish();
     }
 }
 
@@ -330,6 +339,17 @@ pub fn register_entrypoint(name: &str, transform: crate::adapters::ObsTransform)
     crate::adapters::register(name, transform)
 }
 
+/// Remove a trusted entrypoint when its transform has `expected`'s construction
+/// identity, or remove any registration when `expected` is `None`. Resolved
+/// routes keep their clones. Empty names are refused; unknown names return false.
+/// The removed transform is released outside the registry lock.
+pub fn unregister_entrypoint(
+    name: &str,
+    expected: Option<&crate::adapters::ObsTransform>,
+) -> Result<bool> {
+    crate::adapters::unregister(name, expected)
+}
+
 #[cfg(unix)]
 pub use crate::address::remove_stale_socket;
 /// Native endpoint parsing and stale Unix socket cleanup.
@@ -342,6 +362,38 @@ pub const MODEL_ENDPOINT_TOKEN_ENV: &str = "RLMESH_MODEL_ENDPOINT_TOKEN";
 #[cfg(test)]
 mod cancellation_regressions {
     use super::*;
+
+    #[test]
+    fn completion_observes_a_firing_without_polling_and_detaches_atomically() {
+        let token = CancelToken::new();
+        let watch = crate::run::drive::CancelWatch::start(
+            vec![token.clone()],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        token.cancel();
+        assert_eq!(watch.finish(Ok(42)), Err(crate::Error::Cancelled));
+        token.cancel();
+        assert!(token.take());
+        assert!(!token.take());
+    }
+
+    #[test]
+    fn admission_subscription_retains_a_firing_before_watcher_creation() {
+        let token = CancelToken::new();
+        let subscription = token.subscribe();
+        token.cancel();
+        let result = crate::run::drive::CancelWatch::from_subscriptions(
+            vec![subscription],
+            tokio_util::sync::CancellationToken::new(),
+        );
+        assert!(matches!(result, Err(crate::Error::Cancelled)));
+        assert_eq!(token.0.lock().unwrap().subscribers, 0);
+        // A constructor that returns early must release even its fired input.
+        token.cancel();
+        assert!(token.take());
+        assert!(!token.take());
+    }
 
     #[test]
     fn idle_cancel_after_a_finished_call_is_pending_even_before_its_watcher_exits() {

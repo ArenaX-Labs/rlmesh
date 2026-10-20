@@ -67,6 +67,16 @@ pub struct RLMeshEnvFactoryServeOptions {
     pub workflow_edition: *const c_char,
     pub make_kwargs: *const RLMeshValue,
     pub cancel: *const RLMeshExtCancelToken,
+    pub _reserved: u64,
+    pub ext: *const RLMeshExtEnvFactoryServeOptions,
+    #[cfg(target_pointer_width = "32")]
+    pub _reserved1: [u8; 4],
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RLMeshExtEnvFactoryServeOptions {
+    pub struct_size: usize,
+    pub host_runtime_json: *const c_char,
 }
 type GateCollection = Arc<Mutex<Vec<MadeGate>>>;
 struct Data {
@@ -122,11 +132,24 @@ fn enter(f: &RLMeshEnvFactory) -> Result<Busy, CapiError> {
 // binding supplies this C instance while the facade invokes those functions.
 // Every C factory operation is sync; the facade runs its pre-serve hooks on
 // this calling thread. Nested calls on another factory restore the old scope.
-thread_local! {static CURRENT:RefCell<Vec<Arc<Data>>>=const {RefCell::new(Vec::new())};}
+struct ScopeFrame {
+    data: Arc<Data>,
+    gates: Option<GateCollection>,
+}
+thread_local! {static CURRENT:RefCell<Vec<ScopeFrame>>=const {RefCell::new(Vec::new())};}
 pub(crate) struct Scope;
 impl Scope {
     fn new(data: Arc<Data>) -> Self {
-        CURRENT.with(|s| s.borrow_mut().push(data));
+        CURRENT.with(|s| s.borrow_mut().push(ScopeFrame { data, gates: None }));
+        Self
+    }
+    fn with_gates(data: Arc<Data>, gates: GateCollection) -> Self {
+        CURRENT.with(|s| {
+            s.borrow_mut().push(ScopeFrame {
+                data,
+                gates: Some(gates),
+            })
+        });
         Self
     }
 }
@@ -138,11 +161,25 @@ impl Drop for Scope {
 fn current() -> Arc<Data> {
     CURRENT.with(|s| {
         Arc::clone(
-            s.borrow()
+            &s.borrow()
                 .last()
-                .expect("factory operation has a binding scope"),
+                .expect("factory operation has a binding scope")
+                .data,
         )
     })
+}
+fn current_gates(data: &Data) -> Option<GateCollection> {
+    CURRENT
+        .with(|s| s.borrow().last().and_then(|frame| frame.gates.clone()))
+        .or_else(|| {
+            data.serve_gates
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        })
+}
+fn start_gates() -> Option<GateCollection> {
+    CURRENT.with(|s| s.borrow().last().and_then(|frame| frame.gates.clone()))
 }
 #[derive(Default)]
 struct Factory;
@@ -220,8 +257,7 @@ impl EnvFactory for Factory {
         let status =
             unsafe { d.vt.make.expect("validated make")(d.ud, &kwargs, &mut env, &mut vector) };
         let error = (status != 0).then(|| ffi::callback_error("env"));
-        // Reclaim every output on failure too. Dropping a handle never closes
-        // its env, matching factory's ownership rule.
+        // Always reclaim outputs, including rejected successful make results.
         let env = if env.is_null() {
             None
         } else {
@@ -232,6 +268,21 @@ impl EnvFactory for Factory {
         } else {
             Some(unsafe { Box::from_raw(vector) })
         };
+        if (error.is_some() || (env.is_some() && vector.is_some())) && start_gates().is_some() {
+            // Only background start promises close-on-rejected-output. Existing
+            // foreground/session behaviour is unchanged, and a leased env is
+            // owned by another operation and must never be closed here.
+            if let Some(env) = &env
+                && !env.leased.load(Ordering::Acquire)
+            {
+                let _ = env.inner.lock().unwrap_or_else(|e| e.into_inner()).close();
+            }
+            if let Some(env) = &vector
+                && !env.leased.load(Ordering::Acquire)
+            {
+                let _ = env.inner.lock().unwrap_or_else(|e| e.into_inner()).close();
+            }
+        }
         if let Some(error) = error {
             return Err(error);
         }
@@ -240,11 +291,7 @@ impl EnvFactory for Factory {
                 if env.leased.load(Ordering::Acquire) {
                     return Err(Error::Runtime("factory returned a busy env".into()));
                 }
-                let gates = d
-                    .serve_gates
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
+                let gates = current_gates(&d);
                 match gates {
                     None => Ok(MadeEnv::env(env.inner)),
                     Some(gates) => {
@@ -264,11 +311,7 @@ impl EnvFactory for Factory {
                 if env.leased.load(Ordering::Acquire) {
                     return Err(Error::Runtime("factory returned a busy vector env".into()));
                 }
-                let gates = d
-                    .serve_gates
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
+                let gates = current_gates(&d);
                 match gates {
                     None => Ok(MadeEnv::vector(env.inner)),
                     Some(gates) => {
@@ -585,6 +628,7 @@ pub unsafe extern "C" fn rlmesh_env_factory_serve(
         let address =
             unsafe { ffi::text(address) }?.ok_or_else(|| CapiError::invalid_arg("null address"))?;
         let o = unsafe { sizing::read(options, "RLMeshEnvFactoryServeOptions") }?;
+        let host = factory_host(o.as_ref())?;
         let opts = match o {
             None => rlmesh::EnvFactoryServeOptions::default(),
             Some(o) => rlmesh::EnvFactoryServeOptions {
@@ -595,8 +639,65 @@ pub unsafe extern "C" fn rlmesh_env_factory_serve(
             },
         };
         let _drain = ServeDrain::new(Arc::clone(&f.data));
-        rlmesh::binding::env_factory_native_serve(&mut Factory, &address, opts)?;
+        rlmesh::binding::env_factory_native_serve(&mut Factory, &address, opts, host)?;
         Ok(())
+    })
+}
+/// Parse host fields before the facade begins preparation.
+fn factory_host(
+    options: Option<&RLMeshEnvFactoryServeOptions>,
+) -> Result<serde_json::Map<String, serde_json::Value>, CapiError> {
+    let Some(o) = options else {
+        return Ok(Default::default());
+    };
+    if o._reserved != 0 {
+        return Err(CapiError::invalid_arg(
+            "RLMeshEnvFactoryServeOptions._reserved must be zero",
+        ));
+    }
+    // SAFETY: options and its extension are caller-provided sized input structs.
+    let ext = unsafe { sizing::read(o.ext, "RLMeshExtEnvFactoryServeOptions") }?;
+    let host = ext
+        .map(|e| unsafe { ffi::text(e.host_runtime_json) })
+        .transpose()?
+        .flatten();
+    Ok(host
+        .as_deref()
+        .map(crate::describe::host_runtime)
+        .transpose()?
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_env_factory_start(
+    factory: *mut RLMeshEnvFactory,
+    address: *const c_char,
+    options: *const RLMeshEnvFactoryServeOptions,
+    out: *mut *mut crate::env_server::RLMeshEnvServer,
+) -> RLMeshStatus {
+    guard(|| {
+        // SAFETY: the caller supplies writable output storage and live inputs.
+        unsafe { write_out(out, std::ptr::null_mut()) }?;
+        let f = unsafe { require(factory) }?;
+        let _busy = enter(f)?;
+        let drain = ServeDrain::independent();
+        let _scope = Scope::with_gates(Arc::clone(&f.data), Arc::clone(&drain.gates));
+        let address =
+            unsafe { ffi::text(address) }?.ok_or_else(|| CapiError::invalid_arg("null address"))?;
+        let o = unsafe { sizing::read(options, "RLMeshEnvFactoryServeOptions") }?;
+        let host = factory_host(o.as_ref())?;
+        let opts = match o {
+            None => rlmesh::EnvFactoryServeOptions::default(),
+            Some(o) => rlmesh::EnvFactoryServeOptions {
+                num_envs: o.num_envs,
+                workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
+                make_kwargs: ffi::dict(o.make_kwargs)?.unwrap_or_default(),
+                cancel: unsafe { o.cancel.as_ref() }.map(|t| t.0.clone()),
+            },
+        };
+        let server = rlmesh::binding::env_factory_native_start(&mut Factory, &address, opts, host)?;
+        crate::env_server::factory_output(server, drain, out)
     })
 }
 struct Entry {
@@ -673,24 +774,35 @@ enum MadeGate {
     Env(BorrowedEnv),
     Vector(BorrowedVectorEnv),
 }
-struct ServeDrain(Arc<Data>);
+pub(crate) struct ServeDrain {
+    data: Option<Arc<Data>>,
+    gates: GateCollection,
+}
 impl ServeDrain {
     fn new(data: Arc<Data>) -> Self {
-        *data.serve_gates.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Arc::new(Mutex::new(Vec::new())));
-        Self(data)
+        let gates = Arc::new(Mutex::new(Vec::new()));
+        *data.serve_gates.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&gates));
+        Self {
+            data: Some(data),
+            gates,
+        }
+    }
+    fn independent() -> Self {
+        Self {
+            data: None,
+            gates: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 impl Drop for ServeDrain {
     fn drop(&mut self) {
-        let gates = self
-            .0
-            .serve_gates
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-            .expect("serve owns its gate collection");
-        let gates = gates.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(data) = self.data.take() {
+            data.serve_gates
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+        }
+        let gates = self.gates.lock().unwrap_or_else(|e| e.into_inner());
         for gate in gates.iter() {
             match gate {
                 MadeGate::Env(e) => e.stopped.store(true, Ordering::Release),

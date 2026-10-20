@@ -96,6 +96,8 @@ case "$CC" in *zig*)
       -c crates/rlmesh-capi/examples/c_dlpack.c -o "$tmp/dlpack_$triple.o"
     $CC -target "$triple" -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
       -c crates/rlmesh-capi/examples/c_recorder.c -o "$tmp/recorder_$triple.o"
+    $CC -target "$triple" -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+      -c crates/rlmesh-capi/examples/c_serving.c -o "$tmp/serving_$triple.o"
   done
 ;; esac
 
@@ -134,6 +136,13 @@ echo "==> C ABI 5 factories, discriminants, variants and cancellation"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_factory.c "${link[@]}" -o "$tmp/c_factory"
 "$tmp/c_factory"
+echo "==> factory start lifetime/failures, host envelopes and model signal options"
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/c_serving.c "${link[@]}" -o "$tmp/c_serving"
+"$tmp/c_serving"
+# Reuse the caller's prepared client and protocol cohort. Syncing here can
+# replace an isolated non-editable client with the checkout's editable build.
+uv run --no-sync python crates/rlmesh-capi/examples/c_serving.py "$tmp/c_serving"
 echo "==> C ABI 5 typed adapters, transforms, ownership and model integration"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_adapters.c "${link[@]}" -o "$target/c_adapters_smoke"
@@ -190,7 +199,7 @@ for compiler in "${compilers[@]}"; do
     $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_surface.cpp -o "$tmp/cpp_surface.o"
     $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_options.cpp -o "$tmp/cpp_options.o"
     $compiler "${flags[@]}" -c examples/chrono/src/scripted_model.cpp -o "$tmp/chrono_scripted_model.o"
-    for example in cpp_core cpp_errors cpp_runtime cpp_spaces cpp_parity cpp_box_cleanup cpp_constants cpp_span cpp_review; do
+    for example in cpp_core cpp_errors cpp_cancel cpp_runtime cpp_spaces cpp_parity cpp_box_cleanup cpp_output_cleanup cpp_constants cpp_span cpp_review; do
       $compiler "${flags[@]}" "crates/rlmesh-capi/examples/$example.cpp" "${link[@]}" -o "$tmp/$example"
       "$tmp/$example"
     done

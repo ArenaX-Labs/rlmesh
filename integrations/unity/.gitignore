@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+**/Library/
+**/Logs/
+**/Temp/
+**/UserSettings/
+**/TestResults/
+Tests~/Project/Packages/com.rlmesh.rlmesh/
+Tests~/Project/Packages/com.rlmesh.unity/
+Tests~/Project/Assets/ReachTarget/
+Tests~/Project/Assets/Smoke.unity*
+Tests~/Project/Assets/Tools/
+Tests~/Project/ProjectSettings/ProjectVersion.txt
+Tests~/Project/ProjectSettings/*
+Tests~/Project/Assets/*.meta
+Tests~/Project/Packages/*.meta
+Tests~/Project/Packages/packages-lock.json

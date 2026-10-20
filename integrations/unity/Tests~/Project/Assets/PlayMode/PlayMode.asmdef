@@ -1,0 +1,7 @@
+{
+  "name": "RLMesh.Unity.Verification.PlayMode",
+  "references": ["RLMesh.Unity", "RLMesh.Unity.ReachTarget", "UnityEngine.TestRunner"],
+  "overrideReferences": true,
+  "precompiledReferences": ["RLMesh.dll", "nunit.framework.dll"],
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"]
+}

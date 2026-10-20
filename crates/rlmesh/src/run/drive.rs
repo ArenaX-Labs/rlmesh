@@ -324,12 +324,21 @@ impl CancelWatch {
         tokens: Vec<crate::ext::CancelToken>,
         driver: tokio_util::sync::CancellationToken,
     ) -> Result<CancelWatch> {
-        let tokens: Arc<Vec<_>> = Arc::new(
+        Self::from_subscriptions(
             tokens
                 .iter()
                 .map(crate::ext::CancelToken::subscribe)
                 .collect(),
-        );
+            driver,
+        )
+    }
+
+    /// Own the subscriptions captured at admission, without subscribing again.
+    pub(crate) fn from_subscriptions(
+        tokens: Vec<crate::ext::CancelSubscription>,
+        driver: tokio_util::sync::CancellationToken,
+    ) -> Result<CancelWatch> {
+        let tokens = Arc::new(tokens);
         if tokens.iter().any(crate::ext::CancelSubscription::fired) {
             return Err(Error::Cancelled);
         }
@@ -358,6 +367,17 @@ impl CancelWatch {
 
     pub(crate) fn subscriptions(&self) -> Arc<Vec<crate::ext::CancelSubscription>> {
         Arc::clone(&self.tokens)
+    }
+
+    /// Complete only after output processing. Checking and detaching each
+    /// subscription is atomic with cancel(), so a last-moment firing cannot
+    /// fall between the final check and unsubscribe.
+    pub(crate) fn finish<T>(&self, result: Result<T>) -> Result<T> {
+        let fired = self.tokens.iter().fold(
+            self.fired.load(std::sync::atomic::Ordering::SeqCst),
+            |fired, token| token.finish() || fired,
+        );
+        if fired { Err(Error::Cancelled) } else { result }
     }
 
     /// Whether a token fired during the call.

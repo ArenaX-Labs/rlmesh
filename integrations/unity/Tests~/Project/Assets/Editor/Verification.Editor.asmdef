@@ -1,0 +1,5 @@
+{
+  "name": "RLMesh.Unity.Verification.Editor",
+  "references": ["RLMesh.Unity", "RLMesh.Unity.Smoke"],
+  "includePlatforms": ["Editor"]
+}
