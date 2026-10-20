@@ -14,10 +14,12 @@ use rlmesh_session::{
     ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
     SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig, VirtualConfig,
 };
+use rlmesh_spec::{Policy, RunOptions};
 use rlmesh_wire::codec;
 use rlmesh_wire::{
-    ChannelId, ClockMode, CtlStatus, Encoding, Epoch, FenceError, Fingerprint, HistoryQuery, Mode,
-    ParticipantId, PriorityClass, Role, Sample, SessionId, TenantId, VirtualTick, Watermark,
+    ChannelId, ClockMode, ContractMode, CtlStatus, Encoding, Epoch, FenceError, Fingerprint,
+    HistoryQuery, Mode, ParticipantId, Plan, PriorityClass, Role, Sample, SessionId, TenantId,
+    VirtualTick, Watermark,
 };
 
 /// Participants listen too (the OS picks the ports): in peer mode, data
@@ -711,6 +713,108 @@ async fn a_participant_requiring_a_feature_the_session_lacks_is_refused() {
     assert!(world.host.snapshot().roster.is_empty());
 }
 
+/// A policy windowing the force/torque stream and commanding the arm (at
+/// 50 Hz: the robot's 40 ms freshness bound on `ft` refuses a 20 Hz window,
+/// whose increments are 50 ms apart).
+const WINDOWED: &str = r#"{
+    "hz": 50,
+    "inputs": {"ft": {"kind": "x/ft", "at": "ft", "fields": {"wrench": ["float32", [18]]},
+                      "history": 10}},
+    "actions": {"arm": {"kind": "joints", "at": "arm", "hz": 100, "horizon": 5}}
+}"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bound_policy_waits_for_its_streams_plans_and_receives_increments() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let policy = world
+        .join("policy", vec![Role::Controller], PriorityClass::Model, 0)
+        .await;
+    policy
+        .wait_for("the robot's parts", WAIT, |s| {
+            s.part_at(&robot_id(), "ft").is_some()
+        })
+        .await
+        .expect("parts");
+    let binding = policy
+        .bind(
+            &Policy::parse(WINDOWED).expect("policy"),
+            &RunOptions::named("windowed"),
+        )
+        .expect("bound");
+    let ft_channel = channel(&policy, "ft");
+    assert_eq!(binding.contracts[0].mode, ContractMode::History);
+    policy.declare_bound(&binding).await.expect("declare");
+    arm_seen_by(&policy, &[&robot]).await;
+    let arm = channel(&policy, "arm");
+
+    // Install before authority: no publisher has installed ft's plan yet.
+    let err = policy.grant_lease(arm, None).await.expect_err("not ready");
+    assert_eq!(status(err), CtlStatus::NotReady);
+    let ft = robot.publisher("ft").await.expect("publisher");
+    let view = policy
+        .wait_for("ft's plan installed", WAIT, |s| {
+            s.demand(ft_channel).is_some_and(|d| d.acked == d.revision)
+        })
+        .await
+        .expect("acknowledged");
+    let demand = view.demand(ft_channel).expect("demand");
+    assert!(
+        matches!(demand.plan, Plan::Increments { flush, .. } if flush == Duration::from_millis(20))
+    );
+    assert_eq!(ft.plan(), (Some(demand.plan), demand.revision));
+    let lease = policy.grant_lease(arm, None).await.expect("ready: granted");
+    assert_eq!(lease.binding, binding.fingerprint);
+    assert_eq!(
+        view.binding(policy.id()).and_then(|b| b.grid(arm)),
+        Some(Duration::from_millis(10)),
+        "the action grid rides the binding record"
+    );
+
+    // The window's samples travel as increments and arrive as samples.
+    let sub = policy
+        .subscribe(
+            &robot_id(),
+            "ft",
+            SubscribeOptions {
+                window: 10,
+                ..SubscribeOptions::default()
+            },
+        )
+        .await
+        .expect("subscribe");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for i in 1..=25_u8 {
+        ft.publish(robot.clock().now_ns(), ft_payload(f32::from(i)))
+            .expect("publish")
+            .expect("increments coalesce nothing");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    wait_until("all 25 samples", || sub.stats().last_seq == 25).await;
+    let stats = sub.stats();
+    assert_eq!((stats.received, stats.lost), (25, 0));
+    let (coalesced, batches) = ft.counts();
+    assert_eq!(coalesced, 0);
+    assert!((1..25).contains(&batches), "{batches} increments");
+    assert_eq!(
+        sub.window()
+            .iter()
+            .map(|r| r.sample.seq)
+            .collect::<Vec<_>>(),
+        (16..=25).collect::<Vec<_>>()
+    );
+
+    // The controller leaving withdraws its demand: every sample again.
+    policy.detach().await.expect("detach");
+    robot
+        .wait_for("the demand withdrawn", WAIT, |s| {
+            s.demand(ft_channel).is_none()
+        })
+        .await
+        .expect("withdrawn");
+    wait_until("the default plan", || ft.plan() == (None, 0)).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() {
     let world = World::start().await;
@@ -736,7 +840,7 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         let seq = ft
             .publish(robot.clock().now_ns(), ft_payload(f32::from(i)))
             .expect("publish");
-        assert_eq!(seq, u64::from(i));
+        assert_eq!(seq, Some(u64::from(i)));
     }
     wait_until("early subscriber has all six", || {
         early_ft.stats().last_seq == 6
@@ -1059,7 +1163,8 @@ async fn a_virtual_session_steps_through_the_tick_barrier() {
                 ft_payload(k as f32),
                 None,
             )
-            .expect("publish");
+            .expect("publish")
+            .expect("virtual mode sends every sample");
         robot
             .ready(
                 k,

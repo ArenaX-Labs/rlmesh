@@ -8,12 +8,18 @@
 //! subscribers, chunk publishers, history queries, the virtual-mode tick
 //! stream, and the hooks an edge runtime needs ([`AuthorityView`],
 //! [`EdgeReport`], [`Participant::report_safe`]).
+//!
+//! An embodiment's publishers follow their streams' publication plans
+//! (§8.2): a background task installs each `Demand` the host publishes on
+//! the stream's publishers and acknowledges its revision (`DemandAck`), so
+//! controllers bound to the stream can be granted leases.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use rlmesh_spec::{BindError, Binding, Policy, RunOptions};
 use rlmesh_wire::codec;
 use rlmesh_wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_wire::{
@@ -22,7 +28,7 @@ use rlmesh_wire::{
     PriorityClass, Request, Role, SampleBatch, SessionId, SessionKeys, StreamSpec, TenantId,
     TimingSample, VirtualTick, Watermark,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
@@ -35,7 +41,7 @@ use crate::clock::{Clock, MonotonicClock};
 use crate::error::SessionError;
 use crate::media::ImagePublisher;
 use crate::sample::{
-    SamplePublisher, SampleSubscriber, SubscribeContext, SubscribeOptions, fetch_history,
+    Outlet, SamplePublisher, SampleSubscriber, SubscribeContext, SubscribeOptions, fetch_history,
 };
 use crate::transport::{CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, Transport};
 
@@ -267,6 +273,10 @@ struct Shared {
     reports: mpsc::UnboundedSender<SafeReport>,
     /// This controller's binding revisions.
     binding_revision: AtomicU32,
+    /// This embodiment's publishers by stream, for installing demands.
+    outlets: Mutex<BTreeMap<ChannelId, Vec<Weak<Outlet>>>>,
+    /// Wakes the demand installer: a publisher was declared.
+    demand_wake: Notify,
 }
 
 impl Shared {
@@ -414,6 +424,8 @@ impl Participant {
             edge: Arc::new(EdgeReport::default()),
             reports,
             binding_revision: AtomicU32::new(0),
+            outlets: Mutex::new(BTreeMap::new()),
+            demand_wake: Notify::new(),
         });
 
         let state = control
@@ -474,11 +486,10 @@ impl Participant {
         let cancel = CancellationToken::new();
         let mut participant = Self {
             shared: shared.clone(),
-            tasks: vec![tokio::spawn(report_safe(
-                shared.clone(),
-                report_rx,
-                cancel.clone(),
-            ))],
+            tasks: vec![
+                tokio::spawn(report_safe(shared.clone(), report_rx, cancel.clone())),
+                tokio::spawn(install_demands(shared.clone(), cancel.clone())),
+            ],
             cancel,
             _liveliness: liveliness,
             _state: state,
@@ -624,9 +635,11 @@ impl Participant {
             .0)
     }
 
-    /// Declares this controller's binding: the parts it will command, the
-    /// binding table (JSON, from the binder) and its fingerprint. A new
+    /// Declares an identity binding for this controller: the parts it will
+    /// command, a table and a fingerprint, without delivery contracts or
+    /// action grids (a controller that commands paths directly, §6.5). A new
     /// fingerprint re-issues this controller's leases under a fresh token.
+    /// [`Self::declare_bound`] declares what the binder produced.
     pub async fn declare_binding(
         &self,
         fingerprint: Fingerprint,
@@ -645,6 +658,39 @@ impl Participant {
                 replan_hz,
                 contracts: Vec::new(),
                 grids: Vec::new(),
+            })
+            .await?
+            .0)
+    }
+
+    /// Binds `policy` against every part in this participant's view (§6.5):
+    /// the binding table, or the refusal listing every problem.
+    pub fn bind(&self, policy: &Policy, options: &RunOptions) -> Result<Binding, BindError> {
+        let view = self.shared.view.borrow();
+        let parts = view.as_ref().map_or(&[][..], |v| v.parts.as_slice());
+        rlmesh_spec::bind(policy, parts, options)
+    }
+
+    /// Declares a binding the binder produced: its fingerprint, its table,
+    /// the parts it commands, its delivery contracts and its action grids. A
+    /// lease under it is granted once every stream it reads has installed a
+    /// publication plan that includes its contract (`NOT_READY` until
+    /// then).
+    pub async fn declare_bound(
+        &self,
+        binding: &Binding,
+    ) -> Result<AuthoritySnapshot, SessionError> {
+        let revision = self.shared.binding_revision.fetch_add(1, Ordering::Relaxed) + 1;
+        Ok(self
+            .shared
+            .ctl(Command::DeclareBinding {
+                fingerprint: binding.fingerprint,
+                revision,
+                table_json: binding.table_text(),
+                channels: binding.channels(),
+                replan_hz: binding.replan_hz,
+                contracts: binding.contracts.clone(),
+                grids: binding.grids(),
             })
             .await?
             .0)
@@ -784,15 +830,36 @@ impl Participant {
             });
         }
         let key = self.shared.keys.data(&stream.owner, &stream.path);
-        SamplePublisher::declare(
+        // An applied stream has no `send` ceiling; a part's is its rate cap.
+        let ceiling_hz = if stream.applied {
+            None
+        } else {
+            self.shared
+                .view
+                .borrow()
+                .as_ref()
+                .and_then(|v| v.part(stream.channel))
+                .and_then(|p| p.send_policy().hz)
+        };
+        let channel = stream.channel;
+        let publisher = SamplePublisher::declare(
             &self.shared.transport,
             key,
             stream,
             self.shared.clock_mode(),
+            ceiling_hz,
             self.shared.epoch.clone(),
             self.shared.clock.clone(),
         )
-        .await
+        .await?;
+        if let Ok(mut outlets) = self.shared.outlets.lock() {
+            outlets
+                .entry(channel)
+                .or_default()
+                .push(Arc::downgrade(publisher.outlet()));
+        }
+        self.shared.demand_wake.notify_one();
+        Ok(publisher)
     }
 
     /// An image publisher for one of this embodiment's image parts, with the
@@ -1069,6 +1136,66 @@ async fn heartbeat_loop(
         };
         if let Err(err) = publisher.put(codec::encode_heartbeat(&heartbeat)).await {
             warn!(participant = %shared.id, %err, "heartbeat failed");
+        }
+    }
+}
+
+/// Installs the host's demands on this embodiment's publishers and
+/// acknowledges each revision once installed (§8.2), on every new view and
+/// every newly declared publisher.
+async fn install_demands(shared: Arc<Shared>, cancel: CancellationToken) {
+    let mut view = shared.view.subscribe();
+    loop {
+        sync_demands(&shared).await;
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            changed = view.changed() => if changed.is_err() { return },
+            () = shared.demand_wake.notified() => {}
+        }
+    }
+}
+
+async fn sync_demands(shared: &Shared) {
+    let live: Vec<(ChannelId, Vec<Arc<Outlet>>)> = {
+        let Ok(mut outlets) = shared.outlets.lock() else {
+            return;
+        };
+        outlets.retain(|_, list| {
+            list.retain(|o| o.strong_count() > 0);
+            !list.is_empty()
+        });
+        outlets
+            .iter()
+            .map(|(c, list)| (*c, list.iter().filter_map(Weak::upgrade).collect()))
+            .collect()
+    };
+    if live.is_empty() {
+        return;
+    }
+    let acks: Vec<(ChannelId, u64)> = {
+        let view = shared.view.borrow();
+        let Some(view) = view.as_ref() else {
+            return;
+        };
+        live.iter()
+            .filter_map(|(channel, outlets)| {
+                let demand = view.demand(*channel);
+                let (revision, plan) = demand.map_or((0, None), |d| (d.revision, Some(d.plan)));
+                for outlet in outlets {
+                    outlet.install(revision, plan);
+                }
+                demand
+                    .filter(|d| {
+                        d.acked < d.revision && outlets.iter().all(|o| o.revision() == d.revision)
+                    })
+                    .map(|d| (*channel, d.revision))
+            })
+            .collect()
+    };
+    for (channel, revision) in acks {
+        match shared.ctl(Command::DemandAck { channel, revision }).await {
+            Ok(_) => debug!(participant = %shared.id, %channel, revision, "demand installed"),
+            Err(err) => warn!(participant = %shared.id, %channel, %err, "demand ack failed"),
         }
     }
 }

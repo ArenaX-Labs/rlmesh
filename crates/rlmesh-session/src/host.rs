@@ -50,9 +50,10 @@ use crate::authority::{Applied as Accepted, Authority, AuthorityConfig, Authorit
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
 use crate::error::SessionError;
 use crate::metrics::{LinkStats, ParticipantHealth, Report};
+use crate::sample::{batch_encoding, decode_data};
 use crate::transport::{
     CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, TrafficClass, Transport,
-    frame_zbytes, payload_bytes,
+    frame_zbytes,
 };
 use crate::virtual_clock::VirtualConfig;
 
@@ -428,10 +429,17 @@ struct Ring {
 }
 
 impl Ring {
-    fn record(&self, payload: &zenoh::bytes::ZBytes, depth: usize) {
-        let Ok(sample) = codec::decode_sample(payload_bytes(payload)) else {
+    /// Records a live sample, or each sample of a live increment.
+    fn record(&self, payload: &zenoh::bytes::ZBytes, batch: bool, depth: usize) {
+        let Ok(samples) = decode_data(payload, batch, &self.spec) else {
             return;
         };
+        for sample in samples {
+            self.record_one(sample, depth);
+        }
+    }
+
+    fn record_one(&self, sample: rlmesh_wire::Sample, depth: usize) {
         if sample.channel != self.spec.channel || self.spec.check_payload(&sample.payload).is_err()
         {
             return;
@@ -783,7 +791,8 @@ impl HostActor {
                 .declare_subscriber(self.keys.data(&spec.owner, &spec.path))
                 .callback({
                     let ring = ring.clone();
-                    move |sample| ring.record(sample.payload(), depth)
+                    let batch = batch_encoding();
+                    move |sample| ring.record(sample.payload(), *sample.encoding() == batch, depth)
                 })
                 .await;
             match subscriber {
@@ -1044,7 +1053,7 @@ mod tests {
             payload: Bytes::from(seq.to_le_bytes().to_vec()),
             applied: None,
         };
-        ring.record(&frame_zbytes(codec::encode_sample(&sample)), depth);
+        ring.record(&frame_zbytes(codec::encode_sample(&sample)), false, depth);
     }
 
     fn seqs(pages: &[SampleBatch]) -> Vec<u64> {

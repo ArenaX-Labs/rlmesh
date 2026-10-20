@@ -4,7 +4,8 @@
 //! field is a uint8 `[H, W, 3]` image. Each [`ImagePublisher::offer`] of a
 //! captured frame:
 //!
-//! 1. is skipped outright while the bitrate budget (`send:
+//! 1. is skipped outright when the stream's publication plan (or its `send`
+//!    rate ceiling) would coalesce it, or while the bitrate budget (`send:
 //!    latest(max_mbps=…)`, §8.5) is spent, before any encoding work. The
 //!    bucket refills at the budget; its capacity is the larger of 100 ms of
 //!    budget and one maximum-size frame, a frame is admitted while the
@@ -43,6 +44,9 @@ pub enum Offer {
     },
     /// Over the bitrate budget: not encoded, not sent.
     OverBudget,
+    /// Coalesced by the publication plan or the rate ceiling: not encoded,
+    /// not sent.
+    Coalesced,
 }
 
 /// Counts for one image publisher.
@@ -52,6 +56,8 @@ pub struct MediaStats {
     pub offered: u64,
     /// Skipped before encoding: over the bitrate budget.
     pub skipped_over_budget: u64,
+    /// Skipped before encoding: the publication plan coalesced it.
+    pub coalesced: u64,
     /// Frames encoded.
     pub encoded: u64,
     /// Encoded, then replaced by a newer frame before the sender got to it.
@@ -167,10 +173,11 @@ impl Inner {
             // A BLOCK channel waits here while the link is congested; newer
             // frames meanwhile replace each other in the slot.
             match self.publisher.publish(frame.capture_ns, frame.bytes) {
-                Ok(_) => self.bump(|s| {
+                Ok(Some(_)) => self.bump(|s| {
                     s.sent += 1;
                     s.bytes_sent += len;
                 }),
+                Ok(None) => self.bump(|s| s.coalesced += 1),
                 Err(err) => {
                     warn!(channel = %self.publisher.spec().channel, %err, "frame send failed");
                     self.bump(|s| s.send_errors += 1);
@@ -243,6 +250,10 @@ impl ImagePublisher {
         }
         inner.bump(|s| s.offered += 1);
         let now = inner.now_ns();
+        if !inner.publisher.due(now) {
+            inner.bump(|s| s.coalesced += 1);
+            return Ok(Offer::Coalesced);
+        }
         let budget = inner
             .bucket
             .lock()

@@ -456,7 +456,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
             while next < total_end && !stop.load(Ordering::Relaxed) {
                 sleep_until(&clock, next);
                 match camera.offer(clock.now_ns(), &frames[i % frames.len()]) {
-                    Ok(Offer::Queued { .. } | Offer::OverBudget) => {}
+                    Ok(Offer::Queued { .. } | Offer::OverBudget | Offer::Coalesced) => {}
                     Err(err) => eprintln!("camera: {err}"),
                 }
                 i += 1;
