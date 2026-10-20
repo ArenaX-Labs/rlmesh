@@ -1,11 +1,20 @@
 //! The request/reply floor of the session transport: two OS processes
-//! ping-pong a 72-byte sample (encoded and decoded with the session codec)
-//! over the realtime class, free-running, with no host and no tick pacing.
-//! This is the budget a lockstep (Gym-style step) path has to live within.
+//! ping-pong free-running, with no host and no tick pacing, over the
+//! realtime class session. This is the budget a lockstep (Gym-style step)
+//! path has to live within.
 //!
 //! ```text
-//! cargo run --release -p rlmesh-session --example rtt_bench -- [ROUND_TRIPS] [shared|per-class]
+//! cargo run --release -p rlmesh-session --example rtt_bench -- [ROUND_TRIPS] [shared|per-class] [MESSAGE]
 //! ```
+//!
+//! `MESSAGE` is what each round trip carries:
+//!
+//! - `sample` (default): a 72-byte `Sample` each way (the raw floor);
+//! - `lockstep`: a `LockstepStep` with one T1 command (`f32[6]`) out, and a
+//!   `LockstepReply` with one T1 observation (`f32[18]`), the reward and the
+//!   done flags back, on publish/subscribe like `sample`;
+//! - `lockstep-query`: the same messages as a Zenoh query and its reply on
+//!   `l/{robot}` (the §12.3 same-host transport).
 //!
 //! It spawns its own `pong` child, prints one JSON line with the round-trip
 //! percentiles (µs) and the rate, and exits.
@@ -20,14 +29,18 @@ use bytes::Bytes;
 use rlmesh_session::transport::{frame_zbytes, free_local_base, payload_bytes, zenoh_priority};
 use rlmesh_session::{TrafficClass, Transport, TransportConfig};
 use rlmesh_wire::codec;
-use rlmesh_wire::{ChannelId, ChannelPriority, Epoch, Sample};
+use rlmesh_wire::{
+    ChannelId, ChannelPriority, Epoch, LeaseToken, LockstepReply, LockstepStep, PartValues, Sample,
+};
 use zenoh::Wait;
 use zenoh::qos::CongestionControl;
+use zenoh::query::ConsolidationMode;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const PING: &str = "rlmesh/bench/rtt/ping";
 const PONG: &str = "rlmesh/bench/rtt/pong";
+const STEP: &str = "rlmesh/bench/rtt/l/robot";
 
 fn config(
     layout: &str,
@@ -49,8 +62,8 @@ fn config(
 fn sample(seq: u64) -> Sample {
     Sample {
         channel: ChannelId(1),
-        epoch: Epoch(1),
         seq,
+        epoch: Epoch(1),
         capture_ns: 0,
         publish_ns: 0,
         tick: seq,
@@ -59,11 +72,52 @@ fn sample(seq: u64) -> Sample {
     }
 }
 
+/// One T1 step: a 1-lane `f32[6]` command.
+fn step(n: u64, command: &Bytes) -> LockstepStep {
+    LockstepStep {
+        epoch: Epoch(1),
+        step: n,
+        lease_token: LeaseToken(1),
+        lanes: Vec::new(),
+        commands: vec![PartValues {
+            channel: ChannelId(1),
+            payload: command.clone(),
+        }],
+    }
+}
+
+/// The reply to a T1 step: a 1-lane `f32[18]` observation, reward and flags.
+fn reply(n: u64, observation: &Bytes) -> LockstepReply {
+    LockstepReply {
+        epoch: Epoch(1),
+        step: n,
+        observations: vec![PartValues {
+            channel: ChannelId(3),
+            payload: observation.clone(),
+        }],
+        reward: Bytes::from(0.5_f32.to_le_bytes().to_vec()),
+        terminated: Bytes::from_static(&[0]),
+        truncated: Bytes::from_static(&[0]),
+        episode_ids: vec![7],
+        info_json: String::new(),
+    }
+}
+
+/// The step number a pong carries, if it decodes.
+fn pong_seq(message: &str, payload: &zenoh::bytes::ZBytes) -> Option<u64> {
+    let bytes = payload_bytes(payload);
+    match message {
+        "sample" => codec::decode_sample(bytes).ok().map(|s| s.seq),
+        _ => codec::decode_lockstep_reply(bytes).ok().map(|r| r.step),
+    }
+}
+
 /// Answers every ping with a pong carrying the same seq.
-async fn pong(layout: &str, base: std::net::SocketAddr) -> Result<(), BoxError> {
+async fn pong(layout: &str, message: &str, base: std::net::SocketAddr) -> Result<(), BoxError> {
     let transport = Transport::open(&config(layout, Some(base), None)?).await?;
     let session = transport.session(TrafficClass::Realtime).clone();
-    let reply = session
+    let observation = Bytes::from(vec![0_u8; 72]);
+    let reply_to = session
         .declare_publisher(PONG)
         .priority(zenoh_priority(ChannelPriority::Realtime))
         .congestion_control(CongestionControl::Block)
@@ -71,12 +125,42 @@ async fn pong(layout: &str, base: std::net::SocketAddr) -> Result<(), BoxError> 
         .await?;
     let _sub = session
         .declare_subscriber(PING)
-        .callback(move |s| {
-            if let Ok(ping) = codec::decode_sample(payload_bytes(s.payload())) {
-                let _ = reply
-                    .put(frame_zbytes(codec::encode_sample(&sample(ping.seq))))
-                    .wait();
+        .callback({
+            let (message, observation) = (message.to_string(), observation.clone());
+            move |s| {
+                let bytes = payload_bytes(s.payload());
+                let out = match message.as_str() {
+                    "sample" => codec::decode_sample(bytes)
+                        .ok()
+                        .map(|ping| frame_zbytes(codec::encode_sample(&sample(ping.seq)))),
+                    _ => codec::decode_lockstep_step(bytes).ok().map(|step| {
+                        zenoh::bytes::ZBytes::from(codec::encode_lockstep_reply(&reply(
+                            step.step,
+                            &observation,
+                        )))
+                    }),
+                };
+                if let Some(out) = out {
+                    let _ = reply_to.put(out).wait();
+                }
             }
+        })
+        .await?;
+    let _queryable = session
+        .declare_queryable(STEP)
+        .callback(move |query| {
+            let Some(step) = query
+                .payload()
+                .and_then(|p| codec::decode_lockstep_step(payload_bytes(p)).ok())
+            else {
+                return;
+            };
+            let _ = query
+                .reply(
+                    STEP,
+                    codec::encode_lockstep_reply(&reply(step.step, &observation)),
+                )
+                .wait();
         })
         .await?;
     println!("ready");
@@ -86,10 +170,10 @@ async fn pong(layout: &str, base: std::net::SocketAddr) -> Result<(), BoxError> 
     Ok(())
 }
 
-async fn ping(layout: &str, round_trips: usize) -> Result<(), BoxError> {
+async fn ping(layout: &str, message: &str, round_trips: usize) -> Result<(), BoxError> {
     let base = free_local_base("127.0.0.1".parse()?)?;
     let mut child = Command::new(std::env::current_exe()?)
-        .args(["pong", layout, &base.to_string()])
+        .args(["pong", layout, message, &base.to_string()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
@@ -103,9 +187,12 @@ async fn ping(layout: &str, round_trips: usize) -> Result<(), BoxError> {
     let (tx, rx) = mpsc::sync_channel::<u64>(16);
     let _sub = session
         .declare_subscriber(PONG)
-        .callback(move |s| {
-            if let Ok(pong) = codec::decode_sample(payload_bytes(s.payload())) {
-                let _ = tx.try_send(pong.seq);
+        .callback({
+            let message = message.to_string();
+            move |s| {
+                if let Some(seq) = pong_seq(&message, s.payload()) {
+                    let _ = tx.try_send(seq);
+                }
             }
         })
         .await?;
@@ -115,6 +202,7 @@ async fn ping(layout: &str, round_trips: usize) -> Result<(), BoxError> {
         .congestion_control(CongestionControl::Block)
         .express(true)
         .await?;
+    let command = Bytes::from(vec![0_u8; 24]);
     // Wait for the route to exist, then warm up.
     let warm = 2_000;
     let mut rtts = Vec::with_capacity(round_trips);
@@ -124,17 +212,42 @@ async fn ping(layout: &str, round_trips: usize) -> Result<(), BoxError> {
     while rtts.len() < round_trips {
         seq += 1;
         let sent = Instant::now();
-        publisher
-            .put(frame_zbytes(codec::encode_sample(&sample(seq))))
-            .wait()?;
-        match rx.recv_timeout(Duration::from_millis(200)) {
+        let got = match message {
+            "lockstep-query" => {
+                let replies = session
+                    .get(STEP)
+                    .payload(codec::encode_lockstep_step(&step(seq, &command)))
+                    .consolidation(ConsolidationMode::None)
+                    .priority(zenoh_priority(ChannelPriority::Realtime))
+                    .congestion_control(CongestionControl::Block)
+                    .express(true)
+                    .timeout(Duration::from_millis(200))
+                    .wait()?;
+                replies
+                    .recv()
+                    .ok()
+                    .and_then(|r| r.result().ok().and_then(|s| pong_seq(message, s.payload())))
+                    .ok_or(())
+            }
+            _ => {
+                let out = match message {
+                    "sample" => frame_zbytes(codec::encode_sample(&sample(seq))),
+                    _ => zenoh::bytes::ZBytes::from(codec::encode_lockstep_step(&step(
+                        seq, &command,
+                    ))),
+                };
+                publisher.put(out).wait()?;
+                rx.recv_timeout(Duration::from_millis(200)).map_err(|_| ())
+            }
+        };
+        match got {
             Ok(got) if got == seq => {
                 if seq > warm {
                     measured_from.get_or_insert_with(Instant::now);
                     rtts.push(sent.elapsed().as_nanos() as u64);
                 }
             }
-            Ok(_) | Err(_) => {
+            Ok(_) | Err(()) => {
                 // Before the route is up pings are lost; drain and retry.
                 while rx.try_recv().is_ok() {}
                 if started_at.elapsed() > Duration::from_secs(20) {
@@ -151,7 +264,7 @@ async fn ping(layout: &str, round_trips: usize) -> Result<(), BoxError> {
         rtts[((q * rtts.len() as f64).ceil() as usize).clamp(1, rtts.len()) - 1] as f64 / 1e3
     };
     println!(
-        "{{\"layout\":\"{layout}\",\"round_trips\":{},\"p50_us\":{:.1},\"p99_us\":{:.1},\"p999_us\":{:.1},\"max_us\":{:.1},\"per_s\":{:.0}}}",
+        "{{\"layout\":\"{layout}\",\"message\":\"{message}\",\"round_trips\":{},\"p50_us\":{:.1},\"p99_us\":{:.1},\"p999_us\":{:.1},\"max_us\":{:.1},\"per_s\":{:.0}}}",
         rtts.len(),
         at(0.5),
         at(0.99),
@@ -166,11 +279,19 @@ async fn ping(layout: &str, round_trips: usize) -> Result<(), BoxError> {
 async fn main() -> Result<(), BoxError> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("pong") {
-        let layout = args.get(1).ok_or("pong LAYOUT BASE")?;
-        let base = args.get(2).ok_or("pong LAYOUT BASE")?.parse()?;
-        return pong(layout, base).await;
+        let usage = "pong LAYOUT MESSAGE BASE";
+        let layout = args.get(1).ok_or(usage)?;
+        let message = args.get(2).ok_or(usage)?;
+        let base = args.get(3).ok_or(usage)?.parse()?;
+        return pong(layout, message, base).await;
     }
     let round_trips = args.first().map_or(Ok(20_000), |n| n.parse())?;
     let layout = args.get(1).map_or("per-class", String::as_str);
-    ping(layout, round_trips).await
+    let message = args.get(2).map_or("sample", String::as_str);
+    if !matches!(message, "sample" | "lockstep" | "lockstep-query") {
+        return Err(
+            format!("unknown message {message}: sample, lockstep or lockstep-query").into(),
+        );
+    }
+    ping(layout, message, round_trips).await
 }

@@ -548,3 +548,48 @@ message ActionChunk {
   // The controller that computed it; the edge checks it holds the lease.
   string source = 15;
 }
+
+// Lockstep fast path (§12): one request/reply per step on l/{robot}.
+
+// An N-lane slab of one part: lanes x stride.
+message PartValues {
+  uint32 channel = 1;
+  bytes payload = 2;
+}
+
+message LockstepReset {
+  uint64 epoch = 1;
+  // Empty = all lanes.
+  repeated uint32 lanes = 2;
+  // Aligned with lanes when present.
+  repeated uint64 seeds = 3;
+  string options_json = 4;
+  // Minted by the driver, as v1.
+  repeated uint64 episode_ids = 5;
+}
+
+message LockstepStep {
+  uint64 epoch = 1;
+  uint64 step = 2;
+  uint64 lease_token = 3;
+  // Empty = all lanes.
+  repeated uint32 lanes = 4;
+  repeated PartValues commands = 5;
+}
+
+message LockstepReply {
+  uint64 epoch = 1;
+  uint64 step = 2;
+  // Every published part that changed this step.
+  repeated PartValues observations = 3;
+  // f32 [N].
+  bytes reward = 4;
+  // bool [N].
+  bytes terminated = 5;
+  // bool [N].
+  bytes truncated = 6;
+  // Per lane, after autoreset.
+  repeated uint64 episode_ids = 7;
+  // Only when record_info is on.
+  string info_json = 8;
+}

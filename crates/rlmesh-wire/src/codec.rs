@@ -18,6 +18,7 @@
 //!   segments (Zenoh's `ZBytes`) sends it without a copy. The concatenation
 //!   is ordinary protobuf. The decoders take the received buffer as
 //!   [`Bytes`], and the payload slices it.
+//! - The lockstep messages encode to one buffer (one copy of the slabs).
 //!
 //! Payload contents are not validated here; the layout check against the
 //! declaration is [`StreamSpec::check_payload`] (samples) and the edge's
@@ -41,6 +42,7 @@ use crate::authority::{
 use crate::error::WireError;
 use crate::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
 use crate::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
+use crate::lockstep::{LockstepReply, LockstepReset, LockstepStep, PartValues};
 use crate::part::{
     ChannelPriority, CommandSpec, DType, Encoding, FieldLimit, FieldSpec, MAX_BATCH,
     MAX_CHUNK_ACTIONS, MAX_CHUNK_BYTES, MergePolicy, PartSpec,
@@ -496,6 +498,112 @@ pub fn decode_chunk(buf: Bytes) -> Result<ActionChunk, WireError> {
         actions: c.actions,
         publish_ns: c.publish_ns,
         tick: c.tick,
+    })
+}
+
+// --- lockstep ----------------------------------------------------------------
+
+fn values_to_pb(values: &[PartValues]) -> Vec<pb::PartValues> {
+    values
+        .iter()
+        .map(|v| pb::PartValues {
+            channel: v.channel.0,
+            payload: v.payload.clone(),
+        })
+        .collect()
+}
+
+fn values_from_pb(values: Vec<pb::PartValues>) -> Vec<PartValues> {
+    values
+        .into_iter()
+        .map(|v| PartValues {
+            channel: ChannelId(v.channel),
+            payload: v.payload,
+        })
+        .collect()
+}
+
+/// Encodes a lockstep reset.
+pub fn encode_lockstep_reset(reset: &LockstepReset) -> Vec<u8> {
+    pb::LockstepReset {
+        epoch: reset.epoch.0,
+        lanes: reset.lanes.clone(),
+        seeds: reset.seeds.clone(),
+        options_json: reset.options_json.clone(),
+        episode_ids: reset.episode_ids.clone(),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes a lockstep reset.
+pub fn decode_lockstep_reset(buf: &[u8]) -> Result<LockstepReset, WireError> {
+    let r = pb::LockstepReset::decode(buf)?;
+    if !r.seeds.is_empty() && !r.lanes.is_empty() && r.seeds.len() != r.lanes.len() {
+        return Err(WireError::malformed(
+            "lockstep reset",
+            format!("{} seeds for {} lanes", r.seeds.len(), r.lanes.len()),
+        ));
+    }
+    Ok(LockstepReset {
+        epoch: Epoch(r.epoch),
+        lanes: r.lanes,
+        seeds: r.seeds,
+        options_json: r.options_json,
+        episode_ids: r.episode_ids,
+    })
+}
+
+/// Encodes a lockstep step.
+pub fn encode_lockstep_step(step: &LockstepStep) -> Vec<u8> {
+    pb::LockstepStep {
+        epoch: step.epoch.0,
+        step: step.step,
+        lease_token: step.lease_token.0,
+        lanes: step.lanes.clone(),
+        commands: values_to_pb(&step.commands),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes a lockstep step. The slabs slice `buf` (no copy).
+pub fn decode_lockstep_step(buf: Bytes) -> Result<LockstepStep, WireError> {
+    let s = pb::LockstepStep::decode(buf)?;
+    Ok(LockstepStep {
+        epoch: Epoch(s.epoch),
+        step: s.step,
+        lease_token: LeaseToken(s.lease_token),
+        lanes: s.lanes,
+        commands: values_from_pb(s.commands),
+    })
+}
+
+/// Encodes a lockstep reply.
+pub fn encode_lockstep_reply(reply: &LockstepReply) -> Vec<u8> {
+    pb::LockstepReply {
+        epoch: reply.epoch.0,
+        step: reply.step,
+        observations: values_to_pb(&reply.observations),
+        reward: reply.reward.clone(),
+        terminated: reply.terminated.clone(),
+        truncated: reply.truncated.clone(),
+        episode_ids: reply.episode_ids.clone(),
+        info_json: reply.info_json.clone(),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes a lockstep reply. The slabs slice `buf` (no copy).
+pub fn decode_lockstep_reply(buf: Bytes) -> Result<LockstepReply, WireError> {
+    let r = pb::LockstepReply::decode(buf)?;
+    Ok(LockstepReply {
+        epoch: Epoch(r.epoch),
+        step: r.step,
+        observations: values_from_pb(r.observations),
+        reward: r.reward,
+        terminated: r.terminated,
+        truncated: r.truncated,
+        episode_ids: r.episode_ids,
+        info_json: r.info_json,
     })
 }
 
@@ -1569,6 +1677,58 @@ mod tests {
         let mut no_binding = pb::ActionChunk::decode(&buf[..]).expect("plain");
         no_binding.binding = Bytes::new();
         assert!(decode_chunk(Bytes::from(no_binding.encode_to_vec())).is_err());
+    }
+
+    #[test]
+    fn lockstep_messages_round_trip() {
+        let reset = LockstepReset {
+            epoch: Epoch(2),
+            lanes: vec![0, 3],
+            seeds: vec![11, 12],
+            options_json: "{}".into(),
+            episode_ids: vec![100, 101],
+        };
+        assert_eq!(
+            decode_lockstep_reset(&encode_lockstep_reset(&reset)).expect("decode"),
+            reset
+        );
+        let mut bad = reset.clone();
+        bad.seeds.push(13);
+        assert!(decode_lockstep_reset(&encode_lockstep_reset(&bad)).is_err());
+        let step = LockstepStep {
+            epoch: Epoch(2),
+            step: 41,
+            lease_token: LeaseToken(3),
+            lanes: Vec::new(),
+            commands: vec![PartValues {
+                channel: ChannelId(1),
+                payload: Bytes::from(vec![1_u8; 32]),
+            }],
+        };
+        let buf = Bytes::from(encode_lockstep_step(&step));
+        let decoded = decode_lockstep_step(buf.clone()).expect("decode");
+        assert_eq!(decoded, step);
+        assert!(
+            buf.as_ptr_range()
+                .contains(&decoded.commands[0].payload.as_ptr())
+        );
+        let reply = LockstepReply {
+            epoch: Epoch(2),
+            step: 41,
+            observations: vec![PartValues {
+                channel: ChannelId(4),
+                payload: Bytes::from(vec![2_u8; 16]),
+            }],
+            reward: Bytes::from(1.5_f32.to_le_bytes().to_vec()),
+            terminated: Bytes::from_static(&[0]),
+            truncated: Bytes::from_static(&[1]),
+            episode_ids: vec![7],
+            info_json: String::new(),
+        };
+        assert_eq!(
+            decode_lockstep_reply(Bytes::from(encode_lockstep_reply(&reply))).expect("decode"),
+            reply
+        );
     }
 
     #[test]

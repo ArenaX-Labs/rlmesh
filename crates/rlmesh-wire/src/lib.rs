@@ -13,8 +13,8 @@
 //! - the message types: authority state and control verbs ([`authority`]),
 //!   heartbeats and clock pings ([`heartbeat`]), parts, streams and payload
 //!   packing ([`part`]), samples, batches and history queries ([`sample`]),
-//!   timed action chunks ([`action`]) and the virtual-mode tick protocol
-//!   ([`tick`]);
+//!   timed action chunks ([`action`]), the virtual-mode tick protocol
+//!   ([`tick`]) and the lockstep fast path ([`lockstep`]);
 //! - [`codec`]: the one module that knows the byte encoding.
 //!
 //! Every type outside [`codec`] is plain Rust: no generated code, no
@@ -53,6 +53,7 @@ pub mod error;
 pub mod heartbeat;
 pub mod ids;
 pub mod keys;
+pub mod lockstep;
 pub mod part;
 pub mod path;
 pub mod sample;
@@ -71,6 +72,7 @@ pub use ids::{
     ChannelId, Epoch, Fingerprint, IdError, LeaseToken, ParticipantId, SessionId, TenantId,
 };
 pub use keys::SessionKeys;
+pub use lockstep::{LockstepReply, LockstepReset, LockstepStep, PartValues};
 pub use part::{
     ChannelPriority, CommandSpec, DType, Encoding, FieldLimit, FieldSpec, Layout, MergePolicy,
     PartSpec, SendPolicy, StreamSpec,
