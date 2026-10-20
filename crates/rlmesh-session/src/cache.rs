@@ -36,7 +36,8 @@
 //!
 //! [`Inputs`] is the network end: one subscription per bound stream,
 //! feeding the cache from the transport callback (which keeps draining
-//! while `predict` runs), converting capture times to session time through
+//! while `predict` runs; windows and event streams warm from the host's
+//! history store on attach), converting capture times to session time through
 //! the publishers' clock mappings. [`Inputs::observe`] is a policy start:
 //! the snapshot, each sample it uses decoded (JPEG) and each entry's plan
 //! applied, so the values are what `predict` receives and the snapshot is
@@ -460,7 +461,7 @@ pub struct Inputs {
 
 impl Inputs {
     /// Subscribes to every stream `binding` reads, feeding a fresh cache.
-    /// Windowed streams warm from the host's history store.
+    /// Windowed and event streams warm from the host's history store.
     pub async fn open(participant: &Participant, binding: &Binding) -> Result<Self, SessionError> {
         let cache = Arc::new(Mutex::new(InputCache::new(binding)));
         let view = participant.authority_view();
@@ -498,11 +499,14 @@ impl Inputs {
                     }
                 }
             };
-            // The subscription's own window sizes the history warm-up.
+            // The subscription's own window sizes the history warm-up. An
+            // event stream (the task text) warms too: it is published once
+            // per episode, so a controller attaching later would wait for
+            // it forever.
             let options = SubscribeOptions {
                 on_sample: Some(Arc::new(feed)),
                 window: depth,
-                warm_from_history: depth > 1,
+                warm_from_history: depth > 1 || stream.event,
             };
             streams.push(participant.subscribe_stream(stream, options).await?);
         }
