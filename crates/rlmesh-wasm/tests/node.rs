@@ -16,7 +16,7 @@ use rlmesh_wire::version::SPEC_VERSION;
 use rlmesh_wire::{
     Applied, AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command,
     CtlError, CtlReply, CtlStatus, EdgeMode, Epoch, Fingerprint, HeartbeatEcho, Lease, LeaseToken,
-    Mode, PartSpec, ParticipantId, PriorityClass, Sample, SampleBatch, SampleMeta, SessionId,
+    Mode, PartSpec, ParticipantId, PriorityClass, Sample, SessionId,
 };
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
@@ -192,44 +192,6 @@ fn samples_decode_with_gaps_stats_and_copies_into_caller_buffers() {
     // Freshness against max_age (50 ms).
     assert!(!s.is_stale(0, T0 + 9.0 + 40.0));
     assert!(s.is_stale(0, T0 + 9.0 + 60.0));
-}
-
-#[wasm_bindgen_test]
-fn increments_split_into_samples() {
-    let mut s = Streams::new();
-    s.set_state(&codec::encode_state(&snapshot(1, Vec::new())))
-        .unwrap();
-    s.add_stream("arm7/arm", 2.0).unwrap();
-    let mut payload = Vec::new();
-    let mut samples = Vec::new();
-    for seq in 1..=3_u64 {
-        payload.extend_from_slice(&joints(seq, T0, seq as f32).payload);
-        samples.push(SampleMeta {
-            seq,
-            capture_ns: (T0 as i64) * MS + seq as i64,
-            tick: 0,
-            applied: None,
-        });
-    }
-    let batch = SampleBatch {
-        channel: ChannelId(10),
-        epoch: Epoch(1),
-        publish_ns: (T0 as i64) * MS,
-        samples,
-        payload: Bytes::from(payload),
-        gaps: Vec::new(),
-        truncated: false,
-    };
-    let mut f = vec![frame::SAMPLE, 0, 0, 0, 0, frame::BATCH];
-    for seg in codec::encode_batch(&batch).unwrap().segments {
-        f.extend_from_slice(&seg);
-    }
-    assert_eq!(s.push(f, T0 + 1.0).unwrap(), 3);
-    let mut seqs = vec![s.seq()];
-    while s.advance() {
-        seqs.push(s.seq());
-    }
-    assert_eq!(seqs, vec![1.0, 2.0, 3.0]);
 }
 
 #[wasm_bindgen_test]

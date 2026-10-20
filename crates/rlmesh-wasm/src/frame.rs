@@ -13,7 +13,7 @@
 //! | [`REQUEST`] | control | browser → gateway | `u32` request id (LE), a `Request` |
 //! | [`HEARTBEAT`] | control | browser → gateway | a `Heartbeat` |
 //! | [`CHUNK`] | control | browser → gateway | an `ActionChunk` |
-//! | [`SAMPLE`] | state, bulk | gateway → browser | `u32` subscription id (LE), flags ([`BATCH`]), a `Sample` or `SampleBatch` |
+//! | [`SAMPLE`] | state, bulk | gateway → browser | `u32` subscription id (LE), flags (reserved, 0), a `Sample` |
 
 /// An authority snapshot (host → browser).
 pub const STATE: u8 = 0x01;
@@ -27,10 +27,8 @@ pub const REQUEST: u8 = 0x10;
 pub const HEARTBEAT: u8 = 0x11;
 /// An action chunk (browser → edge).
 pub const CHUNK: u8 = 0x12;
-/// A sample or an increment of one subscription (publisher → browser).
+/// One sample of one subscription (publisher → browser).
 pub const SAMPLE: u8 = 0x20;
-/// [`SAMPLE`] flag: the body is a `SampleBatch`.
-pub const BATCH: u8 = 0x01;
 
 /// The `SAMPLE` header: tag, subscription id, flags.
 pub const SAMPLE_HEADER: usize = 6;

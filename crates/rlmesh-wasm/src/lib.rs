@@ -6,8 +6,7 @@
 //!   authority (decoded snapshots), heartbeats and the clock offset estimate
 //!   they yield, `ctl` requests, one [`LeaseClient`] per leased part, and
 //!   fenced action chunks.
-//! - [`Streams`] (the state and bulk Workers): decodes samples and
-//!   increments, applies the session's receive rules (epochs, seq gaps as
+//! - [`Streams`] (the state and bulk Workers): decodes samples, applies the session's receive rules (epochs, seq gaps as
 //!   losses, layout checks, freshness) and measures delivery.
 //!
 //! Every message is a real v2 one, encoded and decoded by `rlmesh-wire`;
@@ -189,7 +188,7 @@ struct Current {
 
 /// The decoder and per-stream rules and measurements of one data Worker.
 /// After [`Streams::push`], the getters read the current sample;
-/// [`Streams::advance`] steps through an increment's samples.
+/// [`Streams::advance`] steps past it.
 #[wasm_bindgen]
 pub struct Streams {
     state: Option<AuthoritySnapshot>,
@@ -333,36 +332,22 @@ impl Streams {
     }
 
     /// Decodes one `SAMPLE` frame received at `now_ms` and applies the
-    /// receive rules. Returns the number of samples accepted (an increment
-    /// carries several; [`Self::advance`] steps through them). An unknown
-    /// subscription id returns 0; garbage is an error.
+    /// receive rules. Returns the number of samples accepted (0 or 1;
+    /// [`Self::advance`] steps past it). An unknown subscription id returns
+    /// 0; garbage is an error.
     pub fn push(&mut self, bytes: Vec<u8>, now_ms: f64) -> Result<u32, JsError> {
         self.current.clear();
         if bytes.first() != Some(&frame::SAMPLE) || bytes.len() < frame::SAMPLE_HEADER {
             return Err(err("not a sample frame"));
         }
         let id = frame::read_id(&bytes).ok_or_else(|| err("short frame"))? as usize;
-        let batch = bytes[5] & frame::BATCH != 0;
         let body = Bytes::from(bytes).slice(frame::SAMPLE_HEADER..);
         if id >= self.streams.len() {
             return Ok(0);
         }
         let receive_ns = ms_to_ns(now_ms);
-        let samples = if batch {
-            let b = codec::decode_batch(body).map_err(err)?;
-            let spec = &self.streams[id].spec;
-            b.split(spec.layout.stride().filter(|_| spec.batchable()))
-                .map_err(err)?
-        } else {
-            vec![codec::decode_sample(body).map_err(err)?]
-        };
-        let mut accepted = 0;
-        for sample in samples {
-            if self.accept(id, sample, receive_ns) {
-                accepted += 1;
-            }
-        }
-        Ok(accepted)
+        let sample = codec::decode_sample(body).map_err(err)?;
+        Ok(u32::from(self.accept(id, sample, receive_ns)))
     }
 
     /// Moves to the next sample of the last frame; false when none is left.

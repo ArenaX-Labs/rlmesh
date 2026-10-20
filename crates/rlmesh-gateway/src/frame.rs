@@ -15,11 +15,9 @@ pub const REQUEST: u8 = 0x10;
 pub const HEARTBEAT: u8 = 0x11;
 /// An action chunk (browser → edge).
 pub const CHUNK: u8 = 0x12;
-/// A sample or increment of one subscription: the subscription id (`u32`
-/// LE), flags ([`BATCH`]), then the payload.
+/// One sample of one subscription: the subscription id (`u32` LE), a flags
+/// byte (reserved, 0), then the `Sample`.
 pub const SAMPLE: u8 = 0x20;
-/// [`SAMPLE`] flag: the body is a `SampleBatch`.
-pub const BATCH: u8 = 0x01;
 
 /// `tag` then `body` (one copy: a WebSocket message is one buffer).
 pub fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
@@ -39,11 +37,11 @@ pub fn with_id(tag: u8, id: u32, body: &[u8]) -> Vec<u8> {
 }
 
 /// A `SAMPLE` frame for subscription `id`.
-pub fn sample(id: u32, batch: bool, body: &[u8]) -> Vec<u8> {
+pub fn sample(id: u32, body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(body.len() + 6);
     out.push(SAMPLE);
     out.extend_from_slice(&id.to_le_bytes());
-    out.push(if batch { BATCH } else { 0 });
+    out.push(0);
     out.extend_from_slice(body);
     out
 }
@@ -62,7 +60,7 @@ mod tests {
     fn tags_match_the_browser_binding() {
         use rlmesh_wasm::frame as browser;
         assert_eq!(
-            [STATE, ECHO, REPLY, REQUEST, HEARTBEAT, CHUNK, SAMPLE, BATCH],
+            [STATE, ECHO, REPLY, REQUEST, HEARTBEAT, CHUNK, SAMPLE],
             [
                 browser::STATE,
                 browser::ECHO,
@@ -70,12 +68,11 @@ mod tests {
                 browser::REQUEST,
                 browser::HEARTBEAT,
                 browser::CHUNK,
-                browser::SAMPLE,
-                browser::BATCH
+                browser::SAMPLE
             ]
         );
-        assert_eq!(sample(7, true, &[9]), [SAMPLE, 7, 0, 0, 0, BATCH, 9]);
-        assert_eq!(sample(7, true, &[]).len(), browser::SAMPLE_HEADER);
+        assert_eq!(sample(7, &[9]), [SAMPLE, 7, 0, 0, 0, 0, 9]);
+        assert_eq!(sample(7, &[]).len(), browser::SAMPLE_HEADER);
         assert_eq!(read_id(&with_id(REPLY, 513, &[])), Some(513));
         assert_eq!(read_id(&[REPLY, 1]), None);
     }

@@ -35,7 +35,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use rlmesh_session::sample::batch_encoding;
 use rlmesh_session::transport::{TrafficClass, payload_bytes, stream_qos};
 use rlmesh_session::{MonotonicClock, Participant, ParticipantConfig, SessionError, Transport};
 use rlmesh_wire::codec;
@@ -163,7 +162,7 @@ impl Gateway {
 
     /// Subscribes `sink` to the stream at `path` (`{robot}/{part}` or
     /// `{robot}/{part}/_applied`) for a `socket` (`state` or `bulk`)
-    /// connection: every sample or increment its publisher sends, as
+    /// connection: every sample its publisher sends, as
     /// [`frame::SAMPLE`] frames for subscription `id`. A full sink drops the
     /// frame.
     pub async fn subscribe(
@@ -199,20 +198,16 @@ impl Gateway {
             ));
         }
         let counters = usize::from(socket == "bulk");
-        let batch = batch_encoding();
         let gw = Arc::downgrade(self);
         let subscriber = self
             .transport
             .for_priority(spec.priority)
             .declare_subscriber(self.keys.data(&robot, &spec.path))
             .callback(move |sample| {
-                let is_batch = sample.encoding() == &batch;
                 // One copy, into the WebSocket message; the bytes are the
                 // publisher's.
                 let body = payload_bytes(sample.payload());
-                let ok = sink
-                    .try_send(Bytes::from(frame::sample(id, is_batch, &body)))
-                    .is_ok();
+                let ok = sink.try_send(Bytes::from(frame::sample(id, &body))).is_ok();
                 if let Some(gw) = gw.upgrade() {
                     let c = &gw.data[counters];
                     if ok { &c.forwarded } else { &c.dropped }.fetch_add(1, Ordering::Relaxed);
