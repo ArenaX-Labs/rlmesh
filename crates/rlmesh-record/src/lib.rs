@@ -109,7 +109,7 @@ enum Entry {
         data: Vec<u8>,
     },
     Finish {
-        metadata: Vec<(String, BTreeMap<String, String>)>,
+        metadata: Metadata,
     },
 }
 
@@ -133,7 +133,12 @@ pub struct Recorder {
     watcher: Option<tokio::task::JoinHandle<Subscriptions>>,
     cancel: tokio::sync::watch::Sender<bool>,
     authority: Option<zenoh::pubsub::Subscriber<()>>,
+    /// Every robot declared while recording, as metadata records.
+    robots: Arc<Mutex<Metadata>>,
 }
+
+/// MCAP metadata records, by name.
+type Metadata = BTreeMap<String, BTreeMap<String, String>>;
 
 /// Everything the watcher subscribed to; dropped to stop recording.
 #[derive(Default)]
@@ -176,7 +181,9 @@ impl Recorder {
         };
 
         // Authority: every published snapshot, as published.
+        let robots: Arc<Mutex<Metadata>> = Arc::default();
         let authority = {
+            let robots = robots.clone();
             let topic = Arc::new(Topic {
                 key: TopicKey::Authority,
                 name: "/_session/authority".into(),
@@ -211,6 +218,10 @@ impl Recorder {
                         sequence: state.revision,
                         data,
                     });
+                    robots
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend(robot_metadata(&state));
                     let mut seen = seen
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -247,6 +258,7 @@ impl Recorder {
             watcher: Some(watcher),
             cancel,
             authority: Some(authority),
+            robots,
         })
     }
 
@@ -257,7 +269,13 @@ impl Recorder {
             drop(watcher.await);
         }
         drop(self.authority.take());
-        let metadata = session_metadata(self.participant.authority().as_ref());
+        let mut metadata = session_metadata(self.participant.authority().as_ref());
+        metadata.extend(
+            self.robots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        );
         let _ = self.tx.send(Entry::Finish { metadata });
         let writer = self.writer.take();
         match writer {
@@ -280,7 +298,7 @@ impl Drop for Recorder {
         let _ = self.cancel.send(true);
         if self.writer.is_some() {
             let _ = self.tx.send(Entry::Finish {
-                metadata: Vec::new(),
+                metadata: Metadata::new(),
             });
         }
     }
@@ -446,13 +464,11 @@ async fn subscribe_stream(
         .await
 }
 
-fn session_metadata(
-    snapshot: Option<&AuthoritySnapshot>,
-) -> Vec<(String, BTreeMap<String, String>)> {
+fn session_metadata(snapshot: Option<&AuthoritySnapshot>) -> Metadata {
     let Some(snapshot) = snapshot else {
-        return Vec::new();
+        return Metadata::new();
     };
-    let mut out = vec![(
+    Metadata::from([(
         "rlmesh.session".to_string(),
         BTreeMap::from([
             ("session".to_string(), snapshot.session.to_string()),
@@ -462,23 +478,31 @@ fn session_metadata(
                 snapshot.protocol_minor.to_string(),
             ),
         ]),
-    )];
-    for (robot, fingerprint) in &snapshot.contract {
-        let parts: Vec<String> = snapshot
-            .parts
-            .iter()
-            .filter(|p| &p.owner == robot)
-            .map(|p| format!("{}:{}:{}", p.path, p.kind, p.channel.0))
-            .collect();
-        out.push((
-            format!("rlmesh.robot.{robot}"),
-            BTreeMap::from([
-                ("fingerprint".to_string(), fingerprint.to_string()),
-                ("parts".to_string(), parts.join(",")),
-            ]),
-        ));
-    }
-    out
+    )])
+}
+
+/// One `rlmesh.robot.{robot}` record per declared robot: its declaration
+/// fingerprint and its parts (`path:kind:channel`).
+fn robot_metadata(snapshot: &AuthoritySnapshot) -> Metadata {
+    snapshot
+        .contract
+        .iter()
+        .map(|(robot, fingerprint)| {
+            let parts: Vec<String> = snapshot
+                .parts
+                .iter()
+                .filter(|p| &p.owner == robot)
+                .map(|p| format!("{}:{}:{}", p.path, p.kind, p.channel.0))
+                .collect();
+            (
+                format!("rlmesh.robot.{robot}"),
+                BTreeMap::from([
+                    ("fingerprint".to_string(), fingerprint.to_string()),
+                    ("parts".to_string(), parts.join(",")),
+                ]),
+            )
+        })
+        .collect()
 }
 
 fn ns(t: i64) -> u64 {
@@ -496,7 +520,7 @@ fn write_loop(
         path,
         ..RecordStats::default()
     };
-    let mut finish_metadata = Vec::new();
+    let mut finish_metadata = Metadata::new();
     while let Ok(entry) = rx.recv() {
         match entry {
             Entry::Message {
