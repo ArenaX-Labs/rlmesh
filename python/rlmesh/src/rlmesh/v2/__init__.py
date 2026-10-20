@@ -476,7 +476,7 @@ class Robot:
         return self._native.now_ns()
 
     def edge_stats(self, path: str) -> dict[str, Any]:
-        """The counters of the edge serving ``path``: accepted, rejected, mode ticks."""
+        """The counters of the edge serving ``path``: accepted, rejected (and ``rejected_by`` reason), mode ticks."""
         return self._native.edge_stats(path)
 
     def close(self) -> None:

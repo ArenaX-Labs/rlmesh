@@ -24,7 +24,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh_edge::{Due, EdgeConfig, EdgeMode, Robot};
+use rlmesh_edge::{Due, EdgeConfig, EdgeMode, Rejection, Robot};
 use rlmesh_record::{RecordError, Recorder};
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::{
@@ -124,6 +124,19 @@ where
             }
         })
     })
+}
+
+/// A rejection reason as a snake_case name (`too_old`, `stale_token`).
+fn rejection_name(reason: Rejection) -> String {
+    let camel = format!("{reason:?}");
+    let mut out = String::with_capacity(camel.len() + 4);
+    for (i, c) in camel.chars().enumerate() {
+        if c.is_ascii_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
 }
 
 fn screaming(status: CtlStatus) -> String {
@@ -722,6 +735,14 @@ impl PyRobot {
         let d = PyDict::new(py);
         d.set_item("accepted", stats.accepted)?;
         d.set_item("rejected", stats.rejected_total())?;
+        let rejected_by = PyDict::new(py);
+        for reason in Rejection::ALL {
+            let n = stats.rejected(reason);
+            if n > 0 {
+                rejected_by.set_item(rejection_name(reason), n)?;
+            }
+        }
+        d.set_item("rejected_by", rejected_by)?;
         d.set_item("clamped", stats.clamped)?;
         d.set_item("handovers", stats.handovers)?;
         d.set_item("safe_reports", stats.safe_reports)?;
