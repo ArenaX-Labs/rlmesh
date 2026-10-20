@@ -33,7 +33,9 @@ impl IdError {
 pub struct SessionId(Uuid);
 
 impl SessionId {
-    /// A fresh UUIDv7.
+    /// A fresh UUIDv7. Not on wasm32-unknown-unknown, which has no clock or
+    /// RNG of its own: a browser takes the id it is given.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn new() -> Self {
         Self(Uuid::now_v7())
     }
@@ -44,6 +46,7 @@ impl SessionId {
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl Default for SessionId {
     fn default() -> Self {
         Self::new()

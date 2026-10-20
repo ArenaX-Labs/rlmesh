@@ -21,6 +21,12 @@ ignored = ["tonic-prost-build"]
 bytes = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
+# Session ids parse and print everywhere; minting one (UUIDv7) reads the
+# clock and the RNG, so `SessionId::new` exists on every target but the
+# browser (wasm32-unknown-unknown has neither without JS glue).
+uuid = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 uuid = { workspace = true, features = ["v7"] }
 
 [build-dependencies]
