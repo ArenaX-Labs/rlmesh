@@ -97,11 +97,11 @@ fn pi0_single_on_ur10e() {
     let b = bound("pi0_single", "ur10e", RunOptions::named("pi0_single"));
     assert_eq!(
         plan(&b, "image"),
-        "decode(jpeg) → pad(1280x720 → 1280x1280) → resize(bilinear, 224x224)"
+        "decode(jpeg) → pad(1280x720 → 224x224, bilinear)"
     );
     assert_eq!(
         plan(&b, "wrist_image"),
-        "decode(jpeg) → pad(640x480 → 640x640) → resize(bilinear, 224x224)"
+        "decode(jpeg) → pad(640x480 → 224x224, bilinear)"
     );
     assert_eq!(plan(&b, "state"), "fields pos; names identical");
     assert_eq!(plan(&b, "gripper"), "none");
@@ -228,7 +228,7 @@ fn force_policy_on_ur10e() {
     assert_eq!(b.input("q").expect("q").delivers.to_string(), "f32 [12]");
     assert_eq!(
         plan(&b, "wrist"),
-        "decode(jpeg) → crop(640x480 → 480x480) → resize(bilinear, 96x96) → auto layout(chw) → normalise(u8 → 0…1 f32)"
+        "decode(jpeg) → crop(640x480 → 96x96, bilinear) → auto layout(chw) → normalise(u8 → 0…1 f32)"
     );
     assert_eq!(
         b.input("wrist").expect("wrist").delivers.to_string(),

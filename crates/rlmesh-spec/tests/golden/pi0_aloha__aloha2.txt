@@ -1,20 +1,20 @@
-binding pi0_aloha on aloha2: 9 inputs, 4 actions, fingerprint faa20aece884eb20
+binding pi0_aloha on aloha2: 9 inputs, 4 actions, fingerprint fabbdcb6b0b7d41d
 replan 50 Hz
 
-  entry            dir  part             status  plan                                                               delivers
-  cam_high         in   scene/cam        bound   decode(jpeg) → pad(640x480 → 640x640) → resize(bilinear, 224x224)  u8 [224, 224, 3]
-  cam_low          in   scene/cam_low    bound   decode(jpeg) → pad(640x480 → 640x640) → resize(bilinear, 224x224)  u8 [224, 224, 3]
-  cam_left_wrist   in   left/wrist/cam   bound   decode(jpeg) → pad(640x480 → 640x640) → resize(bilinear, 224x224)  u8 [224, 224, 3]
-  cam_right_wrist  in   right/wrist/cam  bound   decode(jpeg) → pad(640x480 → 640x640) → resize(bilinear, 224x224)  u8 [224, 224, 3]
-  left             in   left/arm         bound   fields pos; names identical                                        f32 [6]
-  right            in   right/arm        bound   fields pos; names identical                                        f32 [6]
-  left_gripper     in   left/gripper     bound   none                                                               f32 [1]
-  right_gripper    in   right/gripper    bound   none                                                               f32 [1]
-  prompt           in   task             bound   none                                                               str
-  left             out  left/arm         bound   none; names identical                                              f32 [50, 6]
-  right            out  right/arm        bound   none; names identical                                              f32 [50, 6]
-  left_gripper     out  left/gripper     bound   none                                                               f32 [50, 1]
-  right_gripper    out  right/gripper    bound   none                                                               f32 [50, 1]
+  entry            dir  part             status  plan                                             delivers
+  cam_high         in   scene/cam        bound   decode(jpeg) → pad(640x480 → 224x224, bilinear)  u8 [224, 224, 3]
+  cam_low          in   scene/cam_low    bound   decode(jpeg) → pad(640x480 → 224x224, bilinear)  u8 [224, 224, 3]
+  cam_left_wrist   in   left/wrist/cam   bound   decode(jpeg) → pad(640x480 → 224x224, bilinear)  u8 [224, 224, 3]
+  cam_right_wrist  in   right/wrist/cam  bound   decode(jpeg) → pad(640x480 → 224x224, bilinear)  u8 [224, 224, 3]
+  left             in   left/arm         bound   fields pos; names identical                      f32 [6]
+  right            in   right/arm        bound   fields pos; names identical                      f32 [6]
+  left_gripper     in   left/gripper     bound   none                                             f32 [1]
+  right_gripper    in   right/gripper    bound   none                                             f32 [1]
+  prompt           in   task             bound   none                                             str
+  left             out  left/arm         bound   none; names identical                            f32 [50, 6]
+  right            out  right/arm        bound   none; names identical                            f32 [50, 6]
+  left_gripper     out  left/gripper     bound   none                                             f32 [50, 1]
+  right_gripper    out  right/gripper    bound   none                                             f32 [50, 1]
 
   input            contract  source  delivery  freshness
   cam_high         every     30 Hz   50 Hz     100 ms (derived)

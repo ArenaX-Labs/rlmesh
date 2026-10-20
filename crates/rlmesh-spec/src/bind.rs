@@ -2113,7 +2113,7 @@ impl<'a> Binder<'a> {
             });
             size = to;
         }
-        // Aspect fit and resize.
+        // Aspect fit and resize, one step (v1 `fit` semantics).
         let target = input.size.map_or(size, |(h, w)| Size {
             width: w,
             height: h,
@@ -2123,26 +2123,25 @@ impl<'a> Binder<'a> {
             let fit_needed = !size.same_aspect(target);
             let fit = [Fit::Crop, Fit::Pad, Fit::Stretch]
                 .into_iter()
-                .find(|f| allows.has(f.allow()));
-            let fitted = match (fit_needed, fit) {
-                (false, _) => Some(size),
-                (true, Some(Fit::Crop)) => Some(cover(size, target, true)),
-                (true, Some(Fit::Pad)) => Some(cover(size, target, false)),
-                (true, Some(Fit::Stretch)) => Some(size),
-                (true, None) => None,
+                .find(|f| fit_needed && allows.has(f.allow()));
+            let (sx, sy) = (
+                f64::from(target.width) / f64::from(size.width),
+                f64::from(target.height) / f64::from(size.height),
+            );
+            let enlarges = match fit {
+                Some(Fit::Crop) => sx.max(sy) > 1.0,
+                Some(Fit::Pad) => sx.min(sy) > 1.0,
+                _ => sx > 1.0 || sy > 1.0,
             };
-            let resize_needed =
-                fitted.is_none_or(|f| f != target) || fit == Some(Fit::Stretch) && fit_needed;
-            let upscale =
-                fitted.is_some_and(|f| target.width > f.width || target.height > f.height);
-            let missing_resize = resize_needed && !allows.has(Allow::Resize);
+            let missing_fit = fit_needed && fit.is_none();
+            let missing_resize = !allows.has(Allow::Resize);
             let what = format!(
                 "{path} is {size} ({}), the model wants {target} ({})",
                 size.aspect(),
                 target.aspect()
             );
-            if fitted.is_none() || missing_resize {
-                let (needs, fix) = match (fitted.is_none(), missing_resize) {
+            if missing_fit || missing_resize {
+                let (needs, fix) = match (missing_fit, missing_resize) {
                     (true, true) => (
                         "resize, plus one of crop | pad | stretch to change the aspect ratio",
                         "add \"resize\" and \"pad\" (or \"crop\") to allow",
@@ -2161,7 +2160,7 @@ impl<'a> Binder<'a> {
                 ));
                 return None;
             }
-            if upscale && !allows.has(Allow::Upscale) {
+            if enlarges && !allows.has(Allow::Upscale) {
                 self.problems.push(problem(
                     Code::NotAllowed,
                     slot,
@@ -2173,24 +2172,16 @@ impl<'a> Binder<'a> {
                 ));
                 return None;
             }
-            if fit_needed && let (Some(fit), Some(fitted)) = (fit, fitted) {
-                plan.steps.push(Step::Fit {
-                    fit,
-                    from: size,
-                    to: fitted,
-                    aspect: target.aspect(),
-                });
-            }
-            if resize_needed {
-                plan.steps.push(Step::Resize {
-                    kernel: if kind == Kind::Depth {
-                        Resample::Nearest
-                    } else {
-                        input.resample
-                    },
-                    to: target,
-                });
-            }
+            plan.steps.push(Step::Resize {
+                kernel: if kind == Kind::Depth {
+                    Resample::Nearest
+                } else {
+                    input.resample
+                },
+                from: size,
+                to: target,
+                fit,
+            });
             size = target;
         }
         // bgr.
@@ -2267,6 +2258,33 @@ impl<'a> Binder<'a> {
     fn blank(&mut self, slot: &Slot<'_>, input: &Input) -> Option<InputRow> {
         let kind = slot.entry.kind;
         let undeclared = |what: &str| format!("{}: cannot blank it without {what}.", slot.name());
+        // A black frame through the declared preprocessing: range, then the
+        // affine (per channel when it has one value per channel).
+        let mut fill = vec![match (kind, slot.entry.range) {
+            (Kind::Camera, Some((low, _))) => low,
+            _ => 0.0,
+        }];
+        if kind == Kind::Camera && (slot.entry.scale.is_some() || slot.entry.offset.is_some()) {
+            let n = [&slot.entry.scale, &slot.entry.offset]
+                .iter()
+                .filter_map(|v| v.as_ref().map(Vec::len))
+                .max()
+                .unwrap_or(1);
+            let pick = |v: &Option<Vec<f64>>, i: usize, d: f64| {
+                v.as_ref().map_or(d, |v| {
+                    if v.len() == 1 {
+                        v[0]
+                    } else {
+                        v.get(i).copied().unwrap_or(d)
+                    }
+                })
+            };
+            fill = (0..n)
+                .map(|i| {
+                    (fill[0] - pick(&slot.entry.offset, i, 0.0)) * pick(&slot.entry.scale, i, 1.0)
+                })
+                .collect();
+        }
         let (what, delivered) = match kind {
             Kind::Camera => {
                 let Some((h, w)) = input.size else {
@@ -2356,7 +2374,7 @@ impl<'a> Binder<'a> {
             applied: false,
             status: Status::Blank,
             plan: Plan {
-                steps: vec![Step::Blank(what)],
+                steps: vec![Step::Blank { what, fill }],
                 notes: Vec::new(),
             },
             delivers: Delivery::of(delivered, (input.history > 1).then_some(input.history)),
@@ -2893,27 +2911,6 @@ fn field_range(part: &PartSpec, kind: Kind, field: &str, unit: &str) -> Option<(
     Some((r.get(0)?.as_f64()?, r.get(1)?.as_f64()?))
 }
 
-/// The size `from` takes at `target`'s aspect ratio: covered (crop) or
-/// letterboxed (pad).
-fn cover(from: Size, target: Size, crop: bool) -> Size {
-    let (w, h) = (u64::from(from.width), u64::from(from.height));
-    let (tw, th) = (u64::from(target.width), u64::from(target.height));
-    let wider = w * th > h * tw;
-    let round = |n: u64, d: u64| ((n * 2 + d) / (2 * d)) as u32;
-    if wider == crop {
-        // Keep the height: crop the width (or pad it, when narrower).
-        Size {
-            width: round(h * tw, th).max(1),
-            height: from.height,
-        }
-    } else {
-        Size {
-            width: from.width,
-            height: round(w * th, tw).max(1),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2929,14 +2926,5 @@ mod tests {
         assert_eq!(cast(DType::U16, DType::I32), Some(true));
         assert_eq!(cast(DType::Bool, DType::F32), None);
         assert_eq!(cast(DType::Bool, DType::U8), Some(true));
-    }
-
-    #[test]
-    fn aspect_fits_cover_or_letterbox() {
-        let s = |width, height| Size { width, height };
-        assert_eq!(cover(s(640, 480), s(96, 96), true), s(480, 480));
-        assert_eq!(cover(s(1280, 720), s(224, 224), false), s(1280, 1280));
-        assert_eq!(cover(s(480, 640), s(1, 1), true), s(480, 480));
-        assert_eq!(cover(s(480, 640), s(1, 1), false), s(640, 640));
     }
 }

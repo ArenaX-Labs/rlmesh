@@ -1,14 +1,14 @@
-binding pi0_single on aloha2 under "right": 5 inputs, 2 actions, fingerprint ad2bcf7f3e781142
+binding pi0_single on aloha2 under "right": 5 inputs, 2 actions, fingerprint c312390899177a87
 replan 15 Hz
 
-  entry        dir  part             status    plan                                                               delivers
-  image        in   scene/cam        bound     decode(jpeg) → pad(640x480 → 640x640) → resize(bilinear, 224x224)  u8 [224, 224, 3]
-  wrist_image  in   right/wrist/cam  bound     decode(jpeg) → pad(640x480 → 640x640) → resize(bilinear, 224x224)  u8 [224, 224, 3]
-  state        in   right/arm        override  fields pos → positional                                            f32 [6]
-  gripper      in   right/gripper    bound     none                                                               f32 [1]
-  prompt       in   task             bound     none                                                               str
-  arm          out  right/arm        override  positional                                                         f32 [10, 6]
-  gripper      out  right/gripper    bound     rescale(-1…1 → 0…1)                                                f32 [10, 1]
+  entry        dir  part             status    plan                                             delivers
+  image        in   scene/cam        bound     decode(jpeg) → pad(640x480 → 224x224, bilinear)  u8 [224, 224, 3]
+  wrist_image  in   right/wrist/cam  bound     decode(jpeg) → pad(640x480 → 224x224, bilinear)  u8 [224, 224, 3]
+  state        in   right/arm        override  fields pos → positional                          f32 [6]
+  gripper      in   right/gripper    bound     none                                             f32 [1]
+  prompt       in   task             bound     none                                             str
+  arm          out  right/arm        override  positional                                       f32 [10, 6]
+  gripper      out  right/gripper    bound     rescale(-1…1 → 0…1)                              f32 [10, 1]
 
   input        contract   source  delivery  freshness
   image        latest@15  30 Hz   15 Hz     200 ms (derived)

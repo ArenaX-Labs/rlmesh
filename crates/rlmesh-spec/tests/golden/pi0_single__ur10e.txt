@@ -1,14 +1,14 @@
-binding pi0_single on ur10e: 5 inputs, 2 actions, fingerprint e1f11e3068b28bc9
+binding pi0_single on ur10e: 5 inputs, 2 actions, fingerprint bf3bd95bee8923b7
 replan 15 Hz
 
-  entry        dir  part       status  plan                                                                  delivers
-  image        in   scene/cam  bound   decode(jpeg) → pad(1280x720 → 1280x1280) → resize(bilinear, 224x224)  u8 [224, 224, 3]
-  wrist_image  in   wrist/cam  bound   decode(jpeg) → pad(640x480 → 640x640) → resize(bilinear, 224x224)     u8 [224, 224, 3]
-  state        in   arm        bound   fields pos; names identical                                           f32 [6]
-  gripper      in   gripper    bound   none                                                                  f32 [1]
-  prompt       in   task       bound   none                                                                  str
-  arm          out  arm        bound   none; names identical                                                 f32 [10, 6]
-  gripper      out  gripper    bound   rescale(-1…1 → 0…1)                                                   f32 [10, 1]
+  entry        dir  part       status  plan                                              delivers
+  image        in   scene/cam  bound   decode(jpeg) → pad(1280x720 → 224x224, bilinear)  u8 [224, 224, 3]
+  wrist_image  in   wrist/cam  bound   decode(jpeg) → pad(640x480 → 224x224, bilinear)   u8 [224, 224, 3]
+  state        in   arm        bound   fields pos; names identical                       f32 [6]
+  gripper      in   gripper    bound   none                                              f32 [1]
+  prompt       in   task       bound   none                                              str
+  arm          out  arm        bound   none; names identical                             f32 [10, 6]
+  gripper      out  gripper    bound   rescale(-1…1 → 0…1)                               f32 [10, 1]
 
   input        contract   source  delivery  freshness
   image        every      15 Hz   15 Hz     200 ms (derived)

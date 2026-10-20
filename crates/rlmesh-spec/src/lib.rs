@@ -15,6 +15,9 @@
 //!   delivery contracts, action grids and fingerprint) or a [`Refusal`]
 //!   listing every problem; [`plan`] is the conversion vocabulary (§7) its
 //!   rows use, and [`explain`] renders refusals (§6.7) and tables (§6.8).
+//! - [`apply`]: the plans executed: a bound input's samples to what
+//!   `predict` receives, and a chunk from `predict` to packed command
+//!   values; [`image`] holds the image operations, with v1's kernels.
 //! - [`contract`]: delivery contracts, freshness bounds, admission and the
 //!   publication plan per stream (§8.2, §8.7), shared by the binder and the
 //!   host.
@@ -22,10 +25,12 @@
 //! The generic core (`rlmesh-wire`, `rlmesh-session`, `rlmesh-edge`) works on
 //! streams and never interprets kinds; only this crate does.
 
+pub mod apply;
 pub mod bind;
 pub mod canonical;
 pub mod contract;
 pub mod explain;
+pub mod image;
 pub mod kinds;
 pub mod normalise;
 pub mod plan;

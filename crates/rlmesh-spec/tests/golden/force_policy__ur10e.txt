@@ -1,12 +1,12 @@
-binding force_policy on ur10e: 4 inputs, 1 action, fingerprint b62e5c31b8ab41ec
+binding force_policy on ur10e: 4 inputs, 1 action, fingerprint 808bfe5b4172eed7
 replan 50 Hz
 
-  entry  dir  part          status  plan                                                                                                           delivers
-  ft     in   wrist/ft      bound   fields force, torque → window(50 by seq); warmup at episode start                                              f32 [50, 6]
-  q      in   arm           bound   fields pos, vel; names identical                                                                               f32 [12]
-  wrist  in   wrist/cam     bound   decode(jpeg) → crop(640x480 → 480x480) → resize(bilinear, 96x96) → auto layout(chw) → normalise(u8 → 0…1 f32)  f32 [3, 96, 96]
-  last   in   arm/_applied  bound   none                                                                                                           f32 [6]
-  arm    out  arm           bound   none                                                                                                           f32 [20, 6]
+  entry  dir  part          status  plan                                                                                         delivers
+  ft     in   wrist/ft      bound   fields force, torque → window(50 by seq); warmup at episode start                            f32 [50, 6]
+  q      in   arm           bound   fields pos, vel; names identical                                                             f32 [12]
+  wrist  in   wrist/cam     bound   decode(jpeg) → crop(640x480 → 96x96, bilinear) → auto layout(chw) → normalise(u8 → 0…1 f32)  f32 [3, 96, 96]
+  last   in   arm/_applied  bound   none                                                                                         f32 [6]
+  arm    out  arm           bound   none                                                                                         f32 [20, 6]
 
   input  contract    source  delivery  freshness
   ft     history@50  500 Hz  50 Hz     60 ms (derived)

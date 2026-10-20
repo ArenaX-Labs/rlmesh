@@ -49,14 +49,16 @@ fn gcd(a: u32, b: u32) -> u32 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
-/// How an image is fitted to another aspect ratio (§7.2).
+/// How an image is fitted to another aspect ratio (§7.2, v1 `fit`
+/// semantics).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Fit {
-    /// Cover, then center-crop.
+    /// Scale uniformly to cover the target, then center-crop it.
     Crop,
-    /// Letterbox with zeros (depth: NaN).
+    /// Scale uniformly to fit inside the target, then letterbox with zeros
+    /// (depth: NaN), as `resize_with_pad` does.
     Pad,
-    /// Distort.
+    /// Scale each axis to the target (distorting).
     Stretch,
 }
 
@@ -142,23 +144,17 @@ pub enum Step {
         /// After.
         to: Size,
     },
-    /// Aspect fit.
-    Fit {
-        /// How.
-        fit: Fit,
-        /// Before.
-        from: Size,
-        /// After (stretch: unchanged; the resize distorts).
-        to: Size,
-        /// The target aspect ratio.
-        aspect: String,
-    },
-    /// Resample.
+    /// Resample to the target, through an aspect fit when the aspect
+    /// ratios differ (one step, §7.4 "aspect fit + resize").
     Resize {
         /// The kernel.
         kernel: Resample,
-        /// The target.
+        /// The source size.
+        from: Size,
+        /// The target size.
         to: Size,
+        /// The aspect fit (`None`: the same aspect ratio).
+        fit: Option<Fit>,
     },
     /// Swap R and B.
     Bgr,
@@ -202,7 +198,13 @@ pub enum Step {
     /// A window of the last `n` samples by seq.
     Window(u32),
     /// A constant instead of an absent part.
-    Blank(String),
+    Blank {
+        /// What it is, for the table.
+        what: String,
+        /// The value each element takes: one, or one per image channel
+        /// (a black frame through the entry's declared preprocessing).
+        fill: Vec<f64>,
+    },
 }
 
 impl Step {
@@ -257,18 +259,25 @@ impl fmt::Display for Step {
             Self::CenterCrop { fraction, from, to } => {
                 write!(f, "crop({} of {from} → {to})", num(*fraction))
             }
-            Self::Fit {
-                fit: Fit::Stretch,
-                from,
-                aspect,
+            Self::Resize {
+                kernel,
+                to,
+                fit: None,
                 ..
-            } => write!(f, "stretch({} → {aspect})", from.aspect()),
-            Self::Fit { fit, from, to, .. } => write!(
-                f,
-                "{}({from} → {to})",
-                if *fit == Fit::Crop { "crop" } else { "pad" }
-            ),
-            Self::Resize { kernel, to } => write!(f, "resize({}, {to})", kernel.name()),
+            } => write!(f, "resize({}, {to})", kernel.name()),
+            Self::Resize {
+                kernel,
+                from,
+                to,
+                fit: Some(fit),
+            } => {
+                let name = match fit {
+                    Fit::Crop => "crop",
+                    Fit::Pad => "pad",
+                    Fit::Stretch => "stretch",
+                };
+                write!(f, "{name}({from} → {to}, {})", kernel.name())
+            }
             Self::Bgr => f.write_str("bgr"),
             Self::Chw => write!(f, "{auto}layout(chw)"),
             Self::Cast { from, to, exact } => write!(
@@ -317,7 +326,7 @@ impl fmt::Display for Step {
                 f.write_str(&parts.join(" → "))
             }
             Self::Window(n) => write!(f, "window({n} by seq)"),
-            Self::Blank(what) => write!(f, "blank({what})"),
+            Self::Blank { what, .. } => write!(f, "blank({what})"),
         }
     }
 }
@@ -519,31 +528,24 @@ mod tests {
         let plan = Plan {
             steps: vec![
                 Step::Decode,
-                Step::Fit {
-                    fit: Fit::Pad,
+                Step::Resize {
+                    kernel: Resample::Bilinear,
                     from: Size {
                         width: 1280,
                         height: 720,
                     },
                     to: Size {
-                        width: 1280,
-                        height: 1280,
-                    },
-                    aspect: "1:1".into(),
-                },
-                Step::Resize {
-                    kernel: Resample::Bilinear,
-                    to: Size {
                         width: 224,
                         height: 224,
                     },
+                    fit: Some(Fit::Pad),
                 },
             ],
             notes: Vec::new(),
         };
         assert_eq!(
             plan.to_string(),
-            "decode(jpeg) → pad(1280x720 → 1280x1280) → resize(bilinear, 224x224)"
+            "decode(jpeg) → pad(1280x720 → 224x224, bilinear)"
         );
         let state = Plan {
             steps: vec![
