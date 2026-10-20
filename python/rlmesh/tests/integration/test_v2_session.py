@@ -96,10 +96,13 @@ def golden(name: str) -> str:
     return (SPEC / "golden" / f"{name}.txt").read_text().rstrip("\n")
 
 
-def wait_until(what: str, done: Callable[[], bool]) -> None:
+def wait_until(
+    what: str, done: Callable[[], bool], context: Callable[[], object] = lambda: ""
+) -> None:
+    """Poll ``done`` every 10 ms; ``context()`` goes into the timeout's message."""
     deadline = time.monotonic() + WAIT
     while not done():
-        assert time.monotonic() < deadline, f"timed out waiting for {what}"
+        assert time.monotonic() < deadline, f"timed out waiting for {what} {context()}"
         time.sleep(0.01)
 
 
@@ -320,6 +323,12 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         wait_until(
             "the operator driving",
             lambda: ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.75),
+            lambda: {
+                "teleop": operator_result,
+                "rejected_by": ur.robot.edge_stats("arm")["rejected_by"],
+                "recent": [(d.mode, d.lease_token) for d in ur.log[-5:]],
+                "operator_holds": operator.holds,
+            },
         )
         assert ur.log[-1].lease_token == tokens["arm"]
         assert model.stats()["skipped"]["no_lease"] > 0, (
