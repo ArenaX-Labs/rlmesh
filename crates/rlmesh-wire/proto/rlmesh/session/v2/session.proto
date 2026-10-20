@@ -1,0 +1,402 @@
+// RLMesh real-time session wire, generation 2: control messages.
+//
+// Every message is plain protobuf, one message per Zenoh payload; the key
+// says which message it is. Samples and action chunks carry their tensors as
+// raw `bytes` leaves in a layout declared once per channel.
+//
+// Compatibility: additive only. New fields, verbs and enum values; never
+// renumber or retype. A feature added in a protocol minor is a capability
+// string (see Attach.capabilities and AuthorityState.capabilities).
+//
+// Provisional until the v0.2 wire spec freezes.
+syntax = "proto3";
+
+package rlmesh.session.v2;
+
+// What a participant does in a session. One participant may hold several.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  // Publishes sensor channels and consumes actuation (real, sim or twin).
+  ROLE_EMBODIMENT = 1;
+  // Produces commands (model replica, operator or scripted controller).
+  ROLE_CONTROLLER = 2;
+  // Only subscribes (twin renderer, recorder, dashboard).
+  ROLE_OBSERVER = 3;
+}
+
+// The host-owned session mode.
+enum Mode {
+  MODE_UNSPECIFIED = 0;
+  MODE_DISARMED = 1;
+  MODE_ARMED = 2;
+  MODE_ACTIVE = 3;
+  MODE_SAFE = 4;
+  // Latched: leaving it needs a local clear, then disarm, then arm.
+  MODE_ESTOP = 5;
+}
+
+// Lease arbitration class: a higher class preempts a lower one.
+enum PriorityClass {
+  PRIORITY_CLASS_UNSPECIFIED = 0;
+  PRIORITY_CLASS_SCRIPTED = 1;
+  PRIORITY_CLASS_MODEL = 2;
+  PRIORITY_CLASS_OPERATOR = 3;
+  PRIORITY_CLASS_SAFETY = 4;
+}
+
+message ParticipantInfo {
+  string id = 1;
+  string name = 2;
+  repeated Role roles = 3;
+  PriorityClass priority = 4;
+  // Host session clock when the participant (last) attached.
+  int64 attached_ns = 5;
+  uint32 protocol_minor = 6;
+  repeated string capabilities = 7;
+}
+
+// A time-bounded grant of command authority over one actuation channel.
+message Lease {
+  uint32 channel = 1;
+  string holder = 2;
+  PriorityClass priority = 3;
+  // Unique and increasing per session: a preemption issues a new one, which
+  // fences the old holder's in-flight chunks.
+  uint64 token = 4;
+  uint64 ttl_ns = 5;
+  // Host session clock.
+  int64 granted_ns = 6;
+  int64 expires_ns = 7;
+}
+
+// session_ns = participant_ns + offset_ns, within ± error_ns.
+message ClockMapping {
+  string participant = 1;
+  int64 offset_ns = 2;
+  uint64 error_ns = 3;
+  double drift_bound_ppm = 4;
+  // Round trip of the sample the offset came from (the window minimum).
+  uint64 rtt_ns = 5;
+  // Host session clock of that sample.
+  int64 sample_ns = 6;
+}
+
+// The host's authority snapshot.
+message AuthorityState {
+  string session = 1;
+  uint64 epoch = 2;
+  // Bumps on every structural change; periodic republishes keep it.
+  uint64 revision = 3;
+  Mode mode = 4;
+  bool estop_latched = 5;
+  repeated ParticipantInfo roster = 6;
+  repeated Lease leases = 7;
+  repeated ClockMapping clocks = 8;
+  // Host session clock when this snapshot was taken.
+  int64 host_ns = 9;
+  repeated ChannelSpec channels = 10;
+  // The host's protocol minor.
+  uint32 protocol_minor = 11;
+  // Capabilities the session supports.
+  repeated string capabilities = 12;
+}
+
+// One NTP-style exchange: t1 and t4 in the participant's clock, t2 and t3 in
+// the host's.
+message TimingSample {
+  uint64 seq = 1;
+  int64 t1_ns = 2;
+  int64 t2_ns = 3;
+  int64 t3_ns = 4;
+  int64 t4_ns = 5;
+}
+
+// A participant's self-reported health.
+enum Health {
+  HEALTH_UNSPECIFIED = 0;
+  HEALTH_OK = 1;
+  HEALTH_DEGRADED = 2;
+  HEALTH_UNHEALTHY = 3;
+}
+
+message ChannelSeq {
+  uint32 channel = 1;
+  uint64 seq = 2;
+}
+
+// Participant -> host, control class.
+message Heartbeat {
+  string participant = 1;
+  // The participant's view of the epoch and mode.
+  uint64 epoch = 2;
+  Mode mode = 3;
+  uint64 seq = 4;
+  // Participant clock at send.
+  int64 t1_ns = 5;
+  // The previous exchange, completed with its t4.
+  TimingSample previous = 6;
+  repeated ChannelSeq last_seq_seen = 7;
+  uint64 last_chunk_accepted = 8;
+  uint64 last_chunk_applied = 9;
+  uint32 queue_depth = 10;
+  Health health = 11;
+}
+
+// Host -> participant, control class.
+message HeartbeatEcho {
+  uint64 seq = 1;
+  int64 t1_ns = 2;
+  int64 t2_ns = 3;
+  int64 t3_ns = 4;
+  uint64 epoch = 5;
+}
+
+message Attach {
+  string name = 1;
+  repeated Role roles = 2;
+  PriorityClass priority = 3;
+  // The participant's protocol minor.
+  uint32 protocol_minor = 4;
+  // Capabilities it requires of the session; the host refuses the attach
+  // (CTL_STATUS_INCOMPATIBLE) when it lacks one.
+  repeated string capabilities = 5;
+}
+
+message Detach {}
+
+message Arm {}
+
+message Disarm {}
+
+message GrantLease {
+  uint32 channel = 1;
+  // Zero takes the session's lease grace.
+  uint64 ttl_ns = 2;
+}
+
+message ReleaseLease {
+  uint32 channel = 1;
+  uint64 token = 2;
+}
+
+message Estop {
+  string reason = 1;
+}
+
+message Clear {}
+
+// An embodiment's edge fell back on its own account: ACTIVE goes SAFE.
+message EnterSafe {
+  string reason = 1;
+}
+
+message DeclareChannels {
+  repeated ChannelSpec channels = 1;
+}
+
+// A control verb, the payload of a query on `ctl`.
+message CtlRequest {
+  string participant = 1;
+  // The epoch the verb was issued against; zero skips the check.
+  uint64 epoch = 2;
+  oneof verb {
+    Attach attach = 10;
+    Detach detach = 11;
+    Arm arm = 12;
+    Disarm disarm = 13;
+    GrantLease grant_lease = 14;
+    ReleaseLease release_lease = 15;
+    Estop estop = 16;
+    Clear clear = 17;
+    DeclareChannels declare_channels = 18;
+    EnterSafe enter_safe = 19;
+  }
+}
+
+enum CtlStatus {
+  CTL_STATUS_UNSPECIFIED = 0;
+  CTL_STATUS_OK = 1;
+  CTL_STATUS_INVALID_REQUEST = 2;
+  CTL_STATUS_NOT_ATTACHED = 3;
+  CTL_STATUS_FORBIDDEN = 4;
+  CTL_STATUS_INVALID_TRANSITION = 5;
+  CTL_STATUS_ESTOP_LATCHED = 6;
+  CTL_STATUS_STALE_EPOCH = 7;
+  CTL_STATUS_STALE_TOKEN = 8;
+  CTL_STATUS_LEASE_BUSY = 9;
+  CTL_STATUS_CHANNEL_CONFLICT = 10;
+  CTL_STATUS_UNKNOWN_CHANNEL = 11;
+  CTL_STATUS_UNSUPPORTED = 12;
+  // The sender requires a capability the session lacks.
+  CTL_STATUS_INCOMPATIBLE = 13;
+}
+
+message CtlReply {
+  CtlStatus status = 1;
+  string message = 2;
+  // The authority snapshot right after the verb, accepted or not.
+  AuthorityState state = 3;
+  // The granted lease, for grant_lease.
+  Lease lease = 4;
+}
+
+// Channels.
+
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_SENSE = 1;
+  DIRECTION_ACTUATE = 2;
+  DIRECTION_AUX = 3;
+}
+
+enum Delivery {
+  DELIVERY_UNSPECIFIED = 0;
+  DELIVERY_BEST_EFFORT = 1;
+  DELIVERY_RELIABLE = 2;
+}
+
+enum ChannelPriority {
+  CHANNEL_PRIORITY_UNSPECIFIED = 0;
+  CHANNEL_PRIORITY_CONTROL = 1;
+  CHANNEL_PRIORITY_REALTIME = 2;
+  CHANNEL_PRIORITY_DATA = 3;
+  CHANNEL_PRIORITY_BULK = 4;
+}
+
+enum Congestion {
+  CONGESTION_UNSPECIFIED = 0;
+  CONGESTION_DROP = 1;
+  CONGESTION_BLOCK = 2;
+}
+
+message ChannelQos {
+  Delivery delivery = 1;
+  // 1 is LATEST, n > 1 is WINDOW(n).
+  uint32 history_depth = 2;
+  // Zero: none.
+  uint64 max_age_ns = 3;
+  // Zero: none.
+  uint64 deadline_ns = 4;
+  ChannelPriority priority = 5;
+  Congestion congestion = 6;
+  // Zero: none.
+  uint64 max_bitrate_bps = 7;
+}
+
+message Rate {
+  double nominal_hz = 1;
+  // Zero: none.
+  double min_hz = 2;
+}
+
+enum DType {
+  D_TYPE_UNSPECIFIED = 0;
+  D_TYPE_BOOL = 1;
+  D_TYPE_U8 = 2;
+  D_TYPE_I8 = 3;
+  D_TYPE_U16 = 4;
+  D_TYPE_I16 = 5;
+  D_TYPE_U32 = 6;
+  D_TYPE_I32 = 7;
+  D_TYPE_U64 = 8;
+  D_TYPE_I64 = 9;
+  D_TYPE_F16 = 10;
+  D_TYPE_BF16 = 11;
+  D_TYPE_F32 = 12;
+  D_TYPE_F64 = 13;
+}
+
+// One leaf of a channel's value: a dense little-endian row-major tensor.
+message TensorLayout {
+  string name = 1;
+  DType dtype = 2;
+  repeated uint64 shape = 3;
+}
+
+enum MergePolicy {
+  MERGE_POLICY_UNSPECIFIED = 0;
+  MERGE_POLICY_REPLACE = 1;
+  MERGE_POLICY_BLEND = 2;
+  MERGE_POLICY_RTC_PREFIX = 3;
+}
+
+message Actuation {
+  MergePolicy merge = 1;
+  // Zero: the default.
+  uint64 hold_max_ns = 2;
+  string safe_behavior = 3;
+}
+
+message ChannelSpec {
+  uint32 id = 1;
+  string name = 2;
+  Direction direction = 3;
+  string role = 4;
+  // One sample's value: one tensor per leaf, in order.
+  repeated TensorLayout layout = 5;
+  string units = 6;
+  string frame = 7;
+  // "raw" or "jpeg".
+  string encoding = 8;
+  Rate rate = 9;
+  ChannelQos qos = 10;
+  bool required = 11;
+  bool episodic = 12;
+  // Set by the host from the declaring participant.
+  string owner = 13;
+  uint32 encoding_quality = 14;
+  Actuation actuation = 15;
+}
+
+// Samples, on e/{owner}/c/{channel}.
+//
+// The leaves are raw little-endian row-major tensors in the channel's
+// declared layout (one JPEG for a JPEG channel). Senders may write them as
+// separate buffer segments, and receivers may slice them out of the received
+// buffer: neither needs a copy.
+message Sample {
+  uint32 channel = 1;
+  // Per channel per publisher, from 1; a gap is a loss.
+  uint64 seq = 2;
+  uint64 epoch = 3;
+  // Publisher's monotonic clock.
+  int64 capture_ns = 4;
+  int64 publish_ns = 5;
+  repeated bytes leaves = 6;
+  // Virtual or lockstep tick; 0 in wall mode.
+  uint64 tick = 7;
+}
+
+message ObservationRef {
+  uint32 channel = 1;
+  uint64 seq = 2;
+}
+
+// One action: one leaf per tensor of the channel's layout.
+message ActionValue {
+  repeated bytes leaves = 1;
+}
+
+// Action chunks, on a/{owner}/c/{channel}. Times are session time.
+message ActionChunk {
+  uint32 channel = 1;
+  // The controller that computed it; the edge checks it is the lease holder.
+  string source = 2;
+  // From the host; fences stale controllers.
+  uint64 lease_token = 3;
+  uint64 epoch = 4;
+  // Per lease token, increasing.
+  uint64 seq = 5;
+  repeated ObservationRef based_on = 6;
+  int64 t0_ns = 7;
+  // Zero takes the channel's declared period.
+  uint64 dt_ns = 8;
+  int64 replace_from_ns = 9;
+  // The whole chunk is void at and after this.
+  int64 valid_until_ns = 10;
+  repeated ActionValue actions = 11;
+  // Sender's monotonic clock at publish.
+  int64 publish_ns = 12;
+  // Virtual or lockstep tick; 0 in wall mode.
+  uint64 tick = 13;
+}

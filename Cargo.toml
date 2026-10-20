@@ -10,6 +10,7 @@ default-members = [
   "crates/rlmesh-sandbox",
   "crates/rlmesh-spaces",
   "crates/rlmesh-viewer",
+  "crates/rlmesh-wire",
   "python/rlmesh/rust",
 ]
 members = ["crates/*", "python/rlmesh/rust"]
@@ -39,6 +40,7 @@ rlmesh-runtime = { version = "=0.1.0", path = "crates/rlmesh-runtime" }
 rlmesh-sandbox = { version = "=0.1.0", path = "crates/rlmesh-sandbox" }
 rlmesh-spaces = { version = "=0.1.0", path = "crates/rlmesh-spaces" }
 rlmesh-viewer = { version = "=0.1.0", path = "crates/rlmesh-viewer" }
+rlmesh-wire = { version = "=0.1.0", path = "crates/rlmesh-wire" }
 
 # Protocol / Transport
 rayon = "1.10"
@@ -60,6 +62,8 @@ http-body-util = "0.1"
 # Test-only: a throwaway CA and server certificate for TLS tests.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 zstd = "0.13"
+# Shared, sliceable buffers for zero-copy tensor payloads (`Bytes::from_owner`).
+bytes = "1.9"
 
 # Async Runtime
 async-trait = "0.1"

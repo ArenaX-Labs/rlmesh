@@ -3120,6 +3120,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlmesh-wire"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "prost",
+ "thiserror",
+ "tonic-prost-build",
+ "uuid",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
