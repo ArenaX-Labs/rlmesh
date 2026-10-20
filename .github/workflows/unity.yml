@@ -1,0 +1,115 @@
+name: Unity release gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_package_url:
+        description: URL of the separately built D-40 com.rlmesh.rlmesh UPM tarball (matching this revision)
+        required: true
+        type: string
+      core_package_sha256:
+        description: SHA-256 of that core UPM tarball
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: unity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unity:
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 45
+    env:
+      RLMESH_RELEASE_BUILD: "1"
+
+    steps:
+      - name: Require all Unity activation secrets before doing any work
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        run: |
+          missing=0
+          for name in UNITY_LICENSE UNITY_EMAIL UNITY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::$name is unset. Add all Unity activation secrets before dispatching Unity release gates."
+              missing=1
+            fi
+          done
+          [[ "$missing" == 0 ]]
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+
+      - name: Consume the separate core UPM package and prepare the verification project
+        id: prepare
+        env:
+          CORE_PACKAGE_URL: ${{ inputs.core_package_url }}
+          CORE_PACKAGE_SHA256: ${{ inputs.core_package_sha256 }}
+        run: |
+          mkdir -p "$HOME/.cache/rlmesh-unity"
+          artifact="$HOME/.cache/rlmesh-unity/core.tgz"
+          curl --fail --location --proto '=https' --proto-redir '=https' --url "$CORE_PACKAGE_URL" --output "$artifact"
+          [[ "$CORE_PACKAGE_SHA256" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Invalid core package SHA-256'; exit 1; }
+          echo "$CORE_PACKAGE_SHA256  $artifact" | sha256sum --check --strict
+          mise run dev:heavy -- python integrations/unity/Tests~/prepare.py --core-package "$artifact"
+          version="$(sed -n 's/^m_EditorVersion: //p' integrations/unity/ProjectVersion.txt)"
+          echo "unity_version=$version" >> "$GITHUB_OUTPUT"
+          echo "unity_image=unityci/editor:ubuntu-$version-linux-il2cpp-3@sha256:2b491a82d47a112b28026f9dc4b9a5e39e521083c2eaadff26e876cb940fe527" >> "$GITHUB_OUTPUT"
+
+      - name: Editor reload, failed-barrier reload and Play Mode tests
+        uses: game-ci/unity-test-runner@32e57712352b500e17974b245a6dce9e11a73213 # v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: integrations/unity/Tests~/Project
+          unityVersion: auto
+          cliVersion: v0.1.72
+          customImage: ${{ steps.prepare.outputs.unity_image }}
+          testMode: all
+          artifactsPath: artifacts/unity-tests
+
+      - name: Build Linux IL2CPP smoke player
+        uses: game-ci/unity-builder@4423ee75828dff56037d1d1cfdac6b68e3a6ba00 # v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: integrations/unity/Tests~/Project
+          unityVersion: auto
+          targetPlatform: StandaloneLinux64
+          customImage: ${{ steps.prepare.outputs.unity_image }}
+          buildMethod: RLMesh.Unity.Verification.BuildSmoke.Build
+          customParameters: -rlmeshBuildPath /github/workspace/build/unity/Smoke.x86_64
+          versioning: None
+          allowDirtyBuild: true
+
+      - name: Drive the IL2CPP player from Python and require clean exit
+        env:
+          UV_PROJECT_ENVIRONMENT: target/unity-python
+        run: |
+          mise run dev:heavy -- uv sync --locked --no-editable --no-default-groups --group csharp
+          uv run --no-sync python integrations/unity/Tests~/player_smoke.py --player build/unity/Smoke.x86_64 --episodes 3
+
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unity-release-gates
+          path: |
+            artifacts/unity-tests
+            build/unity
+          if-no-files-found: ignore
