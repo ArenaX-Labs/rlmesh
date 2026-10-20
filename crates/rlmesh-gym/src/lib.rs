@@ -33,6 +33,7 @@ pub mod meta_json;
 pub mod record;
 pub mod session;
 pub mod view;
+pub mod virtual_mode;
 
 /// The v1 adapter engine the compatibility path resolves `ModelSpec`s
 /// with (§12.4): the `rlmesh-adapters` resolver and its `join` lowering,
