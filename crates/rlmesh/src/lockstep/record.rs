@@ -13,7 +13,7 @@ use bytes::Bytes;
 use rlmesh_session::record::SampleTee;
 use rlmesh_session::wire::{Layout, LockstepReply, PartSpec, PartValues, Sample};
 
-use crate::lockstep::Request;
+use crate::lockstep::exchange::Request;
 
 /// Hands lockstep traffic to the recorder.
 #[derive(Clone)]

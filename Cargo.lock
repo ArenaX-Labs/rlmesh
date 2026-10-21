@@ -5188,24 +5188,29 @@ name = "rlmesh"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
+ "blake3",
+ "bytes",
  "chrono",
  "futures",
  "image",
  "indexmap 2.14.0",
  "libc",
+ "prost",
  "rand 0.10.1",
  "rayon",
  "rlmesh-adapters",
  "rlmesh-grpc",
- "rlmesh-gym",
  "rlmesh-proto",
  "rlmesh-runtime",
+ "rlmesh-session",
  "rlmesh-spaces",
  "rlmesh-viewer",
  "scoped-tls-hkt",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -5214,6 +5219,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zenoh",
  "zip",
 ]
 
@@ -5310,32 +5316,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlmesh-gym"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "blake3",
- "bytes",
- "libc",
- "prost",
- "rlmesh",
- "rlmesh-adapters",
- "rlmesh-grpc",
- "rlmesh-proto",
- "rlmesh-runtime",
- "rlmesh-session",
- "rlmesh-spaces",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "zenoh",
-]
-
-[[package]]
 name = "rlmesh-node"
 version = "0.1.0"
 dependencies = [
@@ -5375,7 +5355,6 @@ dependencies = [
  "rlmesh-adapters",
  "rlmesh-cli",
  "rlmesh-grpc",
- "rlmesh-gym",
  "rlmesh-proto",
  "rlmesh-sandbox",
  "rlmesh-session",

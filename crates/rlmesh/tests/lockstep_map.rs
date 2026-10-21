@@ -1,7 +1,8 @@
+#![cfg(feature = "lockstep")]
 //! A Gym env as a robot (§12.5): paths, kinds, attrs, and bit-exact slabs.
 
 use bytes::Bytes;
-use rlmesh_gym::map::{self, GymEnvInfo, GymMap};
+use rlmesh::lockstep::map::{self, GymEnvInfo, GymMap};
 use rlmesh_spaces::{
     AutoresetMode, BoxBounds, BoxSpec, DType, DictSpec, DiscreteSpec, EnvContract, MetaMap,
     MetaValue, MultiBinarySpec, MultiDiscreteSpec, SpaceKind, SpaceSpec, TextSpec, TupleSpec,
@@ -133,7 +134,7 @@ fn catalog_contract(num_envs: u32) -> EnvContract {
     });
     let mut metadata = MetaMap::new();
     metadata.insert(
-        rlmesh_gym::adapters::ENV_METADATA_KEY.to_string(),
+        rlmesh::lockstep::adapters::ENV_METADATA_KEY.to_string(),
         native(&tags),
     );
     EnvContract {

@@ -13,8 +13,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh_gym::view::{Entry, Frame, commands};
-use rlmesh_gym::{ConnectOptions, GymError, GymView, LockstepHandler, Request};
+use rlmesh::lockstep::view::{Entry, Frame, commands};
+use rlmesh::lockstep::{ConnectOptions, GymError, GymView, LockstepHandler, Request};
 use rlmesh_session::spec::Policy;
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::wire::{FieldSpec, LockstepReply, PartSpec, ParticipantId};
@@ -142,7 +142,7 @@ pub struct PyLockstepRobot {
     name: String,
     robot_json: String,
     parts: Vec<PartSpec>,
-    binding: Mutex<Option<rlmesh_gym::LockstepBinding>>,
+    binding: Mutex<Option<rlmesh::lockstep::LockstepBinding>>,
     frame: Arc<Mutex<Option<Frame>>>,
     stop: CancellationToken,
     served: Mutex<Option<tokio::task::JoinHandle<Result<(), GymError>>>>,
@@ -164,9 +164,9 @@ impl PyLockstepRobot {
             &robot_json,
         )
         .map_err(|e| PyValueError::new_err(e.message))?;
-        let address = format!("{}{address}/{name}", rlmesh_gym::session::SCHEME);
+        let address = format!("{}{address}/{name}", rlmesh::lockstep::session::SCHEME);
         let binding = block_on(py, async move {
-            rlmesh_gym::bind(&address).await.map_err(gym_err)
+            rlmesh::lockstep::bind(&address).await.map_err(gym_err)
         })?;
         Ok(Self {
             name: name.to_string(),
@@ -220,7 +220,7 @@ impl PyLockstepRobot {
         let frame = self.frame.clone();
         let stop = self.stop.clone();
         let (declared_tx, declared_rx) = tokio::sync::oneshot::channel();
-        let options = rlmesh_gym::ServeOptions {
+        let options = rlmesh::lockstep::ServeOptions {
             timeout: Some(timeout(timeout_s)?),
             ..Default::default()
         };
@@ -356,7 +356,7 @@ impl PyGymView {
 
 fn view_step<'py>(
     py: Python<'py>,
-    step: rlmesh_gym::view::ViewStep,
+    step: rlmesh::lockstep::view::ViewStep,
 ) -> PyResult<Bound<'py, PyAny>> {
     let obs = PyDict::new(py);
     for (name, value) in step.observation {
@@ -413,7 +413,7 @@ impl PyGymView {
         };
         let (address, name) = (address.to_string(), name.to_string());
         let view = block_on(py, async move {
-            rlmesh_gym::connect_view_in(
+            rlmesh::lockstep::connect_view_in(
                 &address,
                 robot.as_deref(),
                 policy.as_ref().map(|p| (p, name.as_str())),

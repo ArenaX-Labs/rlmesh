@@ -177,7 +177,7 @@ pub fn catalog_observation() -> SpaceSpec {
 pub fn catalog_contract(num_envs: u32, autoreset: AutoresetMode) -> EnvContract {
     let mut metadata = BTreeMap::new();
     metadata.insert(
-        rlmesh_gym::adapters::ENV_METADATA_KEY.to_string(),
+        rlmesh::lockstep::adapters::ENV_METADATA_KEY.to_string(),
         native(&catalog_tags()),
     );
     EnvContract {

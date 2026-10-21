@@ -16,7 +16,7 @@
 //! corner (one `predict_batch` of N observations per step).
 //!
 //! ```text
-//! cargo run --release -p rlmesh-gym --example lockstep_bench -- \
+//! cargo run --release -p rlmesh --features lockstep --example lockstep_bench -- \
 //!     --transport grpc|lockstep [--lanes 1] [--warmup 3] [--measure 30]
 //! ```
 //!

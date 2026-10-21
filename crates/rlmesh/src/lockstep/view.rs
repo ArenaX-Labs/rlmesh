@@ -1,7 +1,7 @@
 //! The Gym view over a v2-native robot in lockstep (§12.6).
 //!
 //! [`GymView`] drives a robot that serves the lockstep exchange (a
-//! [`LockstepHandler`](crate::LockstepHandler) behind [`serve_robot`](crate::LockstepBinding::serve_robot))
+//! [`LockstepHandler`](crate::lockstep::LockstepHandler) behind [`serve_robot`](crate::lockstep::LockstepBinding::serve_robot))
 //! and presents it as a Gymnasium env:
 //!
 //! - the observation space is keyed by the policy's input names, or by part
@@ -38,8 +38,8 @@ use rlmesh_session::wire::{
     LockstepStep, PartSpec, PartValues, ParticipantId,
 };
 
-use crate::error::GymError;
-use crate::lockstep::{LockstepLink, Request};
+use crate::lockstep::error::GymError;
+use crate::lockstep::exchange::{LockstepLink, Request};
 
 /// What one observation or action entry is.
 #[derive(Clone, Debug, PartialEq)]

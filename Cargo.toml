@@ -6,7 +6,6 @@ default-members = [
   "crates/rlmesh-cli",
   "crates/rlmesh-cockpit",
   "crates/rlmesh-grpc",
-  "crates/rlmesh-gym",
   "crates/rlmesh-proto",
   "crates/rlmesh-runtime",
   "crates/rlmesh-sandbox",
@@ -38,7 +37,6 @@ rlmesh = { version = "=0.1.0", path = "crates/rlmesh" }
 rlmesh-adapters = { version = "=0.1.0", path = "crates/rlmesh-adapters" }
 rlmesh-cli = { version = "=0.1.0", path = "crates/rlmesh-cli" }
 rlmesh-grpc = { version = "=0.1.0", path = "crates/rlmesh-grpc" }
-rlmesh-gym = { version = "=0.1.0", path = "crates/rlmesh-gym" }
 rlmesh-proto = { version = "=0.1.0", path = "crates/rlmesh-proto" }
 rlmesh-runtime = { version = "=0.1.0", path = "crates/rlmesh-runtime" }
 rlmesh-sandbox = { version = "=0.1.0", path = "crates/rlmesh-sandbox" }

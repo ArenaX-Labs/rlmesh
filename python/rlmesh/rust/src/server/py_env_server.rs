@@ -39,7 +39,7 @@ enum BoundListener {
         path: PathBuf,
     },
     /// A v2 lockstep robot in a session (`lockstep://...`, protocol v2 §12).
-    Lockstep(rlmesh_gym::LockstepBinding),
+    Lockstep(rlmesh::lockstep::LockstepBinding),
 }
 
 type ServeResult = Result<(), String>;
@@ -174,9 +174,9 @@ fn construct_server(
         ))
     })?;
 
-    if let Some(address) = address.filter(|a| rlmesh_gym::is_lockstep_address(a)) {
+    if let Some(address) = address.filter(|a| rlmesh::lockstep::is_lockstep_address(a)) {
         let binding = runtime
-            .block_on(rlmesh_gym::bind(address))
+            .block_on(rlmesh::lockstep::bind(address))
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyConnectionError, _>(e.to_string()))?;
         return Ok(PyEnvServer {
             id,
@@ -735,7 +735,7 @@ where
             let served = binding
                 .serve(
                     Arc::clone(&env),
-                    rlmesh_gym::ServeOptions {
+                    rlmesh::lockstep::ServeOptions {
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
                         ..Default::default()
                     },

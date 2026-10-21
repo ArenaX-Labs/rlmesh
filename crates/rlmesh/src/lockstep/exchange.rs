@@ -35,7 +35,7 @@ use tracing::{debug, warn};
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::query::ConsolidationMode;
 
-use crate::error::GymError;
+use crate::lockstep::error::GymError;
 
 /// The selector parameter of a reset query.
 const RESET: &str = "reset";

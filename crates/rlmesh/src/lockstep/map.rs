@@ -6,7 +6,7 @@
 //!
 //! | Gym leaf | Part |
 //! |---|---|
-//! | `Dict` key nesting, `Tuple` item i | path segments ([`escape`](mod@crate::escape)) |
+//! | `Dict` key nesting, `Tuple` item i | path segments ([`escape`](mod@crate::lockstep::escape)) |
 //! | untagged `Box` | `gym/box`, field `value` |
 //! | `Discrete`, `MultiDiscrete`, `MultiBinary` | `gym/discrete`, `gym/multi_discrete`, `gym/multi_binary`, field `value` |
 //! | `Text` | `text` (per step, as v1) |
@@ -43,8 +43,8 @@ use rlmesh_session::wire::{ChannelId, DType, Layout, PartSpec, ParticipantId};
 use rlmesh_spaces::{EnvContract, SpaceKind, SpaceSpec};
 use serde_json::{Value, json};
 
-use crate::error::GymError;
-use crate::escape::{self, KeySeg};
+use crate::lockstep::error::GymError;
+use crate::lockstep::escape::{self, KeySeg};
 
 /// What a driver needs to drive a Gym env it cannot handshake with: the v1
 /// contract and the handshake answers, carried in `gym_env`.

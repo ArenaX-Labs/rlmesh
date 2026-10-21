@@ -3,7 +3,7 @@
 //! compatibility path: existing Gym envs and v1 model servers run unchanged
 //! on v2, at v1 throughput.
 //!
-//! - [`lockstep`]: the exchange (one `LockstepStep`, one `LockstepReply`),
+//! - [`exchange`]: the exchange (one `LockstepStep`, one `LockstepReply`),
 //!   the env-side [`Gate`] (epoch, lease token and e-stop
 //!   checked locally per step) and the links: a direct call in one process,
 //!   a Zenoh query on `l/{robot}` otherwise.
@@ -27,7 +27,7 @@
 pub mod compat;
 pub mod error;
 pub mod escape;
-pub mod lockstep;
+pub mod exchange;
 pub mod map;
 pub mod meta_json;
 pub mod record;
@@ -47,7 +47,7 @@ pub mod adapters {
 
 pub use compat::{GymEnv, LockstepEnv};
 pub use error::GymError;
-pub use lockstep::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
+pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
 pub use session::{
     ConnectOptions, Declared, LockstepAddress, LockstepBinding, ServeOptions, bind, connect,

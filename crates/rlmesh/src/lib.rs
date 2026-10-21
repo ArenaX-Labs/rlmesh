@@ -30,6 +30,12 @@
 //! options field is a minor change, and a full struct literal without `..`
 //! is unsupported.
 //!
+//! # Features
+//!
+//! - `lockstep`: the [`lockstep`] module, Gym envs and v1 model servers
+//!   over a v2 session (`lockstep://` addresses for [`EnvServer`] and
+//!   local models). Pulls in `rlmesh-session`.
+//!
 //! # Errors
 //!
 //! Fallible operations return [`Result`], an alias for `Result<T, Error>`.
@@ -130,6 +136,8 @@ mod editions;
 pub mod env;
 mod error;
 pub mod ext;
+#[cfg(feature = "lockstep")]
+pub mod lockstep;
 mod model;
 pub mod prelude;
 pub mod recorder;

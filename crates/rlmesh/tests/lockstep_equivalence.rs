@@ -1,3 +1,4 @@
+#![cfg(feature = "lockstep")]
 //! v1 and v2 trace equivalence (§12.4, the wave 5 release gate's
 //! "semantically equivalent" half).
 //!
@@ -146,12 +147,12 @@ fn runtime() -> tokio::runtime::Runtime {
 fn serve(rt: &tokio::runtime::Runtime, env: CatalogEnv, v2: bool) -> String {
     if v2 {
         let binding = rt
-            .block_on(rlmesh_gym::bind("lockstep://127.0.0.1:0/catalog"))
+            .block_on(rlmesh::lockstep::bind("lockstep://127.0.0.1:0/catalog"))
             .unwrap();
         let address = binding.address();
         rt.spawn(binding.serve(
             Arc::new(env),
-            rlmesh_gym::ServeOptions::default(),
+            rlmesh::lockstep::ServeOptions::default(),
             tokio_util::sync::CancellationToken::new(),
         ));
         return address;
@@ -469,7 +470,7 @@ fn run_managed(v2: bool) -> Traces {
             .unwrap();
         client.handshake().await.unwrap();
         if v2 {
-            let env = rlmesh_gym::connect(&env_address, Default::default())
+            let env = rlmesh::lockstep::connect(&env_address, Default::default())
                 .await
                 .unwrap();
             let handshake = env.handshake(Some("2026.06")).unwrap();

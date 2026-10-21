@@ -1,3 +1,4 @@
+#![cfg(feature = "lockstep")]
 //! A lockstep env in a session: one lease grant, then per-step checks of
 //! the epoch, the lease token and the e-stop: the direct link in one
 //! process, the lockstep session otherwise.
@@ -10,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::CatalogEnv;
-use rlmesh_gym::{ConnectOptions, GymError, LockstepAddress};
+use rlmesh::lockstep::{ConnectOptions, GymError, LockstepAddress};
 use rlmesh_proto::env::v1::{ResetRequest, StepRequest};
 use rlmesh_proto::spaces::v1::SpaceValue;
 use rlmesh_session::wire::{LeaseToken, ParticipantId, PriorityClass, Role};
@@ -64,22 +65,22 @@ fn refused(result: Result<impl std::fmt::Debug, GymError>, why: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_and_estop() {
-    let binding = rlmesh_gym::bind("lockstep://127.0.0.1:0/catalog")
+    let binding = rlmesh::lockstep::bind("lockstep://127.0.0.1:0/catalog")
         .await
         .unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
     let served = tokio::spawn(binding.serve(
         Arc::new(CatalogEnv::new(1, AutoresetMode::Disabled, false)),
-        rlmesh_gym::ServeOptions::default(),
+        rlmesh::lockstep::ServeOptions::default(),
         cancel.clone(),
     ));
-    let direct = rlmesh_gym::connect(&address, ConnectOptions::default())
+    let direct = rlmesh::lockstep::connect(&address, ConnectOptions::default())
         .await
         .unwrap();
     // A second driver over the lockstep session (it takes the lease over
     // only when the first releases it: the same priority class is busy).
-    let networked = rlmesh_gym::connect(
+    let networked = rlmesh::lockstep::connect(
         &address,
         ConnectOptions {
             direct: false,
@@ -113,17 +114,17 @@ async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_an
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_driver_over_the_lockstep_session_steps_and_a_stale_token_is_refused() {
-    let binding = rlmesh_gym::bind("lockstep://127.0.0.1:0/catalog")
+    let binding = rlmesh::lockstep::bind("lockstep://127.0.0.1:0/catalog")
         .await
         .unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
     let served = tokio::spawn(binding.serve(
         Arc::new(CatalogEnv::new(2, AutoresetMode::NextStep, false)),
-        rlmesh_gym::ServeOptions::default(),
+        rlmesh::lockstep::ServeOptions::default(),
         cancel.clone(),
     ));
-    let env = rlmesh_gym::connect(
+    let env = rlmesh::lockstep::connect(
         &address,
         ConnectOptions {
             direct: false,
@@ -164,20 +165,20 @@ async fn a_driver_over_the_lockstep_session_steps_and_a_stale_token_is_refused()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recorded_lockstep_env_tees_every_step_per_lane() {
     let path = std::env::temp_dir().join(format!("rlmesh-lockstep-{}.mcap", std::process::id()));
-    let binding = rlmesh_gym::bind("lockstep://127.0.0.1:0/catalog")
+    let binding = rlmesh::lockstep::bind("lockstep://127.0.0.1:0/catalog")
         .await
         .unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
     let served = tokio::spawn(binding.serve(
         Arc::new(CatalogEnv::new(2, AutoresetMode::NextStep, false)),
-        rlmesh_gym::ServeOptions {
+        rlmesh::lockstep::ServeOptions {
             record: Some(path.clone()),
             ..Default::default()
         },
         cancel.clone(),
     ));
-    let env = rlmesh_gym::connect(&address, ConnectOptions::default())
+    let env = rlmesh::lockstep::connect(&address, ConnectOptions::default())
         .await
         .unwrap();
     env.reset_v1(ResetRequest {

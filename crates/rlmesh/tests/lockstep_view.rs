@@ -1,3 +1,4 @@
+#![cfg(feature = "lockstep")]
 //! The Gym view over a v2-native robot that serves lockstep (§12.6).
 
 #![allow(clippy::unwrap_used)]
@@ -5,8 +6,8 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use rlmesh_gym::view::{Entry, Frame, commands};
-use rlmesh_gym::{ConnectOptions, GymError, LockstepHandler, Request};
+use rlmesh::lockstep::view::{Entry, Frame, commands};
+use rlmesh::lockstep::{ConnectOptions, GymError, LockstepHandler, Request};
 use rlmesh_session::spec::Policy;
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::wire::{DType, LockstepReply, PartSpec};
@@ -92,14 +93,14 @@ impl LockstepHandler for Arm {
 }
 
 async fn serve() -> (String, tokio_util::sync::CancellationToken) {
-    let binding = rlmesh_gym::bind("lockstep://127.0.0.1:0/ur10e")
+    let binding = rlmesh::lockstep::bind("lockstep://127.0.0.1:0/ur10e")
         .await
         .unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
     tokio::spawn(binding.serve_robot(
         UR10E,
-        rlmesh_gym::ServeOptions::default(),
+        rlmesh::lockstep::ServeOptions::default(),
         cancel.clone(),
         |declared| {
             Ok(Arc::new(Arm {
@@ -123,7 +124,7 @@ fn target(values: [f32; 6]) -> Value {
 async fn without_a_policy_the_view_is_keyed_by_path_and_steps_once_per_step() {
     let (address, cancel) = serve().await;
     for direct in [true, false] {
-        let view = rlmesh_gym::connect_view(
+        let view = rlmesh::lockstep::connect_view(
             &address,
             None,
             ConnectOptions {
@@ -175,9 +176,10 @@ async fn without_a_policy_the_view_is_keyed_by_path_and_steps_once_per_step() {
 async fn through_a_policy_one_view_step_plays_the_whole_chunk() {
     let (address, cancel) = serve().await;
     let policy = Policy::parse(POLICY).unwrap();
-    let view = rlmesh_gym::connect_view(&address, Some((&policy, "reach")), Default::default())
-        .await
-        .unwrap();
+    let view =
+        rlmesh::lockstep::connect_view(&address, Some((&policy, "reach")), Default::default())
+            .await
+            .unwrap();
     assert!(view.table().is_some());
     let obs = view.observation_entries();
     assert_eq!(

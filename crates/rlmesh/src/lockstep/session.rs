@@ -36,14 +36,14 @@ use rlmesh_session::{
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::compat::{GymEnv, LockstepEnv, env_info};
-use crate::error::GymError;
-use crate::lockstep::{
+use crate::lockstep::compat::{GymEnv, LockstepEnv, env_info};
+use crate::lockstep::error::GymError;
+use crate::lockstep::exchange::{
     DirectLink, Gate, Gated, LockstepHandler, LockstepLink, ZenohLink, serve_zenoh,
 };
-use crate::map::{GymEnvInfo, GymMap};
-use crate::record::Tee;
-use crate::view::{self, GymView};
+use crate::lockstep::map::{GymEnvInfo, GymMap};
+use crate::lockstep::record::Tee;
+use crate::lockstep::view::{self, GymView};
 
 /// The address scheme.
 pub const SCHEME: &str = "lockstep://";

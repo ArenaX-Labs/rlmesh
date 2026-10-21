@@ -151,7 +151,7 @@ enum Served {
 enum Listener {
     Grpc(BoundListener),
     #[cfg(feature = "lockstep")]
-    Lockstep(rlmesh_gym::LockstepBinding),
+    Lockstep(crate::lockstep::LockstepBinding),
 }
 
 impl Listener {
@@ -160,7 +160,7 @@ impl Listener {
             #[cfg(feature = "lockstep")]
             {
                 let binding = runtime
-                    .block_on(rlmesh_gym::bind(address))
+                    .block_on(crate::lockstep::bind(address))
                     .map_err(|err| Error::invalid_argument(err.to_string()))?;
                 let bound = binding.address();
                 return Ok((Self::Lockstep(binding), bound));
@@ -1539,7 +1539,7 @@ fn drive<E: Environment + Send + Sync + 'static>(
                             cancel.cancel();
                         })
                     };
-                    let options = rlmesh_gym::ServeOptions {
+                    let options = crate::lockstep::ServeOptions {
                         workflow_edition: grpc.workflow_edition.clone(),
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
                         timeout: None,

@@ -185,7 +185,7 @@ async fn connect_env(options: &LocalRun) -> Result<(DrivenEnv, rlmesh_grpc::EnvH
     if options.address.starts_with("lockstep://") {
         #[cfg(feature = "lockstep")]
         {
-            let env = rlmesh_gym::connect(&options.address, Default::default())
+            let env = crate::lockstep::connect(&options.address, Default::default())
                 .await
                 .map_err(|err| Error::Connection(err.to_string()))?;
             let handshake = env
@@ -228,7 +228,7 @@ async fn connect_env(options: &LocalRun) -> Result<(DrivenEnv, rlmesh_grpc::EnvH
 enum DrivenEnv {
     Grpc(Box<EnvClientRuntimeEnv>),
     #[cfg(feature = "lockstep")]
-    Lockstep(rlmesh_gym::LockstepEnv),
+    Lockstep(crate::lockstep::LockstepEnv),
 }
 
 #[async_trait]

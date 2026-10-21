@@ -1,3 +1,4 @@
+#![cfg(feature = "lockstep")]
 //! The virtual clock's run loop (§11.3) on a session host in virtual mode:
 //! a seeded latency model gives the same schedule twice, and a stalled
 //! barrier ends the episode `interrupted: TIMEOUT`.
@@ -7,7 +8,9 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use rlmesh_gym::virtual_mode::{Faults, Interrupted, LatencyModel, VirtualController, robot_tick};
+use rlmesh::lockstep::virtual_mode::{
+    Faults, Interrupted, LatencyModel, VirtualController, robot_tick,
+};
 use rlmesh_session::wire::{
     ChunkRef, Fingerprint, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId, Watermark,
 };

@@ -22,11 +22,18 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
 async-trait = { workspace = true }
+# The `lockstep` module (feature `lockstep`).
+base64 = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+zenoh = { workspace = true, optional = true }
 rlmesh-spaces = { workspace = true }
 rlmesh-adapters = { workspace = true }
 rlmesh-grpc = { workspace = true }
 # The v2 lockstep transport (`lockstep://` env addresses, protocol v2 §12).
-rlmesh-gym = { workspace = true, optional = true }
+rlmesh-session = { workspace = true, features = ["record"], optional = true }
 rlmesh-proto = { workspace = true }
 rlmesh-runtime = { workspace = true }
 rlmesh-viewer = { workspace = true }
@@ -59,7 +66,21 @@ tracing-subscriber = { workspace = true }
 
 [features]
 # Serve envs and drive models over the v2 lockstep path (`lockstep://`).
-lockstep = ["dep:rlmesh-gym"]
+lockstep = [
+  "dep:base64",
+  "dep:blake3",
+  "dep:bytes",
+  "dep:prost",
+  "dep:rlmesh-session",
+  "dep:thiserror",
+  "dep:zenoh",
+  "serde_json/float_roundtrip",
+  "tokio/macros",
+]
 
 [lints]
 workspace = true
+
+[[example]]
+name = "lockstep_bench"
+required-features = ["lockstep"]
