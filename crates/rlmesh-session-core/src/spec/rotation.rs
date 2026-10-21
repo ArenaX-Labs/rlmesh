@@ -14,7 +14,8 @@ pub enum Rotation {
     QuatXyzw,
     /// Unit quaternion, scalar first (MuJoCo, Isaac, Unitree).
     QuatWxyz,
-    /// Rotation vector: axis × angle (rad), norm ≤ π. Canonical for deltas.
+    /// Rotation vector: axis × angle (rad). Canonical for deltas. Norm at most
+    /// π, except converted from a quaternion with w < 0 (see [`convert`]).
     AxisAngle,
     /// The first two rotation-matrix columns, column-major.
     Rot6d,
