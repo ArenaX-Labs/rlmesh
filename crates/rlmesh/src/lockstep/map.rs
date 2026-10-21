@@ -530,8 +530,16 @@ impl GymMap {
     fn push(
         drafts: &mut Vec<Draft>,
         by_path: &mut BTreeMap<String, usize>,
-        draft: Draft,
+        mut draft: Draft,
     ) -> Result<(), GymError> {
+        // Keys that escape alike (`Pos` and `pos`), or an observation key
+        // under the action root, keep apart: the later one's last segment
+        // takes the hash of its original keys.
+        let commanded = draft.keys.iter().any(|(key, _)| *key == "command");
+        let under_action = draft.path == "action" || draft.path.starts_with("action/");
+        if by_path.contains_key(&draft.path) || (under_action && !commanded) {
+            draft.path = escape::distinct(&draft.path, &draft.origin);
+        }
         rlmesh_session::wire::PartPath::new(&draft.path).map_err(|e| {
             bad(format!(
                 "leaf {} maps to the path {:?}, which is refused: {}",

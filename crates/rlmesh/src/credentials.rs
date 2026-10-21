@@ -44,6 +44,16 @@ pub fn resolve(
     tls_ca_file: Option<&Path>,
     warn: bool,
 ) -> Result<ClientAuth> {
+    // A lockstep robot's session authorizes the driver's lease; no key or
+    // certificate travels on that path.
+    if address.starts_with("lockstep://") {
+        if api_key.is_some_and(|key| !key.is_empty()) || tls_ca_file.is_some() {
+            return Err(Error::invalid_argument(
+                "a lockstep:// address takes no api_key or tls_ca_file",
+            ));
+        }
+        return Ok(ClientAuth::default());
+    }
     let target =
         rlmesh_grpc::helpers::parse_env_connect_target(address).map_err(Error::from_grpc)?;
     let trust = match tls_ca_file {

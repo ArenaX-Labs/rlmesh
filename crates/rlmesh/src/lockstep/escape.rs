@@ -6,7 +6,10 @@
 //! characters of the BLAKE3 hash of the original key. A `Tuple` item `i` is
 //! the segment `item{i}`. Two readings the table leaves open, taken here as
 //! the smallest that keeps every path valid (§2.1): a leading `_` (a reserved
-//! segment) also gets the `n` prefix, and an empty key is `n`.
+//! segment) also gets the `n` prefix, and an empty key is `n`. Keys that
+//! escape alike (`Pos` and `pos`) are not refused: the later leaf's last
+//! segment is cut the same way, with the hash of its original keys
+//! ([`distinct`]).
 
 /// The longest segment (§2.1).
 const MAX_SEGMENT: usize = 32;
@@ -61,16 +64,33 @@ pub fn segment(key: &KeySeg) -> String {
         out.insert(0, 'n');
     }
     if out.len() > MAX_SEGMENT {
-        let hash = blake3::hash(key.as_bytes());
-        let hex: String = hash.as_bytes()[..4]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
         out.truncate(23);
         out.push('_');
-        out.push_str(&hex);
+        out.push_str(&hash8(key));
     }
     out
+}
+
+/// `path` with its last segment made distinct for the leaf `origin` (its
+/// original keys): the segment's first 23 characters + `_` + 8 hex
+/// characters of the BLAKE3 hash of `origin`, as an over-long key is cut.
+pub fn distinct(path: &str, origin: &str) -> String {
+    let (head, last) = path.rsplit_once('/').map_or(("", path), |(h, l)| (h, l));
+    let mut segment: String = last.chars().take(23).collect();
+    segment.push('_');
+    segment.push_str(&hash8(origin));
+    if head.is_empty() {
+        segment
+    } else {
+        format!("{head}/{segment}")
+    }
+}
+
+fn hash8(text: &str) -> String {
+    blake3::hash(text.as_bytes()).as_bytes()[..4]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// The escaped path of a key path below `prefix` (empty: the root).

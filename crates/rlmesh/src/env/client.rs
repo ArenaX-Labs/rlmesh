@@ -273,12 +273,108 @@ fn wire_lane(index: u64) -> Result<u32> {
 /// A shared read handle on a client's selected workflow edition: the
 /// handshake selection until a pin replaces it.
 #[derive(Clone, Debug)]
-pub struct EditionCell(rlmesh_grpc::env::PinnedEdition);
+pub struct EditionCell(Edition);
+
+#[derive(Clone, Debug)]
+enum Edition {
+    Grpc(rlmesh_grpc::env::PinnedEdition),
+    #[cfg(feature = "lockstep")]
+    Local(Arc<std::sync::Mutex<String>>),
+}
 
 impl EditionCell {
     /// The current selection.
     pub fn get(&self) -> String {
-        self.0.get()
+        match &self.0 {
+            Edition::Grpc(pinned) => pinned.get(),
+            #[cfg(feature = "lockstep")]
+            Edition::Local(edition) => edition
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        }
+    }
+}
+
+/// How a client reaches its env: a v1 gRPC Join stream, or (with the
+/// `lockstep` feature) a v2 lockstep driver (`lockstep://`, §12), which
+/// answers the same v1 requests.
+#[derive(Clone)]
+enum Link {
+    Grpc(Box<rlmesh_grpc::EnvClient>),
+    #[cfg(feature = "lockstep")]
+    Lockstep {
+        env: crate::lockstep::LockstepEnv,
+        address: String,
+        /// The selection; lockstep sends no pin (the env runs its declared
+        /// edition), so a pin is only recorded.
+        edition: Arc<std::sync::Mutex<String>>,
+    },
+}
+
+#[cfg(feature = "lockstep")]
+fn lockstep_error(error: crate::lockstep::GymError) -> Error {
+    use crate::lockstep::GymError;
+    match error {
+        GymError::Timeout(timeout) => Error::Timeout(timeout),
+        GymError::Closed(why) => Error::Connection(why),
+        GymError::Session(error) => Error::Connection(error.to_string()),
+        GymError::Map(why) | GymError::Config(why) => Error::invalid_argument(why),
+        other => Error::from_grpc(rlmesh_grpc::error::Error::Environment(
+            rlmesh_grpc::env::proto_error_to_env_error(other.to_proto()),
+        )),
+    }
+}
+
+impl Link {
+    /// The gRPC client, unless this link is lockstep.
+    fn grpc(&mut self) -> Option<&mut rlmesh_grpc::EnvClient> {
+        match self {
+            Self::Grpc(inner) => Some(inner),
+            #[cfg(feature = "lockstep")]
+            Self::Lockstep { .. } => None,
+        }
+    }
+
+    fn address(&self) -> &str {
+        match self {
+            Self::Grpc(inner) => inner.address(),
+            #[cfg(feature = "lockstep")]
+            Self::Lockstep { address, .. } => address,
+        }
+    }
+
+    async fn reset(
+        &mut self,
+        request: ProtoResetRequest,
+    ) -> Result<rlmesh_proto::env::v1::ResetResponse> {
+        match self {
+            Self::Grpc(inner) => inner.reset(request).await.map_err(Error::from_grpc),
+            #[cfg(feature = "lockstep")]
+            Self::Lockstep { env, .. } => env.reset_v1(request).await.map_err(lockstep_error),
+        }
+    }
+
+    async fn step(
+        &mut self,
+        request: ProtoStepRequest,
+    ) -> Result<rlmesh_proto::env::v1::StepResponse> {
+        match self {
+            Self::Grpc(inner) => inner.step(request).await.map_err(Error::from_grpc),
+            #[cfg(feature = "lockstep")]
+            Self::Lockstep { env, .. } => env.step_v1(request).await.map_err(lockstep_error),
+        }
+    }
+
+    async fn render(
+        &mut self,
+        request: rlmesh_proto::env::v1::RenderRequest,
+    ) -> Result<rlmesh_proto::env::v1::RenderResponse> {
+        match self {
+            Self::Grpc(inner) => inner.render(request).await.map_err(Error::from_grpc),
+            #[cfg(feature = "lockstep")]
+            Self::Lockstep { env, .. } => env.render_v1(request).await.map_err(lockstep_error),
+        }
     }
 }
 
@@ -301,7 +397,7 @@ pub struct CoreConnect<'a> {
 /// [`RemoteVectorEnv`] wrap, and the Python extension drives directly
 /// (binding plumbing, exempt from semver).
 pub struct EnvClientCore {
-    inner: rlmesh_grpc::EnvClient,
+    inner: Link,
     env_contract: spaces::EnvContract,
     observation_space: Arc<spaces::SpaceSpec>,
     action_space: Arc<spaces::SpaceSpec>,
@@ -379,11 +475,41 @@ impl EnvClientCore {
         credentials: &rlmesh_grpc::Credentials,
         declared: Option<&str>,
     ) -> Result<Self> {
-        let mut inner = rlmesh_grpc::EnvClient::connect_with(&address.to_string(), credentials)
-            .await
-            .map_err(Error::from_grpc)?;
-        inner.declare_workflow_edition(declared.map(str::to_string));
-        let handshake = inner.handshake().await.map_err(Error::from_grpc)?;
+        let (inner, handshake) = match address {
+            #[cfg(feature = "lockstep")]
+            ConnectAddress::Lockstep(address) => {
+                let env = crate::lockstep::connect(&address, Default::default())
+                    .await
+                    .map_err(lockstep_error)?;
+                let handshake = env.handshake(declared).map_err(lockstep_error)?;
+                let edition = Arc::new(std::sync::Mutex::new(
+                    handshake.selected_workflow_edition.clone(),
+                ));
+                (
+                    Link::Lockstep {
+                        env,
+                        address,
+                        edition,
+                    },
+                    handshake,
+                )
+            }
+            #[cfg(not(feature = "lockstep"))]
+            ConnectAddress::Lockstep(address) => {
+                return Err(Error::invalid_argument(format!(
+                    "{address}: this build has no v2 lockstep transport (the `lockstep` feature)"
+                )));
+            }
+            address => {
+                let mut inner =
+                    rlmesh_grpc::EnvClient::connect_with(&address.to_string(), credentials)
+                        .await
+                        .map_err(Error::from_grpc)?;
+                inner.declare_workflow_edition(declared.map(str::to_string));
+                let handshake = inner.handshake().await.map_err(Error::from_grpc)?;
+                (Link::Grpc(Box::new(inner)), handshake)
+            }
+        };
         let session_offer = handshake.session_offer();
         // The handshake refuses a contract without spaces; one that does not
         // decode is a malformed handshake too.
@@ -489,8 +615,16 @@ impl EnvClientCore {
     /// message.
     pub fn pin_workflow_edition(&mut self, edition: &str) {
         self.selected_workflow_edition = edition.trim().to_string();
-        self.inner
-            .pin_workflow_edition(self.selected_workflow_edition.clone());
+        match &mut self.inner {
+            Link::Grpc(inner) => inner.pin_workflow_edition(self.selected_workflow_edition.clone()),
+            #[cfg(feature = "lockstep")]
+            Link::Lockstep { edition, .. } => {
+                *edition
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    self.selected_workflow_edition.clone();
+            }
+        }
     }
 
     /// The env's negotiation offer captured at handshake.
@@ -500,7 +634,11 @@ impl EnvClientCore {
 
     /// A shared handle on the selected edition, reading every pin.
     pub fn edition_cell(&self) -> EditionCell {
-        EditionCell(self.inner.pinned_edition())
+        EditionCell(match &self.inner {
+            Link::Grpc(inner) => Edition::Grpc(inner.pinned_edition()),
+            #[cfg(feature = "lockstep")]
+            Link::Lockstep { edition, .. } => Edition::Local(Arc::clone(edition)),
+        })
     }
 
     /// Name the client class closed-handle errors report.
@@ -606,10 +744,7 @@ impl EnvClientCore {
             episode_ids: pushed_ids,
         };
         let inner = &mut self.inner;
-        let response = bounded(timeout, async {
-            inner.reset(request).await.map_err(Error::from_grpc)
-        })
-        .await?;
+        let response = bounded(timeout, inner.reset(request)).await?;
 
         let observations = decode_batched_partial_values(
             response.observation.as_ref(),
@@ -653,10 +788,7 @@ impl EnvClientCore {
             episode_ids: self.episode_ids.clone(),
         };
         let inner = &mut self.inner;
-        let response = bounded(timeout, async {
-            inner.step(request).await.map_err(Error::from_grpc)
-        })
-        .await?;
+        let response = bounded(timeout, inner.step(request)).await?;
 
         let observations = decode_batched_partial_values(
             response.observation.as_ref(),
@@ -747,10 +879,7 @@ impl EnvClientCore {
                     env_index: Some(0),
                     timeout_ms: i64::try_from(wire_timeout_ms(timeout)).unwrap_or(i64::MAX),
                 });
-                let response = bounded(timeout, async {
-                    inner.render(request).await.map_err(Error::from_grpc)
-                })
-                .await?;
+                let response = bounded(timeout, inner.render(request)).await?;
                 let result = render_result_from_proto(response)
                     .map_err(|e| Error::Protocol(e.to_string()))?;
                 match result.frame {
@@ -771,10 +900,7 @@ impl EnvClientCore {
             timeout_ms: i64::try_from(wire_timeout_ms(timeout)).unwrap_or(i64::MAX),
         });
         let inner = &mut self.inner;
-        let response = bounded(timeout, async {
-            inner.render(request).await.map_err(Error::from_grpc)
-        })
-        .await?;
+        let response = bounded(timeout, inner.render(request)).await?;
         let result =
             render_result_from_proto(response).map_err(|err| Error::Protocol(err.to_string()))?;
         Ok(result.frame.map(|frame| frame.frame))
@@ -790,17 +916,28 @@ impl EnvClientCore {
         }
         self.closed = true;
         let bound = self.request_timeout.unwrap_or(CLOSE_GRACE);
-        let outcome = tokio::time::timeout(bound, self.inner.close()).await;
+        #[cfg(feature = "lockstep")]
+        if let Link::Lockstep { env, .. } = &self.inner {
+            // Releases the lease, so the robot re-arms for the next driver.
+            if tokio::time::timeout(bound, env.close()).await.is_err() {
+                tracing::debug!("lockstep detach did not complete within {bound:?}");
+            }
+            return Ok(());
+        }
+        let Some(inner) = self.inner.grpc() else {
+            return Ok(());
+        };
+        let outcome = tokio::time::timeout(bound, inner.close()).await;
         match outcome {
             Ok(Ok(_)) => Ok(()),
             Err(_) => {
                 tracing::debug!("close did not complete within {bound:?}; detaching locally");
-                self.inner.detach();
+                inner.detach();
                 Ok(())
             }
             Ok(Err(err)) => {
                 let err = Error::from_grpc(err);
-                self.inner.detach();
+                inner.detach();
                 match err {
                     Error::Connection(_) | Error::Timeout(_) => {
                         tracing::debug!("close did not complete ({err}); detaching locally");
@@ -814,7 +951,11 @@ impl EnvClientCore {
 
     /// Register owned cleanup before it is queued by a nonblocking Drop.
     pub(crate) fn prepare_close(&self) {
-        self.inner.prepare_close();
+        match &self.inner {
+            Link::Grpc(inner) => inner.prepare_close(),
+            #[cfg(feature = "lockstep")]
+            Link::Lockstep { .. } => {}
+        }
     }
 
     /// Ask the server to shut itself down; an accepted request closes this
@@ -823,7 +964,10 @@ impl EnvClientCore {
         self.check_open()?;
         let timeout = self.request_timeout;
         let reason = reason.into().unwrap_or("owner shutdown").to_string();
-        let inner = &mut self.inner;
+        let Some(inner) = self.inner.grpc() else {
+            // A lockstep robot is its server's to stop; a driver cannot.
+            return Ok(false);
+        };
         let response = bounded(timeout, async {
             inner.shutdown(reason).await.map_err(Error::from_grpc)
         })
@@ -892,7 +1036,7 @@ impl EnvClientCore {
     /// The transport client, for tests that reach below the facade.
     #[cfg(test)]
     pub(crate) fn grpc(&mut self) -> &mut rlmesh_grpc::EnvClient {
-        &mut self.inner
+        self.inner.grpc().expect("a gRPC client")
     }
 
     /// Render lane `env_index` decoded to a uint8 frame.

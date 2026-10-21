@@ -45,12 +45,12 @@ pub mod adapters {
     };
 }
 
-pub use compat::{GymEnv, LockstepEnv};
+pub use compat::{GymEnv, Keep, LockstepEnv};
 pub use error::GymError;
 pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
 pub use session::{
-    ConnectOptions, Declared, LockstepAddress, LockstepBinding, ServeOptions, bind, connect,
-    connect_view, connect_view_in, is_lockstep_address,
+    ConnectOptions, Declared, LockstepAddress, LockstepBinding, ServeOptions, bind, check, connect,
+    connect_view, connect_view_in, is_lockstep_address, lockstep_robot_map,
 };
 pub use view::{Frame, GymView};

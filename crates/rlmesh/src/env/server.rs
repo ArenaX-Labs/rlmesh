@@ -155,10 +155,16 @@ enum Listener {
 }
 
 impl Listener {
-    fn bind(address: &str, runtime: &tokio::runtime::Runtime) -> Result<(Self, String)> {
+    fn bind(
+        address: &str,
+        runtime: &tokio::runtime::Runtime,
+        contract: &crate::EnvContract,
+    ) -> Result<(Self, String)> {
         if address.starts_with("lockstep://") {
             #[cfg(feature = "lockstep")]
             {
+                crate::lockstep::check(contract.to_wire()?)
+                    .map_err(|err| Error::invalid_argument(err.to_string()))?;
                 let binding = runtime
                     .block_on(crate::lockstep::bind(address))
                     .map_err(|err| Error::invalid_argument(err.to_string()))?;
@@ -166,9 +172,12 @@ impl Listener {
                 return Ok((Self::Lockstep(binding), bound));
             }
             #[cfg(not(feature = "lockstep"))]
-            return Err(Error::invalid_argument(format!(
-                "{address}: this build has no v2 lockstep transport (the `lockstep` feature)"
-            )));
+            {
+                let _ = contract;
+                return Err(Error::invalid_argument(format!(
+                    "{address}: this build has no v2 lockstep transport (the `lockstep` feature)"
+                )));
+            }
         }
         let listener = BoundListener::bind_sync(BindAddress::parse(address)?, runtime.handle())?;
         let bound = listener.local_addr()?.to_string();
@@ -608,7 +617,7 @@ impl EnvServer {
             .thread_name("rlmesh-env-server")
             .build()
             .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;
-        let (listener, address) = Listener::bind(&address, &runtime)?;
+        let (listener, address) = Listener::bind(&address, &runtime, &contract)?;
 
         let idle_timeout = serve.idle_timeout;
         let drain_timeout = serve.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE);

@@ -158,6 +158,8 @@ impl PyLockstepRobot {
     #[new]
     fn new(py: Python<'_>, address: &str, name: &str, robot_json: String) -> PyResult<Self> {
         let robot = ParticipantId::new(name).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let robot_json = rlmesh::lockstep::lockstep_robot_map(&robot_json)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         let parts = rlmesh_session::spec::normalise(
             &robot,
             rlmesh_session::wire::version::SPEC_VERSION,
@@ -239,11 +241,19 @@ impl PyLockstepRobot {
         });
         let wait = timeout(timeout_s)?;
         if background {
-            block_on(py, async move {
-                tokio::time::timeout(wait, declared_rx)
-                    .await
-                    .map_err(|_| SessionException::new_err("the robot did not declare in time"))?
-                    .map_err(|_| SessionException::new_err("the robot stopped before serving"))
+            let task = block_on(py, async move {
+                match tokio::time::timeout(wait, declared_rx).await {
+                    Ok(Ok(())) => Ok(task),
+                    Err(_) => Err(SessionException::new_err(
+                        "the robot did not declare in time",
+                    )),
+                    // The serve task ended before serving: its own error says why.
+                    Ok(Err(_)) => Err(match task.await {
+                        Ok(Err(err)) => gym_err(err),
+                        Ok(Ok(())) => SessionException::new_err("the robot stopped before serving"),
+                        Err(join) => SessionException::new_err(join.to_string()),
+                    }),
+                }
             })?;
             *self
                 .served

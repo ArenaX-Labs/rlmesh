@@ -39,8 +39,8 @@ use rlmesh_grpc::env::{
 };
 use rlmesh_grpc::error::{Error as GrpcError, ProtocolError, TransportError};
 use rlmesh_proto::env::v1::{
-    JoinRequest, ResetRequest, ResetResponse, StepRequest, StepResponse, join_request,
-    join_response,
+    JoinRequest, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
+    StepResponse, join_request, join_response,
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 use rlmesh_runtime::{RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError};
@@ -275,6 +275,15 @@ impl<E: Environment + 'static> LockstepHandler for GymEnv<E> {
         reply
     }
 
+    async fn render(&self, request: RenderRequest) -> Result<RenderResponse, GymError> {
+        let join_response::Kind::Render(frame) =
+            self.call(join_request::Kind::Render(request)).await?
+        else {
+            return Err(GymError::Malformed("not a render response".into()));
+        };
+        Ok(frame)
+    }
+
     fn concurrent(&self) -> bool {
         self.core.env().supports_lanes()
     }
@@ -320,8 +329,18 @@ struct Driver {
     step: AtomicU64,
     mirror: Mutex<EpisodeMirror>,
     numbers: Mutex<EpisodeNumbers>,
-    /// Kept alive for the run (its heartbeats keep the lease).
-    _keep: Option<Box<dyn std::any::Any + Send + Sync>>,
+    /// Kept alive for the run (its heartbeats keep the lease), until
+    /// [`LockstepEnv::close`] releases it.
+    keep: tokio::sync::Mutex<Option<Box<dyn Keep>>>,
+}
+
+/// What a driver holds for its run: the session participant whose lease
+/// it steps under.
+#[async_trait]
+pub trait Keep: Send + Sync + 'static {
+    /// Releases the lease and detaches (the robot then re-arms for the next
+    /// driver).
+    async fn release(self: Box<Self>);
 }
 
 /// The driver side: a lockstep env as a v1 [`RuntimeEnv`]. Clones share
@@ -345,7 +364,7 @@ impl LockstepEnv {
         map: GymMap,
         epoch: Epoch,
         token: LeaseToken,
-        keep: Option<Box<dyn std::any::Any + Send + Sync>>,
+        keep: Option<Box<dyn Keep>>,
     ) -> Self {
         let num_envs = (map.info.contract.num_envs as usize).max(1);
         let mirror = EpisodeMirror::new(num_envs, map.info.contract.autoreset_mode);
@@ -359,7 +378,7 @@ impl LockstepEnv {
                 step: AtomicU64::new(0),
                 mirror: Mutex::new(mirror),
                 numbers: Mutex::new(EpisodeNumbers::default()),
-                _keep: keep,
+                keep: tokio::sync::Mutex::new(keep),
             }),
         }
     }
@@ -515,6 +534,20 @@ impl LockstepEnv {
         Ok(response)
     }
 
+    /// One render frame of lane `request.env_indices[0]`, as the v1 env
+    /// service answers it.
+    pub async fn render_v1(&self, request: RenderRequest) -> Result<RenderResponse, GymError> {
+        let timeout = Self::timeout(request.timeout_ms);
+        self.inner.link.render(request, timeout).await
+    }
+
+    /// Releases the lease and detaches (idempotent); every clone is closed.
+    pub async fn close(&self) {
+        if let Some(keep) = self.inner.keep.lock().await.take() {
+            keep.release().await;
+        }
+    }
+
     /// The channel of every commandable part.
     pub fn command_channels(&self) -> Vec<ChannelId> {
         self.inner
@@ -551,5 +584,11 @@ impl RuntimeEnv for LockstepEnv {
             endpoint_total_ns: None,
             phases: Default::default(),
         })
+    }
+
+    async fn close(&mut self, timeout: Duration) -> Result<(), String> {
+        tokio::time::timeout(timeout, LockstepEnv::close(self))
+            .await
+            .map_err(|_| format!("the lockstep driver did not detach within {timeout:?}"))
     }
 }

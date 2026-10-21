@@ -15,16 +15,19 @@
 //! | same process | [`DirectLink`]: a function call, no serialisation |
 //! | same host or remote | [`ZenohLink`]: a query on `l/{robot}` over the lockstep class session, answered by [`serve_zenoh`] |
 //!
-//! A reset is the same query with the selector parameter `reset`; an error
-//! reply carries a v1 `EnvError`.
+//! A reset is the same query with the selector parameter `reset`, a render
+//! the selector parameter `render` (a v1 `RenderRequest` in, a v1
+//! `RenderResponse` out, as on the Join stream); an error reply carries a v1
+//! `EnvError`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use prost::Message as _;
-use rlmesh_proto::env::v1::EnvError as ProtoEnvError;
+use rlmesh_proto::env::v1::{EnvError as ProtoEnvError, RenderRequest, RenderResponse};
 use rlmesh_session::transport::payload_bytes;
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{
@@ -39,6 +42,8 @@ use crate::lockstep::error::GymError;
 
 /// The selector parameter of a reset query.
 const RESET: &str = "reset";
+/// The selector parameter of a render query.
+const RENDER: &str = "render";
 /// The selector parameter of a probe: answered with an empty reply, so a
 /// driver knows the route to the env is up before its first request.
 const PROBE: &str = "probe";
@@ -57,6 +62,11 @@ pub enum Request {
 pub trait LockstepHandler: Send + Sync + 'static {
     /// Answers one request.
     async fn handle(&self, request: Request) -> Result<LockstepReply, GymError>;
+
+    /// Renders a frame, as a v1 env renders one; by default there is none.
+    async fn render(&self, _request: RenderRequest) -> Result<RenderResponse, GymError> {
+        Ok(RenderResponse::default())
+    }
 
     /// Whether several lane-scoped requests may run at once (a lane
     /// endpoint, v1's `subset_step`).
@@ -198,6 +208,10 @@ impl LockstepHandler for Gated {
         self.inner.handle(request).await
     }
 
+    async fn render(&self, request: RenderRequest) -> Result<RenderResponse, GymError> {
+        self.inner.render(request).await
+    }
+
     fn concurrent(&self) -> bool {
         self.inner.concurrent()
     }
@@ -212,6 +226,26 @@ pub trait LockstepLink: Send + Sync + 'static {
         request: Request,
         timeout: Option<Duration>,
     ) -> Result<LockstepReply, GymError>;
+
+    /// Asks the env for a render frame.
+    async fn render(
+        &self,
+        request: RenderRequest,
+        timeout: Option<Duration>,
+    ) -> Result<RenderResponse, GymError>;
+}
+
+/// `future` bounded by `timeout`, when there is one.
+async fn within<T>(
+    timeout: Option<Duration>,
+    future: impl std::future::Future<Output = Result<T, GymError>>,
+) -> Result<T, GymError> {
+    match timeout {
+        Some(t) => tokio::time::timeout(t, future)
+            .await
+            .map_err(|_| GymError::Timeout(t))?,
+        None => future.await,
+    }
 }
 
 /// The same-process link: a function call, no serialisation.
@@ -224,12 +258,15 @@ impl LockstepLink for DirectLink {
         request: Request,
         timeout: Option<Duration>,
     ) -> Result<LockstepReply, GymError> {
-        match timeout {
-            Some(t) => tokio::time::timeout(t, self.0.handle(request))
-                .await
-                .map_err(|_| GymError::Timeout(t))?,
-            None => self.0.handle(request).await,
-        }
+        within(timeout, self.0.handle(request)).await
+    }
+
+    async fn render(
+        &self,
+        request: RenderRequest,
+        timeout: Option<Duration>,
+    ) -> Result<RenderResponse, GymError> {
+        within(timeout, self.0.render(request)).await
     }
 }
 
@@ -241,6 +278,7 @@ pub struct ZenohLink {
     session: zenoh::Session,
     key: String,
     reset_selector: String,
+    render_selector: String,
 }
 
 impl ZenohLink {
@@ -248,6 +286,7 @@ impl ZenohLink {
     pub fn new(session: zenoh::Session, key: String) -> Self {
         Self {
             reset_selector: format!("{key}?{RESET}"),
+            render_selector: format!("{key}?{RENDER}"),
             session,
             key,
         }
@@ -287,20 +326,15 @@ fn encode(request: &Request) -> (bool, Vec<u8>) {
     }
 }
 
-#[async_trait]
-impl LockstepLink for ZenohLink {
-    async fn call(
+impl ZenohLink {
+    /// One query on `selector`: the reply's payload, or the env's error.
+    async fn query(
         &self,
-        request: Request,
+        selector: &str,
+        payload: Vec<u8>,
         timeout: Option<Duration>,
-    ) -> Result<LockstepReply, GymError> {
+    ) -> Result<Bytes, GymError> {
         let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
-        let (reset, payload) = encode(&request);
-        let selector = if reset {
-            self.reset_selector.as_str()
-        } else {
-            self.key.as_str()
-        };
         let replies = self
             .session
             .get(selector)
@@ -317,9 +351,7 @@ impl LockstepLink for ZenohLink {
             .await
             .map_err(|_| GymError::Timeout(timeout))?;
         match reply.result() {
-            Ok(sample) => Ok(codec::decode_lockstep_reply(payload_bytes(
-                sample.payload(),
-            ))?),
+            Ok(sample) => Ok(payload_bytes(sample.payload())),
             Err(err) => {
                 let bytes = payload_bytes(err.payload());
                 match ProtoEnvError::decode(bytes) {
@@ -329,6 +361,35 @@ impl LockstepLink for ZenohLink {
                 }
             }
         }
+    }
+}
+
+#[async_trait]
+impl LockstepLink for ZenohLink {
+    async fn call(
+        &self,
+        request: Request,
+        timeout: Option<Duration>,
+    ) -> Result<LockstepReply, GymError> {
+        let (reset, payload) = encode(&request);
+        let selector = if reset {
+            self.reset_selector.as_str()
+        } else {
+            self.key.as_str()
+        };
+        let reply = self.query(selector, payload, timeout).await?;
+        Ok(codec::decode_lockstep_reply(reply)?)
+    }
+
+    async fn render(
+        &self,
+        request: RenderRequest,
+        timeout: Option<Duration>,
+    ) -> Result<RenderResponse, GymError> {
+        let reply = self
+            .query(&self.render_selector, request.encode_to_vec(), timeout)
+            .await?;
+        RenderResponse::decode(reply).map_err(|e| GymError::Malformed(e.to_string()))
     }
 }
 
@@ -342,13 +403,17 @@ fn decode_request(query: &zenoh::query::Query) -> Result<Request, GymError> {
 }
 
 async fn answer(query: &zenoh::query::Query, key: &str, result: Result<LockstepReply, GymError>) {
+    answer_bytes(
+        query,
+        key,
+        result.map(|reply| codec::encode_lockstep_reply(&reply)),
+    )
+    .await;
+}
+
+async fn answer_bytes(query: &zenoh::query::Query, key: &str, result: Result<Vec<u8>, GymError>) {
     let sent = match result {
-        Ok(reply) => {
-            query
-                .reply(key, codec::encode_lockstep_reply(&reply))
-                .express(true)
-                .await
-        }
+        Ok(payload) => query.reply(key, payload).express(true).await,
         Err(err) => query.reply_err(err.to_proto().encode_to_vec()).await,
     };
     if let Err(err) = sent {
@@ -379,6 +444,15 @@ pub async fn serve_zenoh(
         };
         if query.parameters().contains_key(PROBE) {
             answer(&query, &key, Ok(LockstepReply::default())).await;
+            continue;
+        }
+        if query.parameters().contains_key(RENDER) {
+            let payload = query.payload().map(payload_bytes).unwrap_or_default();
+            let result = match RenderRequest::decode(payload) {
+                Ok(request) => handler.render(request).await.map(|r| r.encode_to_vec()),
+                Err(err) => Err(GymError::Malformed(err.to_string())),
+            };
+            answer_bytes(&query, &key, result).await;
             continue;
         }
         let request = match decode_request(&query) {

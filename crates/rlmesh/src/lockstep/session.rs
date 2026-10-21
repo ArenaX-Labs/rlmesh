@@ -36,7 +36,7 @@ use rlmesh_session::{
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::lockstep::compat::{GymEnv, LockstepEnv, env_info};
+use crate::lockstep::compat::{GymEnv, Keep, LockstepEnv, env_info};
 use crate::lockstep::error::GymError;
 use crate::lockstep::exchange::{
     DirectLink, Gate, Gated, LockstepHandler, LockstepLink, ZenohLink, serve_zenoh,
@@ -56,6 +56,34 @@ pub fn is_lockstep_address(address: &str) -> bool {
 /// The notional rate of a Gym robot's parts: lockstep never paces, and
 /// `tick_ns` defaults to 1 ms (§11.2).
 pub const GYM_HZ: f64 = 1000.0;
+
+/// A lockstep robot's map with what lockstep lets it leave out filled in: a
+/// part without `hz` runs once per step (at the notional [`GYM_HZ`]), and a
+/// part without `kind` is a custom part of its own, kind
+/// `local/{its last path segment}`, declared by its `fields`. A game or a
+/// classic-control env so needs no robot vocabulary.
+pub fn lockstep_robot_map(robot_json: &str) -> Result<String, GymError> {
+    use serde_json::value::RawValue;
+    type Decl = indexmap::IndexMap<String, Box<RawValue>>;
+    let bad = |e: serde_json::Error| GymError::Config(format!("robot map: {e}"));
+    let parts: indexmap::IndexMap<String, Decl> = serde_json::from_str(robot_json).map_err(bad)?;
+    let mut out = indexmap::IndexMap::with_capacity(parts.len());
+    for (path, mut decl) in parts {
+        if !decl.contains_key("kind") {
+            let last = path.rsplit('/').next().unwrap_or(&path);
+            let kind = serde_json::to_string(&format!("local/{last}")).map_err(bad)?;
+            decl.insert("kind".into(), RawValue::from_string(kind).map_err(bad)?);
+        }
+        if !decl.contains_key("hz") {
+            decl.insert(
+                "hz".into(),
+                RawValue::from_string(GYM_HZ.to_string()).map_err(bad)?,
+            );
+        }
+        out.insert(path, decl);
+    }
+    serde_json::to_string(&out).map_err(bad)
+}
 
 /// A parsed lockstep address.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,6 +218,20 @@ pub struct ServeOptions {
     pub record: Option<PathBuf>,
     /// How long to wait for the host.
     pub timeout: Option<Duration>,
+}
+
+/// Checks that an env with `contract` maps to a robot (§12.5) before
+/// anything is served, so a refusal (a Text action, a space with no part
+/// layout) reaches the caller at once instead of surfacing later from the
+/// serve task.
+pub fn check(contract: rlmesh_spaces::EnvContract) -> Result<(), GymError> {
+    let info = GymEnvInfo {
+        contract,
+        workflow_edition: String::new(),
+        supported_workflow_editions: Vec::new(),
+        capabilities: Vec::new(),
+    };
+    GymMap::new(info, GYM_HZ).map(|_| ())
 }
 
 /// A lockstep address bound for serving: the session joined or hosted.
@@ -431,8 +473,24 @@ fn own_parts(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> Vec<PartSpe
 
 /// What a driver keeps alive for its run.
 struct Held {
-    _participant: Participant,
-    _lockstep: Option<zenoh::Session>,
+    participant: Participant,
+    lockstep: Option<zenoh::Session>,
+}
+
+#[async_trait::async_trait]
+impl Keep for Held {
+    async fn release(self: Box<Self>) {
+        let Held {
+            participant,
+            lockstep,
+        } = *self;
+        if let Err(err) = participant.detach().await {
+            tracing::debug!(%err, "lockstep driver: detach");
+        }
+        if let Some(lockstep) = lockstep {
+            let _ = lockstep.close().await;
+        }
+    }
 }
 
 /// Driver-side options.
@@ -573,8 +631,8 @@ impl Attached {
             epoch,
             token,
             Held {
-                _participant: participant,
-                _lockstep: lockstep,
+                participant,
+                lockstep,
             },
         ))
     }
@@ -678,6 +736,18 @@ async fn view_of(
     options: ConnectOptions,
 ) -> Result<GymView, GymError> {
     let parts = attached.parts.clone();
+    if policy.is_none()
+        && parts.iter().any(|p| {
+            p.attrs
+                .contains_key(rlmesh_session::spec::normalise::attrs::GYM_ENV)
+        })
+    {
+        return Err(GymError::Config(format!(
+            "robot {robot} serves a Gym env: drive it with RemoteEnv(\"{}\"), which keeps its \
+             original spaces, or give the view a policy",
+            attached.address
+        )));
+    }
     let (table, fingerprint, channels) = match policy {
         Some((policy, name)) => {
             let binding =

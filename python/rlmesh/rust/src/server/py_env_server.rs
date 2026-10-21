@@ -175,6 +175,8 @@ fn construct_server(
     })?;
 
     if let Some(address) = address.filter(|a| rlmesh::lockstep::is_lockstep_address(a)) {
+        rlmesh::lockstep::check(env_contract.clone())
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
         let binding = runtime
             .block_on(rlmesh::lockstep::bind(address))
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyConnectionError, _>(e.to_string()))?;
@@ -714,6 +716,7 @@ where
     let drain_timeout = Some(options.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let env = Arc::new(env);
+    let workflow_edition = options.workflow_edition.clone();
     let grpc_options = rlmesh::binding::serve_options_to_grpc(options, token);
     let service = env_service_from_shared(
         Arc::clone(&env),
@@ -736,8 +739,9 @@ where
                 .serve(
                     Arc::clone(&env),
                     rlmesh::lockstep::ServeOptions {
+                        workflow_edition,
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
-                        ..Default::default()
+                        timeout: None,
                     },
                     cancel,
                 )

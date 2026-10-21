@@ -294,7 +294,7 @@ fn a_catalog_env_maps_to_a_robot_and_its_slabs_round_trip_bit_exact() {
 }
 
 #[test]
-fn an_untagged_box_env_is_obs_and_action_and_collisions_are_refused() {
+fn an_untagged_box_env_is_obs_and_action_and_keys_that_escape_alike_keep_apart() {
     let contract = EnvContract {
         id: "Box-v0".into(),
         action_space: Some(boxed(DType::Float32, &[6])),
@@ -309,13 +309,22 @@ fn an_untagged_box_env_is_obs_and_action_and_collisions_are_refused() {
     assert_eq!(paths, ["obs", "action"]);
     assert!(gym.parts().all(|p| p.zero_copy));
 
+    // `Pos` and `pos` escape alike, and an observation key `action` meets
+    // the action root: the later one takes the hash of its original keys.
     let clash = EnvContract {
         observation_space: Some(dict(vec![
             ("Pos", boxed(DType::Float32, &[3])),
             ("pos", boxed(DType::Float32, &[3])),
+            ("action", boxed(DType::Float32, &[1])),
         ])),
         ..contract
     };
-    let err = GymMap::new(info(clash), 1000.0).expect_err("collision");
-    assert!(err.to_string().contains("\"pos\""), "{err}");
+    let gym = GymMap::new(info(clash), 1000.0).expect("map");
+    let paths: Vec<&str> = gym.parts().map(|p| p.spec.path.as_str()).collect();
+    assert_eq!(paths.len(), 4);
+    assert_eq!((paths[0], paths[3]), ("pos", "action"));
+    assert!(
+        paths[1].starts_with("pos_") && paths[2].starts_with("action_"),
+        "{paths:?}"
+    );
 }
