@@ -1,7 +1,7 @@
 //! Node-API bindings for real-time sessions (protocol v2, the v0.2 spec): an
 //! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound policy
 //! ([`rlmesh_session::Controller`]) and an MCAP recorder
-//! ([`rlmesh_record::Recorder`]), the Node and Electron twin of the PyO3
+//! ([`rlmesh_session::record::Recorder`]), the Node and Electron twin of the PyO3
 //! binding. The `rlmesh` npm package wraps them (`src/native.ts`);
 //! every rule (packing, binding, the edge, leases, the run loop) stays in
 //! the Rust crates.
@@ -28,9 +28,9 @@ use napi::bindgen_prelude::{BigInt, Either, Uint8Array, create_custom_tokio_runt
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Error, Result, Status, tokio};
 use napi_derive::napi;
-use rlmesh_record::{RecordError, Recorder};
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::edge::{Due, EdgeConfig, EdgeMode, Rejection, Robot};
+use rlmesh_session::record::{RecordError, Recorder};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::policy::Allow;
 use rlmesh_session::spec::{BindError, Policy, RunOptions};
@@ -1696,7 +1696,7 @@ pub struct RecordingSummary {
 /// ordering, the lease timeline.
 #[napi]
 pub async fn read_recording(path: String) -> Result<RecordingSummary> {
-    let summary = tokio::task::spawn_blocking(move || rlmesh_record::summarize(&path))
+    let summary = tokio::task::spawn_blocking(move || rlmesh_session::record::summarize(&path))
         .await
         .map_err(|e| exception(e.to_string()))?
         .map_err(record_err)?;

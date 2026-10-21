@@ -40,6 +40,8 @@
 //! - [`edge`]: the edge runtime next to an embodiment (§9): the timed
 //!   action queue, command limits, the hold-then-safe ladder, the applied
 //!   stream and log, and the [`Robot`](edge::Robot) bindings wrap.
+//! - `record` (feature `record`): MCAP recording of a session (§13) and
+//!   reading a recording back.
 //! - [`report`]: observer telemetry (§8.10), the publisher and controller
 //!   counters an observer cannot measure itself.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
@@ -64,6 +66,8 @@ pub mod host;
 pub mod media;
 pub mod metrics;
 pub mod participant;
+#[cfg(feature = "record")]
+pub mod record;
 pub mod report;
 pub mod sample;
 pub use rlmesh_session_core::schedule;

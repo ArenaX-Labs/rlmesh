@@ -5347,7 +5347,6 @@ dependencies = [
  "rlmesh-adapters",
  "rlmesh-grpc",
  "rlmesh-proto",
- "rlmesh-record",
  "rlmesh-runtime",
  "rlmesh-session",
  "rlmesh-spaces",
@@ -5368,7 +5367,6 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
- "rlmesh-record",
  "rlmesh-session",
  "tokio",
 ]
@@ -5403,7 +5401,6 @@ dependencies = [
  "rlmesh-grpc",
  "rlmesh-gym",
  "rlmesh-proto",
- "rlmesh-record",
  "rlmesh-sandbox",
  "rlmesh-session",
  "rlmesh-spaces",
@@ -5417,20 +5414,6 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "rlmesh-record"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "mcap",
- "rlmesh-session",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "zenoh",
 ]
 
 [[package]]
@@ -5477,8 +5460,10 @@ dependencies = [
  "image",
  "jpeg-encoder",
  "libc",
+ "mcap",
  "rlmesh-session-core",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

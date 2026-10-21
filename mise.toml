@@ -589,7 +589,7 @@ env = { RLMESH_RELEASE_BUILD = "1" }
 # rlmesh-gym, which is unpublished, so it cannot be packaged until that
 # changes (a v0.2 release blocker), and rlmesh-capi, which would then mix
 # the published rlmesh with this tree's crates.
-run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-session-core --exclude rlmesh-session --exclude rlmesh-wasm --exclude rlmesh-gateway --exclude rlmesh-node --exclude rlmesh-record --exclude rlmesh-gym --exclude rlmesh-cockpit --exclude rlmesh-python --exclude rlmesh --exclude rlmesh-capi'
+run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-session-core --exclude rlmesh-session --exclude rlmesh-wasm --exclude rlmesh-gateway --exclude rlmesh-node --exclude rlmesh-gym --exclude rlmesh-cockpit --exclude rlmesh-python --exclude rlmesh --exclude rlmesh-capi'
 
 [tasks."release:artifacts:licenses"]
 description = "Validate release artifact license files before publishing"

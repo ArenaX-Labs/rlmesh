@@ -1,7 +1,7 @@
 //! PyO3 bindings for real-time sessions (protocol v2, the v0.2 spec): an
 //! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound
 //! policy ([`rlmesh_session::Controller`]) and an MCAP recorder
-//! ([`rlmesh_record::Recorder`]). The `rlmesh.v2` package wraps
+//! ([`rlmesh_session::record::Recorder`]). The `rlmesh.v2` package wraps
 //! them; every rule (packing, binding, the edge, leases, the run loop)
 //! stays in the Rust crates.
 //!
@@ -24,9 +24,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh_record::{RecordError, Recorder};
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::edge::{Due, EdgeConfig, EdgeMode, Rejection, Robot};
+use rlmesh_session::record::{RecordError, Recorder};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::policy::Allow;
 use rlmesh_session::spec::{BindError, Policy, RunOptions};
@@ -1521,7 +1521,7 @@ impl PyRecorder {
     #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
     fn read<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyDict>> {
         let summary = py
-            .detach(|| rlmesh_record::summarize(&path))
+            .detach(|| rlmesh_session::record::summarize(&path))
             .map_err(record_err)?;
         let d = PyDict::new(py);
         d.set_item("messages", summary.messages)?;

@@ -371,7 +371,7 @@ impl LockstepBinding {
                 Duration::from_secs(10),
             )
             .await?;
-            let started = rlmesh_record::Recorder::start(Arc::new(observer), path)
+            let started = rlmesh_session::record::Recorder::start(Arc::new(observer), path)
                 .await
                 .map_err(|e| GymError::Config(e.to_string()))?;
             tee = Some(started.tee());
@@ -414,7 +414,7 @@ pub struct Declared {
     /// The robot's parts.
     pub parts: Vec<PartSpec>,
     /// The in-process recorder (§13), when recording.
-    pub tee: Option<rlmesh_record::SampleTee>,
+    pub tee: Option<rlmesh_session::record::SampleTee>,
 }
 
 /// The notional lockstep tick (§11.2: 1 ms unless the env declares one).

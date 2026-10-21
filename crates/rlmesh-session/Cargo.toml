@@ -25,6 +25,8 @@ clap = { workspace = true, features = ["derive"] }
 # zune-jpeg (the workspace's existing pair, as in rlmesh-adapters).
 image = { workspace = true, features = ["jpeg"] }
 jpeg-encoder = { workspace = true }
+# Session recordings (§13), feature `record`.
+mcap = { workspace = true, optional = true }
 # The sans-IO core (the wire, the spec, authority, clock offsets, input
 # cache, schedule, virtual clock, stream rules), re-exported unchanged.
 rlmesh-session-core = { workspace = true }
@@ -40,8 +42,15 @@ zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-str
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
+# The library's optional parts are on for the crate itself (its binaries
+# and tests); the workspace dependency turns them off, so a binding opts in
+# to what it ships.
+default = ["record"]
+# MCAP recording of a session (`record`).
+record = ["dep:mcap"]
 # QUIC links (one stream per Zenoh priority, so one connection can carry
 # every class across NAT); needs TLS certificates.
 quic = ["zenoh/transport_quic"]

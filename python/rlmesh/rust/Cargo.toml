@@ -40,9 +40,8 @@ rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-gym = { workspace = true }
 rlmesh-proto = { workspace = true }
-rlmesh-record = { workspace = true }
 rlmesh-sandbox = { workspace = true }
-rlmesh-session = { workspace = true }
+rlmesh-session = { workspace = true, features = ["record"] }
 rlmesh-spaces = { workspace = true }
 rlmesh-viewer = { workspace = true }
 

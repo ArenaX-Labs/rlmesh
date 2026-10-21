@@ -197,7 +197,7 @@ async fn a_recorded_lockstep_env_tees_every_step_per_lane() {
     drop(env);
     cancel.cancel();
     served.await.unwrap().unwrap();
-    let summary = rlmesh_record::summarize(&path).unwrap();
+    let summary = rlmesh_session::record::summarize(&path).unwrap();
     let count = |topic: &str| {
         summary
             .topics

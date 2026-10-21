@@ -1,3 +1,4 @@
+#![cfg(feature = "record")]
 //! A recording of a live session: a robot, a model replanning, an operator
 //! preempting it and handing back, all read back from the MCAP file.
 
@@ -5,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use rlmesh_record::{Recorder, summarize};
 use rlmesh_session::edge::{EdgeConfig, Robot};
+use rlmesh_session::record::{Recorder, summarize};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;

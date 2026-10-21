@@ -27,8 +27,6 @@
 //! [`summarize`] reads a recording back: message counts per topic, time
 //! ordering, envelopes that do not decode, and the lease timeline.
 
-#![warn(missing_docs)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::BufWriter;
@@ -37,13 +35,13 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use bytes::Bytes;
-use rlmesh_session::transport::{TrafficClass, payload_bytes};
-use rlmesh_session::wire::codec::{self, schema};
-use rlmesh_session::wire::{
+use crate::transport::{TrafficClass, payload_bytes};
+use crate::wire::codec::{self, schema};
+use crate::wire::{
     AuthoritySnapshot, ChannelId, Fingerprint, PartSpec, ParticipantId, Sample, StreamSpec,
 };
-use rlmesh_session::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
+use crate::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
+use bytes::Bytes;
 use tracing::{debug, warn};
 
 /// What can go wrong recording or reading a recording.
@@ -167,7 +165,7 @@ impl Recorder {
         let writer = mcap::WriteOptions::new()
             .compression(None)
             .profile("rlmesh")
-            .library(concat!("rlmesh-record ", env!("CARGO_PKG_VERSION")))
+            .library(concat!("rlmesh-session ", env!("CARGO_PKG_VERSION")))
             .create(BufWriter::new(file))?;
         let (tx, rx) = mpsc::channel();
         let writer = std::thread::Builder::new()
@@ -513,7 +511,7 @@ async fn subscribe_stream(
     let on_sample = {
         let tx = tx.clone();
         let stamp = stamp.clone();
-        Arc::new(move |received: &rlmesh_session::Received| {
+        Arc::new(move |received: &crate::Received| {
             let p = &stamp.participant;
             let _ = tx.send(Entry::Message {
                 topic: topic.clone(),
