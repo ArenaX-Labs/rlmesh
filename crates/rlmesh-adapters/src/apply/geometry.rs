@@ -1,300 +1,22 @@
-//! Rotation encoding conversions used by resolved adapters.
+//! Rotation encoding conversions used by resolved adapters: the shared codec
+//! (`rlmesh_session_core::spec::rotation`) on `f32` values.
+
+use rlmesh_session_core::spec::rotation::{self, Rotation};
 
 use crate::error::ApplyError;
 use crate::spec::{RotationEncoding, RotationLiteral};
 
-const EPS: f64 = 1e-8;
-/// cos(pitch) below which roll and yaw are read as one coupled angle. Sized
-/// for float32 entries, whose rounding noise reaches ~1e-7.
-const GIMBAL_EPS: f64 = 1e-4;
-
-pub(crate) type Matrix = [[f32; 3]; 3];
-
-fn norm(values: &[f32]) -> f64 {
-    f64::from(values.iter().map(|&x| x * x).sum::<f32>().sqrt())
-}
-
-fn eye() -> Matrix {
-    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-}
-
-/// Reorder a quaternion to xyzw if it is wxyz.
-fn as_quat_xyzw(quat: &[f32], encoding: RotationEncoding) -> [f32; 4] {
-    if encoding == RotationEncoding::QuatWxyz {
-        [quat[1], quat[2], quat[3], quat[0]]
-    } else {
-        [quat[0], quat[1], quat[2], quat[3]]
-    }
-}
-
-/// Convert an xyzw quaternion to an axis-angle 3-vector.
-fn quat_xyzw_to_axis_angle(quat: [f32; 4]) -> Vec<f32> {
-    let quat_norm = norm(&quat);
-    if quat_norm <= EPS {
-        return vec![0.0; 3];
-    }
-    let scale = quat_norm as f32;
-    let unit: Vec<f32> = quat.iter().map(|&x| x / scale).collect();
-    let (xyz, w) = (&unit[..3], f64::from(unit[3]));
-    let sin_half = norm(xyz);
-    if sin_half <= EPS {
-        return vec![0.0; 3];
-    }
-    let angle = 2.0 * sin_half.atan2(w);
-    let factor = (angle / sin_half) as f32;
-    xyz.iter().map(|&x| x * factor).collect()
-}
-
-/// Convert a rotation matrix to an xyzw quaternion (float64 internally,
-/// like the reference).
-fn matrix_to_quat_xyzw(matrix: &Matrix) -> Vec<f32> {
-    let m = |row: usize, col: usize| f64::from(matrix[row][col]);
-    let trace = m(0, 0) + m(1, 1) + m(2, 2);
-    let (x, y, z, w);
-    if trace > 0.0 {
-        let s = 2.0 * (trace + 1.0).sqrt();
-        w = 0.25 * s;
-        x = (m(2, 1) - m(1, 2)) / s;
-        y = (m(0, 2) - m(2, 0)) / s;
-        z = (m(1, 0) - m(0, 1)) / s;
-    } else if m(0, 0) > m(1, 1) && m(0, 0) > m(2, 2) {
-        let s = 2.0 * (1.0 + m(0, 0) - m(1, 1) - m(2, 2)).sqrt();
-        w = (m(2, 1) - m(1, 2)) / s;
-        x = 0.25 * s;
-        y = (m(0, 1) + m(1, 0)) / s;
-        z = (m(0, 2) + m(2, 0)) / s;
-    } else if m(1, 1) > m(2, 2) {
-        let s = 2.0 * (1.0 + m(1, 1) - m(0, 0) - m(2, 2)).sqrt();
-        w = (m(0, 2) - m(2, 0)) / s;
-        x = (m(0, 1) + m(1, 0)) / s;
-        y = 0.25 * s;
-        z = (m(1, 2) + m(2, 1)) / s;
-    } else {
-        let s = 2.0 * (1.0 + m(2, 2) - m(0, 0) - m(1, 1)).sqrt();
-        w = (m(1, 0) - m(0, 1)) / s;
-        x = (m(0, 2) + m(2, 0)) / s;
-        y = (m(1, 2) + m(2, 1)) / s;
-        z = 0.25 * s;
-    }
-    vec![x as f32, y as f32, z as f32, w as f32]
-}
-
-/// Reconstruct a rotation matrix from a 6D rotation's two column vectors via
-/// Gram-Schmidt: `a1` -> `b1`, `a2` orthonormalized against `b1` -> `b2`, and
-/// `b3 = b1 x b2`. Shared by both 6D orderings, which differ only in how `a1`
-/// and `a2` are read out of the flat vector.
-fn rot6d_basis_to_matrix(a1: [f32; 3], a2: [f32; 3]) -> Matrix {
-    let b1_scale = (norm(&a1) + EPS) as f32;
-    let b1 = a1.map(|x| x / b1_scale);
-    let dot: f32 = b1.iter().zip(&a2).map(|(&l, &r)| l * r).sum();
-    let mut b2 = [
-        a2[0] - dot * b1[0],
-        a2[1] - dot * b1[1],
-        a2[2] - dot * b1[2],
-    ];
-    let b2_scale = (norm(&b2) + EPS) as f32;
-    for entry in &mut b2 {
-        *entry /= b2_scale;
-    }
-    let b3 = [
-        b1[1] * b2[2] - b1[2] * b2[1],
-        b1[2] * b2[0] - b1[0] * b2[2],
-        b1[0] * b2[1] - b1[1] * b2[0],
-    ];
-    // Columns are b1, b2, b3.
-    [
-        [b1[0], b2[0], b3[0]],
-        [b1[1], b2[1], b3[1]],
-        [b1[2], b2[2], b3[2]],
-    ]
-}
-
-/// Convert a rotation vector in any supported encoding to a matrix. A sink
-/// encoding never reaches here: [`check_source`] refuses it on every
-/// conversion path and the `post_rotate` codec refuses it as a literal.
-pub(crate) fn to_matrix(value: &[f32], encoding: RotationEncoding) -> Matrix {
+/// The shared codec's encoding for a v1 one (the same names).
+pub(crate) fn shared(encoding: RotationEncoding) -> Rotation {
     match encoding {
-        RotationEncoding::GravityXyz => {
-            unreachable!("gravity_xyz is a sink; check_source refuses it before decoding")
-        }
-        RotationEncoding::QuatXyzw | RotationEncoding::QuatWxyz => {
-            let quat = as_quat_xyzw(value, encoding).map(f64::from);
-            let quat_norm = quat.iter().map(|c| c * c).sum::<f64>().sqrt();
-            if quat_norm <= EPS {
-                return eye();
-            }
-            let [x, y, z, w] = quat.map(|component| component / quat_norm);
-            let (xx, yy, zz) = (x * x, y * y, z * z);
-            let (xy, xz, yz) = (x * y, x * z, y * z);
-            let (wx, wy, wz) = (w * x, w * y, w * z);
-            let entries = [
-                [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
-                [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
-                [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
-            ];
-            entries.map(|row| row.map(|entry| entry as f32))
-        }
-        RotationEncoding::AxisAngle => {
-            let angle = norm(value);
-            if angle <= EPS {
-                return eye();
-            }
-            let scale = angle as f32;
-            let (x, y, z) = (value[0] / scale, value[1] / scale, value[2] / scale);
-            let skew: Matrix = [[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]];
-            let (sin, cos) = (angle.sin() as f32, (1.0 - angle.cos()) as f32);
-            let mut out = eye();
-            for row in 0..3 {
-                for col in 0..3 {
-                    let skew_sq: f32 = (0..3)
-                        .map(|inner| skew[row][inner] * skew[inner][col])
-                        .sum();
-                    out[row][col] += sin * skew[row][col] + cos * skew_sq;
-                }
-            }
-            out
-        }
-        RotationEncoding::Rot6d => {
-            // Standard: a1 = first column, a2 = second column.
-            rot6d_basis_to_matrix(
-                [value[0], value[1], value[2]],
-                [value[3], value[4], value[5]],
-            )
-        }
-        RotationEncoding::Rot6dRowMajor => {
-            // Row-major flatten of the (3, 2) column block: de-interleave the
-            // two columns before the same Gram-Schmidt as `Rot6d`.
-            rot6d_basis_to_matrix(
-                [value[0], value[2], value[4]],
-                [value[1], value[3], value[5]],
-            )
-        }
-        RotationEncoding::EulerXyz => {
-            // [roll, pitch, yaw], extrinsic XYZ: R = Rz(yaw) Ry(pitch) Rx(roll).
-            let (roll, pitch, yaw) = (
-                f64::from(value[0]),
-                f64::from(value[1]),
-                f64::from(value[2]),
-            );
-            let (sr, cr) = (roll.sin(), roll.cos());
-            let (sp, cp) = (pitch.sin(), pitch.cos());
-            let (sy, cy) = (yaw.sin(), yaw.cos());
-            let entries = [
-                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-                [-sp, cp * sr, cp * cr],
-            ];
-            entries.map(|row| row.map(|entry| entry as f32))
-        }
+        RotationEncoding::QuatXyzw => Rotation::QuatXyzw,
+        RotationEncoding::QuatWxyz => Rotation::QuatWxyz,
+        RotationEncoding::AxisAngle => Rotation::AxisAngle,
+        RotationEncoding::Rot6d => Rotation::Rot6d,
+        RotationEncoding::Rot6dRowMajor => Rotation::Rot6dRowMajor,
+        RotationEncoding::EulerXyz => Rotation::EulerXyz,
+        RotationEncoding::GravityXyz => Rotation::GravityXyz,
     }
-}
-
-/// Convert a rotation matrix to a vector in any supported encoding.
-fn matrix_to(matrix: &Matrix, encoding: RotationEncoding) -> Vec<f32> {
-    match encoding {
-        RotationEncoding::GravityXyz => {
-            // R_world_from_base^T · (0, 0, -1): the negated third row of R.
-            vec![-matrix[2][0], -matrix[2][1], -matrix[2][2]]
-        }
-        RotationEncoding::AxisAngle => {
-            // Via the quaternion: recovering the angle from the float32 trace
-            // amplifies rounding near 0 and pi (28 degrees off at pi - 4e-4).
-            // w >= 0 keeps the angle in [0, pi].
-            let mut quat = matrix_to_quat_xyzw(matrix);
-            if quat[3] < 0.0 {
-                for component in &mut quat {
-                    *component = -*component;
-                }
-            }
-            quat_xyzw_to_axis_angle([quat[0], quat[1], quat[2], quat[3]])
-        }
-        RotationEncoding::Rot6d => {
-            // Standard: the first two columns concatenated (col0 then col1).
-            vec![
-                matrix[0][0],
-                matrix[1][0],
-                matrix[2][0],
-                matrix[0][1],
-                matrix[1][1],
-                matrix[2][1],
-            ]
-        }
-        RotationEncoding::Rot6dRowMajor => {
-            // The same two columns flattened row-major over the (3, 2) block.
-            vec![
-                matrix[0][0],
-                matrix[0][1],
-                matrix[1][0],
-                matrix[1][1],
-                matrix[2][0],
-                matrix[2][1],
-            ]
-        }
-        RotationEncoding::QuatXyzw | RotationEncoding::QuatWxyz => {
-            let quat = matrix_to_quat_xyzw(matrix);
-            if encoding == RotationEncoding::QuatWxyz {
-                vec![quat[3], quat[0], quat[1], quat[2]]
-            } else {
-                quat
-            }
-        }
-        RotationEncoding::EulerXyz => {
-            // Inverse of the extrinsic-XYZ matrix; pitch is recovered in
-            // [-pi/2, pi/2]. At gimbal lock (cos(pitch) ~ 0) roll and yaw
-            // couple, so yaw is pinned to 0.
-            let m = |row: usize, col: usize| f64::from(matrix[row][col]);
-            let sin_pitch = (-m(2, 0)).clamp(-1.0, 1.0);
-            // cos(pitch) from the entries roll/yaw are read from, not
-            // sqrt(1 - sin^2): at float32 gimbal lock the latter is ~3e-4
-            // while those entries have already rounded to zero.
-            let cos_pitch = m(2, 1).hypot(m(2, 2));
-            let pitch = sin_pitch.atan2(cos_pitch);
-            let (roll, yaw) = if cos_pitch > GIMBAL_EPS {
-                (m(2, 1).atan2(m(2, 2)), m(1, 0).atan2(m(0, 0)))
-            } else {
-                // With yaw pinned to 0, the combined roll+/-yaw angle is read
-                // off the top-left 2x2. Its sign tracks sin(pitch): +pi/2 gives
-                // sin(roll-yaw), -pi/2 gives -sin(roll+yaw), so scale m[0][1] by
-                // sin_pitch to recover an angle that reconstructs the matrix.
-                ((sin_pitch * m(0, 1)).atan2(m(1, 1)), 0.0)
-            };
-            vec![roll as f32, pitch as f32, yaw as f32]
-        }
-    }
-}
-
-/// `left @ right` for two 3x3 matrices.
-fn mat_mul(left: &Matrix, right: &Matrix) -> Matrix {
-    let mut out = [[0.0f32; 3]; 3];
-    for (row, entry) in out.iter_mut().enumerate() {
-        for (col, cell) in entry.iter_mut().enumerate() {
-            *cell = (0..3)
-                .map(|inner| left[row][inner] * right[inner][col])
-                .sum();
-        }
-    }
-    out
-}
-
-/// Convert a flat rotation vector between encodings, right-multiplying a fixed
-/// `post` rotation onto it first (`R_out = R_in @ R(post)`).
-///
-/// With a `post` the value always goes through the matrix: the same-encoding
-/// and quat->axis-angle shortcuts in [`convert_rotation`] would drop the factor.
-pub fn convert_rotation_with(
-    value: &[f32],
-    source: RotationEncoding,
-    target: RotationEncoding,
-    post: Option<&RotationLiteral>,
-) -> Result<Vec<f32>, ApplyError> {
-    let Some(post) = post else {
-        return convert_rotation(value, source, target);
-    };
-    check_source(value, source)?;
-    Ok(matrix_to(
-        &mat_mul(&to_matrix(value, source), &post.matrix()),
-        target,
-    ))
 }
 
 /// A source must be a rotation of its declared width: a sink encoding carries
@@ -319,24 +41,38 @@ fn check_source(value: &[f32], source: RotationEncoding) -> Result<(), ApplyErro
     Ok(())
 }
 
+/// Convert a flat rotation vector between encodings, right-multiplying a fixed
+/// `post` rotation onto it first (`R_out = R_in @ R(post)`).
+pub fn convert_rotation_with(
+    value: &[f32],
+    source: RotationEncoding,
+    target: RotationEncoding,
+    post: Option<&RotationLiteral>,
+) -> Result<Vec<f32>, ApplyError> {
+    if source == target && post.is_none() {
+        return Ok(value.to_vec());
+    }
+    check_source(value, source)?;
+    let input: Vec<f64> = value.iter().map(|&x| f64::from(x)).collect();
+    let post = post.map(RotationLiteral::matrix);
+    let mut out = Vec::with_capacity(target.dims() as usize);
+    rotation::convert_with(
+        &input,
+        shared(source),
+        shared(target),
+        post.as_ref(),
+        &mut out,
+    );
+    Ok(out.into_iter().map(|x| x as f32).collect())
+}
+
 /// Convert a flat rotation vector between encodings (float32 output).
 pub fn convert_rotation(
     value: &[f32],
     source: RotationEncoding,
     target: RotationEncoding,
 ) -> Result<Vec<f32>, ApplyError> {
-    if source == target {
-        return Ok(value.to_vec());
-    }
-    check_source(value, source)?;
-    if matches!(
-        source,
-        RotationEncoding::QuatXyzw | RotationEncoding::QuatWxyz
-    ) && target == RotationEncoding::AxisAngle
-    {
-        return Ok(quat_xyzw_to_axis_angle(as_quat_xyzw(value, source)));
-    }
-    Ok(matrix_to(&to_matrix(value, source), target))
+    convert_rotation_with(value, source, target, None)
 }
 
 #[cfg(test)]
@@ -344,284 +80,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matrix_to_axis_angle_recovers_180_degree_rotation() {
-        // rot6d (first two columns) of a 180° rotation about x:
-        // R = diag(1, -1, -1). The matrix is symmetric, so the antisymmetric
-        // recovery yields a zero axis — the pre-fix bug returned ~[0, 0, 0].
-        let rot6d = [1.0, 0.0, 0.0, 0.0, -1.0, 0.0];
-        let axis_angle =
-            convert_rotation(&rot6d, RotationEncoding::Rot6d, RotationEncoding::AxisAngle)
-                .expect("convert");
-        let pi = std::f32::consts::PI;
-        assert!(
-            (axis_angle[0].abs() - pi).abs() < 1e-4,
-            "expected |angle| ~ pi about x, got {axis_angle:?}"
-        );
-        assert!(
-            axis_angle[1].abs() < 1e-4 && axis_angle[2].abs() < 1e-4,
-            "{axis_angle:?}"
-        );
-    }
-
-    #[test]
-    fn near_pi_branch_only_engages_close_to_pi() {
-        // A general (non-degenerate) rotation must still resolve to a non-zero
-        // axis-angle — the near-pi branch must not swallow ordinary angles.
-        let rot6d = [0.0, 1.0, 0.0, -1.0, 0.0, 0.0]; // 90° about z
-        let axis_angle =
-            convert_rotation(&rot6d, RotationEncoding::Rot6d, RotationEncoding::AxisAngle)
-                .expect("convert");
-        let angle: f32 = axis_angle.iter().map(|&x| x * x).sum::<f32>().sqrt();
-        assert!(
-            (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
-            "{axis_angle:?}"
-        );
-    }
-
-    #[test]
-    fn euler_xyz_round_trips_through_the_matrix() {
-        use RotationEncoding::{EulerXyz, QuatXyzw};
-        // Non-degenerate roll/pitch/yaw recover exactly through a quaternion.
-        let euler = vec![0.3_f32, -0.4, 1.1];
-        let quat = convert_rotation(&euler, EulerXyz, QuatXyzw).expect("to quat");
-        let back = convert_rotation(&quat, QuatXyzw, EulerXyz).expect("from quat");
-        for (expected, actual) in euler.iter().zip(&back) {
-            assert!(
-                (expected - actual).abs() < 1e-4,
-                "euler round-trip {expected} vs {actual}"
-            );
-        }
-    }
-
-    #[test]
-    fn euler_xyz_axes_match_the_convention() {
-        use RotationEncoding::{AxisAngle, EulerXyz};
-        let half_pi = std::f32::consts::FRAC_PI_2;
-        // Pure yaw (rotation about z) -> axis-angle about z.
-        let yaw = convert_rotation(&[0.0, 0.0, half_pi], EulerXyz, AxisAngle).expect("yaw");
-        assert!(yaw[0].abs() < 1e-4 && yaw[1].abs() < 1e-4);
-        assert!((yaw[2] - half_pi).abs() < 1e-4, "{yaw:?}");
-        // Pure roll (rotation about x) -> axis-angle about x.
-        let roll = convert_rotation(&[half_pi, 0.0, 0.0], EulerXyz, AxisAngle).expect("roll");
-        assert!(roll[1].abs() < 1e-4 && roll[2].abs() < 1e-4);
-        assert!((roll[0] - half_pi).abs() < 1e-4, "{roll:?}");
-    }
-
-    #[test]
-    fn euler_xyz_recovers_at_gimbal_lock() {
-        use RotationEncoding::{EulerXyz, QuatXyzw};
-        let half_pi = std::f32::consts::FRAC_PI_2;
-        // At pitch = +/-pi/2, roll and yaw couple, so the recovered euler need
-        // not match componentwise -- but it must encode the *same* rotation.
-        // (Pre-fix, the -pi/2 case flipped the combined angle's sign.)
-        for pitch in [half_pi, -half_pi] {
-            let euler = vec![0.3_f32, pitch, 1.1];
-            let quat = convert_rotation(&euler, EulerXyz, QuatXyzw).expect("to quat");
-            let back = convert_rotation(&quat, QuatXyzw, EulerXyz).expect("from quat");
-            let requat = convert_rotation(&back, EulerXyz, QuatXyzw).expect("re-quat");
-            // q and -q are the same rotation.
-            let agree = quat.iter().zip(&requat).all(|(a, b)| (a - b).abs() < 1e-4)
-                || quat.iter().zip(&requat).all(|(a, b)| (a + b).abs() < 1e-4);
-            assert!(agree, "gimbal pitch {pitch}: {quat:?} vs {requat:?}");
-        }
-    }
-
-    fn frobenius_distance(left: &Matrix, right: &Matrix) -> f32 {
-        left.iter()
-            .flatten()
-            .zip(right.iter().flatten())
-            .map(|(l, r)| (l - r) * (l - r))
-            .sum::<f32>()
-            .sqrt()
-    }
-
-    #[test]
-    fn matrix_to_axis_angle_is_stable_near_zero_and_pi() {
-        use RotationEncoding::{AxisAngle, EulerXyz, Rot6d};
-        let pi = std::f32::consts::PI;
-        // Pre-fix: pi - 4e-4 about x came back as 3.639 (28 degrees off) and
-        // 1e-4 collapsed to zero, both from the float32 trace.
-        for offset in [1e-4_f32, 3e-4, 4e-4, 1e-3, 1e-2, 0.5] {
-            for angle in [offset, pi - offset] {
-                let got = convert_rotation(&[angle, 0.0, 0.0], EulerXyz, AxisAngle).expect("ok");
-                assert!(
-                    (got[0] - angle).abs() < 2e-6 && got[1].abs() < 1e-6 && got[2].abs() < 1e-6,
-                    "Rx({angle}) -> {got:?}"
-                );
-            }
-        }
-        let rot6d = [1.0, 0.0, 0.0, 0.0, -0.999_999_94, 4e-4];
-        let got = convert_rotation(&rot6d, Rot6d, AxisAngle).expect("ok");
-        assert!((got[0] - (pi - 4e-4)).abs() < 2e-6, "{got:?}");
-    }
-
-    #[test]
-    fn euler_xyz_recovers_a_float32_quaternion_at_gimbal_lock() {
-        use RotationEncoding::{EulerXyz, QuatWxyz, QuatXyzw};
-        // Euler [0.3, -pi/2, 1.1] as a float32 quaternion. Its matrix has
-        // -m20 = 0.99999994, so sqrt(1 - s^2) claimed cos(pitch) ~ 3e-4 while
-        // the roll/yaw entries were exactly zero: the pre-fix inverse returned
-        // [0, -pi/2, 0], 80 degrees away.
-        let quat = [0.455_530_7_f32, -0.540_825_07, 0.455_530_7, 0.540_825_07];
-        for (value, encoding) in [
-            (quat, QuatXyzw),
-            ([quat[3], quat[0], quat[1], quat[2]], QuatWxyz),
-        ] {
-            let euler = convert_rotation(&value, encoding, EulerXyz).expect("ok");
-            let distance =
-                frobenius_distance(&to_matrix(&value, encoding), &to_matrix(&euler, EulerXyz));
-            assert!(
-                distance < 1e-5,
-                "{encoding:?}: euler {euler:?} is {distance} away"
-            );
-        }
-        // Just off gimbal lock, roll and yaw still separate cleanly.
-        let half_pi = std::f32::consts::FRAC_PI_2;
-        for pitch in [
-            half_pi - 1e-3,
-            -half_pi + 1e-3,
-            half_pi - 2e-4,
-            -half_pi + 2e-4,
-        ] {
-            let euler = [0.3_f32, pitch, 1.1];
-            let quat = convert_rotation(&euler, EulerXyz, QuatXyzw).expect("ok");
-            let back = convert_rotation(&quat, QuatXyzw, EulerXyz).expect("ok");
-            let distance =
-                frobenius_distance(&to_matrix(&euler, EulerXyz), &to_matrix(&back, EulerXyz));
-            assert!(
-                distance < 1e-3,
-                "pitch {pitch}: {back:?} is {distance} away"
-            );
-        }
-    }
-
-    #[test]
-    fn euler_xyz_survives_float32_quaternions_across_gimbal_lock() {
-        use RotationEncoding::{EulerXyz, QuatXyzw};
-        // Normalizing the float32 quaternion in float32 left a 0.2 degree
-        // error at some roll/yaw pairs; the f64 normalization holds them all.
-        let half_pi = std::f32::consts::FRAC_PI_2;
-        for pitch in [half_pi, -half_pi, half_pi - 1e-4, -half_pi + 1e-4] {
-            for step in 0..64 {
-                let roll = -3.0 + step as f32 * 0.1;
-                let yaw = 3.0 - step as f32 * 0.07;
-                let euler = [roll, pitch, yaw];
-                let quat = convert_rotation(&euler, EulerXyz, QuatXyzw).expect("ok");
-                let back = convert_rotation(&quat, QuatXyzw, EulerXyz).expect("ok");
-                let distance =
-                    frobenius_distance(&to_matrix(&quat, QuatXyzw), &to_matrix(&back, EulerXyz));
-                assert!(distance < 5e-4, "{euler:?} -> {back:?} is {distance} away");
-            }
-        }
-    }
-
-    #[test]
-    fn rot6d_is_standard_column_concat_and_round_trips() {
-        use RotationEncoding::{AxisAngle, QuatXyzw, Rot6d};
-        // 90° about z: R = [[0,-1,0],[1,0,0],[0,0,1]]. Standard rot6d is the
-        // first two columns concatenated: col0=[0,1,0], col1=[-1,0,0].
-        let half = std::f32::consts::FRAC_PI_2 / 2.0;
-        let quat = [0.0, 0.0, half.sin(), half.cos()];
-        let rot6d = convert_rotation(&quat, QuatXyzw, Rot6d).expect("to rot6d");
-        let expected = [0.0_f32, 1.0, 0.0, -1.0, 0.0, 0.0];
-        for (got, want) in rot6d.iter().zip(&expected) {
-            assert!((got - want).abs() < 1e-4, "{rot6d:?} vs {expected:?}");
-        }
-        // Encode and decode now agree: the round-trip recovers the rotation.
-        let axis_angle = [0.3_f32, -0.4, 1.1];
-        let r6d = convert_rotation(&axis_angle, AxisAngle, Rot6d).expect("to rot6d");
-        let back = convert_rotation(&r6d, Rot6d, AxisAngle).expect("from rot6d");
-        for (expected, actual) in axis_angle.iter().zip(&back) {
-            assert!((expected - actual).abs() < 1e-4, "{expected} vs {actual}");
-        }
-    }
-
-    #[test]
-    fn gravity_xyz_points_down_in_the_base_frame_and_never_converts_out() {
-        use RotationEncoding::{EulerXyz, GravityXyz, QuatWxyz, QuatXyzw};
-        // Identity orientation: gravity is straight down.
-        let down = convert_rotation(&[1.0, 0.0, 0.0, 0.0], QuatWxyz, GravityXyz).expect("ok");
-        assert_eq!(down, vec![0.0, 0.0, -1.0]);
-        // A 180 degree roll: the robot is on its back, so "down" is +z.
-        let pi = std::f32::consts::PI;
-        let up = convert_rotation(&[pi, 0.0, 0.0], EulerXyz, GravityXyz).expect("ok");
-        for (got, want) in up.iter().zip(&[0.0, 0.0, 1.0]) {
-            assert!((got - want).abs() < 1e-6, "{up:?}");
-        }
-        // A 90 degree pitch (nose down about y): gravity points along +x.
-        let half_pi = std::f32::consts::FRAC_PI_2;
-        let nose = convert_rotation(&[0.0, half_pi, 0.0], EulerXyz, GravityXyz).expect("ok");
-        for (got, want) in nose.iter().zip(&[1.0, 0.0, 0.0]) {
-            assert!((got - want).abs() < 1e-6, "{nose:?}");
-        }
-        // The post-rotation composes before the projection: Rx(pi) on an
-        // identity source flips it.
-        let roll: RotationLiteral = serde_json::from_str(
-            r#"{"encoding": "rot6d", "value": [1.0, 0.0, 0.0, 0.0, -1.0, 0.0]}"#,
-        )
-        .expect("literal");
-        let flipped =
-            convert_rotation_with(&[0.0, 0.0, 0.0, 1.0], QuatXyzw, GravityXyz, Some(&roll))
-                .expect("ok");
-        for (got, want) in flipped.iter().zip(&[0.0, 0.0, 1.0]) {
-            assert!((got - want).abs() < 1e-6, "{flipped:?}");
-        }
-        // The direction law: a sink is never a source, except of itself.
+    fn gravity_xyz_never_converts_out() {
+        use RotationEncoding::{GravityXyz, QuatXyzw};
         let same = convert_rotation(&[0.0, 0.0, -1.0], GravityXyz, GravityXyz).expect("ok");
         assert_eq!(same, vec![0.0, 0.0, -1.0]);
         let err = convert_rotation(&[0.0, 0.0, -1.0], GravityXyz, QuatXyzw).unwrap_err();
         assert!(err.to_string().contains("is a sink"), "{err}");
+        let roll: RotationLiteral = serde_json::from_str(
+            r#"{"encoding": "rot6d", "value": [1.0, 0.0, 0.0, 0.0, -1.0, 0.0]}"#,
+        )
+        .expect("literal");
         let err = convert_rotation_with(&[0.0, 0.0, -1.0], GravityXyz, GravityXyz, Some(&roll))
             .unwrap_err();
         assert!(err.to_string().contains("is a sink"), "{err}");
     }
 
     #[test]
-    fn post_rotation_right_multiplies_and_survives_a_no_op_conversion() {
+    fn post_rotation_survives_a_no_op_conversion() {
         use RotationEncoding::{QuatXyzw, Rot6d};
-        // Rz(-90 deg) as a rot6d literal: columns [0,-1,0] and [1,0,0].
         let post: RotationLiteral = serde_json::from_str(
             r#"{"encoding": "rot6d", "value": [0.0, -1.0, 0.0, 1.0, 0.0, 0.0]}"#,
         )
         .expect("literal");
-        // Identity input, same encoding on both sides: the shortcut in
-        // `convert_rotation` would return the input untouched.
         let identity = [0.0_f32, 0.0, 0.0, 1.0];
-        let plain = convert_rotation(&identity, QuatXyzw, QuatXyzw).expect("plain");
-        assert_eq!(plain, identity.to_vec());
         let rotated = convert_rotation_with(&identity, QuatXyzw, Rot6d, Some(&post)).expect("post");
-        let expected = [0.0_f32, -1.0, 0.0, 1.0, 0.0, 0.0];
-        for (got, want) in rotated.iter().zip(&expected) {
-            assert!((got - want).abs() < 1e-5, "{rotated:?} vs {expected:?}");
+        for (got, want) in rotated.iter().zip(&[0.0_f32, -1.0, 0.0, 1.0, 0.0, 0.0]) {
+            assert!((got - want).abs() < 1e-6, "{rotated:?}");
         }
     }
 
     #[test]
-    fn rot6d_rowmajor_is_the_interleaving_and_round_trips() {
-        use RotationEncoding::{AxisAngle, QuatXyzw, Rot6d, Rot6dRowMajor};
-        let half = std::f32::consts::FRAC_PI_2 / 2.0;
-        let quat = [0.0, 0.0, half.sin(), half.cos()]; // 90° about z
-        let standard = convert_rotation(&quat, QuatXyzw, Rot6d).expect("std");
-        let rowmajor = convert_rotation(&quat, QuatXyzw, Rot6dRowMajor).expect("row");
-        // Row-major is the row-wise interleaving of the standard column-concat:
-        // [c0_0, c1_0, c0_1, c1_1, c0_2, c1_2] vs [c0_0, c0_1, c0_2, c1_0, ...].
-        let interleaved = [
-            standard[0],
-            standard[3],
-            standard[1],
-            standard[4],
-            standard[2],
-            standard[5],
-        ];
-        for (got, want) in rowmajor.iter().zip(&interleaved) {
-            assert!((got - want).abs() < 1e-5, "{rowmajor:?} vs {interleaved:?}");
-        }
-        // The row-major encoding is self-consistent (its own encode/decode pair).
-        let axis_angle = [0.3_f32, -0.4, 1.1];
-        let r6d = convert_rotation(&axis_angle, AxisAngle, Rot6dRowMajor).expect("to");
-        let back = convert_rotation(&r6d, Rot6dRowMajor, AxisAngle).expect("from");
-        for (expected, actual) in axis_angle.iter().zip(&back) {
-            assert!((expected - actual).abs() < 1e-4, "{expected} vs {actual}");
+    fn euler_xyz_survives_float32_quaternions_across_gimbal_lock() {
+        use RotationEncoding::{EulerXyz, QuatXyzw};
+        let to_matrix = |v: &[f32], e| {
+            let v: Vec<f64> = v.iter().map(|&x| f64::from(x)).collect();
+            rotation::to_matrix(&v, shared(e))
+        };
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        for pitch in [half_pi, -half_pi, half_pi - 1e-4, -half_pi + 1e-4] {
+            for step in 0..64 {
+                let euler = [-3.0 + step as f32 * 0.1, pitch, 3.0 - step as f32 * 0.07];
+                let quat = convert_rotation(&euler, EulerXyz, QuatXyzw).expect("ok");
+                let back = convert_rotation(&quat, QuatXyzw, EulerXyz).expect("ok");
+                let (a, b) = (to_matrix(&quat, QuatXyzw), to_matrix(&back, EulerXyz));
+                let distance = a
+                    .iter()
+                    .flatten()
+                    .zip(b.iter().flatten())
+                    .map(|(l, r)| (l - r) * (l - r))
+                    .sum::<f64>()
+                    .sqrt();
+                assert!(distance < 5e-4, "{euler:?} -> {back:?} is {distance} away");
+            }
         }
     }
 }

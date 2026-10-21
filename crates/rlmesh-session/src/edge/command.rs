@@ -13,6 +13,7 @@
 //! rejected whole. The clamped value is what the edge dispatches and what
 //! `_applied` shows. Actions are only copied when one of them changes.
 
+use crate::spec::Rotation;
 use crate::wire::{CommandSpec, DType, Layout};
 use bytes::Bytes;
 
@@ -21,38 +22,12 @@ const UNIT_TOLERANCE: f64 = 1e-3;
 /// Slack on the rotation-vector bound, for float rounding.
 const PI_SLACK: f64 = 1e-6;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Rotation {
-    /// Unit quaternion (either component order).
-    Quaternion,
-    /// Axis × angle, norm ≤ π.
-    Vector,
-    /// Row-major 3×3.
-    Matrix,
-    /// Two rotation-matrix columns, column-major.
-    Rot6dColumns,
-    /// The same block, row-major.
-    Rot6dRows,
-}
-
-impl Rotation {
-    fn of(encoding: &str) -> Option<(Self, usize)> {
-        Some(match encoding {
-            "quat_xyzw" | "quat_wxyz" => (Self::Quaternion, 4),
-            "axis_angle" => (Self::Vector, 3),
-            "matrix" => (Self::Matrix, 9),
-            "rot6d" => (Self::Rot6dColumns, 6),
-            "rot6d_rowmajor" => (Self::Rot6dRows, 6),
-            _ => return None,
-        })
-    }
-}
-
 /// One command field, prepared.
 #[derive(Clone, Debug)]
 struct Field {
     dtype: DType,
     range: std::ops::Range<usize>,
+    /// A validated rotation encoding and its width.
     rotation: Option<(Rotation, usize)>,
     /// Per element `(low, high)`; one pair broadcasts.
     bounds: Vec<(f64, f64)>,
@@ -93,8 +68,9 @@ impl CommandCheck {
                 Field {
                     dtype: spec.dtype,
                     range: layout_field(&layout, i),
-                    rotation: Rotation::of(&spec.rotation)
-                        .filter(|_| matches!(spec.dtype, DType::F32 | DType::F64)),
+                    rotation: Rotation::from_name(&spec.rotation)
+                        .filter(|r| validated(*r) && matches!(spec.dtype, DType::F32 | DType::F64))
+                        .map(|r| (r, r.width() as usize)),
                     bounds: limit
                         .map(|l| l.low.iter().copied().zip(l.high.iter().copied()).collect())
                         .unwrap_or_default(),
@@ -106,7 +82,7 @@ impl CommandCheck {
             || fields.iter().any(|f| {
                 !f.bounds.is_empty()
                     || f.max_norm.is_some()
-                    || f.rotation.is_some_and(|(r, _)| r == Rotation::Quaternion)
+                    || f.rotation.is_some_and(|(r, _)| r.is_quaternion())
             });
         Some(Self {
             fields,
@@ -204,7 +180,9 @@ impl CommandCheck {
             let bytes = &mut action[field.range.clone()];
             let mut values = read(field.dtype, bytes);
             let before = values.clone();
-            if let Some((Rotation::Quaternion, width)) = field.rotation {
+            if let Some((rotation, width)) = field.rotation
+                && rotation.is_quaternion()
+            {
                 for q in values.chunks_exact_mut(width) {
                     let norm = norm(q);
                     if (norm - 1.0).abs() > f64::EPSILON {
@@ -307,20 +285,27 @@ fn orthonormal(vectors: &[[f64; 3]]) -> bool {
     })
 }
 
+/// Whether the edge validates `rotation` (Euler angles take any value and
+/// gravity is no command).
+fn validated(rotation: Rotation) -> bool {
+    !matches!(rotation, Rotation::EulerXyz | Rotation::GravityXyz)
+}
+
 fn check_rotation(rotation: Rotation, v: &[f64]) -> Result<(), String> {
     let ok = match rotation {
-        Rotation::Quaternion => (norm(v) - 1.0).abs() <= UNIT_TOLERANCE,
-        Rotation::Vector => norm(v) <= std::f64::consts::PI + PI_SLACK,
+        Rotation::QuatXyzw | Rotation::QuatWxyz => (norm(v) - 1.0).abs() <= UNIT_TOLERANCE,
+        Rotation::AxisAngle => norm(v) <= std::f64::consts::PI + PI_SLACK,
         Rotation::Matrix => {
             orthonormal(&[[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]])
         }
-        Rotation::Rot6dColumns => orthonormal(&[[v[0], v[1], v[2]], [v[3], v[4], v[5]]]),
-        Rotation::Rot6dRows => orthonormal(&[[v[0], v[2], v[4]], [v[1], v[3], v[5]]]),
+        Rotation::Rot6d => orthonormal(&[[v[0], v[1], v[2]], [v[3], v[4], v[5]]]),
+        Rotation::Rot6dRowMajor => orthonormal(&[[v[0], v[2], v[4]], [v[1], v[3], v[5]]]),
+        Rotation::EulerXyz | Rotation::GravityXyz => true,
     };
     if ok {
         Ok(())
     } else {
-        Err(format!("an invalid {rotation:?} rotation {v:?}"))
+        Err(format!("an invalid {rotation} rotation {v:?}"))
     }
 }
 

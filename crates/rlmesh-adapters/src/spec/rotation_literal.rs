@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use rlmesh_session_core::spec::rotation::{self, Matrix};
+
 use crate::spec::RotationEncoding;
 
 /// Tolerance on an authored rotation's orthonormality (and on `|det - 1|`).
@@ -29,19 +31,15 @@ struct RotationLiteralWire {
     value: Vec<f64>,
 }
 
-fn cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
-    [
-        left[1] * right[2] - left[2] * right[1],
-        left[2] * right[0] - left[0] * right[2],
-        left[0] * right[1] - left[1] * right[0],
-    ]
-}
-
 /// A matrix from two authored columns, third = `c0 x c1`. Unlike the apply-side
 /// 6D decode this does *not* Gram-Schmidt: the authored basis is checked, not
 /// repaired.
-fn from_columns(c0: [f32; 3], c1: [f32; 3]) -> [[f32; 3]; 3] {
-    let c2 = cross(c0, c1);
+fn from_columns(c0: [f64; 3], c1: [f64; 3]) -> Matrix {
+    let c2 = [
+        c0[1] * c1[2] - c0[2] * c1[1],
+        c0[2] * c1[0] - c0[0] * c1[2],
+        c0[0] * c1[1] - c0[1] * c1[0],
+    ];
     [
         [c0[0], c1[0], c2[0]],
         [c0[1], c1[1], c2[1]],
@@ -51,8 +49,8 @@ fn from_columns(c0: [f32; 3], c1: [f32; 3]) -> [[f32; 3]; 3] {
 
 impl RotationLiteral {
     /// The 3x3 rotation this literal denotes.
-    pub(crate) fn matrix(&self) -> [[f32; 3]; 3] {
-        let value: Vec<f32> = self.value.iter().map(|&x| x as f32).collect();
+    pub(crate) fn matrix(&self) -> Matrix {
+        let value = &self.value;
         match self.encoding {
             RotationEncoding::Rot6d => from_columns(
                 [value[0], value[1], value[2]],
@@ -62,7 +60,7 @@ impl RotationLiteral {
                 [value[0], value[2], value[4]],
                 [value[1], value[3], value[5]],
             ),
-            other => crate::apply::geometry::to_matrix(&value, other),
+            other => rotation::to_matrix(value, crate::apply::geometry::shared(other)),
         }
     }
 }
@@ -96,7 +94,7 @@ impl TryFrom<RotationLiteralWire> for RotationLiteral {
             value: wire.value,
         };
         let matrix = literal.matrix();
-        let entry = |row: usize, col: usize| f64::from(matrix[row][col]);
+        let entry = |row: usize, col: usize| matrix[row][col];
         // R^T R = I (columns orthonormal) and det = +1 (right-handed).
         for left in 0..3 {
             for right in 0..3 {
