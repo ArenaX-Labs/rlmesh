@@ -58,7 +58,7 @@ impl Arm {
         )?;
         frame.publish("task", &[b"reach"])?;
         let err: f32 = q.iter().zip(target).map(|(q, x)| (x - q).abs()).sum();
-        frame.reward = -err;
+        frame.reward = -f64::from(err);
         frame.truncated = t >= 10;
         frame.info_json = format!("{{\"t\":{t}}}");
         Ok(frame)

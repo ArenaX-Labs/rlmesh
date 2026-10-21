@@ -106,8 +106,9 @@ pub fn dotted(path: &str) -> String {
 pub struct Frame {
     parts: Vec<PartSpec>,
     values: Vec<PartValues>,
-    /// Reward since the previous step.
-    pub reward: f32,
+    /// Reward since the previous step (sent as `f64`, as the Gym
+    /// compatibility path sends it, so `1/3` stays `1/3`).
+    pub reward: f64,
     /// The episode reached a terminal state.
     pub terminated: bool,
     /// The episode was cut short.

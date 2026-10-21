@@ -66,7 +66,7 @@ impl Callbacks {
     /// Runs one callback with a fresh frame, then takes the frame back.
     fn run(
         &self,
-        call: impl FnOnce(Python<'_>) -> PyResult<(f32, bool, bool, String)>,
+        call: impl FnOnce(Python<'_>) -> PyResult<(f64, bool, bool, String)>,
     ) -> Result<Frame, GymError> {
         *self
             .frame

@@ -399,7 +399,7 @@ def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
         def step(commands: dict[str, Any]) -> Any:
             board[int(commands["move"])] = 1
             robot.publish("board", board)
-            return 1.0, bool(board.all()), False, {"filled": np.int64(board.sum())}
+            return 1 / 3, bool(board.all()), False, {"filled": np.int64(board.sum())}
 
         def reset(seed: int | None, options: Any) -> Any:
             board[:] = 0
@@ -413,7 +413,7 @@ def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
             assert info["options"] == {"first": [0, 1]}
             obs, reward, _, _, info = env.step(np.int32(4))  # the one action entry
             assert obs["board"].tolist() == [0, 0, 0, 0, 1, 0, 0, 0, 0]
-            assert (reward, info["filled"]) == (1.0, 1)
+            assert (reward, info["filled"]) == (1 / 3, 1)  # f64, not f32
         finally:
             env.close()
             robot.close()
