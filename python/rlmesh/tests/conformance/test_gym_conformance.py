@@ -134,6 +134,18 @@ class SpaceEnv(gym.Env):  # type: ignore[misc]
         return frame
 
 
+def make(env_id: str, **kwargs: Any) -> Any:
+    """``gym.make`` with metadata of its own: gymnasium's ``SyncVectorEnv``
+    writes its ``autoreset_mode`` into the env class's shared metadata, which
+    would leak one test's vector mode into the next test's single env."""
+    env = gym.make(env_id, **kwargs)
+    unwrapped: Any = env.unwrapped
+    unwrapped.metadata = {
+        k: v for k, v in unwrapped.metadata.items() if k != "autoreset_mode"
+    }
+    return env
+
+
 @contextmanager
 def served(env: Any, transport: str) -> Iterator[Any]:
     """``env`` behind an EnvServer, as the RemoteEnv (or RemoteVectorEnv) a
@@ -329,7 +341,7 @@ def test_a_gymnasium_env_steps_as_it_does_unserved(
     if env_id.endswith("-v5"):
         pytest.importorskip("mujoco")
     assert_matches(
-        lambda: gym.make(env_id), transport, scalars=True, seeds=(0, 1), steps=steps
+        lambda: make(env_id), transport, scalars=True, seeds=(0, 1), steps=steps
     )
 
 
@@ -342,16 +354,16 @@ def test_the_remote_env_passes_gymnasiums_env_checker(transport: str) -> None:
             check_env(env, skip_render_check=True)
         return {str(w.message) for w in caught}
 
-    expected = warned(gym.make("CartPole-v1").unwrapped)
-    with served(gym.make("CartPole-v1").unwrapped, transport) as remote:
+    expected = warned(make("CartPole-v1").unwrapped)
+    with served(make("CartPole-v1").unwrapped, transport) as remote:
         assert warned(remote) == expected
 
 
 def test_the_remote_env_is_a_gymnasium_env_with_the_envs_attributes(
     transport: str,
 ) -> None:
-    reference = gym.make("CartPole-v1", render_mode="rgb_array")
-    with served(gym.make("CartPole-v1", render_mode="rgb_array"), transport) as remote:
+    reference = make("CartPole-v1", render_mode="rgb_array")
+    with served(make("CartPole-v1", render_mode="rgb_array"), transport) as remote:
         assert isinstance(remote, gym.Env)
         assert remote.unwrapped is remote
         assert remote.metadata == reference.metadata
@@ -372,10 +384,10 @@ def test_a_client_side_wrapper_behaves_as_on_the_env_itself(
     wrapper: str, transport: str
 ) -> None:
     wrap = WRAPPERS[wrapper]
-    reference = wrap(gym.make("CartPole-v1"))
+    reference = wrap(make("CartPole-v1"))
     actions = sampled(reference.action_space)
     want = rollout(reference, actions, seeds=(0, 1), steps=40)
-    with served(gym.make("CartPole-v1"), transport) as remote:
+    with served(make("CartPole-v1"), transport) as remote:
         got = rollout(wrap(remote), actions, seeds=(0, 1), steps=40)
     for trace in (want, got):
         for transition in trace:
@@ -449,10 +461,10 @@ def test_an_env_lockstep_cannot_carry_is_refused_when_served() -> None:
 AR = gym.vector.AutoresetMode
 VECTORS = {
     "sync_next_step": lambda: gym.vector.SyncVectorEnv(
-        [lambda: gym.make("CartPole-v1")] * 3, autoreset_mode=AR.NEXT_STEP
+        [lambda: make("CartPole-v1")] * 3, autoreset_mode=AR.NEXT_STEP
     ),
     "sync_disabled": lambda: gym.vector.SyncVectorEnv(
-        [lambda: gym.make("CartPole-v1")] * 3, autoreset_mode=AR.DISABLED
+        [lambda: make("CartPole-v1")] * 3, autoreset_mode=AR.DISABLED
     ),
     "vector_entry_point": lambda: gym.make_vec(
         "CartPole-v1", num_envs=4, vectorization_mode="vector_entry_point"
@@ -491,12 +503,12 @@ def test_a_vector_env_steps_as_it_does_unserved(case: str, transport: str) -> No
 
 
 def test_remote_envs_vectorise_on_the_client_side(transport: str) -> None:
-    reference = gym.vector.SyncVectorEnv([lambda: gym.make("CartPole-v1")] * 2)
+    reference = gym.vector.SyncVectorEnv([lambda: make("CartPole-v1")] * 2)
     actions = sampled(reference.action_space)
     want = vector_rollout(reference, actions, 40)
     with (
-        served(gym.make("CartPole-v1"), transport) as a,
-        served(gym.make("CartPole-v1"), transport) as b,
+        served(make("CartPole-v1"), transport) as a,
+        served(make("CartPole-v1"), transport) as b,
     ):
         remotes = iter((a, b))
         got = vector_rollout(
@@ -507,7 +519,7 @@ def test_remote_envs_vectorise_on_the_client_side(transport: str) -> None:
 
 def test_lockstep_steps_at_least_as_fast_as_grpc() -> None:
     def median_step(transport: str) -> float:
-        with served(gym.make("CartPole-v1"), transport) as remote:
+        with served(make("CartPole-v1"), transport) as remote:
             remote.reset(seed=0)
             latencies = []
             for n in range(500):
