@@ -7,8 +7,8 @@ the same seeds and actions, and compares types, dtypes, shapes and bits.
 Accepted differences: ``reward`` is a Python ``float`` (a vector env's
 rewards are ``float64``); a ``Discrete`` observation is the space's NumPy
 integer; tuples in ``info`` arrive as lists; an env's exception arrives as an
-``EnvironmentException`` that is also its builtin class, its message led by
-the call that failed (``reset failed: ...``); ``close()`` detaches, and the
+``EnvironmentException`` that is also its builtin class, with the call that
+raised it in ``phase``; ``close()`` detaches, and the
 server's ``shutdown()`` closes the served env.
 
 Refused, at once and by name: Graph, Sequence, OneOf, a shape-``()`` Box, and
@@ -446,6 +446,8 @@ def test_an_env_error_raises_at_once_with_its_type_and_message(
             remote.reset(seed=0)
             remote.step(remote.action_space.sample())
         assert isinstance(raised.value, rlmesh.EnvironmentException)
+        assert str(raised.value) == f"boom in {where}"
+        assert raised.value.phase == where
         assert time.perf_counter() - started < 2
         env.raise_in = None
         remote.reset(seed=1)

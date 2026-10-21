@@ -478,7 +478,8 @@ def test_an_env_s_builtin_exception_raises_its_class_with_its_message(
                 with pytest.raises(raised) as again:
                     remote.reset()
                 assert type(again.value) is type(caught.value), "made once"
-                assert str(caught.value) == f"reset failed: {error}"
+                assert str(caught.value) == str(error)
+                assert caught.value.phase == "reset"
         finally:
             remote.close()
     finally:

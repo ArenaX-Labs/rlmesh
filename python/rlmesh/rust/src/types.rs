@@ -128,8 +128,8 @@ pub fn to_py_err(err: Error) -> PyErr {
 
 /// `typed(base, name)`: the subclass of `base` (an Environment exception)
 /// and the builtin exception class `name` a client raises for an env that
-/// raised `name`, made once per pair. Its `str()` is the message, as the
-/// builtin's is. `None` for a name that is no builtin exception class, or one
+/// raised `name`, made once per pair. Its `str()` is the env's own message,
+/// as the builtin's is. `None` for a name that is no builtin exception class, or one
 /// whose layout cannot share a subclass with `base`.
 const TYPED_EXCEPTION: &std::ffi::CStr = cr#"
 import builtins
@@ -174,7 +174,21 @@ fn typed_exception<'py>(
     if cls.is_none() {
         return None;
     }
-    cls.call1((message,)).ok()
+    // The env server leads a raised exception's message with the call that
+    // failed (`reset failed: boom`, ENV-35); the typed exception keeps the
+    // env's own message, and the call in `phase` and a note.
+    let (phase, message) = match message.split_once(" failed: ") {
+        Some((phase, rest)) if !phase.contains(' ') => (Some(phase), rest),
+        _ => (None, message),
+    };
+    let exception = cls.call1((message,)).ok()?;
+    if let Some(phase) = phase {
+        exception.setattr("phase", phase).ok()?;
+        exception
+            .call_method1("add_note", (format!("raised by the env's {phase}"),))
+            .ok()?;
+    }
+    Some(exception)
 }
 
 /// Convert environment error to Python exception, carrying its `code` and
