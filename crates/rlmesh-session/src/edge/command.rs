@@ -5,7 +5,8 @@
 //! - float values are finite and booleans are 0 or 1;
 //! - rotation fields are valid: a quaternion's norm is within 1 ± 1e-3 (it is
 //!   renormalised; never replaced with identity), a rotation vector's norm
-//!   is at most π, matrices and 6D rotations are orthonormal within 1e-3.
+//!   is at most 2π (one over π is wrapped to the same rotation at most π),
+//!   matrices and 6D rotations are orthonormal within 1e-3.
 //!
 //! Then each element is clamped to its command field's `limits`, a
 //! `max_norm` scales a delta vector down to the bound, and a `binary` part
@@ -19,7 +20,7 @@ use bytes::Bytes;
 
 /// Tolerance on unit norms and orthogonality.
 const UNIT_TOLERANCE: f64 = 1e-3;
-/// Slack on the rotation-vector bound, for float rounding.
+/// Slack on the rotation-vector bounds, for float rounding.
 const PI_SLACK: f64 = 1e-6;
 
 /// One command field, prepared.
@@ -169,7 +170,7 @@ impl CommandCheck {
         Ok(())
     }
 
-    /// Renormalises quaternions and applies limits, norm bounds and the
+    /// Renormalises quaternions, wraps rotation vectors and applies limits, norm bounds and the
     /// binary snap in place: `(renormalised, limited)`.
     fn apply(&self, action: &mut [u8]) -> (bool, bool) {
         let (mut normalised, mut limited) = (false, false);
@@ -180,15 +181,9 @@ impl CommandCheck {
             let bytes = &mut action[field.range.clone()];
             let mut values = read(field.dtype, bytes);
             let before = values.clone();
-            if let Some((rotation, width)) = field.rotation
-                && rotation.is_quaternion()
-            {
-                for q in values.chunks_exact_mut(width) {
-                    let norm = norm(q);
-                    if (norm - 1.0).abs() > f64::EPSILON {
-                        q.iter_mut().for_each(|v| *v /= norm);
-                        normalised = true;
-                    }
+            if let Some((rotation, width)) = field.rotation {
+                for group in values.chunks_exact_mut(width) {
+                    normalised |= canonical(rotation, group);
                 }
             }
             for (i, v) in values.iter_mut().enumerate() {
@@ -291,10 +286,24 @@ fn validated(rotation: Rotation) -> bool {
     !matches!(rotation, Rotation::EulerXyz | Rotation::GravityXyz)
 }
 
+/// Renormalises a quaternion, and wraps a rotation vector over π to the
+/// same rotation the other way round (θ − 2π along its axis), as robosuite's
+/// `quat2axisangle` can emit up to 2π. Whether it changed anything.
+fn canonical(rotation: Rotation, v: &mut [f64]) -> bool {
+    let n = norm(v);
+    let scale = match rotation {
+        _ if rotation.is_quaternion() && (n - 1.0).abs() > f64::EPSILON => 1.0 / n,
+        Rotation::AxisAngle if n > std::f64::consts::PI => (n - std::f64::consts::TAU) / n,
+        _ => return false,
+    };
+    v.iter_mut().for_each(|x| *x *= scale);
+    true
+}
+
 fn check_rotation(rotation: Rotation, v: &[f64]) -> Result<(), String> {
     let ok = match rotation {
         Rotation::QuatXyzw | Rotation::QuatWxyz => (norm(v) - 1.0).abs() <= UNIT_TOLERANCE,
-        Rotation::AxisAngle => norm(v) <= std::f64::consts::PI + PI_SLACK,
+        Rotation::AxisAngle => norm(v) <= std::f64::consts::TAU + PI_SLACK,
         Rotation::Matrix => {
             orthonormal(&[[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]])
         }
@@ -423,10 +432,18 @@ mod tests {
         let q = values(&nearly.actions[0..16]);
         assert!((q[3] - 1.0).abs() < 1e-6, "renormalised: {q:?}");
         assert_eq!(nearly.clamped, 0, "renormalising is not clamping");
+        let wrapped = check
+            .check(&action([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 6.083]), 1)
+            .expect("a rotation vector up to 2π");
+        let r = values(&wrapped.actions[16..28]);
+        assert!(
+            (f64::from(r[2]) - (6.083 - std::f64::consts::TAU)).abs() < 1e-5,
+            "wrapped to the same rotation: {r:?}"
+        );
         for bad in [
             action([0.0, 0.0, 0.0, 1.01], [0.0; 3]),
             action([0.0; 4], [0.0; 3]),
-            action([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 3.2]),
+            action([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 6.3]),
             action([0.0, 0.0, 0.0, f32::NAN], [0.0; 3]),
         ] {
             assert!(check.check(&bad, 1).is_err(), "{bad:?}");
