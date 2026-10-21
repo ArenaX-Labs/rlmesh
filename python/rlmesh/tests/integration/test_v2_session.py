@@ -170,7 +170,9 @@ class FakeUR10e:
 
 @pytest.fixture
 def host() -> Iterator[rlmesh.Host]:
-    with rlmesh.Host() as host:
+    # A loaded CI runner can delay a heartbeat past the default 250 ms grace
+    # and lapse a lease mid-test; the tests are about authority, not timing.
+    with rlmesh.Host(lease_grace_ms=1000) as host:
         yield host
 
 
@@ -186,6 +188,14 @@ def in_thread(target: Callable[[], object]) -> tuple[threading.Thread, list[obje
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     return thread, out
+
+
+def raised(out: list[object]) -> bool:
+    """Re-raises what an ``in_thread`` target raised, so a dead loop fails the
+    wait at once with its own error instead of a timeout; False otherwise."""
+    if out and isinstance(out[0], BaseException):
+        raise out[0]
+    return False
 
 
 def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) -> None:
@@ -211,7 +221,9 @@ def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) ->
         thread, result = in_thread(lambda: policy.run(predict, duration=30.0))
         wait_until(
             "the arm driven by the sine",
-            lambda: ur.driven(lambda d: abs(float(np.asarray(d.value)[0])) <= 0.1001),
+            lambda: raised(result)
+            or ur.driven(lambda d: abs(float(np.asarray(d.value)[0])) <= 0.1001),
+            lambda: {"stats": policy.stats(), "holds": policy.holds},
         )
         wait_until("the gripper commanded", lambda: abs(ur.gripper - 0.5) < 1e-6)
         policy.stop()
@@ -296,7 +308,9 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         thread, result = in_thread(lambda: model.run(hold(0.25), duration=30.0))
         wait_until(
             "the model driving",
-            lambda: ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25),
+            lambda: raised(result)
+            or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25),
+            lambda: {"stats": model.stats(), "holds": model.holds},
         )
         model_token = ur.log[-1].lease_token
         assert model_token is not None
@@ -316,13 +330,17 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
                     time.sleep(0.01)
                     continue
                 sent = operator.send({"arm": np.full((10, 6), 0.75)}, obs)
-                assert sent["arm"] is not None
+                if sent["arm"] is None:
+                    raise AssertionError(
+                        f"the operator lost its lease (holds={operator.holds})"
+                    )
                 time.sleep(0.01)
 
         operator_thread, operator_result = in_thread(teleop)
         wait_until(
             "the operator driving",
-            lambda: ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.75),
+            lambda: raised(operator_result)
+            or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.75),
             lambda: {
                 "teleop": operator_result,
                 "rejected_by": ur.robot.edge_stats("arm")["rejected_by"],
@@ -347,7 +365,9 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         operator.release()
         wait_until(
             "the model driving again",
-            lambda: ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25),
+            lambda: raised(result)
+            or ur.driven(lambda d: float(np.asarray(d.value)[0]) == 0.25),
+            lambda: {"stats": model.stats(), "holds": model.holds},
         )
         resumed = ur.log[-1].lease_token
         assert resumed is not None and resumed > tokens["arm"]
