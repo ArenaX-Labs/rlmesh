@@ -1,28 +1,21 @@
 """Gymnasium conformance: a served env behaves as the env itself.
 
-Every test runs plain gymnasium (the reference) and ``rlmesh.numpy.RemoteEnv``
-(or ``RemoteVectorEnv``) over gRPC (v1) and over a v2 session
-(``lockstep://``) on the same seeds and actions, and compares types, dtypes,
-shapes and bits.
+Every test runs plain gymnasium (the reference) and the RemoteEnv (or
+RemoteVectorEnv) a Gym user connects to the env served on a v2 session, on
+the same seeds and actions, and compares types, dtypes, shapes and bits.
 
-Documented differences (the wire carries values, not Python types):
+Accepted differences: ``reward`` is a Python ``float`` (a vector env's
+rewards are ``float64``); a ``Discrete`` observation is the space's NumPy
+integer; tuples in ``info`` arrive as lists; ``close()`` detaches, and the
+server's ``shutdown()`` closes the served env.
 
-- ``reward`` is a Python ``float`` (an env's ``np.float64`` or ``int`` is
-  equal in value); a vector env's rewards are ``float64``;
-- ``info`` values travel as JSON-like data: NumPy arrays and scalars arrive
-  as lists and Python numbers, tuples as lists; a vector env's per-lane
-  lists are arrays again;
-- a ``Discrete`` observation is the space's NumPy integer even when the env
-  returned a Python ``int``; a ``MultiBinary`` action reaches the env as
-  ``uint8`` (Gymnasium samples ``int8``; the values are the same);
-- ``Text`` with Gymnasium's default charset rebuilds as printable text;
-- ``spec`` is ``None``, ``close()`` detaches without closing the served env,
-  and an env's exception arrives as ``rlmesh.EnvironmentException`` with
-  its message.
+Refused, at once and by name: Graph, Sequence, OneOf, a shape-``()`` Box, and
+``info`` values that are neither JSON-like nor arrays (ints beyond int64
+included).
 
-Not carried at all (refused): Graph, Sequence, OneOf, a shape-``()`` Box,
-``MultiDiscrete(start=...)``, ints beyond int64 in ``info``, ``SAME_STEP``
-autoreset, and (on ``lockstep://``) Text actions.
+``GAP`` rows are the contract's targets the lockstep Gym path still misses
+(it rides v1's contract and ``MetaMap`` encodings); they land with its
+rewrite off the v1 crates and are strict, so each one flips when it does.
 """
 
 from __future__ import annotations
@@ -47,7 +40,8 @@ import rlmesh.numpy  # noqa: E402
 
 spaces = gym.spaces
 
-TRANSPORTS = {"grpc": "127.0.0.1:0", "lockstep": "lockstep://127.0.0.1:0/gym"}
+ADDRESS = "lockstep://127.0.0.1:0/gym"
+GAP = pytest.mark.xfail(strict=True, reason="lands with the lockstep Gym rewrite")
 EDITION = rlmesh.ServeOptions(workflow_edition="2026.06")
 
 
@@ -99,6 +93,7 @@ class SpaceEnv(gym.Env):  # type: ignore[misc]
         self.extra_info = info or (lambda t: {})
         self.raise_in = raise_in
         self.actions: list[Any] = []
+        self.options: list[Any] = []
         self._t = 0
         self._len = 3
 
@@ -106,6 +101,7 @@ class SpaceEnv(gym.Env):  # type: ignore[misc]
         super().reset(seed=seed)
         if seed is not None:
             self.observation_space.seed(seed)
+        self.options.append(options)
         if self.raise_in == "reset":
             raise ValueError("boom in reset")
         self._t = 0
@@ -147,10 +143,10 @@ def make(env_id: str, **kwargs: Any) -> Any:
 
 
 @contextmanager
-def served(env: Any, transport: str) -> Iterator[Any]:
+def served(env: Any) -> Iterator[Any]:
     """``env`` behind an EnvServer, as the RemoteEnv (or RemoteVectorEnv) a
     Gym user connects."""
-    server = rlmesh.EnvServer(env, TRANSPORTS[transport], options=EDITION)
+    server = rlmesh.EnvServer(env, ADDRESS, options=EDITION)
     server.start()
     vector = hasattr(env, "num_envs") and env.num_envs > 1
     cls = rlmesh.numpy.RemoteVectorEnv if vector else rlmesh.numpy.RemoteEnv
@@ -225,21 +221,16 @@ def sampled(space: Any, n: int = 32) -> list[Any]:
 
 
 def assert_matches(
-    make: Callable[[], Any], transport: str, *, scalars: bool = False, **run: Any
+    make: Callable[[], Any], *, scalars: bool = False, **run: Any
 ) -> None:
     reference = make()
     actions = sampled(reference.action_space)
     want = rollout(reference, actions, **run)
-    with served(make(), transport) as remote:
+    with served(make()) as remote:
         assert remote.observation_space == reference.observation_space
         assert remote.action_space == reference.action_space
         got = rollout(remote, actions, **run)
     assert difference(want, got, scalars=scalars) is None
-
-
-@pytest.fixture(params=sorted(TRANSPORTS))
-def transport(request: pytest.FixtureRequest) -> str:
-    return str(request.param)
 
 
 SPACES = {
@@ -254,11 +245,20 @@ SPACES = {
     "box_u16": spaces.Box(0, 60000, (2,), np.uint16),
     "box_i64": spaces.Box(-(2**40), 2**40, (2,), np.int64),
     "box_u64": spaces.Box(0, 2**40, (2,), np.uint64),
+    "box_i16": spaces.Box(-300, 300, (3,), np.int16),
+    "box_i32": spaces.Box(-(2**20), 2**20, (3,), np.int32),
+    "box_u32": spaces.Box(0, 2**30, (2,), np.uint32),
     "box_bool": spaces.Box(0, 1, (3,), np.bool_),
     "discrete": spaces.Discrete(4),
     "discrete_start": spaces.Discrete(5, start=-2),
+    "multi_discrete": spaces.MultiDiscrete([3, 5, 2]),
     "multi_discrete_2d": spaces.MultiDiscrete(np.array([[2, 3], [4, 5]])),
+    "multi_discrete_start": spaces.MultiDiscrete([3, 4], start=[-1, 5]),
+    "multi_binary": spaces.MultiBinary(4),
     "multi_binary_2d": spaces.MultiBinary([2, 3]),
+    "dict_flat": spaces.Dict(
+        {"pos": spaces.Box(-1, 1, (2,), np.float32), "gripper": spaces.Discrete(2)}
+    ),
     "dict_nested": spaces.Dict(
         {
             "robot": spaces.Dict(
@@ -284,29 +284,41 @@ SPACES = {
 }
 ACTION_SPACES = [
     "box_f32_bounded",
+    "box_f64_inf",
     "box_i8",
+    "box_i32",
+    "discrete",
     "discrete_start",
     "multi_discrete_2d",
+    "multi_discrete_start",
+    "multi_binary",
+    "multi_binary_2d",
     "dict_nested",
     "tuple",
+    "text",
 ]
 
 
-@pytest.mark.parametrize("name", sorted(SPACES))
-def test_an_observation_space_and_its_values_round_trip_bit_exact(
-    name: str, transport: str
-) -> None:
-    assert_matches(lambda: SpaceEnv(copy.deepcopy(SPACES[name])), transport)
+GAPS = {"multi_discrete_start"}
 
 
-@pytest.mark.parametrize("name", ACTION_SPACES)
-def test_an_action_space_reaches_the_env_bit_exact(name: str, transport: str) -> None:
-    assert_matches(
-        lambda: SpaceEnv(action_space=copy.deepcopy(SPACES[name])), transport
-    )
+def gapped(names: Any) -> list[Any]:
+    return [pytest.param(n, marks=GAP) if n in GAPS else n for n in sorted(names)]
 
 
-def test_info_round_trips_as_the_env_produced_it(transport: str) -> None:
+@pytest.mark.parametrize("name", gapped(SPACES))
+def test_an_observation_space_and_its_values_round_trip_bit_exact(name: str) -> None:
+    assert_matches(lambda: SpaceEnv(copy.deepcopy(SPACES[name])))
+
+
+@pytest.mark.parametrize(
+    "name", [*gapped(set(ACTION_SPACES) - {"text"}), pytest.param("text", marks=GAP)]
+)
+def test_an_action_space_reaches_the_env_bit_exact(name: str) -> None:
+    assert_matches(lambda: SpaceEnv(action_space=copy.deepcopy(SPACES[name])))
+
+
+def test_info_round_trips_as_the_env_produced_it() -> None:
     def info(t: int) -> dict[str, Any]:
         return {
             "nested": {"a": {"b": t, "c": [1, 2.5, "x"]}, "flag": t % 2 == 0},
@@ -319,7 +331,7 @@ def test_info_round_trips_as_the_env_produced_it(transport: str) -> None:
             "is_success": t >= 3,
         }
 
-    assert_matches(lambda: SpaceEnv(info=info), transport)
+    assert_matches(lambda: SpaceEnv(info=info))
 
 
 GYM_ENVS = [
@@ -335,17 +347,13 @@ GYM_ENVS = [
 
 
 @pytest.mark.parametrize(("env_id", "steps"), GYM_ENVS)
-def test_a_gymnasium_env_steps_as_it_does_unserved(
-    env_id: str, steps: int, transport: str
-) -> None:
+def test_a_gymnasium_env_steps_as_it_does_unserved(env_id: str, steps: int) -> None:
     if env_id.endswith("-v5"):
         pytest.importorskip("mujoco")
-    assert_matches(
-        lambda: make(env_id), transport, scalars=True, seeds=(0, 1), steps=steps
-    )
+    assert_matches(lambda: make(env_id), scalars=True, seeds=(0, 1), steps=steps)
 
 
-def test_the_remote_env_passes_gymnasiums_env_checker(transport: str) -> None:
+def test_the_remote_env_passes_gymnasiums_env_checker() -> None:
     from gymnasium.utils.env_checker import check_env
 
     def warned(env: Any) -> set[str]:
@@ -355,15 +363,13 @@ def test_the_remote_env_passes_gymnasiums_env_checker(transport: str) -> None:
         return {str(w.message) for w in caught}
 
     expected = warned(make("CartPole-v1").unwrapped)
-    with served(make("CartPole-v1").unwrapped, transport) as remote:
+    with served(make("CartPole-v1").unwrapped) as remote:
         assert warned(remote) == expected
 
 
-def test_the_remote_env_is_a_gymnasium_env_with_the_envs_attributes(
-    transport: str,
-) -> None:
+def test_the_remote_env_is_a_gymnasium_env_with_the_envs_attributes() -> None:
     reference = make("CartPole-v1", render_mode="rgb_array")
-    with served(make("CartPole-v1", render_mode="rgb_array"), transport) as remote:
+    with served(make("CartPole-v1", render_mode="rgb_array")) as remote:
         assert isinstance(remote, gym.Env)
         assert remote.unwrapped is remote
         assert remote.metadata == reference.metadata
@@ -380,14 +386,12 @@ WRAPPERS = {
 
 
 @pytest.mark.parametrize("wrapper", sorted(WRAPPERS))
-def test_a_client_side_wrapper_behaves_as_on_the_env_itself(
-    wrapper: str, transport: str
-) -> None:
+def test_a_client_side_wrapper_behaves_as_on_the_env_itself(wrapper: str) -> None:
     wrap = WRAPPERS[wrapper]
     reference = wrap(make("CartPole-v1"))
     actions = sampled(reference.action_space)
     want = rollout(reference, actions, seeds=(0, 1), steps=40)
-    with served(make("CartPole-v1"), transport) as remote:
+    with served(make("CartPole-v1")) as remote:
         got = rollout(wrap(remote), actions, seeds=(0, 1), steps=40)
     for trace in (want, got):
         for transition in trace:
@@ -395,31 +399,31 @@ def test_a_client_side_wrapper_behaves_as_on_the_env_itself(
     assert difference(want, got, scalars=True) is None
 
 
-def test_a_dict_observation_flattens_as_on_the_env_itself(transport: str) -> None:
+def test_a_dict_observation_flattens_as_on_the_env_itself() -> None:
     space = SPACES["dict_nested"]
     reference = gym.wrappers.FlattenObservation(SpaceEnv(copy.deepcopy(space)))
     actions = sampled(reference.action_space)
     want = rollout(reference, actions)
-    with served(SpaceEnv(copy.deepcopy(space)), transport) as remote:
+    with served(SpaceEnv(copy.deepcopy(space))) as remote:
         got = rollout(gym.wrappers.FlattenObservation(remote), actions)
     assert difference(want, got) is None
 
 
-def test_render_returns_the_envs_frame(transport: str) -> None:
+def test_render_returns_the_envs_frame() -> None:
     reference = SpaceEnv()
     reference.reset(seed=1)
     reference.step(reference.action_space.sample())
-    with served(SpaceEnv(), transport) as remote:
+    with served(SpaceEnv()) as remote:
         remote.reset(seed=1)
         remote.step(remote.action_space.sample())
         assert difference(reference.render(), remote.render()) is None
 
 
-def test_actions_are_cast_to_the_space_dtype_and_refused_when_the_kind_differs(
-    transport: str,
-) -> None:
+def test_actions_are_cast_to_the_space_dtype_and_refused_when_the_kind_differs() -> (
+    None
+):
     box, discrete = SpaceEnv(), SpaceEnv(action_space=spaces.Discrete(3))
-    with served(box, transport) as remote:
+    with served(box) as remote:
         remote.reset(seed=0)
         remote.step(np.array([0.1, 0.2, 0.3]))  # float64
         remote.step([0.5, -0.5, 1.0])
@@ -427,7 +431,7 @@ def test_actions_are_cast_to_the_space_dtype_and_refused_when_the_kind_differs(
             remote.step(np.zeros(4))
     assert [a.dtype for a in box.actions] == [np.float32, np.float32]
     assert box.actions[1].tolist() == [0.5, -0.5, 1.0]
-    with served(discrete, transport) as remote:
+    with served(discrete) as remote:
         remote.reset(seed=0)
         remote.step(np.int32(2))
         remote.step(1)
@@ -436,26 +440,193 @@ def test_actions_are_cast_to_the_space_dtype_and_refused_when_the_kind_differs(
     assert discrete.actions == [2, 1]
 
 
-@pytest.mark.parametrize("where", ["reset", "step"])
-def test_an_env_error_raises_at_once_with_its_message(
-    where: str, transport: str
+@pytest.mark.parametrize(
+    ("where", "error"),
+    [pytest.param("reset", ValueError, marks=GAP), ("step", RuntimeError)],
+)
+def test_an_env_error_raises_at_once_with_its_type_and_message(
+    where: str, error: type[Exception]
 ) -> None:
     env = SpaceEnv(raise_in=where)
-    with served(env, transport) as remote:
+    with served(env) as remote:
         started = time.perf_counter()
-        with pytest.raises(rlmesh.EnvironmentException, match=f"boom in {where}"):
+        with pytest.raises(error, match=f"boom in {where}") as raised:
             remote.reset(seed=0)
             remote.step(remote.action_space.sample())
+        assert isinstance(raised.value, rlmesh.EnvironmentException)
         assert time.perf_counter() - started < 2
         env.raise_in = None
         remote.reset(seed=1)
 
 
-def test_an_env_lockstep_cannot_carry_is_refused_when_served() -> None:
+class Unencodable:
+    pass
+
+
+REFUSED = {
+    "graph": (
+        lambda: SpaceEnv(
+            spaces.Graph(spaces.Box(-1, 1, (2,), np.float32), spaces.Discrete(2))
+        ),
+        "Graph",
+    ),
+    "sequence": (lambda: SpaceEnv(spaces.Sequence(spaces.Discrete(3))), "Sequence"),
+    "one_of": (
+        lambda: SpaceEnv(spaces.OneOf((spaces.Discrete(2), spaces.Discrete(3)))),
+        "OneOf",
+    ),
+    "scalar_box": (lambda: SpaceEnv(spaces.Box(-1, 1, (), np.float32)), "shape"),
+    "info_object": (lambda: SpaceEnv(info=lambda t: {"thing": Unencodable()}), "thing"),
+    "info_big_int": (lambda: SpaceEnv(info=lambda t: {"big": 2**70}), "big"),
+}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(c, marks=GAP) if c.startswith("info_") else c
+        for c in sorted(REFUSED)
+    ],
+)
+def test_what_the_wire_cannot_carry_is_refused_at_once_by_name(case: str) -> None:
+    build, name = REFUSED[case]
     started = time.perf_counter()
-    with pytest.raises(ValueError, match="Text"):
-        rlmesh.EnvServer(SpaceEnv(action_space=spaces.Text(8)), TRANSPORTS["lockstep"])
+    with pytest.raises((TypeError, ValueError), match=name):
+        with served(build()) as remote:
+            remote.reset(seed=0)
+            remote.step(remote.action_space.sample())
     assert time.perf_counter() - started < 2
+
+
+@GAP
+def test_reset_options_reach_the_env_as_given() -> None:
+    options = {
+        "goal": np.arange(3, dtype=np.int16),
+        "scale": np.float32(0.5),
+        "mode": "hard",
+        "nested": {"weights": np.ones((2, 2))},
+    }
+    env = SpaceEnv()
+    with served(env) as remote:
+        remote.reset(seed=0, options=options)
+        remote.reset()
+    assert difference([options, None], env.options) is None
+
+
+def test_an_unseeded_reset_continues_the_envs_random_stream() -> None:
+    assert_matches(lambda: make("CartPole-v1"), scalars=True, seeds=(5, None, None))
+
+
+class BothDone(SpaceEnv):
+    def step(self, action: Any) -> Any:
+        obs, reward, _, _, info = super().step(action)
+        return obs, reward, True, True, info
+
+
+def test_a_step_both_terminated_and_truncated_arrives_so() -> None:
+    assert_matches(BothDone)
+
+
+class Strided(gym.ObservationWrapper):  # type: ignore[misc]
+    """Observations as non-contiguous views (a reversed, strided slice)."""
+
+    def __init__(self, env: Any) -> None:
+        super().__init__(env)
+        self.observation_space = spaces.Box(0, 255, (4, 3), np.uint8)
+
+    def observation(self, observation: Any) -> Any:
+        frame = np.arange(48, dtype=np.uint8).reshape(8, 6)
+        return (frame + np.uint8(abs(observation[0]) * 100))[::-2, ::2]
+
+
+def test_non_contiguous_observations_and_actions_arrive_by_value() -> None:
+    def build() -> Any:
+        return Strided(SpaceEnv(action_space=spaces.Box(-1, 1, (3,), np.float32)))
+
+    reference = build()
+    strided = np.linspace(-1, 1, 9, dtype=np.float32)[::3]
+    want = rollout(reference, [strided])
+    with served(build()) as remote:
+        got = rollout(remote, [strided])
+    assert difference(want, got) is None
+    assert not strided.flags.c_contiguous
+
+
+SERVED_WRAPPED = {
+    "RecordEpisodeStatistics": lambda: gym.wrappers.RecordEpisodeStatistics(
+        make("CartPole-v1")
+    ),
+    "FrameStackObservation": lambda: gym.wrappers.FrameStackObservation(
+        make("CartPole-v1"), 3
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(SERVED_WRAPPED))
+def test_an_env_served_already_wrapped_steps_as_it_does_unserved(case: str) -> None:
+    build = SERVED_WRAPPED[case]
+    reference = build()
+    actions = sampled(reference.action_space)
+    want = rollout(reference, actions, seeds=(0, 1), steps=40)
+    with served(build()) as remote:
+        got = rollout(remote, actions, seeds=(0, 1), steps=40)
+    for trace in (want, got):
+        for transition in trace:
+            transition[-1].get("episode", {}).pop("t", None)  # wall-clock time
+    assert difference(want, got, scalars=True) is None
+
+
+@GAP
+def test_the_env_s_spec_is_forwarded_and_close_detaches() -> None:
+    reference = make("CartPole-v1")
+    env = make("CartPole-v1")
+    closed: list[bool] = []
+    env.unwrapped.close = lambda: closed.append(True)
+    server = rlmesh.EnvServer(env, ADDRESS, options=EDITION)
+    server.start()
+    try:
+        remote = rlmesh.numpy.RemoteEnv(server.address, workflow_edition="2026.06")
+        assert remote.spec is not None and reference.spec is not None
+        assert remote.spec.id == reference.spec.id == "CartPole-v1"
+        assert remote.spec.max_episode_steps == reference.spec.max_episode_steps
+        remote.close()
+        assert not closed, "close() detaches; the server owns the env"
+        again = rlmesh.numpy.RemoteEnv(server.address, workflow_edition="2026.06")
+        again.reset(seed=0)
+        again.close()
+    finally:
+        server.shutdown()
+    assert closed, "shutdown() closes the served env"
+
+
+@pytest.mark.parametrize("backend", ["torch", "jax"])
+def test_every_backend_s_remote_env_is_a_gymnasium_env(backend: str) -> None:
+    module = pytest.importorskip(f"rlmesh.{backend}")
+    pytest.importorskip(backend)
+    reference = make("CartPole-v1", render_mode="rgb_array")
+    server = rlmesh.EnvServer(
+        make("CartPole-v1", render_mode="rgb_array"), ADDRESS, options=EDITION
+    )
+    server.start()
+    try:
+        remote = module.RemoteEnv(server.address, workflow_edition="2026.06")
+        try:
+            assert isinstance(remote, gym.Env)
+            assert remote.unwrapped is remote
+            assert remote.metadata == reference.metadata
+            assert remote.render_mode == "rgb_array"
+            assert remote.observation_space == reference.observation_space
+            assert remote.action_space == reference.action_space
+            wrapped = gym.wrappers.RecordEpisodeStatistics(remote)
+            obs, _ = wrapped.reset(seed=0)
+            want, _ = reference.reset(seed=0)
+            assert np.asarray(obs).tobytes() == want.tobytes()
+            _, reward, *_ = wrapped.step(remote.action_space.sample())
+            assert reward == 1.0
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()
 
 
 AR = gym.vector.AutoresetMode
@@ -463,8 +634,14 @@ VECTORS = {
     "sync_next_step": lambda: gym.vector.SyncVectorEnv(
         [lambda: make("CartPole-v1")] * 3, autoreset_mode=AR.NEXT_STEP
     ),
+    "sync_same_step": lambda: gym.vector.SyncVectorEnv(
+        [lambda: make("CartPole-v1")] * 3, autoreset_mode=AR.SAME_STEP
+    ),
     "sync_disabled": lambda: gym.vector.SyncVectorEnv(
         [lambda: make("CartPole-v1")] * 3, autoreset_mode=AR.DISABLED
+    ),
+    "async": lambda: gym.vector.AsyncVectorEnv(
+        [lambda: make("CartPole-v1")] * 2, context="spawn"
     ),
     "vector_entry_point": lambda: gym.make_vec(
         "CartPole-v1", num_envs=4, vectorization_mode="vector_entry_point"
@@ -484,13 +661,19 @@ def vector_rollout(env: Any, actions: list[Any], steps: int) -> list[Any]:
     return trace
 
 
-@pytest.mark.parametrize("case", sorted(VECTORS))
-def test_a_vector_env_steps_as_it_does_unserved(case: str, transport: str) -> None:
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(c, marks=GAP) if c == "sync_same_step" else c
+        for c in sorted(VECTORS)
+    ],
+)
+def test_a_vector_env_steps_as_it_does_unserved(case: str) -> None:
     reference = VECTORS[case]()
     actions = sampled(reference.action_space)
     steps = VECTOR_STEPS.get(case, 20)
     want = vector_rollout(reference, actions, steps)
-    with served(VECTORS[case](), transport) as remote:
+    with served(VECTORS[case]()) as remote:
         assert isinstance(remote, gym.vector.VectorEnv)
         assert remote.single_observation_space == reference.single_observation_space
         assert remote.observation_space == reference.observation_space
@@ -502,13 +685,13 @@ def test_a_vector_env_steps_as_it_does_unserved(case: str, transport: str) -> No
     assert difference(want, got) is None
 
 
-def test_remote_envs_vectorise_on_the_client_side(transport: str) -> None:
+def test_remote_envs_vectorise_on_the_client_side() -> None:
     reference = gym.vector.SyncVectorEnv([lambda: make("CartPole-v1")] * 2)
     actions = sampled(reference.action_space)
     want = vector_rollout(reference, actions, 40)
     with (
-        served(make("CartPole-v1"), transport) as a,
-        served(make("CartPole-v1"), transport) as b,
+        served(make("CartPole-v1")) as a,
+        served(make("CartPole-v1")) as b,
     ):
         remotes = iter((a, b))
         got = vector_rollout(
@@ -517,17 +700,73 @@ def test_remote_envs_vectorise_on_the_client_side(transport: str) -> None:
     assert difference(want, got, scalars=True) is None
 
 
-def test_lockstep_steps_at_least_as_fast_as_grpc() -> None:
-    def median_step(transport: str) -> float:
-        with served(make("CartPole-v1"), transport) as remote:
-            remote.reset(seed=0)
-            latencies = []
-            for n in range(500):
-                started = time.perf_counter()
-                _, _, terminated, truncated, _ = remote.step(n % 2)
-                latencies.append(time.perf_counter() - started)
-                if terminated or truncated:
-                    remote.reset()
-        return statistics.median(latencies)
+SERVE_IN_A_CHILD = """
+import sys, gymnasium as gym, numpy as np, rlmesh
 
-    assert median_step("lockstep") <= median_step("grpc")
+class Frames(gym.Env):
+    def __init__(self, shape):
+        self.observation_space = gym.spaces.Box(0, 255, shape, np.uint8)
+        self.action_space = gym.spaces.Discrete(2)
+        self.frame = np.random.default_rng(0).integers(0, 255, shape, np.uint8)
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        return self.frame, {}
+    def step(self, action):
+        return self.frame, 0.0, False, False, {}
+
+env = gym.make("CartPole-v1") if sys.argv[1] == "cartpole" else Frames(eval(sys.argv[1]))
+server = rlmesh.EnvServer(env, "lockstep://127.0.0.1:0/gym")
+server.start()
+print(server.address, flush=True)
+sys.stdin.read()
+server.shutdown()
+"""
+
+
+@contextmanager
+def served_in_a_child(env: str) -> Iterator[Any]:
+    import subprocess
+    import sys
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", SERVE_IN_A_CHILD, env],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert child.stdout is not None and child.stdin is not None
+    try:
+        remote = rlmesh.numpy.RemoteEnv(child.stdout.readline().strip())
+        try:
+            yield remote
+        finally:
+            remote.close()
+    finally:
+        child.stdin.close()
+        child.wait(timeout=10)
+
+
+def median_step(env: str, steps: int) -> float:
+    with served_in_a_child(env) as remote:
+        remote.reset(seed=0)
+        latencies = []
+        for n in range(steps):
+            started = time.perf_counter()
+            _, _, terminated, truncated, _ = remote.step(n % 2)
+            latencies.append(time.perf_counter() - started)
+            if terminated or truncated:
+                remote.reset()
+    return statistics.median(latencies)
+
+
+PERF = {  # env, steps, median step budget in seconds
+    "cartpole": ("cartpole", 2000, 0.0005),
+    "image_224": ("(224, 224, 3)", 500, 0.001),
+    "image_1080p": ("(1080, 1920, 3)", 100, 0.02),
+}
+
+
+@pytest.mark.parametrize("case", sorted(PERF))
+def test_a_two_process_step_is_fast(case: str) -> None:
+    env, steps, budget = PERF[case]
+    assert median_step(env, steps) < budget
