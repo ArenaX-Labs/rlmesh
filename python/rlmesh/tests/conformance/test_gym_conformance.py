@@ -311,9 +311,7 @@ def test_an_observation_space_and_its_values_round_trip_bit_exact(name: str) -> 
     assert_matches(lambda: SpaceEnv(copy.deepcopy(SPACES[name])))
 
 
-@pytest.mark.parametrize(
-    "name", [*gapped(set(ACTION_SPACES) - {"text"}), pytest.param("text", marks=GAP)]
-)
+@pytest.mark.parametrize("name", gapped(ACTION_SPACES))
 def test_an_action_space_reaches_the_env_bit_exact(name: str) -> None:
     assert_matches(lambda: SpaceEnv(action_space=copy.deepcopy(SPACES[name])))
 

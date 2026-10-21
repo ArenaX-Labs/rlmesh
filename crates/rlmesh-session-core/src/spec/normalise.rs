@@ -1027,9 +1027,7 @@ fn part(robot: &ParticipantId, path: &str, mut decl: PartDecl) -> Result<PartSpe
             if encoding != Encoding::Raw {
                 return Err(invalid(path, "encoded parts take no commands"));
             }
-            if matches!(Layout::of(&command_fields), Ok(Layout::Text)) {
-                return Err(invalid(path, "text cannot be commanded"));
-            }
+            // A text command (one utf8 field) is sent whole, as its slab.
             Layout::of(&command_fields).map_err(|err| invalid(path, err))?;
             let merge = match decl.merge.as_deref() {
                 None | Some("replace") => MergePolicy::Replace,

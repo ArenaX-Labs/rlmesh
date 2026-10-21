@@ -25,7 +25,8 @@
 //! Actions keep the `action` part (`gym/box`, `command: "value"`; one part
 //! per leaf below `action/` for a `Dict` or `Tuple` action space), so the
 //! wrapper never has to reassemble or fill a flat vector: §12.5's "or
-//! `action`" branch. Per-component action parts are deferred.
+//! `action`" branch; a `Text` action leaf is a `gym/text` part of one
+//! `utf8` field. Per-component action parts are deferred.
 //!
 //! Each part carries its original space (`gym_space`), keys (`gym_key`)
 //! and tag (`env_tags`) in `attrs`; the robot's first part carries the
@@ -479,10 +480,13 @@ impl GymMap {
             let path = escape::path(&["action"], &leaf.keys);
             let (kind, mut keys) = custom_kind(leaf, hz)?;
             if kind == "text" {
-                return Err(bad(format!(
-                    "action leaf {} is Text, which a part cannot be commanded with",
-                    escape::key_text(&leaf.keys)
-                )));
+                // A Text action is a custom part of one utf8 field (the v1
+                // text slab), commanded whole.
+                keys = vec![
+                    ("kind", json_text(&json!("gym/text"))),
+                    ("hz", json_text(&json!(hz))),
+                    ("fields", "{\"value\":[\"utf8\",[]]}".to_string()),
+                ];
             }
             keys.push(("command", json_text(&json!("value"))));
             Self::push(
