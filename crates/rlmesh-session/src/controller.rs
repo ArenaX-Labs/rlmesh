@@ -47,7 +47,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::cache::{Inputs, Observation, ObserveError, Skip};
+use crate::cache::{Inputs, Observation, ObserveError};
 use crate::chunk::{ChunkDraft, ChunkPublisher};
 use crate::error::SessionError;
 use crate::lease::{LeaseChange, LeaseGroup};
@@ -651,7 +651,7 @@ impl Controller {
             let (observation, snapshot_ns) = match self.observe() {
                 Ok(observed) => observed,
                 Err(ObserveError::Skipped(skip)) => {
-                    let reason = skip_reason(&skip);
+                    let reason = skip.reason();
                     self.skip(t - off, reason);
                     // A gap inside a window: ask the host's store to fill it
                     // (§8.8 recovery), at most every 100 ms.
@@ -777,17 +777,6 @@ impl Drop for Controller {
     fn drop(&mut self) {
         self.participant.set_run_source(None);
         self.cancel.cancel();
-    }
-}
-
-/// The reason a snapshot was refused, most specific first.
-fn skip_reason(skip: &Skip) -> SkipReason {
-    if !skip.gaps.is_empty() {
-        SkipReason::WindowGap
-    } else if !skip.stale.is_empty() {
-        SkipReason::StaleInput
-    } else {
-        SkipReason::Waiting
     }
 }
 

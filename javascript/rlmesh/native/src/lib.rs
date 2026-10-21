@@ -18,29 +18,25 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
 use napi::bindgen_prelude::{BigInt, Either, Uint8Array, create_custom_tokio_runtime};
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Error, Result, Status, tokio};
 use napi_derive::napi;
 use rlmesh_session::controller::sleep_until;
-use rlmesh_session::edge::{Due, EdgeConfig, EdgeMode, Rejection, Robot};
+use rlmesh_session::edge::{Due, Rejection, Robot};
 use rlmesh_session::record::{RecordError, Recorder};
+use rlmesh_session::sdk::{self, BindPolicyError, EmbeddedHost, ErrorKind};
 use rlmesh_session::spec::apply::{Tensor, Value};
-use rlmesh_session::spec::policy::Allow;
-use rlmesh_session::spec::{BindError, Policy, RunOptions};
-use rlmesh_session::wire::{
-    CtlStatus, DType, Encoding, PartSpec, PriorityClass, Role, SessionId, TenantId,
-};
+use rlmesh_session::spec::{BindError, RunOptions};
+use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, TenantId};
 use rlmesh_session::{
-    Clock, Controller, ControllerConfig, ControllerError, HostConfig, Observation, ObserveError,
-    Predictor, RunError, RunEvent, SendError, Sent, SessionAddress, SessionError, SessionHost,
-    SkipReason, Snapshot, SystemMonotonicClock, Transport,
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunError, RunEvent,
+    SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
 };
 
 /// The first line of an error's message, naming its kind for the wrapper.
@@ -89,50 +85,30 @@ fn init() {
     create_custom_tokio_runtime(runtime);
 }
 
-fn screaming(status: CtlStatus) -> String {
-    let camel = format!("{status:?}");
-    let mut out = String::with_capacity(camel.len() + 4);
-    for (i, c) in camel.chars().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            out.push('_');
-        }
-        out.push(c.to_ascii_uppercase());
-    }
-    out
-}
-
 fn session_err(err: SessionError) -> Error {
-    match err {
-        SessionError::Rejected(refusal) => error(
-            "SessionRefused",
-            &[("status", format!("{:?}", screaming(refusal.status)))],
-            refusal.message,
-        ),
-        SessionError::NoReply(_) | SessionError::Timeout(..) => {
-            error("TimeoutError", &[], err.to_string())
+    match ErrorKind::of(&err) {
+        ErrorKind::Refused(status) => {
+            let message = match err {
+                SessionError::Rejected(refusal) => refusal.message,
+                other => other.to_string(),
+            };
+            error(
+                "SessionRefused",
+                &[("status", format!("{status:?}"))],
+                message,
+            )
         }
-        SessionError::InvalidValue { .. }
-        | SessionError::UnknownPart(_)
-        | SessionError::WrongChannel { .. } => invalid(err.to_string()),
-        other => exception(other.to_string()),
+        ErrorKind::Timeout => error("TimeoutError", &[], err.to_string()),
+        ErrorKind::Value => invalid(err.to_string()),
+        ErrorKind::Session => exception(err.to_string()),
     }
 }
 
 fn bind_err(err: BindError) -> Error {
-    let problems: Vec<String> = match &err {
-        BindError::Refused(refusal) => refusal
-            .problems
-            .iter()
-            .map(|p| {
-                let dir = match p.dir {
-                    rlmesh_session::spec::bind::Dir::In => "input",
-                    rlmesh_session::spec::bind::Dir::Out => "action",
-                };
-                format!("[{:?},{dir:?},{:?}]", p.code.name(), p.entry)
-            })
-            .collect(),
-        BindError::Options(_) => Vec::new(),
-    };
+    let problems: Vec<String> = sdk::bind_problems(&err)
+        .into_iter()
+        .map(|(code, dir, entry)| format!("[{code:?},{dir:?},{entry:?}]"))
+        .collect();
     error(
         "BindingRefused",
         &[("problems", format!("[{}]", problems.join(",")))],
@@ -151,6 +127,13 @@ fn controller_err(err: ControllerError) -> Error {
     }
 }
 
+fn bind_policy_err(err: BindPolicyError) -> Error {
+    match err {
+        BindPolicyError::Policy(_) => binding_refused(err.to_string()),
+        BindPolicyError::Controller(err) => controller_err(err),
+    }
+}
+
 fn send_err(err: SendError) -> Error {
     match err {
         SendError::Value(message) => invalid(message),
@@ -161,13 +144,7 @@ fn send_err(err: SendError) -> Error {
 fn observe_err(err: ObserveError) -> Error {
     match err {
         ObserveError::Skipped(skip) => {
-            let reason = if !skip.gaps.is_empty() {
-                SkipReason::WindowGap
-            } else if !skip.stale.is_empty() {
-                SkipReason::StaleInput
-            } else {
-                SkipReason::Waiting
-            };
+            let reason = skip.reason();
             error(
                 "StartSkipped",
                 &[
@@ -199,15 +176,7 @@ fn timeout(seconds: f64) -> Result<Duration> {
 }
 
 fn priority(name: &str) -> Result<PriorityClass> {
-    match name {
-        "safety" => Ok(PriorityClass::Safety),
-        "operator" => Ok(PriorityClass::Operator),
-        "model" => Ok(PriorityClass::Model),
-        "scripted" => Ok(PriorityClass::Scripted),
-        other => Err(invalid(format!(
-            "priority {other:?}: safety, operator, model or scripted"
-        ))),
-    }
+    sdk::priority(name).map_err(invalid)
 }
 
 /// A `bigint` from JS as nanoseconds.
@@ -221,8 +190,7 @@ fn ns(value: &BigInt, what: &str) -> Result<i64> {
 /// A session host in this process, on local per-class TCP ports.
 #[napi]
 pub struct NativeHost {
-    address: SessionAddress,
-    host: Mutex<Option<(SessionHost, Transport)>>,
+    host: EmbeddedHost,
 }
 
 /// Starts a session host listening on `ip`.
@@ -230,25 +198,11 @@ pub struct NativeHost {
 pub async fn open_host(ip: String, tenant: String, lease_grace_ms: u32) -> Result<NativeHost> {
     let ip: IpAddr = ip.parse().map_err(|e| invalid(format!("ip {ip:?}: {e}")))?;
     let tenant = TenantId::new(&tenant).map_err(|e| invalid(e.to_string()))?;
-    let session = SessionId::new();
-    let (transport, base) = rlmesh_session::transport::open_local_listeners(ip)
+    let grace = Duration::from_millis(u64::from(lease_grace_ms));
+    let host = EmbeddedHost::start(ip, tenant, grace)
         .await
         .map_err(session_err)?;
-    let mut config = HostConfig::new(tenant.clone(), session);
-    config.clock = SystemMonotonicClock.shared();
-    config.lease_grace = Duration::from_millis(u64::from(lease_grace_ms.max(1)));
-    config.health_log = None;
-    let host = SessionHost::start(transport.clone(), config)
-        .await
-        .map_err(session_err)?;
-    Ok(NativeHost {
-        address: SessionAddress {
-            base,
-            tenant,
-            session,
-        },
-        host: Mutex::new(Some((host, transport))),
-    })
+    Ok(NativeHost { host })
 }
 
 #[napi]
@@ -256,18 +210,13 @@ impl NativeHost {
     /// `{ip}:{base_port}/{tenant}/{session}`: what participants connect to.
     #[napi(getter)]
     pub fn address(&self) -> String {
-        self.address.to_string()
+        self.host.address().to_string()
     }
 
     /// Stops the host (participants see it leave).
     #[napi]
     pub async fn close(&self) -> Result<()> {
-        let taken = self.host.lock().map(|mut h| h.take()).unwrap_or(None);
-        if let Some((host, transport)) = taken {
-            host.shutdown().await;
-            transport.close().await.map_err(session_err)?;
-        }
-        Ok(())
+        self.host.close().await.map_err(session_err)
     }
 }
 
@@ -350,24 +299,13 @@ fn tensor_out(name: Option<String>, tensor: Tensor) -> TensorData {
 }
 
 fn tensor_in(entry: &str, tensor: &TensorData) -> Result<Tensor> {
-    let dtype = DType::from_name(&tensor.dtype)
-        .filter(|d| *d != DType::Utf8)
-        .ok_or_else(|| invalid(format!("{entry}: dtype {} is not numeric", tensor.dtype)))?;
-    let data = tensor.data.to_vec();
-    let elements: u64 = tensor.shape.iter().map(|d| u64::from(*d)).product();
-    if elements.checked_mul(dtype.size()) != u64::try_from(data.len()).ok() {
-        return Err(invalid(format!(
-            "{entry}: {} bytes for {} {:?}",
-            data.len(),
-            dtype.name(),
-            tensor.shape
-        )));
-    }
-    Ok(Tensor {
-        dtype,
-        shape: tensor.shape.clone(),
-        data,
-    })
+    sdk::tensor(
+        entry,
+        &tensor.dtype,
+        tensor.shape.clone(),
+        tensor.data.to_vec(),
+    )
+    .map_err(invalid)
 }
 
 /// One input or action entry's value: an array, several named arrays, or
@@ -430,16 +368,6 @@ fn values_in(values: &[EntryValue]) -> Result<Vec<(String, Value)>> {
         .collect()
 }
 
-fn mode_name(mode: EdgeMode) -> &'static str {
-    match mode {
-        EdgeMode::Idle => "idle",
-        EdgeMode::Driving => "driving",
-        EdgeMode::Hold => "hold",
-        EdgeMode::Safe => "safe",
-        EdgeMode::Estop => "estop",
-    }
-}
-
 /// The inputs a chunk was computed from, by the robot's path.
 #[napi(object)]
 pub struct InputSeqs {
@@ -479,6 +407,22 @@ fn seq(value: u64) -> i64 {
 }
 
 fn due_tick(robot: &Robot, due: Due) -> Result<DueTick> {
+    let fields = sdk::due_fields(robot, &due)
+        .map_err(exception)?
+        .map(|fields| {
+            fields
+                .into_iter()
+                .map(|(name, tensor)| tensor_out(Some(name), tensor))
+                .collect()
+        });
+    let based_on = sdk::due_based_on(robot, &due)
+        .into_iter()
+        .map(|(path, first, last)| InputSeqs {
+            path,
+            seq_first: seq(first),
+            seq_last: seq(last),
+        })
+        .collect();
     let Due {
         path,
         mode,
@@ -486,32 +430,9 @@ fn due_tick(robot: &Robot, due: Due) -> Result<DueTick> {
         safe,
         handover,
     } = due;
-    let fields = match (&action, robot.part(&path).and_then(|p| p.command.as_ref())) {
-        (Some(action), Some(command)) => {
-            let layout = command.layout().map_err(exception)?;
-            let mut out = Vec::with_capacity(command.fields.len());
-            for (i, field) in command.fields.iter().enumerate() {
-                let range = layout.field(i).ok_or_else(|| exception("a text command"))?;
-                let bytes = action
-                    .value
-                    .get(range)
-                    .ok_or_else(|| exception("an action shorter than its stride"))?;
-                out.push(tensor_out(
-                    Some(field.name.clone()),
-                    Tensor {
-                        dtype: field.dtype,
-                        shape: field.shape.clone(),
-                        data: bytes.to_vec(),
-                    },
-                ));
-            }
-            Some(out)
-        }
-        _ => None,
-    };
     let chunk = action.as_ref().map(|a| &a.chunk);
     Ok(DueTick {
-        mode: mode_name(mode).to_string(),
+        mode: sdk::mode_name(mode).to_string(),
         fields,
         safe: safe.map(|s| s.to_string()),
         handover: handover.map(|h| Handover {
@@ -524,20 +445,7 @@ fn due_tick(robot: &Robot, due: Due) -> Result<DueTick> {
         index: action.as_ref().map(|a| a.index),
         received_ns: chunk.map(|c| BigInt::from(c.receive_ns)),
         slot_ns: action.as_ref().map(|a| BigInt::from(a.slot_ns)),
-        based_on: chunk
-            .map(|c| {
-                c.based_on
-                    .iter()
-                    .map(|r| InputSeqs {
-                        path: robot
-                            .path_of(r.channel)
-                            .map_or_else(|| r.channel.to_string(), str::to_string),
-                        seq_first: seq(r.seq_first),
-                        seq_last: seq(r.seq_last),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        based_on,
         path,
     })
 }
@@ -555,19 +463,6 @@ pub struct ModeCount {
 pub struct RejectionCount {
     pub reason: String,
     pub count: i64,
-}
-
-/// A rejection reason as a snake_case name.
-fn rejection_name(reason: Rejection) -> String {
-    let camel = format!("{reason:?}");
-    let mut out = String::with_capacity(camel.len() + 4);
-    for (i, c) in camel.chars().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            out.push('_');
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
 }
 
 /// The counters of one edge.
@@ -635,11 +530,7 @@ pub async fn connect_robot(
 ) -> Result<NativeRobot> {
     let address = self::address(&address)?;
     let wait = timeout(timeout_s)?;
-    let participant = address
-        .join(&name, vec![Role::Embodiment], PriorityClass::Scripted, wait)
-        .await
-        .map_err(session_err)?;
-    let robot = Robot::declare(participant, &robot_json, EdgeConfig::default())
+    let robot = sdk::connect_robot(&address, &name, &robot_json, wait)
         .await
         .map_err(|err| match err {
             rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
@@ -727,21 +618,8 @@ impl NativeRobot {
             }
             return Ok(None);
         }
-        let packed = robot.part(&path).and_then(|part| match owned.as_slice() {
-            [only] if part.fields.len() == 1 && only.len().is_multiple_of(8) => Some(()),
-            _ => None,
-        });
-        let sent = match packed {
-            Some(()) => {
-                let value = owned.pop().map(Bytes::from).unwrap_or_default();
-                robot.publish_packed(&path, capture, value)
-            }
-            None => {
-                let refs: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
-                robot.publish(&path, capture, &refs)
-            }
-        };
-        Ok(sent.map_err(session_err)?.map(seq))
+        let sent = sdk::publish(&robot, &path, capture, owned).map_err(session_err)?;
+        Ok(sent.map(seq))
     }
 
     /// One control tick of the edge serving `path` and its command group:
@@ -835,30 +713,24 @@ impl NativeRobot {
                 .into_iter()
                 .filter(|r| stats.rejected(*r) > 0)
                 .map(|r| RejectionCount {
-                    reason: rejection_name(r),
+                    reason: sdk::rejection_name(r),
                     count: count(stats.rejected(r)),
                 })
                 .collect(),
             clamped: count(stats.clamped),
             handovers: count(stats.handovers),
             safe_reports: count(stats.safe_reports),
-            modes: [
-                EdgeMode::Idle,
-                EdgeMode::Driving,
-                EdgeMode::Hold,
-                EdgeMode::Safe,
-                EdgeMode::Estop,
-            ]
-            .into_iter()
-            .map(|mode| {
-                let m = stats.mode(mode);
-                ModeCount {
-                    mode: mode_name(mode).to_string(),
-                    ticks: count(m.ticks),
-                    entries: count(m.entries),
-                }
-            })
-            .collect(),
+            modes: sdk::EDGE_MODES
+                .into_iter()
+                .map(|mode| {
+                    let m = stats.mode(mode);
+                    ModeCount {
+                        mode: sdk::mode_name(mode).to_string(),
+                        ticks: count(m.ticks),
+                        entries: count(m.entries),
+                    }
+                })
+                .collect(),
         })
     }
 
@@ -875,11 +747,7 @@ impl NativeRobot {
         let Some(robot) = taken else {
             return Ok(());
         };
-        match Arc::try_unwrap(robot) {
-            Ok(robot) => robot.detach().await.map_err(session_err),
-            // A call is in flight: dropping it withdraws presence.
-            Err(_) => Ok(()),
-        }
+        sdk::close_robot(robot).await.map_err(session_err)
     }
 }
 
@@ -1035,33 +903,19 @@ fn run_options(
     robot: &str,
     opts: &BindOptions,
 ) -> std::result::Result<RunOptions, String> {
-    let mut options = RunOptions::named(name).robot(robot)?;
-    if let Some(under) = &opts.under {
-        options = options.under(under)?;
-    }
-    // Sorted, as the Python binding's dicts are, so errors come in a stable
-    // order.
-    let sorted = |map: &Option<HashMap<String, String>>| {
-        let mut pairs: Vec<(String, String)> =
-            map.clone().unwrap_or_default().into_iter().collect();
-        pairs.sort();
-        pairs
+    let pairs = |map: &Option<HashMap<String, String>>| {
+        map.clone().unwrap_or_default().into_iter().collect()
     };
-    for (entry, path) in sorted(&opts.at) {
-        options = options.at(&entry, &path)?;
+    sdk::BindOptions {
+        name,
+        robot,
+        under: opts.under.as_deref(),
+        at: pairs(&opts.at),
+        positional: opts.positional.as_deref().unwrap_or_default(),
+        allow: opts.allow.as_deref().unwrap_or_default(),
+        captures: pairs(&opts.captures),
     }
-    for entry in opts.positional.iter().flatten() {
-        options = options.positional(entry);
-    }
-    for name in opts.allow.iter().flatten() {
-        let conversion =
-            Allow::from_name(name).ok_or_else(|| format!("allow: unknown conversion {name:?}"))?;
-        options = options.allow(conversion);
-    }
-    for (capture, value) in sorted(&opts.captures) {
-        options = options.capture(&capture, &value)?;
-    }
-    Ok(options)
+    .run_options()
 }
 
 /// A bound action: its entry, the part it drives (none when dropped) and its
@@ -1212,30 +1066,11 @@ pub async fn bind_policy(
     let address = self::address(&address)?;
     let wait = timeout(options.timeout_s.unwrap_or(10.0))?;
     let class = priority(options.priority.as_deref().unwrap_or("model"))?;
-    let policy = Policy::parse(&policy_json)
-        .map_err(|why| binding_refused(format!("binding refused: {name}: {why}")))?;
     let run_options = run_options(&name, &robot, &options)
         .map_err(|why| binding_refused(format!("binding refused: {why}")))?;
-    let participant = address
-        .join(&name, vec![Role::Controller], class, wait)
+    let controller = sdk::bind_policy(&address, &name, &policy_json, &run_options, class, wait)
         .await
-        .map_err(session_err)?;
-    let config = ControllerConfig {
-        bind_timeout: wait,
-        ..ControllerConfig::default()
-    };
-    let participant = Arc::new(participant);
-    let controller =
-        match Controller::bind(participant.clone(), &policy, &run_options, config).await {
-            Ok(controller) => controller,
-            Err(err) => {
-                // Refused: leave the session rather than linger.
-                if let Ok(participant) = Arc::try_unwrap(participant) {
-                    let _ = participant.detach().await;
-                }
-                return Err(controller_err(err));
-            }
-        };
+        .map_err(bind_policy_err)?;
     Ok(NativePolicy {
         name,
         controller: Mutex::new(Some(Arc::new(controller))),
@@ -1495,28 +1330,12 @@ impl NativePolicy {
     #[napi]
     pub async fn close(&self) -> Result<()> {
         let taken = self.controller.lock().map(|mut c| c.take()).unwrap_or(None);
-        let Some(mut controller) = taken else {
+        let Some(controller) = taken else {
             return Ok(());
         };
-        controller.stop();
+        // A `predict` waiting on JS gives up, so the run can return.
         self.closing.store(true, Ordering::Relaxed);
-        // A `run` returns within one idle slice.
-        for _ in 0..50 {
-            match Arc::try_unwrap(controller) {
-                Ok(owned) => {
-                    let participant = owned.close().await;
-                    return match Arc::try_unwrap(participant) {
-                        Ok(participant) => participant.detach().await.map_err(session_err),
-                        Err(_) => Ok(()),
-                    };
-                }
-                Err(shared) => {
-                    controller = shared;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            }
-        }
-        Ok(())
+        sdk::close_policy(controller).await.map_err(session_err)
     }
 }
 
@@ -1526,24 +1345,15 @@ impl NativePolicy {
 /// than bursting.
 #[napi]
 pub struct NativeRate {
-    period_ns: i64,
-    next_ns: Arc<AtomicU64>,
-    missed: Arc<AtomicU64>,
+    rate: Arc<sdk::Rate>,
 }
 
 #[napi]
 impl NativeRate {
     #[napi(constructor)]
     pub fn new(hz: f64) -> Result<Self> {
-        if !(hz.is_finite() && hz > 0.0) {
-            return Err(invalid(format!("rate {hz} Hz is not positive")));
-        }
-        #[allow(clippy::cast_possible_truncation)]
-        let period_ns = ((1e9 / hz).round() as i64).max(1);
         Ok(Self {
-            period_ns,
-            next_ns: Arc::new(AtomicU64::new(0)),
-            missed: Arc::new(AtomicU64::new(0)),
+            rate: Arc::new(sdk::Rate::new(hz).map_err(invalid)?),
         })
     }
 
@@ -1552,22 +1362,7 @@ impl NativeRate {
     #[napi]
     pub async fn sleep(&self) -> Result<i64> {
         let clock = SystemMonotonicClock;
-        let now = clock.now_ns();
-        let mut next = i64::try_from(self.next_ns.load(Ordering::Relaxed)).unwrap_or(0);
-        if next == 0 {
-            next = now;
-        }
-        if now > next + self.period_ns {
-            let behind = (now - next) / self.period_ns;
-            self.missed
-                .fetch_add(behind.unsigned_abs(), Ordering::Relaxed);
-            next += behind * self.period_ns;
-        }
-        let late = (now - next).max(0);
-        self.next_ns.store(
-            u64::try_from(next + self.period_ns).unwrap_or(0),
-            Ordering::Relaxed,
-        );
+        let (next, late) = self.rate.next(clock.now_ns());
         tokio::task::spawn_blocking(move || sleep_until(|| clock.now_ns(), next))
             .await
             .map_err(|e| exception(e.to_string()))?;
@@ -1577,7 +1372,7 @@ impl NativeRate {
     /// Periods skipped because a call came more than a period late.
     #[napi(getter)]
     pub fn missed(&self) -> i64 {
-        seq(self.missed.load(Ordering::Relaxed))
+        seq(self.rate.missed())
     }
 }
 
@@ -1616,11 +1411,7 @@ pub async fn start_recorder(
 ) -> Result<NativeRecorder> {
     let address = self::address(&address)?;
     let wait = timeout(timeout_s)?;
-    let participant = address
-        .join(&name, vec![Role::Observer], PriorityClass::Scripted, wait)
-        .await
-        .map_err(session_err)?;
-    let recorder = Recorder::start(Arc::new(participant), &path)
+    let recorder = sdk::start_recorder(&address, &path, &name, wait)
         .await
         .map_err(record_err)?;
     Ok(NativeRecorder {
@@ -1644,11 +1435,7 @@ impl NativeRecorder {
         let Some(recorder) = taken else {
             return Ok(None);
         };
-        let participant = recorder.participant().clone();
-        let stats = recorder.finish().await.map_err(record_err)?;
-        if let Ok(participant) = Arc::try_unwrap(participant) {
-            participant.detach().await.map_err(session_err)?;
-        }
+        let stats = sdk::finish_recorder(recorder).await.map_err(record_err)?;
         Ok(Some(RecordStats {
             path: stats.path.to_string_lossy().into_owned(),
             messages: seq(stats.messages),

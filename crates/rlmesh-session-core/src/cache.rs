@@ -143,6 +143,18 @@ pub struct Skip {
 }
 
 impl Skip {
+    /// The reason the start counts under, most specific first.
+    pub fn reason(&self) -> crate::schedule::SkipReason {
+        use crate::schedule::SkipReason;
+        if !self.gaps.is_empty() {
+            SkipReason::WindowGap
+        } else if !self.stale.is_empty() {
+            SkipReason::StaleInput
+        } else {
+            SkipReason::Waiting
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.waiting.is_empty() && self.stale.is_empty() && self.gaps.is_empty()
     }

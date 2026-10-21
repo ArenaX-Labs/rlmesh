@@ -11,12 +11,10 @@
 //! `predict` (and, between starts, to check for signals).
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
 use pyo3::buffer::PyBuffer;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyTimeoutError, PyValueError};
@@ -25,18 +23,15 @@ use pyo3::types::{PyDict, PyList};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh_session::controller::sleep_until;
-use rlmesh_session::edge::{Due, EdgeConfig, EdgeMode, Rejection, Robot};
+use rlmesh_session::edge::{Due, Rejection, Robot};
 use rlmesh_session::record::{RecordError, Recorder};
+use rlmesh_session::sdk::{self, BindOptions, BindPolicyError, EmbeddedHost, ErrorKind};
+use rlmesh_session::spec::BindError;
 use rlmesh_session::spec::apply::{Tensor, Value};
-use rlmesh_session::spec::policy::Allow;
-use rlmesh_session::spec::{BindError, Policy, RunOptions};
-use rlmesh_session::wire::{
-    CtlStatus, DType, PartSpec, ParticipantId, PriorityClass, Role, SessionId, TenantId,
-};
+use rlmesh_session::wire::{PartSpec, PriorityClass, TenantId};
 use rlmesh_session::{
-    Clock, Controller, ControllerConfig, ControllerError, HostConfig, Observation, ObserveError,
-    Participant, ParticipantConfig, Predictor, RunError, RunEvent, SendError, Sent, SessionError,
-    SessionHost, SkipReason, Snapshot, SystemMonotonicClock, Transport, TransportConfig,
+    Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunError, RunEvent,
+    SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
 };
 
 use crate::client::{check_signals, signal_poll};
@@ -126,71 +121,28 @@ where
     })
 }
 
-/// A rejection reason as a snake_case name (`too_old`, `stale_token`).
-fn rejection_name(reason: Rejection) -> String {
-    let camel = format!("{reason:?}");
-    let mut out = String::with_capacity(camel.len() + 4);
-    for (i, c) in camel.chars().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            out.push('_');
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
-}
-
-fn screaming(status: CtlStatus) -> String {
-    let camel = format!("{status:?}");
-    let mut out = String::with_capacity(camel.len() + 4);
-    for (i, c) in camel.chars().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            out.push('_');
-        }
-        out.push(c.to_ascii_uppercase());
-    }
-    out
-}
-
 pub(crate) fn session_err(err: SessionError) -> PyErr {
-    match err {
-        SessionError::Rejected(refusal) => Python::attach(|py| {
-            let err = SessionRefused::new_err(refusal.message.clone());
-            let status = screaming(refusal.status);
+    match ErrorKind::of(&err) {
+        ErrorKind::Refused(status) => Python::attach(|py| {
+            let message = match &err {
+                SessionError::Rejected(refusal) => refusal.message.clone(),
+                other => other.to_string(),
+            };
+            let err = SessionRefused::new_err(message);
             if let Err(set) = err.value(py).setattr("status", status) {
                 return set;
             }
             err
         }),
-        SessionError::NoReply(_) | SessionError::Timeout(..) => {
-            PyTimeoutError::new_err(err.to_string())
-        }
-        SessionError::InvalidValue { .. }
-        | SessionError::UnknownPart(_)
-        | SessionError::WrongChannel { .. } => PyValueError::new_err(err.to_string()),
-        other => SessionException::new_err(other.to_string()),
+        ErrorKind::Timeout => PyTimeoutError::new_err(err.to_string()),
+        ErrorKind::Value => PyValueError::new_err(err.to_string()),
+        ErrorKind::Session => SessionException::new_err(err.to_string()),
     }
 }
 
 pub(crate) fn bind_err(err: BindError) -> PyErr {
     Python::attach(|py| {
-        let problems: Vec<(String, String, String)> = match &err {
-            BindError::Refused(refusal) => refusal
-                .problems
-                .iter()
-                .map(|p| {
-                    (
-                        p.code.name().to_string(),
-                        match p.dir {
-                            rlmesh_session::spec::bind::Dir::In => "input",
-                            rlmesh_session::spec::bind::Dir::Out => "action",
-                        }
-                        .to_string(),
-                        p.entry.clone(),
-                    )
-                })
-                .collect(),
-            BindError::Options(_) => Vec::new(),
-        };
+        let problems = sdk::bind_problems(&err);
         let err_obj = BindingRefused::new_err(err.to_string());
         if let Err(set) = err_obj.value(py).setattr("problems", problems) {
             return set;
@@ -206,6 +158,13 @@ fn controller_err(err: ControllerError) -> PyErr {
     }
 }
 
+fn bind_policy_err(err: BindPolicyError) -> PyErr {
+    match err {
+        BindPolicyError::Policy(_) => BindingRefused::new_err(err.to_string()),
+        BindPolicyError::Controller(err) => controller_err(err),
+    }
+}
+
 fn send_err(err: SendError) -> PyErr {
     match err {
         SendError::Value(message) => PyValueError::new_err(message),
@@ -216,13 +175,7 @@ fn send_err(err: SendError) -> PyErr {
 fn observe_err(err: ObserveError) -> PyErr {
     match err {
         ObserveError::Skipped(skip) => Python::attach(|py| {
-            let reason = if !skip.gaps.is_empty() {
-                SkipReason::WindowGap
-            } else if !skip.stale.is_empty() {
-                SkipReason::StaleInput
-            } else {
-                SkipReason::Waiting
-            };
+            let reason = skip.reason();
             let err = StartSkipped::new_err(format!(
                 "start skipped ({reason}): waiting for {:?}, stale {:?}, window gaps {:?}",
                 skip.waiting, skip.stale, skip.gaps
@@ -242,68 +195,11 @@ fn observe_err(err: ObserveError) -> PyErr {
     }
 }
 
-/// Where a session's host listens: `{ip}:{base_port}/{tenant}/{session}`.
-#[derive(Clone, Debug)]
-struct Address {
-    base: SocketAddr,
-    tenant: TenantId,
-    session: SessionId,
-}
-
-impl Address {
-    fn parse(text: &str) -> PyResult<Self> {
-        let invalid = |why: String| {
-            PyValueError::new_err(format!(
-                "session address {text:?}: {why} (expected {{ip}}:{{port}}/{{tenant}}/{{session}})"
-            ))
-        };
-        let mut parts = text.splitn(3, '/');
-        let (Some(base), Some(tenant), Some(session)) = (parts.next(), parts.next(), parts.next())
-        else {
-            return Err(invalid("three parts".into()));
-        };
-        Ok(Self {
-            base: base.parse().map_err(|e| invalid(format!("{e}")))?,
-            tenant: TenantId::new(tenant).map_err(|e| invalid(e.to_string()))?,
-            session: session.parse().map_err(|e| invalid(format!("{e}")))?,
-        })
-    }
-
-    fn text(&self) -> String {
-        format!("{}/{}/{}", self.base, self.tenant, self.session)
-    }
-
-    /// Opens a participant's transport (listening on the host's interface,
-    /// any port) and attaches.
-    async fn join(
-        &self,
-        id: &str,
-        roles: Vec<Role>,
-        priority: PriorityClass,
-        timeout: Duration,
-    ) -> Result<Participant, SessionError> {
-        let listen_ip = if self.base.ip().is_loopback() {
-            self.base.ip()
-        } else {
-            IpAddr::from([0, 0, 0, 0])
-        };
-        let transport = Transport::open(&TransportConfig::per_class_tcp(
-            Some(SocketAddr::new(listen_ip, 0)),
-            Some(self.base),
-        )?)
-        .await?;
-        let mut config = ParticipantConfig::new(
-            self.tenant.clone(),
-            self.session,
-            ParticipantId::new(id)?,
-            roles,
-            priority,
-        );
-        // `time.monotonic_ns()` in Python: capture times line up with it.
-        config.clock = SystemMonotonicClock.shared();
-        config.host_timeout = timeout;
-        Participant::attach(transport, config).await
-    }
+/// A session address (`{ip}:{port}/{tenant}/{session}`); joining it puts
+/// capture times on `CLOCK_MONOTONIC`, `time.monotonic_ns()`'s clock.
+fn address(text: &str) -> PyResult<SessionAddress> {
+    text.parse()
+        .map_err(|e: SessionError| PyValueError::new_err(e.to_string()))
 }
 
 pub(crate) fn timeout(seconds: f64) -> PyResult<Duration> {
@@ -312,23 +208,14 @@ pub(crate) fn timeout(seconds: f64) -> PyResult<Duration> {
 }
 
 fn priority(name: &str) -> PyResult<PriorityClass> {
-    match name {
-        "safety" => Ok(PriorityClass::Safety),
-        "operator" => Ok(PriorityClass::Operator),
-        "model" => Ok(PriorityClass::Model),
-        "scripted" => Ok(PriorityClass::Scripted),
-        other => Err(PyValueError::new_err(format!(
-            "priority {other:?}: safety, operator, model or scripted"
-        ))),
-    }
+    sdk::priority(name).map_err(PyValueError::new_err)
 }
 
 /// A session host in this process, on local per-class TCP ports.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Host", frozen)]
 pub struct PyHost {
-    address: Address,
-    host: Mutex<Option<(SessionHost, Transport)>>,
+    host: EmbeddedHost,
 }
 
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
@@ -341,49 +228,24 @@ impl PyHost {
             .parse()
             .map_err(|e| PyValueError::new_err(format!("ip {ip:?}: {e}")))?;
         let tenant = TenantId::new(tenant).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let session = SessionId::new();
-        let (host, transport, base) = block_on(py, {
-            let tenant = tenant.clone();
-            async move {
-                let (transport, base) = rlmesh_session::transport::open_local_listeners(ip)
-                    .await
-                    .map_err(session_err)?;
-                let mut config = HostConfig::new(tenant, session);
-                config.clock = SystemMonotonicClock.shared();
-                config.lease_grace = Duration::from_millis(lease_grace_ms.max(1));
-                config.health_log = None;
-                let host = SessionHost::start(transport.clone(), config)
-                    .await
-                    .map_err(session_err)?;
-                Ok((host, transport, base))
-            }
+        let grace = Duration::from_millis(lease_grace_ms);
+        let host = block_on(py, async move {
+            EmbeddedHost::start(ip, tenant, grace)
+                .await
+                .map_err(session_err)
         })?;
-        Ok(Self {
-            address: Address {
-                base,
-                tenant,
-                session,
-            },
-            host: Mutex::new(Some((host, transport))),
-        })
+        Ok(Self { host })
     }
 
     /// `{ip}:{base_port}/{tenant}/{session}`: what participants connect to.
     #[getter]
     fn address(&self) -> String {
-        self.address.text()
+        self.host.address().to_string()
     }
 
     /// Stops the host (participants see it leave).
     fn close(&self, py: Python<'_>) -> PyResult<()> {
-        let taken = self.host.lock().map(|mut h| h.take()).unwrap_or(None);
-        if let Some((host, transport)) = taken {
-            block_on(py, async move {
-                host.shutdown().await;
-                transport.close().await.map_err(session_err)
-            })?;
-        }
-        Ok(())
+        block_on(py, async { self.host.close().await.map_err(session_err) })
     }
 }
 
@@ -460,19 +322,8 @@ pub(crate) fn tensor_from_py(entry: &str, obj: &Bound<'_, PyAny>) -> PyResult<Te
                 .map_or_else(|_| "?".into(), |n| n.to_string())
         ))
     })?;
-    let dtype = DType::from_name(&dtype)
-        .filter(|d| *d != DType::Utf8)
-        .ok_or_else(|| PyValueError::new_err(format!("{entry}: dtype {dtype} is not numeric")))?;
     let data = data.to_vec(obj.py())?;
-    let elements: u64 = shape.iter().map(|d| u64::from(*d)).product();
-    if elements.checked_mul(dtype.size()) != u64::try_from(data.len()).ok() {
-        return Err(PyValueError::new_err(format!(
-            "{entry}: {} bytes for {} {shape:?}",
-            data.len(),
-            dtype.name()
-        )));
-    }
-    Ok(Tensor { dtype, shape, data })
+    sdk::tensor(entry, &dtype, shape, data).map_err(PyValueError::new_err)
 }
 
 /// What `predict` returned, by action entry: an array, or a dict of arrays.
@@ -499,16 +350,6 @@ pub(crate) fn values_from_py(output: &Bound<'_, PyAny>) -> PyResult<Vec<(String,
         values.push((entry, value));
     }
     Ok(values)
-}
-
-fn mode_name(mode: EdgeMode) -> &'static str {
-    match mode {
-        EdgeMode::Idle => "idle",
-        EdgeMode::Driving => "driving",
-        EdgeMode::Hold => "hold",
-        EdgeMode::Safe => "safe",
-        EdgeMode::Estop => "estop",
-    }
 }
 
 /// A robot: its map declared, a publisher per part and an edge per command
@@ -546,15 +387,10 @@ impl PyRobot {
         robot_json: String,
         timeout_s: f64,
     ) -> PyResult<Self> {
-        let address = Address::parse(address)?;
+        let address = self::address(address)?;
         let wait = timeout(timeout_s)?;
-        let id = name.to_string();
         let robot = block_on(py, async move {
-            let participant = address
-                .join(&id, vec![Role::Embodiment], PriorityClass::Scripted, wait)
-                .await
-                .map_err(session_err)?;
-            Robot::declare(participant, &robot_json, EdgeConfig::default())
+            sdk::connect_robot(&address, name, &robot_json, wait)
                 .await
                 .map_err(|err| match err {
                     rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
@@ -617,24 +453,8 @@ impl PyRobot {
             }
         }
         let capture = capture_ns.unwrap_or_else(|| robot.participant().clock().now_ns());
-        let path = path.to_string();
-        py.detach(move || {
-            let packed = robot.part(&path).and_then(|part| match owned.as_slice() {
-                [only] if part.fields.len() == 1 && only.len().is_multiple_of(8) => Some(()),
-                _ => None,
-            });
-            match packed {
-                Some(()) => {
-                    let value = owned.pop().map(Bytes::from).unwrap_or_default();
-                    robot.publish_packed(&path, capture, value)
-                }
-                None => {
-                    let refs: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
-                    robot.publish(&path, capture, &refs)
-                }
-            }
-        })
-        .map_err(session_err)
+        py.detach(move || sdk::publish(&robot, path, capture, owned))
+            .map_err(session_err)
     }
 
     /// One control tick of the edge serving `path` and its command group:
@@ -739,7 +559,7 @@ impl PyRobot {
         for reason in Rejection::ALL {
             let n = stats.rejected(reason);
             if n > 0 {
-                rejected_by.set_item(rejection_name(reason), n)?;
+                rejected_by.set_item(sdk::rejection_name(reason), n)?;
             }
         }
         d.set_item("rejected_by", rejected_by)?;
@@ -747,15 +567,9 @@ impl PyRobot {
         d.set_item("handovers", stats.handovers)?;
         d.set_item("safe_reports", stats.safe_reports)?;
         let modes = PyDict::new(py);
-        for mode in [
-            EdgeMode::Idle,
-            EdgeMode::Driving,
-            EdgeMode::Hold,
-            EdgeMode::Safe,
-            EdgeMode::Estop,
-        ] {
+        for mode in sdk::EDGE_MODES {
             let m = stats.mode(mode);
-            modes.set_item(mode_name(mode), (m.ticks, m.entries))?;
+            modes.set_item(sdk::mode_name(mode), (m.ticks, m.entries))?;
         }
         d.set_item("modes", modes)?;
         Ok(d)
@@ -767,11 +581,9 @@ impl PyRobot {
         let Some(robot) = taken else {
             return Ok(());
         };
-        match Arc::try_unwrap(robot) {
-            Ok(robot) => block_on(py, async move { robot.detach().await.map_err(session_err) }),
-            // Another thread is mid-call: dropping it withdraws presence.
-            Err(_) => Ok(()),
-        }
+        block_on(py, async move {
+            sdk::close_robot(robot).await.map_err(session_err)
+        })
     }
 }
 
@@ -827,6 +639,17 @@ impl PyDue {
 
 impl PyDue {
     fn new(py: Python<'_>, robot: &Robot, due: Due) -> PyResult<Self> {
+        let fields = match sdk::due_fields(robot, &due).map_err(SessionException::new_err)? {
+            Some(fields) => {
+                let d = PyDict::new(py);
+                for (name, tensor) in fields {
+                    d.set_item(name, tensor_to_py(py, tensor)?)?;
+                }
+                Some(d.unbind())
+            }
+            None => None,
+        };
+        let based_on = sdk::due_based_on(robot, &due);
         let Due {
             path,
             mode,
@@ -834,31 +657,9 @@ impl PyDue {
             safe,
             handover,
         } = due;
-        let fields = match (&action, robot.part(&path).and_then(|p| p.command.as_ref())) {
-            (Some(action), Some(command)) => {
-                let layout = command.layout().map_err(SessionException::new_err)?;
-                let d = PyDict::new(py);
-                for (i, field) in command.fields.iter().enumerate() {
-                    let range = layout
-                        .field(i)
-                        .ok_or_else(|| SessionException::new_err("a text command"))?;
-                    let bytes = action.value.get(range).ok_or_else(|| {
-                        SessionException::new_err("an action shorter than its stride")
-                    })?;
-                    let tensor = Tensor {
-                        dtype: field.dtype,
-                        shape: field.shape.clone(),
-                        data: bytes.to_vec(),
-                    };
-                    d.set_item(&field.name, tensor_to_py(py, tensor)?)?;
-                }
-                Some(d.unbind())
-            }
-            _ => None,
-        };
         let chunk = action.as_ref().map(|a| &a.chunk);
         Ok(Self {
-            mode: mode_name(mode),
+            mode: sdk::mode_name(mode),
             fields,
             safe: safe.map(|s| s.to_string()),
             handover: handover.map(|h| (h.group, h.from, h.to)),
@@ -867,19 +668,7 @@ impl PyDue {
             index: action.as_ref().map(|a| a.index),
             received_ns: chunk.map(|c| c.receive_ns),
             slot_ns: action.as_ref().map(|a| a.slot_ns),
-            based_on: chunk
-                .map(|c| {
-                    c.based_on
-                        .iter()
-                        .map(|r| {
-                            let path = robot
-                                .path_of(r.channel)
-                                .map_or_else(|| r.channel.to_string(), str::to_string);
-                            (path, r.seq_first, r.seq_last)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            based_on,
             path,
         })
     }
@@ -1025,37 +814,6 @@ impl PyController {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_options(
-    name: &str,
-    robot: &str,
-    under: Option<&str>,
-    at: BTreeMap<String, String>,
-    positional: Vec<String>,
-    allow: Vec<String>,
-    captures: BTreeMap<String, String>,
-) -> Result<RunOptions, String> {
-    let mut options = RunOptions::named(name).robot(robot)?;
-    if let Some(under) = under {
-        options = options.under(under)?;
-    }
-    for (entry, path) in &at {
-        options = options.at(entry, path)?;
-    }
-    for entry in &positional {
-        options = options.positional(entry);
-    }
-    for name in &allow {
-        let conversion =
-            Allow::from_name(name).ok_or_else(|| format!("allow: unknown conversion {name:?}"))?;
-        options = options.allow(conversion);
-    }
-    for (capture, value) in &captures {
-        options = options.capture(capture, value)?;
-    }
-    Ok(options)
-}
-
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
@@ -1085,34 +843,24 @@ impl PyController {
         captures: BTreeMap<String, String>,
         timeout_s: f64,
     ) -> PyResult<Self> {
-        let address = Address::parse(address)?;
+        let address = self::address(address)?;
         let wait = timeout(timeout_s)?;
         let class = self::priority(priority)?;
-        let policy = Policy::parse(policy_json)
-            .map_err(|why| BindingRefused::new_err(format!("binding refused: {name}: {why}")))?;
-        let options = run_options(name, robot, under, at, positional, allow, captures)
-            .map_err(|why| BindingRefused::new_err(format!("binding refused: {why}")))?;
-        let id = name.to_string();
+        let options = BindOptions {
+            name,
+            robot,
+            under,
+            at: at.into_iter().collect(),
+            positional: &positional,
+            allow: &allow,
+            captures: captures.into_iter().collect(),
+        }
+        .run_options()
+        .map_err(|why| BindingRefused::new_err(format!("binding refused: {why}")))?;
         let controller = block_on(py, async move {
-            let participant = address
-                .join(&id, vec![Role::Controller], class, wait)
+            sdk::bind_policy(&address, name, policy_json, &options, class, wait)
                 .await
-                .map_err(session_err)?;
-            let config = ControllerConfig {
-                bind_timeout: wait,
-                ..ControllerConfig::default()
-            };
-            let participant = Arc::new(participant);
-            match Controller::bind(participant.clone(), &policy, &options, config).await {
-                Ok(controller) => Ok(controller),
-                Err(err) => {
-                    // Refused: leave the session rather than linger.
-                    if let Ok(participant) = Arc::try_unwrap(participant) {
-                        let _ = participant.detach().await;
-                    }
-                    Err(controller_err(err))
-                }
-            }
+                .map_err(bind_policy_err)
         })?;
         Ok(Self {
             name: name.to_string(),
@@ -1347,27 +1095,9 @@ impl PyController {
         let Some(controller) = taken else {
             return Ok(());
         };
-        controller.stop();
-        // A `run` on another thread returns within one idle slice.
-        let mut controller = controller;
-        for _ in 0..50 {
-            match Arc::try_unwrap(controller) {
-                Ok(owned) => {
-                    return block_on(py, async move {
-                        let participant = owned.close().await;
-                        match Arc::try_unwrap(participant) {
-                            Ok(participant) => participant.detach().await.map_err(session_err),
-                            Err(_) => Ok(()),
-                        }
-                    });
-                }
-                Err(shared) => {
-                    controller = shared;
-                    py.detach(|| std::thread::sleep(Duration::from_millis(10)));
-                }
-            }
-        }
-        Ok(())
+        block_on(py, async move {
+            sdk::close_policy(controller).await.map_err(session_err)
+        })
     }
 }
 
@@ -1378,9 +1108,7 @@ impl PyController {
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Rate", frozen)]
 pub struct PyRate {
-    period_ns: i64,
-    next_ns: AtomicU64,
-    missed: AtomicU64,
+    rate: sdk::Rate,
 }
 
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
@@ -1388,15 +1116,8 @@ pub struct PyRate {
 impl PyRate {
     #[new]
     fn new(hz: f64) -> PyResult<Self> {
-        if !(hz.is_finite() && hz > 0.0) {
-            return Err(PyValueError::new_err(format!(
-                "rate {hz} Hz is not positive"
-            )));
-        }
         Ok(Self {
-            period_ns: ((1e9 / hz).round() as i64).max(1),
-            next_ns: AtomicU64::new(0),
-            missed: AtomicU64::new(0),
+            rate: sdk::Rate::new(hz).map_err(PyValueError::new_err)?,
         })
     }
 
@@ -1404,30 +1125,15 @@ impl PyRate {
     /// for it, in ns.
     fn sleep(&self, py: Python<'_>) -> i64 {
         let clock = SystemMonotonicClock;
-        let now = clock.now_ns();
-        let mut next = i64::try_from(self.next_ns.load(Ordering::Relaxed)).unwrap_or(0);
-        if next == 0 {
-            next = now;
-        }
-        if now > next + self.period_ns {
-            let behind = (now - next) / self.period_ns;
-            self.missed
-                .fetch_add(behind.unsigned_abs(), Ordering::Relaxed);
-            next += behind * self.period_ns;
-        }
-        let late = (now - next).max(0);
+        let (next, late) = self.rate.next(clock.now_ns());
         py.detach(|| sleep_until(|| clock.now_ns(), next));
-        self.next_ns.store(
-            u64::try_from(next + self.period_ns).unwrap_or(0),
-            Ordering::Relaxed,
-        );
         late
     }
 
     /// Periods skipped because a call came more than a period late.
     #[getter]
     fn missed(&self) -> u64 {
-        self.missed.load(Ordering::Relaxed)
+        self.rate.missed()
     }
 }
 
@@ -1462,16 +1168,10 @@ impl PyRecorder {
         name: &str,
         timeout_s: f64,
     ) -> PyResult<Self> {
-        let address = Address::parse(address)?;
+        let address = self::address(address)?;
         let wait = timeout(timeout_s)?;
-        let id = name.to_string();
-        let file = path.clone();
-        let recorder = block_on(py, async move {
-            let participant = address
-                .join(&id, vec![Role::Observer], PriorityClass::Scripted, wait)
-                .await
-                .map_err(session_err)?;
-            Recorder::start(Arc::new(participant), file)
+        let recorder = block_on(py, async {
+            sdk::start_recorder(&address, &path, name, wait)
                 .await
                 .map_err(record_err)
         })?;
@@ -1496,12 +1196,7 @@ impl PyRecorder {
             return Ok(None);
         };
         let stats = block_on(py, async move {
-            let participant = recorder.participant().clone();
-            let stats = recorder.finish().await.map_err(record_err)?;
-            if let Ok(participant) = Arc::try_unwrap(participant) {
-                participant.detach().await.map_err(session_err)?;
-            }
-            Ok(stats)
+            sdk::finish_recorder(recorder).await.map_err(record_err)
         })?;
         let d = PyDict::new(py);
         d.set_item("path", stats.path.to_string_lossy())?;

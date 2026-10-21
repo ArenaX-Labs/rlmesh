@@ -48,6 +48,8 @@
 //!   reading a recording back.
 //! - [`report`]: observer telemetry (§8.10), the publisher and controller
 //!   counters an observer cannot measure itself.
+//! - [`sdk`]: what the language bindings share (Python's extension, the
+//!   Node addon), so each only converts values.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
 //!   only starve its own class.
 //!
@@ -76,6 +78,7 @@ pub mod participant;
 pub mod record;
 pub mod report;
 pub mod sample;
+pub mod sdk;
 pub use rlmesh_session_core::lease;
 pub use rlmesh_session_core::schedule;
 pub use rlmesh_session_core::spec;
