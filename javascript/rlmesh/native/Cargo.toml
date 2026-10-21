@@ -22,7 +22,6 @@ ignored = ["napi-build"]
 crate-type = ["cdylib"]
 
 [dependencies]
-bytes = { workspace = true }
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt"] }
 napi-derive = "3"
 rlmesh-session = { workspace = true, features = ["record"] }

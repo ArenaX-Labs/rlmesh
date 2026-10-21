@@ -5321,7 +5321,6 @@ dependencies = [
 name = "rlmesh-node"
 version = "0.2.0-alpha.0"
 dependencies = [
- "bytes",
  "napi",
  "napi-build",
  "napi-derive",
