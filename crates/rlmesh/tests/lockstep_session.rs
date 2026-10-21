@@ -12,27 +12,15 @@ use std::time::Duration;
 
 use common::CatalogEnv;
 use rlmesh::lockstep::{ConnectOptions, GymError, LockstepAddress};
-use rlmesh_proto::env::v1::{ResetRequest, StepRequest};
-use rlmesh_proto::spaces::v1::SpaceValue;
 use rlmesh_session::wire::{LeaseToken, ParticipantId, PriorityClass, Role};
 use rlmesh_session::{Participant, ParticipantConfig, Transport, TransportConfig};
-use rlmesh_spaces::AutoresetMode;
+use rlmesh_spaces::{AutoresetMode, DType, SpaceValue, Tensor};
 
-fn step(seq: u8) -> StepRequest {
-    StepRequest {
-        action: Some(SpaceValue {
-            leaves: vec![bytes::Bytes::from(vec![seq; 28])],
-        }),
-        ..Default::default()
-    }
-}
-
-fn reset() -> ResetRequest {
-    ResetRequest {
-        seeds: vec![3],
-        episode_ids: vec!["e1".into()],
-        ..Default::default()
-    }
+/// `lanes` actions of the catalog's `float32 [7]`, every byte `seq`.
+fn actions(seq: u8, lanes: usize) -> Vec<SpaceValue> {
+    (0..lanes)
+        .map(|_| SpaceValue::Box(Tensor::from_vec(vec![seq; 28], vec![7], DType::Float32).unwrap()))
+        .collect()
 }
 
 async fn operator(address: &str) -> Participant {
@@ -91,23 +79,23 @@ async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_an
     .await;
     assert!(networked.is_err(), "the lease is held by the first driver");
 
-    direct.reset_v1(reset()).await.unwrap();
-    let reply = direct.step_v1(step(1)).await.unwrap();
+    direct.reset(&[], &[3], None, None).await.unwrap();
+    let reply = direct.step(&[], &actions(1, 1), None).await.unwrap();
     assert_eq!(reply.rewards.len(), 1);
     assert_eq!(direct.info().contract.id, "Catalog-v0");
 
     // A stale epoch is refused locally, without the host.
     let (epoch, token) = direct.authority();
     direct.set_authority(rlmesh_session::wire::Epoch(epoch.0 + 7), token);
-    refused(direct.step_v1(step(2)).await, "stale");
+    refused(direct.step(&[], &actions(2, 1), None).await, "stale");
     direct.set_authority(epoch, token);
-    direct.step_v1(step(3)).await.unwrap();
+    direct.step(&[], &actions(3, 1), None).await.unwrap();
 
     // E-stop: refused between steps.
     let op = operator(&address).await;
     op.estop("test").await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    refused(direct.step_v1(step(2)).await, "e-stopped");
+    refused(direct.step(&[], &actions(2, 1), None).await, "e-stopped");
     cancel.cancel();
     served.await.unwrap().unwrap();
 }
@@ -133,31 +121,17 @@ async fn a_driver_over_the_lockstep_session_steps_and_a_stale_token_is_refused()
     )
     .await
     .unwrap();
-    env.reset_v1(ResetRequest {
-        episode_ids: vec!["a".into(), "b".into()],
-        ..Default::default()
-    })
-    .await
-    .unwrap();
-    let mut two = step(1);
-    two.action = Some(SpaceValue {
-        leaves: vec![bytes::Bytes::from(vec![1_u8; 56])],
-    });
-    two.episode_ids = vec!["a".into(), "b".into()];
-    let reply = env.step_v1(two.clone()).await.unwrap();
+    env.reset(&[], &[], None, None).await.unwrap();
+    let reply = env.step(&[], &actions(1, 2), None).await.unwrap();
     assert_eq!(reply.rewards.len(), 2);
-    assert_eq!(reply.terminated_mask.len(), 2);
+    assert_eq!(reply.terminated.len(), 2);
 
     // Keep the epoch, forge the token: the env refuses it from its own view.
     let (epoch, _) = env.authority();
     env.set_authority(epoch, LeaseToken(0xdead));
-    refused(env.step_v1(two.clone()).await, "lease token");
+    refused(env.step(&[], &actions(1, 2), None).await, "lease token");
     // A malformed action (one lane's worth) is refused as malformed.
-    let mut short = two;
-    short.action = Some(SpaceValue {
-        leaves: vec![bytes::Bytes::from(vec![1_u8; 28])],
-    });
-    refused(env.step_v1(short).await, "lanes");
+    refused(env.step(&[], &actions(1, 1), None).await, "lanes");
     cancel.cancel();
     served.await.unwrap().unwrap();
 }
@@ -181,19 +155,9 @@ async fn a_recorded_lockstep_env_tees_every_step_per_lane() {
     let env = rlmesh::lockstep::connect(&address, ConnectOptions::default())
         .await
         .unwrap();
-    env.reset_v1(ResetRequest {
-        episode_ids: vec!["a".into(), "b".into()],
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    env.reset(&[], &[], None, None).await.unwrap();
     for i in 0..3_u8 {
-        let mut two = step(i);
-        two.action = Some(SpaceValue {
-            leaves: vec![bytes::Bytes::from(vec![i; 56])],
-        });
-        two.episode_ids = vec!["a".into(), "b".into()];
-        env.step_v1(two).await.unwrap();
+        env.step(&[], &actions(i, 2), None).await.unwrap();
     }
     drop(env);
     cancel.cancel();

@@ -35,7 +35,7 @@ use rlmesh_session::{
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::lockstep::compat::{Keep, LockstepEnv};
+use crate::lockstep::client::{Keep, LockstepClient};
 use crate::lockstep::error::GymError;
 use crate::lockstep::exchange::{
     DirectLink, Gate, Gated, LockstepHandler, LockstepLink, ZenohLink, serve_zenoh,
@@ -657,7 +657,7 @@ impl Attached {
 /// controller, rebuilds the env's map from its declaration, takes one
 /// lease on its commandable parts and opens the link (direct when the env
 /// is in this process).
-pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepEnv, GymError> {
+pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepClient, GymError> {
     let robot = LockstepAddress::parse(address)?.robot;
     let attached = attach_driver(address, &options, |s| {
         s.parts.iter().any(|p| {
@@ -680,7 +680,7 @@ pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepE
     let (link, epoch, token, held) = attached
         .lease(table, None, channels, options.direct, options.timeout)
         .await?;
-    Ok(LockstepEnv::with_keep(
+    Ok(LockstepClient::with_keep(
         link,
         map,
         epoch,

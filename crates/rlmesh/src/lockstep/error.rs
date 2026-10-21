@@ -15,6 +15,9 @@ pub enum GymError {
     /// A message or payload does not fit the map.
     #[error("malformed lockstep message: {0}")]
     Malformed(String),
+    /// A value does not fit its space (an action the client cannot send).
+    #[error("{0}")]
+    Value(String),
     /// The env answered with an error.
     #[error("env error: {}", .0.message)]
     Env(EnvironmentError),

@@ -259,6 +259,21 @@ async fn bounded<T>(
     }
 }
 
+/// A contract's observation and action spaces; one without them is a
+/// malformed handshake.
+fn spaces_of(
+    contract: &spaces::EnvContract,
+) -> Result<(Arc<spaces::SpaceSpec>, Arc<spaces::SpaceSpec>)> {
+    match (&contract.observation_space, &contract.action_space) {
+        (Some(observation), Some(action)) => {
+            Ok((Arc::new(observation.clone()), Arc::new(action.clone())))
+        }
+        _ => Err(Error::Protocol(
+            "remote environment contract is missing its spaces".to_string(),
+        )),
+    }
+}
+
 /// A lane index for the wire (`uint32`): above `u32::MAX` is the ValueError
 /// class, before any I/O.
 fn wire_lane(index: u64) -> Result<u32> {
@@ -297,18 +312,24 @@ impl EditionCell {
 }
 
 /// How a client reaches its env: a v1 gRPC Join stream, or (with the
-/// `lockstep` feature) a v2 lockstep driver (`lockstep://`, §12), which
-/// answers the same v1 requests.
+/// `lockstep` feature) a v2 lockstep driver (`lockstep://`, §12). Both take
+/// and answer native values; the proto conversion is the gRPC arm's.
 #[derive(Clone)]
 enum Link {
-    Grpc(Box<rlmesh_grpc::EnvClient>),
+    Grpc {
+        client: Box<rlmesh_grpc::EnvClient>,
+        observation_space: Arc<spaces::SpaceSpec>,
+        action_space: Arc<spaces::SpaceSpec>,
+        num_envs: usize,
+    },
     #[cfg(feature = "lockstep")]
     Lockstep {
-        env: crate::lockstep::LockstepEnv,
+        client: crate::lockstep::LockstepClient,
         address: String,
         /// The selection; lockstep sends no pin (the env runs its declared
         /// edition), so a pin is only recorded.
         edition: Arc<std::sync::Mutex<String>>,
+        episodes: Episodes,
     },
 }
 
@@ -319,7 +340,9 @@ fn lockstep_error(error: crate::lockstep::GymError) -> Error {
         GymError::Timeout(timeout) => Error::Timeout(timeout),
         GymError::Closed(why) => Error::Connection(why),
         GymError::Session(error) => Error::Connection(error.to_string()),
-        GymError::Map(why) | GymError::Config(why) => Error::invalid_argument(why),
+        GymError::Map(why) | GymError::Config(why) | GymError::Value(why) => {
+            Error::invalid_argument(why)
+        }
         other => Error::Environment(other.to_failure()),
     }
 }
@@ -328,7 +351,7 @@ impl Link {
     /// The gRPC client, unless this link is lockstep.
     fn grpc(&mut self) -> Option<&mut rlmesh_grpc::EnvClient> {
         match self {
-            Self::Grpc(inner) => Some(inner),
+            Self::Grpc { client, .. } => Some(client),
             #[cfg(feature = "lockstep")]
             Self::Lockstep { .. } => None,
         }
@@ -336,43 +359,289 @@ impl Link {
 
     fn address(&self) -> &str {
         match self {
-            Self::Grpc(inner) => inner.address(),
+            Self::Grpc { client, .. } => client.address(),
             #[cfg(feature = "lockstep")]
             Self::Lockstep { address, .. } => address,
         }
     }
 
+    /// Resets `lanes` (empty: every lane): the observations and the info.
     async fn reset(
         &mut self,
-        request: ProtoResetRequest,
-    ) -> Result<rlmesh_proto::env::v1::ResetResponse> {
+        lanes: Vec<u32>,
+        seeds: Vec<i64>,
+        options: Option<MetaMap>,
+        episode_ids: Vec<String>,
+        timeout: Option<Duration>,
+    ) -> Result<(Vec<spaces::SpaceValue>, Option<MetaMap>)> {
         match self {
-            Self::Grpc(inner) => inner.reset(request).await.map_err(Error::from_grpc),
+            Self::Grpc {
+                client,
+                observation_space,
+                num_envs,
+                ..
+            } => {
+                let request = ProtoResetRequest {
+                    seeds,
+                    options: options.as_ref().map(meta_map_to_proto),
+                    timeout_ms: wire_timeout_ms(timeout),
+                    env_indices: lanes,
+                    episode_ids,
+                };
+                let response = client.reset(request).await.map_err(Error::from_grpc)?;
+                let observations = decode_batched_partial_values(
+                    response.observation.as_ref(),
+                    observation_space,
+                    *num_envs,
+                )
+                .map_err(|err| Error::Protocol(err.to_string()))?;
+                Ok((
+                    observations,
+                    response.infos.map(rlmesh_grpc::wire::meta_map_from_proto),
+                ))
+            }
             #[cfg(feature = "lockstep")]
-            Self::Lockstep { env, .. } => env.reset_v1(request).await.map_err(lockstep_error),
+            Self::Lockstep {
+                client, episodes, ..
+            } => {
+                let reset = client
+                    .reset(&lanes, &seeds, options.as_ref(), timeout)
+                    .await
+                    .map_err(lockstep_error)?;
+                episodes.reset(&lanes, &seeds, &episode_ids);
+                Ok((reset.observations, reset.info))
+            }
         }
     }
 
+    /// Steps every lane with one action each.
     async fn step(
         &mut self,
-        request: ProtoStepRequest,
-    ) -> Result<rlmesh_proto::env::v1::StepResponse> {
+        actions: &[spaces::SpaceValue],
+        episode_ids: Vec<String>,
+        timeout: Option<Duration>,
+    ) -> Result<VectorStepResult> {
         match self {
-            Self::Grpc(inner) => inner.step(request).await.map_err(Error::from_grpc),
+            Self::Grpc {
+                client,
+                observation_space,
+                action_space,
+                num_envs,
+            } => {
+                let action = encode_batched_partial_values(actions, action_space)
+                    .map_err(|err| Error::invalid_argument(err.to_string()))?;
+                let request = ProtoStepRequest {
+                    action: Some(action),
+                    timeout_ms: wire_timeout_ms(timeout),
+                    // Full-width step; subset-stepping is reserved-but-deferred.
+                    env_indices: Vec::new(),
+                    episode_ids,
+                };
+                let response = client.step(request).await.map_err(Error::from_grpc)?;
+                let observations = decode_batched_partial_values(
+                    response.observation.as_ref(),
+                    observation_space,
+                    *num_envs,
+                )
+                .map_err(|err| Error::Protocol(err.to_string()))?;
+                let flags = |mask: &[u8]| mask.iter().map(|value| *value != 0).collect();
+                Ok(VectorStepResult {
+                    observations,
+                    rewards: response.rewards,
+                    terminated: flags(&response.terminated_mask),
+                    truncated: flags(&response.truncated_mask),
+                    info: response.infos.map(rlmesh_grpc::wire::meta_map_from_proto),
+                    completed_episodes: response
+                        .completed_episodes
+                        .into_iter()
+                        .map(proto_episode_metadata_to_public)
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(Error::Protocol)?,
+                    episode_ids: Vec::new(),
+                })
+            }
             #[cfg(feature = "lockstep")]
-            Self::Lockstep { env, .. } => env.step_v1(request).await.map_err(lockstep_error),
+            Self::Lockstep {
+                client, episodes, ..
+            } => {
+                let step = client
+                    .step(&[], actions, timeout)
+                    .await
+                    .map_err(lockstep_error)?;
+                let mut result = VectorStepResult {
+                    observations: step.observations,
+                    rewards: step.rewards,
+                    terminated: step.terminated,
+                    truncated: step.truncated,
+                    info: step.info,
+                    completed_episodes: Vec::new(),
+                    episode_ids: Vec::new(),
+                };
+                let next_step =
+                    client.info().contract.autoreset_mode == spaces::types::AutoresetMode::NextStep;
+                result.completed_episodes = episodes.step(&result, &episode_ids, next_step);
+                Ok(result)
+            }
         }
     }
 
-    async fn render(
-        &mut self,
-        request: rlmesh_proto::env::v1::RenderRequest,
-    ) -> Result<rlmesh_proto::env::v1::RenderResponse> {
+    /// Lane `lane`'s frame as PNG bytes, if it has one.
+    async fn render(&mut self, lane: u32, timeout: Option<Duration>) -> Result<Option<Vec<u8>>> {
         match self {
-            Self::Grpc(inner) => inner.render(request).await.map_err(Error::from_grpc),
+            Self::Grpc { client, .. } => {
+                let request = render_request_to_proto(&RenderRequest {
+                    env_index: Some(lane as usize),
+                    timeout_ms: i64::try_from(wire_timeout_ms(timeout)).unwrap_or(i64::MAX),
+                });
+                let response = client.render(request).await.map_err(Error::from_grpc)?;
+                let result = render_result_from_proto(response)
+                    .map_err(|err| Error::Protocol(err.to_string()))?;
+                Ok(result.frame.map(|frame| frame.frame))
+            }
             #[cfg(feature = "lockstep")]
-            Self::Lockstep { env, .. } => env.render_v1(request).await.map_err(lockstep_error),
+            Self::Lockstep { client, .. } => client
+                .render(lane, timeout)
+                .await
+                .map(|frame| frame.map(|frame| frame.to_vec()))
+                .map_err(lockstep_error),
         }
+    }
+}
+
+/// The episodes a lockstep client's lanes run. A lockstep reply carries no
+/// episode metadata, so the client, which holds the episode ids, keeps the
+/// accounting the v1 env server reports in `completed_episodes`: an episode
+/// ends on a done step or when a reset replaces it, and under NEXT_STEP the
+/// lane's next step starts the autoreset episode.
+#[cfg(feature = "lockstep")]
+#[derive(Clone, Debug, Default)]
+struct Episodes {
+    lanes: Vec<Lane>,
+    /// Episodes a reset replaced, reported by the next step.
+    interrupted: Vec<super::types::EpisodeMetadata>,
+}
+
+#[cfg(feature = "lockstep")]
+#[derive(Clone, Debug, Default)]
+enum Lane {
+    #[default]
+    Idle,
+    Active(Episode),
+    /// Done under NEXT_STEP: the next step is the autoreset observation.
+    Pending,
+}
+
+#[cfg(feature = "lockstep")]
+#[derive(Clone, Debug)]
+struct Episode {
+    id: String,
+    seed: Option<i64>,
+    steps: i64,
+    reward: f64,
+    start_ns: i64,
+}
+
+#[cfg(feature = "lockstep")]
+fn unix_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+}
+
+#[cfg(feature = "lockstep")]
+impl Episode {
+    fn new(id: String, seed: Option<i64>) -> Self {
+        Self {
+            id,
+            seed,
+            steps: 0,
+            reward: 0.0,
+            start_ns: unix_ns(),
+        }
+    }
+
+    fn end(self, lane: usize, terminated: bool, truncated: bool) -> super::types::EpisodeMetadata {
+        let end_ns = unix_ns();
+        super::types::EpisodeMetadata {
+            episode_id: self.id,
+            seed: self.seed,
+            env_index: i32::try_from(lane).unwrap_or(i32::MAX),
+            step_count: self.steps,
+            cumulative_reward: self.reward,
+            terminated,
+            truncated,
+            start_timestamp_ns: self.start_ns,
+            end_timestamp_ns: end_ns,
+            duration_ms: (end_ns - self.start_ns).max(0) / 1_000_000,
+            final_info: None,
+        }
+    }
+}
+
+#[cfg(feature = "lockstep")]
+impl Episodes {
+    fn new(num_envs: usize) -> Self {
+        Self {
+            lanes: (0..num_envs).map(|_| Lane::Idle).collect(),
+            interrupted: Vec::new(),
+        }
+    }
+
+    /// `lanes` (empty: every lane) start episodes `ids`, seeded by `seeds`.
+    fn reset(&mut self, lanes: &[u32], seeds: &[i64], ids: &[String]) {
+        let all: Vec<u32>;
+        let lanes = if lanes.is_empty() {
+            all = (0..self.lanes.len() as u32).collect();
+            &all
+        } else {
+            lanes
+        };
+        for (pos, &lane) in lanes.iter().enumerate() {
+            let Some(slot) = self.lanes.get_mut(lane as usize) else {
+                continue;
+            };
+            let id = ids.get(pos).cloned().unwrap_or_default();
+            let started = Lane::Active(Episode::new(id, seeds.get(pos).copied()));
+            if let Lane::Active(old) = std::mem::replace(slot, started) {
+                self.interrupted.push(old.end(lane as usize, false, true));
+            }
+        }
+    }
+
+    /// A full-width step: the episodes it completed (`ids`: the lanes'
+    /// current ids, which an autoreset episode adopts).
+    fn step(
+        &mut self,
+        result: &VectorStepResult,
+        ids: &[String],
+        next_step: bool,
+    ) -> Vec<super::types::EpisodeMetadata> {
+        let mut completed = std::mem::take(&mut self.interrupted);
+        for (lane, slot) in self.lanes.iter_mut().enumerate() {
+            let terminated = result.terminated.get(lane).copied().unwrap_or(false);
+            let truncated = result.truncated.get(lane).copied().unwrap_or(false);
+            match std::mem::take(slot) {
+                Lane::Active(mut episode) => {
+                    episode.steps += 1;
+                    episode.reward += result.rewards.get(lane).copied().unwrap_or(0.0);
+                    if terminated || truncated {
+                        completed.push(episode.end(lane, terminated, truncated));
+                        if next_step {
+                            *slot = Lane::Pending;
+                        }
+                    } else {
+                        *slot = Lane::Active(episode);
+                    }
+                }
+                // The autoreset observation: the episode the env rolled.
+                Lane::Pending => {
+                    let id = ids.get(lane).cloned().unwrap_or_default();
+                    *slot = Lane::Active(Episode::new(id, None));
+                }
+                Lane::Idle => {}
+            }
+        }
+        completed
     }
 }
 
@@ -475,24 +744,25 @@ impl EnvClientCore {
         credentials: &rlmesh_grpc::Credentials,
         declared: Option<&str>,
     ) -> Result<Self> {
-        let (inner, handshake) = match address {
+        let (inner, env_contract, spaces, num_envs, session_offer, selected) = match address {
             #[cfg(feature = "lockstep")]
             ConnectAddress::Lockstep(address) => {
-                let env = crate::lockstep::connect(&address, Default::default())
+                let client = crate::lockstep::connect(&address, Default::default())
                     .await
                     .map_err(lockstep_error)?;
-                let handshake = env.handshake(declared).map_err(lockstep_error)?;
-                let edition = Arc::new(std::sync::Mutex::new(
-                    handshake.selected_workflow_edition.clone(),
-                ));
-                (
-                    Link::Lockstep {
-                        env,
-                        address,
-                        edition,
-                    },
-                    handshake,
-                )
+                let info = client.info();
+                let (offer, selected, _) = crate::editions::negotiate_env(info, declared)
+                    .map_err(|why| lockstep_error(crate::lockstep::GymError::Config(why)))?;
+                let env_contract = info.contract.clone();
+                let spaces = spaces_of(&env_contract)?;
+                let num_envs = (env_contract.num_envs as usize).max(1);
+                let link = Link::Lockstep {
+                    client,
+                    address,
+                    edition: Arc::new(std::sync::Mutex::new(selected.clone())),
+                    episodes: Episodes::new(num_envs),
+                };
+                (link, env_contract, spaces, num_envs, offer, selected)
             }
             #[cfg(not(feature = "lockstep"))]
             ConnectAddress::Lockstep(address) => {
@@ -501,40 +771,48 @@ impl EnvClientCore {
                 )));
             }
             address => {
-                let mut inner =
+                let mut client =
                     rlmesh_grpc::EnvClient::connect_with(&address.to_string(), credentials)
                         .await
                         .map_err(Error::from_grpc)?;
-                inner.declare_workflow_edition(declared.map(str::to_string));
-                let handshake = inner.handshake().await.map_err(Error::from_grpc)?;
-                (Link::Grpc(Box::new(inner)), handshake)
+                client.declare_workflow_edition(declared.map(str::to_string));
+                let handshake = client.handshake().await.map_err(Error::from_grpc)?;
+                let session_offer = handshake.session_offer();
+                // The handshake refuses a contract without spaces; one that
+                // does not decode is a malformed handshake too.
+                let env_contract = rlmesh_grpc::wire::env_contract_from_proto(
+                    handshake.env_contract,
+                )
+                .map_err(|error| {
+                    Error::Protocol(format!("invalid spaces spec from remote env: {error}"))
+                })?;
+                let spaces = spaces_of(&env_contract)?;
+                let link = Link::Grpc {
+                    client: Box::new(client),
+                    observation_space: Arc::clone(&spaces.0),
+                    action_space: Arc::clone(&spaces.1),
+                    num_envs: handshake.num_envs,
+                };
+                (
+                    link,
+                    env_contract,
+                    spaces,
+                    handshake.num_envs,
+                    session_offer,
+                    handshake.selected_workflow_edition,
+                )
             }
-        };
-        let session_offer = handshake.session_offer();
-        // The handshake refuses a contract without spaces; one that does not
-        // decode is a malformed handshake too.
-        let env_contract = rlmesh_grpc::wire::env_contract_from_proto(handshake.env_contract)
-            .map_err(|error| {
-                Error::Protocol(format!("invalid spaces spec from remote env: {error}"))
-            })?;
-        let (Some(observation_space), Some(action_space)) = (
-            env_contract.observation_space.clone(),
-            env_contract.action_space.clone(),
-        ) else {
-            return Err(Error::Protocol(
-                "remote environment contract is missing its spaces".to_string(),
-            ));
         };
         Ok(Self {
             inner,
             env_contract,
-            observation_space: Arc::new(observation_space),
-            action_space: Arc::new(action_space),
-            num_envs: handshake.num_envs,
+            observation_space: spaces.0,
+            action_space: spaces.1,
+            num_envs,
             session_offer,
             env_id: crate::mint_id(),
-            episode_ids: vec![String::new(); handshake.num_envs],
-            selected_workflow_edition: handshake.selected_workflow_edition,
+            episode_ids: vec![String::new(); num_envs],
+            selected_workflow_edition: selected,
             request_timeout: None,
             closed: false,
             warned_shadowed_info_key: false,
@@ -617,7 +895,9 @@ impl EnvClientCore {
     pub fn pin_workflow_edition(&mut self, edition: &str) {
         self.selected_workflow_edition = edition.trim().to_string();
         match &mut self.inner {
-            Link::Grpc(inner) => inner.pin_workflow_edition(self.selected_workflow_edition.clone()),
+            Link::Grpc { client, .. } => {
+                client.pin_workflow_edition(self.selected_workflow_edition.clone());
+            }
             #[cfg(feature = "lockstep")]
             Link::Lockstep { edition, .. } => {
                 *edition
@@ -636,7 +916,7 @@ impl EnvClientCore {
     /// A shared handle on the selected edition, reading every pin.
     pub fn edition_cell(&self) -> EditionCell {
         EditionCell(match &self.inner {
-            Link::Grpc(inner) => Edition::Grpc(inner.pinned_edition()),
+            Link::Grpc { client, .. } => Edition::Grpc(client.pinned_edition()),
             #[cfg(feature = "lockstep")]
             Link::Lockstep { edition, .. } => Edition::Local(Arc::clone(edition)),
         })
@@ -730,7 +1010,6 @@ impl EnvClientCore {
         env_indices: Vec<u32>,
         timeout: Option<Duration>,
     ) -> Result<VectorResetResult> {
-        let observation_space = Arc::clone(&self.observation_space);
         // Mint authoritative episode ids for the lanes this reset starts and
         // push them down (the env adopts them; it never mints).
         let pushed_ids: Vec<String> = if env_indices.is_empty() {
@@ -746,28 +1025,15 @@ impl EnvClientCore {
             }
             ids
         };
-        let request = ProtoResetRequest {
-            seeds,
-            options: options.as_ref().map(meta_map_to_proto),
-            timeout_ms: wire_timeout_ms(timeout),
-            env_indices,
-            episode_ids: pushed_ids,
-        };
         let inner = &mut self.inner;
-        let response = bounded(timeout, inner.reset(request)).await?;
-
-        let observations = decode_batched_partial_values(
-            response.observation.as_ref(),
-            &observation_space,
-            self.num_envs,
+        let (observations, info) = bounded(
+            timeout,
+            inner.reset(env_indices, seeds, options, pushed_ids, timeout),
         )
-        .map_err(|err| Error::Protocol(err.to_string()))?;
+        .await?;
         validate_count(&observations, self.num_envs, "observations")
             .map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
-        let mut info = response
-            .infos
-            .map(rlmesh_grpc::wire::meta_map_from_proto)
-            .unwrap_or_default();
+        let mut info = info.unwrap_or_default();
         let ids = self.episode_ids_value();
         self.insert_runtime_info(&mut info, "episode_ids", ids);
         Ok(VectorResetResult {
@@ -782,61 +1048,33 @@ impl EnvClientCore {
     pub async fn step(&mut self, req: VectorStepRequest) -> Result<VectorStepResult> {
         self.check_open()?;
         let timeout = self.call_timeout(req.timeout_ms);
-        let action_space = Arc::clone(&self.action_space);
-        let observation_space = Arc::clone(&self.observation_space);
         validate_action_count(&req.actions, self.num_envs)
             .map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
-        let action = encode_batched_partial_values(&req.actions, &action_space)
-            .map_err(|err| Error::invalid_argument(err.to_string()))?;
-        let request = ProtoStepRequest {
-            action: Some(action),
-            timeout_ms: wire_timeout_ms(timeout),
-            // Full-width step; subset-stepping is reserved-but-deferred.
-            env_indices: Vec::new(),
-            // Push the authoritative per-lane ids (the env adopts a rolled id
-            // on a NEXT_STEP autoreset).
-            episode_ids: self.episode_ids.clone(),
-        };
+        // Push the authoritative per-lane ids (the env adopts a rolled id on a
+        // NEXT_STEP autoreset).
+        let pushed_ids = self.episode_ids.clone();
         let inner = &mut self.inner;
-        let response = bounded(timeout, inner.step(request)).await?;
-
-        let observations = decode_batched_partial_values(
-            response.observation.as_ref(),
-            &observation_space,
-            self.num_envs,
-        )
-        .map_err(|err| Error::Protocol(err.to_string()))?;
-        let terminated = response
-            .terminated_mask
-            .iter()
-            .map(|value| *value != 0)
-            .collect::<Vec<_>>();
-        let truncated = response
-            .truncated_mask
-            .iter()
-            .map(|value| *value != 0)
-            .collect::<Vec<_>>();
-        let completed_episodes = response
-            .completed_episodes
-            .into_iter()
-            .map(proto_episode_metadata_to_public)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Error::Protocol)?;
+        let VectorStepResult {
+            observations,
+            rewards,
+            terminated,
+            truncated,
+            info,
+            completed_episodes,
+            ..
+        } = bounded(timeout, inner.step(&req.actions, pushed_ids, timeout)).await?;
 
         let env_count = self.num_envs;
         for check in [
             validate_count(&observations, env_count, "observations"),
             validate_count(&terminated, env_count, "terminated values"),
             validate_count(&truncated, env_count, "truncated values"),
-            validate_count(&response.rewards, env_count, "rewards values"),
+            validate_count(&rewards, env_count, "rewards values"),
         ] {
             check.map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
         }
 
-        let mut info = response
-            .infos
-            .map(rlmesh_grpc::wire::meta_map_from_proto)
-            .unwrap_or_default();
+        let mut info = info.unwrap_or_default();
         let ids = self.episode_ids_value();
         self.insert_runtime_info(&mut info, "episode_ids", ids);
         // A single env reports 1 on the step that ends its episode; a vector
@@ -856,7 +1094,7 @@ impl EnvClientCore {
         // lane still belongs to the episode that just ended).
         let result = VectorStepResult {
             observations,
-            rewards: response.rewards,
+            rewards,
             terminated,
             truncated,
             info: Some(info),
@@ -885,15 +1123,8 @@ impl EnvClientCore {
             crate::run::drive::refuse_in_async_context("RunContext render")?;
             let mut inner = inner.clone();
             crate::run::drive::run_sync(async move {
-                let request = render_request_to_proto(&RenderRequest {
-                    env_index: Some(0),
-                    timeout_ms: i64::try_from(wire_timeout_ms(timeout)).unwrap_or(i64::MAX),
-                });
-                let response = bounded(timeout, inner.render(request)).await?;
-                let result = render_result_from_proto(response)
-                    .map_err(|e| Error::Protocol(e.to_string()))?;
-                match result.frame {
-                    Some(frame) => decode_render_png(&frame.frame),
+                match bounded(timeout, inner.render(0, timeout)).await? {
+                    Some(png) => decode_render_png(&png),
                     None => Ok(Value::None),
                 }
             })
@@ -905,15 +1136,8 @@ impl EnvClientCore {
         self.check_open()?;
         let lane = wire_lane(env_index)?;
         let timeout = self.request_timeout;
-        let request = render_request_to_proto(&RenderRequest {
-            env_index: Some(lane as usize),
-            timeout_ms: i64::try_from(wire_timeout_ms(timeout)).unwrap_or(i64::MAX),
-        });
         let inner = &mut self.inner;
-        let response = bounded(timeout, inner.render(request)).await?;
-        let result =
-            render_result_from_proto(response).map_err(|err| Error::Protocol(err.to_string()))?;
-        Ok(result.frame.map(|frame| frame.frame))
+        bounded(timeout, inner.render(lane, timeout)).await
     }
 
     /// Close this client's session (idempotent). Bounded by the request
@@ -927,9 +1151,9 @@ impl EnvClientCore {
         self.closed = true;
         let bound = self.request_timeout.unwrap_or(CLOSE_GRACE);
         #[cfg(feature = "lockstep")]
-        if let Link::Lockstep { env, .. } = &self.inner {
+        if let Link::Lockstep { client, .. } = &self.inner {
             // Releases the lease, so the robot re-arms for the next driver.
-            if tokio::time::timeout(bound, env.close()).await.is_err() {
+            if tokio::time::timeout(bound, client.close()).await.is_err() {
                 tracing::debug!("lockstep detach did not complete within {bound:?}");
             }
             return Ok(());
@@ -962,7 +1186,7 @@ impl EnvClientCore {
     /// Register owned cleanup before it is queued by a nonblocking Drop.
     pub(crate) fn prepare_close(&self) {
         match &self.inner {
-            Link::Grpc(inner) => inner.prepare_close(),
+            Link::Grpc { client, .. } => client.prepare_close(),
             #[cfg(feature = "lockstep")]
             Link::Lockstep { .. } => {}
         }

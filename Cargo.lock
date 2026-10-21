@@ -5197,7 +5197,6 @@ dependencies = [
  "image",
  "indexmap 2.14.0",
  "libc",
- "prost",
  "rand 0.10.1",
  "rav1e",
  "rayon",

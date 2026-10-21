@@ -47,6 +47,33 @@ pub(crate) fn env_offer(declared: Option<&str>) -> (String, Vec<String>) {
     )
 }
 
+/// A lockstep env's offer (its `gym_env` edition answers), negotiated
+/// against `declared` (the driver's WANT) exactly as the gRPC env client
+/// negotiates it: the env's offer, the selected edition and its retained
+/// base. A refusal is the message to report.
+#[cfg(feature = "lockstep")]
+pub(crate) fn negotiate_env(
+    info: &crate::lockstep::GymEnvInfo,
+    declared: Option<&str>,
+) -> std::result::Result<(rlmesh_proto::SessionOffer, String, rlmesh_proto::Edition), String> {
+    let env = rlmesh_proto::SessionOffer {
+        editions: info.supported_workflow_editions.clone(),
+        preferred: Some(info.workflow_edition.trim().to_string()).filter(|w| !w.is_empty()),
+    };
+    let selected = rlmesh_proto::negotiate_workflow_edition(
+        &env,
+        &rlmesh_proto::SessionOffer::this_build(declared),
+    )
+    .map_err(|refusal| {
+        format!(
+            "no mutual workflow edition with the env: {refusal}{}",
+            refusal.hint()
+        )
+    })?;
+    let base = rlmesh_proto::parse_retained_edition(&selected)?;
+    Ok((env, selected, base))
+}
+
 /// The declarations one participant could resolve from (rungs 1, 3 and 4).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EditionSources<'a> {

@@ -26,7 +26,6 @@ async-trait = { workspace = true }
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-prost = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
 rlmesh-spaces = { workspace = true }
@@ -78,7 +77,6 @@ lockstep = [
   "dep:base64",
   "dep:blake3",
   "dep:bytes",
-  "dep:prost",
   "dep:rlmesh-session",
   "dep:thiserror",
   "dep:zenoh",

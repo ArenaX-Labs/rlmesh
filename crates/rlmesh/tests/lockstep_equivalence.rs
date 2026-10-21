@@ -470,10 +470,10 @@ fn run_managed(v2: bool) -> Traces {
             .unwrap();
         client.handshake().await.unwrap();
         if v2 {
-            let env = rlmesh::lockstep::connect(&env_address, Default::default())
-                .await
-                .unwrap();
-            let handshake = env.handshake(Some("2026.06")).unwrap();
+            let (env, handshake) =
+                rlmesh::binding::model::LockstepRuntimeEnv::connect(&env_address, Some("2026.06"))
+                    .await
+                    .unwrap();
             let floor = rlmesh_grpc::env_floor(
                 &handshake.session_offer(),
                 &client.model_session_offer(),

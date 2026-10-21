@@ -11,10 +11,8 @@
 //!   map, leaf slabs to part slabs and back, bit-exact.
 //! - [`served`]: a served env behind the lockstep exchange ([`GymEnv`] over
 //!   a [`Served`] env, on native values).
-//! - [`compat`]: a lockstep env as a v1
-//!   [`RuntimeEnv`](rlmesh_runtime::RuntimeEnv) ([`LockstepEnv`]), so the v1
-//!   runtime's chunking, prefetch, batching, autoreset and episode ids run
-//!   unchanged.
+//! - [`client`]: the driver of a lockstep Gym env ([`LockstepClient`]), on
+//!   native values.
 //! - [`session`]: attach, declare, arm and one lease grant; addresses
 //!   (`lockstep://...`).
 //! - [`view`]: the Gym view over a v2-native robot (§12.6).
@@ -25,7 +23,7 @@
 
 #![warn(missing_docs)]
 
-pub mod compat;
+pub mod client;
 pub mod error;
 pub mod escape;
 pub mod exchange;
@@ -47,7 +45,7 @@ pub mod adapters {
     };
 }
 
-pub use compat::{Keep, LockstepEnv};
+pub use client::{Keep, LockstepClient};
 pub use error::GymError;
 pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
