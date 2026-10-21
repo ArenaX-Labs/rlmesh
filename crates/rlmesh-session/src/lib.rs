@@ -19,6 +19,8 @@
 //!   (`safety > operator > model > scripted`), command groups, TTLs,
 //!   preemption and fencing tokens. Sans-IO; the [`SessionHost`] is its
 //!   single writer.
+//! - [`lease`]: the holder's side of a lease (deadline, renewal, loss,
+//!   fencing), sans-IO; the [`Controller`] and the browser binding share it.
 //! - [`virtual_clock`]: the virtual-mode tick barrier (§11.3), sans-IO.
 //! - [`clock`]: clock domains and NTP-style offset estimation with an error
 //!   bound, fed by heartbeats.
@@ -74,6 +76,7 @@ pub mod participant;
 pub mod record;
 pub mod report;
 pub mod sample;
+pub use rlmesh_session_core::lease;
 pub use rlmesh_session_core::schedule;
 pub use rlmesh_session_core::spec;
 pub mod transport;

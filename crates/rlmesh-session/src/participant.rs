@@ -37,7 +37,7 @@ use zenoh::query::ConsolidationMode;
 use zenoh::sample::SampleKind;
 
 use crate::chunk::ChunkPublisher;
-use crate::clock::{Clock, MonotonicClock};
+use crate::clock::{Clock, MonotonicClock, OffsetEstimate};
 use crate::error::SessionError;
 use crate::media::ImagePublisher;
 use crate::report::{ReportInputs, RunSource, report_loop};
@@ -345,6 +345,17 @@ impl Shared {
     /// host's snapshot, which updates this participant's view even when the
     /// verb was refused.
     async fn ctl(&self, command: Command) -> Result<(AuthoritySnapshot, Vec<Lease>), SessionError> {
+        let CtlReply {
+            result,
+            state,
+            leases,
+        } = self.ctl_reply(command).await?;
+        result?;
+        Ok((state, leases))
+    }
+
+    /// [`Self::ctl`], with a refusal left in the reply.
+    async fn ctl_reply(&self, command: Command) -> Result<CtlReply, SessionError> {
         let (epoch, _) = self.epoch_and_mode();
         let request = Request {
             from: self.id.clone(),
@@ -368,14 +379,9 @@ impl Shared {
             .await
             .map_err(|_| SessionError::NoReply(timeout))?;
         let sample = reply.result().map_err(|_| SessionError::NoReply(timeout))?;
-        let CtlReply {
-            result,
-            state,
-            leases,
-        } = codec::decode_reply(&sample.payload().to_bytes())?;
-        self.observe(state.clone());
-        result?;
-        Ok((state, leases))
+        let reply = codec::decode_reply(&sample.payload().to_bytes())?;
+        self.observe(reply.state.clone());
+        Ok(reply)
     }
 }
 
@@ -711,10 +717,7 @@ impl Participant {
         release: Vec<ChannelId>,
         ttl: Option<Duration>,
     ) -> Result<Vec<Lease>, SessionError> {
-        let binding = self
-            .authority()
-            .and_then(|view| view.binding(&self.shared.id).map(|b| b.fingerprint))
-            .unwrap_or_default();
+        let binding = self.binding_fingerprint();
         let ttl_ns = ttl.map(|ttl| u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX));
         let (_, leases) = self
             .shared
@@ -726,6 +729,28 @@ impl Participant {
             })
             .await?;
         Ok(leases)
+    }
+
+    /// The fingerprint of this participant's declared binding (zero: none).
+    pub fn binding_fingerprint(&self) -> Fingerprint {
+        self.authority()
+            .and_then(|view| view.binding(&self.shared.id).map(|b| b.fingerprint))
+            .unwrap_or_default()
+    }
+
+    /// Sends one verb and returns the host's reply, a refusal included (as
+    /// its `result`); the reply's snapshot updates the view either way.
+    pub async fn command(&self, command: Command) -> Result<CtlReply, SessionError> {
+        self.shared.ctl_reply(command).await
+    }
+
+    /// The host's estimate of this participant's clock offset, from the
+    /// current view.
+    pub fn clock_estimate(&self) -> Option<OffsetEstimate> {
+        self.shared.view.borrow().as_ref().and_then(|view| {
+            view.clock(&self.shared.id)
+                .map(OffsetEstimate::from_mapping)
+        })
     }
 
     /// [`Self::grant_leases`] for one part.

@@ -1,6 +1,8 @@
-//! The holder's side of one lease (§9.7), sans-IO: a participant that
-//! commands a part without the controller runtime (the browser binding,
-//! through its gateway) tracks its lease here.
+//! The holder's side of a lease (§9.7), sans-IO: every participant that
+//! commands a part tracks its lease here. The browser binding holds one
+//! [`LeaseClient`] per part; the native controller holds its binding's
+//! parts together as a [`LeaseGroup`] (one all-or-none request, one client
+//! per part).
 //!
 //! The host is the only authority: this client never grants, renews or
 //! extends anything on its own. It turns the host's answers into a local
@@ -443,6 +445,122 @@ impl LeaseClient {
     }
 }
 
+/// A binding's leases held together, as a controller holds them: one
+/// all-or-none `GrantLease` for every part, then one [`LeaseClient`] per
+/// part for its deadline, renewal, loss and release.
+#[derive(Clone, Debug)]
+pub struct LeaseGroup {
+    clients: Vec<LeaseClient>,
+}
+
+impl LeaseGroup {
+    /// `me`'s leases on `channels`; see [`LeaseClient::new`] for the margin.
+    pub fn new(me: &ParticipantId, channels: &[ChannelId], margin_ns: i64) -> Self {
+        Self {
+            clients: channels
+                .iter()
+                .map(|channel| LeaseClient::new(me.clone(), *channel, margin_ns))
+                .collect(),
+        }
+    }
+
+    /// The parts, in order.
+    pub fn channels(&self) -> Vec<ChannelId> {
+        self.clients.iter().map(LeaseClient::channel).collect()
+    }
+
+    /// Starts a request for every part at once: the one `GrantLease` verb,
+    /// sent at `now_ns`.
+    pub fn request(&mut self, binding: Fingerprint, ttl_ns: Option<u64>, now_ns: i64) -> Command {
+        for client in &mut self.clients {
+            client.request(binding, ttl_ns, now_ns);
+        }
+        Command::GrantLease {
+            channels: self.channels(),
+            release: Vec::new(),
+            binding,
+            ttl_ns,
+        }
+    }
+
+    /// The host's reply to the request. Returns whether every lease is now
+    /// held.
+    pub fn on_reply(
+        &mut self,
+        reply: &CtlReply,
+        clock: Option<&OffsetEstimate>,
+        now_ns: i64,
+    ) -> bool {
+        // Every client sees the reply: no short circuit.
+        let mut all = true;
+        for client in &mut self.clients {
+            all &= client.on_reply(reply, clock, now_ns);
+        }
+        all
+    }
+
+    /// An authority snapshot, applied to every part: what it did to each.
+    pub fn on_snapshot(
+        &mut self,
+        snapshot: &AuthoritySnapshot,
+        clock: Option<&OffsetEstimate>,
+        now_ns: i64,
+    ) -> Vec<(ChannelId, LeaseChange)> {
+        self.clients
+            .iter_mut()
+            .filter_map(|client| {
+                let change = client.on_snapshot(snapshot, clock, now_ns)?;
+                Some((client.channel(), change))
+            })
+            .collect()
+    }
+
+    /// The lease on `channel`, while held at `now_ns`.
+    pub fn lease(&mut self, channel: ChannelId, now_ns: i64) -> Option<&Lease> {
+        let client = self.clients.iter_mut().find(|c| c.channel() == channel)?;
+        client.tick(now_ns);
+        client.lease()
+    }
+
+    /// The leases held at `now_ns`.
+    pub fn held(&mut self, now_ns: i64) -> Vec<Lease> {
+        self.clients
+            .iter_mut()
+            .filter_map(|client| {
+                client.tick(now_ns);
+                client.lease().cloned()
+            })
+            .collect()
+    }
+
+    /// Whether every part's lease is held at `now_ns`.
+    pub fn holds_all(&mut self, now_ns: i64) -> bool {
+        self.clients.iter_mut().all(|client| {
+            client.tick(now_ns);
+            client.lease().is_some()
+        })
+    }
+
+    /// Gives every lease back: one `ReleaseLease` verb per token still held
+    /// (or expired locally but maybe still held at the host).
+    pub fn release(&mut self) -> Vec<Command> {
+        let mut by_token: Vec<(LeaseToken, Vec<ChannelId>)> = Vec::new();
+        for client in &mut self.clients {
+            let Some(Command::ReleaseLease { channels, token }) = client.release() else {
+                continue;
+            };
+            match by_token.iter_mut().find(|(t, _)| *t == token) {
+                Some((_, all)) => all.extend(channels),
+                None => by_token.push((token, channels)),
+            }
+        }
+        by_token
+            .into_iter()
+            .map(|(token, channels)| Command::ReleaseLease { channels, token })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -664,5 +782,48 @@ mod tests {
             matches!(client.state(MS), LeaseState::Refused { ref error } if error.status == CtlStatus::LeaseBusy)
         );
         assert_eq!(client.release(), None);
+    }
+
+    #[test]
+    fn a_group_is_granted_all_or_none_and_released_per_token() {
+        let mut group = LeaseGroup::new(&me(), &[ChannelId(3), ChannelId(4)], 0);
+        let verb = group.request(Fingerprint::from(7), None, 0);
+        assert!(
+            matches!(verb, Command::GrantLease { ref channels, .. } if channels == &[ChannelId(3), ChannelId(4)])
+        );
+        let other = Lease {
+            channel: ChannelId(4),
+            ..lease("web-1", 9, 1_000 * MS)
+        };
+        let both = vec![lease("web-1", 9, 1_000 * MS), other.clone()];
+        let reply = CtlReply {
+            result: Ok(()),
+            state: snapshot(5, 0, Mode::Active, both.clone()),
+            leases: both,
+        };
+        assert!(group.on_reply(&reply, None, MS));
+        assert!(group.holds_all(2 * MS));
+        // One part preempted: the group no longer holds all of them.
+        let safety = Lease {
+            priority: PriorityClass::Safety,
+            ..lease("supervisor", 10, 2_000 * MS)
+        };
+        let changes = group.on_snapshot(
+            &snapshot(6, 1, Mode::Active, vec![safety, other]),
+            None,
+            3 * MS,
+        );
+        assert!(
+            matches!(changes.as_slice(), [(ChannelId(3), LeaseChange::Revoked(r)), (ChannelId(4), LeaseChange::Renewed)] if r.contains("preempted"))
+        );
+        assert!(!group.holds_all(3 * MS));
+        assert!(group.lease(ChannelId(4), 3 * MS).is_some());
+        assert_eq!(
+            group.release(),
+            vec![Command::ReleaseLease {
+                channels: vec![ChannelId(4)],
+                token: LeaseToken(9)
+            }]
+        );
     }
 }

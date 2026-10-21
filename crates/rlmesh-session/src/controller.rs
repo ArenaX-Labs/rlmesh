@@ -6,7 +6,8 @@
 //!   (refuse-and-explain, §6.7), declares the binding and opens its inputs
 //!   ([`Inputs`]).
 //! - **Leases.** A background keeper holds the binding's leases while they
-//!   are wanted: it requests them, re-requests them after a preemption
+//!   are wanted, as one [`LeaseGroup`] (the holder state machine the
+//!   browser binding runs too, with its local deadline): it requests them, re-requests them after a preemption
 //!   ends, a lapse or a re-arm (each with a fresh token), and declares a
 //!   chunk sender per granted lease. On the wall clock it waits until the
 //!   host has mapped this controller's clock and its robots' (an edge
@@ -40,9 +41,7 @@ use std::time::Duration;
 use crate::spec::apply::{ApplyError, Value};
 use crate::spec::policy::ChunkStart;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
-use crate::wire::{
-    ChannelId, ClockMode, Epoch, InputRange, Lease, Mode, ParticipantId, RunCounters,
-};
+use crate::wire::{ChannelId, ClockMode, InputRange, Lease, Mode, ParticipantId, RunCounters};
 use bytes::Bytes;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -51,6 +50,7 @@ use tracing::{debug, info, warn};
 use crate::cache::{Inputs, Observation, ObserveError, Skip};
 use crate::chunk::{ChunkDraft, ChunkPublisher};
 use crate::error::SessionError;
+use crate::lease::{LeaseChange, LeaseGroup};
 use crate::participant::Participant;
 use crate::report::run_counters;
 use crate::schedule::{PhaseAlign, RunEvent, RunStats, SkipReason, StartSchedule};
@@ -160,17 +160,13 @@ pub trait Predictor {
     }
 }
 
-struct Held {
-    lease: Lease,
-    epoch: Epoch,
-    publisher: ChunkPublisher,
-}
-
-/// The lease keeper's shared state.
+/// The lease keeper's shared state: the binding's leases as one
+/// [`LeaseGroup`] (the holder state machine the browser binding runs too),
+/// and a chunk sender per granted token.
 struct Leases {
-    channels: Vec<ChannelId>,
+    group: Mutex<LeaseGroup>,
+    publishers: Mutex<BTreeMap<ChannelId, ChunkPublisher>>,
     want: AtomicBool,
-    held: Mutex<BTreeMap<ChannelId, Held>>,
     /// Serialises grants and releases between the keeper and explicit
     /// calls.
     request: tokio::sync::Mutex<()>,
@@ -179,36 +175,39 @@ struct Leases {
 }
 
 impl Leases {
-    fn held(&self) -> MutexGuard<'_, BTreeMap<ChannelId, Held>> {
-        self.held
+    fn group(&self) -> MutexGuard<'_, LeaseGroup> {
+        self.group
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Drops chunk senders the authority view no longer backs (lost to a
-    /// preemption, lapsed, or voided by a new epoch).
-    fn prune(&self, participant: &Participant) {
-        let me = participant.id();
-        participant.authority_view().with(|view| {
-            let Some(view) = view else {
-                return;
-            };
-            self.held().retain(|channel, held| {
-                let kept = view.epoch == held.epoch
-                    && view
-                        .lease(*channel)
-                        .is_some_and(|l| &l.holder == me && l.token == held.lease.token);
-                if !kept {
-                    info!(participant = %me, %channel, token = %held.lease.token, "lease lost");
-                }
-                kept
-            });
-        });
+    fn publishers(&self) -> MutexGuard<'_, BTreeMap<ChannelId, ChunkPublisher>> {
+        self.publishers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn holds_all(&self) -> bool {
-        let held = self.held();
-        self.channels.iter().all(|c| held.contains_key(c))
+    /// Applies the current authority view: renews the held leases, and
+    /// drops what it no longer backs (lost to a preemption, lapsed, or
+    /// voided by a new epoch) with its chunk sender.
+    fn sync(&self, participant: &Participant) {
+        let Some(snapshot) = participant.authority_view().current() else {
+            return;
+        };
+        let now = participant.clock().now_ns();
+        let changes =
+            self.group()
+                .on_snapshot(&snapshot, participant.clock_estimate().as_ref(), now);
+        for (channel, change) in changes {
+            if let LeaseChange::Revoked(reason) = change {
+                info!(participant = %participant.id(), %channel, %reason, "lease lost");
+                self.publishers().remove(&channel);
+            }
+        }
+    }
+
+    fn holds_all(&self, participant: &Participant) -> bool {
+        self.group().holds_all(participant.clock().now_ns())
     }
 
     /// Whether the host has mapped this controller's clock and the clock of
@@ -217,6 +216,7 @@ impl Leases {
     /// rejected chunks; a ticked session needs no mapping.
     fn clocks_mapped(&self, participant: &Participant) -> bool {
         let me = participant.id();
+        let channels = self.group().channels();
         participant.authority_view().with(|view| {
             let Some(view) = view else {
                 return false;
@@ -225,7 +225,7 @@ impl Leases {
                 return true;
             }
             view.clock(me).is_some()
-                && self.channels.iter().all(|c| {
+                && channels.iter().all(|c| {
                     view.part(*c)
                         .is_some_and(|part| view.clock(&part.owner).is_some())
                 })
@@ -236,53 +236,45 @@ impl Leases {
     /// token.
     async fn grant(&self, participant: &Participant) -> Result<Vec<Lease>, SessionError> {
         let _request = self.request.lock().await;
-        let leases = participant
-            .grant_leases(self.channels.clone(), Vec::new(), self.ttl)
-            .await?;
-        let epoch = participant.authority_view().epoch();
-        for lease in &leases {
+        let ttl_ns = self
+            .ttl
+            .map(|ttl| u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX));
+        let command = self.group().request(
+            participant.binding_fingerprint(),
+            ttl_ns,
+            participant.clock().now_ns(),
+        );
+        let reply = participant.command(command).await?;
+        self.group().on_reply(
+            &reply,
+            participant.clock_estimate().as_ref(),
+            participant.clock().now_ns(),
+        );
+        reply.result.clone()?;
+        for lease in &reply.leases {
             let current = self
-                .held()
+                .publishers()
                 .get(&lease.channel)
-                .is_some_and(|h| h.lease.token == lease.token && h.epoch == epoch);
+                .is_some_and(|p| p.token() == lease.token);
             if current {
                 continue;
             }
             let publisher = participant.chunk_publisher(lease).await?;
             info!(participant = %participant.id(), channel = %lease.channel, token = %lease.token, "lease granted");
-            self.held().insert(
-                lease.channel,
-                Held {
-                    lease: lease.clone(),
-                    epoch,
-                    publisher,
-                },
-            );
+            self.publishers().insert(lease.channel, publisher);
         }
-        Ok(leases)
+        Ok(reply.leases)
     }
 
     /// Gives every held lease back.
     async fn release(&self, participant: &Participant) -> Result<(), SessionError> {
         let _request = self.request.lock().await;
-        let by_token: BTreeMap<_, Vec<ChannelId>> =
-            self.held()
-                .values()
-                .fold(BTreeMap::new(), |mut by_token, held| {
-                    by_token
-                        .entry(held.lease.token)
-                        .or_insert_with(Vec::new)
-                        .push(held.lease.channel);
-                    by_token
-                });
-        self.held().clear();
-        for (token, channels) in by_token {
-            match participant.release_leases(channels, token).await {
-                // Already gone (preempted, lapsed, a new epoch): nothing to
-                // give back.
-                Ok(_) | Err(SessionError::Rejected(_)) => {}
-                Err(err) => return Err(err),
-            }
+        let commands = self.group().release();
+        self.publishers().clear();
+        for command in commands {
+            // A refusal means it is already gone (preempted, lapsed, a new
+            // epoch): nothing to give back.
+            participant.command(command).await?;
         }
         Ok(())
     }
@@ -297,11 +289,11 @@ async fn keep_leases(
 ) {
     let mut view = participant.watch();
     loop {
-        leases.prune(&participant);
+        leases.sync(&participant);
         let wanted = leases.want.load(Ordering::Relaxed);
         let mode = participant.authority().map(|v| v.mode);
         if wanted
-            && !leases.holds_all()
+            && !leases.holds_all(&participant)
             && matches!(mode, Some(Mode::Armed | Mode::Active))
             && leases.clocks_mapped(&participant)
         {
@@ -411,9 +403,9 @@ impl Controller {
         participant.declare_bound(&binding).await?;
         let inputs = Inputs::open(&participant, &binding).await?;
         let leases = Arc::new(Leases {
-            channels: binding.channels(),
+            group: Mutex::new(LeaseGroup::new(participant.id(), &binding.channels(), 0)),
+            publishers: Mutex::new(BTreeMap::new()),
             want: AtomicBool::new(false),
-            held: Mutex::new(BTreeMap::new()),
             request: tokio::sync::Mutex::new(()),
             wake: Notify::new(),
             ttl: config.lease_ttl,
@@ -494,18 +486,14 @@ impl Controller {
 
     /// Whether this controller holds every lease its binding commands.
     pub fn holds(&self) -> bool {
-        self.leases.prune(&self.participant);
-        self.leases.holds_all()
+        self.leases.sync(&self.participant);
+        self.leases.holds_all(&self.participant)
     }
 
     /// The leases held now.
     pub fn leases(&self) -> Vec<Lease> {
-        self.leases.prune(&self.participant);
-        self.leases
-            .held()
-            .values()
-            .map(|h| h.lease.clone())
-            .collect()
+        self.leases.sync(&self.participant);
+        self.leases.group().held(self.participant.clock().now_ns())
     }
 
     /// Takes the binding's leases now (all or none), preempting a lower
@@ -579,9 +567,17 @@ impl Controller {
                 actions,
                 tick: 0,
             };
-            let held = self.leases.held();
-            let outcome = match held.get(&part.channel) {
-                Some(held) => Sent::Seq(held.publisher.send(draft)?),
+            let token = self
+                .leases
+                .group()
+                .lease(part.channel, self.participant.clock().now_ns())
+                .map(|lease| lease.token);
+            let publishers = self.leases.publishers();
+            let outcome = match publishers
+                .get(&part.channel)
+                .filter(|p| Some(p.token()) == token)
+            {
+                Some(publisher) => Sent::Seq(publisher.send(draft)?),
                 None => Sent::NoLease,
             };
             sent.push((row.entry.clone(), outcome));
