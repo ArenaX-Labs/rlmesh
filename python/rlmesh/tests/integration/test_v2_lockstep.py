@@ -4,12 +4,15 @@
   addresses: the same env and model over v1 (gRPC) and v2 (lockstep) leave
   the same traces, bit for bit, across every space kind and v1 dtype, a
   vector env with NEXT_STEP autoreset, seeds and chunking.
-- :class:`rlmesh.v2.GymView` drives a v2-native robot served in lockstep.
+- A served model (``RemoteModel``) runs a lockstep env as it runs a gRPC one.
+- :class:`rlmesh.v2.GymView` drives a v2-native robot served in lockstep; a
+  lockstep robot needs no rates or kinds.
 """
 
 from __future__ import annotations
 
 import hashlib
+import time
 from typing import Any, cast
 
 import numpy as np
@@ -203,6 +206,46 @@ def test_a_next_step_vector_env_runs_unchanged_on_lockstep() -> None:
     assert lockstep == v1
 
 
+def test_a_served_model_runs_a_lockstep_env_as_it_runs_a_grpc_one() -> None:
+    import socket
+    import threading
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    model_address = f"127.0.0.1:{sock.getsockname()[1]}"
+    sock.close()
+    model = rlmesh.numpy.Model(Recorder())
+    threading.Thread(target=lambda: model.serve(model_address), daemon=True).start()
+
+    def trace(address: str) -> tuple[Any, ...]:
+        log: list[str] = []
+        server = rlmesh.EnvServer(CatalogEnv(log), address)
+        server.start()
+        hooks = Hooks()
+        try:
+            for _ in range(100):
+                try:
+                    rlmesh.run(
+                        rlmesh.RemoteModel(model_address),
+                        server.address,
+                        seeds=[5, 6],
+                        hooks=hooks,
+                        workflow_edition="2026.06",
+                    )
+                    break
+                except ConnectionError:  # the model server is still starting
+                    time.sleep(0.05)
+        finally:
+            server.shutdown()
+        # Steps' info carries run-minted episode ids; the env's log and the
+        # episodes say what ran.
+        return log, len(hooks.steps), hooks.episodes
+
+    grpc = trace("127.0.0.1:0")
+    assert len(grpc[2]) == 2
+    assert trace("lockstep://127.0.0.1:0/served") == grpc
+
+
 ARM = {
     "arm": {
         "kind": "joints",
@@ -340,3 +383,51 @@ def test_the_gym_view_keys_a_policy_s_entries_and_plays_its_chunks() -> None:
         finally:
             env.close()
             robot.close()
+
+
+def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
+    # A game: no hz (lockstep steps it), no kinds (each part is its own).
+    game = {
+        "board": {"fields": {"cells": ["int8", [9]]}},
+        "move": {"fields": {"cell": ["int64", []]}, "command": "value"},
+    }
+    with v2.Host() as host:
+        robot = v2.Robot("ttt", game, session=host, clock="lockstep")
+        assert robot.parts == {"board": "local/board", "move": "local/move"}
+        board = np.zeros(9, np.int8)
+
+        def step(commands: dict[str, Any]) -> Any:
+            board[int(commands["move"])] = 1
+            robot.publish("board", board)
+            return 1.0, bool(board.all()), False, {"filled": np.int64(board.sum())}
+
+        def reset(seed: int | None, options: Any) -> Any:
+            board[:] = 0
+            robot.publish("board", board)
+            return {"options": options}
+
+        robot.serve_lockstep(step, reset, background=True)
+        env = v2.GymView(host)
+        try:
+            _, info = env.reset(seed=1, options={"first": np.arange(2)})
+            assert info["options"] == {"first": [0, 1]}
+            obs, reward, _, _, info = env.step(np.int32(4))  # the one action entry
+            assert obs["board"].tolist() == [0, 0, 0, 0, 1, 0, 0, 0, 0]
+            assert (reward, info["filled"]) == (1.0, 1)
+        finally:
+            env.close()
+            robot.close()
+
+
+def test_the_gym_view_sends_a_gym_env_to_remote_env() -> None:
+    server = rlmesh.EnvServer(CatalogEnv(), "lockstep://127.0.0.1:0/gym")
+    server.start()
+    try:
+        session, robot = server.address[len("lockstep://") :].rsplit("/", 1)
+        with pytest.raises(v2.SessionException, match="RemoteEnv"):
+            v2.GymView(session, robot=robot)
+        remote = rlmesh.numpy.RemoteEnv(server.address)
+        assert remote.observation_space["mode"] == catalog_spaces()[0]["mode"]
+        remote.close()
+    finally:
+        server.shutdown()

@@ -346,7 +346,7 @@ description = "Run Python integration tests"
 run = "uv run pytest python/rlmesh/tests/integration -q"
 
 [tasks."test:python:conformance"]
-description = "Run Python adapter-spec conformance vectors (cross-engine parity gate)"
+description = "Run Python conformance gates: adapter-spec vectors (cross-engine parity) and Gymnasium (served envs behave as plain gymnasium, over gRPC and lockstep)"
 run = "uv run pytest python/rlmesh/tests/conformance -q"
 
 [tasks."test:python:api-surface"]
