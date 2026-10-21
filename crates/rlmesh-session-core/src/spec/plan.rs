@@ -185,15 +185,14 @@ pub enum Step {
         /// To.
         to: (f64, f64),
     },
-    /// Declared affine: inputs `(x - offset) * scale`, actions
-    /// `x * scale + offset`.
+    /// Declared affine `x * scale + offset` ([`convert::affine`]).
+    ///
+    /// [`convert::affine`]: crate::spec::convert::affine
     Affine {
         /// Scale values (empty: 1).
         scale: Vec<f64>,
         /// Offset values (empty: 0).
         offset: Vec<f64>,
-        /// An action's (applied before the other steps).
-        action: bool,
     },
     /// A window of the last `n` samples by seq.
     Window(u32),
@@ -302,26 +301,13 @@ impl fmt::Display for Step {
                 num(to.0),
                 num(to.1)
             ),
-            Self::Affine {
-                scale,
-                offset,
-                action,
-            } => {
+            Self::Affine { scale, offset } => {
                 let mut parts = Vec::new();
-                if *action {
-                    if !scale.is_empty() {
-                        parts.push(format!("scale({})", values(scale)));
-                    }
-                    if !offset.is_empty() {
-                        parts.push(format!("offset({})", values(offset)));
-                    }
-                } else {
-                    if !offset.is_empty() {
-                        parts.push(format!("offset({})", values(offset)));
-                    }
-                    if !scale.is_empty() {
-                        parts.push(format!("scale({})", values(scale)));
-                    }
+                if !scale.is_empty() {
+                    parts.push(format!("scale({})", values(scale)));
+                }
+                if !offset.is_empty() {
+                    parts.push(format!("offset({})", values(offset)));
                 }
                 f.write_str(&parts.join(" → "))
             }

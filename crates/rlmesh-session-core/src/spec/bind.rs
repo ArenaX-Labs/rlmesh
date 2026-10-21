@@ -33,6 +33,7 @@ use serde_json::{Value, json};
 
 use crate::spec::canonical;
 use crate::spec::contract;
+use crate::spec::convert;
 use crate::spec::explain::{hz, ms, num};
 use crate::spec::kinds::{Kind, quantity};
 use crate::spec::normalise::attrs;
@@ -1601,12 +1602,7 @@ impl<'a> Binder<'a> {
     }
 
     /// The affine's arity: one value, or one per element.
-    fn affine(
-        &mut self,
-        slot: &Slot<'_>,
-        elements: Option<u64>,
-        action: bool,
-    ) -> Result<Option<Step>, ()> {
+    fn affine(&mut self, slot: &Slot<'_>, elements: Option<u64>) -> Result<Option<Step>, ()> {
         let (scale, offset) = (&slot.entry.scale, &slot.entry.offset);
         if scale.is_none() && offset.is_none() {
             return Ok(None);
@@ -1632,7 +1628,6 @@ impl<'a> Binder<'a> {
         Ok(Some(Step::Affine {
             scale: scale.clone().unwrap_or_default(),
             offset: offset.clone().unwrap_or_default(),
-            action,
         }))
     }
 
@@ -1939,7 +1934,7 @@ impl<'a> Binder<'a> {
                 })
                 .map(|c| u64::from(*c));
         }
-        match self.affine(slot, elements, false) {
+        match self.affine(slot, elements) {
             Ok(Some(step)) => {
                 for d in &mut delivered {
                     if !d.dtype.is_float() {
@@ -2270,19 +2265,12 @@ impl<'a> Binder<'a> {
                 .filter_map(|v| v.as_ref().map(Vec::len))
                 .max()
                 .unwrap_or(1);
-            let pick = |v: &Option<Vec<f64>>, i: usize, d: f64| {
-                v.as_ref().map_or(d, |v| {
-                    if v.len() == 1 {
-                        v[0]
-                    } else {
-                        v.get(i).copied().unwrap_or(d)
-                    }
-                })
-            };
+            let (scale, offset) = (
+                slot.entry.scale.as_deref().unwrap_or_default(),
+                slot.entry.offset.as_deref().unwrap_or_default(),
+            );
             fill = (0..n)
-                .map(|i| {
-                    (fill[0] - pick(&slot.entry.offset, i, 0.0)) * pick(&slot.entry.scale, i, 1.0)
-                })
+                .map(|i| convert::affine(fill[0], i, scale, offset))
                 .collect();
         }
         let (what, delivered) = match kind {
@@ -2522,7 +2510,7 @@ impl<'a> Binder<'a> {
         } else {
             None
         };
-        match self.affine(slot, elements, true) {
+        match self.affine(slot, elements) {
             Ok(Some(step)) => plan.steps.push(step),
             Ok(None) => {}
             Err(()) => return None,

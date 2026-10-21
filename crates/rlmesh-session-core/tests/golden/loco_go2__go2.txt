@@ -1,4 +1,4 @@
-binding loco_go2 on go2: 6 inputs, 1 action, fingerprint 600d1f1d78076124
+binding loco_go2 on go2: 6 inputs, 1 action, fingerprint e2b1af7aea1fdd22
 replan 50 Hz
 
   entry    dir  part           status  plan                                                                delivers
@@ -7,7 +7,7 @@ replan 50 Hz
   command  in   goal/cmd_vel   bound   fields linear, angular                                              f32 [3]
   q        in   legs           bound   fields pos → auto reorder(by names) → offset(12 values)             f32 [12]
   dq       in   legs           bound   fields vel → auto reorder(by names) → scale(0.05)                   f32 [12]
-  last     in   legs/_applied  bound   auto reorder(by names) → offset(12 values) → scale(4)               f32 [12]
+  last     in   legs/_applied  bound   auto reorder(by names) → scale(4) → offset(12 values)               f32 [12]
   legs     out  legs           bound   scale(0.25) → offset(12 values) → auto reorder(by names)            f32 [1, 12]
 
   input    contract   source  delivery  freshness

@@ -22,6 +22,7 @@ use std::fmt;
 use crate::wire::part::{DType, FieldSpec, Layout, PartSpec};
 
 use crate::spec::bind::{ActionRow, InputRow};
+use crate::spec::convert;
 use crate::spec::image::{Image, crop_cut, fit_resize, fit_resize_depth, normalise_table};
 use crate::spec::kinds::Kind;
 use crate::spec::plan::{Delivered, Delivery, Order, Step};
@@ -286,18 +287,13 @@ fn unpack(fields: &[FieldSpec], payload: &[u8]) -> Result<Vec<Field>, ApplyError
         .collect()
 }
 
-/// An affine over the delivered vector: one value or one per element.
-fn affine(fields: &mut [Field], scale: &[f64], offset: &[f64], action: bool) {
+/// The declared affine over the delivered vector, one element index across
+/// its fields.
+fn affine(fields: &mut [Field], scale: &[f64], offset: &[f64]) {
     let mut index = 0;
-    let pick = |v: &[f64], i: usize, default: f64| match v {
-        [] => default,
-        [one] => *one,
-        many => many.get(i).copied().unwrap_or(default),
-    };
     for field in fields {
         for x in field.values() {
-            let (s, o) = (pick(scale, index, 1.0), pick(offset, index, 0.0));
-            *x = if action { *x * s + o } else { (*x - o) * s };
+            *x = convert::affine(*x, index, scale, offset);
             index += 1;
         }
     }
@@ -451,7 +447,7 @@ impl InputRow {
                             rescale(f.values(), *from, *to);
                         }
                     }
-                    Step::Affine { scale, offset, .. } => affine(&mut fields, scale, offset, false),
+                    Step::Affine { scale, offset } => affine(&mut fields, scale, offset),
                     _ => {}
                 }
             }
@@ -513,13 +509,9 @@ impl InputRow {
                             fill,
                         );
                     }
-                    Step::Affine { scale, offset, .. } => {
-                        let (s, o) = (
-                            scale.first().copied().unwrap_or(1.0),
-                            offset.first().copied().unwrap_or(0.0),
-                        );
+                    Step::Affine { scale, offset } => {
                         for v in &mut image.data {
-                            *v = (*v - o) * s;
+                            *v = convert::affine(*v, 0, scale, offset);
                         }
                     }
                     _ => {}
@@ -567,18 +559,12 @@ impl InputRow {
                             .collect(),
                     );
                 }
-                Step::Affine { scale, offset, .. } => {
+                Step::Affine { scale, offset } => {
                     let values = floats
                         .get_or_insert_with(|| image.data.iter().map(|v| f64::from(*v)).collect());
                     let c = image.channels;
-                    let pick = |v: &[f64], ch: usize, default: f64| match v {
-                        [] => default,
-                        [one] => *one,
-                        many => many.get(ch).copied().unwrap_or(default),
-                    };
                     for (i, x) in values.iter_mut().enumerate() {
-                        let ch = i % c;
-                        *x = (*x - pick(offset, ch, 0.0)) * pick(scale, ch, 1.0);
+                        *x = convert::affine(*x, i % c, scale, offset);
                     }
                 }
                 _ => {}
@@ -763,7 +749,7 @@ impl ActionRow {
         for mut fields in per_action {
             for step in &self.plan.steps {
                 match step {
-                    Step::Affine { scale, offset, .. } => affine(&mut fields, scale, offset, true),
+                    Step::Affine { scale, offset } => affine(&mut fields, scale, offset),
                     Step::Rescale { from, to } => {
                         for f in &mut fields {
                             rescale(f.values(), *from, *to);

@@ -1,5 +1,6 @@
 //! Apply a resolved action plan to a model action output.
 
+use rlmesh_session_core::spec::convert;
 use rlmesh_spaces::Tensor;
 
 use super::geometry::convert_rotation;
@@ -8,44 +9,6 @@ use super::state::apply_affine;
 use super::value::{self, Value};
 use crate::error::ApplyError;
 use crate::plans::ActionPlan;
-
-/// Snap a corrected value to a definite binary side. A value exactly on the
-/// boundary (e.g. the model output equals the threshold, giving 0.0 here) opens
-/// (`>= 0`) rather than emitting an undefined 0.0, which is neither open nor close.
-fn binary_snap(value: f32) -> f32 {
-    if value >= 0.0 { 1.0 } else { -1.0 }
-}
-
-/// Apply one side's corrections in place, in the order scale, offset, invert,
-/// threshold (scale and offset each scalar or per-axis). Both the model side
-/// and the env side run this (model first), so a model can declare its own
-/// output convention instead of hardcoding the env's.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one call per side listing that side's six correction fields in apply order"
-)]
-fn apply_scalar_corrections(
-    piece: &mut [f32],
-    scale: Option<f64>,
-    axis_scale: Option<&[f64]>,
-    offset: Option<f64>,
-    axis_offset: Option<&[f64]>,
-    invert: bool,
-    threshold: Option<f64>,
-) {
-    apply_affine(piece, scale, axis_scale, offset, axis_offset);
-    if invert {
-        for entry in piece.iter_mut() {
-            *entry = -*entry;
-        }
-    }
-    if let Some(threshold) = threshold {
-        let threshold = threshold as f32;
-        for entry in piece.iter_mut() {
-            *entry -= threshold;
-        }
-    }
-}
 
 /// Convert a model action vector into the env action vector (float32).
 pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor, ApplyError> {
@@ -77,9 +40,9 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
         }
         // Corrections after the declared formats are bridged: model-side first
         // (the model's own output convention, in the model's own axis order),
-        // then the scatter onto the env's axes, then env-side, each in the
-        // order scale, offset, invert, threshold; the binary snap follows.
-        apply_scalar_corrections(
+        // then the scatter onto the env's axes, then env-side, each one affine
+        // (scale, offset, invert, threshold); the binary snap follows, at 0.
+        apply_affine(
             &mut piece,
             segment.model_scale,
             segment.model_axis_scale.as_deref(),
@@ -94,7 +57,7 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
                 .map(|&model_index| piece[model_index as usize])
                 .collect();
         }
-        apply_scalar_corrections(
+        apply_affine(
             &mut piece,
             segment.scale,
             segment.axis_scale.as_deref(),
@@ -110,7 +73,7 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
                 // thresholded boundary opens.
                 if segment.threshold.is_some() || segment.model_threshold.is_some() || *entry != 0.0
                 {
-                    *entry = binary_snap(*entry);
+                    *entry = convert::binary(f64::from(*entry), -1.0, 1.0) as f32;
                 }
             }
         }

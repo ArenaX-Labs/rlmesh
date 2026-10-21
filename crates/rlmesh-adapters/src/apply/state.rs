@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use rlmesh_session_core::spec::convert;
 use rlmesh_spaces::{DType, Tensor};
 
 use super::geometry::convert_rotation_with;
@@ -60,37 +61,42 @@ fn list_value(tensor: &Tensor) -> Vec<Value> {
         .collect()
 }
 
-/// `value * scale + offset` per element, either side per-axis. The per-axis
-/// widths were checked at resolve; a runtime value of another width already
-/// failed the piece-width assertion before this runs.
+/// `value * scale + offset` per element ([`convert::affine`]), each of scale
+/// and offset a scalar times/plus an optional per-axis value, then negated
+/// when `invert` and less `threshold`. The per-axis widths were checked at
+/// resolve; a runtime value of another width already failed the piece-width
+/// assertion before this runs.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a side's correction fields, in the order they apply"
+)]
 pub(super) fn apply_affine(
     value: &mut [f32],
     scale: Option<f64>,
     axis_scale: Option<&[f64]>,
     offset: Option<f64>,
     axis_offset: Option<&[f64]>,
+    invert: bool,
+    threshold: Option<f64>,
 ) {
-    if let Some(scale) = scale {
-        let scale = scale as f32;
-        for entry in value.iter_mut() {
-            *entry *= scale;
-        }
+    if scale.is_none()
+        && axis_scale.is_none()
+        && offset.is_none()
+        && axis_offset.is_none()
+        && !invert
+        && threshold.is_none()
+    {
+        return;
     }
-    if let Some(axis) = axis_scale {
-        for (entry, scale) in value.iter_mut().zip(axis) {
-            *entry *= *scale as f32;
-        }
-    }
-    if let Some(offset) = offset {
-        let offset = offset as f32;
-        for entry in value.iter_mut() {
-            *entry += offset;
-        }
-    }
-    if let Some(axis) = axis_offset {
-        for (entry, offset) in value.iter_mut().zip(axis) {
-            *entry += *offset as f32;
-        }
+    let axis = |values: Option<&[f64]>, i: usize, default: f64| {
+        values.and_then(|v| v.get(i).copied()).unwrap_or(default)
+    };
+    let sign = if invert { -1.0 } else { 1.0 };
+    for (i, entry) in value.iter_mut().enumerate() {
+        let s = sign * scale.unwrap_or(1.0) * axis(axis_scale, i, 1.0);
+        let o =
+            sign * (offset.unwrap_or(0.0) + axis(axis_offset, i, 0.0)) - threshold.unwrap_or(0.0);
+        *entry = convert::affine(f64::from(*entry), 0, &[s], &[o]) as f32;
     }
 }
 
@@ -135,6 +141,8 @@ pub(super) fn apply_state(
                 piece.axis_scale.as_deref(),
                 None,
                 piece.axis_offset.as_deref(),
+                false,
+                None,
             );
             state.extend(value);
             continue;
@@ -222,6 +230,8 @@ pub(super) fn apply_state(
             piece.axis_scale.as_deref(),
             piece.offset,
             piece.axis_offset.as_deref(),
+            false,
+            None,
         );
         state.extend(value);
     }

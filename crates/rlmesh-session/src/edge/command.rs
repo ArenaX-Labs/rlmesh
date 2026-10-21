@@ -13,7 +13,7 @@
 //! rejected whole. The clamped value is what the edge dispatches and what
 //! `_applied` shows. Actions are only copied when one of them changes.
 
-use crate::spec::Rotation;
+use crate::spec::{Rotation, convert};
 use crate::wire::{CommandSpec, DType, Layout};
 use bytes::Bytes;
 
@@ -212,7 +212,7 @@ impl CommandCheck {
             }
             if self.binary {
                 for v in &mut values {
-                    let snapped = if *v >= 0.5 { 1.0 } else { 0.0 };
+                    let snapped = convert::binary(*v, 0.0, 1.0);
                     limited |= snapped != *v;
                     *v = snapped;
                 }

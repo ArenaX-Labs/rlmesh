@@ -29,6 +29,7 @@ pub mod apply;
 pub mod bind;
 pub mod canonical;
 pub mod contract;
+pub mod convert;
 pub mod explain;
 pub mod image;
 pub mod kinds;
