@@ -203,8 +203,9 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue], GymEnv):  # pyright: igno
     env's own Gymnasium spaces (bounds and dtypes included), a ``Discrete``
     observation is a NumPy integer, and an action may be a plain array, list
     or scalar, cast to the space's dtype when the kind allows. ``address``
-    may also be a v2 session's ``lockstep://`` robot (an ``EnvServer`` at a
-    ``lockstep://`` address prints it).
+    may also be a robot's participant address in a v2 session
+    (``"cartpole"``, ``"lab:7447/bench-3/cartpole"``; an ``EnvServer``
+    prints its own).
 
     Args:
         address: Endpoint address such as ``"tcp://127.0.0.1:5555"``,

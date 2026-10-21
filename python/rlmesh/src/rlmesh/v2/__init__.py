@@ -19,8 +19,9 @@ as written::
 
 A robot can also run in lockstep (``Robot(..., clock="lockstep")``, §12):
 each step is one call of its ``step(commands)``, and ``RemoteEnv`` at its
-``lockstep://`` address drives it as a Gymnasium env. Existing Gym envs and
-v1 models reach lockstep through their own servers and runs, unchanged.
+participant address (``robot.address``) drives it as a Gymnasium env.
+Existing Gym envs and v1 models reach lockstep through their own servers
+and runs, unchanged.
 
 Every rule (normalisation, binding, conversions, leases, the edge, the run
 loop) runs in Rust; this module converts NumPy arrays at the boundary.
@@ -56,6 +57,7 @@ from .._rlmesh import (
     V2Rate,
     V2Recorder,
     V2Robot,
+    parse_address,
 )
 
 if TYPE_CHECKING:
@@ -81,6 +83,7 @@ __all__ = [
     "SessionException",
     "SessionRefused",
     "StartSkipped",
+    "parse_address",
     "read_recording",
     "run",
 ]
@@ -91,24 +94,21 @@ Predict = Callable[["Observation"], Mapping[str, Any]]
 
 
 class Host:
-    """A session host in this process, listening on local TCP ports.
+    """The session at ``address`` (``[host/][session]``), by the hosting rule.
 
-    Participants (robots, policies, operators) connect to its ``address``,
-    in this process or another. Use it as a context manager, or ``close()``.
+    ``":0"``, the default, hosts a session in this process on an OS-assigned
+    port; an address without a host joins the local host on port 7447, or
+    hosts the session here when nothing listens there. Participants
+    (robots, policies, operators) connect to its ``address``, in this
+    process or another. Use it as a context manager, or ``close()``.
     """
 
-    def __init__(
-        self,
-        *,
-        ip: str = "127.0.0.1",
-        tenant: str = "local",
-        lease_grace_ms: int = 250,
-    ) -> None:
-        self._native: V2Host = V2Host(ip, tenant, lease_grace_ms)
+    def __init__(self, address: str = ":0", *, lease_grace_ms: int = 250) -> None:
+        self._native: V2Host = V2Host(address, lease_grace_ms)
 
     @property
     def address(self) -> str:
-        """``{ip}:{port}/{tenant}/{session}``: what participants connect to."""
+        """``{ip}:{port}[/{session}]``: what participants connect to."""
         return self._native.address
 
     def close(self) -> None:
@@ -298,7 +298,7 @@ class Robot:
         name: str,
         parts: Mapping[str, Any],
         *,
-        session: Host | str,
+        session: Host | str = "",
         timeout: float = 10.0,
         on_handover: Callable[[str, str, str], None] | None = None,
         clock: str = "wall",
@@ -325,6 +325,11 @@ class Robot:
     def name(self) -> str:
         """The robot's participant id."""
         return self._native.name
+
+    @property
+    def address(self) -> str:
+        """The robot's participant address, with its host's real port."""
+        return self._native.address
 
     @property
     def parts(self) -> dict[str, str]:

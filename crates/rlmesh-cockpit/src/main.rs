@@ -14,7 +14,7 @@ use rlmesh_session::wire::{ParticipantId, PriorityClass, Role};
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
-    /// The session address, `{ip}:{port}/{tenant}/{session}` (what
+    /// The session address, `[host/][session]` (what
     /// `rlmesh.v2.Host.address` prints).
     address: SessionAddress,
     /// This observer's participant id.

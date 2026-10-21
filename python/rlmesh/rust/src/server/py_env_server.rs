@@ -38,8 +38,8 @@ enum BoundListener {
         listener: UnixListener,
         path: PathBuf,
     },
-    /// A v2 lockstep robot in a session (`lockstep://...`, protocol v2 §12).
-    Lockstep(rlmesh::lockstep::LockstepBinding),
+    /// A v2 lockstep robot in a session (its participant address, protocol v2 §12).
+    Lockstep(Box<rlmesh::lockstep::LockstepBinding>),
 }
 
 type ServeResult = Result<(), String>;
@@ -174,12 +174,17 @@ fn construct_server(
         ))
     })?;
 
-    if let Some(address) = address.filter(|a| rlmesh::lockstep::is_lockstep_address(a)) {
+    if let Some(address) = address.filter(|a| rlmesh::lockstep::is_v2_address(a)) {
         rlmesh::lockstep::check(env_contract.clone())
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
         let binding = runtime
             .block_on(rlmesh::lockstep::bind(address))
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyConnectionError, _>(e.to_string()))?;
+            .map_err(|e| match e {
+                rlmesh::lockstep::GymError::Config(why) => {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(why)
+                }
+                other => PyErr::new::<pyo3::exceptions::PyConnectionError, _>(other.to_string()),
+            })?;
         return Ok(PyEnvServer {
             id,
             address: binding.address(),
@@ -187,7 +192,7 @@ fn construct_server(
             state: StdMutex::new(ServerState::Ready(Box::new(ServerResources {
                 env: py_env,
                 runtime,
-                listener: BoundListener::Lockstep(binding),
+                listener: BoundListener::Lockstep(Box::new(binding)),
                 options,
                 token,
                 close_env_on_shutdown,

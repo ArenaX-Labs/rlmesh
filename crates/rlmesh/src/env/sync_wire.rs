@@ -46,7 +46,7 @@ pub(crate) fn autoreset_mode(metadata: Option<&Metadata>) -> Result<AutoresetMod
         Value::Text(mode) => match mode.as_str() {
             "NextStep" => Ok(AutoresetMode::NextStep),
             "Disabled" => Ok(AutoresetMode::Disabled),
-            // Served on `lockstep://` (the v1 wire and `Model.run` refuse it).
+            // Served on a v2 session (the v1 wire and `Model.run` refuse it).
             "SameStep" => Ok(AutoresetMode::SameStep),
             other => Err(Error::invalid_argument(format!(
                 "unrecognized metadata[\"autoreset_mode\"] {other:?}; expected a gymnasium \

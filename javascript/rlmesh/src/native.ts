@@ -144,7 +144,7 @@ interface NativePolicy {
 interface NativeRate { sleep(): Promise<number>; readonly missed: number }
 interface NativeRecorder { readonly path: string; close(): Promise<RecordStats | null> }
 interface Addon {
-  openHost(ip: string, tenant: string, leaseGraceMs: number): Promise<NativeHost>;
+  openHost(address: string, leaseGraceMs: number): Promise<NativeHost>;
   connectRobot(address: string, name: string, robotJson: string, timeoutS: number): Promise<NativeRobot>;
   bindPolicy(address: string, name: string, policyJson: string, robot: string, options: object): Promise<NativePolicy>;
   NativeRate: new (hz: number) => NativeRate;
@@ -329,11 +329,12 @@ function input(e: NativeEntry): InputValue {
 export class Host implements AsyncDisposable {
   private constructor(private native: NativeHost) {}
 
-  static async open(opts: { ip?: string; tenant?: string; leaseGraceMs?: number } = {}): Promise<Host> {
-    return new Host(await wait(() => native().openHost(opts.ip ?? '127.0.0.1', opts.tenant ?? 'local', opts.leaseGraceMs ?? 250)));
+  /** The session `address` names (`[host/][session]`; `":0"`, the default: hosted here on an OS-assigned port). */
+  static async open(opts: { address?: string; leaseGraceMs?: number } = {}): Promise<Host> {
+    return new Host(await wait(() => native().openHost(opts.address ?? ':0', opts.leaseGraceMs ?? 250)));
   }
 
-  /** `{ip}:{port}/{tenant}/{session}`: what participants connect to. */
+  /** `{ip}:{port}[/{session}]`: what participants connect to. */
   get address(): string {
     return this.native.address;
   }

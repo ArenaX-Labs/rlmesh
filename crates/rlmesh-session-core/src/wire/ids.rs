@@ -28,7 +28,8 @@ impl IdError {
     }
 }
 
-/// A session id: a UUIDv7, so ids sort by creation time.
+/// A session id: a UUIDv7, so fresh ids sort by creation time, or a named
+/// session's UUIDv8 ([`SessionId::named`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(Uuid);
 
@@ -43,6 +44,16 @@ impl SessionId {
     /// The underlying UUID.
     pub fn as_uuid(&self) -> Uuid {
         self.0
+    }
+
+    /// The session a human name (`bench-3`, `default`) identifies: a UUIDv8
+    /// of the name's hash, the same in every process, so participants that
+    /// name a session meet in it without exchanging its id.
+    pub fn named(name: &str) -> Self {
+        let hash = blake3::hash(format!("rlmesh.session.v1:{name}").as_bytes());
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&hash.as_bytes()[..16]);
+        Self(uuid::Builder::from_custom_bytes(bytes).into_uuid())
     }
 }
 
@@ -65,8 +76,13 @@ impl FromStr for SessionId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let uuid =
             Uuid::parse_str(s).map_err(|err| IdError::new("session id", s, err.to_string()))?;
-        if uuid.get_version_num() != 7 {
-            return Err(IdError::new("session id", s, "not a UUIDv7"));
+        // v7: a fresh session; v8: a named one ([`SessionId::named`]).
+        if !matches!(uuid.get_version_num(), 7 | 8) {
+            return Err(IdError::new(
+                "session id",
+                s,
+                "not a UUIDv7 or a named UUIDv8",
+            ));
         }
         Ok(Self(uuid))
     }

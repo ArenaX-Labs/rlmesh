@@ -9,8 +9,8 @@
 //! [`clock`], the input cache in [`cache`] and the receive rules in
 //! [`sample`]).
 //!
-//! - [`address`]: a session's `{ip}:{port}/{tenant}/{session}` address,
-//!   and joining it from another process.
+//! - [`address`]: the address grammar (`[host/][session/]participant`),
+//!   the hosting rule, and joining a session from another process.
 //! - [`authority`]: epoch, roster, the DISARMED/ARMED/ACTIVE/SAFE/ESTOP mode
 //!   machine with a latched e-stop, the part table with host-assigned,
 //!   never-reused ids (normalised by [`spec`]), bindings, and the

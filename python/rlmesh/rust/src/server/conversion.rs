@@ -98,7 +98,7 @@ pub(super) fn extract_render_mode(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 /// an explicit `None`, a non-string, or an unrecognized string raises
 /// `ValueError` rather than silently downgrading to `Disabled`, which would
 /// double-reset a mislabeled self-autoresetting env. `SameStep` is served on
-/// `lockstep://` addresses (the v1 wire and `Model.run` refuse it).
+/// v2 sessions (the v1 wire and `Model.run` refuse it).
 pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<AutoresetMode> {
     if !obj.hasattr("metadata")? {
         return Ok(AutoresetMode::Disabled);

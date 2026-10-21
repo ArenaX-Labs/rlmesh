@@ -53,12 +53,12 @@ pub fn env_spec_from_proto(
 /// a nonzero `start` (the proto `MultiDiscreteSpec` has no `start`, so
 /// [`space_spec_to_proto`] would drop it), or SAME_STEP autoreset (the
 /// service steps NEXT_STEP and DISABLED lanes only). Serve such an env on
-/// `lockstep://`.
+/// a v2 session (a participant address).
 pub fn check_proto_contract(contract: &native::EnvContract) -> Result<(), ProtocolError> {
     if contract.autoreset_mode == native::AutoresetMode::SameStep {
         return Err(ProtocolError::EncodeError(
-            "SAME_STEP autoreset has no v1 env service; serve the env on a lockstep:// \
-             address"
+            "SAME_STEP autoreset has no v1 env service; serve the env at a participant \
+             address (a v2 session)"
                 .into(),
         ));
     }
@@ -66,8 +66,8 @@ pub fn check_proto_contract(contract: &native::EnvContract) -> Result<(), Protoc
         match &spec.spec {
             Some(native::SpaceKind::MultiDiscrete(md)) if md.has_start() => {
                 Err(ProtocolError::EncodeError(format!(
-                    "{path}: a MultiDiscrete start ({:?}) has no v1 wire form; serve the env on \
-                     a lockstep:// address",
+                    "{path}: a MultiDiscrete start ({:?}) has no v1 wire form; serve the env at \
+                     a participant address (a v2 session)",
                     md.start
                 )))
             }

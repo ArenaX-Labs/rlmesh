@@ -383,7 +383,7 @@ fn run(args: &Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let transport = args.get("transport", "grpc");
     let addr = match transport.as_str() {
         "grpc" => "tcp://127.0.0.1:0",
-        "lockstep" => "lockstep://127.0.0.1:0/embodiment",
+        "lockstep" => ":0/embodiment",
         other => return Err(format!("unknown transport {other}").into()),
     };
     let out = format!("/tmp/lockstep_bench-{}.json", std::process::id());

@@ -11,7 +11,6 @@
 //! `predict` (and, between starts, to check for signals).
 
 use std::collections::BTreeMap;
-use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,17 +20,18 @@ use pyo3::exceptions::{PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 #[cfg(feature = "stub-gen")]
-use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
+use rlmesh_session::address::Address;
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::edge::{Due, Rejection, Robot};
 use rlmesh_session::record::{RecordError, Recorder};
 use rlmesh_session::sdk::{self, BindOptions, BindPolicyError, EmbeddedHost, ErrorKind};
 use rlmesh_session::spec::BindError;
 use rlmesh_session::spec::apply::{Tensor, Value};
-use rlmesh_session::wire::{PartSpec, PriorityClass, TenantId};
+use rlmesh_session::wire::{PartSpec, PriorityClass};
 use rlmesh_session::{
     Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunError, RunEvent,
-    SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
+    SendError, Sent, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
 };
 
 use crate::client::{check_signals, signal_poll};
@@ -82,8 +82,66 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyObservation>()?;
     m.add_class::<PyRate>()?;
     m.add_class::<PyRecorder>()?;
+    m.add_function(wrap_pyfunction!(parse_address, m)?)?;
+    m.add_function(wrap_pyfunction!(is_v2_address, m)?)?;
     crate::lockstep::register(m)?;
     Ok(())
+}
+
+/// Parses an address: a participant address,
+/// `[rlmesh://][host/][session/]participant`, or with `session=True` a
+/// session address, `[rlmesh://][host/][session]`, as
+/// `{"host", "port", "session", "participant"}` (`None` where it names
+/// none). A malformed or old form (`lockstep://`, a tenant segment) is the
+/// ValueError class, an upgrade's naming the new form.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def parse_address(text: str, session: bool = False) -> dict[str, typing.Any]: ...
+"#
+    )
+)]
+#[pyfunction]
+#[pyo3(signature = (text, session=false))]
+fn parse_address<'py>(py: Python<'py>, text: &str, session: bool) -> PyResult<Bound<'py, PyDict>> {
+    let parsed = if session {
+        Address::session(text)
+    } else {
+        Address::participant(text)
+    }
+    .map_err(address_err)?;
+    let d = PyDict::new(py);
+    d.set_item("host", parsed.host.as_ref().map(|h| h.name.clone()))?;
+    d.set_item("port", parsed.host.as_ref().and_then(|h| h.port))?;
+    d.set_item("session", parsed.session)?;
+    d.set_item("participant", parsed.participant)?;
+    Ok(d)
+}
+
+/// Whether `text` is a v2 session or participant address rather than a v1
+/// endpoint (`host:port`, a port, `tcp://`, `unix://`, `https://`).
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def is_v2_address(text: str) -> bool: ...
+"#
+    )
+)]
+#[pyfunction]
+fn is_v2_address(text: &str) -> bool {
+    rlmesh_session::address::is_v2_address(text)
+}
+
+/// An address refused as the ValueError class, without the error's kind.
+fn address_err(err: SessionError) -> PyErr {
+    match err {
+        SessionError::Config(why) => PyValueError::new_err(why),
+        other => PyValueError::new_err(other.to_string()),
+    }
 }
 
 /// The runtime every session object of this process runs on.
@@ -195,12 +253,20 @@ fn observe_err(err: ObserveError) -> PyErr {
     }
 }
 
-/// A session address (`{ip}:{port}/{tenant}/{session}`); joining it puts
-/// capture times on `CLOCK_MONOTONIC`, `time.monotonic_ns()`'s clock.
-fn address(text: &str) -> PyResult<SessionAddress> {
-    text.parse()
-        .map_err(|e: SessionError| PyValueError::new_err(e.to_string()))
+/// The session a session address (`[host/][session]`) names, placed by the
+/// hosting rule: joined, or hosted in this process when no host answers.
+/// Joining it puts capture times on `CLOCK_MONOTONIC`,
+/// `time.monotonic_ns()`'s clock.
+fn place(py: Python<'_>, text: &str, lease_grace: Duration) -> PyResult<EmbeddedHost> {
+    let address = Address::session(text).map_err(address_err)?;
+    block_on(py, async move {
+        EmbeddedHost::start(&address, lease_grace)
+            .await
+            .map_err(session_err)
+    })
 }
+
+use rlmesh_session::address::LEASE_GRACE;
 
 pub(crate) fn timeout(seconds: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(seconds)
@@ -221,23 +287,16 @@ pub struct PyHost {
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PyHost {
+    /// Places the session `address` names (`":0"`: hosted here on an
+    /// OS-assigned port).
     #[new]
-    #[pyo3(signature = (ip="127.0.0.1", tenant="local", lease_grace_ms=250))]
-    fn new(py: Python<'_>, ip: &str, tenant: &str, lease_grace_ms: u64) -> PyResult<Self> {
-        let ip: IpAddr = ip
-            .parse()
-            .map_err(|e| PyValueError::new_err(format!("ip {ip:?}: {e}")))?;
-        let tenant = TenantId::new(tenant).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let grace = Duration::from_millis(lease_grace_ms);
-        let host = block_on(py, async move {
-            EmbeddedHost::start(ip, tenant, grace)
-                .await
-                .map_err(session_err)
-        })?;
+    #[pyo3(signature = (address=":0", lease_grace_ms=250))]
+    fn new(py: Python<'_>, address: &str, lease_grace_ms: u64) -> PyResult<Self> {
+        let host = place(py, address, Duration::from_millis(lease_grace_ms))?;
         Ok(Self { host })
     }
 
-    /// `{ip}:{base_port}/{tenant}/{session}`: what participants connect to.
+    /// `{ip}:{port}[/{session}]`: what participants connect to.
     #[getter]
     fn address(&self) -> String {
         self.host.address().to_string()
@@ -359,6 +418,7 @@ pub(crate) fn values_from_py(output: &Bound<'_, PyAny>) -> PyResult<Vec<(String,
 pub struct PyRobot {
     name: String,
     robot: Mutex<Option<Arc<Robot>>>,
+    session: EmbeddedHost,
 }
 
 impl PyRobot {
@@ -387,7 +447,8 @@ impl PyRobot {
         robot_json: String,
         timeout_s: f64,
     ) -> PyResult<Self> {
-        let address = self::address(address)?;
+        let session = place(py, address, LEASE_GRACE)?;
+        let address = session.address().clone();
         let wait = timeout(timeout_s)?;
         let robot = block_on(py, async move {
             sdk::connect_robot(&address, name, &robot_json, wait)
@@ -400,6 +461,7 @@ impl PyRobot {
         Ok(Self {
             name: name.to_string(),
             robot: Mutex::new(Some(Arc::new(robot))),
+            session,
         })
     }
 
@@ -407,6 +469,12 @@ impl PyRobot {
     #[getter]
     fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The robot's participant address, `{ip}:{port}[/{session}]/{name}`.
+    #[getter]
+    fn address(&self) -> String {
+        self.session.address().participant(&self.name)
     }
 
     /// The parts as the host normalised them, in authored order.
@@ -578,11 +646,11 @@ impl PyRobot {
     /// Detaches: the edges and publishers go, the host drops the parts.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let taken = self.robot.lock().map(|mut r| r.take()).unwrap_or(None);
-        let Some(robot) = taken else {
-            return Ok(());
-        };
         block_on(py, async move {
-            sdk::close_robot(robot).await.map_err(session_err)
+            if let Some(robot) = taken {
+                sdk::close_robot(robot).await.map_err(session_err)?;
+            }
+            self.session.close().await.map_err(session_err)
         })
     }
 }
@@ -802,6 +870,7 @@ impl Predictor for PyPredictor<'_> {
 pub struct PyController {
     name: String,
     controller: Mutex<Option<Arc<Controller>>>,
+    session: EmbeddedHost,
 }
 
 impl PyController {
@@ -843,7 +912,8 @@ impl PyController {
         captures: BTreeMap<String, String>,
         timeout_s: f64,
     ) -> PyResult<Self> {
-        let address = self::address(address)?;
+        let session = place(py, address, LEASE_GRACE)?;
+        let address = session.address().clone();
         let wait = timeout(timeout_s)?;
         let class = self::priority(priority)?;
         let options = BindOptions {
@@ -865,6 +935,7 @@ impl PyController {
         Ok(Self {
             name: name.to_string(),
             controller: Mutex::new(Some(Arc::new(controller))),
+            session,
         })
     }
 
@@ -1092,11 +1163,11 @@ impl PyController {
     /// Gives the leases back and detaches.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let taken = self.controller.lock().map(|mut c| c.take()).unwrap_or(None);
-        let Some(controller) = taken else {
-            return Ok(());
-        };
         block_on(py, async move {
-            sdk::close_policy(controller).await.map_err(session_err)
+            if let Some(controller) = taken {
+                sdk::close_policy(controller).await.map_err(session_err)?;
+            }
+            self.session.close().await.map_err(session_err)
         })
     }
 }
@@ -1150,6 +1221,7 @@ fn record_err(err: RecordError) -> PyErr {
 pub struct PyRecorder {
     path: String,
     recorder: Mutex<Option<Recorder>>,
+    session: EmbeddedHost,
 }
 
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
@@ -1168,7 +1240,8 @@ impl PyRecorder {
         name: &str,
         timeout_s: f64,
     ) -> PyResult<Self> {
-        let address = self::address(address)?;
+        let session = place(py, address, LEASE_GRACE)?;
+        let address = session.address().clone();
         let wait = timeout(timeout_s)?;
         let recorder = block_on(py, async {
             sdk::start_recorder(&address, &path, name, wait)
@@ -1178,6 +1251,7 @@ impl PyRecorder {
         Ok(Self {
             path,
             recorder: Mutex::new(Some(recorder)),
+            session,
         })
     }
 
@@ -1196,7 +1270,9 @@ impl PyRecorder {
             return Ok(None);
         };
         let stats = block_on(py, async move {
-            sdk::finish_recorder(recorder).await.map_err(record_err)
+            let stats = sdk::finish_recorder(recorder).await.map_err(record_err)?;
+            self.session.close().await.map_err(session_err)?;
+            Ok::<_, PyErr>(stats)
         })?;
         let d = PyDict::new(py);
         d.set_item("path", stats.path.to_string_lossy())?;

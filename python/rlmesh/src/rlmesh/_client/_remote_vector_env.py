@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
+from .._rlmesh import is_v2_address
 from .._value_conversion import encode_framework_array_batch
 from ..spaces import Space
 from ..types import Metadata
@@ -82,7 +83,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
     @property
     def _lowers_arrays(self) -> bool:
         """Whether the transport lowers info arrays to lists (lockstep does not)."""
-        return not self._address.startswith("lockstep://")
+        return not is_v2_address(self._address)
 
     def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
         """Restore the Gymnasium ``AutoresetMode`` enum on the endpoint metadata.

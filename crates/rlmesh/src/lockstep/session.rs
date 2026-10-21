@@ -2,14 +2,11 @@
 //! declare, arm and one lease grant (§12.1); every step after that is the
 //! lockstep exchange alone.
 //!
-//! Addresses:
-//!
-//! - `lockstep://{ip}:{port}/{tenant}/{session}/{robot}`: the robot `robot`
-//!   in the session whose host listens on `ip:port` (the address a v2
-//!   `Host` prints, plus the robot).
-//! - `lockstep://{ip}:{port}/{robot}` (env side only): host a new session
-//!   here, on `ip:port` (port 0: any); [`LockstepBinding::address`] is
-//!   then the full address drivers connect to.
+//! A robot or a driver names the robot by its participant address
+//! (`[host/][session/]robot`, [`rlmesh_session::address`]); the session is
+//! placed by the hosting rule, so the first participant may host it in its
+//! own process. [`LockstepBinding::address`] is the robot's address with the
+//! host's real port, what drivers in other processes connect to.
 //!
 //! The lockstep class (§10.2) is its own Zenoh session per participant
 //! (RealTime, reliable, BLOCK, express), opened only when lockstep is
@@ -23,15 +20,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
+use rlmesh_session::address::{Address, LEASE_GRACE, Placed, SessionAddress, place};
 use rlmesh_session::transport::{Endpoints, TransportTuning, zenoh_config};
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, CtlStatus, Epoch, Fingerprint, LeaseToken, Mode, PartSpec,
-    ParticipantId, PriorityClass, Role, SessionId, SessionKeys, TenantId,
+    ParticipantId, PriorityClass, Role, SessionKeys,
 };
-use rlmesh_session::{
-    HostConfig, Participant, ParticipantConfig, SessionError, SessionHost, SystemMonotonicClock,
-    Transport, TransportConfig,
-};
+use rlmesh_session::{Participant, SessionError, Transport};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -44,14 +39,6 @@ use crate::lockstep::map::{self, GymEnvInfo, GymMap};
 use crate::lockstep::record::Tee;
 use crate::lockstep::served::{GymEnv, Served};
 use crate::lockstep::view::{self, GymView};
-
-/// The address scheme.
-pub const SCHEME: &str = "lockstep://";
-
-/// Whether `address` names a lockstep robot.
-pub fn is_lockstep_address(address: &str) -> bool {
-    address.starts_with(SCHEME)
-}
 
 /// The notional rate of a Gym robot's parts: lockstep never paces, and
 /// `tick_ns` defaults to 1 ms (§11.2).
@@ -85,64 +72,54 @@ pub fn lockstep_robot_map(robot_json: &str) -> Result<String, GymError> {
     serde_json::to_string(&out).map_err(bad)
 }
 
-/// A parsed lockstep address.
+/// Parses a participant address; a malformed one (or an old form, with its
+/// upgrade) is a configuration error.
+fn participant_address(text: &str) -> Result<Address, GymError> {
+    Address::participant(text).map_err(|e| match e {
+        SessionError::Config(why) => GymError::Config(why),
+        other => GymError::Config(other.to_string()),
+    })
+}
+
+/// A robot's participant address, its session placed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LockstepAddress {
-    /// The host's base (control) endpoint.
-    pub base: SocketAddr,
-    /// The session, or `None` to host one.
-    pub session: Option<(TenantId, SessionId)>,
+    /// The session.
+    pub session: SessionAddress,
     /// The robot.
     pub robot: ParticipantId,
 }
 
 impl LockstepAddress {
-    /// Parses `lockstep://{ip}:{port}[/{tenant}/{session}]/{robot}`.
-    pub fn parse(text: &str) -> Result<Self, GymError> {
-        let bad = |why: &str| {
-            GymError::Config(format!(
-                "lockstep address {text:?}: {why} (expected \
-                 lockstep://{{ip}}:{{port}}/{{tenant}}/{{session}}/{{robot}})"
-            ))
-        };
-        let rest = text
-            .strip_prefix(SCHEME)
-            .ok_or_else(|| bad("no lockstep:// scheme"))?;
-        let parts: Vec<&str> = rest.split('/').collect();
-        let (base, session, robot) = match parts.as_slice() {
-            [base, robot] => (*base, None, *robot),
-            [base, tenant, session, robot] => (*base, Some((*tenant, *session)), *robot),
-            _ => return Err(bad("two or four parts")),
-        };
-        Ok(Self {
-            base: base.parse().map_err(|_| bad("not ip:port"))?,
-            session: session
-                .map(|(t, s)| -> Result<_, GymError> {
-                    Ok((
-                        TenantId::new(t).map_err(|e| bad(&e.to_string()))?,
-                        s.parse().map_err(|_| bad("not a session id"))?,
-                    ))
-                })
-                .transpose()?,
-            robot: ParticipantId::new(robot).map_err(|e| bad(&e.to_string()))?,
-        })
+    /// Parses the participant address `text` and places its session by the
+    /// hosting rule.
+    async fn place(text: &str) -> Result<(Self, Placed), GymError> {
+        let address = participant_address(text)?;
+        let robot = ParticipantId::new(address.participant.clone().unwrap_or_default())
+            .map_err(|e| GymError::Config(e.to_string()))?;
+        let placed = place(&address, LEASE_GRACE).await?;
+        Ok((
+            Self {
+                session: placed.address.clone(),
+                robot,
+            },
+            placed,
+        ))
     }
 
-    fn key(&self) -> Option<String> {
-        self.session
-            .as_ref()
-            .map(|(tenant, session)| format!("{tenant}/{session}/{}", self.robot))
+    /// The robot's key in this process's registry: named sessions recur
+    /// across hosts, so the host's endpoint is part of it.
+    fn key(&self) -> String {
+        format!(
+            "{}/{}/{}/{}",
+            self.session.base, self.session.tenant, self.session.session, self.robot
+        )
     }
 }
 
 impl std::fmt::Display for LockstepAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.session {
-            Some((tenant, session)) => {
-                write!(f, "{SCHEME}{}/{tenant}/{session}/{}", self.base, self.robot)
-            }
-            None => write!(f, "{SCHEME}{}/{}", self.base, self.robot),
-        }
+        f.write_str(&self.session.participant(self.robot.as_str()))
     }
 }
 
@@ -160,27 +137,15 @@ fn local_handler(key: &str) -> Option<Arc<dyn LockstepHandler>> {
         .and_then(Weak::upgrade)
 }
 
-/// Opens a participant's transport (listening on the host's interface, any
-/// port) and attaches.
+/// Joins `session` as `id`.
 async fn join(
-    base: SocketAddr,
-    tenant: &TenantId,
-    session: SessionId,
+    session: &SessionAddress,
     id: ParticipantId,
     roles: Vec<Role>,
     priority: PriorityClass,
     timeout: Duration,
 ) -> Result<Participant, GymError> {
-    let listen_ip = listen_ip(base);
-    let transport = Transport::open(&TransportConfig::per_class_tcp(
-        Some(SocketAddr::new(listen_ip, 0)),
-        Some(base),
-    )?)
-    .await?;
-    let mut config = ParticipantConfig::new(tenant.clone(), session, id, roles, priority);
-    config.clock = SystemMonotonicClock.shared();
-    config.host_timeout = timeout;
-    Ok(Participant::attach(transport, config).await?)
+    Ok(session.join(id.as_str(), roles, priority, timeout).await?)
 }
 
 fn listen_ip(base: SocketAddr) -> IpAddr {
@@ -252,42 +217,23 @@ fn env_info(env: &dyn Served, declared: Option<&str>) -> GymEnvInfo {
 /// A lockstep address bound for serving: the session joined or hosted.
 pub struct LockstepBinding {
     address: LockstepAddress,
-    hosted: Option<(SessionHost, Transport)>,
+    placed: Placed,
 }
 
 impl std::fmt::Debug for LockstepBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LockstepBinding")
             .field("address", &self.address)
-            .field("hosted", &self.hosted.is_some())
+            .field("hosted", &self.placed.hosts())
             .finish()
     }
 }
 
-/// Binds an env-side lockstep address: hosts the session when the address
-/// names none.
+/// Binds a robot's participant address for serving, placing its session by
+/// the hosting rule.
 pub async fn bind(address: &str) -> Result<LockstepBinding, GymError> {
-    let mut address = LockstepAddress::parse(address)?;
-    let mut hosted = None;
-    if address.session.is_none() {
-        let (transport, base) = if address.base.port() == 0 {
-            rlmesh_session::transport::open_local_listeners(address.base.ip()).await?
-        } else {
-            let transport =
-                Transport::open(&TransportConfig::per_class_tcp(Some(address.base), None)?).await?;
-            (transport, address.base)
-        };
-        let tenant = TenantId::new("local").map_err(|e| GymError::Config(e.to_string()))?;
-        let session = SessionId::new();
-        let mut config = HostConfig::new(tenant.clone(), session);
-        config.clock = SystemMonotonicClock.shared();
-        config.health_log = None;
-        let host = SessionHost::start(transport.clone(), config).await?;
-        address.base = base;
-        address.session = Some((tenant, session));
-        hosted = Some((host, transport));
-    }
-    Ok(LockstepBinding { address, hosted })
+    let (address, placed) = LockstepAddress::place(address).await?;
+    Ok(LockstepBinding { address, placed })
 }
 
 impl LockstepBinding {
@@ -333,10 +279,8 @@ impl LockstepBinding {
         build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
     ) -> Result<(), GymError> {
         let result = self.serve_inner(robot_json, options, shutdown, build).await;
-        if let Some((host, transport)) = self.hosted {
-            host.shutdown().await;
-            let _ = transport.close().await;
-        }
+        let mut placed = self.placed;
+        let _ = placed.close().await;
         result
     }
 
@@ -348,15 +292,9 @@ impl LockstepBinding {
         build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
     ) -> Result<(), GymError> {
         let address = &self.address;
-        let (tenant, session) = address
-            .session
-            .clone()
-            .ok_or_else(|| GymError::Config("no session".into()))?;
         let participant = Arc::new(
             join(
-                address.base,
-                &tenant,
-                session,
+                &address.session,
                 address.robot.clone(),
                 vec![Role::Embodiment],
                 PriorityClass::Scripted,
@@ -418,9 +356,7 @@ impl LockstepBinding {
         let mut tee = None;
         if let Some(path) = &options.record {
             let observer = join(
-                address.base,
-                &tenant,
-                session,
+                &address.session,
                 ParticipantId::new(format!("{}.recorder", address.robot))
                     .map_err(|e| GymError::Config(e.to_string()))?,
                 vec![Role::Observer],
@@ -435,12 +371,12 @@ impl LockstepBinding {
             recorder = Some(started);
         }
         let handler: Arc<dyn LockstepHandler> = Gated::new(gate, build(Declared { parts, tee })?);
-        let local_key = address.key().unwrap_or_default();
+        let local_key = address.key();
         local()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(local_key.clone(), Arc::downgrade(&handler));
-        let lockstep = lockstep_session(participant.transport(), address.base).await?;
+        let lockstep = lockstep_session(participant.transport(), address.session.base).await?;
         let key = participant.keys().lockstep(&address.robot);
         info!(robot = %address.robot, %key, "lockstep robot serving");
         let served = serve_zenoh(lockstep.clone(), key, handler.clone(), shutdown).await;
@@ -486,10 +422,12 @@ fn own_parts(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> Vec<PartSpe
         .collect()
 }
 
-/// What a driver keeps alive for its run.
+/// What a driver keeps alive for its run: its participant, its lockstep
+/// session, and the session's host when the driver hosts it.
 struct Held {
     participant: Participant,
     lockstep: Option<zenoh::Session>,
+    placed: Placed,
 }
 
 #[async_trait::async_trait]
@@ -498,6 +436,7 @@ impl Keep for Held {
         let Held {
             participant,
             lockstep,
+            mut placed,
         } = *self;
         if let Err(err) = participant.detach().await {
             tracing::debug!(%err, "lockstep driver: detach");
@@ -505,6 +444,7 @@ impl Keep for Held {
         if let Some(lockstep) = lockstep {
             let _ = lockstep.close().await;
         }
+        let _ = placed.close().await;
     }
 }
 
@@ -535,6 +475,7 @@ struct Attached {
     participant: Participant,
     address: LockstepAddress,
     parts: Vec<PartSpec>,
+    placed: Placed,
 }
 
 /// Attaches a driver and waits for the robot's parts (`ready` decides).
@@ -543,21 +484,13 @@ async fn attach_driver(
     options: &ConnectOptions,
     ready: impl FnMut(&AuthoritySnapshot) -> bool,
 ) -> Result<Attached, GymError> {
-    let address = LockstepAddress::parse(address)?;
-    let (tenant, session) = address.session.clone().ok_or_else(|| {
-        GymError::Config(format!(
-            "lockstep address {address}: a driver needs the session (the robot's server \
-             prints its full address)"
-        ))
-    })?;
+    let (address, placed) = LockstepAddress::place(address).await?;
     let id = match &options.id {
         Some(id) => id.clone(),
         None => format!("driver-{}", uuid_suffix()),
     };
     let participant = join(
-        address.base,
-        &tenant,
-        session,
+        &address.session,
         ParticipantId::new(id).map_err(|e| GymError::Config(e.to_string()))?,
         vec![Role::Controller],
         PriorityClass::Model,
@@ -572,6 +505,7 @@ async fn attach_driver(
         participant,
         address,
         parts,
+        placed,
     })
 }
 
@@ -629,12 +563,13 @@ impl Attached {
         };
         let token = leases.first().map(|l| l.token).unwrap_or_default();
         let epoch = participant.authority().map(|s| s.epoch).unwrap_or_default();
-        let local_key = self.address.key().unwrap_or_default();
+        let local_key = self.address.key();
         let local = direct.then(|| local_handler(&local_key)).flatten();
         let (link, lockstep): (Arc<dyn LockstepLink>, _) = match local {
             Some(handler) => (Arc::new(DirectLink(handler)), None),
             None => {
-                let session = lockstep_session(participant.transport(), self.address.base).await?;
+                let session =
+                    lockstep_session(participant.transport(), self.address.session.base).await?;
                 let keys: &SessionKeys = participant.keys();
                 let link = ZenohLink::new(session.clone(), keys.lockstep(&self.address.robot));
                 link.wait_ready(timeout).await?;
@@ -648,6 +583,7 @@ impl Attached {
             Held {
                 participant,
                 lockstep,
+                placed: self.placed,
             },
         ))
     }
@@ -662,44 +598,18 @@ pub enum Driven {
     View(GymView),
 }
 
-/// Attaches a driver to the robot at `address`
-/// (`lockstep://{ip}:{port}/{tenant}/{session}/{robot}`, or without
-/// `/{robot}` for the session's only robot) and waits for its parts.
+/// Attaches a driver to the robot at the participant address `address`
+/// and waits for its parts.
 async fn attach_robot(
     address: &str,
     options: &ConnectOptions,
 ) -> Result<(Attached, ParticipantId), GymError> {
-    if address.trim_start_matches(SCHEME).split('/').count() == 3 {
-        // The session's only robot: attach under a placeholder, then take
-        // the one owner.
-        let mut attached =
-            attach_driver(&format!("{address}/any"), options, |s| !s.parts.is_empty()).await?;
-        let snapshot = attached
+    let robot = ParticipantId::new(
+        participant_address(address)?
             .participant
-            .authority()
-            .ok_or_else(|| GymError::Config("no authority view".into()))?;
-        let mut owners: Vec<ParticipantId> =
-            snapshot.parts.iter().map(|p| p.owner.clone()).collect();
-        owners.sort();
-        owners.dedup();
-        let robot = match owners.as_slice() {
-            [one] => one.clone(),
-            many => {
-                return Err(GymError::Config(format!(
-                    "the session has {} robots ({}): name one",
-                    many.len(),
-                    many.iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            }
-        };
-        attached.address.robot = robot.clone();
-        attached.parts = own_parts(&snapshot, &robot);
-        return Ok((attached, robot));
-    }
-    let robot = LockstepAddress::parse(address)?.robot;
+            .unwrap_or_default(),
+    )
+    .map_err(|e| GymError::Config(e.to_string()))?;
     let attached = attach_driver(address, options, |s| {
         s.parts.iter().any(|p| p.owner == robot)
     })
@@ -714,10 +624,8 @@ fn is_gym_env(parts: &[PartSpec]) -> bool {
     })
 }
 
-/// Connects a driver to the lockstep robot at `address`
-/// (`lockstep://{ip}:{port}/{tenant}/{session}/{robot}`, or without
-/// `/{robot}` for the session's only robot): a Gym env, rebuilt from its
-/// declaration,
+/// Connects a driver to the robot at the participant address `address`: a
+/// Gym env, rebuilt from its declaration,
 /// as a [`LockstepClient`]; any other robot as a [`GymView`] keyed by part
 /// path.
 pub async fn connect_driver(address: &str, options: ConnectOptions) -> Result<Driven, GymError> {
@@ -833,7 +741,7 @@ async fn view_of(
 }
 
 fn uuid_suffix() -> String {
-    let id = SessionId::new().to_string();
+    let id = rlmesh_session::wire::SessionId::new().to_string();
     id.chars()
         .filter(char::is_ascii_alphanumeric)
         .rev()

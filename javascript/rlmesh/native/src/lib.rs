@@ -17,7 +17,6 @@
 //! turns it into one of its error classes.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -27,13 +26,14 @@ use napi::bindgen_prelude::{BigInt, Either, Uint8Array, create_custom_tokio_runt
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Error, Result, Status, tokio};
 use napi_derive::napi;
+use rlmesh_session::address::Address;
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::edge::{Due, Rejection, Robot};
 use rlmesh_session::record::{RecordError, Recorder};
 use rlmesh_session::sdk::{self, BindPolicyError, EmbeddedHost, ErrorKind};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{BindError, RunOptions};
-use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, TenantId};
+use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass};
 use rlmesh_session::{
     Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunError, RunEvent,
     SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
@@ -163,7 +163,7 @@ fn observe_err(err: ObserveError) -> Error {
     }
 }
 
-/// A session address (`{ip}:{port}/{tenant}/{session}`); joining it puts
+/// A session address (`[host/][session]`); joining it puts
 /// capture times on `CLOCK_MONOTONIC`, `process.hrtime.bigint()`'s clock.
 fn address(text: &str) -> Result<SessionAddress> {
     text.parse()
@@ -193,13 +193,13 @@ pub struct NativeHost {
     host: EmbeddedHost,
 }
 
-/// Starts a session host listening on `ip`.
+/// Places the session `address` names by the hosting rule (`":0"`:
+/// hosted here on an OS-assigned port).
 #[napi]
-pub async fn open_host(ip: String, tenant: String, lease_grace_ms: u32) -> Result<NativeHost> {
-    let ip: IpAddr = ip.parse().map_err(|e| invalid(format!("ip {ip:?}: {e}")))?;
-    let tenant = TenantId::new(&tenant).map_err(|e| invalid(e.to_string()))?;
+pub async fn open_host(address: String, lease_grace_ms: u32) -> Result<NativeHost> {
+    let address = Address::session(&address).map_err(|e| invalid(e.to_string()))?;
     let grace = Duration::from_millis(u64::from(lease_grace_ms));
-    let host = EmbeddedHost::start(ip, tenant, grace)
+    let host = EmbeddedHost::start(&address, grace)
         .await
         .map_err(session_err)?;
     Ok(NativeHost { host })
@@ -207,7 +207,7 @@ pub async fn open_host(ip: String, tenant: String, lease_grace_ms: u32) -> Resul
 
 #[napi]
 impl NativeHost {
-    /// `{ip}:{base_port}/{tenant}/{session}`: what participants connect to.
+    /// `{ip}:{port}[/{session}]`: what participants connect to.
     #[napi(getter)]
     pub fn address(&self) -> String {
         self.host.address().to_string()

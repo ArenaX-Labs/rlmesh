@@ -147,11 +147,11 @@ enum Served {
 }
 
 /// Where a server listens: a gRPC listener, or (with the `lockstep`
-/// feature) a v2 lockstep robot in a session (`lockstep://...`, §12).
+/// feature) a v2 lockstep robot in a session (its participant address, §12).
 enum Listener {
     Grpc(BoundListener),
     #[cfg(feature = "lockstep")]
-    Lockstep(crate::lockstep::LockstepBinding),
+    Lockstep(Box<crate::lockstep::LockstepBinding>),
 }
 
 impl Listener {
@@ -160,7 +160,7 @@ impl Listener {
         runtime: &tokio::runtime::Runtime,
         contract: &crate::EnvContract,
     ) -> Result<(Self, String)> {
-        if address.starts_with("lockstep://") {
+        if crate::address::is_v2(address) {
             #[cfg(feature = "lockstep")]
             {
                 crate::lockstep::check(contract.to_wire()?)
@@ -169,7 +169,7 @@ impl Listener {
                     .block_on(crate::lockstep::bind(address))
                     .map_err(|err| Error::invalid_argument(err.to_string()))?;
                 let bound = binding.address();
-                return Ok((Self::Lockstep(binding), bound));
+                return Ok((Self::Lockstep(Box::new(binding)), bound));
             }
             #[cfg(not(feature = "lockstep"))]
             {

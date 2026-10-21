@@ -14,7 +14,7 @@
 //! - [`client`]: the driver of a lockstep Gym env ([`LockstepClient`]), on
 //!   native values.
 //! - [`session`]: attach, declare, arm and one lease grant; addresses
-//!   (`lockstep://...`).
+//!   (participant addresses).
 //! - [`view`]: the Gym view over a v2-native robot (§12.6).
 //! - [`virtual_mode`]: the virtual clock's run loop (§11.3).
 //! - [`record`]: the lockstep tee into the recorder (§13).
@@ -49,9 +49,10 @@ pub use client::{Keep, LockstepClient};
 pub use error::GymError;
 pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
+pub use rlmesh_session::address::is_v2_address;
 pub use served::{GymEnv, Reset, Served, Step};
 pub use session::{
     ConnectOptions, Declared, Driven, LockstepAddress, LockstepBinding, ServeOptions, bind, check,
-    connect, connect_driver, connect_view, is_lockstep_address, lockstep_robot_map,
+    connect, connect_driver, connect_view, lockstep_robot_map,
 };
 pub use view::{Frame, GymView};

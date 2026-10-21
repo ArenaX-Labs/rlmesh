@@ -2,7 +2,7 @@
 //! serves the lockstep exchange from Python callbacks
 //! (`rlmesh.v2.Robot(..., clock="lockstep")` wraps it). Gym envs, models and
 //! `RemoteEnv` (a Gym env, or any robot through its Gym view) reach lockstep
-//! through their own servers, runs and clients (`lockstep://` addresses).
+//! through their own servers, runs and clients (participant addresses).
 
 use std::sync::{Arc, Mutex};
 
@@ -136,6 +136,7 @@ impl LockstepHandler for PyHandler {
 #[pyclass(module = "rlmesh._rlmesh", name = "V2LockstepRobot", frozen)]
 pub struct PyLockstepRobot {
     name: String,
+    address: String,
     robot_json: String,
     parts: Vec<PartSpec>,
     binding: Mutex<Option<rlmesh::lockstep::LockstepBinding>>,
@@ -162,12 +163,17 @@ impl PyLockstepRobot {
             &robot_json,
         )
         .map_err(|e| PyValueError::new_err(e.message))?;
-        let address = format!("{}{address}/{name}", rlmesh::lockstep::session::SCHEME);
+        // The session address with the robot: its participant address.
+        let address = match address {
+            "" => name.to_string(),
+            address => format!("{address}/{name}"),
+        };
         let binding = block_on(py, async move {
             rlmesh::lockstep::bind(&address).await.map_err(gym_err)
         })?;
         Ok(Self {
             name: name.to_string(),
+            address: binding.address(),
             robot_json,
             parts,
             binding: Mutex::new(Some(binding)),
@@ -181,6 +187,12 @@ impl PyLockstepRobot {
     #[getter]
     fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The robot's participant address, `{ip}:{port}[/{session}]/{name}`.
+    #[getter]
+    fn address(&self) -> &str {
+        &self.address
     }
 
     /// The parts as normalised, in authored order.

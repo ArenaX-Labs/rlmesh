@@ -4,25 +4,21 @@
 //! options, the loop timer and the names errors and counters carry. A
 //! binding only converts values to and from its language.
 
-use std::net::IpAddr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
 
-use crate::address::SessionAddress;
-use crate::clock::SystemMonotonicClock;
+use crate::address::{Address, Placed, SessionAddress, place};
 use crate::controller::{Controller, ControllerConfig, ControllerError};
 use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Rejection, Robot};
 use crate::error::SessionError;
-use crate::host::{HostConfig, SessionHost};
 use crate::spec::apply::Tensor;
 use crate::spec::bind::Dir;
 use crate::spec::policy::Allow;
 use crate::spec::{BindError, Policy, RunOptions};
-use crate::transport::{Transport, open_local_listeners};
-use crate::wire::{CtlStatus, DType, PriorityClass, Role, SessionId, TenantId};
+use crate::wire::{CtlStatus, DType, PriorityClass, Role};
 
 /// How a binding reports a [`SessionError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,35 +187,23 @@ impl BindOptions<'_> {
     }
 }
 
-/// A session host in this process, on local per-class TCP ports, on this
-/// process's `CLOCK_MONOTONIC`.
+/// A session placed by the hosting rule (`address::place`): hosted in
+/// this process, on local per-class TCP ports and this process's
+/// `CLOCK_MONOTONIC`, or joined when another process holds it.
 pub struct EmbeddedHost {
     address: SessionAddress,
-    host: Mutex<Option<(SessionHost, Transport)>>,
+    placed: tokio::sync::Mutex<Option<Placed>>,
 }
 
 impl EmbeddedHost {
-    /// Starts a host listening on `ip`; leases lapse `lease_grace` after
-    /// their holder's last heartbeat.
-    pub async fn start(
-        ip: IpAddr,
-        tenant: TenantId,
-        lease_grace: Duration,
-    ) -> Result<Self, SessionError> {
-        let session = SessionId::new();
-        let (transport, base) = open_local_listeners(ip).await?;
-        let mut config = HostConfig::new(tenant.clone(), session);
-        config.clock = SystemMonotonicClock.shared();
-        config.lease_grace = lease_grace.max(Duration::from_millis(1));
-        config.health_log = None;
-        let host = SessionHost::start(transport.clone(), config).await?;
+    /// Places the session `address` names (`":0"`: hosted here on an
+    /// OS-assigned port); leases in a session hosted here lapse
+    /// `lease_grace` after their holder's last heartbeat.
+    pub async fn start(address: &Address, lease_grace: Duration) -> Result<Self, SessionError> {
+        let placed = place(address, lease_grace).await?;
         Ok(Self {
-            address: SessionAddress {
-                base,
-                tenant,
-                session,
-            },
-            host: Mutex::new(Some((host, transport))),
+            address: placed.address.clone(),
+            placed: tokio::sync::Mutex::new(Some(placed)),
         })
     }
 
@@ -228,12 +212,11 @@ impl EmbeddedHost {
         &self.address
     }
 
-    /// Stops the host (participants see it leave). Idempotent.
+    /// Stops the host, if this process runs it (participants see it leave).
+    /// Idempotent.
     pub async fn close(&self) -> Result<(), SessionError> {
-        let taken = self.host.lock().map(|mut h| h.take()).unwrap_or(None);
-        if let Some((host, transport)) = taken {
-            host.shutdown().await;
-            transport.close().await?;
+        if let Some(mut placed) = self.placed.lock().await.take() {
+            placed.close().await?;
         }
         Ok(())
     }

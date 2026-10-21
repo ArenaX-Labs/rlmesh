@@ -5,7 +5,8 @@
 //! rlmesh-session-host --listen unixsock-stream//tmp/s.sock  # one shared session
 //! ```
 //!
-//! It prints the session id on stdout (and writes it to `--session-file`),
+//! It hosts the default session unless `--session` names another (a name or
+//! a UUID), prints the session id on stdout (and writes it to `--session-file`),
 //! logs to stderr (`RUST_LOG`), and shuts down cleanly on SIGINT or SIGTERM.
 
 #![allow(clippy::print_stdout)]
@@ -15,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
-use rlmesh_session::wire::{SessionId, TenantId};
+use rlmesh_session::wire::TenantId;
 use rlmesh_session::{HostConfig, SessionError, SessionHost, Transport, TransportConfig};
 use tracing::info;
 
@@ -26,9 +27,9 @@ struct Args {
     /// The tenant namespace.
     #[arg(long, default_value = "local")]
     tenant: String,
-    /// The session id (a UUIDv7); a fresh one by default.
-    #[arg(long)]
-    session: Option<String>,
+    /// The session: a name (`bench-3`) or a UUID.
+    #[arg(long, default_value = rlmesh_session::address::DEFAULT_SESSION)]
+    session: String,
     /// Per-class TCP: class i listens on this port + i (control, realtime,
     /// data, bulk).
     #[arg(long, conflicts_with = "listen")]
@@ -57,10 +58,7 @@ async fn main() -> Result<(), SessionError> {
         .init();
     let args = Args::parse();
     let tenant = TenantId::new(args.tenant)?;
-    let session = match &args.session {
-        Some(id) => id.parse::<SessionId>()?,
-        None => SessionId::new(),
-    };
+    let session = rlmesh_session::address::session_id(&args.session);
     let transport = match args.listen_base {
         Some(base) => TransportConfig::per_class_tcp(Some(base), None)?,
         None if args.listen.is_empty() => {

@@ -2,7 +2,7 @@
 
 With gymnasium installed, :class:`rlmesh.numpy.RemoteEnv` is a
 ``gymnasium.Env`` and :class:`rlmesh.numpy.RemoteVectorEnv` a
-``gymnasium.vector.VectorEnv``, over gRPC and ``lockstep://`` alike. This
+``gymnasium.vector.VectorEnv``, over gRPC and v2 sessions alike. This
 module rebuilds the env's own spaces from its contract and converts values
 at the boundary, so code written against Gymnasium cannot tell the
 difference:

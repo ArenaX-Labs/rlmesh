@@ -9,7 +9,7 @@
 //! most unless `--max-priority` raises it.
 //!
 //! The session is the address its host prints (`--address
-//! 127.0.0.1:7447/local/<id>`), or its parts (`--connect` with `--session`
+//! 127.0.0.1:7447/<session>`), or its parts (`--connect` with `--session`
 //! or `--session-file`).
 
 use std::net::{IpAddr, SocketAddr};
@@ -27,9 +27,8 @@ use crate::gateway::security::{self, Origins, Policy};
 #[derive(Clone, Debug, Parser)]
 #[command(name = "rlmesh-gateway", version, about)]
 pub struct Args {
-    /// The session's address as its host prints it:
-    /// `{ip}:{port}/{tenant}/{session}`.
-    #[arg(long, conflicts_with_all = ["connect", "session", "session_file", "tenant"])]
+    /// The session's address as its host prints it: `{ip}:{port}[/{session}]`.
+    #[arg(long, conflicts_with_all = ["connect", "session", "session_file"])]
     pub address: Option<String>,
     /// The session host's per-class TCP base (class i on this port + i:
     /// control, realtime, data, bulk).
@@ -43,7 +42,7 @@ pub struct Args {
     /// The tenant namespace.
     #[arg(long, default_value = "local")]
     pub tenant: String,
-    /// The session id (a UUIDv7).
+    /// The session: its name or UUID.
     #[arg(
         long,
         conflicts_with = "session_file",
@@ -172,9 +171,13 @@ impl Config {
             Origins::List(list)
         };
         let address = match &args.address {
-            Some(text) => text
-                .parse::<SessionAddress>()
-                .map_err(|e| format!("--address: {e}"))?,
+            Some(text) => SessionAddress {
+                // The platform's tenant is configuration, not address.
+                tenant: TenantId::new(args.tenant.clone()).map_err(|e| e.to_string())?,
+                ..text
+                    .parse::<SessionAddress>()
+                    .map_err(|e| format!("--address: {e}"))?
+            },
             None => {
                 let session = match (&args.session, &args.session_file) {
                     (Some(id), _) => id.clone(),
@@ -188,14 +191,13 @@ impl Config {
                         );
                     }
                 };
+                let base = args
+                    .connect
+                    .ok_or("pass --address, or --connect with --session or --session-file")?;
                 SessionAddress {
-                    base: args
-                        .connect
-                        .ok_or("pass --address, or --connect with --session or --session-file")?,
+                    // The platform's tenant is configuration, not address.
                     tenant: TenantId::new(args.tenant).map_err(|e| e.to_string())?,
-                    session: session
-                        .parse()
-                        .map_err(|e: crate::wire::IdError| e.to_string())?,
+                    ..SessionAddress::new(base, &session).map_err(|e| e.to_string())?
                 }
             }
         };
@@ -289,7 +291,7 @@ mod tests {
 
     #[test]
     fn the_printed_session_address_is_accepted() {
-        let line = format!("rlmesh-gateway --address 10.0.0.5:7447/lab/{SESSION}");
+        let line = format!("rlmesh-gateway --address 10.0.0.5:7447/{SESSION} --tenant lab");
         let c = Config::from_args(
             Args::try_parse_from(line.split_whitespace()).expect("args"),
             Some("0123456789abcdefXYZ".into()),
@@ -300,7 +302,7 @@ mod tests {
         assert_eq!(c.session.to_string(), SESSION);
         assert_eq!(c.zenoh_listen.ip().to_string(), "0.0.0.0");
         let both =
-            format!("rlmesh-gateway --address 10.0.0.5:7447/lab/{SESSION} --connect 10.0.0.5:7447");
+            format!("rlmesh-gateway --address 10.0.0.5:7447/{SESSION} --connect 10.0.0.5:7447");
         assert!(Args::try_parse_from(both.split_whitespace()).is_err());
     }
 }

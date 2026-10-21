@@ -11,9 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::CatalogEnv;
-use rlmesh::lockstep::{ConnectOptions, GymError, LockstepAddress};
-use rlmesh_session::wire::{LeaseToken, ParticipantId, PriorityClass, Role};
-use rlmesh_session::{Participant, ParticipantConfig, Transport, TransportConfig};
+use rlmesh::lockstep::{ConnectOptions, GymError};
+use rlmesh_session::wire::{LeaseToken, PriorityClass, Role};
+use rlmesh_session::{Participant, SessionAddress};
 use rlmesh_spaces::{AutoresetMode, DType, SpaceValue, Tensor};
 
 /// `lanes` actions of the catalog's `float32 [7]`, every byte `seq`.
@@ -24,26 +24,18 @@ fn actions(seq: u8, lanes: usize) -> Vec<SpaceValue> {
 }
 
 async fn operator(address: &str) -> Participant {
-    let address = LockstepAddress::parse(address).unwrap();
-    let (tenant, session) = address.session.unwrap();
-    let transport = Transport::open(
-        &TransportConfig::per_class_tcp(Some("127.0.0.1:0".parse().unwrap()), Some(address.base))
-            .unwrap(),
-    )
-    .await
-    .unwrap();
-    Participant::attach(
-        transport,
-        ParticipantConfig::new(
-            tenant,
-            session,
-            ParticipantId::new("operator").unwrap(),
+    // The robot's participant address, less the robot: its session's.
+    let (session, _) = address.rsplit_once('/').unwrap();
+    let session: SessionAddress = session.parse().unwrap();
+    session
+        .join(
+            "operator",
             vec![Role::Controller],
             PriorityClass::Safety,
-        ),
-    )
-    .await
-    .unwrap()
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap()
 }
 
 fn refused(result: Result<impl std::fmt::Debug, GymError>, why: &str) {
@@ -53,9 +45,7 @@ fn refused(result: Result<impl std::fmt::Debug, GymError>, why: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_and_estop() {
-    let binding = rlmesh::lockstep::bind("lockstep://127.0.0.1:0/catalog")
-        .await
-        .unwrap();
+    let binding = rlmesh::lockstep::bind(":0/catalog").await.unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
     let served = tokio::spawn(binding.serve(
@@ -102,9 +92,7 @@ async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_an
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_driver_over_the_lockstep_session_steps_and_a_stale_token_is_refused() {
-    let binding = rlmesh::lockstep::bind("lockstep://127.0.0.1:0/catalog")
-        .await
-        .unwrap();
+    let binding = rlmesh::lockstep::bind(":0/catalog").await.unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
     let served = tokio::spawn(binding.serve(
@@ -139,9 +127,7 @@ async fn a_driver_over_the_lockstep_session_steps_and_a_stale_token_is_refused()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recorded_lockstep_env_tees_every_step_per_lane() {
     let path = std::env::temp_dir().join(format!("rlmesh-lockstep-{}.mcap", std::process::id()));
-    let binding = rlmesh::lockstep::bind("lockstep://127.0.0.1:0/catalog")
-        .await
-        .unwrap();
+    let binding = rlmesh::lockstep::bind(":0/catalog").await.unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
     let served = tokio::spawn(binding.serve(

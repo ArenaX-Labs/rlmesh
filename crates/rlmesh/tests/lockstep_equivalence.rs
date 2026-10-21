@@ -4,7 +4,7 @@
 //!
 //! The same catalog-style env and the same model run once over v1 (the env
 //! behind the gRPC Join stream) and once over v2 (the env as a lockstep
-//! robot in a session, `lockstep://`), and every trace must match:
+//! robot in a session, at its participant address), and every trace must match:
 //!
 //! - what the env received and answered, per lane: reset seeds and options,
 //!   the exact action bytes, the observation leaf bytes, rewards (bit
@@ -146,9 +146,7 @@ fn runtime() -> tokio::runtime::Runtime {
 /// Serves `env` over v1 (gRPC) or v2 (lockstep) and returns its address.
 fn serve(rt: &tokio::runtime::Runtime, env: CatalogEnv, v2: bool) -> String {
     if v2 {
-        let binding = rt
-            .block_on(rlmesh::lockstep::bind("lockstep://127.0.0.1:0/catalog"))
-            .unwrap();
+        let binding = rt.block_on(rlmesh::lockstep::bind(":0/catalog")).unwrap();
         let address = binding.address();
         rt.spawn(binding.serve(
             Arc::new(env),

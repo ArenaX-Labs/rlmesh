@@ -93,9 +93,7 @@ impl LockstepHandler for Arm {
 }
 
 async fn serve() -> (String, tokio_util::sync::CancellationToken) {
-    let binding = rlmesh::lockstep::bind("lockstep://127.0.0.1:0/ur10e")
-        .await
-        .unwrap();
+    let binding = rlmesh::lockstep::bind(":0/ur10e").await.unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
     tokio::spawn(binding.serve_robot(

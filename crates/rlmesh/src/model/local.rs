@@ -183,10 +183,10 @@ where
 }
 
 /// Dials the env and handshakes: over gRPC, or (with the `lockstep`
-/// feature) as a v2 lockstep driver (`lockstep://...`, §12), whose
+/// feature) as a v2 lockstep driver (a participant address, §12), whose
 /// handshake the env's declaration answers.
 async fn connect_env(options: &LocalRun) -> Result<(DrivenEnv, rlmesh_grpc::EnvHandshake)> {
-    if options.address.starts_with("lockstep://") {
+    if crate::address::is_v2(&options.address) {
         #[cfg(feature = "lockstep")]
         {
             let (env, handshake) =

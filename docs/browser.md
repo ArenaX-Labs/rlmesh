@@ -103,7 +103,7 @@ back. When the session's host is gone for 2 s, the session has ended: the
 gateway closes every socket with `4410`, the page gets one `ended` event
 (its leases end with `cause: 'session_ended'`), and `rlmesh-gateway`, which
 serves one session, exits. The gateway takes the session as its host
-prints it, `--address {ip}:{port}/{tenant}/{session}`, or as `--connect`
+prints it, `--address {ip}:{port}[/{session}]`, or as `--connect`
 with `--session`/`--session-file`.
 
 ## Security model

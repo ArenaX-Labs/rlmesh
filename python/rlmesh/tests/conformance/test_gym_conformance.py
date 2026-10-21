@@ -38,7 +38,7 @@ import rlmesh.numpy  # noqa: E402
 
 spaces = gym.spaces
 
-ADDRESS = "lockstep://127.0.0.1:0/gym"
+ADDRESS = ":0/gym"
 EDITION = rlmesh.ServeOptions(workflow_edition="2026.06")
 
 
@@ -743,7 +743,7 @@ class Frames(gym.Env):
         return self.frame, 0.0, False, False, {}
 
 env = gym.make("CartPole-v1") if sys.argv[1] == "cartpole" else Frames(eval(sys.argv[1]))
-server = rlmesh.EnvServer(env, "lockstep://127.0.0.1:0/gym")
+server = rlmesh.EnvServer(env, ":0/gym")
 server.start()
 print(server.address, flush=True)
 sys.stdin.read()

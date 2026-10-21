@@ -312,7 +312,7 @@ impl EditionCell {
 }
 
 /// How a client reaches its env: a v1 gRPC Join stream, or (with the
-/// `lockstep` feature) a v2 lockstep driver (`lockstep://`, §12). Both take
+/// `lockstep` feature) a v2 lockstep driver (a participant address, §12). Both take
 /// and answer native values; the proto conversion is the gRPC arm's.
 #[derive(Clone)]
 enum Link {

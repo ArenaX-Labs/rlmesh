@@ -1,6 +1,6 @@
 """The v2 lockstep path (§12) from Python.
 
-- Existing Gymnasium envs and v1 models run unchanged at ``lockstep://``
+- Existing Gymnasium envs and v1 models run unchanged at participant
   addresses: the same env and model over v1 (gRPC) and v2 (lockstep) leave
   the same traces, bit for bit, across every space kind and v1 dtype, a
   vector env with NEXT_STEP autoreset, seeds and chunking.
@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from typing import Any, cast
 
@@ -187,7 +188,7 @@ def _traces(make_env: Any, address: str, **run: Any) -> tuple[Any, ...]:
 def test_a_catalog_env_runs_unchanged_on_lockstep_with_seeds_and_chunking() -> None:
     run = {"seeds": [5, 6, 2**40, 8], "execution_horizon": 2}
     v1 = _traces(CatalogEnv, "127.0.0.1:0", **run)
-    lockstep = _traces(CatalogEnv, "lockstep://127.0.0.1:0/catalog", **run)
+    lockstep = _traces(CatalogEnv, ":0/catalog", **run)
     assert v1[4] == 4 and v1[1] and v1[2]
     assert lockstep == v1
 
@@ -201,7 +202,7 @@ def test_a_next_step_vector_env_runs_unchanged_on_lockstep() -> None:
 
     run = {"episodes": 7}
     v1 = _traces(make, "127.0.0.1:0", **run)
-    lockstep = _traces(make, "lockstep://127.0.0.1:0/vector", **run)
+    lockstep = _traces(make, ":0/vector", **run)
     assert v1[4] == 7
     assert lockstep == v1
 
@@ -243,7 +244,7 @@ def test_a_served_model_runs_a_lockstep_env_as_it_runs_a_grpc_one() -> None:
 
     grpc = trace("127.0.0.1:0")
     assert len(grpc[2]) == 2
-    assert trace("lockstep://127.0.0.1:0/served") == grpc
+    assert trace(":0/served") == grpc
 
 
 ARM = {
@@ -281,7 +282,7 @@ def test_remote_env_drives_a_lockstep_robot() -> None:
         robot.serve_lockstep(step, reset, background=True)
         with pytest.raises(v2.SessionException, match="inside its step"):
             robot.publish("arm", pos=q)
-        env = rlmesh.numpy.RemoteEnv(f"lockstep://{host.address}/arm1")
+        env = rlmesh.numpy.RemoteEnv(f"{host.address}/arm1")
         try:
             assert isinstance(env, gym.Env)
             observations, actions = (
@@ -326,7 +327,7 @@ def test_a_remote_env_view_step_is_not_delayed_by_the_signal_poll() -> None:
             robot.publish("arm", pos=q)
 
         robot.serve_lockstep(step, reset, background=True)
-        env = rlmesh.numpy.RemoteEnv(f"lockstep://{host.address}/arm1")
+        env = rlmesh.numpy.RemoteEnv(f"{host.address}/arm1")
         try:
             env.reset(seed=0)
             action = {"arm": np.ones(2, np.float32)}
@@ -363,8 +364,7 @@ def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
             return {"options": options}
 
         robot.serve_lockstep(step, reset, background=True)
-        # The session's only robot: its address without the robot.
-        env = rlmesh.numpy.RemoteEnv(f"lockstep://{host.address}")
+        env = rlmesh.numpy.RemoteEnv(f"{host.address}/ttt")
         try:
             _, info = env.reset(seed=1, options={"first": np.arange(2)})
             assert info["options"] == {"first": [0, 1]}
@@ -377,7 +377,7 @@ def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
 
 
 def test_remote_env_picks_the_gym_path_for_a_gym_env_and_the_view_for_a_robot() -> None:
-    server = rlmesh.EnvServer(CatalogEnv(), "lockstep://127.0.0.1:0/gym")
+    server = rlmesh.EnvServer(CatalogEnv(), ":0/gym")
     server.start()
     try:
         remote = rlmesh.numpy.RemoteEnv(server.address)
@@ -396,7 +396,7 @@ def test_remote_env_picks_the_gym_path_for_a_gym_env_and_the_view_for_a_robot() 
             robot.publish("arm", pos=q)
 
         robot.serve_lockstep(step, reset, background=True)
-        env = rlmesh.numpy.RemoteEnv(f"lockstep://{host.address}/arm1")
+        env = rlmesh.numpy.RemoteEnv(f"{host.address}/arm1")
         try:
             assert set(cast("Any", env.observation_space).spaces) == {"arm"}
             _, info = env.reset()
@@ -438,7 +438,7 @@ def _undecodable() -> UnicodeDecodeError:
 def test_an_env_s_builtin_exception_raises_its_class_with_its_message(
     error: BaseException, raised: type[BaseException], typed: bool
 ) -> None:
-    server = rlmesh.EnvServer(_Raises(error), "lockstep://127.0.0.1:0/raises")
+    server = rlmesh.EnvServer(_Raises(error), ":0/raises")
     server.start()
     try:
         remote = rlmesh.numpy.RemoteEnv(server.address)
@@ -468,7 +468,7 @@ def test_a_spec_that_is_not_json_forwards_its_basic_fields() -> None:
     env.spec = EnvSpec(
         "Mine-v0", entry_point=type(env), max_episode_steps=9, kwargs={"x": object()}
     )
-    server = rlmesh.EnvServer(env, "lockstep://127.0.0.1:0/spec")
+    server = rlmesh.EnvServer(env, ":0/spec")
     server.start()
     try:
         remote = rlmesh.numpy.RemoteEnv(server.address)
@@ -493,7 +493,7 @@ def _same_step() -> Any:
 def test_same_step_is_served_on_lockstep_and_refused_by_name_elsewhere() -> None:
     with pytest.raises(ValueError, match="SAME_STEP"):
         rlmesh.EnvServer(_same_step(), "tcp://127.0.0.1:0")
-    server = rlmesh.EnvServer(_same_step(), "lockstep://127.0.0.1:0/same")
+    server = rlmesh.EnvServer(_same_step(), ":0/same")
     server.start()
     try:
         model = rlmesh.Model(lambda observation: 0)
@@ -507,3 +507,52 @@ def test_same_step_is_served_on_lockstep_and_refused_by_name_elsewhere() -> None
             remote.close()
     finally:
         server.shutdown()
+
+
+def test_addresses_parse_as_written_and_old_forms_name_their_upgrade() -> None:
+    assert v2.parse_address("lab:7447/bench-3/cartpole") == {
+        "host": "lab",
+        "port": 7447,
+        "session": "bench-3",
+        "participant": "cartpole",
+    }
+    assert v2.parse_address("robot-lab/ur10")["session"] == "robot-lab"
+    assert v2.parse_address("lab:7447", session=True)["participant"] is None
+    with pytest.raises(ValueError, match=re.escape('use "127.0.0.1:7447/gym"')):
+        rlmesh.EnvServer(CatalogEnv(), "lockstep://127.0.0.1:7447/gym")
+
+
+SERVE_BY_NAME = """
+import sys, gymnasium as gym, rlmesh
+server = rlmesh.EnvServer(gym.make("CartPole-v1"), "cartpole")
+server.start()
+print(server.address, flush=True)
+sys.stdin.read()
+server.shutdown()
+"""
+
+
+def test_two_processes_meet_by_name_the_first_hosting() -> None:
+    import subprocess
+    import sys
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", SERVE_BY_NAME],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert child.stdout is not None and child.stdin is not None
+    try:
+        printed = child.stdout.readline().strip()
+        assert printed.endswith(":7447/cartpole"), printed
+        remote = rlmesh.numpy.RemoteEnv("cartpole")
+        try:
+            obs, _ = remote.reset(seed=0)
+            assert obs.shape == (4,)
+            remote.step(0)
+        finally:
+            remote.close()
+    finally:
+        child.stdin.close()
+        child.wait(timeout=10)

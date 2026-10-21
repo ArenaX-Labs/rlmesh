@@ -91,10 +91,12 @@ __all__ = [
     "describe_envelope_normalize",
     "dict_space_spec",
     "discrete_space_spec",
+    "is_v2_address",
     "local_env_contract",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
     "normalize_connect_address",
+    "parse_address",
     "predict_seed",
     "resolve_workflow_edition_rungs",
     "run_cli",
@@ -894,9 +896,13 @@ class V2Host:
     @property
     def address(self) -> builtins.str:
         r"""
-        `{ip}:{base_port}/{tenant}/{session}`: what participants connect to.
+        `{ip}:{port}[/{session}]`: what participants connect to.
         """
-    def __new__(cls, ip: builtins.str = ..., tenant: builtins.str = ..., lease_grace_ms: builtins.int = ...) -> V2Host: ...
+    def __new__(cls, address: builtins.str = ..., lease_grace_ms: builtins.int = ...) -> V2Host:
+        r"""
+        Places the session `address` names (`":0"`: hosted here on an
+        OS-assigned port).
+        """
     def close(self) -> None:
         r"""
         Stops the host (participants see it leave).
@@ -912,6 +918,11 @@ class V2LockstepRobot:
     def name(self) -> builtins.str:
         r"""
         The robot's participant id.
+        """
+    @property
+    def address(self) -> builtins.str:
+        r"""
+        The robot's participant address, `{ip}:{port}[/{session}]/{name}`.
         """
     def __new__(cls, address: builtins.str, name: builtins.str, robot_json: builtins.str) -> V2LockstepRobot:
         r"""
@@ -1049,6 +1060,11 @@ class V2Robot:
         The robot's participant id.
         """
     @property
+    def address(self) -> builtins.str:
+        r"""
+        The robot's participant address, `{ip}:{port}[/{session}]/{name}`.
+        """
+    @property
     def mode(self) -> builtins.str:
         r"""
         The session mode this robot sees (`disarmed`, `armed`, `active`,
@@ -1160,6 +1176,8 @@ def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
 
 def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> SpaceSpec: ...
 
+def is_v2_address(text: str) -> bool: ...
+
 def local_env_contract(env: typing.Any) -> typing.Any:
     r"""
     The wire contract of a local env, derived as an `EnvServer` would publish
@@ -1178,6 +1196,8 @@ def normalize_connect_address(address: typing.Optional[builtins.str] = None, *, 
     implementation (every language shares its rules and texts); the caller
     has checked `port`'s type and range and `transport`'s spelling.
     """
+
+def parse_address(text: str, session: bool = False) -> dict[str, typing.Any]: ...
 
 def predict_seed(episode_seed: int, predict_index: int) -> int: ...
 
