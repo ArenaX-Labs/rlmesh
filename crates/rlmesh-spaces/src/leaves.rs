@@ -517,6 +517,7 @@ mod tests {
             dtype,
             spec: Some(SpaceKind::MultiDiscrete(MultiDiscreteSpec {
                 nvec: vec![4, 4],
+                ..Default::default()
             })),
         }
     }

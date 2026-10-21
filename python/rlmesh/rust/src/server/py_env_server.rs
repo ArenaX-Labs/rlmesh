@@ -195,6 +195,8 @@ fn construct_server(
             shutdown,
         });
     }
+    rlmesh_grpc::wire::check_proto_contract(&env_contract)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     let bind_target = match address {
         Some(address) => BindAddress::parse(address).map_err(to_py_err)?,
         None => BindAddress::Tcp {

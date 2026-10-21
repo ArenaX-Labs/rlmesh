@@ -78,6 +78,7 @@ fn catalog_contract(num_envs: u32) -> EnvContract {
                 dtype: DType::Int32,
                 spec: Some(SpaceKind::MultiDiscrete(MultiDiscreteSpec {
                     nvec: vec![2, 3, 4],
+                    ..Default::default()
                 })),
             },
         ),

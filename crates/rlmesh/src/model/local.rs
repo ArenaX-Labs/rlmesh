@@ -294,6 +294,9 @@ impl LockstepRuntimeEnv {
             .await
             .map_err(|err| Error::Connection(err.to_string()))?;
         let info = client.info();
+        // The v1 runtime drives the env through its v1 contract.
+        rlmesh_grpc::wire::check_proto_contract(&info.contract)
+            .map_err(|err| Error::invalid_argument(err.to_string()))?;
         let (offer, selected, workflow_edition) =
             crate::editions::negotiate_env(info, declared).map_err(Error::Protocol)?;
         let capabilities: Vec<&str> = info.capabilities.iter().map(String::as_str).collect();

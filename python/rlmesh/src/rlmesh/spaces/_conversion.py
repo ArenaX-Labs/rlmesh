@@ -97,7 +97,9 @@ def to_gymnasium_space(space: Space[Any] | SpaceSpec) -> object:
         return gym_spaces.MultiBinary(shape)
     if spec.kind == "multi_discrete":
         details = spec_details(spec)
-        return gym_spaces.MultiDiscrete(details["nvec"], dtype=_dtype(spec))
+        return gym_spaces.MultiDiscrete(
+            details["nvec"], dtype=_dtype(spec), start=details.get("start")
+        )
     if spec.kind == "text":
         details = spec_details(spec)
         max_length = cast(int, details["max_length"])
@@ -233,7 +235,7 @@ def _multi_discrete_from_gymnasium(space: Any) -> MultiDiscrete:
     import numpy as np
 
     nvec = np.asarray(space.nvec)
-    if nvec.ndim == 1:
+    if nvec.ndim == 1 and not np.any(getattr(space, "start", 0)):
         return MultiDiscrete(
             [int(value) for value in nvec.tolist()], dtype=str(space.dtype)
         )

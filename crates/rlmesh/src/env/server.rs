@@ -179,6 +179,8 @@ impl Listener {
                 )));
             }
         }
+        rlmesh_grpc::wire::check_proto_contract(&contract.to_wire()?)
+            .map_err(|err| Error::invalid_argument(err.to_string()))?;
         let listener = BoundListener::bind_sync(BindAddress::parse(address)?, runtime.handle())?;
         let bound = listener.local_addr()?.to_string();
         Ok((Self::Grpc(listener), bound))

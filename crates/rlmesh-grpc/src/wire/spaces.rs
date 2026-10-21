@@ -49,6 +49,43 @@ pub fn env_spec_from_proto(
     })
 }
 
+/// Refuse a contract the v1 wire cannot carry: a MultiDiscrete with a
+/// nonzero `start` (the proto `MultiDiscreteSpec` has no `start`, so
+/// [`space_spec_to_proto`] would drop it). Serve such an env on `lockstep://`.
+pub fn check_proto_contract(contract: &native::EnvContract) -> Result<(), ProtocolError> {
+    fn check(spec: &native::SpaceSpec, path: &str) -> Result<(), ProtocolError> {
+        match &spec.spec {
+            Some(native::SpaceKind::MultiDiscrete(md)) if md.has_start() => {
+                Err(ProtocolError::EncodeError(format!(
+                    "{path}: a MultiDiscrete start ({:?}) has no v1 wire form; serve the env on \
+                     a lockstep:// address",
+                    md.start
+                )))
+            }
+            Some(native::SpaceKind::Dict(dict)) => dict
+                .keys
+                .iter()
+                .zip(&dict.spaces)
+                .try_for_each(|(key, child)| check(child, &format!("{path}[{key:?}]"))),
+            Some(native::SpaceKind::Tuple(tuple)) => tuple
+                .spaces
+                .iter()
+                .enumerate()
+                .try_for_each(|(i, child)| check(child, &format!("{path}[{i}]"))),
+            _ => Ok(()),
+        }
+    }
+    for (name, space) in [
+        ("observation_space", &contract.observation_space),
+        ("action_space", &contract.action_space),
+    ] {
+        if let Some(space) = space {
+            check(space, name)?;
+        }
+    }
+    Ok(())
+}
+
 /// Flatten a native FLAT [`native::EnvContract`] into the nested proto
 /// [`core_proto::EnvContract`] (the nesting lives entirely in the wire codec;
 /// the native type stays flat for all consumers).
@@ -219,7 +256,10 @@ fn space_kind_from_proto(
             native::SpaceKind::MultiBinary(native::MultiBinarySpec)
         }
         proto::space_spec::Spec::MultiDiscrete(spec) => {
-            native::SpaceKind::MultiDiscrete(native::MultiDiscreteSpec { nvec: spec.nvec })
+            native::SpaceKind::MultiDiscrete(native::MultiDiscreteSpec {
+                nvec: spec.nvec,
+                start: Vec::new(),
+            })
         }
         proto::space_spec::Spec::Text(spec) => native::SpaceKind::Text(native::TextSpec {
             min_length: spec.min_length,
@@ -501,6 +541,31 @@ fn native_dtype_from_proto(dtype: i32) -> Result<native::DType, ProtocolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_multi_discrete_start_is_refused_for_the_v1_wire() {
+        let md = |start: Vec<i64>| {
+            native::spaces::MultiDiscreteBuilder::vector(vec![3, 4])
+                .start(start)
+                .build()
+                .expect("builds")
+        };
+        let contract = |space| native::EnvContract {
+            observation_space: Some(
+                native::spaces::DictSpaceBuilder::new()
+                    .insert("md", space)
+                    .build()
+                    .expect("dict"),
+            ),
+            ..Default::default()
+        };
+        assert!(check_proto_contract(&contract(md(vec![0, 0]))).is_ok());
+        let err = check_proto_contract(&contract(md(vec![-1, 5]))).expect_err("refused");
+        assert!(
+            err.to_string().contains("observation_space[\"md\"]"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn autoreset_mode_native_and_proto_agree() {

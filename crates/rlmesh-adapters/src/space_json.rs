@@ -96,7 +96,11 @@ pub fn space_spec_from_json(value: &Value) -> Result<SpaceSpec, SpaceJsonError> 
         "multi_discrete" => {
             let mut nvec = Vec::new();
             flat_ints(detail("nvec")?, &mut nvec).ok_or_else(|| json_error("nvec"))?;
-            SpaceKind::MultiDiscrete(MultiDiscreteSpec { nvec })
+            let mut start = Vec::new();
+            if let Some(value) = details.get("start") {
+                flat_ints(value, &mut start).ok_or_else(|| json_error("start"))?;
+            }
+            SpaceKind::MultiDiscrete(MultiDiscreteSpec { nvec, start })
         }
         "text" => SpaceKind::Text(TextSpec {
             min_length: int("min_length")?,
@@ -248,19 +252,26 @@ fn details(space: &SpaceSpec) -> Result<Value, SpaceJsonError> {
         }
         // `nvec` is stored flat; a rank-2 shape reshapes back to the nested
         // matrix form, lower ranks stay flat.
+        // A nonzero `start`, in the same form, only when set, so a zero-based
+        // space reads as before.
         SpaceKind::MultiDiscrete(spec) => {
-            let nvec = if space.shape.len() == 2 {
-                let cols = space.shape[1].max(0) as usize;
-                let rows: Vec<Vec<i64>> = if cols == 0 {
-                    Vec::new()
+            let shaped = |flat: &[i64]| {
+                if space.shape.len() == 2 {
+                    let cols = space.shape[1].max(0) as usize;
+                    let rows: Vec<Vec<i64>> = if cols == 0 {
+                        Vec::new()
+                    } else {
+                        flat.chunks(cols).map(<[i64]>::to_vec).collect()
+                    };
+                    json!(rows)
                 } else {
-                    spec.nvec.chunks(cols).map(<[i64]>::to_vec).collect()
-                };
-                json!(rows)
-            } else {
-                json!(spec.nvec)
+                    json!(flat)
+                }
             };
-            details.insert("nvec".into(), nvec);
+            details.insert("nvec".into(), shaped(&spec.nvec));
+            if spec.has_start() {
+                details.insert("start".into(), shaped(&spec.start));
+            }
         }
         SpaceKind::Text(spec) => {
             details.insert("min_length".into(), spec.min_length.into());
@@ -502,6 +513,15 @@ mod tests {
                 DType::Int64,
                 SpaceKind::MultiDiscrete(MultiDiscreteSpec {
                     nvec: vec![2, 3, 4, 5],
+                    ..Default::default()
+                }),
+            ),
+            space(
+                &[2, 2],
+                DType::Int64,
+                SpaceKind::MultiDiscrete(MultiDiscreteSpec {
+                    nvec: vec![2, 3, 4, 5],
+                    start: vec![-1, 0, 5, 9],
                 }),
             ),
             space(
@@ -578,13 +598,17 @@ mod tests {
             DType::Int64,
             SpaceKind::MultiDiscrete(MultiDiscreteSpec {
                 nvec: vec![2, 3, 4, 5],
+                ..Default::default()
             }),
         );
         assert!(render(&matrix).contains(r#""details":{"nvec":[[2,3],[4,5]]}"#));
         let vector = space(
             &[2],
             DType::Int64,
-            SpaceKind::MultiDiscrete(MultiDiscreteSpec { nvec: vec![2, 3] }),
+            SpaceKind::MultiDiscrete(MultiDiscreteSpec {
+                nvec: vec![2, 3],
+                ..Default::default()
+            }),
         );
         assert!(render(&vector).contains(r#""details":{"nvec":[2,3]}"#));
         let text = space(

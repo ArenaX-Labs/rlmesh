@@ -299,7 +299,7 @@ ACTION_SPACES = [
 ]
 
 
-GAPS = {"multi_discrete_start"}
+GAPS: set[str] = set()
 
 
 def gapped(names: Any) -> list[Any]:
