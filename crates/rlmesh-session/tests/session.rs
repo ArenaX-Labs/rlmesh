@@ -943,6 +943,42 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_late_subscriber_gets_an_event_published_once_from_its_publisher() {
+    // No host store: only the publisher can answer for the event.
+    let world = World::start_with(|config| config.history.enabled = false).await;
+    let robot = world
+        .join("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0)
+        .await;
+    robot
+        .declare_parts(r#"{"task": {"kind": "text"}}"#)
+        .await
+        .expect("declare");
+    let task = robot.publisher("task").await.expect("publisher");
+    task.publish(robot.clock().now_ns(), Bytes::from_static(b"wave the arm"))
+        .expect("publish");
+    let late = world
+        .join("late", vec![Role::Observer], PriorityClass::Scripted, 0)
+        .await;
+    let late_task = late
+        .subscribe(
+            &robot_id(),
+            "task",
+            SubscribeOptions {
+                warm_from_history: true,
+                ..SubscribeOptions::default()
+            },
+        )
+        .await
+        .expect("subscribe");
+    let latest = late_task.latest().expect("the task, joined late");
+    assert_eq!(
+        latest.received.sample.payload,
+        Bytes::from_static(b"wave the arm")
+    );
+    assert_eq!(late_task.stats().from_history, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn seq_gaps_count_as_losses_and_old_samples_go_stale() {
     let world = World::start().await;
     let robot = world.robot().await;

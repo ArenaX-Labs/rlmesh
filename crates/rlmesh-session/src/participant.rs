@@ -860,6 +860,7 @@ impl Participant {
             });
         }
         let key = self.shared.keys.data(&stream.owner, &stream.path);
+        let history_key = self.shared.keys.history(&stream.owner, &stream.path);
         // An applied stream has no `send` ceiling; a part's is its rate cap.
         let ceiling_hz = if stream.applied {
             None
@@ -875,6 +876,7 @@ impl Participant {
         let publisher = SamplePublisher::declare(
             &self.shared.transport,
             key,
+            history_key,
             stream,
             self.shared.clock_mode(),
             ceiling_hz,

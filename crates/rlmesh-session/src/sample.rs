@@ -30,7 +30,11 @@
 //! first and buffers, the store is queried up to the first live seq, and the
 //! two are merged by seq (§8.8). The publisher keeps no retransmission
 //! (which would hold newer samples behind missing ones, the head-of-line
-//! blocking a real-time stream must not have).
+//! blocking a real-time stream must not have), with one exception: an event
+//! stream's publisher keeps its last sample and answers history queries for
+//! it beside the host's store, so a controller that joins after a single
+//! publication (the task text) still sees it, even when the store's
+//! subscription had not reached the publisher yet.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
@@ -40,7 +44,7 @@ use std::time::Duration;
 use crate::wire::codec;
 use crate::wire::{
     Applied, AuthoritySnapshot, ClockMode, Epoch, HistoryQuery, ParticipantId, Plan, Sample,
-    SampleBatch, StreamSpec,
+    SampleBatch, SampleMeta, StreamSpec,
 };
 use bytes::Bytes;
 use tokio::sync::{Notify, watch};
@@ -121,14 +125,67 @@ pub(crate) struct Outlet {
     state: Mutex<PlanState>,
     changed: Notify,
     coalesced: AtomicU64,
+    /// An event stream's last sample, for late joiners.
+    last: Mutex<Option<Sample>>,
 }
 
 impl Outlet {
     fn put_sample(&self, sample: &Sample) -> Result<(), SessionError> {
+        if self.spec.event
+            && let Ok(mut last) = self.last.lock()
+        {
+            *last = Some(sample.clone());
+        }
         self.publisher
             .put(frame_zbytes(codec::encode_sample(sample)))
             .wait()?;
         Ok(())
+    }
+
+    /// Answers a history query on an event stream with its last sample, when
+    /// the query's range holds it.
+    fn serve_last(&self, query: &zenoh::query::Query) {
+        let request = match query.payload() {
+            Some(payload) => match codec::decode_history_query(&payload.to_bytes()) {
+                Ok(request) => request,
+                Err(err) => {
+                    debug!(channel = %self.spec.channel, %err, "undecodable history query");
+                    return;
+                }
+            },
+            None => HistoryQuery::default(),
+        };
+        let Some(sample) = self.last.lock().ok().and_then(|last| last.clone()) else {
+            return;
+        };
+        if sample.epoch != request.epoch
+            || sample.seq <= request.after_seq
+            || request.until_seq.is_some_and(|until| sample.seq > until)
+        {
+            return;
+        }
+        let page = SampleBatch {
+            channel: sample.channel,
+            epoch: sample.epoch,
+            publish_ns: sample.publish_ns,
+            samples: vec![SampleMeta {
+                seq: sample.seq,
+                capture_ns: sample.capture_ns,
+                tick: sample.tick,
+                applied: sample.applied,
+            }],
+            payload: sample.payload,
+            truncated: false,
+            gaps: Vec::new(),
+        };
+        match codec::encode_batch(&page) {
+            Ok(encoded) => {
+                if let Err(err) = query.reply(query.key_expr(), frame_zbytes(encoded)).wait() {
+                    debug!(channel = %self.spec.channel, %err, "last-event reply failed");
+                }
+            }
+            Err(err) => debug!(channel = %self.spec.channel, %err, "last-event page"),
+        }
     }
 
     /// Installs demand revision `revision` (`None`: no demand, the default
@@ -177,12 +234,16 @@ impl Outlet {
 /// Publishes one stream. Cheap to share: `publish` takes `&self`.
 pub struct SamplePublisher {
     outlet: Arc<Outlet>,
+    /// An event stream's answer to late joiners (`h/{robot}/{path}`).
+    _last: Option<zenoh::query::Queryable<()>>,
 }
 
 impl SamplePublisher {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn declare(
         transport: &Transport,
         key: String,
+        history_key: String,
         spec: StreamSpec,
         clock_mode: ClockMode,
         ceiling_hz: Option<f64>,
@@ -212,13 +273,32 @@ impl SamplePublisher {
             }),
             changed: Notify::new(),
             coalesced: AtomicU64::new(0),
+            last: Mutex::new(None),
             spec,
             publisher,
             seq: AtomicU64::new(0),
             epoch,
             clock,
         });
-        Ok(Self { outlet })
+        let last = if outlet.spec.event {
+            let weak = Arc::downgrade(&outlet);
+            let queryable = transport
+                .session(TrafficClass::Data)
+                .declare_queryable(history_key)
+                .callback(move |query| {
+                    if let Some(outlet) = weak.upgrade() {
+                        outlet.serve_last(&query);
+                    }
+                })
+                .await?;
+            Some(queryable)
+        } else {
+            None
+        };
+        Ok(Self {
+            outlet,
+            _last: last,
+        })
     }
 
     pub(crate) fn outlet(&self) -> &Arc<Outlet> {
