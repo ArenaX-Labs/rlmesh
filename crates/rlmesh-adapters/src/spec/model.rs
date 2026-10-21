@@ -244,6 +244,11 @@ impl<'de> Deserialize<'de> for InputNode {
 pub struct ModelSpec {
     pub input: InputNode,
     pub output: Action,
+    /// Named projections (lossy fits) the model accepts, by name
+    /// (`drop_action`). A resolve applies one only when it is listed, and
+    /// records it on the adapter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
 }
 
 /// The camera resolutions this model's image inputs assert, in document order.

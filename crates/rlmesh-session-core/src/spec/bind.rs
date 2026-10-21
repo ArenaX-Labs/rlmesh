@@ -42,6 +42,7 @@ use crate::spec::policy::{
     Action, Allow, Allows, ChunkStart, Entry, ImageFormat, ImageLayout, Input, Names, Policy,
     Resample, RunOptions, Source,
 };
+use crate::spec::projection::Projection;
 use crate::spec::rotation::{self, Rotation, RotationChange};
 use crate::spec::selector::{Selector, below};
 use crate::spec::units::{self, Quantity, UnitChange};
@@ -2389,7 +2390,10 @@ impl<'a> Binder<'a> {
             kind: slot.entry.kind_name.clone(),
             part: None,
             status: Status::Dropped,
-            plan: Plan::default(),
+            plan: Plan {
+                steps: vec![Step::Project(Projection::DropAction)],
+                ..Plan::default()
+            },
             delivers: Delivery::Array {
                 dtype: DType::F32,
                 shape: vec![action.horizon],

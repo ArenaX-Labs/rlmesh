@@ -31,10 +31,15 @@ class ModelSpec:
     Attributes:
         input: The model input tree.
         output: Layout of the action vector produced by the model.
+        allow: Named projections (lossy fits) the model accepts, e.g.
+            ``("drop_action",)`` to bind an env with no actuator for some
+            model output, which is then discarded and recorded in
+            ``describe()``. Without it such a pairing is refused.
     """
 
     input: InputNode
     output: Action
+    allow: tuple[str, ...] = ()
 
     def __hash__(self) -> int:
         """Hash consistently with the generated order-insensitive ``__eq__``.
@@ -46,7 +51,7 @@ class ModelSpec:
         key-order-canonical rendering (see :func:`hashable_node`); it applies no
         serialization, so a Custom-input spec stays hashable.
         """
-        return hash((hashable_node(self.input), self.output))
+        return hash((hashable_node(self.input), self.output, self.allow))
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of this spec.
@@ -61,10 +66,12 @@ class ModelSpec:
             ValueError: If a custom *input* cannot be serialized (an in-process
                 callable, or an entrypoint custom at the publish boundary).
         """
-        raw = {
+        raw: dict[str, Any] = {
             "input": model_input_to_dict(self.input),
             "output": action_to_dict(self.output),
         }
+        if self.allow:
+            raw["allow"] = list(self.allow)
         return normalize_spec("model", raw, allow_custom=False)
 
     def to_json(self) -> str:
@@ -115,6 +122,7 @@ class ModelSpec:
         return cls(
             input=model_input_from_dict(canonical["input"]),
             output=action_from_dict(canonical["output"]),
+            allow=tuple(canonical.get("allow", ())),
         )
 
     @classmethod

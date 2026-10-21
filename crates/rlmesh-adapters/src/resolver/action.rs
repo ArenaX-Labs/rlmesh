@@ -1,6 +1,6 @@
 //! Map the model's action layout onto the env's, role by role.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::state::{check_axis_width, label_permutation, part_suffix};
 use super::{LeafKey, Result, bind, check_geometry, err, index_by_key};
@@ -196,6 +196,35 @@ pub(super) fn index_outputs(model: &Action) -> Result<ModelOutputs<'_>> {
         by_key: index_by_key(placed.into_iter(), "model action")?,
         in_dim: cursor,
     })
+}
+
+/// The roled model outputs no segment of `plan` reads, as `(role, part,
+/// start, dim)` in model output order: what binding them would discard.
+pub(super) fn unconsumed<'a>(
+    outputs: &ModelOutputs<'a>,
+    plan: &ActionPlan,
+) -> Vec<(&'a str, Option<&'a str>, u32, u32)> {
+    let read: BTreeSet<u32> = plan
+        .segments
+        .iter()
+        .filter(|segment| segment.fill.is_none())
+        .map(|segment| segment.start)
+        .collect();
+    let mut out: Vec<_> = outputs
+        .by_key
+        .values()
+        .filter(|(start, _)| !read.contains(start))
+        .map(|(start, actuator)| {
+            (
+                actuator.role.as_deref().unwrap_or_default(),
+                actuator.part.as_deref(),
+                *start,
+                actuator.dim,
+            )
+        })
+        .collect();
+    out.sort_by_key(|(_, _, start, _)| *start);
+    out
 }
 
 pub(super) fn plan_action(

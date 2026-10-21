@@ -429,7 +429,7 @@ def _substitute_encodings(
 
     shadow_input = _map_leaves(model_spec.input, shadow_leaf)
     shadow_action = _shadow_action(model_spec.output, act_shims)
-    shadow = ModelSpec(input=shadow_input, output=shadow_action)
+    shadow = ModelSpec(input=shadow_input, output=shadow_action, allow=model_spec.allow)
     return shadow, obs_shims, shim_parts, tuple(act_shims)
 
 
@@ -484,7 +484,12 @@ def _model_wire(
         on_dict=lambda children: children,
         on_tuple=lambda children: children,
     )
-    wire = {"input": wire_input, "output": action_to_dict(model_spec.output)}
+    wire: dict[str, Any] = {
+        "input": wire_input,
+        "output": action_to_dict(model_spec.output),
+    }
+    if model_spec.allow:
+        wire["allow"] = list(model_spec.allow)
     return wire, customs
 
 

@@ -2143,6 +2143,10 @@
       "ModelSpec": {
         "kind": "class",
         "members": {
+          "allow": {
+            "kind": "attribute",
+            "signature": "allow: tuple[str, ...]"
+          },
           "from_dict": {
             "kind": "function",
             "signature": "from_dict(data: Mapping[str, Any])"
@@ -2176,7 +2180,7 @@
             "signature": "to_metadata()"
           }
         },
-        "signature": "ModelSpec(input: InputNode, output: Action)",
+        "signature": "ModelSpec(input: InputNode, output: Action, allow: tuple[str, ...] = ())",
         "stability": "Stable"
       },
       "ObsLeaf": {

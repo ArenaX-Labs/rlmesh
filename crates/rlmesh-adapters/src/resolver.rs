@@ -14,10 +14,12 @@ use super::error::{AdapterResolutionError, ErrorCode};
 use super::fmt::quoted;
 use super::join::join;
 use super::path::NodePath;
-use super::plans::{ObsPlan, ResolvedAdapter};
+use rlmesh_session_core::spec::Projection;
+
+use super::plans::{ActionPlan, AppliedProjection, ObsPlan, ResolvedAdapter};
 use super::space_view::SpaceView;
 use super::spec::{
-    AcceptSet, Attr, EnvFeature, EnvImage, EnvState, EnvTags, EnvText, FrameRef, InputNode,
+    AcceptSet, Action, Attr, EnvFeature, EnvImage, EnvState, EnvTags, EnvText, FrameRef, InputNode,
     ModelLeaf, ModelSpec, Provenance,
 };
 
@@ -451,6 +453,76 @@ fn collect_leaves<'spec>(
 /// widths and ranges) those plus the spaces imply, then each model input leaf is
 /// matched to an env feature by role and placed at its tree position. A model
 /// role may be reused across leaves (one camera → several input slots).
+/// The named projections `model_spec` allows, refusing an unknown name.
+fn allowed_projections(model_spec: &ModelSpec) -> Result<Vec<Projection>> {
+    model_spec
+        .allow
+        .iter()
+        .map(|name| {
+            Projection::from_name(name).ok_or_else(|| {
+                let known: Vec<&str> = Projection::ALL.iter().map(|p| p.name()).collect();
+                err(
+                    ErrorCode::Unsupported,
+                    format!(
+                        "model spec allows unknown projection {}; the named projections are {known:?}",
+                        quoted(name)
+                    ),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Model outputs no env actuator reads: refused, unless the model spec allows
+/// `drop_action`, which then records each one it discards.
+fn project(
+    model_spec: &ModelSpec,
+    outputs: &action::ModelOutputs<'_>,
+    plan: &ActionPlan,
+    env: &Action,
+) -> Result<Vec<AppliedProjection>> {
+    let allowed = allowed_projections(model_spec)?;
+    let unconsumed = action::unconsumed(outputs, plan);
+    let Some((role, part, _, dim)) = unconsumed.first().copied() else {
+        return Ok(Vec::new());
+    };
+    if !allowed.contains(&Projection::DropAction) {
+        let takes: Vec<String> = env
+            .components
+            .iter()
+            .filter_map(|actuator| {
+                actuator.role.as_ref().map(|role| match &actuator.part {
+                    Some(part) => format!("{role}#{part}"),
+                    None => role.clone(),
+                })
+            })
+            .collect();
+        return Err(err(
+            ErrorCode::MissingRole,
+            format!(
+                "model output role {}{} ({dim} dims) drives no env actuator: the env takes {takes:?}. \
+                 Discarding it is the named projection {}; add it to the model spec's allow to \
+                 bind anyway",
+                quoted(role),
+                state::part_suffix(part),
+                quoted(Projection::DropAction.name()),
+            ),
+        ));
+    }
+    Ok(unconsumed
+        .into_iter()
+        .map(|(role, part, start, dim)| AppliedProjection {
+            projection: Projection::DropAction,
+            target: format!(
+                "model output {}{} [{start}, {}) is discarded",
+                quoted(role),
+                state::part_suffix(part),
+                start + dim
+            ),
+        })
+        .collect())
+}
+
 pub fn resolve(
     env_tags: &EnvTags,
     observation_space: &SpaceView,
@@ -596,12 +668,13 @@ pub fn resolve(
 
     let action_plan =
         action::plan_action(&model_spec.output, &env_spec.action, &outputs, &mut quiet)?;
+    let projections = project(model_spec, &outputs, &action_plan, &env_spec.action)?;
 
-    // Model-side ad-hoc roles the env does not answer. An ad-hoc role matches
-    // only on the exact string, so a typo or a private name silently degrades
-    // to a zero fill (an optional input) or to dropped output dims (an unmatched
-    // model actuator) -- the required cases already hard-errored above. One
-    // advisory per role, not per placement.
+    // Model-side ad-hoc input roles the env does not answer. An ad-hoc role
+    // matches only on the exact string, so a typo or a private name silently
+    // degrades to a zero fill (an optional input) -- the required cases already
+    // hard-errored above, and an unmatched model output is refused unless
+    // `drop_action` is allowed. One advisory per role, not per placement.
     let mut leaves: Vec<PlacedLeaf> = Vec::new();
     collect_leaves(&model_spec.input, NodePath::root(), &mut leaves);
     let mut ad_hoc: BTreeSet<&str> = BTreeSet::new();
@@ -630,20 +703,6 @@ pub fn resolve(
             _ => {}
         }
     }
-    let env_action_roles: BTreeSet<&str> = env_spec
-        .action
-        .components
-        .iter()
-        .filter_map(|actuator| actuator.role.as_deref())
-        .collect();
-    ad_hoc.extend(
-        model_spec
-            .output
-            .components
-            .iter()
-            .filter_map(|actuator| actuator.role.as_deref())
-            .filter(|role| !env_action_roles.contains(role)),
-    );
     advisories.extend(
         ad_hoc
             .into_iter()
@@ -721,7 +780,8 @@ pub fn resolve(
     advisories.sort_by(|a, b| a.message.cmp(&b.message));
     quiet.sort_by(|a, b| a.message.cmp(&b.message));
 
-    let resolved = ResolvedAdapter::new(obs_plans, action_plan, advisories, quiet);
+    let resolved = ResolvedAdapter::new(obs_plans, action_plan, advisories, quiet)
+        .with_projections(projections);
     // The frame-stacking × action-chunk-replay guard used to live here, but the
     // execution horizon is no longer part of the spec — it is a runtime decision
     // (`execution_horizon` on ResolveAdapter). The guard moved to the engine's
@@ -2227,5 +2287,67 @@ mod provenance_tests {
             "{}",
             err.message
         );
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::resolve;
+    use crate::error::ErrorCode;
+    use crate::space_view::SpaceView;
+    use crate::spec::{EnvTags, ModelSpec};
+
+    /// A LIBERO-style 7-D model on a MetaWorld-style 4-D env: the rotation
+    /// delta has no actuator.
+    fn resolve_with(allow: &str) -> super::Result<crate::plans::ResolvedAdapter> {
+        let tags: EnvTags = serde_json::from_str(
+            r#"{"observation": {"t": {"type": "text", "role": "text/instruction"}},
+                "action": {"components": [
+                    {"role": "action/delta_eef_pos", "dim": 3},
+                    {"role": "action/gripper", "dim": 1}]}}"#,
+        )
+        .expect("tags");
+        let spec: ModelSpec = serde_json::from_str(&format!(
+            r#"{{"input": {{"type": "text", "role": "text/instruction"}},
+                "output": {{"components": [
+                    {{"role": "action/delta_eef_pos", "dim": 3}},
+                    {{"role": "action/delta_eef_rot", "dim": 3, "encoding": "axis_angle"}},
+                    {{"role": "action/gripper", "dim": 1}}]}}{allow}}}"#
+        ))
+        .expect("spec");
+        let obs: SpaceView = serde_json::from_str(
+            r#"{"kind": "dict", "dtype": "unspecified", "keys": ["t"],
+                "children": [{"kind": "text", "dtype": "unspecified"}]}"#,
+        )
+        .expect("obs");
+        let action: SpaceView =
+            serde_json::from_str(r#"{"kind": "box", "shape": [4], "dtype": "float32"}"#)
+                .expect("action");
+        resolve(&tags, &obs, &action, &spec, false)
+    }
+
+    #[test]
+    fn an_unconsumed_model_output_is_refused_unless_drop_action_is_allowed() {
+        let refused = resolve_with("").expect_err("refused");
+        assert_eq!(refused.code, ErrorCode::MissingRole);
+        assert!(
+            refused
+                .message
+                .contains("\"action/delta_eef_rot\" (3 dims) drives no env actuator")
+                && refused.message.contains("\"drop_action\""),
+            "{}",
+            refused.message
+        );
+        let adapter = resolve_with(r#", "allow": ["drop_action"]"#).expect("allowed");
+        assert_eq!(adapter.projections().len(), 1);
+        assert!(
+            adapter
+                .describe()
+                .contains("projections:\n  drop_action: model output \"action/delta_eef_rot\" [3, 6) is discarded"),
+            "{}",
+            adapter.describe()
+        );
+        let unknown = resolve_with(r#", "allow": ["drop_rot"]"#).expect_err("unknown");
+        assert_eq!(unknown.code, ErrorCode::Unsupported);
     }
 }

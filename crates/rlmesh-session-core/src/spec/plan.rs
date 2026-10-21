@@ -14,6 +14,7 @@ use crate::wire::part::DType;
 
 use crate::spec::explain::num;
 use crate::spec::policy::{Allow, Resample};
+use crate::spec::projection::Projection;
 use crate::spec::rotation::Rotation;
 
 /// An image size, `width × height`.
@@ -204,6 +205,8 @@ pub enum Step {
         /// (a black frame through the entry's declared preprocessing).
         fill: Vec<f64>,
     },
+    /// A named projection the binding applied.
+    Project(Projection),
 }
 
 impl Step {
@@ -313,6 +316,7 @@ impl fmt::Display for Step {
             }
             Self::Window(n) => write!(f, "window({n} by seq)"),
             Self::Blank { what, .. } => write!(f, "blank({what})"),
+            Self::Project(projection) => write!(f, "{projection}"),
         }
     }
 }

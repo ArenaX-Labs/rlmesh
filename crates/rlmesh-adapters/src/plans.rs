@@ -8,6 +8,8 @@ mod text;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rlmesh_session_core::spec::Projection;
+
 use super::advisory::Advisory;
 use super::describe;
 use super::path::{NodePath, PathSeg};
@@ -118,6 +120,18 @@ pub struct ResolvedAdapter {
     /// `reference` the env does not confirm). None of these is a *dropped* env
     /// modality, so none may land under that header (which vectors pin).
     quiet_advisories: Vec<Advisory>,
+    /// The named projections the resolve applied (each was allowed by the
+    /// model spec), in model output order.
+    projections: Vec<AppliedProjection>,
+}
+
+/// A named projection a resolve applied, and what it applied to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedProjection {
+    /// The projection.
+    pub projection: Projection,
+    /// What it discarded or fabricated, for describe and the run record.
+    pub target: String,
 }
 
 impl ResolvedAdapter {
@@ -174,7 +188,19 @@ impl ResolvedAdapter {
             previous,
             resolve_advisories,
             quiet_advisories,
+            projections: Vec::new(),
         }
+    }
+
+    /// The same adapter, recording the named projections its resolve applied.
+    pub(crate) fn with_projections(mut self, projections: Vec<AppliedProjection>) -> Self {
+        self.projections = projections;
+        self
+    }
+
+    /// The named projections the resolve applied (empty for a lossless one).
+    pub fn projections(&self) -> &[AppliedProjection] {
+        &self.projections
     }
 
     /// Human-readable summary of the resolved transformations.
@@ -187,6 +213,12 @@ impl ResolvedAdapter {
     /// dropped leaf produces no plan.
     pub fn describe(&self) -> String {
         let mut summary = describe::describe_adapter(self);
+        if !self.projections.is_empty() {
+            summary.push_str("\nprojections:");
+            for applied in &self.projections {
+                summary.push_str(&format!("\n  {}: {}", applied.projection, applied.target));
+            }
+        }
         if !self.resolve_advisories.is_empty() {
             summary.push_str("\ndropped:");
             for note in &self.resolve_advisories {
@@ -206,6 +238,12 @@ impl ResolvedAdapter {
         // env-declaration hints raised at join, then the per-apply data-loss
         // notes derived from the plans.
         let mut all = self.resolve_advisories.clone();
+        all.extend(self.projections.iter().map(|applied| {
+            Advisory::caution(format!(
+                "{} (allowed): {}",
+                applied.projection, applied.target
+            ))
+        }));
         all.extend(self.quiet_advisories.iter().cloned());
         all.extend(describe::adapter_advisories(self));
         all

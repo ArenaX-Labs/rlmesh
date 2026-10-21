@@ -13,6 +13,7 @@ cannot express (image layout, rotation encoding, explicit ranges).
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import warnings
 from types import SimpleNamespace
@@ -441,6 +442,8 @@ XVLA = adapt.ModelSpec(
             adapt.ACTION_GRIPPER, part=adapt.RIGHT_ARM, dim=1, range=(-1.0, 1.0)
         ),
     ),
+    # The second arm's outputs have no LIBERO actuator.
+    allow=("drop_action",),
 )
 
 
@@ -3963,6 +3966,7 @@ def test_xvla_libero_hand_to_grip_is_a_post_rotation():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
 
     obs = make_obs()
@@ -3997,6 +4001,7 @@ def test_state_scale_and_offset_express_the_robotwin_gripper():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     obs = make_obs()
     gripper = float(np.asarray(obs["robot0_gripper_qpos"])[0])
@@ -4012,6 +4017,7 @@ def test_constant_part_is_not_reported_as_a_zero_filled_role():
     constant = adapt.ModelSpec(
         input={"state": adapt.Concat(adapt.EEF_POS, adapt.Constant(dim=2))},
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     absent = adapt.ModelSpec(
         input={
@@ -4021,6 +4027,7 @@ def test_constant_part_is_not_reported_as_a_zero_filled_role():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     constant_text = resolve(LIBERO_ENV, constant).explain()
     assert "const(2)=0.0" in constant_text
@@ -4063,6 +4070,7 @@ def test_non_zero_fill_needs_optional_and_folds_scale_and_offset():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     state = resolve(LIBERO_ENV, spec).transform_obs(make_obs())["state"]
     # fill * scale + offset, folded once at resolve.
@@ -4092,6 +4100,7 @@ def test_rotation_literal_must_be_a_rotation():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     with pytest.raises(ValueError, match="orthonormal"):
         sheared.to_dict()
@@ -4114,6 +4123,7 @@ def test_constant_part_shifts_a_later_custom_encoding_slice():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     adapter = resolve(LIBERO_ENV, spec)
     assert "'state'[5:9]" in adapter.explain()
@@ -4556,6 +4566,7 @@ def test_two_arms_bind_by_explicit_part() -> None:
                     "state": adapt.State(adapt.EEF_POS, dim=3, part=adapt.RIGHT_ARM)
                 },
                 output=XVLA.output,
+                allow=XVLA.allow,
             ),
         )
 
@@ -5391,3 +5402,31 @@ def test_an_action_role_on_an_observation_tag_is_a_join_error() -> None:
     )
     with pytest.raises(adapt.AdapterResolutionError, match="an action kind"):
         resolve(env, spec)
+
+
+def test_an_output_the_env_has_no_actuator_for_needs_drop_action():
+    """A 7-D LIBERO model on a 4-D (xyz + gripper) env is refused; allowing
+    the named projection binds it and records the discarded output."""
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"instruction": adapt.TextTag(role=adapt.INSTRUCTION)},
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"instruction": text_space()}),
+        action_space=box(4, low=-1.0, high=1.0),
+    )
+    model = adapt.ModelSpec(
+        input={"prompt": adapt.Text(role=adapt.INSTRUCTION)},
+        output=LIBERO_MODEL_ACTION,
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="drop_action"):
+        resolve(env, model)
+    allowed = dataclasses.replace(model, allow=("drop_action",))
+    assert adapt.ModelSpec.from_json(allowed.to_json()) == allowed
+    adapter = resolve(env, allowed)
+    assert "drop_action" in adapter.explain()
+    action = adapter.transform_action(np.arange(7, dtype=np.float32) / 10)
+    np.testing.assert_allclose(action, [0.0, 0.1, 0.2, 0.6])

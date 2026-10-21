@@ -679,6 +679,7 @@ fn optional_entries_blank_or_drop_only_when_allowed() {
     )
     .expect("dropped");
     assert_eq!(b.action("hand").expect("hand").status, Status::Dropped);
+    assert!(b.table().contains("drop_action"), "{}", b.table());
     assert!(b.channels().is_empty());
 }
 
