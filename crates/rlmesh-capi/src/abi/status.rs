@@ -859,6 +859,7 @@ mod tests {
             code: ErrorCode::Busy,
             message: "later".into(),
             is_recoverable: true,
+            class: None,
         }));
         let mut code = -1;
         assert!(unsafe { rlmesh_last_error_code(&mut code) });

@@ -105,6 +105,9 @@ pub struct EnvironmentError {
     /// Whether the request failed but the session stays usable
     /// (`RecoverableEnvironmentException`).
     pub is_recoverable: bool,
+    /// The builtin exception class a Python env raised (`ValueError`), when
+    /// it raised one: the Python client raises that class too.
+    pub class: Option<String>,
 }
 
 /// A failure reported by a model (`ModelException`).
@@ -338,6 +341,7 @@ impl Error {
             code: ErrorCode::Internal,
             message: message.into(),
             is_recoverable: false,
+            class: None,
         })
     }
 
@@ -348,6 +352,7 @@ impl Error {
             code: ErrorCode::Internal,
             message: message.into(),
             is_recoverable: true,
+            class: None,
         })
     }
 
@@ -614,6 +619,7 @@ impl EnvironmentError {
             code: map_env_error_code(value.code),
             message: value.message,
             is_recoverable: value.is_recoverable,
+            class: None,
         }
     }
 
@@ -705,6 +711,7 @@ mod tests {
                     code: ErrorCode::InvalidAction,
                     message: "bad action".into(),
                     is_recoverable: true,
+                    class: None,
                 }),
                 "[INVALID_ACTION] bad action",
             ),

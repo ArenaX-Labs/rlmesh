@@ -526,6 +526,7 @@ fn run_error(error: RuntimeError) -> Error {
                 code: crate::ErrorCode::Internal,
                 message,
                 is_recoverable: recoverable,
+                class: None,
             }),
         },
         RuntimeError::OperationTimeout { timeout, .. } => Error::Timeout(timeout),

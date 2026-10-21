@@ -596,6 +596,7 @@ fn failure(error: EnvError) -> rlmesh::EnvironmentError {
         code: rlmesh::ErrorCode::Internal,
         message: error.message,
         is_recoverable: error.is_recoverable,
+        class: None,
     }
 }
 

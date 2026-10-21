@@ -431,3 +431,55 @@ def test_the_gym_view_sends_a_gym_env_to_remote_env() -> None:
         remote.close()
     finally:
         server.shutdown()
+
+
+class _Raises(gym.Env):  # type: ignore[misc]
+    observation_space = gym.spaces.Discrete(2)
+    action_space = gym.spaces.Discrete(2)
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def reset(self, *, seed: int | None = None, options: Any = None) -> Any:
+        raise self.error
+
+
+def _undecodable() -> UnicodeDecodeError:
+    try:
+        b"\xff".decode()
+    except UnicodeDecodeError as error:
+        return error
+    raise AssertionError
+
+
+@pytest.mark.parametrize(
+    ("error", "raised", "typed"),
+    [
+        (KeyError("k"), KeyError, True),
+        (OSError("disk"), OSError, True),
+        # A builtin whose own constructor takes more than a message.
+        (_undecodable(), UnicodeDecodeError, True),
+        (rlmesh.EnvironmentException("own"), rlmesh.EnvironmentException, False),
+    ],
+)
+def test_an_env_s_builtin_exception_raises_its_class_with_its_message(
+    error: BaseException, raised: type[BaseException], typed: bool
+) -> None:
+    server = rlmesh.EnvServer(_Raises(error), "lockstep://127.0.0.1:0/raises")
+    server.start()
+    try:
+        remote = rlmesh.numpy.RemoteEnv(server.address)
+        try:
+            with pytest.raises(raised) as caught:
+                remote.reset()
+            assert isinstance(caught.value, rlmesh.EnvironmentException)
+            assert (type(caught.value) is not rlmesh.EnvironmentException) == typed
+            if typed:
+                with pytest.raises(raised) as again:
+                    remote.reset()
+                assert type(again.value) is type(caught.value), "made once"
+                assert str(caught.value) == f"reset failed: {error}"
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()

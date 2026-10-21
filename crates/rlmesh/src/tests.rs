@@ -65,6 +65,7 @@ fn facade_error_mapping_hides_core_error_types() {
             code: ErrorCode::InvalidAction,
             message: "bad action".to_string(),
             is_recoverable: true,
+            class: None,
         })
     );
 }

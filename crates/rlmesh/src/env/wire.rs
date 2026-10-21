@@ -833,7 +833,11 @@ mod served {
     use crate::lockstep::{Reset, Served, Step};
 
     fn failure(error: EnvError) -> EnvironmentError {
-        EnvironmentError::from_wire(error)
+        let class = error.debug_info.clone();
+        EnvironmentError {
+            class,
+            ..EnvironmentError::from_wire(error)
+        }
     }
 
     fn reset(result: super::VectorResetResult) -> Reset {
@@ -1011,6 +1015,16 @@ fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
         // serving: the flag (not the code) keeps the session open.
         spaces::EnvRuntimeError::Recoverable(message) => EnvError {
             is_recoverable: true,
+            ..EnvError::new(EnvErrorCode::Internal, message)
+        },
+        // The builtin class rides in `debug_info` to the lockstep reply.
+        spaces::EnvRuntimeError::Raised {
+            class,
+            message,
+            recoverable,
+        } => EnvError {
+            is_recoverable: recoverable,
+            debug_info: Some(class),
             ..EnvError::new(EnvErrorCode::Internal, message)
         },
         // EnvRuntimeError is #[non_exhaustive]; treat unknown variants as internal.

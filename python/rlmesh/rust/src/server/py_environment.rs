@@ -470,6 +470,9 @@ pub fn build_vector_server_env(env: Py<PyAny>, native_values: bool) -> PyResult<
 fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {
     match error.code {
         EnvErrorCode::InvalidAction => EnvRuntimeError::InvalidValue(error.message),
+        _ if error.debug_info.is_some() => {
+            runtime_env_err(error.message, error.is_recoverable, error.debug_info)
+        }
         _ if error.is_recoverable => EnvRuntimeError::Recoverable(error.message),
         _ => EnvRuntimeError::Runtime(error.message),
     }
@@ -491,8 +494,23 @@ fn py_err_is_recoverable(error: &PyErr) -> bool {
     })
 }
 
+/// The builtin exception class (`ValueError`) an env raised, when it raised
+/// one: what a client raises beside `EnvironmentException`.
+fn builtin_class(error: &PyErr) -> Option<String> {
+    Python::attach(|py| {
+        let value = error.value(py);
+        if value.is_instance_of::<crate::types::EnvironmentException>() {
+            return None;
+        }
+        let class = value.get_type();
+        let module: String = class.getattr("__module__").ok()?.extract().ok()?;
+        (module == "builtins").then(|| class.name().ok()?.extract().ok())?
+    })
+}
+
 /// Run `work` under the GIL where `dispatch` says, mapping a lost reply or a
-/// `PyErr` through `into_err` (with whether the error is recoverable). Wraps
+/// `PyErr` through `into_err` (with whether the error is recoverable, and the
+/// builtin class it raised). Wraps
 /// the boilerplate every reset/step/render/close body shares.
 async fn spawn_py<T, E, W, M>(
     dispatch: Dispatch,
@@ -504,23 +522,33 @@ async fn spawn_py<T, E, W, M>(
 where
     T: Send + 'static,
     W: FnOnce(Python<'_>) -> PyResult<T> + Send + 'static,
-    M: Fn(String, bool) -> E,
+    M: Fn(String, bool, Option<String>) -> E,
 {
     let work = move |py: Python<'_>| as_server_callback(server_id, || work(py));
     let result = match dispatch {
         Dispatch::Pinned => Python::attach(work),
         Dispatch::Pool => tokio::task::spawn_blocking(move || Python::attach(work))
             .await
-            .map_err(|e| into_err(format!("{phase} task panicked: {e}"), false))?,
+            .map_err(|e| into_err(format!("{phase} task panicked: {e}"), false, None))?,
         Dispatch::Foreground(jobs) => {
             let (reply, replied) = tokio::sync::oneshot::channel();
             jobs.send(Box::new(move || {
                 let _ = reply.send(Python::attach(work));
             }))
-            .map_err(|_| into_err(format!("{phase}: the serving thread has stopped"), false))?;
-            replied
-                .await
-                .map_err(|_| into_err(format!("{phase}: the serving thread has stopped"), false))?
+            .map_err(|_| {
+                into_err(
+                    format!("{phase}: the serving thread has stopped"),
+                    false,
+                    None,
+                )
+            })?;
+            replied.await.map_err(|_| {
+                into_err(
+                    format!("{phase}: the serving thread has stopped"),
+                    false,
+                    None,
+                )
+            })?
         }
     };
     // ENV-35: `{phase} failed: {message}`, the message without a class name.
@@ -528,6 +556,7 @@ where
         into_err(
             format!("{phase} failed: {}", crate::types::py_err_text(&e)),
             py_err_is_recoverable(&e),
+            builtin_class(&e),
         )
     })
 }
@@ -585,18 +614,24 @@ fn set_reset_options(
     Ok(())
 }
 
-fn internal_env_err(message: String, recoverable: bool) -> EnvError {
+/// The builtin class rides in `debug_info` to [`env_error_to_runtime_error`].
+fn internal_env_err(message: String, recoverable: bool, class: Option<String>) -> EnvError {
     EnvError {
         is_recoverable: recoverable,
+        debug_info: class,
         ..EnvError::new(EnvErrorCode::Internal, message)
     }
 }
 
-fn runtime_env_err(message: String, recoverable: bool) -> EnvRuntimeError {
-    if recoverable {
-        EnvRuntimeError::Recoverable(message)
-    } else {
-        EnvRuntimeError::Runtime(message)
+fn runtime_env_err(message: String, recoverable: bool, class: Option<String>) -> EnvRuntimeError {
+    match class {
+        Some(class) => EnvRuntimeError::Raised {
+            class,
+            message,
+            recoverable,
+        },
+        None if recoverable => EnvRuntimeError::Recoverable(message),
+        None => EnvRuntimeError::Runtime(message),
     }
 }
 

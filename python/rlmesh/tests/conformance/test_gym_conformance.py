@@ -440,7 +440,7 @@ def test_actions_are_cast_to_the_space_dtype_and_refused_when_the_kind_differs()
 
 @pytest.mark.parametrize(
     ("where", "error"),
-    [pytest.param("reset", ValueError, marks=GAP), ("step", RuntimeError)],
+    [("reset", ValueError), ("step", RuntimeError)],
 )
 def test_an_env_error_raises_at_once_with_its_type_and_message(
     where: str, error: type[Exception]

@@ -126,17 +126,81 @@ pub fn to_py_err(err: Error) -> PyErr {
     }
 }
 
+/// `typed(base, name)`: the subclass of `base` (an Environment exception)
+/// and the builtin exception class `name` a client raises for an env that
+/// raised `name`, made once per pair. Its `str()` is the message, as the
+/// builtin's is. `None` for a name that is no builtin exception class, or one
+/// whose layout cannot share a subclass with `base`.
+const TYPED_EXCEPTION: &std::ffi::CStr = cr#"
+import builtins
+
+_typed = {}
+
+def typed(base, name):
+    key = (base, name)
+    if key not in _typed:
+        builtin = getattr(builtins, name, None)
+        cls = None
+        if isinstance(builtin, type) and issubclass(builtin, Exception):
+            try:
+                cls = type(
+                    name,
+                    (base, builtin),
+                    {"__str__": BaseException.__str__, "__module__": base.__module__},
+                )
+            except TypeError:
+                pass
+        _typed[key] = cls
+    return _typed[key]
+"#;
+
+static TYPED: pyo3::sync::PyOnceLock<Py<PyAny>> = pyo3::sync::PyOnceLock::new();
+
+/// An instance of the typed exception for `class`, if one can be made.
+fn typed_exception<'py>(
+    py: Python<'py>,
+    base: Bound<'py, pyo3::types::PyType>,
+    class: &str,
+    message: &str,
+) -> Option<Bound<'py, PyAny>> {
+    let typed = TYPED
+        .get_or_try_init(py, || -> PyResult<Py<PyAny>> {
+            let globals = PyDict::new(py);
+            py.run(TYPED_EXCEPTION, Some(&globals), None)?;
+            Ok(globals.get_item("typed")?.expect("defined").unbind())
+        })
+        .ok()?;
+    let cls = typed.bind(py).call1((base, class)).ok()?;
+    if cls.is_none() {
+        return None;
+    }
+    cls.call1((message,)).ok()
+}
+
 /// Convert environment error to Python exception, carrying its `code` and
 /// `is_recoverable` as attributes. Every code raises the Environment family,
-/// including `TIMEOUT`, `INVALID_ACTION` and `CANCELLED`.
+/// including `TIMEOUT`, `INVALID_ACTION` and `CANCELLED`; one the env raised
+/// as a builtin class (`ValueError`) raises that class too.
 fn env_error_to_py(err: EnvironmentError) -> PyErr {
     // The raw message: `str(exc)` adds the code (`[CODE] message`).
     let msg = err.message.clone();
-    let py_err = if err.is_recoverable {
-        RecoverableEnvironmentException::new_err(msg)
-    } else {
-        EnvironmentException::new_err(msg)
-    };
+    let typed = err.class.as_deref().and_then(|class| {
+        Python::attach(|py| {
+            let base = if err.is_recoverable {
+                py.get_type::<RecoverableEnvironmentException>()
+            } else {
+                py.get_type::<EnvironmentException>()
+            };
+            typed_exception(py, base, class, &msg).map(PyErr::from_value)
+        })
+    });
+    let py_err = typed.unwrap_or_else(|| {
+        if err.is_recoverable {
+            RecoverableEnvironmentException::new_err(msg)
+        } else {
+            EnvironmentException::new_err(msg)
+        }
+    });
     annotate(&py_err, err.code.as_str(), err.is_recoverable);
     py_err
 }
@@ -248,6 +312,7 @@ mod tests {
             code,
             message: "boom".into(),
             is_recoverable,
+            class: None,
         })
     }
 

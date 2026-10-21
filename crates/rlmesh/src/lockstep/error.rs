@@ -48,6 +48,7 @@ impl GymError {
             code,
             message: message.into(),
             is_recoverable: recoverable,
+            class: None,
         })
     }
 
@@ -57,6 +58,7 @@ impl GymError {
             code,
             message,
             is_recoverable: false,
+            class: None,
         };
         match self {
             Self::Env(error) => error.clone(),
@@ -89,15 +91,18 @@ const CODES: [ErrorCode; 10] = [
     ErrorCode::Closed,
 ];
 
-/// An env failure as a lockstep error reply: `{code, message, recoverable}`.
+/// An env failure as a lockstep error reply: `{code, message, recoverable}`,
+/// and `class` when the env raised a builtin exception class.
 pub fn failure_to_json(failure: &EnvironmentError) -> Vec<u8> {
-    json!({
+    let mut value = json!({
         "code": failure.code.as_str(),
         "message": failure.message,
         "recoverable": failure.is_recoverable,
-    })
-    .to_string()
-    .into_bytes()
+    });
+    if let Some(class) = &failure.class {
+        value["class"] = json!(class);
+    }
+    value.to_string().into_bytes()
 }
 
 /// The inverse of [`failure_to_json`]; `None` for anything else (a
@@ -109,5 +114,9 @@ pub fn failure_from_json(bytes: &[u8]) -> Option<EnvironmentError> {
         code: CODES.into_iter().find(|c| c.as_str() == code)?,
         message: value.get("message")?.as_str()?.to_string(),
         is_recoverable: value.get("recoverable")?.as_bool()?,
+        class: value
+            .get("class")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
