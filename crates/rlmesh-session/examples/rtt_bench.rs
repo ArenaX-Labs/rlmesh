@@ -27,11 +27,11 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rlmesh_session::transport::{frame_zbytes, free_local_base, payload_bytes, zenoh_priority};
-use rlmesh_session::{TrafficClass, Transport, TransportConfig};
-use rlmesh_wire::codec;
-use rlmesh_wire::{
+use rlmesh_session::wire::codec;
+use rlmesh_session::wire::{
     ChannelId, ChannelPriority, Epoch, LeaseToken, LockstepReply, LockstepStep, PartValues, Sample,
 };
+use rlmesh_session::{TrafficClass, Transport, TransportConfig};
 use zenoh::Wait;
 use zenoh::qos::CongestionControl;
 use zenoh::query::ConsolidationMode;

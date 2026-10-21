@@ -40,10 +40,10 @@ use std::time::Duration;
 use crate::spec::apply::{ApplyError, Value};
 use crate::spec::policy::ChunkStart;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
-use bytes::Bytes;
-use rlmesh_wire::{
+use crate::wire::{
     ChannelId, ClockMode, ContractMode, Epoch, InputRange, Lease, Mode, ParticipantId, RunCounters,
 };
+use bytes::Bytes;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};

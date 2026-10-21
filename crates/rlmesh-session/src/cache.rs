@@ -48,8 +48,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::spec::Binding;
 use crate::spec::apply::{ApplyError, Value};
+use crate::wire::{ChannelId, Epoch, HistoryQuery, StreamSpec};
 use bytes::Bytes;
-use rlmesh_wire::{ChannelId, Epoch, HistoryQuery, StreamSpec};
 
 use crate::error::SessionError;
 use crate::media::decode_payload;
@@ -105,7 +105,7 @@ pub struct Inputs {
     binding: Binding,
     cache: Arc<Mutex<InputCache>>,
     view: AuthorityView,
-    me: rlmesh_wire::ParticipantId,
+    me: crate::wire::ParticipantId,
     streams: Vec<SampleSubscriber>,
     /// Per input, the last decoded value of an encoded stream and the
     /// samples it came from: a 30 fps JPEG camera read by a 100 Hz policy
@@ -142,7 +142,7 @@ impl Inputs {
                     let sample = &received.sample;
                     let mapping = view.with(|v| {
                         v.and_then(|v| match v.clock_mode {
-                            rlmesh_wire::ClockMode::Wall => {
+                            crate::wire::ClockMode::Wall => {
                                 v.clock(&owner).map(|c| (c.offset_ns, c.error_ns))
                             }
                             _ => Some((0, 0)),
@@ -199,7 +199,7 @@ impl Inputs {
                 .channel
                 .and_then(|c| self.streams.iter().find(|s| s.spec().channel == c))
                 .map(SampleSubscriber::spec);
-            let encoded = stream.filter(|spec| spec.encoding != rlmesh_wire::Encoding::Raw);
+            let encoded = stream.filter(|spec| spec.encoding != crate::wire::Encoding::Raw);
             let key = (encoded.is_some() && !input.samples.is_empty()).then(|| Decoded {
                 epoch,
                 seqs: input.samples.iter().map(|s| s.seq).collect(),

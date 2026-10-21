@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use crate::spec::{BindError, Binding, Policy, RunOptions};
-use rlmesh_wire::codec;
-use rlmesh_wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
-use rlmesh_wire::{
+use crate::wire::codec;
+use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
+use crate::wire::{
     AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlReply, Epoch, Fingerprint,
     Health, Heartbeat, HistoryQuery, Lease, LeaseToken, Mode, PartSpec, ParticipantId,
     PriorityClass, Request, Role, SampleBatch, SessionId, SessionKeys, StreamSpec, TenantId,
@@ -738,7 +738,7 @@ impl Participant {
             .await?
             .pop()
             .ok_or_else(|| {
-                SessionError::Wire(rlmesh_wire::WireError::Malformed {
+                SessionError::Wire(crate::wire::WireError::Malformed {
                     message: "ctl reply",
                     reason: "a granted lease is missing".into(),
                 })

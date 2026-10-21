@@ -24,9 +24,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
-use rlmesh_wire::part::{DType, FieldSpec, MAX_CHUNK_ACTIONS};
-use rlmesh_wire::path::is_identifier;
-use rlmesh_wire::{PartPath, ParticipantId};
+use crate::wire::part::{DType, FieldSpec, MAX_CHUNK_ACTIONS};
+use crate::wire::path::is_identifier;
+use crate::wire::{PartPath, ParticipantId};
 use serde::Deserialize;
 use serde_json::Value;
 

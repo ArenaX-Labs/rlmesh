@@ -59,7 +59,7 @@ Experimental, with its constraints written down as a rule (R-29), before it
 has a Stable surface.
 
 - **What it is.** The `rlmesh` npm package (`javascript/rlmesh`, not
-  published yet) over `javascript/rlmesh/wasm` (`rlmesh-wasm`): `rlmesh-wire` and
+  published yet) over `javascript/rlmesh/wasm` (`rlmesh-wasm`):
   `rlmesh-session-core`, the sans-IO core every v2 binding shares, compiled
   to `wasm32-unknown-unknown`, one instance per traffic class Worker. A page
   has no raw TCP or UDP, so `rlmesh-gateway` bridges it to the session: each

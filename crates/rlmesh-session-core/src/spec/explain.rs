@@ -23,7 +23,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use rlmesh_wire::part::CommandSpec;
+use crate::wire::part::CommandSpec;
 
 use crate::spec::bind::{Binding, Dir, NamesClash, Problem, Refusal, Status};
 use crate::spec::contract;

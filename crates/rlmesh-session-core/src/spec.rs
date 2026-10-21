@@ -6,7 +6,7 @@
 //!   and rotation encodings (§5.3).
 //! - [`normalise`](mod@normalise): the shared normaliser. The host lowers an
 //!   embodiment's authored robot map (JSON) to
-//!   [`PartSpec`](rlmesh_wire::PartSpec)s with the kind table's fields and
+//!   [`PartSpec`](crate::wire::PartSpec)s with the kind table's fields and
 //!   defaults, and fingerprints the canonical form (§3.3).
 //! - [`canonical`]: RFC 8785 JSON and the BLAKE3 fingerprints over it.
 //! - [`policy`], [`selector`]: the policy map and run-time options (§6.1-
@@ -22,8 +22,8 @@
 //!   publication plan per stream (§8.2, §8.7), shared by the binder and the
 //!   host.
 //!
-//! The generic core (`rlmesh-wire`, `rlmesh-session`, `rlmesh-edge`) works on
-//! streams and never interprets kinds; only this crate does.
+//! The generic core ([`wire`](crate::wire), `rlmesh-session` and its edge)
+//! works on streams and never interprets kinds; only this module does.
 
 pub mod apply;
 pub mod bind;

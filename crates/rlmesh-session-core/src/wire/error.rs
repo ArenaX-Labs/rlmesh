@@ -1,6 +1,6 @@
 //! Decoding errors.
 
-use crate::ids::IdError;
+use crate::wire::ids::IdError;
 
 /// Why a message could not be decoded. Receivers drop such a message (and
 /// count it); none of these is fatal to a session.

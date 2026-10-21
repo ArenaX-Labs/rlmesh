@@ -8,7 +8,7 @@
 
 use bytes::Bytes;
 
-use crate::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
+use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
 
 /// The samples one input of a chunk was computed from: a seq range of one
 /// stream (a window, or one sample when `seq_first == seq_last`).

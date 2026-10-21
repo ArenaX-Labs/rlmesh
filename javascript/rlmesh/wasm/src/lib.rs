@@ -1,4 +1,4 @@
-//! The browser binding's wasm core: [`rlmesh_wire`] and
+//! The browser binding's wasm core: [`rlmesh_session_core::wire`] and
 //! [`rlmesh_session_core`] behind wasm-bindgen, instantiated once per class
 //! Worker of the `rlmesh` npm package (`javascript/rlmesh`).
 //!
@@ -9,7 +9,7 @@
 //! - [`Streams`] (the state and bulk Workers): decodes samples, applies the session's receive rules (epochs, seq gaps as
 //!   losses, layout checks, freshness) and measures delivery.
 //!
-//! Every message is a real v2 one, encoded and decoded by `rlmesh-wire`;
+//! Every message is a real v2 one, encoded and decoded by `rlmesh_session_core::wire`;
 //! the gateway forwards the bytes ([`frame`]).
 //!
 //! # Boundary conventions
@@ -39,8 +39,8 @@ use js_sys::{Array, Float64Array, Object, Reflect, Uint8Array};
 use rlmesh_session_core::clock::{OffsetEstimate, OffsetEstimator, OffsetEstimatorConfig};
 use rlmesh_session_core::lease::{LeaseChange, LeaseClient, LeaseState};
 use rlmesh_session_core::stream::{SampleStats, check_sample, is_stale};
-use rlmesh_wire::codec;
-use rlmesh_wire::{
+use rlmesh_session_core::wire::codec;
+use rlmesh_session_core::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, Command, CtlReply, Epoch, Health, Heartbeat,
     LeaseToken, Mode, ParticipantId, Request, Sample, StreamSpec, TimingSample,
 };

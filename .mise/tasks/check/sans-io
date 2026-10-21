@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Sans-IO guard: rlmesh-wire and rlmesh-session-core build for wasm32-unknown-unknown with no clock reads, threads, sleeps or IO dependencies"
+#MISE description="Sans-IO guard: rlmesh-session-core builds for wasm32-unknown-unknown with no clock reads, threads, sleeps or IO dependencies"
 #MISE dir="{{ config_root }}"
 #MISE depends=["setup:js"]
 
@@ -9,7 +9,7 @@
 # always an injected `now_ns`.
 set -euo pipefail
 
-crates=(rlmesh-wire rlmesh-session-core)
+crates=(rlmesh-session-core)
 deny='^(tokio|mio|socket2|zenoh.*|tonic|hyper|async-std|getrandom|wasm-bindgen|js-sys|web-sys|libc)$'
 
 for crate in "${crates[@]}"; do
@@ -26,4 +26,4 @@ for crate in "${crates[@]}"; do
     exit 1
   fi
 done
-echo "OK: ${crates[*]} are sans-IO"
+echo "OK: ${crates[*]} sans-IO"

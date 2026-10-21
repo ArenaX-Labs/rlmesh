@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-wasm"
-description = "Internal RLMesh crate (unstable Rust API): the browser binding's wasm core: rlmesh-wire and rlmesh-session-core behind wasm-bindgen, loaded once per class Worker by the rlmesh npm package."
+description = "Internal RLMesh crate (unstable Rust API): the browser binding's wasm core: rlmesh-session-core (the wire and the sans-IO state machines) behind wasm-bindgen, loaded once per class Worker by the rlmesh npm package."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
@@ -26,7 +26,6 @@ bytes = { workspace = true }
 console_error_panic_hook = "0.1"
 js-sys = "0.3"
 rlmesh-session-core = { workspace = true }
-rlmesh-wire = { workspace = true }
 # Must equal the wasm-bindgen CLI exactly (mise.toml), or the generated
 # glue does not match the module.
 wasm-bindgen = "=0.2.129"

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rlmesh_wire::{ChannelId, CtlError, IdError, WireError};
+use crate::wire::{ChannelId, CtlError, IdError, WireError};
 
 /// Everything a session call can fail with.
 #[derive(Debug, thiserror::Error)]

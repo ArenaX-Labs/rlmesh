@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use rlmesh_wire::{AuthoritySnapshot, Lease, Mode};
+use rlmesh_session::wire::{AuthoritySnapshot, Lease, Mode};
 
 /// What an entry is about, for filtering and colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -99,10 +99,10 @@ fn path_of(s: &AuthoritySnapshot, lease: &Lease) -> String {
 
 fn class(lease: &Lease) -> &'static str {
     match lease.priority {
-        rlmesh_wire::PriorityClass::Scripted => "scripted",
-        rlmesh_wire::PriorityClass::Model => "model",
-        rlmesh_wire::PriorityClass::Operator => "operator",
-        rlmesh_wire::PriorityClass::Safety => "safety",
+        rlmesh_session::wire::PriorityClass::Scripted => "scripted",
+        rlmesh_session::wire::PriorityClass::Model => "model",
+        rlmesh_session::wire::PriorityClass::Operator => "operator",
+        rlmesh_session::wire::PriorityClass::Safety => "safety",
     }
 }
 
@@ -429,7 +429,7 @@ impl Timeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_wire::{
+    use rlmesh_session::wire::{
         ChannelId, ClockMode, Epoch, Fingerprint, LeaseToken, ParticipantId, ParticipantInfo,
         PriorityClass, Role, SessionId,
     };

@@ -14,11 +14,11 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rlmesh_session::transport::payload_bytes;
+use rlmesh_session::wire::codec;
+use rlmesh_session::wire::{ActionChunk, ChannelId, ChunkRef, ClockMode};
 use rlmesh_session::{
     AuthorityView, Clock, EdgeReport, Participant, SafeReporter, SamplePublisher, TrafficClass,
 };
-use rlmesh_wire::codec;
-use rlmesh_wire::{ActionChunk, ChannelId, ChunkRef, ClockMode};
 use tracing::{debug, info};
 
 use crate::core::{AppliedAction, EdgeConfig, EdgeCore, EdgeStats, EdgeTick, Rejection};

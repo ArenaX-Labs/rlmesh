@@ -28,11 +28,11 @@
 
 use std::fmt;
 
-use bytes::Bytes;
-use rlmesh_wire::{
+use crate::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, Command, CtlError, CtlReply, Epoch, Fingerprint,
     InputRange, Lease, LeaseToken, Mode, ParticipantId,
 };
+use bytes::Bytes;
 
 use crate::clock::OffsetEstimate;
 
@@ -447,7 +447,7 @@ impl LeaseClient {
 mod tests {
     use std::collections::BTreeMap;
 
-    use rlmesh_wire::{ClockMode, CtlStatus, PriorityClass, SessionId};
+    use crate::wire::{ClockMode, CtlStatus, PriorityClass, SessionId};
 
     use super::*;
 

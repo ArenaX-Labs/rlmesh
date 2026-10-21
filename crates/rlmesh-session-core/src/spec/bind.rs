@@ -27,8 +27,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
-use rlmesh_wire::part::{DType, Encoding, FieldSpec, MAX_CHUNK_BYTES, PartSpec};
-use rlmesh_wire::{ActionGrid, ChannelId, Fingerprint, ParticipantId, StreamContract};
+use crate::wire::part::{DType, Encoding, FieldSpec, MAX_CHUNK_BYTES, PartSpec};
+use crate::wire::{ActionGrid, ChannelId, Fingerprint, ParticipantId, StreamContract};
 use serde_json::{Value, json};
 
 use crate::spec::canonical;

@@ -26,7 +26,7 @@ use egui_kittest::kittest::Queryable;
 use rlmesh_cockpit::model::Verb;
 use rlmesh_cockpit::ui::{self, ESTOP_RED, Tab, UiState};
 use rlmesh_cockpit::{Feed, Model, ModelConfig, View};
-use rlmesh_wire::{Command, EdgeMode};
+use rlmesh_session::wire::{Command, EdgeMode};
 
 type State = (View, UiState, Vec<Verb>);
 
@@ -180,8 +180,8 @@ fn live_session() {
         runtime
             .block_on(address.join(
                 "cockpit-snapshot",
-                vec![rlmesh_wire::Role::Observer],
-                rlmesh_wire::PriorityClass::Operator,
+                vec![rlmesh_session::wire::Role::Observer],
+                rlmesh_session::wire::PriorityClass::Operator,
                 Duration::from_secs(10),
             ))
             .expect("join"),

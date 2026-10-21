@@ -8,12 +8,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rlmesh_gym::virtual_mode::{Faults, Interrupted, LatencyModel, VirtualController, robot_tick};
+use rlmesh_session::wire::{
+    ChunkRef, Fingerprint, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId, Watermark,
+};
 use rlmesh_session::{
     ChunkDraft, HostConfig, Participant, ParticipantConfig, SessionHost, Transport,
     TransportConfig, VirtualConfig,
-};
-use rlmesh_wire::{
-    ChunkRef, Fingerprint, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId, Watermark,
 };
 
 const TICK_NS: u64 = 1_000_000;

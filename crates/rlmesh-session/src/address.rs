@@ -7,7 +7,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::time::Duration;
 
-use rlmesh_wire::{ParticipantId, PriorityClass, Role, SessionId, TenantId};
+use crate::wire::{ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
 use crate::clock::SystemMonotonicClock;
 use crate::error::SessionError;

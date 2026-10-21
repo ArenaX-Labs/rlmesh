@@ -11,8 +11,8 @@ use std::time::Duration;
 use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status};
 use rlmesh_session_core::spec::policy::Allow;
 use rlmesh_session_core::spec::{Policy, RunOptions, bind, normalise};
-use rlmesh_wire::version::SPEC_VERSION;
-use rlmesh_wire::{ChannelId, ContractMode, PartSpec, ParticipantId};
+use rlmesh_session_core::wire::version::SPEC_VERSION;
+use rlmesh_session_core::wire::{ChannelId, ContractMode, PartSpec, ParticipantId};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")

@@ -10,11 +10,11 @@ use rlmesh_edge::{EdgeConfig, EdgeMode, Robot};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::wire::{DType, LeaseToken, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
     Predictor, RunError, SessionHost, SkipReason, SystemMonotonicClock, Transport, TransportConfig,
 };
-use rlmesh_wire::{DType, LeaseToken, PriorityClass, Role, SessionId, TenantId};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -82,7 +82,7 @@ impl World {
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),
             self.session,
-            rlmesh_wire::ParticipantId::new(id).expect("id"),
+            rlmesh_session::wire::ParticipantId::new(id).expect("id"),
             vec![role],
             priority,
         );

@@ -7,9 +7,9 @@
 //! field by field in declaration order; JPEG frames, raw `u8 [H, W, 3]`
 //! images and text cross as bytes.
 
-use rlmesh_wire::part::{DType, FieldSpec, Layout};
-use rlmesh_wire::path::APPLIED;
-use rlmesh_wire::{
+use rlmesh_session_core::wire::part::{DType, FieldSpec, Layout};
+use rlmesh_session_core::wire::path::APPLIED;
+use rlmesh_session_core::wire::{
     AuthoritySnapshot, ChannelId, ChannelPriority, CommandSpec, EdgeMode, Encoding, Mode, PartSpec,
     ParticipantId, PriorityClass, StreamSpec,
 };
@@ -480,7 +480,7 @@ mod tests {
             safe_behavior: "stop".into(),
             hold_max: CommandSpec::DEFAULT_HOLD_MAX,
             max_action_age: CommandSpec::DEFAULT_MAX_ACTION_AGE,
-            merge: rlmesh_wire::MergePolicy::Replace,
+            merge: rlmesh_session_core::wire::MergePolicy::Replace,
             reference: String::new(),
             group: None,
             binary: false,

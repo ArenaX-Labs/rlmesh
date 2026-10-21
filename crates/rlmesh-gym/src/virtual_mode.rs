@@ -28,9 +28,9 @@
 
 use std::time::Duration;
 
+use rlmesh_session::wire::tick::{Step, TickState, VirtualTick};
+use rlmesh_session::wire::{ChannelId, ChunkRef, ParticipantId, Watermark};
 use rlmesh_session::{Participant, SessionError, TickStream};
-use rlmesh_wire::tick::{Step, TickState, VirtualTick};
-use rlmesh_wire::{ChannelId, ChunkRef, ParticipantId, Watermark};
 
 /// Why a virtual episode ended early.
 #[derive(Debug, thiserror::Error)]

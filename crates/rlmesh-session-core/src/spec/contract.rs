@@ -20,8 +20,8 @@
 
 use std::time::Duration;
 
-use rlmesh_wire::part::{PartSpec, SendPolicy};
-use rlmesh_wire::{ContractMode, Plan, StreamContract};
+use crate::wire::part::{PartSpec, SendPolicy};
+use crate::wire::{ContractMode, Plan, StreamContract};
 
 /// The longest window, in samples (§3.4).
 pub const MAX_HISTORY: u32 = 1024;
@@ -223,7 +223,7 @@ pub fn plan<'a>(
 mod tests {
     use super::*;
     use crate::spec::normalise::normalise;
-    use rlmesh_wire::{ChannelId, ParticipantId, version::SPEC_VERSION};
+    use crate::wire::{ChannelId, ParticipantId, version::SPEC_VERSION};
 
     fn part(json: &str) -> PartSpec {
         normalise(&ParticipantId::new("r").expect("id"), SPEC_VERSION, json)

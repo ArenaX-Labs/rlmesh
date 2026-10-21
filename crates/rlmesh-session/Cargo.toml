@@ -29,7 +29,6 @@ jpeg-encoder = { workspace = true }
 # The sans-IO state machines (authority, clock offsets, input cache,
 # schedule, virtual clock, stream rules), re-exported unchanged.
 rlmesh-session-core = { workspace = true }
-rlmesh-wire = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true }

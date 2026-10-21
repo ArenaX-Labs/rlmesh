@@ -9,7 +9,7 @@ use rlmesh_gym::view::{Entry, Frame, commands};
 use rlmesh_gym::{ConnectOptions, GymError, LockstepHandler, Request};
 use rlmesh_session::spec::Policy;
 use rlmesh_session::spec::apply::{Tensor, Value};
-use rlmesh_wire::{DType, LockstepReply, PartSpec};
+use rlmesh_session::wire::{DType, LockstepReply, PartSpec};
 
 const UR10E: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos", "vel"], "hz": 100,

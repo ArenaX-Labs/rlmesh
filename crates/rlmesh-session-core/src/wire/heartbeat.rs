@@ -6,8 +6,8 @@
 //! ([`TimingSample`]), so the host learns all four timestamps without a third
 //! message.
 
-use crate::authority::Mode;
-use crate::ids::{ChannelId, Epoch, ParticipantId};
+use crate::wire::authority::Mode;
+use crate::wire::ids::{ChannelId, Epoch, ParticipantId};
 
 /// One NTP-style exchange: `t1`/`t4` in the participant's clock, `t2`/`t3` in
 /// the host's.

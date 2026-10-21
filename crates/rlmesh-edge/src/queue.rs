@@ -32,7 +32,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use rlmesh_wire::{Epoch, InputRange, LeaseToken, ParticipantId};
+use rlmesh_session::wire::{Epoch, InputRange, LeaseToken, ParticipantId};
 
 /// How each action reaches the embodiment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -342,7 +342,7 @@ impl ActionQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_wire::ChannelId;
+    use rlmesh_session::wire::ChannelId;
 
     const MS: i64 = 1_000_000;
 

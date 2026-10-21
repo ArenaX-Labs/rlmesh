@@ -116,7 +116,7 @@ mod tests {
             )
         );
         for s in [segment(&key("Ünïcode")), s] {
-            rlmesh_wire::PartPath::new(&s).expect("valid");
+            rlmesh_session::wire::PartPath::new(&s).expect("valid");
         }
         assert_eq!(
             path(&["action"], &[key("Arm"), KeySeg::Item(0)]),

@@ -9,7 +9,7 @@
 //! matters (a part's fields, which are its payload order) is therefore never
 //! carried in an object: the normalised forms use arrays for it.
 
-use rlmesh_wire::Fingerprint;
+use crate::wire::Fingerprint;
 use serde_json::Value;
 
 /// `value` as RFC 8785 canonical JSON.

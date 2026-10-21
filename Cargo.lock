@@ -5275,7 +5275,6 @@ dependencies = [
  "half",
  "image",
  "rlmesh-session",
- "rlmesh-wire",
  "serde_json",
  "tokio",
  "tracing",
@@ -5289,7 +5288,6 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "rlmesh-session",
- "rlmesh-wire",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -5312,7 +5310,6 @@ dependencies = [
  "rlmesh-edge",
  "rlmesh-session",
  "rlmesh-wasm",
- "rlmesh-wire",
  "rustls",
  "serde_json",
  "tokio",
@@ -5369,7 +5366,6 @@ dependencies = [
  "rlmesh-runtime",
  "rlmesh-session",
  "rlmesh-spaces",
- "rlmesh-wire",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -5390,7 +5386,6 @@ dependencies = [
  "rlmesh-edge",
  "rlmesh-record",
  "rlmesh-session",
- "rlmesh-wire",
  "tokio",
 ]
 
@@ -5430,7 +5425,6 @@ dependencies = [
  "rlmesh-session",
  "rlmesh-spaces",
  "rlmesh-viewer",
- "rlmesh-wire",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -5450,7 +5444,6 @@ dependencies = [
  "mcap",
  "rlmesh-edge",
  "rlmesh-session",
- "rlmesh-wire",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5503,7 +5496,6 @@ dependencies = [
  "jpeg-encoder",
  "libc",
  "rlmesh-session-core",
- "rlmesh-wire",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -5518,10 +5510,13 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytes",
- "rlmesh-wire",
+ "prost",
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "thiserror 2.0.18",
+ "tonic-prost-build",
+ "uuid",
 ]
 
 [[package]]
@@ -5557,21 +5552,9 @@ dependencies = [
  "console_error_panic_hook",
  "js-sys",
  "rlmesh-session-core",
- "rlmesh-wire",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "web-time",
-]
-
-[[package]]
-name = "rlmesh-wire"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "prost",
- "thiserror 2.0.18",
- "tonic-prost-build",
- "uuid",
 ]
 
 [[package]]

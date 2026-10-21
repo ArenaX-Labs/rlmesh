@@ -13,7 +13,7 @@
 
 use bytes::Bytes;
 
-use crate::ids::{ChannelId, Epoch, LeaseToken};
+use crate::wire::ids::{ChannelId, Epoch, LeaseToken};
 
 /// An N-lane slab of one part.
 #[derive(Clone, Debug, PartialEq, Eq)]

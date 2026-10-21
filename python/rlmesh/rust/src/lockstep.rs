@@ -17,7 +17,7 @@ use rlmesh_gym::view::{Entry, Frame, commands};
 use rlmesh_gym::{ConnectOptions, GymError, GymView, LockstepHandler, Request};
 use rlmesh_session::spec::Policy;
 use rlmesh_session::spec::apply::{Tensor, Value};
-use rlmesh_wire::{FieldSpec, LockstepReply, PartSpec, ParticipantId};
+use rlmesh_session::wire::{FieldSpec, LockstepReply, PartSpec, ParticipantId};
 use tokio_util::sync::CancellationToken;
 
 use crate::session::{
@@ -160,7 +160,7 @@ impl PyLockstepRobot {
         let robot = ParticipantId::new(name).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let parts = rlmesh_session::spec::normalise(
             &robot,
-            rlmesh_wire::version::SPEC_VERSION,
+            rlmesh_session::wire::version::SPEC_VERSION,
             &robot_json,
         )
         .map_err(|e| PyValueError::new_err(e.message))?;

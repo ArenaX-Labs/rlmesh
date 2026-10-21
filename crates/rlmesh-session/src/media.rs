@@ -23,9 +23,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+use crate::wire::part::MAX_ENCODED_OVERHEAD;
+use crate::wire::{Encoding, Sample, StreamSpec};
 use bytes::Bytes;
-use rlmesh_wire::part::MAX_ENCODED_OVERHEAD;
-use rlmesh_wire::{Encoding, Sample, StreamSpec};
 use tracing::warn;
 
 use crate::error::SessionError;

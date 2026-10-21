@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use rlmesh_wire::{
+use rlmesh_session::wire::{
     BindingRecord, ChannelId, ClockMode, ContractMode, EdgeMode, Mode, PartSpec, Plan,
     PriorityClass, Role,
 };

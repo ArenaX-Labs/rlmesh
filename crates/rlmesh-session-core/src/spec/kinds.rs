@@ -19,7 +19,7 @@
 
 use std::fmt;
 
-use rlmesh_wire::path::is_identifier;
+use crate::wire::path::is_identifier;
 
 use crate::spec::units::Quantity;
 

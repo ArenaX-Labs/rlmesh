@@ -9,7 +9,7 @@ use egui::{
     Align, Button, Color32, CornerRadius, Grid, Layout, Modal, RichText, ScrollArea, Sense, Stroke,
     TextureHandle, TextureOptions, Vec2, pos2, vec2,
 };
-use rlmesh_wire::{ChannelId, EdgeMode, Mode};
+use rlmesh_session::wire::{ChannelId, EdgeMode, Mode};
 
 use crate::model::Verb;
 use crate::timeline::Tone;

@@ -33,7 +33,7 @@ use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::bind::{ActionRow, InputRow};
 use rlmesh_session::spec::plan::Delivery;
 use rlmesh_session::spec::{Policy, RunOptions};
-use rlmesh_wire::{
+use rlmesh_session::wire::{
     ChannelId, DType, Epoch, FieldSpec, Layout, LeaseToken, LockstepReply, LockstepReset,
     LockstepStep, PartSpec, PartValues, ParticipantId,
 };

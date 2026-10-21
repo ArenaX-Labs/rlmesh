@@ -1,6 +1,6 @@
 //! Runs under Node through `wasm-bindgen-test-runner` (no browser):
 //! `mise run test:js:wasm`. Fixtures are real v2 messages, encoded by
-//! `rlmesh-wire` and normalised by `rlmesh_session_core::spec`.
+//! `rlmesh_session_core::wire` and normalised by `rlmesh_session_core::spec`.
 #![cfg(target_arch = "wasm32")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -9,15 +9,15 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use js_sys::{Array, Float64Array, Reflect, Uint8Array};
 use rlmesh_session_core::spec::normalise;
-use rlmesh_wasm::frame;
-use rlmesh_wasm::*;
-use rlmesh_wire::codec;
-use rlmesh_wire::version::SPEC_VERSION;
-use rlmesh_wire::{
+use rlmesh_session_core::wire::codec;
+use rlmesh_session_core::wire::version::SPEC_VERSION;
+use rlmesh_session_core::wire::{
     Applied, AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command,
     CtlError, CtlReply, CtlStatus, EdgeMode, Epoch, Fingerprint, HeartbeatEcho, Lease, LeaseToken,
     Mode, PartSpec, ParticipantId, PriorityClass, Sample, SessionId,
 };
+use rlmesh_wasm::frame;
+use rlmesh_wasm::*;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
 

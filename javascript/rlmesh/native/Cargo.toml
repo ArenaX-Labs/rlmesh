@@ -28,7 +28,6 @@ napi-derive = "3"
 rlmesh-edge = { workspace = true }
 rlmesh-record = { workspace = true }
 rlmesh-session = { workspace = true }
-rlmesh-wire = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [build-dependencies]

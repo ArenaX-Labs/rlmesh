@@ -7,13 +7,13 @@
 use bytes::Bytes;
 use rlmesh_cockpit::{Input, Model, ModelConfig};
 use rlmesh_session::spec::{Policy, RunOptions};
-use rlmesh_session::{Authority, AuthorityConfig};
-use rlmesh_wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
-use rlmesh_wire::{
+use rlmesh_session::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
+use rlmesh_session::wire::{
     ActionChunk, Applied, ChannelId, ClockMapping, Command, DType, EdgeMode, Epoch, Health,
     Heartbeat, LeaseToken, ParticipantId, ParticipantReport, PriorityClass, PublisherCounters,
     Request, Role, RunCounters, Sample, SessionId, StreamSpec,
 };
+use rlmesh_session::{Authority, AuthorityConfig};
 
 pub const MS: i64 = 1_000_000;
 
@@ -138,7 +138,7 @@ impl World {
         w.verb(
             "operator",
             Command::DeclareBinding {
-                fingerprint: rlmesh_wire::Fingerprint::from(0x0be7_u64),
+                fingerprint: rlmesh_session::wire::Fingerprint::from(0x0be7_u64),
                 revision: 1,
                 table_json: "{}".into(),
                 channels: vec![arm],
@@ -155,7 +155,11 @@ impl World {
         w
     }
 
-    pub fn verb(&mut self, from: &str, command: Command) -> Result<(), rlmesh_wire::CtlError> {
+    pub fn verb(
+        &mut self,
+        from: &str,
+        command: Command,
+    ) -> Result<(), rlmesh_session::wire::CtlError> {
         let epoch = Some(self.auth.epoch());
         self.auth
             .apply(

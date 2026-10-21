@@ -17,7 +17,6 @@ publish = false
 [dependencies]
 bytes = { workspace = true }
 rlmesh-session = { workspace = true }
-rlmesh-wire = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 zenoh = { workspace = true }

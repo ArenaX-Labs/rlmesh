@@ -26,8 +26,8 @@ use async_trait::async_trait;
 use prost::Message as _;
 use rlmesh_proto::env::v1::EnvError as ProtoEnvError;
 use rlmesh_session::transport::payload_bytes;
-use rlmesh_wire::codec;
-use rlmesh_wire::{
+use rlmesh_session::wire::codec;
+use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, LockstepReply, LockstepReset, LockstepStep, Mode, ParticipantId,
 };
 use tokio_util::sync::CancellationToken;

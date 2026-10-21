@@ -14,16 +14,27 @@ keywords = { workspace = true }
 # Not released until the v0.2 wire spec freezes.
 publish = false
 
+[package.metadata.cargo-machete]
+ignored = ["tonic-prost-build"]
+
 # Sans-IO: no runtime, sockets, threads, clock reads or RNG. It builds for
 # wasm32-unknown-unknown, and `mise run check:sans-io` keeps it that way
 # (clippy.toml here bans the clock and thread calls).
 [dependencies]
 blake3 = { workspace = true }
 bytes = { workspace = true }
-rlmesh-wire = { workspace = true }
+prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+uuid = { workspace = true, features = ["v7"] }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
 
 [lints]
 workspace = true

@@ -11,13 +11,13 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rlmesh_edge::{Edge, EdgeConfig, EdgeMode, EdgeTick, Rejection};
 use rlmesh_session::transport::open_local_listeners;
+use rlmesh_session::wire::{
+    ChannelId, Fingerprint, InputRange, Lease, Mode, ParticipantId, PriorityClass, Role, SessionId,
+    TenantId,
+};
 use rlmesh_session::{
     ChunkDraft, HostConfig, Participant, ParticipantConfig, SessionHost, SubscribeOptions,
     SystemMonotonicClock, Transport, TransportConfig,
-};
-use rlmesh_wire::{
-    ChannelId, Fingerprint, InputRange, Lease, Mode, ParticipantId, PriorityClass, Role, SessionId,
-    TenantId,
 };
 use serde_json::json;
 
@@ -570,7 +570,7 @@ async fn child_process() {
         let report = json!({
             "samples": seen.len(),
             "present": present.len(),
-            "driving": seen.iter().filter(|(a, _)| a.mode == rlmesh_wire::EdgeMode::Driving).count(),
+            "driving": seen.iter().filter(|(a, _)| a.mode == rlmesh_session::wire::EdgeMode::Driving).count(),
             "tokens": present.iter().map(|(a, _)| a.lease_token.0).collect::<std::collections::BTreeSet<_>>(),
             "tags": present.iter().filter_map(|(_, tag)| *tag).collect::<std::collections::BTreeSet<_>>(),
             "seq_ordered": present.windows(2).all(|w| w[0].0.chunk_seq <= w[1].0.chunk_seq),

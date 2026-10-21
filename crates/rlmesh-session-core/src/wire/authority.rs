@@ -5,10 +5,10 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::action::ChunkRef;
-use crate::contract::{ActionGrid, Demand, StreamContract};
-use crate::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId, SessionId};
-use crate::part::{PartSpec, StreamSpec};
+use crate::wire::action::ChunkRef;
+use crate::wire::contract::{ActionGrid, Demand, StreamContract};
+use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId, SessionId};
+use crate::wire::part::{PartSpec, StreamSpec};
 
 /// What a participant does in a session. One participant may hold several.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -410,7 +410,7 @@ pub enum Command {
     Disarm,
     /// An embodiment's robot map, as authored JSON; the host normalises it.
     DeclareParts {
-        /// The kind table version: [`crate::version::SPEC_VERSION`].
+        /// The kind table version: [`crate::wire::version::SPEC_VERSION`].
         spec_version: u32,
         /// The authored map.
         robot_json: String,

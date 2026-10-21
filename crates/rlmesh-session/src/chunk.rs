@@ -10,13 +10,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bytes::Bytes;
-use rlmesh_wire::codec;
-use rlmesh_wire::part::MAX_CHUNK_ACTIONS;
-use rlmesh_wire::{
+use crate::wire::codec;
+use crate::wire::part::MAX_CHUNK_ACTIONS;
+use crate::wire::{
     ActionChunk, ClockMode, Epoch, Fingerprint, InputRange, Lease, LeaseToken, PartSpec,
     ParticipantId,
 };
+use bytes::Bytes;
 use zenoh::Wait;
 
 use crate::clock::Clock;

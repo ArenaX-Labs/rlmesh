@@ -26,8 +26,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rlmesh_wire::tick::{Step, TickState, VirtualTick};
-use rlmesh_wire::{ChannelId, ChunkRef, CtlError, CtlStatus, Epoch, ParticipantId, Watermark};
+use crate::wire::tick::{Step, TickState, VirtualTick};
+use crate::wire::{ChannelId, ChunkRef, CtlError, CtlStatus, Epoch, ParticipantId, Watermark};
 
 /// How a virtual session ticks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,7 +273,7 @@ impl VirtualClock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_wire::LeaseToken;
+    use crate::wire::LeaseToken;
 
     fn pid(id: &str) -> ParticipantId {
         ParticipantId::new(id).expect("id")

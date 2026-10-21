@@ -42,9 +42,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::wire::codec::Encoded;
+use crate::wire::{ChannelPriority, ClockMode, StreamSpec};
 use bytes::Bytes;
-use rlmesh_wire::codec::Encoded;
-use rlmesh_wire::{ChannelPriority, ClockMode, StreamSpec};
 use tracing::debug;
 use zenoh::bytes::ZBytes;
 use zenoh::qos::{CongestionControl, Priority, Reliability};
@@ -602,12 +602,12 @@ mod tests {
     #[test]
     fn each_class_maps_to_the_spec_qos_and_events_are_reliable() {
         let stream = |priority| StreamSpec {
-            channel: rlmesh_wire::ChannelId(1),
-            owner: rlmesh_wire::ParticipantId::new("robot").expect("id"),
+            channel: crate::wire::ChannelId(1),
+            owner: crate::wire::ParticipantId::new("robot").expect("id"),
             path: "x".into(),
             fields: Vec::new(),
-            layout: rlmesh_wire::Layout::Text,
-            encoding: rlmesh_wire::Encoding::Raw,
+            layout: crate::wire::Layout::Text,
+            encoding: crate::wire::Encoding::Raw,
             priority,
             event: false,
             max_age: None,

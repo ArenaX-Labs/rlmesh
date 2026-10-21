@@ -19,7 +19,7 @@
 
 use std::fmt;
 
-use rlmesh_wire::part::{DType, FieldSpec, Layout, PartSpec};
+use crate::wire::part::{DType, FieldSpec, Layout, PartSpec};
 
 use crate::spec::bind::{ActionRow, InputRow};
 use crate::spec::image::{Image, crop_cut, fit_resize, fit_resize_depth};

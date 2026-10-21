@@ -11,15 +11,15 @@ use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
-use rlmesh_session::{
-    ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
-    SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig, VirtualConfig,
-};
-use rlmesh_wire::codec;
-use rlmesh_wire::{
+use rlmesh_session::wire::codec;
+use rlmesh_session::wire::{
     ChannelId, ClockMode, ContractMode, CtlStatus, Encoding, Epoch, FenceError, Fingerprint,
     HistoryQuery, Mode, ParticipantId, Plan, PriorityClass, Role, Sample, SessionId, TenantId,
     VirtualTick, Watermark,
+};
+use rlmesh_session::{
+    ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
+    SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig, VirtualConfig,
 };
 
 /// Participants listen too (the OS picks the ports): in peer mode, data
@@ -1144,7 +1144,7 @@ async fn a_virtual_session_steps_through_the_tick_barrier() {
                     ..ChunkDraft::default()
                 })
                 .expect("send");
-            let reference = rlmesh_wire::ChunkRef {
+            let reference = rlmesh_session::wire::ChunkRef {
                 channel: arm,
                 lease_token: lease.token,
                 seq,
@@ -1227,7 +1227,7 @@ async fn publishers_and_controllers_report_their_counters_to_observers() {
         ft.publish(robot.clock().now_ns(), ft_payload(i as f32))
             .expect("publish");
     }
-    policy.set_run_source(Some(Arc::new(|_| rlmesh_wire::RunCounters {
+    policy.set_run_source(Some(Arc::new(|_| rlmesh_session::wire::RunCounters {
         starts: 7,
         busy_skips: 2,
         ..Default::default()

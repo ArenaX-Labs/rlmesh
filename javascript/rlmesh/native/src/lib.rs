@@ -34,12 +34,14 @@ use rlmesh_session::controller::sleep_until;
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::policy::Allow;
 use rlmesh_session::spec::{BindError, Policy, RunOptions};
+use rlmesh_session::wire::{
+    CtlStatus, DType, Encoding, PartSpec, PriorityClass, Role, SessionId, TenantId,
+};
 use rlmesh_session::{
     Clock, Controller, ControllerConfig, ControllerError, HostConfig, Observation, ObserveError,
     Predictor, RunError, RunEvent, SendError, Sent, SessionAddress, SessionError, SessionHost,
     SkipReason, Snapshot, SystemMonotonicClock, Transport,
 };
-use rlmesh_wire::{CtlStatus, DType, Encoding, PartSpec, PriorityClass, Role, SessionId, TenantId};
 
 /// The first line of an error's message, naming its kind for the wrapper.
 const KIND_PREFIX: &str = "rlmesh:";
@@ -277,7 +279,7 @@ pub struct FieldInfo {
     pub shape: Vec<u32>,
 }
 
-fn fields_info(fields: &[rlmesh_wire::FieldSpec]) -> Vec<FieldInfo> {
+fn fields_info(fields: &[rlmesh_session::wire::FieldSpec]) -> Vec<FieldInfo> {
     fields
         .iter()
         .map(|f| FieldInfo {

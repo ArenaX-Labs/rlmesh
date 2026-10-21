@@ -19,9 +19,12 @@
 //!   contracts.
 //! - [`stream`]: a subscriber's receive rules: epochs, seq gaps as losses,
 //!   layout checks and freshness against `max_age`.
+//! - [`wire`]: the session wire (§10): ids, paths, the key layout, the
+//!   versioning rule, the message types and the one byte codec.
 //!
-//! `rlmesh-session` runs these over Zenoh and re-exports them, so its API is
-//! unchanged; `rlmesh-wasm` runs them in the browser.
+//! `rlmesh-session` runs these over Zenoh and re-exports them under the same
+//! paths (`rlmesh_session::wire`, `rlmesh_session::spec`, ...);
+//! `rlmesh-wasm` runs them in the browser.
 
 #![warn(missing_docs)]
 
@@ -33,6 +36,7 @@ pub mod schedule;
 pub mod spec;
 pub mod stream;
 pub mod virtual_clock;
+pub mod wire;
 
 pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, LeaseEnd};
 pub use cache::{Cached, InputCache, InputSnapshot, Skip, Snapshot};

@@ -30,13 +30,13 @@ use rlmesh_session::controller::sleep_until;
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::policy::Allow;
 use rlmesh_session::spec::{BindError, Policy, RunOptions};
+use rlmesh_session::wire::{
+    CtlStatus, DType, PartSpec, ParticipantId, PriorityClass, Role, SessionId, TenantId,
+};
 use rlmesh_session::{
     Clock, Controller, ControllerConfig, ControllerError, HostConfig, Observation, ObserveError,
     Participant, ParticipantConfig, Predictor, RunError, RunEvent, SendError, Sent, SessionError,
     SessionHost, SkipReason, Snapshot, SystemMonotonicClock, Transport, TransportConfig,
-};
-use rlmesh_wire::{
-    CtlStatus, DType, PartSpec, ParticipantId, PriorityClass, Role, SessionId, TenantId,
 };
 
 use crate::client::{check_signals, signal_poll};
@@ -390,7 +390,7 @@ impl PyHost {
 /// One field of a part, for the Python layer: `(name, dtype, shape)`.
 type FieldInfo = (String, String, Vec<u32>);
 
-fn fields_info(fields: &[rlmesh_wire::FieldSpec]) -> Vec<FieldInfo> {
+fn fields_info(fields: &[rlmesh_session::wire::FieldSpec]) -> Vec<FieldInfo> {
     fields
         .iter()
         .map(|f| (f.name.clone(), f.dtype.name().to_string(), f.shape.clone()))

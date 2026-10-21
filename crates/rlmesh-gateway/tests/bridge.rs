@@ -13,14 +13,14 @@ use rlmesh_edge::{EdgeConfig, Robot};
 use rlmesh_gateway::security::{Origins, Policy, SUBPROTOCOL};
 use rlmesh_gateway::{AppState, Gateway, frame, router};
 use rlmesh_session::transport::{open_local_listeners, payload_bytes};
+use rlmesh_session::wire::codec;
+use rlmesh_session::wire::{
+    AuthoritySnapshot, Command, Epoch, Health, Heartbeat, Mode, ParticipantId, PriorityClass,
+    Request, Role, SessionId, SessionKeys, TenantId,
+};
 use rlmesh_session::{
     HostConfig, Participant, ParticipantConfig, SessionHost, SystemMonotonicClock, Transport,
     TransportConfig,
-};
-use rlmesh_wire::codec;
-use rlmesh_wire::{
-    AuthoritySnapshot, Command, Epoch, Health, Heartbeat, Mode, ParticipantId, PriorityClass,
-    Request, Role, SessionId, SessionKeys, TenantId,
 };
 use serde_json::Value;
 use tokio::net::TcpStream;

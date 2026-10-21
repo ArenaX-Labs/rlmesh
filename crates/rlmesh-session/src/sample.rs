@@ -37,12 +37,12 @@ use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
-use rlmesh_wire::codec;
-use rlmesh_wire::{
+use crate::wire::codec;
+use crate::wire::{
     Applied, AuthoritySnapshot, ClockMode, Epoch, HistoryQuery, ParticipantId, Plan, Sample,
     SampleBatch, StreamSpec,
 };
+use bytes::Bytes;
 use tokio::sync::{Notify, watch};
 use tracing::{debug, warn};
 use zenoh::Wait;
@@ -165,8 +165,8 @@ impl Outlet {
     }
 
     /// Its publisher counters, for the participant's report.
-    pub(crate) fn counters(&self) -> rlmesh_wire::PublisherCounters {
-        rlmesh_wire::PublisherCounters {
+    pub(crate) fn counters(&self) -> crate::wire::PublisherCounters {
+        crate::wire::PublisherCounters {
             channel: self.spec.channel,
             published: self.seq.load(Ordering::Relaxed),
             coalesced: self.coalesced.load(Ordering::Relaxed),
@@ -691,7 +691,7 @@ pub(crate) async fn fetch_history(
 mod tests {
     use super::*;
     use crate::clock::MonotonicClock;
-    use rlmesh_wire::{ChannelId, ChannelPriority, DType, FieldSpec, Layout};
+    use crate::wire::{ChannelId, ChannelPriority, DType, FieldSpec, Layout};
     use std::time::Instant;
 
     fn spec() -> StreamSpec {
@@ -702,7 +702,7 @@ mod tests {
             path: "ft".into(),
             layout: Layout::of(&fields).expect("layout"),
             fields,
-            encoding: rlmesh_wire::Encoding::Raw,
+            encoding: crate::wire::Encoding::Raw,
             priority: ChannelPriority::Realtime,
             event: false,
             max_age: None,
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn old_epochs_and_misfit_payloads_are_dropped_and_counted() {
         let mut snapshot = crate::authority::Authority::new(
-            rlmesh_wire::SessionId::new(),
+            crate::wire::SessionId::new(),
             crate::authority::AuthorityConfig::default(),
         )
         .snapshot(Vec::new(), 0);

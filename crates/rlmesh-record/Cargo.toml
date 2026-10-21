@@ -20,7 +20,6 @@ bytes = { workspace = true }
 # and camera frames, written as they arrived (§13).
 mcap = { workspace = true }
 rlmesh-session = { workspace = true }
-rlmesh-wire = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 tracing = { workspace = true }

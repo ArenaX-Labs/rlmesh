@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
-use rlmesh_wire::{
+use rlmesh_session::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, EdgeMode, Heartbeat, PartSpec, ParticipantId,
     ParticipantReport, PublisherCounters, RunCounters, Sample, StreamSpec,
 };
@@ -186,7 +186,7 @@ pub(crate) struct EdgeState {
 #[derive(Clone, Debug)]
 pub(crate) struct LastChunk {
     pub(crate) source: ParticipantId,
-    pub(crate) token: rlmesh_wire::LeaseToken,
+    pub(crate) token: rlmesh_session::wire::LeaseToken,
     pub(crate) seq: u64,
     pub(crate) t0_ns: i64,
     pub(crate) dt_ns: i64,
@@ -458,7 +458,12 @@ impl Model {
         }
     }
 
-    fn on_applied(&mut self, sample: &Sample, applied: rlmesh_wire::Applied, receive_ns: i64) {
+    fn on_applied(
+        &mut self,
+        sample: &Sample,
+        applied: rlmesh_session::wire::Applied,
+        receive_ns: i64,
+    ) {
         let Some(part) = self.part_of(sample.channel).cloned() else {
             return;
         };

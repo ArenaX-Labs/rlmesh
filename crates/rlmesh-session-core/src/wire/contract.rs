@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use crate::ids::ChannelId;
+use crate::wire::ids::ChannelId;
 
 /// How a subscriber is delivered one stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

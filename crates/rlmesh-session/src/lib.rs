@@ -2,7 +2,7 @@
 //!
 //! A session is a long-lived shared world that participants (embodiments,
 //! controllers, observers) attach to. This crate holds its authority core
-//! and its network ends; the wire format lives in [`rlmesh_wire`] and the
+//! and its network ends; the wire format lives in [`crate::wire`] and the
 //! embodiment-side action queue in `rlmesh-edge`.
 //!
 //! The sans-IO state machines live in `rlmesh-session-core` and are
@@ -93,4 +93,4 @@ pub use transport::{ClassQos, TrafficClass, Transport, TransportConfig, Transpor
 pub use virtual_clock::VirtualConfig;
 
 /// The wire types, re-exported so users need one dependency.
-pub use rlmesh_wire as wire;
+pub use rlmesh_session_core::wire;

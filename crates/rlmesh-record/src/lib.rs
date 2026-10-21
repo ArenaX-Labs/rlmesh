@@ -39,11 +39,11 @@ use std::thread::JoinHandle;
 
 use bytes::Bytes;
 use rlmesh_session::transport::{TrafficClass, payload_bytes};
-use rlmesh_session::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
-use rlmesh_wire::codec::{self, schema};
-use rlmesh_wire::{
+use rlmesh_session::wire::codec::{self, schema};
+use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, Fingerprint, PartSpec, ParticipantId, Sample, StreamSpec,
 };
+use rlmesh_session::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use tracing::{debug, warn};
 
 /// What can go wrong recording or reading a recording.

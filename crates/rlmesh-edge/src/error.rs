@@ -1,7 +1,7 @@
 //! Errors.
 
 use rlmesh_session::SessionError;
-use rlmesh_wire::{ChannelId, ParticipantId};
+use rlmesh_session::wire::{ChannelId, ParticipantId};
 
 /// Why an edge could not be set up.
 #[derive(Debug, thiserror::Error)]

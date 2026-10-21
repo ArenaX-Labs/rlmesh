@@ -226,7 +226,10 @@ fn a_catalog_env_maps_to_a_robot_and_its_slabs_round_trip_bit_exact() {
         );
         // The f64 gripper is not a float32 gripper part.
         let gripper = gym.part("gripper").expect("gripper");
-        assert_eq!(gripper.spec.fields[0].dtype, rlmesh_wire::DType::F64);
+        assert_eq!(
+            gripper.spec.fields[0].dtype,
+            rlmesh_session::wire::DType::F64
+        );
         let arm = gym.part("arm").expect("arm");
         let names: Vec<&str> = arm.spec.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["pos", "vel"]);

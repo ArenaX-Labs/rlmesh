@@ -29,14 +29,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use bytes::Bytes;
-use rlmesh_wire::codec;
-use rlmesh_wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
-use rlmesh_wire::{
+use crate::wire::codec;
+use crate::wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
+use crate::wire::{
     Applied, AuthoritySnapshot, ChannelId, ChannelPriority, CtlError, CtlReply, CtlStatus, Epoch,
     HeartbeatEcho, HistoryQuery, ParticipantId, SampleBatch, SampleMeta, SeqRange, SessionId,
     SessionKeys, StreamSpec, TenantId,
 };
+use bytes::Bytes;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -127,7 +127,7 @@ impl HostConfig {
             republish: Duration::from_millis(500),
             health_log: Some(Duration::from_secs(1)),
             offset: OffsetEstimatorConfig::default(),
-            supports: rlmesh_wire::version::FEATURES
+            supports: crate::wire::version::FEATURES
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
@@ -354,7 +354,7 @@ impl Drop for SessionHost {
 /// Echo publishers by participant, shared with the heartbeat callback.
 type Echoes = Arc<RwLock<HashMap<ParticipantId, zenoh::pubsub::Publisher<'static>>>>;
 
-type HeartbeatTx = mpsc::Sender<(ParticipantId, rlmesh_wire::Heartbeat, i64)>;
+type HeartbeatTx = mpsc::Sender<(ParticipantId, crate::wire::Heartbeat, i64)>;
 
 /// The heartbeat callback: echo at once (t3 as late as possible), then queue
 /// the heartbeat for the host task.
@@ -436,7 +436,7 @@ impl Ring {
         }
     }
 
-    fn record_one(&self, sample: rlmesh_wire::Sample, depth: usize) {
+    fn record_one(&self, sample: crate::wire::Sample, depth: usize) {
         if sample.channel != self.spec.channel || self.spec.check_payload(&sample.payload).is_err()
         {
             return;
@@ -676,7 +676,7 @@ impl HostActor {
     async fn run(
         &mut self,
         cancel: CancellationToken,
-        mut heartbeats: mpsc::Receiver<(ParticipantId, rlmesh_wire::Heartbeat, i64)>,
+        mut heartbeats: mpsc::Receiver<(ParticipantId, crate::wire::Heartbeat, i64)>,
         ctl: zenoh::query::Queryable<Fifo<Query>>,
         state: zenoh::query::Queryable<Fifo<Query>>,
         presence: zenoh::pubsub::Subscriber<Fifo<zenoh::sample::Sample>>,
@@ -861,7 +861,7 @@ impl HostActor {
         }
     }
 
-    fn on_heartbeat(&mut self, id: ParticipantId, heartbeat: rlmesh_wire::Heartbeat, t2: i64) {
+    fn on_heartbeat(&mut self, id: ParticipantId, heartbeat: crate::wire::Heartbeat, t2: i64) {
         // Only attached participants are tracked; attach precedes the first
         // heartbeat.
         let Some(link) = self.links.get_mut(&id) else {
@@ -1013,7 +1013,7 @@ impl HostActor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_wire::{Encoding, FieldSpec, Layout, Sample};
+    use crate::wire::{Encoding, FieldSpec, Layout, Sample};
 
     fn ring(fields: Vec<FieldSpec>) -> Ring {
         Ring {
@@ -1061,7 +1061,7 @@ mod tests {
 
     #[test]
     fn the_store_pages_by_epoch_watermark_and_limit_with_gaps_and_truncation() {
-        let ring = ring(vec![FieldSpec::new("x", rlmesh_wire::DType::U64, &[])]);
+        let ring = ring(vec![FieldSpec::new("x", crate::wire::DType::U64, &[])]);
         for seq in [1, 2, 3, 6, 7, 8, 9, 10] {
             put(&ring, 2, seq, 6);
         }
@@ -1103,7 +1103,7 @@ mod tests {
 
     #[test]
     fn large_ranges_split_into_pages() {
-        let ring = ring(vec![FieldSpec::new("x", rlmesh_wire::DType::U64, &[])]);
+        let ring = ring(vec![FieldSpec::new("x", crate::wire::DType::U64, &[])]);
         for seq in 1..=600 {
             put(&ring, 1, seq, 1024);
         }

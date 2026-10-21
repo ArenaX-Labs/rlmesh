@@ -13,9 +13,9 @@ use common::CatalogEnv;
 use rlmesh_gym::{ConnectOptions, GymError, LockstepAddress};
 use rlmesh_proto::env::v1::{ResetRequest, StepRequest};
 use rlmesh_proto::spaces::v1::SpaceValue;
+use rlmesh_session::wire::{LeaseToken, ParticipantId, PriorityClass, Role};
 use rlmesh_session::{Participant, ParticipantConfig, Transport, TransportConfig};
 use rlmesh_spaces::AutoresetMode;
-use rlmesh_wire::{LeaseToken, ParticipantId, PriorityClass, Role};
 
 fn step(seq: u8) -> StepRequest {
     StepRequest {
@@ -97,7 +97,7 @@ async fn an_in_process_driver_calls_the_env_directly_and_the_env_checks_epoch_an
 
     // A stale epoch is refused locally, without the host.
     let (epoch, token) = direct.authority();
-    direct.set_authority(rlmesh_wire::Epoch(epoch.0 + 7), token);
+    direct.set_authority(rlmesh_session::wire::Epoch(epoch.0 + 7), token);
     refused(direct.step_v1(step(2)).await, "stale");
     direct.set_authority(epoch, token);
     direct.step_v1(step(3)).await.unwrap();

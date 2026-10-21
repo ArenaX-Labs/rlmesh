@@ -11,7 +11,7 @@ use std::sync::mpsc;
 
 use bytes::Bytes;
 use rlmesh_record::SampleTee;
-use rlmesh_wire::{Layout, LockstepReply, PartSpec, PartValues, Sample};
+use rlmesh_session::wire::{Layout, LockstepReply, PartSpec, PartValues, Sample};
 
 use crate::lockstep::Request;
 

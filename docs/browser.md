@@ -7,8 +7,8 @@ A browser page cannot open a v2 session's own transport: it has no raw TCP
 or UDP, so neither Zenoh nor gRPC can run there. The browser binding is
 three pieces instead:
 
-- **The sans-IO core in wasm.** `javascript/rlmesh/wasm` (`rlmesh-wasm`) wraps `rlmesh-wire` (the
-  v2 messages) and `rlmesh-session-core` (the state machines: the clock
+- **The sans-IO core in wasm.** `javascript/rlmesh/wasm` (`rlmesh-wasm`) wraps `rlmesh-session-core`
+  (the v2 wire and the state machines: the clock
   offset estimator, the holder side of a lease, the receive rules) with
   wasm-bindgen. One wasm Module is compiled once and instantiated in three
   Workers.
@@ -163,10 +163,10 @@ and the npm dev dependencies, and no other check needs them. The CI
 `browser` job runs the browser gates only when the wasm, gateway,
 session-core, wire or JS inputs change.
 
-The sans-IO crates (`rlmesh-wire`, `rlmesh-session-core`) carry their own
-`clippy.toml` that bans `Instant::now`, `SystemTime::now`, `thread::spawn`
-and `thread::sleep` (clippy does not merge config files, so each repeats the
-workspace settings). `check:sans-io` builds them for wasm32-unknown-unknown,
+The sans-IO crate (`rlmesh-session-core`: the wire, the spec and the state
+machines) carries its own `clippy.toml` that bans `Instant::now`,
+`SystemTime::now`, `thread::spawn` and `thread::sleep` (clippy does not merge
+config files, so it repeats the workspace settings). `check:sans-io` builds it for wasm32-unknown-unknown,
 runs clippy with those bans denied, and refuses an IO dependency (tokio, mio,
 socket2, zenoh, tonic, hyper, async-std, getrandom, wasm-bindgen, js-sys,
 web-sys, libc) on the wasm target.

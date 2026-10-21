@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use half::f16;
 use rlmesh_session::media::decode_payload;
-use rlmesh_wire::{DType, Encoding, StreamSpec};
+use rlmesh_session::wire::{DType, Encoding, StreamSpec};
 
 /// The most elements shown one by one; a larger value is summarised.
 pub const MAX_ELEMENTS: usize = 32;
@@ -233,7 +233,7 @@ pub fn number(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_wire::{ChannelId, ChannelPriority, FieldSpec, Layout, ParticipantId};
+    use rlmesh_session::wire::{ChannelId, ChannelPriority, FieldSpec, Layout, ParticipantId};
 
     fn spec(fields: Vec<FieldSpec>, encoding: Encoding) -> StreamSpec {
         StreamSpec {

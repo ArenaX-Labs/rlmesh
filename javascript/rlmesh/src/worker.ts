@@ -8,7 +8,7 @@
 // it from the compiled Module.
 //
 // Every binary frame is a real v2 message behind a one-byte tag (wasm/src/frame.rs); the
-// wasm encodes and decodes them with rlmesh-wire. Text frames are the gateway's JSON.
+// wasm encodes and decodes them with the session wire (rlmesh-session-core). Text frames are the gateway's JSON.
 
 import { initSync, Streams, ControlSession, build_info, web_time_now_ms, std_instant_now_panics } from '../pkg/rlmesh.js';
 import { ReconnectingSocket } from './socket.js';
@@ -290,7 +290,7 @@ function runData(init: InitMsg) {
     const u8 = new Uint8Array(data);
     let n: number;
     try {
-      n = streams.push(u8, t); // JS -> wasm copy, rlmesh-wire decode, the session's receive rules
+      n = streams.push(u8, t); // JS -> wasm copy, wire decode, the session's receive rules
     } catch (e) {
       if (e instanceof WebAssembly.RuntimeError) throw e;
       return; // a malformed frame is an Err from the core, not a panic: drop it

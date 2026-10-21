@@ -44,7 +44,7 @@ use rlmesh_proto::env::v1::{
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 use rlmesh_runtime::{RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError};
-use rlmesh_wire::{
+use rlmesh_session::wire::{
     ChannelId, Epoch, LeaseToken, LockstepReply, LockstepReset, LockstepStep, PartValues,
 };
 

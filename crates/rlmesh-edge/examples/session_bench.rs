@@ -58,13 +58,13 @@ use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::spec::apply::{Tensor, Value as ActionValue};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::free_local_base;
+use rlmesh_session::wire::{
+    Fingerprint, InputRange, Mode, ParticipantId, PriorityClass, Role, Sample, SessionId, TenantId,
+};
 use rlmesh_session::{
     AuthorityEvent, ChunkDraft, Clock, Controller, ControllerConfig, HostConfig, LeaseEnd,
     Observation, Offer, Participant, ParticipantConfig, Predictor, SessionHost, SubscribeOptions,
     SystemMonotonicClock, Transport, TransportConfig,
-};
-use rlmesh_wire::{
-    Fingerprint, InputRange, Mode, ParticipantId, PriorityClass, Role, Sample, SessionId, TenantId,
 };
 use serde_json::{Value, json};
 

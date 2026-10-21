@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rlmesh_wire::codec;
-use rlmesh_wire::{Epoch, ParticipantId, ParticipantReport, PublisherCounters, RunCounters};
+use crate::wire::codec;
+use crate::wire::{Epoch, ParticipantId, ParticipantReport, PublisherCounters, RunCounters};
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;

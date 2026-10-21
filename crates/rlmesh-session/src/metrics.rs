@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 
-use rlmesh_wire::{ChannelId, Health, ParticipantId};
+use crate::wire::{ChannelId, Health, ParticipantId};
 
 use crate::clock::OffsetEstimate;
 

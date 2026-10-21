@@ -18,9 +18,9 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError, channel, sync_
 use std::sync::{Arc, Mutex};
 
 use rlmesh_session::transport::{TrafficClass, payload_bytes};
+use rlmesh_session::wire::codec;
+use rlmesh_session::wire::{ChannelId, StreamSpec};
 use rlmesh_session::{Participant, Received, SampleSubscriber, SessionError, SubscribeOptions};
-use rlmesh_wire::codec;
-use rlmesh_wire::{ChannelId, StreamSpec};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};

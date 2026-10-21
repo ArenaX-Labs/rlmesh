@@ -48,11 +48,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::spec::contract;
-use rlmesh_wire::authority::fence;
-use rlmesh_wire::part::PartSpec;
-use rlmesh_wire::tick::VirtualTick;
-use rlmesh_wire::version::{PROTOCOL_MINOR, missing_features};
-use rlmesh_wire::{
+use crate::wire::authority::fence;
+use crate::wire::part::PartSpec;
+use crate::wire::tick::VirtualTick;
+use crate::wire::version::{PROTOCOL_MINOR, missing_features};
+use crate::wire::{
     AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command, CtlError,
     CtlStatus, Demand, Epoch, FenceError, Fingerprint, Lease, LeaseToken, Mode, ParticipantId,
     ParticipantInfo, PriorityClass, Request, Role, SessionId,
@@ -276,7 +276,7 @@ pub struct AuthorityConfig {
     /// Default lease ttl: how long the holder's heartbeats may stop before
     /// its lease lapses.
     pub lease_grace_ns: u64,
-    /// The features the session implements (see [`rlmesh_wire::version`]).
+    /// The features the session implements (see [`crate::wire::version`]).
     pub supports: Vec<String>,
     /// Virtual clock mode (§11.3); `None` is wall mode.
     pub virtual_clock: Option<VirtualConfig>,
@@ -286,7 +286,7 @@ impl Default for AuthorityConfig {
     fn default() -> Self {
         Self {
             lease_grace_ns: 250_000_000,
-            supports: rlmesh_wire::version::FEATURES
+            supports: crate::wire::version::FEATURES
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
@@ -1112,7 +1112,7 @@ impl Authority {
     /// Re-derives every stream's publication plan from the contracts of the
     /// attached controllers; a changed plan bumps its demand's revision.
     fn recompute_demands(&mut self, events: &mut Vec<AuthorityEvent>) {
-        let mut wanted: BTreeMap<ChannelId, Vec<&rlmesh_wire::StreamContract>> = BTreeMap::new();
+        let mut wanted: BTreeMap<ChannelId, Vec<&crate::wire::StreamContract>> = BTreeMap::new();
         for (participant, binding) in &self.bindings {
             if !self.roster.contains_key(participant) {
                 continue;
@@ -1121,7 +1121,7 @@ impl Authority {
                 wanted.entry(c.channel).or_default().push(c);
             }
         }
-        let mut next: BTreeMap<ChannelId, (rlmesh_wire::Plan, std::time::Duration)> =
+        let mut next: BTreeMap<ChannelId, (crate::wire::Plan, std::time::Duration)> =
             BTreeMap::new();
         for (channel, contracts) in wanted {
             if let Some((part, applied)) = self.stream_part(channel)
@@ -1632,7 +1632,7 @@ struct Grant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_wire::version::SPEC_VERSION;
+    use crate::wire::version::SPEC_VERSION;
 
     const GRACE: u64 = 100;
 
@@ -2058,12 +2058,12 @@ mod tests {
 
     fn contract(
         channel: ChannelId,
-        mode: rlmesh_wire::ContractMode,
+        mode: crate::wire::ContractMode,
         delivery_hz: f64,
         history: u32,
         max_age_ms: Option<u64>,
-    ) -> rlmesh_wire::StreamContract {
-        rlmesh_wire::StreamContract {
+    ) -> crate::wire::StreamContract {
+        crate::wire::StreamContract {
             channel,
             mode,
             delivery_hz,
@@ -2079,12 +2079,12 @@ mod tests {
             from: &str,
             fp: u64,
             paths: &[&str],
-            contracts: Vec<rlmesh_wire::StreamContract>,
+            contracts: Vec<crate::wire::StreamContract>,
         ) -> Result<Applied, CtlError> {
             let channels: Vec<ChannelId> = paths.iter().map(|p| self.ch(p)).collect();
             let grids = channels
                 .iter()
-                .map(|c| rlmesh_wire::ActionGrid {
+                .map(|c| crate::wire::ActionGrid {
                     channel: *c,
                     dt: std::time::Duration::from_millis(10),
                 })
@@ -2116,7 +2116,7 @@ mod tests {
 
     #[test]
     fn a_lease_waits_until_every_bound_stream_installed_its_plan() {
-        use rlmesh_wire::{ContractMode, Plan};
+        use crate::wire::{ContractMode, Plan};
         let mut f = Fixture::new();
         f.run("operator", Command::Arm, 0).expect("arm");
         let ft = f.ch("ft");
@@ -2187,7 +2187,7 @@ mod tests {
 
     #[test]
     fn contracts_a_stream_cannot_meet_are_refused_at_admission() {
-        use rlmesh_wire::ContractMode;
+        use crate::wire::ContractMode;
         let mut f = Fixture::new();
         let (ft, cmd1) = (f.ch("ft"), f.ch("cmd1"));
         for (contracts, status, needle) in [
@@ -2249,7 +2249,7 @@ mod tests {
             channels: vec![cmd1],
             replan_hz: 20.0,
             contracts: Vec::new(),
-            grids: vec![rlmesh_wire::ActionGrid {
+            grids: vec![crate::wire::ActionGrid {
                 channel: f.ch("cmd2"),
                 dt: std::time::Duration::from_millis(10),
             }],
@@ -2266,7 +2266,7 @@ mod tests {
 
     #[test]
     fn removing_a_stream_withdraws_its_demand() {
-        use rlmesh_wire::ContractMode;
+        use crate::wire::ContractMode;
         let mut f = Fixture::new();
         let ft = f.ch("ft");
         f.bind_with(
@@ -2278,7 +2278,7 @@ mod tests {
         .expect("bind");
         assert_eq!(
             f.demand("ft").map(|d| d.plan),
-            Some(rlmesh_wire::Plan::Every)
+            Some(crate::wire::Plan::Every)
         );
         let applied = f.run("robot", Command::Detach, 1).expect("detach");
         assert!(applied.events.iter().any(|e| matches!(

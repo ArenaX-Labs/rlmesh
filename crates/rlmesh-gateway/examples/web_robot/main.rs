@@ -36,11 +36,11 @@ use rlmesh_edge::{EdgeConfig, EdgeMode, Robot};
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
+use rlmesh_session::wire::{DType, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
     Predictor, SessionHost, SystemMonotonicClock, Transport, TransportConfig,
 };
-use rlmesh_wire::{DType, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
 const ROBOT: &str = "arm7";
 const JOINTS: usize = 7;

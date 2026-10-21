@@ -17,13 +17,13 @@
 //! ```
 //!
 //! The `v2` chunk is the protocol generation
-//! ([`crate::version::GENERATION`]), so peers of different generations never
+//! ([`crate::wire::version::GENERATION`]), so peers of different generations never
 //! route to each other. `{robot}` is the embodiment's participant id, and
 //! each path segment is one key chunk, so `d/ur10e/wrist/**` subscribes to a
 //! subtree.
 
-use crate::ids::{ParticipantId, SessionId, TenantId};
-use crate::version::GENERATION;
+use crate::wire::ids::{ParticipantId, SessionId, TenantId};
+use crate::wire::version::GENERATION;
 
 /// Every key of one session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,7 +89,7 @@ impl SessionKeys {
         format!("{}/p/{id}/hb/echo", self.prefix)
     }
 
-    /// A participant's observer telemetry ([`crate::ParticipantReport`]).
+    /// A participant's observer telemetry ([`crate::wire::ParticipantReport`]).
     pub fn report(&self, id: &ParticipantId) -> String {
         format!("{}/p/{id}/report", self.prefix)
     }

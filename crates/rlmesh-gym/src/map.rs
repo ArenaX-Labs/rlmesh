@@ -39,8 +39,8 @@ use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use prost::Message as _;
 use rlmesh_adapters::v1::{EnvTags, ObsLeaf, ObsNode, space_spec_to_json};
+use rlmesh_session::wire::{ChannelId, DType, Layout, PartSpec, ParticipantId};
 use rlmesh_spaces::{EnvContract, SpaceKind, SpaceSpec};
-use rlmesh_wire::{ChannelId, DType, Layout, PartSpec, ParticipantId};
 use serde_json::{Value, json};
 
 use crate::error::GymError;
@@ -494,7 +494,7 @@ impl GymMap {
         let robot = ParticipantId::new("gym").map_err(|e| bad(e.to_string()))?;
         let specs = rlmesh_session::spec::normalise(
             &robot,
-            rlmesh_wire::version::SPEC_VERSION,
+            rlmesh_session::wire::version::SPEC_VERSION,
             &robot_json,
         )
         .map_err(|e| {
@@ -532,7 +532,7 @@ impl GymMap {
         by_path: &mut BTreeMap<String, usize>,
         draft: Draft,
     ) -> Result<(), GymError> {
-        rlmesh_wire::PartPath::new(&draft.path).map_err(|e| {
+        rlmesh_session::wire::PartPath::new(&draft.path).map_err(|e| {
             bad(format!(
                 "leaf {} maps to the path {:?}, which is refused: {}",
                 draft.origin, draft.path, e.reason

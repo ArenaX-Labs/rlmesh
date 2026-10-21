@@ -2,12 +2,12 @@
 //! `host/tick`. Embodiments answer with [`Command::Ready`], due controllers
 //! with [`Command::Decided`].
 //!
-//! [`Command::Ready`]: crate::authority::Command::Ready
-//! [`Command::Decided`]: crate::authority::Command::Decided
+//! [`Command::Ready`]: crate::wire::authority::Command::Ready
+//! [`Command::Decided`]: crate::wire::authority::Command::Decided
 
-use crate::action::ChunkRef;
-use crate::authority::Watermark;
-use crate::ids::{Epoch, ParticipantId};
+use crate::wire::action::ChunkRef;
+use crate::wire::authority::Watermark;
+use crate::wire::ids::{Epoch, ParticipantId};
 
 /// Phase 2, observe: every embodiment published tick `tick`.
 #[derive(Clone, Debug, PartialEq, Eq)]

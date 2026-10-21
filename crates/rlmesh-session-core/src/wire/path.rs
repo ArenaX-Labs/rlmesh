@@ -11,7 +11,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::ids::IdError;
+use crate::wire::ids::IdError;
 
 /// The most segments a path has.
 pub const MAX_DEPTH: usize = 6;

@@ -7,7 +7,7 @@ use std::time::Duration;
 use clap::Parser;
 use rlmesh_cockpit::{CockpitApp, Feed, Model, ModelConfig};
 use rlmesh_session::SessionAddress;
-use rlmesh_wire::{ParticipantId, PriorityClass, Role};
+use rlmesh_session::wire::{ParticipantId, PriorityClass, Role};
 
 /// The RLMesh cockpit: live channels, declared vs measured rates, the
 /// lease and mode timeline, and arm and e-stop, for one session.

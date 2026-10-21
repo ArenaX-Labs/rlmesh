@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use rlmesh_wire::{Epoch, Sample, StreamSpec};
+use crate::wire::{Epoch, Sample, StreamSpec};
 
 /// Loss and freshness counters for one subscription.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -5,12 +5,12 @@
 //! how many samples a publisher produced before its plan coalesced some, and
 //! a controller runtime's starts, completions and skipped slots. A
 //! participant publishes them as a [`ParticipantReport`] on
-//! `p/{participant}/report` ([`crate::SessionKeys::report`]) a few times per
+//! `p/{participant}/report` ([`crate::wire::SessionKeys::report`]) a few times per
 //! second. The counters are cumulative since the participant attached, so a
 //! lost report loses nothing; observers take rates from their deltas on the
 //! sender's clock. Nothing in the session acts on a report.
 
-use crate::ids::{ChannelId, Epoch, ParticipantId};
+use crate::wire::ids::{ChannelId, Epoch, ParticipantId};
 
 /// What one participant reports to observers.
 #[derive(Clone, Debug, PartialEq, Eq)]

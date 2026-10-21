@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
+use rlmesh_session::wire::{SessionId, TenantId};
 use rlmesh_session::{HostConfig, SessionError, SessionHost, Transport, TransportConfig};
-use rlmesh_wire::{SessionId, TenantId};
 use tracing::info;
 
 /// Runs an RLMesh session host.

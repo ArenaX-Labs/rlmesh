@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 
-use rlmesh_wire::{ClockMapping, ParticipantId, TimingSample};
+use crate::wire::{ClockMapping, ParticipantId, TimingSample};
 
 /// How offsets are filtered.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -20,14 +20,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use rlmesh_session::wire::{ChannelId, PartSpec};
 use rlmesh_session::{ImagePublisher, Offer, Participant, SamplePublisher, SessionError};
-use rlmesh_wire::{ChannelId, PartSpec};
 
 use crate::core::{EdgeConfig, EdgeStats, EdgeTick};
 use crate::error::EdgeError;
 use crate::queue::QueuedAction;
 use crate::runtime::Edge;
-use rlmesh_wire::EdgeMode;
+use rlmesh_session::wire::EdgeMode;
 
 /// How one part is published.
 enum Outlet {

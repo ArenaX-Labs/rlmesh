@@ -26,7 +26,7 @@
 //! intake (chunks). Lengths are bounded here: a chunk's action count and
 //! payload size, a batch's sample count.
 //!
-//! [`StreamSpec::check_payload`]: crate::part::StreamSpec::check_payload
+//! [`StreamSpec::check_payload`]: crate::wire::part::StreamSpec::check_payload
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -35,24 +35,26 @@ use bytes::Bytes;
 use prost::Message as _;
 use prost::encoding::encode_varint;
 
-use crate::action::{ActionChunk, ChunkRef, InputRange};
-use crate::authority::{
+use crate::wire::action::{ActionChunk, ChunkRef, InputRange};
+use crate::wire::authority::{
     AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
     CtlStatus, Lease, Mode, ParticipantInfo, PriorityClass, Request, Role, Watermark,
 };
-use crate::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
-use crate::error::WireError;
-use crate::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
-use crate::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
-use crate::lockstep::{LockstepReply, LockstepReset, LockstepStep, PartValues};
-use crate::part::{
+use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
+use crate::wire::error::WireError;
+use crate::wire::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
+use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
+use crate::wire::lockstep::{LockstepReply, LockstepReset, LockstepStep, PartValues};
+use crate::wire::part::{
     ChannelPriority, CommandSpec, DType, Encoding, FieldLimit, FieldSpec, MAX_BATCH,
     MAX_CHUNK_ACTIONS, MAX_CHUNK_BYTES, MergePolicy, PartSpec,
 };
-use crate::path::PartPath;
-use crate::report::{ParticipantReport, PublisherCounters, RunCounters};
-use crate::sample::{Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange};
-use crate::tick::{Step, TickState, VirtualTick};
+use crate::wire::path::PartPath;
+use crate::wire::report::{ParticipantReport, PublisherCounters, RunCounters};
+use crate::wire::sample::{
+    Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange,
+};
+use crate::wire::tick::{Step, TickState, VirtualTick};
 
 /// Generated `rlmesh.session.v2` messages: private, so the schema can move
 /// without touching any public type.
@@ -1516,9 +1518,9 @@ fn part_from_pb(p: pb::PartSpec) -> Result<PartSpec, WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::SessionId;
-    use crate::part::tests::{arm, camera, pid};
-    use crate::version::PROTOCOL_MINOR;
+    use crate::wire::ids::SessionId;
+    use crate::wire::part::tests::{arm, camera, pid};
+    use crate::wire::version::PROTOCOL_MINOR;
 
     fn snapshot() -> AuthoritySnapshot {
         AuthoritySnapshot {

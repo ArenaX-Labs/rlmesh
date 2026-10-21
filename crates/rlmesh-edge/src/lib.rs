@@ -44,6 +44,6 @@ pub use crate::core::{
 pub use error::EdgeError;
 pub use fallback::{ModeStats, SafeCause};
 pub use queue::{Delivery, QueueStats, QueuedAction};
-pub use rlmesh_wire::EdgeMode;
+pub use rlmesh_session::wire::EdgeMode;
 pub use robot::{Due, Handover, Robot};
 pub use runtime::{Edge, OnAccept};

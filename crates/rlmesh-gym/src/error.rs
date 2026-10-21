@@ -27,7 +27,7 @@ pub enum GymError {
     Session(#[from] SessionError),
     /// The wire.
     #[error(transparent)]
-    Wire(#[from] rlmesh_wire::WireError),
+    Wire(#[from] rlmesh_session::wire::WireError),
     /// The link is gone.
     #[error("the lockstep link is closed: {0}")]
     Closed(String),

@@ -4,7 +4,7 @@ use std::fmt;
 
 use bytes::Bytes;
 
-use crate::ids::{ChannelId, Epoch, LeaseToken};
+use crate::wire::ids::{ChannelId, Epoch, LeaseToken};
 
 /// What the edge did on one control tick, per command group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

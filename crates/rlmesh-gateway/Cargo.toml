@@ -27,7 +27,6 @@ clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 rand = { workspace = true }
 rlmesh-session = { workspace = true }
-rlmesh-wire = { workspace = true }
 # TLS: the ring provider only (no aws-lc), as everywhere in the workspace.
 rustls = { workspace = true }
 serde_json = { workspace = true }

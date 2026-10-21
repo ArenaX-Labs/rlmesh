@@ -48,7 +48,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use rlmesh_wire::{
+use rlmesh_session::wire::{
     ActionChunk, Applied, AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, EdgeMode, Epoch,
     FenceError, LeaseToken, Mode, PartSpec, ParticipantId,
 };
@@ -762,12 +762,12 @@ impl EdgeCore {
 
 #[cfg(test)]
 mod tests {
-    use rlmesh_session::{Authority, AuthorityConfig, VirtualConfig};
-    use rlmesh_wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
-    use rlmesh_wire::{
+    use rlmesh_session::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
+    use rlmesh_session::wire::{
         ClockMapping, Command, Fingerprint, InputRange, Lease, PriorityClass, Request, Role,
         SessionId,
     };
+    use rlmesh_session::{Authority, AuthorityConfig, VirtualConfig};
 
     use super::*;
 
@@ -1105,7 +1105,7 @@ mod tests {
                 channels: vec![cmd],
                 replan_hz: 0.0,
                 contracts: Vec::new(),
-                grids: vec![rlmesh_wire::ActionGrid {
+                grids: vec![rlmesh_session::wire::ActionGrid {
                     channel: cmd,
                     dt: Duration::from_millis(10),
                 }],

@@ -13,8 +13,8 @@
 
 use std::fmt;
 
-use rlmesh_wire::ParticipantId;
-use rlmesh_wire::path::{MAX_DEPTH, MAX_SEGMENT_LEN, is_identifier};
+use crate::wire::ParticipantId;
+use crate::wire::path::{MAX_DEPTH, MAX_SEGMENT_LEN, is_identifier};
 
 /// Run-time option names, which cannot be capture names.
 pub const RUN_OPTIONS: [&str; 7] = ["robot", "under", "at", "names", "allow", "session", "clock"];
@@ -90,7 +90,7 @@ impl Selector {
     }
 
     /// A literal path from the robot root (a run-time override).
-    pub fn literal(path: &rlmesh_wire::PartPath) -> Self {
+    pub fn literal(path: &crate::wire::PartPath) -> Self {
         Self {
             robot: None,
             absolute: true,

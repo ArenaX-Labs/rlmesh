@@ -38,13 +38,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
-use rlmesh_wire::part::{
+use crate::wire::part::{
     ChannelPriority, CommandSpec, DType, Encoding, FieldLimit, FieldSpec, Layout, MAX_PARTS,
     MergePolicy, PartSpec, SMALL_SAMPLE_BYTES, SendPolicy,
 };
-use rlmesh_wire::path::is_identifier;
-use rlmesh_wire::version::SPEC_VERSION;
-use rlmesh_wire::{ChannelId, CtlError, CtlStatus, Fingerprint, PartPath, ParticipantId};
+use crate::wire::path::is_identifier;
+use crate::wire::version::SPEC_VERSION;
+use crate::wire::{ChannelId, CtlError, CtlStatus, Fingerprint, PartPath, ParticipantId};
 use serde::Deserialize;
 use serde::de::value::MapAccessDeserializer;
 use serde::de::{MapAccess, SeqAccess, Visitor};

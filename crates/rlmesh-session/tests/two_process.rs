@@ -10,14 +10,14 @@ use rlmesh_session::media::synthetic_frame;
 use rlmesh_session::spec::apply::Value;
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::free_local_base;
+use rlmesh_session::wire::version::SPEC_VERSION;
+use rlmesh_session::wire::{
+    ContractMode, CtlStatus, Fingerprint, Mode, ParticipantId, PriorityClass, Role, SessionId,
+    TenantId,
+};
 use rlmesh_session::{
     Inputs, ObserveError, Participant, ParticipantConfig, SessionError, SubscribeOptions,
     Transport, TransportConfig,
-};
-use rlmesh_wire::version::SPEC_VERSION;
-use rlmesh_wire::{
-    ContractMode, CtlStatus, Fingerprint, Mode, ParticipantId, PriorityClass, Role, SessionId,
-    TenantId,
 };
 
 /// Participants listen too (the OS picks the ports): in peer mode, data

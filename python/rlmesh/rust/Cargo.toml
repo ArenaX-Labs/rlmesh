@@ -46,7 +46,6 @@ rlmesh-sandbox = { workspace = true }
 rlmesh-session = { workspace = true }
 rlmesh-spaces = { workspace = true }
 rlmesh-viewer = { workspace = true }
-rlmesh-wire = { workspace = true }
 
 async-trait = { workspace = true }
 bytes = { workspace = true }

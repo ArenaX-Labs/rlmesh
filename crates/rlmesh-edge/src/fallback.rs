@@ -38,7 +38,7 @@
 
 use std::fmt;
 
-use rlmesh_wire::{EdgeMode, Epoch, LeaseToken, Mode};
+use rlmesh_session::wire::{EdgeMode, Epoch, LeaseToken, Mode};
 
 use crate::queue::{ActionQueue, Delivery, QueuedAction};
 
@@ -460,7 +460,7 @@ mod tests {
     use std::sync::Arc;
 
     use bytes::Bytes;
-    use rlmesh_wire::{ChannelId, InputRange, ParticipantId};
+    use rlmesh_session::wire::{ChannelId, InputRange, ParticipantId};
 
     use super::*;
     use crate::queue::{ChunkMeta, Splice};

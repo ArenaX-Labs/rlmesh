@@ -10,7 +10,7 @@
 
 use std::fmt;
 
-use rlmesh_wire::part::DType;
+use crate::wire::part::DType;
 
 use crate::spec::explain::num;
 use crate::spec::policy::{Allow, Resample};

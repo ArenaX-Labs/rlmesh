@@ -2146,7 +2146,7 @@ surface the area tables map; it has no manifest column. Its constraints:
   must run next to its robot, where a process stall can be bounded). Its
   binding is the gateway's identity binding over the commandable parts, not
   a bound policy map.
-- **One core.** It runs `rlmesh-wire` and `rlmesh-session-core`, the sans-IO
+- **One core.** It runs `rlmesh-session-core` (the wire and the state machines), the sans-IO
   core shared with the native session, compiled to
   `wasm32-unknown-unknown`: messages are the v2 wire's, and the lease, clock
   and receive rules are the core's. It adds no state machine of its own

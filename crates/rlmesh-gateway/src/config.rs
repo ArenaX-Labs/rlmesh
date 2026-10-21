@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use rlmesh_session::SessionAddress;
-use rlmesh_wire::{PriorityClass, SessionId, TenantId};
+use rlmesh_session::wire::{PriorityClass, SessionId, TenantId};
 
 use crate::security::{self, Origins, Policy};
 
@@ -195,7 +195,7 @@ impl Config {
                     tenant: TenantId::new(args.tenant).map_err(|e| e.to_string())?,
                     session: session
                         .parse()
-                        .map_err(|e: rlmesh_wire::IdError| e.to_string())?,
+                        .map_err(|e: rlmesh_session::wire::IdError| e.to_string())?,
                 }
             }
         };

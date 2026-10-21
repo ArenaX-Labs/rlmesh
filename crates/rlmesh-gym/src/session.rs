@@ -25,13 +25,13 @@ use std::time::Duration;
 
 use rlmesh_grpc::env::Environment;
 use rlmesh_session::transport::{Endpoints, TransportTuning, zenoh_config};
+use rlmesh_session::wire::{
+    AuthoritySnapshot, ChannelId, CtlStatus, Epoch, Fingerprint, LeaseToken, Mode, PartSpec,
+    ParticipantId, PriorityClass, Role, SessionId, SessionKeys, TenantId,
+};
 use rlmesh_session::{
     HostConfig, Participant, ParticipantConfig, SessionError, SessionHost, SystemMonotonicClock,
     Transport, TransportConfig,
-};
-use rlmesh_wire::{
-    AuthoritySnapshot, ChannelId, CtlStatus, Epoch, Fingerprint, LeaseToken, Mode, PartSpec,
-    ParticipantId, PriorityClass, Role, SessionId, SessionKeys, TenantId,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};

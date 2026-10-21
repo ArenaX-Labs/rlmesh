@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
-use crate::ids::{ChannelId, ParticipantId};
-use crate::path::{APPLIED, PartPath};
+use crate::wire::ids::{ChannelId, ParticipantId};
+use crate::wire::path::{APPLIED, PartPath};
 
 /// The most fields a part has.
 pub const MAX_FIELDS: usize = 16;

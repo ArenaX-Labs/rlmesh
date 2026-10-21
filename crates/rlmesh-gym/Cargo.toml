@@ -29,7 +29,6 @@ rlmesh-record = { workspace = true }
 rlmesh-runtime = { workspace = true }
 rlmesh-session = { workspace = true }
 rlmesh-spaces = { workspace = true }
-rlmesh-wire = { workspace = true }
 serde = { workspace = true }
 # Exact float round trips: info and options cross the wire as JSON (§12.2).
 serde_json = { workspace = true, features = ["float_roundtrip"] }
