@@ -507,3 +507,29 @@ def test_a_spec_that_is_not_json_forwards_its_basic_fields() -> None:
             remote.close()
     finally:
         server.shutdown()
+
+
+def _same_step() -> Any:
+    return gym.vector.SyncVectorEnv(
+        [lambda: gym.make("CartPole-v1")] * 2,
+        autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
+    )
+
+
+def test_same_step_is_served_on_lockstep_and_refused_by_name_elsewhere() -> None:
+    with pytest.raises(ValueError, match="SAME_STEP"):
+        rlmesh.EnvServer(_same_step(), "tcp://127.0.0.1:0")
+    server = rlmesh.EnvServer(_same_step(), "lockstep://127.0.0.1:0/same")
+    server.start()
+    try:
+        model = rlmesh.Model(lambda observation: 0)
+        with pytest.raises(ValueError, match="SAME_STEP"):
+            model.run(server.address, episodes=1)
+        remote = rlmesh.numpy.RemoteVectorEnv(server.address)
+        try:
+            remote.reset(seed=0)
+            remote.step(np.zeros(2, np.int64))
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()

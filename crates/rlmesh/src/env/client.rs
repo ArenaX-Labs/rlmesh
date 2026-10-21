@@ -477,9 +477,8 @@ impl Link {
                     completed_episodes: Vec::new(),
                     episode_ids: Vec::new(),
                 };
-                let next_step =
-                    client.info().contract.autoreset_mode == spaces::types::AutoresetMode::NextStep;
-                result.completed_episodes = episodes.step(&result, &episode_ids, next_step);
+                let mode = client.info().contract.autoreset_mode;
+                result.completed_episodes = episodes.step(&result, &episode_ids, mode);
                 Ok(result)
             }
         }
@@ -527,8 +526,11 @@ enum Lane {
     #[default]
     Idle,
     Active(Episode),
-    /// Done under NEXT_STEP: the next step is the autoreset observation.
-    Pending,
+    /// Done under NEXT_STEP (the next step is the autoreset observation) or
+    /// SAME_STEP (the next step is the new episode's first).
+    Pending {
+        same_step: bool,
+    },
 }
 
 #[cfg(feature = "lockstep")]
@@ -614,31 +616,35 @@ impl Episodes {
         &mut self,
         result: &VectorStepResult,
         ids: &[String],
-        next_step: bool,
+        mode: spaces::types::AutoresetMode,
     ) -> Vec<super::types::EpisodeMetadata> {
+        use spaces::types::AutoresetMode;
         let mut completed = std::mem::take(&mut self.interrupted);
         for (lane, slot) in self.lanes.iter_mut().enumerate() {
             let terminated = result.terminated.get(lane).copied().unwrap_or(false);
             let truncated = result.truncated.get(lane).copied().unwrap_or(false);
-            match std::mem::take(slot) {
-                Lane::Active(mut episode) => {
-                    episode.steps += 1;
-                    episode.reward += result.rewards.get(lane).copied().unwrap_or(0.0);
-                    if terminated || truncated {
-                        completed.push(episode.end(lane, terminated, truncated));
-                        if next_step {
-                            *slot = Lane::Pending;
-                        }
-                    } else {
-                        *slot = Lane::Active(episode);
-                    }
-                }
+            let id = || ids.get(lane).cloned().unwrap_or_default();
+            let mut episode = match std::mem::take(slot) {
+                Lane::Active(episode) => episode,
                 // The autoreset observation: the episode the env rolled.
-                Lane::Pending => {
-                    let id = ids.get(lane).cloned().unwrap_or_default();
-                    *slot = Lane::Active(Episode::new(id, None));
+                Lane::Pending { same_step: false } => {
+                    *slot = Lane::Active(Episode::new(id(), None));
+                    continue;
                 }
-                Lane::Idle => {}
+                Lane::Pending { same_step: true } => Episode::new(id(), None),
+                Lane::Idle => continue,
+            };
+            episode.steps += 1;
+            episode.reward += result.rewards.get(lane).copied().unwrap_or(0.0);
+            if terminated || truncated {
+                completed.push(episode.end(lane, terminated, truncated));
+                *slot = match mode {
+                    AutoresetMode::NextStep => Lane::Pending { same_step: false },
+                    AutoresetMode::SameStep => Lane::Pending { same_step: true },
+                    AutoresetMode::Disabled => Lane::Idle,
+                };
+            } else {
+                *slot = Lane::Active(episode);
             }
         }
         completed
@@ -1102,9 +1108,10 @@ impl EnvClientCore {
             completed_episodes,
         };
         // Under NEXT_STEP the env autoresets each completed lane next step and
-        // adopts the fresh id pushed then, so roll it now. Under any other
-        // mode the lane stays done until an explicit reset re-mints.
-        if self.env_contract.autoreset_mode == spaces::types::AutoresetMode::NextStep {
+        // adopts the fresh id pushed then, and under SAME_STEP the lane's next
+        // step is already the new episode's, so roll it now. Under DISABLED
+        // the lane stays done until an explicit reset re-mints.
+        if self.env_contract.autoreset_mode != spaces::types::AutoresetMode::Disabled {
             for completed in &result.completed_episodes {
                 if let Some(slot) = self.episode_ids.get_mut(completed.env_index as usize) {
                     *slot = crate::mint_id();

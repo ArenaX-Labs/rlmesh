@@ -97,8 +97,8 @@ pub(super) fn extract_render_mode(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 /// env naturally needs explicit reset. A present value is held to the contract:
 /// an explicit `None`, a non-string, or an unrecognized string raises
 /// `ValueError` rather than silently downgrading to `Disabled`, which would
-/// double-reset a mislabeled self-autoresetting env. `SameStep` is reserved in
-/// the protocol but not yet honored by the runtime, so it is rejected too.
+/// double-reset a mislabeled self-autoresetting env. `SameStep` is served on
+/// `lockstep://` addresses (the v1 wire and `Model.run` refuse it).
 pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<AutoresetMode> {
     if !obj.hasattr("metadata")? {
         return Ok(AutoresetMode::Disabled);
@@ -143,10 +143,7 @@ pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<Autorese
     match mode_str.as_str() {
         "NextStep" => Ok(AutoresetMode::NextStep),
         "Disabled" => Ok(AutoresetMode::Disabled),
-        "SameStep" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "SAME_STEP autoreset mode is not yet supported by the rlmesh runtime; \
-             construct the environment with NEXT_STEP or DISABLED autoreset",
-        )),
+        "SameStep" => Ok(AutoresetMode::SameStep),
         // Present but unrecognized: either a typo or a mode this runtime does
         // not know. Erroring beats silently downgrading to DISABLED, which would
         // double-reset a self-autoresetting env.
@@ -553,8 +550,10 @@ mod tests {
                 ),
                 // unrecognized string -> error
                 (env_with_mode(py, Some(pystr(py, "Bogus"))), None),
-                // SAME_STEP is reserved but unsupported -> error
-                (env_with_mode(py, Some(pystr(py, "SameStep"))), None),
+                (
+                    env_with_mode(py, Some(pystr(py, "SameStep"))),
+                    Some(AutoresetMode::SameStep),
+                ),
             ];
 
             for (env, expected) in cases {

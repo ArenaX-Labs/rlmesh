@@ -189,7 +189,7 @@ fn meta_value_to_py<'py>(py: Python<'py>, value: &MetaValue) -> PyResult<Py<PyAn
         }
         MetaValue::Array { shape, items } => {
             let np = py.import("numpy")?;
-            let array = np.call_method1("empty", (items.len(), np.getattr("object")?))?;
+            let array = np.call_method1("empty", (items.len(), "O"))?;
             for (i, item) in items.iter().enumerate() {
                 array.set_item(i, meta_value_to_py(py, item)?)?;
             }

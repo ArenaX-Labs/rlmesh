@@ -46,10 +46,8 @@ pub(crate) fn autoreset_mode(metadata: Option<&Metadata>) -> Result<AutoresetMod
         Value::Text(mode) => match mode.as_str() {
             "NextStep" => Ok(AutoresetMode::NextStep),
             "Disabled" => Ok(AutoresetMode::Disabled),
-            "SameStep" => Err(Error::invalid_argument(
-                "SAME_STEP autoreset mode is not yet supported by the rlmesh runtime; \
-                 construct the environment with NEXT_STEP or DISABLED autoreset",
-            )),
+            // Served on `lockstep://` (the v1 wire and `Model.run` refuse it).
+            "SameStep" => Ok(AutoresetMode::SameStep),
             other => Err(Error::invalid_argument(format!(
                 "unrecognized metadata[\"autoreset_mode\"] {other:?}; expected a gymnasium \
                  AutoresetMode enum or one of \"NextStep\"/\"SameStep\"/\"Disabled\""

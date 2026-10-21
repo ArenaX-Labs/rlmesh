@@ -6,16 +6,14 @@ the same seeds and actions, and compares types, dtypes, shapes and bits.
 
 Accepted differences: ``reward`` is a Python ``float`` (a vector env's
 rewards are ``float64``); a ``Discrete`` observation is the space's NumPy
-integer; tuples in ``info`` arrive as lists; ``close()`` detaches, and the
+integer; tuples in ``info`` arrive as lists; an env's exception arrives as an
+``EnvironmentException`` that is also its builtin class, its message led by
+the call that failed (``reset failed: ...``); ``close()`` detaches, and the
 server's ``shutdown()`` closes the served env.
 
 Refused, at once and by name: Graph, Sequence, OneOf, a shape-``()`` Box, and
-``info`` values that are neither JSON-like nor arrays (ints beyond int64
-included).
-
-``GAP`` rows are the contract's targets the lockstep Gym path still misses
-(it rides v1's contract and ``MetaMap`` encodings); they land with its
-rewrite off the v1 crates and are strict, so each one flips when it does.
+``info`` values that are neither JSON-like nor arrays (a ``TypeError``), or
+ints beyond int64 (a ``ValueError``), each naming its key path.
 """
 
 from __future__ import annotations
@@ -41,7 +39,6 @@ import rlmesh.numpy  # noqa: E402
 spaces = gym.spaces
 
 ADDRESS = "lockstep://127.0.0.1:0/gym"
-GAP = pytest.mark.xfail(strict=True, reason="lands with the lockstep Gym rewrite")
 EDITION = rlmesh.ServeOptions(workflow_edition="2026.06")
 
 
@@ -189,6 +186,10 @@ def difference(a: Any, b: Any, *, scalars: bool = False, path: str = "") -> str 
         return None if same else f"{path}: {a!r} vs {b!r}"
     if type(a) is not type(b):
         return f"{path}: {type(a).__name__} vs {type(b).__name__}"
+    if isinstance(a, np.ndarray) and a.dtype == object:
+        if b.dtype != object or a.shape != b.shape:
+            return f"{path}: {a!r} vs {b!r}"
+        return difference(list(a.ravel()), list(b.ravel()), scalars=scalars, path=path)
     if isinstance(a, (np.ndarray, np.generic)):
         if a.dtype != b.dtype or a.shape != b.shape or a.tobytes() != b.tobytes():
             return f"{path}: {a!r} vs {b!r}"
@@ -299,19 +300,12 @@ ACTION_SPACES = [
 ]
 
 
-GAPS: set[str] = set()
-
-
-def gapped(names: Any) -> list[Any]:
-    return [pytest.param(n, marks=GAP) if n in GAPS else n for n in sorted(names)]
-
-
-@pytest.mark.parametrize("name", gapped(SPACES))
+@pytest.mark.parametrize("name", sorted(SPACES))
 def test_an_observation_space_and_its_values_round_trip_bit_exact(name: str) -> None:
     assert_matches(lambda: SpaceEnv(copy.deepcopy(SPACES[name])))
 
 
-@pytest.mark.parametrize("name", gapped(ACTION_SPACES))
+@pytest.mark.parametrize("name", sorted(ACTION_SPACES))
 def test_an_action_space_reaches_the_env_bit_exact(name: str) -> None:
     assert_matches(lambda: SpaceEnv(action_space=copy.deepcopy(SPACES[name])))
 
@@ -651,13 +645,7 @@ def vector_rollout(env: Any, actions: list[Any], steps: int) -> list[Any]:
     return trace
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        pytest.param(c, marks=GAP) if c == "sync_same_step" else c
-        for c in sorted(VECTORS)
-    ],
-)
+@pytest.mark.parametrize("case", sorted(VECTORS))
 def test_a_vector_env_steps_as_it_does_unserved(case: str) -> None:
     reference = VECTORS[case]()
     actions = sampled(reference.action_space)
@@ -675,16 +663,7 @@ def test_a_vector_env_steps_as_it_does_unserved(case: str) -> None:
     assert difference(want, got) is None
 
 
-def arrays_as_lists(value: Any) -> Any:
-    """An object array's elements (compared by value, not by pointer)."""
-    if isinstance(value, dict):
-        return {k: arrays_as_lists(v) for k, v in value.items()}
-    if isinstance(value, np.ndarray) and value.dtype == object:
-        return ("object", value.shape, [arrays_as_lists(v) for v in value.ravel()])
-    return value
-
-
-@pytest.mark.parametrize("mode", ["NEXT_STEP", pytest.param("SAME_STEP", marks=GAP)])
+@pytest.mark.parametrize("mode", ["NEXT_STEP", "SAME_STEP"])
 def test_a_vector_env_s_info_arrays_arrive_as_arrays_with_their_dtypes(
     mode: str,
 ) -> None:
@@ -703,12 +682,8 @@ def test_a_vector_env_s_info_arrays_arrive_as_arrays_with_their_dtypes(
     for trace in (want, got):
         for transition in trace:
             transition[-1].get("episode", {}).pop("t", None)  # wall-clock time
-    infos = (
-        [arrays_as_lists(t[-1]) for t in want],
-        [arrays_as_lists(t[-1]) for t in got],
-    )
-    assert any("episode" in info for info in infos[0])
-    assert difference(*infos) is None
+    assert any("episode" in t[-1] for t in want)
+    assert difference([t[-1] for t in want], [t[-1] for t in got]) is None
 
 
 def test_remote_envs_vectorise_on_the_client_side() -> None:

@@ -294,6 +294,12 @@ impl LockstepRuntimeEnv {
             .await
             .map_err(|err| Error::Connection(err.to_string()))?;
         let info = client.info();
+        if info.contract.autoreset_mode == spaces::types::AutoresetMode::SameStep {
+            return Err(Error::invalid_argument(
+                "Model.run does not drive a SAME_STEP autoreset env; serve it with NEXT_STEP or \
+                 DISABLED autoreset, or drive it with RemoteVectorEnv",
+            ));
+        }
         // The v1 runtime drives the env through its v1 contract.
         rlmesh_grpc::wire::check_proto_contract(&info.contract)
             .map_err(|err| Error::invalid_argument(err.to_string()))?;
