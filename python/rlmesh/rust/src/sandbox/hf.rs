@@ -4,8 +4,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::looks_like_full_git_sha;
-use crate::source::HfSourceRef;
+use crate::sandbox::looks_like_full_git_sha;
+use crate::sandbox::source::HfSourceRef;
 
 pub(crate) fn resolve_revision(source: &HfSourceRef) -> Result<String> {
     if let Some(revision) = &source.revision
@@ -180,7 +180,7 @@ fn hf_git_url(repo: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{parse_ls_remote_unique, validate_revision};
-    use crate::looks_like_full_git_sha;
+    use crate::sandbox::looks_like_full_git_sha;
 
     #[test]
     fn detects_full_git_shas() {

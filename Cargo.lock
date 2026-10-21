@@ -5344,6 +5344,7 @@ dependencies = [
 name = "rlmesh-python"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "image",
@@ -5358,18 +5359,21 @@ dependencies = [
  "rlmesh-cli",
  "rlmesh-grpc",
  "rlmesh-proto",
- "rlmesh-sandbox",
  "rlmesh-session",
  "rlmesh-spaces",
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -5388,22 +5392,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "rlmesh-sandbox"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rlmesh-grpc",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
  "uuid",
 ]
 

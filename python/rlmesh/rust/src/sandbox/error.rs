@@ -1,4 +1,4 @@
-//! Public error type for the rlmesh-sandbox crate.
+//! Error type of the Docker sandbox.
 //!
 //! The crate uses [`anyhow`] internally for ergonomic context propagation but
 //! exposes this typed [`SandboxError`] enum on its public API so consumers can
@@ -7,7 +7,7 @@
 
 use thiserror::Error;
 
-/// Errors returned by the public rlmesh-sandbox API.
+/// Errors returned by the Docker sandbox.
 ///
 /// This enum is `#[non_exhaustive]`: new variants may be added in future
 /// releases, so downstream `match` expressions must include a wildcard arm.

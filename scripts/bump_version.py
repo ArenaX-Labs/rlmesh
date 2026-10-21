@@ -3,7 +3,7 @@
 
 SemVer is the source of truth: `Cargo.toml [workspace.package].version`. The PEP 440
 spelling for the Python package is derived from it (mirrors the Rust
-`rlmesh-sandbox::python_package_version`). `policy:check` is the backstop — it fails
+`python_package_version` in `python/rlmesh/rust/src/sandbox.rs`). `policy:check` is the backstop — it fails
 loudly if any version-bearing spot is missed.
 
 Usage:

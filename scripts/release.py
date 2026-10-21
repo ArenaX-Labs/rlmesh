@@ -51,7 +51,6 @@ CRATE_ORDER = [
     "rlmesh-cli",
     "rlmesh-runtime",
     "rlmesh-grpc",
-    "rlmesh-sandbox",
     "rlmesh",
 ]
 

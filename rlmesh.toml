@@ -156,15 +156,6 @@ role = "core"
 publish = true
 
 [[artifact]]
-id = "cargo:rlmesh-sandbox"
-ecosystem = "cargo"
-name = "rlmesh-sandbox"
-manifest = "crates/rlmesh-sandbox/Cargo.toml"
-version = "0.1.0"
-role = "core"
-publish = true
-
-[[artifact]]
 id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"

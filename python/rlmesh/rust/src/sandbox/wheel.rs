@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{DEFAULT_PACKAGE_NAME, hex};
+use crate::sandbox::{DEFAULT_PACKAGE_NAME, hex};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -332,7 +332,7 @@ fn file_sha256(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DEFAULT_BASE_IMAGE;
+    use crate::sandbox::DEFAULT_BASE_IMAGE;
 
     #[test]
     fn resolves_explicit_wheel_package_and_hashes_contents() {

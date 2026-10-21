@@ -3,7 +3,7 @@ use std::fmt;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::SandboxError;
+use crate::sandbox::SandboxError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -48,24 +48,6 @@ impl EnvironmentSourceRef {
         Ok(Self::Gym(GymSourceRef {
             env_id: env_id.to_string(),
         }))
-    }
-
-    pub fn slug(&self) -> String {
-        match self {
-            Self::Gym(source) => sanitize_slug(&source.env_id),
-            Self::Hf(source) => {
-                let mut value = source.repo.replace('/', "-");
-                if let Some(suite) = &source.suite {
-                    value.push('-');
-                    value.push_str(suite);
-                }
-                if let Some(task) = &source.task {
-                    value.push('-');
-                    value.push_str(task);
-                }
-                sanitize_slug(&value)
-            }
-        }
     }
 }
 
@@ -325,12 +307,6 @@ mod tests {
 
         let source = EnvironmentSourceRef::parse("hf://org/repo@main:suite_1/0").unwrap();
         assert_eq!(source.to_string(), "hf://org/repo@main:suite_1/0");
-    }
-
-    #[test]
-    fn hf_slug_includes_suite_and_task() {
-        let source = EnvironmentSourceRef::parse("hf://org/repo@main:suite_1/0").unwrap();
-        assert_eq!(source.slug(), "org-repo-suite-1-0");
     }
 
     #[test]

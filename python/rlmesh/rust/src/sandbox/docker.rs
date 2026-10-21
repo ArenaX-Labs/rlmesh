@@ -8,8 +8,8 @@ use serde::Serialize;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-use crate::source::ResolvedEnvironmentSourceRef;
-use crate::{EffectiveSandboxSpec, EnvironmentSourceRef, hf, shell_quote};
+use crate::sandbox::source::ResolvedEnvironmentSourceRef;
+use crate::sandbox::{EffectiveSandboxSpec, EnvironmentSourceRef, hf, shell_quote};
 
 const DEFAULT_CONTAINER_PORT: u16 = 50051;
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -1021,10 +1021,9 @@ mod tests {
         parse_container_state, parse_owned_containers, parse_published_port, pid_is_alive,
         render_bootstrap_json, render_dockerfile, resolve_build_memory, shell_quote, tail_text,
     };
-    use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
-    use crate::{
-        EffectiveSandboxSpec, EnvironmentSourceRef, GymSourceRef, ResolvedRLMeshPackage,
-        VectorizationMode,
+    use crate::sandbox::source::{GymSourceRef, ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
+    use crate::sandbox::{
+        EffectiveSandboxSpec, EnvironmentSourceRef, ResolvedRLMeshPackage, VectorizationMode,
     };
 
     fn pip_rlmesh_package() -> ResolvedRLMeshPackage {
@@ -1037,7 +1036,7 @@ mod tests {
     /// via `..gym_spec()`.
     fn gym_spec() -> EffectiveSandboxSpec {
         EffectiveSandboxSpec {
-            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
+            schema_version: crate::sandbox::BOOTSTRAP_SCHEMA_VERSION,
             requested_source: EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
             resolved_source: ResolvedEnvironmentSourceRef::Gym(GymSourceRef {
                 env_id: "CartPole-v1".to_string(),
@@ -1423,7 +1422,7 @@ mod tests {
     #[test]
     fn dockerfile_copies_hf_source_and_installs_requirements() {
         let spec = EffectiveSandboxSpec {
-            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
+            schema_version: crate::sandbox::BOOTSTRAP_SCHEMA_VERSION,
             requested_source: EnvironmentSourceRef::parse("hf://org/repo@main:suite").unwrap(),
             resolved_source: ResolvedEnvironmentSourceRef::Hf(ResolvedHfSourceRef {
                 repo: "org/repo".to_string(),
@@ -1473,7 +1472,7 @@ mod tests {
     #[test]
     fn hf_bootstrap_spec_includes_suite_and_task() {
         let spec = EffectiveSandboxSpec {
-            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
+            schema_version: crate::sandbox::BOOTSTRAP_SCHEMA_VERSION,
             requested_source: EnvironmentSourceRef::parse("hf://org/repo@main:suite/0").unwrap(),
             resolved_source: ResolvedEnvironmentSourceRef::Hf(ResolvedHfSourceRef {
                 repo: "org/repo".to_string(),
