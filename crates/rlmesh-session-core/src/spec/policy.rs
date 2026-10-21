@@ -246,7 +246,8 @@ impl Resample {
         }
     }
 
-    fn parse(name: &str) -> Option<Self> {
+    /// The pixel kernel `name` names (`nearest` is depth's, never declared).
+    pub fn parse(name: &str) -> Option<Self> {
         [
             Self::Bilinear,
             Self::BilinearAa,

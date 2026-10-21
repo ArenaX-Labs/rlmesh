@@ -22,7 +22,7 @@ use std::fmt;
 use crate::wire::part::{DType, FieldSpec, Layout, PartSpec};
 
 use crate::spec::bind::{ActionRow, InputRow};
-use crate::spec::image::{Image, crop_cut, fit_resize, fit_resize_depth};
+use crate::spec::image::{Image, crop_cut, fit_resize, fit_resize_depth, normalise_table};
 use crate::spec::kinds::Kind;
 use crate::spec::plan::{Delivered, Delivery, Order, Step};
 use crate::spec::rotation::{self, Rotation};
@@ -552,18 +552,18 @@ impl InputRow {
                         (to.height as usize, to.width as usize),
                         *fit,
                         *kernel,
+                        None,
                     );
                 }
                 Step::Bgr => image = image.bgr(),
                 Step::Chw => chw = true,
                 Step::Normalise { low, high, .. } => {
-                    // The f32 expression v1 pins: low + (v / 255) * (high - low).
-                    let (low, high) = (*low as f32, *high as f32);
+                    let table = normalise_table(*low, *high);
                     floats = Some(
                         image
                             .data
                             .iter()
-                            .map(|v| f64::from(low + (f32::from(*v) / 255.0) * (high - low)))
+                            .map(|v| f64::from(table[usize::from(*v)]))
                             .collect(),
                     );
                 }

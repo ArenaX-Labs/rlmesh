@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use rlmesh_spaces::scalar::{Scalar, check_int_in_dtype_range, decode_scalars, encode_scalars};
-use rlmesh_spaces::{DType, Tensor, dtype_size};
+use rlmesh_spaces::{DType, Tensor};
 
 use crate::error::ApplyError;
 
@@ -133,9 +133,10 @@ pub fn u8_pixels(tensor: &Tensor) -> Result<Vec<u8>, ApplyError> {
 
 /// Reorder a tensor's elements so `out[i] = src[indices[i]]`, dtype-generic
 /// (moves whole `itemsize`-byte elements).
+#[cfg(test)]
 pub fn gather(tensor: &Tensor, indices: &[usize], out_shape: Vec<i64>) -> Tensor {
     let dtype = tensor.dtype();
-    let size = dtype_size(dtype);
+    let size = rlmesh_spaces::dtype_size(dtype);
     let bytes = tensor.to_contiguous_bytes();
     let mut out = Vec::with_capacity(indices.len() * size);
     for &index in indices {

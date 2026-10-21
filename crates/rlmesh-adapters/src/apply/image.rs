@@ -1,19 +1,16 @@
 //! Image operations used by resolved adapters.
 //!
-//! Resizing implements the algorithms pinned by the v1 conformance vectors,
-//! named by one rule: an un-suffixed kernel has cv2/torch semantics, an `_aa`
-//! kernel has PIL semantics -- an antialiased filter whose support widens with
-//! the downscale factor. So `bilinear` is the 4-tap half-pixel-center sampler,
-//! `bilinear_aa`/`bicubic_aa`/`lanczos3_aa` are PIL's triangle, cubic
-//! (a = -0.5) and Lanczos-3 filters, and `area` is cv2's `INTER_AREA` average
-//! over each output pixel's source footprint. All compute in float64 with one
-//! final round-half-to-even like the reference, and all but `bilinear` share
-//! one weight builder. Pixels are carried in `rlmesh_spaces::Tensor`.
+//! The pixel operations (resize kernels, aspect fits, crops, the 180°
+//! rotation, BGR, normalisation) are the shared ones in
+//! `rlmesh_session_core::spec::image`, which v2 bindings run too; this module
+//! carries pixels in `rlmesh_spaces::Tensor` and adds what only v1 has
+//! (decoding, the JPEG round trip, layouts and lead axes).
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
-use std::rc::Rc;
+use std::collections::BTreeMap;
 
+use rlmesh_session_core::spec::image::{self as shared, Image, normalise_table};
+use rlmesh_session_core::spec::plan::Fit;
+use rlmesh_session_core::spec::policy::Resample;
 use rlmesh_spaces::{DType, Tensor, dtype_size};
 
 use super::lookup::resolve_in_obs;
@@ -77,7 +74,7 @@ pub(super) fn apply_image(
 /// precomputes the same box at the env's declared resolution for describe), so
 /// the two can never print and cut different numbers.
 pub(crate) fn crop_cut(src: usize, fraction: f64) -> usize {
-    ((src as f64 * fraction).round() as usize).clamp(1, src.max(1))
+    shared::crop_cut(src, fraction)
 }
 
 /// The shared tail both image paths (real and zero-fill) end with: map the HWC
@@ -113,8 +110,7 @@ fn finalize_camera_chw(image: &Tensor, plan: &ImagePlan) -> Option<Tensor> {
     {
         return None;
     }
-    let (low, high) = (low as f32, high as f32);
-    let table: [f32; 256] = std::array::from_fn(|v| low + (v as f32 / 255.0) * (high - low));
+    let table = normalise_table(low, high);
     let shape = value::shape_usize(image);
     let (height, width, channels) = (shape[0], shape[1], shape[2]);
     let plane = height * width;
@@ -212,17 +208,26 @@ fn image_dims(tensor: &Tensor) -> Result<(usize, usize, usize), ApplyError> {
 /// `resolver/image.rs`). Don't "fix" this into a vertical flip — that would
 /// silently mirror every frame left-right for everyone relying on rot180.
 pub fn flip_180(tensor: &Tensor) -> Result<Tensor, ApplyError> {
-    let (_, _, channels) = image_dims(tensor)?;
-    // rot180 of an HWC frame is the pixel sequence reversed, one pixel =
-    // `channels` elements: a single reversed pass, no index vector.
-    let pixel = channels.max(1) * dtype_size(tensor.dtype());
-    let bytes = tensor.to_contiguous_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    for px in bytes.chunks_exact(pixel).rev() {
-        out.extend_from_slice(px);
-    }
-    Tensor::from_vec(out, tensor.shape().to_vec(), tensor.dtype())
-        .map_err(|err| ApplyError::new(err.to_string()))
+    Ok(from_image(to_image(tensor)?.rotate180()))
+}
+
+/// An HWC uint8 tensor as the shared [`Image`].
+fn to_image(tensor: &Tensor) -> Result<Image<u8>, ApplyError> {
+    let (height, width, channels) = image_dims(tensor)?;
+    Ok(Image {
+        height,
+        width,
+        channels,
+        data: value::u8_pixels(tensor)?,
+    })
+}
+
+/// The shared [`Image`] as an HWC uint8 tensor.
+fn from_image(image: Image<u8>) -> Tensor {
+    value::tensor_from_u8(
+        value::shape_i64(&[image.height, image.width, image.channels]),
+        image.data,
+    )
 }
 
 /// Swap the red and blue channels of an HWC image (`channel_order = "bgr"`).
@@ -231,17 +236,13 @@ pub fn flip_180(tensor: &Tensor) -> Result<Tensor, ApplyError> {
 /// grayscale or RGBA frame, so a wrong-shaped source fails loudly rather than
 /// reordering whatever happens to sit at those offsets.
 pub fn swap_rb(tensor: &Tensor) -> Result<Tensor, ApplyError> {
-    let (height, width, channels) = image_dims(tensor)?;
+    let (_, _, channels) = image_dims(tensor)?;
     if channels != 3 {
         return Err(ApplyError::new(format!(
             "channel_order \"bgr\" needs a 3-channel image, got {channels} channel(s)"
         )));
     }
-    let mut indices = Vec::with_capacity(tensor.numel());
-    for pixel in 0..height * width {
-        indices.extend([pixel * 3 + 2, pixel * 3 + 1, pixel * 3]);
-    }
-    Ok(value::gather(tensor, &indices, tensor.shape().to_vec()))
+    Ok(from_image(to_image(tensor)?.bgr()))
 }
 
 /// Encode an HWC 8-bit RGB frame as JPEG at `quality` and decode it back
@@ -348,284 +349,6 @@ pub fn to_layout(
         .map_err(|err| ApplyError::new(err.to_string()))
 }
 
-fn finish_pixels(blended: Vec<f64>, shape: Vec<usize>) -> Tensor {
-    let data: Vec<u8> = blended
-        .into_iter()
-        .map(|value| value.round_ties_even().clamp(0.0, 255.0) as u8)
-        .collect();
-    value::tensor_from_u8(value::shape_i64(&shape), data)
-}
-
-/// 4-tap half-pixel-center bilinear resize (OpenCV/torch-compatible), sampling
-/// each axis through its [`Roi`] (the whole axis unless a zoom crop narrowed it).
-fn resize_bilinear(tensor: &Tensor, row_roi: Roi, col_roi: Roi) -> Result<Tensor, ApplyError> {
-    let (_, src_width, channels) = image_dims(tensor)?;
-    let (height, width) = (row_roi.dst, col_roi.dst);
-    let data = value::u8_pixels(tensor)?;
-    let coords = |roi: Roi| -> Vec<(usize, usize, f64)> {
-        let scale = (roi.end - roi.start) / roi.dst as f64;
-        (0..roi.dst)
-            .map(|i| {
-                let pos = roi.start + (i as f64 + 0.5) * scale - 0.5;
-                let lo = (pos.floor() as i64).clamp(0, roi.src as i64 - 1) as usize;
-                let hi = (lo + 1).min(roi.src - 1);
-                (lo, hi, (pos - lo as f64).clamp(0.0, 1.0))
-            })
-            .collect()
-    };
-    let rows = coords(row_roi);
-    let cols = coords(col_roi);
-    let pixel = |row: usize, col: usize, channel: usize| -> f64 {
-        f64::from(data[(row * src_width + col) * channels + channel])
-    };
-    let mut blended = Vec::with_capacity(height * width * channels);
-    for &(row0, row1, row_w) in &rows {
-        for &(col0, col1, col_w) in &cols {
-            for channel in 0..channels {
-                let top =
-                    pixel(row0, col0, channel) * (1.0 - col_w) + pixel(row0, col1, channel) * col_w;
-                let bottom =
-                    pixel(row1, col0, channel) * (1.0 - col_w) + pixel(row1, col1, channel) * col_w;
-                blended.push(top * (1.0 - row_w) + bottom * row_w);
-            }
-        }
-    }
-    Ok(finish_pixels(blended, vec![height, width, channels]))
-}
-
-/// A resample filter shape. Naming rule for the wire names in [`RESAMPLES`]:
-/// un-suffixed = cv2/torch semantics, `_aa` = PIL semantics (the filter's
-/// support widens with the downscale factor, so decimation averages rather
-/// than point-samples).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Kernel {
-    /// PIL `BILINEAR`: triangle, support 1.
-    Triangle,
-    /// PIL `BICUBIC`: Keys cubic with a = -0.5, support 2.
-    Cubic,
-    /// PIL `LANCZOS`: windowed sinc, support 3.
-    Lanczos3,
-    /// cv2 `INTER_AREA`: box average over the output pixel's source footprint.
-    Area,
-}
-
-impl Kernel {
-    /// Filter half-width in its own (unwidened) units.
-    fn support(self) -> f64 {
-        match self {
-            Kernel::Area => 0.5,
-            Kernel::Triangle => 1.0,
-            Kernel::Cubic => 2.0,
-            Kernel::Lanczos3 => 3.0,
-        }
-    }
-
-    /// How far the filter is stretched for a source-to-output `scale`. PIL's
-    /// antialiased filters widen by the downscale factor and keep the unit
-    /// filter when upscaling; `area` is always the output pixel's footprint,
-    /// which is what makes cv2's `INTER_AREA` a plain average one way and a
-    /// two-tap coverage split the other.
-    fn filterscale(self, scale: f64) -> f64 {
-        match self {
-            Kernel::Area => scale,
-            _ => scale.max(1.0),
-        }
-    }
-
-    /// Weight of source pixel `tap` for an output pixel centered at `center`,
-    /// with the filter widened by `filterscale`.
-    fn weight(self, tap: usize, center: f64, filterscale: f64) -> f64 {
-        let tap = tap as f64;
-        let x = ((tap + 0.5 - center) / filterscale).abs();
-        match self {
-            // cv2 integrates the box over each source pixel instead of
-            // sampling it at the pixel center, so a partially covered edge
-            // pixel gets exactly its coverage as weight.
-            Kernel::Area => {
-                let (low, high) = (center - filterscale / 2.0, center + filterscale / 2.0);
-                (high.min(tap + 1.0) - low.max(tap)).max(0.0)
-            }
-            Kernel::Triangle => (1.0 - x).max(0.0),
-            Kernel::Cubic => {
-                const A: f64 = -0.5;
-                if x < 1.0 {
-                    ((A + 2.0) * x - (A + 3.0)) * x * x + 1.0
-                } else if x < 2.0 {
-                    (((x - 5.0) * x + 8.0) * x - 4.0) * A
-                } else {
-                    0.0
-                }
-            }
-            Kernel::Lanczos3 => {
-                fn sinc(x: f64) -> f64 {
-                    if x == 0.0 {
-                        1.0
-                    } else {
-                        let x = x * std::f64::consts::PI;
-                        x.sin() / x
-                    }
-                }
-                if x < 3.0 {
-                    sinc(x) * sinc(x / 3.0)
-                } else {
-                    0.0
-                }
-            }
-        }
-    }
-}
-
-/// One resample axis: `src` input pixels, the half-open source span
-/// `[start, end)` sampled from them, and `dst` output pixels. [`Roi::full`]
-/// samples the whole axis; a narrower span is the seam a crop resamples
-/// through without a separate pass.
-#[derive(Debug, Clone, Copy)]
-struct Roi {
-    src: usize,
-    start: f64,
-    end: f64,
-    dst: usize,
-}
-
-impl Roi {
-    fn full(src: usize, dst: usize) -> Self {
-        Roi {
-            src,
-            start: 0.0,
-            end: src as f64,
-            dst,
-        }
-    }
-
-    /// The whole axis, mapped 1:1 onto the output — nothing to resample.
-    fn is_identity(self) -> bool {
-        self.dst == self.src && self.start == 0.0 && self.end == self.src as f64
-    }
-}
-
-/// Per-output-pixel normalized filter weights, PIL-style: for each output
-/// pixel, the first source pixel it touches and the normalized weight of each
-/// pixel from there on.
-fn filter_weights(kernel: Kernel, support: f64, roi: Roi) -> Vec<(usize, Vec<f64>)> {
-    let scale = (roi.end - roi.start) / roi.dst as f64;
-    let filterscale = kernel.filterscale(scale);
-    let reach = support * filterscale;
-    (0..roi.dst)
-        .map(|out| {
-            let center = roi.start + (out as f64 + 0.5) * scale;
-            // PIL snaps the tap window to the nearest pixel centers; `area`
-            // needs every pixel the box touches, a partly covered one included.
-            let (low, high) = match kernel {
-                Kernel::Area => ((center - reach).floor(), (center + reach).ceil()),
-                _ => (
-                    (center - reach + 0.5).trunc(),
-                    (center + reach + 0.5).trunc(),
-                ),
-            };
-            let lo = (low as i64).clamp(0, roi.src as i64) as usize;
-            let hi = (high as i64).clamp(lo as i64, roi.src as i64) as usize;
-            let mut row: Vec<f64> = (lo..hi)
-                .map(|tap| kernel.weight(tap, center, filterscale))
-                .collect();
-            let total: f64 = row.iter().sum();
-            if total > 0.0 {
-                for weight in &mut row {
-                    *weight /= total;
-                }
-            }
-            (lo, row)
-        })
-        .collect()
-}
-
-/// One axis' memoized weights.
-type AxisWeights = Rc<Vec<(usize, Vec<f64>)>>;
-
-/// What a memoized axis is keyed by: the kernel, the two sizes, and the
-/// sampled span's bits (a zoom crop narrows the span; `Roi` is not `Hash`
-/// because `f64` is not, hence the bits).
-type WeightKey = (Kernel, usize, usize, u64, u64);
-
-thread_local! {
-    /// Weights depend only on the kernel and the two sizes, so a plan resizing
-    /// the same camera every step builds them once instead of once per frame
-    /// (a Lanczos-3 row is six taps of `sin` per output pixel). Thread-local
-    /// rather than a field on the plan: no locking on the per-lane apply path,
-    /// and the key covers the intermediate sizes `fit_resize` derives.
-    static WEIGHT_CACHE: RefCell<HashMap<WeightKey, AxisWeights>> =
-        RefCell::new(HashMap::new());
-}
-
-fn axis_weights(kernel: Kernel, roi: Roi) -> AxisWeights {
-    // The span joins the key by its bits: a zoom crop is a fixed box per plan,
-    // so its weights are as reusable as a full-axis resize's.
-    let key = (
-        kernel,
-        roi.src,
-        roi.dst,
-        roi.start.to_bits(),
-        roi.end.to_bits(),
-    );
-    WEIGHT_CACHE.with_borrow_mut(|cache| {
-        Rc::clone(
-            cache
-                .entry(key)
-                .or_insert_with(|| Rc::new(filter_weights(kernel, kernel.support(), roi))),
-        )
-    })
-}
-
-/// Separable filtered resize: a horizontal pass then a vertical one, both in
-/// float64, with the per-axis weights taken from the cache.
-fn resize_filter(
-    tensor: &Tensor,
-    row_roi: Roi,
-    col_roi: Roi,
-    kernel: Kernel,
-) -> Result<Tensor, ApplyError> {
-    let (src_height, src_width, channels) = image_dims(tensor)?;
-    let (height, width) = (row_roi.dst, col_roi.dst);
-    let data = value::u8_pixels(tensor)?;
-    let col_weights = axis_weights(kernel, col_roi);
-    let row_weights = axis_weights(kernel, row_roi);
-
-    // Horizontal pass: (src_height, width, channels) in float64.
-    let mut horizontal = vec![0.0f64; src_height * width * channels];
-    for row in 0..src_height {
-        for (out_col, (lo, weights)) in col_weights.iter().enumerate() {
-            for channel in 0..channels {
-                let mut acc = 0.0;
-                for (offset, weight) in weights.iter().enumerate() {
-                    acc += weight
-                        * f64::from(data[(row * src_width + lo + offset) * channels + channel]);
-                }
-                // PIL's intermediate is an 8-bit image, so a filter with
-                // negative lobes (cubic, Lanczos) has its overshoot clipped
-                // here, not only at the end. Clipping the float64 intermediate
-                // to the same range reproduces that without also taking on
-                // PIL's intermediate rounding; non-negative filters
-                // (triangle, box) never reach the clamp.
-                horizontal[(row * width + out_col) * channels + channel] = acc.clamp(0.0, 255.0);
-            }
-        }
-    }
-
-    // Vertical pass: (height, width, channels).
-    let mut blended = vec![0.0f64; height * width * channels];
-    for (out_row, (lo, weights)) in row_weights.iter().enumerate() {
-        for col in 0..width {
-            for channel in 0..channels {
-                let mut acc = 0.0;
-                for (offset, weight) in weights.iter().enumerate() {
-                    acc += weight * horizontal[((lo + offset) * width + col) * channels + channel];
-                }
-                blended[(out_row * width + col) * channels + channel] = acc;
-            }
-        }
-    }
-    Ok(finish_pixels(blended, vec![height, width, channels]))
-}
-
 /// The resample algorithms `resize_roi` accepts. Un-suffixed names have
 /// cv2/torch semantics, `_aa` names PIL's; bare `bicubic`/`lanczos3` are
 /// deliberately absent, so a spec naming one fails resolution rather than
@@ -638,55 +361,42 @@ pub const RESAMPLES: [&str; 5] = [
     "area",
 ];
 
-/// Resize an HWC uint8 image to `(height, width)`, sampling only the center
-/// box `zoom` names (a side fraction of each axis) — `None` is the whole frame.
-///
-/// The box is resampled *straight* to the target by the declared kernel, so a
-/// zoom crop costs no extra pass and no intermediate rounding; this is PIL's
-/// `Image.resize(size, box=...)`, which is the anchor the vectors pin.
-fn resize_roi(
+/// The kernel a resample name names, and the frame's dimensions, refusing a
+/// zero dimension on either side.
+fn prepare(
     tensor: &Tensor,
     (height, width): (u32, u32),
-    zoom: Option<f64>,
     resample: &str,
-) -> Result<Tensor, ApplyError> {
+) -> Result<(Image<u8>, Resample), ApplyError> {
     let (src_height, src_width, _) = image_dims(tensor)?;
-    let (height, width) = (height as usize, width as usize);
     if height == 0 || width == 0 || src_height == 0 || src_width == 0 {
         return Err(ApplyError::new(format!(
             "cannot resize an image with a zero dimension (source \
              {src_height}x{src_width}, target {height}x{width})"
         )));
     }
-    let row_roi = zoom_roi(src_height, height, zoom);
-    let col_roi = zoom_roi(src_width, width, zoom);
-    if row_roi.is_identity() && col_roi.is_identity() {
-        return Ok(tensor.clone());
-    }
-    match resample {
-        "bilinear" => resize_bilinear(tensor, row_roi, col_roi),
-        "bilinear_aa" => resize_filter(tensor, row_roi, col_roi, Kernel::Triangle),
-        "bicubic_aa" => resize_filter(tensor, row_roi, col_roi, Kernel::Cubic),
-        "lanczos3_aa" => resize_filter(tensor, row_roi, col_roi, Kernel::Lanczos3),
-        "area" => resize_filter(tensor, row_roi, col_roi, Kernel::Area),
-        other => Err(ApplyError::new(format!("unsupported resample {other:?}"))),
-    }
+    let kernel = Resample::parse(resample)
+        .ok_or_else(|| ApplyError::new(format!("unsupported resample {resample:?}")))?;
+    Ok((to_image(tensor)?, kernel))
 }
 
-/// The centered span of a `src`-long axis a zoom crop samples, as the [`Roi`]
-/// the weight builders take. `None` is the whole axis.
-fn zoom_roi(src: usize, dst: usize, zoom: Option<f64>) -> Roi {
-    let Some(fraction) = zoom else {
-        return Roi::full(src, dst);
-    };
-    let span = src as f64 * fraction;
-    let start = (src as f64 - span) / 2.0;
-    Roi {
-        src,
-        start,
-        end: start + span,
-        dst,
-    }
+/// Resize an HWC uint8 image to `(height, width)`, sampling only the center
+/// box `zoom` names (a side fraction of each axis) — `None` is the whole frame.
+///
+/// The box is resampled *straight* to the target by the declared kernel, so a
+/// zoom crop costs no extra pass and no intermediate rounding; this is PIL's
+/// `Image.resize(size, box=...)`, which is the anchor the vectors pin.
+#[cfg(test)]
+fn resize_roi(
+    tensor: &Tensor,
+    size: (u32, u32),
+    zoom: Option<f64>,
+    resample: &str,
+) -> Result<Tensor, ApplyError> {
+    let (image, kernel) = prepare(tensor, size, resample)?;
+    let rows = shared::Roi::zoom(image.height, size.0 as usize, zoom);
+    let cols = shared::Roi::zoom(image.width, size.1 as usize, zoom);
+    Ok(from_image(image.resize_roi(rows, cols, kernel)))
 }
 
 /// Resize an HWC uint8 image to `(height, width)`, reconciling an aspect-ratio
@@ -700,85 +410,32 @@ fn fit_resize(
     fit: FitMode,
     zoom: Option<f64>,
 ) -> Result<Tensor, ApplyError> {
-    let (src_height, src_width, _) = image_dims(tensor)?;
-    // A zoom crop keeps the same fraction of both axes, so the box has the
-    // source's aspect ratio and the fit math only needs its (fractional) size.
-    let fraction = zoom.unwrap_or(1.0);
-    let (box_height, box_width) = (src_height as f64 * fraction, src_width as f64 * fraction);
-    let (target_height, target_width) = (height as usize, width as usize);
-    match fit {
-        FitMode::Stretch => resize_roi(tensor, (height, width), zoom, resample),
-        FitMode::Crop => {
-            // Cover: scale uniformly so both axes reach the target, then crop.
-            let scale = (target_height as f64 / box_height).max(target_width as f64 / box_width);
-            let scaled_height = ((box_height * scale).round() as usize).max(target_height);
-            let scaled_width = ((box_width * scale).round() as usize).max(target_width);
-            let scaled = resize_roi(
-                tensor,
-                (scaled_height as u32, scaled_width as u32),
-                zoom,
-                resample,
-            )?;
-            crop_center(&scaled, target_height, target_width)
-        }
-        FitMode::Pad => {
-            // Contain: scale uniformly so both axes fit within the target, then pad.
-            let scale = (target_height as f64 / box_height).min(target_width as f64 / box_width);
-            let scaled_height = ((box_height * scale).round() as usize).clamp(1, target_height);
-            let scaled_width = ((box_width * scale).round() as usize).clamp(1, target_width);
-            let scaled = resize_roi(
-                tensor,
-                (scaled_height as u32, scaled_width as u32),
-                zoom,
-                resample,
-            )?;
-            pad_center(&scaled, target_height, target_width)
-        }
-    }
+    let (image, kernel) = prepare(tensor, (height, width), resample)?;
+    let fit = match fit {
+        FitMode::Stretch => Fit::Stretch,
+        FitMode::Crop => Fit::Crop,
+        FitMode::Pad => Fit::Pad,
+    };
+    Ok(from_image(shared::fit_resize(
+        &image,
+        (height as usize, width as usize),
+        Some(fit),
+        kernel,
+        zoom,
+    )))
 }
 
 /// Center-crop an HWC uint8 image to `(height, width)`; the source must be at
-/// least that size in both axes (the cover-scale in [`fit_resize`] guarantees it).
+/// least that size in both axes.
 fn crop_center(tensor: &Tensor, height: usize, width: usize) -> Result<Tensor, ApplyError> {
-    let (src_height, src_width, channels) = image_dims(tensor)?;
-    let off_row = (src_height - height) / 2;
-    let off_col = (src_width - width) / 2;
-    let mut indices = Vec::with_capacity(height * width * channels);
-    for row in 0..height {
-        for col in 0..width {
-            let src = ((off_row + row) * src_width + (off_col + col)) * channels;
-            indices.extend(src..src + channels);
-        }
-    }
-    Ok(value::gather(
-        tensor,
-        &indices,
-        value::shape_i64(&[height, width, channels]),
-    ))
+    Ok(from_image(to_image(tensor)?.crop_center(height, width)))
 }
 
 /// Center-pad an HWC uint8 image to `(height, width)` with zeros (black bars);
-/// the source must fit within the target (the contain-scale guarantees it).
+/// the source must fit within the target.
+#[cfg(test)]
 fn pad_center(tensor: &Tensor, height: usize, width: usize) -> Result<Tensor, ApplyError> {
-    let (src_height, src_width, channels) = image_dims(tensor)?;
-    if src_height == height && src_width == width {
-        return Ok(tensor.clone());
-    }
-    let off_row = (height - src_height) / 2;
-    let off_col = (width - src_width) / 2;
-    let data = value::u8_pixels(tensor)?;
-    let mut out = vec![0u8; height * width * channels];
-    for row in 0..src_height {
-        for col in 0..src_width {
-            let dst = ((off_row + row) * width + (off_col + col)) * channels;
-            let src = (row * src_width + col) * channels;
-            out[dst..dst + channels].copy_from_slice(&data[src..src + channels]);
-        }
-    }
-    Ok(value::tensor_from_u8(
-        value::shape_i64(&[height, width, channels]),
-        out,
-    ))
+    Ok(from_image(to_image(tensor)?.pad_center(height, width, 0)))
 }
 
 /// Cast an image to `dtype`, optionally mapping 8-bit values into a target
@@ -793,15 +450,13 @@ pub fn finalize_dtype(
         ApplyError::new(format!("unsupported dtype {dtype:?} for an image output"))
     })?;
     if let Some((low, high)) = normalize {
-        let (low, high) = (low as f32, high as f32);
         if tensor.dtype() == DType::Uint8 && target == DType::Float32 {
             // The camera case (uint8 in, float32 out): one table lookup per
             // element, written straight as little-endian f32. The table holds
             // exactly `low + (v / 255) * (high - low)` in f32, which is what the
             // generic path computes before widening to f64 and narrowing back,
             // so the bytes are identical to it.
-            let table: [[u8; 4]; 256] =
-                std::array::from_fn(|v| (low + (v as f32 / 255.0) * (high - low)).to_le_bytes());
+            let table = normalise_table(low, high).map(f32::to_le_bytes);
             let bytes = tensor.to_contiguous_bytes();
             let mut out = Vec::with_capacity(bytes.len() * 4);
             for &v in bytes.iter() {
@@ -814,6 +469,7 @@ pub fn finalize_dtype(
         // Float32 staging tensor), widen to f64, and encode straight to the
         // target dtype — skipping the intermediate float32 tensor and its
         // decode/re-encode round-trip while preserving the bit-identical result.
+        let (low, high) = (low as f32, high as f32);
         let scaled: Vec<f64> = value::to_f32_vec(tensor)
             .into_iter()
             .map(|value| f64::from(low + (value / 255.0) * (high - low)))
@@ -1144,15 +800,6 @@ mod tests {
         assert!(err.message.contains("could not decode image bytes"));
     }
 
-    /// Every kernel in the public vocabulary, paired with its filter shape
-    /// (`bilinear` has none -- it is the 4-tap sampler, not a filter).
-    const FILTER_KERNELS: [(&str, Kernel); 4] = [
-        ("bilinear_aa", Kernel::Triangle),
-        ("bicubic_aa", Kernel::Cubic),
-        ("lanczos3_aa", Kernel::Lanczos3),
-        ("area", Kernel::Area),
-    ];
-
     #[test]
     fn every_named_resample_resizes() {
         // RESAMPLES is the resolver's accept-set; a name in it that resize
@@ -1163,32 +810,6 @@ mod tests {
         }
         assert!(resize_roi(&image, (2, 3), None, "bicubic").is_err());
         assert!(resize_roi(&image, (2, 3), None, "lanczos3").is_err());
-    }
-
-    #[test]
-    fn filter_weights_sum_to_one() {
-        // Weights are a normalized partition of unity, so a resize can never
-        // change an image's overall level -- the property the constant-image
-        // test below observes end to end.
-        for (name, kernel) in FILTER_KERNELS {
-            for (src, dst) in [(8usize, 3usize), (3, 8), (7, 7), (256, 224), (1, 5), (5, 1)] {
-                for (out, (lo, row)) in
-                    filter_weights(kernel, kernel.support(), Roi::full(src, dst))
-                        .iter()
-                        .enumerate()
-                {
-                    let total: f64 = row.iter().sum();
-                    assert!(
-                        (total - 1.0).abs() < 1e-12,
-                        "{name} {src}->{dst} out {out}: weights sum to {total}"
-                    );
-                    assert!(
-                        lo + row.len() <= src,
-                        "{name} {src}->{dst}: tap past the edge"
-                    );
-                }
-            }
-        }
     }
 
     #[test]
@@ -1256,18 +877,6 @@ mod tests {
         let aa = resize_roi(&image, (1, 2), None, "bilinear_aa").expect("resize");
         assert_eq!(plain.to_contiguous_bytes().as_ref(), [0u8, 0]);
         assert!(aa.to_contiguous_bytes()[0] > 0);
-    }
-
-    #[test]
-    fn the_weight_cache_returns_the_same_weights_it_built() {
-        // Memoization must be keyed tightly enough that a second axis size
-        // cannot pick up the first one's weights.
-        let first = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
-        let again = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
-        assert_eq!(first.as_ref(), again.as_ref());
-        assert!(Rc::ptr_eq(&first, &again), "the second call rebuilt them");
-        let other = axis_weights(Kernel::Lanczos3, Roi::full(256, 112));
-        assert_ne!(first.len(), other.len());
     }
 
     /// Bench gate for the kernels, run by hand: this crate has no criterion
