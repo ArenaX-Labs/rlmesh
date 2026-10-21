@@ -357,6 +357,7 @@ fn native_json(value: &rlmesh_spaces::MetaValue) -> Value {
                 .map(|(k, v)| (k.clone(), native_json(v)))
                 .collect(),
         ),
+        array @ (M::Tensor(_) | M::Array { .. }) => native_json(&array.lowered()),
     }
 }
 

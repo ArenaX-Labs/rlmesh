@@ -460,6 +460,10 @@ pub(crate) fn meta_value_to_proto(value: &native::MetaValue) -> proto::MetaValue
             items: value.iter().map(meta_value_to_proto).collect(),
         })),
         native::MetaValue::Map(value) => Some(MetaKind::Map(meta_map_to_proto(value))),
+        // The v1 wire carries arrays as their nested lists.
+        native::MetaValue::Tensor(_) | native::MetaValue::Array { .. } => {
+            return meta_value_to_proto(&value.lowered());
+        }
     };
     proto::MetaValue { kind }
 }

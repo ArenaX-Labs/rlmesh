@@ -53,6 +53,10 @@ pub(crate) fn value_from_wire(value: MetaValue) -> Value {
         MetaValue::Bytes(bytes) => Value::Bytes(bytes),
         MetaValue::List(items) => Value::List(items.into_iter().map(value_from_wire).collect()),
         MetaValue::Map(map) => Value::Dict(metadata_from_wire(map)),
+        // The facade's metadata carries arrays as their nested lists.
+        array @ (MetaValue::Tensor(_) | MetaValue::Array { .. }) => {
+            value_from_wire(array.lowered())
+        }
     }
 }
 

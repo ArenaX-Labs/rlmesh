@@ -10,15 +10,20 @@
 //!   exponent (`1.0`), so the two stay apart;
 //! - a non-finite float is `{"$f64": "nan" | "inf" | "-inf"}`;
 //! - bytes are `{"$bytes": "<base64>"}`;
+//! - a numeric or bool array (a NumPy array or scalar) is
+//!   `{"$tensor": {"dtype", "shape", "data": "<base64 of its little-endian
+//!   bytes>"}}`, and an object array `{"$array": {"shape", "items"}}`;
 //! - a map key starting with `$` is written with one more `$`.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use rlmesh_spaces::{MetaMap, MetaValue};
+use rlmesh_spaces::{DType, MetaMap, MetaValue, Tensor};
 use serde_json::{Map, Number, Value};
 
 const F64: &str = "$f64";
 const BYTES: &str = "$bytes";
+const TENSOR: &str = "$tensor";
+const ARRAY: &str = "$array";
 
 /// A map as JSON text.
 pub fn to_json(map: &MetaMap) -> String {
@@ -93,6 +98,21 @@ pub fn value(value: &MetaValue) -> Value {
         MetaValue::Bytes(b) => tagged(BYTES, Value::String(STANDARD.encode(b))),
         MetaValue::List(items) => Value::Array(items.iter().map(self::value).collect()),
         MetaValue::Map(map) => map_value(map),
+        MetaValue::Tensor(tensor) => tagged(
+            TENSOR,
+            serde_json::json!({
+                "dtype": tensor.dtype().name(),
+                "shape": tensor.shape(),
+                "data": STANDARD.encode(tensor.to_contiguous_bytes()),
+            }),
+        ),
+        MetaValue::Array { shape, items } => tagged(
+            ARRAY,
+            serde_json::json!({
+                "shape": shape,
+                "items": items.iter().map(self::value).collect::<Vec<_>>(),
+            }),
+        ),
     }
 }
 
@@ -139,6 +159,22 @@ pub fn meta(value: Value) -> Result<MetaValue, String> {
                     };
                     return Ok(MetaValue::Float(x));
                 }
+                if let Some(tensor) = object.get(TENSOR) {
+                    return tensor_value(tensor).ok_or_else(|| "info json: $tensor".to_string());
+                }
+                if let Some(Value::Object(array)) = object.remove(ARRAY) {
+                    let shape = array
+                        .get("shape")
+                        .and_then(|s| serde_json::from_value(s.clone()).ok())
+                        .ok_or("info json: $array shape")?;
+                    let items = match array.get("items") {
+                        Some(Value::Array(items)) => {
+                            items.iter().cloned().map(meta).collect::<Result<_, _>>()?
+                        }
+                        _ => return Err("info json: $array items".into()),
+                    };
+                    return Ok(MetaValue::Array { shape, items });
+                }
                 if let Some(Value::String(b64)) = object.remove(BYTES) {
                     let bytes = STANDARD
                         .decode(b64)
@@ -149,6 +185,15 @@ pub fn meta(value: Value) -> Result<MetaValue, String> {
             MetaValue::Map(object_map(object)?)
         }
     })
+}
+
+fn tensor_value(value: &Value) -> Option<MetaValue> {
+    let dtype = DType::from_name(value.get("dtype")?.as_str()?)?;
+    let shape: Vec<i64> = serde_json::from_value(value.get("shape")?.clone()).ok()?;
+    let data = STANDARD.decode(value.get("data")?.as_str()?).ok()?;
+    Tensor::from_vec(data, shape, dtype)
+        .ok()
+        .map(MetaValue::Tensor)
 }
 
 #[cfg(test)]
@@ -179,6 +224,25 @@ mod tests {
                 MetaValue::List(vec![MetaValue::Int(1), MetaValue::Float(1.5)]),
             ),
             ("map", MetaValue::Map(inner)),
+            (
+                "tensor",
+                MetaValue::Tensor(
+                    Tensor::from_vec(vec![1, 0, 2, 0], vec![2], DType::Int16).unwrap(),
+                ),
+            ),
+            (
+                "scalar",
+                MetaValue::Tensor(
+                    Tensor::from_vec(vec![0, 0, 0, 63], vec![], DType::Float32).unwrap(),
+                ),
+            ),
+            (
+                "objects",
+                MetaValue::Array {
+                    shape: vec![1, 2],
+                    items: vec![MetaValue::String("a".into()), MetaValue::Int(3)],
+                },
+            ),
         ] {
             map.insert(key.into(), value);
         }
@@ -198,6 +262,9 @@ mod tests {
             assert_eq!(a.to_bits(), b.to_bits(), "{key} round-trips bit-exact");
         }
         assert!(matches!(back["int"], MetaValue::Int(i64::MIN)));
+        for key in ["tensor", "scalar", "objects"] {
+            assert_eq!(back[key], map[key], "{key}");
+        }
         assert_eq!(optional_to_json(None), "");
         assert_eq!(optional_to_json(Some(&MetaMap::default())), "{}");
         assert_eq!(optional_from_json("").expect("none"), None);

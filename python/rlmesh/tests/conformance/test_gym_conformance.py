@@ -479,13 +479,7 @@ REFUSED = {
 }
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        pytest.param(c, marks=GAP) if c.startswith("info_") else c
-        for c in sorted(REFUSED)
-    ],
-)
+@pytest.mark.parametrize("case", sorted(REFUSED))
 def test_what_the_wire_cannot_carry_is_refused_at_once_by_name(case: str) -> None:
     build, name = REFUSED[case]
     started = time.perf_counter()
@@ -496,7 +490,6 @@ def test_what_the_wire_cannot_carry_is_refused_at_once_by_name(case: str) -> Non
     assert time.perf_counter() - started < 2
 
 
-@GAP
 def test_reset_options_reach_the_env_as_given() -> None:
     options = {
         "goal": np.arange(3, dtype=np.int16),
@@ -681,6 +674,42 @@ def test_a_vector_env_steps_as_it_does_unserved(case: str) -> None:
         # CartPole's own vector env returns float32 rewards; the wire's are float64.
         want[1:] = [(obs, r.astype(np.float64), *rest) for obs, r, *rest in want[1:]]
     assert difference(want, got) is None
+
+
+def arrays_as_lists(value: Any) -> Any:
+    """An object array's elements (compared by value, not by pointer)."""
+    if isinstance(value, dict):
+        return {k: arrays_as_lists(v) for k, v in value.items()}
+    if isinstance(value, np.ndarray) and value.dtype == object:
+        return ("object", value.shape, [arrays_as_lists(v) for v in value.ravel()])
+    return value
+
+
+@pytest.mark.parametrize("mode", ["NEXT_STEP", pytest.param("SAME_STEP", marks=GAP)])
+def test_a_vector_env_s_info_arrays_arrive_as_arrays_with_their_dtypes(
+    mode: str,
+) -> None:
+    def build() -> Any:
+        return gym.wrappers.vector.RecordEpisodeStatistics(
+            gym.vector.SyncVectorEnv(
+                [lambda: make("CartPole-v1")] * 3, autoreset_mode=AR[mode]
+            )
+        )
+
+    reference = build()
+    actions = sampled(reference.action_space)
+    want = vector_rollout(reference, actions, 40)
+    with served(build()) as remote:
+        got = vector_rollout(remote, actions, 40)
+    for trace in (want, got):
+        for transition in trace:
+            transition[-1].get("episode", {}).pop("t", None)  # wall-clock time
+    infos = (
+        [arrays_as_lists(t[-1]) for t in want],
+        [arrays_as_lists(t[-1]) for t in got],
+    )
+    assert any("episode" in info for info in infos[0])
+    assert difference(*infos) is None
 
 
 def test_remote_envs_vectorise_on_the_client_side() -> None:
