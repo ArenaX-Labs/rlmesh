@@ -11,7 +11,8 @@
 //! default session; a host without a port is on [`DEFAULT_PORT`].
 //!
 //! Where a session is reached follows the hosting rule ([`place`]): no host
-//! joins the local host on the well-known port, or hosts the session in
+//! joins the local host on the well-known port ([`well_known_port`],
+//! `RLMESH_PORT` overriding 7447), or hosts the session in
 //! this process when nothing listens there; an explicit port on this machine
 //! hosts in-process on it (`:0` on an OS-assigned port); any other host is
 //! joined. A session is named (`bench-3`, [`DEFAULT_SESSION`]) or a UUID; a
@@ -32,8 +33,22 @@ use crate::transport::{Transport, TransportConfig, open_local_listeners};
 use crate::wire::{ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
 /// The well-known port a session host listens on (control class; the other
-/// classes follow it).
+/// classes follow it), unless [`PORT_VAR`] names another.
 pub const DEFAULT_PORT: u16 = 7447;
+/// The environment variable that overrides the well-known port.
+pub const PORT_VAR: &str = "RLMESH_PORT";
+
+/// The well-known local port: [`PORT_VAR`] when set to a port, else
+/// [`DEFAULT_PORT`].
+pub fn well_known_port() -> Result<u16, SessionError> {
+    match std::env::var(PORT_VAR) {
+        Ok(port) => port
+            .trim()
+            .parse()
+            .map_err(|_| SessionError::Config(format!("{PORT_VAR}={port:?} is not a port"))),
+        Err(_) => Ok(DEFAULT_PORT),
+    }
+}
 /// The session an address names when it names none.
 pub const DEFAULT_SESSION: &str = "default";
 /// The tenant every local session runs in.
@@ -84,7 +99,7 @@ pub struct Address {
 /// participant ([`SessionServer`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Placement {
-    /// No host given: join the local host on [`DEFAULT_PORT`], else host the
+    /// No host given: join the local host on [`well_known_port`], else host the
     /// session in this process there.
     Local,
     /// An explicit port on this machine: host in this process on it (port
@@ -349,14 +364,14 @@ fn joinable(base: SocketAddr) -> SocketAddr {
 }
 
 /// A session address resolved for joining, without hosting: the local host
-/// on [`DEFAULT_PORT`] when it names none.
+/// on [`well_known_port`] when it names none.
 impl FromStr for SessionAddress {
     type Err = SessionError;
 
     fn from_str(text: &str) -> Result<Self, SessionError> {
         let address = Address::session(text)?;
         let base = match address.placement() {
-            Placement::Local => SocketAddr::from((Ipv4Addr::LOCALHOST, DEFAULT_PORT)),
+            Placement::Local => SocketAddr::from((Ipv4Addr::LOCALHOST, well_known_port()?)),
             Placement::Host(base) => joinable(base),
             Placement::Join(host, port) => resolve(text, &host, port)?,
         };
@@ -484,7 +499,7 @@ async fn host_on(
 }
 
 /// Reaches the session `address` names by the hosting rule: joins the local
-/// host on [`DEFAULT_PORT`] (or on the explicit local port) when one
+/// host on [`well_known_port`] (or on the explicit local port) when one
 /// listens, else hosts the session in this process there; a bind that
 /// loses a race joins the winner. Another machine's host is joined. Leases
 /// in a session this process hosts lapse `lease_grace` after their holder's
@@ -502,7 +517,7 @@ pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, S
             return join(resolve(&address.to_string(), &host, port)?);
         }
         Placement::Local => {
-            let base = SocketAddr::from((Ipv4Addr::LOCALHOST, DEFAULT_PORT));
+            let base = SocketAddr::from((Ipv4Addr::LOCALHOST, well_known_port()?));
             if listening(base) {
                 return join(base);
             }

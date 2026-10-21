@@ -532,10 +532,19 @@ server.shutdown()
 """
 
 
-def test_two_processes_meet_by_name_the_first_hosting() -> None:
+def test_two_processes_meet_by_name_the_first_hosting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import socket
     import subprocess
     import sys
 
+    # A free well-known port of this test's own, so a running rlmeshd or a
+    # concurrent run cannot meet it.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    monkeypatch.setenv("RLMESH_PORT", str(port))
     child = subprocess.Popen(
         [sys.executable, "-c", SERVE_BY_NAME],
         stdin=subprocess.PIPE,
@@ -545,7 +554,7 @@ def test_two_processes_meet_by_name_the_first_hosting() -> None:
     assert child.stdout is not None and child.stdin is not None
     try:
         printed = child.stdout.readline().strip()
-        assert printed.endswith(":7447/cartpole"), printed
+        assert printed == f"127.0.0.1:{port}/cartpole", printed
         remote = rlmesh.numpy.RemoteEnv("cartpole")
         try:
             obs, _ = remote.reset(seed=0)
