@@ -29,6 +29,8 @@
 //! - [`host`]: the [`SessionHost`]: `ctl` verbs, the published authority
 //!   snapshot, heartbeat echoes, lease expiry, virtual ticks and the history
 //!   store. A library, and a binary (`rlmesh-session-host`).
+//! - [`server`]: the [`SessionServer`], a multi-session host that starts a
+//!   session's host for its first participant.
 //! - [`participant`]: the [`Participant`]: presence, heartbeats, the
 //!   authority view, verbs, and endpoints by robot and path ([`sample`],
 //!   [`chunk`], [`media`]); an embodiment's publishers follow their
@@ -79,6 +81,7 @@ pub mod record;
 pub mod report;
 pub mod sample;
 pub mod sdk;
+pub mod server;
 pub use rlmesh_session_core::lease;
 pub use rlmesh_session_core::schedule;
 pub use rlmesh_session_core::spec;
@@ -106,6 +109,7 @@ pub use sample::{
     Fresh, Received, SamplePublisher, SampleStats, SampleSubscriber, SubscribeOptions,
 };
 pub use schedule::{PhaseAlign, RunEvent, RunStats, SkipReason, StartSchedule};
+pub use server::SessionServer;
 pub use transport::{ClassQos, TrafficClass, Transport, TransportConfig, TransportTuning};
 pub use virtual_clock::VirtualConfig;
 

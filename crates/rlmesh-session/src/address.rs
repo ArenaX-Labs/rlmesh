@@ -25,8 +25,9 @@ use std::time::Duration;
 
 use crate::clock::SystemMonotonicClock;
 use crate::error::SessionError;
-use crate::host::{HostConfig, SessionHost};
+use crate::host::HostConfig;
 use crate::participant::{Participant, ParticipantConfig};
+use crate::server::SessionServer;
 use crate::transport::{Transport, TransportConfig, open_local_listeners};
 use crate::wire::{ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
@@ -78,6 +79,9 @@ pub struct Address {
 }
 
 /// Where the hosting rule puts a session.
+///
+/// A host serves any number of named sessions: it starts one for its first
+/// participant ([`SessionServer`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Placement {
     /// No host given: join the local host on [`DEFAULT_PORT`], else host the
@@ -405,7 +409,15 @@ impl SessionAddress {
         );
         config.clock = SystemMonotonicClock.shared();
         config.host_timeout = host_timeout;
-        Participant::attach(transport, config).await
+        Participant::attach(transport, config)
+            .await
+            .map_err(|err| match err {
+                SessionError::NotServed(why) => SessionError::NotServed(format!(
+                    "the host at {} cannot serve session {:?}: {why}",
+                    self.base, self.name
+                )),
+                other => other,
+            })
     }
 }
 
@@ -414,7 +426,7 @@ impl SessionAddress {
 pub struct Placed {
     /// Where participants join.
     pub address: SessionAddress,
-    hosted: Option<(SessionHost, Transport)>,
+    hosted: Option<(SessionServer, Transport)>,
 }
 
 impl fmt::Debug for Placed {
@@ -464,7 +476,7 @@ async fn host_on(
     config.clock = SystemMonotonicClock.shared();
     config.lease_grace = lease_grace.max(Duration::from_millis(1));
     config.health_log = None;
-    let host = SessionHost::start(transport.clone(), config).await?;
+    let host = SessionServer::start(transport.clone(), config).await?;
     Ok(Placed {
         address,
         hosted: Some((host, transport)),
@@ -512,6 +524,7 @@ pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::SessionHost;
 
     fn host(name: &str, port: Option<u16>) -> Option<HostName> {
         Some(HostName {
@@ -714,5 +727,62 @@ mod tests {
         assert!(!second.hosts(), "the port is taken: join it");
         assert_eq!(second.address, first.address);
         first.close().await.expect("close");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_host_serves_many_named_sessions_and_refuses_fast_where_it_cannot() {
+        let grace = Duration::from_millis(250);
+        let mut host = place(&Address::session(":0").expect("parse"), grace)
+            .await
+            .expect("host");
+        let join = |base: SocketAddr, name: &str| {
+            let session = SessionAddress::new(base, name).expect("session");
+            async move {
+                session
+                    .join(
+                        "p",
+                        vec![Role::Observer],
+                        PriorityClass::Scripted,
+                        Duration::from_secs(5),
+                    )
+                    .await
+            }
+        };
+        let base = host.address.base;
+        let bench = join(base, "bench-3")
+            .await
+            .expect("a new session starts for its first participant");
+        let lab = join(base, "robot-lab")
+            .await
+            .expect("and another beside it");
+        drop((bench, lab));
+        host.close().await.expect("close");
+
+        // A plain single-session host cannot start sessions: refused at once.
+        let (transport, base) = open_local_listeners(IpAddr::from(Ipv4Addr::LOCALHOST))
+            .await
+            .expect("listen");
+        let only = SessionAddress::new(base, "only").expect("session");
+        let single = SessionHost::start(
+            transport.clone(),
+            HostConfig::new(only.tenant.clone(), only.session),
+        )
+        .await
+        .expect("single host");
+        let started = std::time::Instant::now();
+        let Err(err) = join(base, "elsewhere").await else {
+            panic!("not served");
+        };
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "fails fast: {err}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains(&base.to_string()) && text.contains("elsewhere"),
+            "{text}"
+        );
+        single.shutdown().await;
+        transport.close().await.expect("close");
     }
 }

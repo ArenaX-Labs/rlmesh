@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use rlmesh_session::wire::TenantId;
-use rlmesh_session::{HostConfig, SessionError, SessionHost, Transport, TransportConfig};
+use rlmesh_session::{HostConfig, SessionError, SessionServer, Transport, TransportConfig};
 use tracing::info;
 
 /// Runs an RLMesh session host.
@@ -75,7 +75,7 @@ async fn main() -> Result<(), SessionError> {
     let mut config = HostConfig::new(tenant, session);
     config.lease_grace = Duration::from_millis(args.lease_grace_ms.max(1));
     config.health_log = (args.health_log_ms > 0).then(|| Duration::from_millis(args.health_log_ms));
-    let host = SessionHost::start(transport.clone(), config).await?;
+    let host = SessionServer::start(transport.clone(), config).await?;
     println!("{session}");
     if let Some(path) = &args.session_file {
         std::fs::write(path, session.to_string())?;

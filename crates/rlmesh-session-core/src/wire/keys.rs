@@ -1,6 +1,7 @@
 //! The Zenoh key layout of one session (§10.3).
 //!
 //! ```text
+//! rlmesh/v2/{tenant}/server                                    multi-session host (queryable)
 //! rlmesh/v2/{tenant}/s/{session}/host                          host liveliness
 //! rlmesh/v2/{tenant}/s/{session}/host/state                    authority snapshot (queryable) + updates
 //! rlmesh/v2/{tenant}/s/{session}/host/tick                     virtual-mode ticks (§11.3)
@@ -24,6 +25,30 @@
 
 use crate::wire::ids::{ParticipantId, SessionId, TenantId};
 use crate::wire::version::GENERATION;
+
+/// A multi-session host's queryable: it hosts any session of `tenant` a
+/// participant attaches to.
+pub fn session_server(tenant: &TenantId) -> String {
+    format!("rlmesh/v{GENERATION}/{tenant}/server")
+}
+
+/// Every participant's liveliness token in every session of `tenant`.
+pub fn tenant_participants(tenant: &TenantId) -> String {
+    format!("rlmesh/v{GENERATION}/{tenant}/s/*/p/*")
+}
+
+/// Every session host's authority snapshot queryable, of any tenant.
+pub fn session_hosts() -> String {
+    format!("rlmesh/v{GENERATION}/*/s/*/host/state")
+}
+
+/// The tenant and session of a session key (`rlmesh/v2/{tenant}/s/{session}/...`).
+pub fn session_of(key: &str) -> Option<(&str, SessionId)> {
+    let mut segments = key.split('/').skip(2);
+    let tenant = segments.next()?;
+    (segments.next()? == "s").then_some(())?;
+    Some((tenant, segments.next()?.parse().ok()?))
+}
 
 /// Every key of one session.
 #[derive(Clone, Debug, PartialEq, Eq)]

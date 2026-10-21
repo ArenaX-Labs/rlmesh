@@ -398,6 +398,45 @@ pub struct Participant {
     _host: zenoh::pubsub::Subscriber<()>,
 }
 
+/// Resolves when the host this transport reaches can never serve
+/// `session`: it hosts other sessions, and is no multi-session host of
+/// `tenant` (which would start `session` for this participant). Pending
+/// while no host answers at all, so a host still starting is waited for.
+async fn not_served(
+    control: &zenoh::Session,
+    tenant: &TenantId,
+    session: SessionId,
+) -> SessionError {
+    use crate::wire::keys::{session_hosts, session_server};
+    // Whether any queryable answers `key` (queries reach every matching
+    // queryable, where liveliness tokens reach only declared interests).
+    let answers = |key: String| async move {
+        match control.get(key).timeout(Duration::from_millis(500)).await {
+            Ok(replies) => {
+                let mut any = false;
+                while let Ok(reply) = replies.recv_async().await {
+                    any |= reply.result().is_ok();
+                }
+                any
+            }
+            Err(_) => false,
+        }
+    };
+    let own = SessionKeys::new(tenant, session).host_state();
+    loop {
+        // Give a multi-session host time to see this participant first.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        if answers(session_server(tenant)).await || answers(own.clone()).await {
+            return std::future::pending().await;
+        }
+        if answers(session_hosts()).await {
+            return SessionError::NotServed(format!(
+                "it hosts other sessions and starts none for tenant {tenant}"
+            ));
+        }
+    }
+}
+
 impl Participant {
     /// Announces presence, waits for the host, subscribes to authority
     /// updates, attaches through `ctl` and starts heartbeating.
@@ -488,10 +527,16 @@ impl Participant {
         // Zenoh keeps declaration order per link, so once the token is seen
         // the first `ctl` query cannot miss the host.
         let mut present = shared.host_present.subscribe();
-        tokio::time::timeout(config.host_timeout, present.wait_for(|p| *p))
-            .await
-            .map_err(|_| SessionError::Timeout(config.host_timeout, "the session host".into()))?
-            .map_err(|_| SessionError::Closed)?;
+        tokio::select! {
+            found = tokio::time::timeout(config.host_timeout, present.wait_for(|p| *p)) => {
+                found
+                    .map_err(|_| {
+                        SessionError::Timeout(config.host_timeout, "the session host".into())
+                    })?
+                    .map_err(|_| SessionError::Closed)?;
+            }
+            refusal = not_served(&control, &config.tenant, config.session) => return Err(refusal),
+        }
 
         let cancel = CancellationToken::new();
         let mut participant = Self {

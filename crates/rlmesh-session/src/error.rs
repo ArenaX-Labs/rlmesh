@@ -44,6 +44,9 @@ pub enum SessionError {
         /// What is wrong.
         reason: String,
     },
+    /// The host reached serves other sessions, and never this one.
+    #[error("{0}")]
+    NotServed(String),
     /// A configuration value is unusable.
     #[error("config: {0}")]
     Config(String),
