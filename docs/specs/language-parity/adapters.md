@@ -259,6 +259,12 @@ C's `_len` / `_get` (D-2) instead of hard-coding the list.
 | `to_json()` / `from_json(payload)`          | `to_json() -> Result<String>` (text fixed by ADP-5) / `from_json(&str) -> Result<Self>`                                                    | `rlmesh_model_spec_to_json(…, RLMeshBytes* out)` / `_from_json(const char*, RLMeshModelSpec**)`                                                                                                            | `std::string to_json() const` / `static ModelSpec from_json(std::string_view)`                    | `string ToJson()` / `static ModelSpec FromJson(string payload)`                                                                |
 | `to_metadata()` / `from_metadata(metadata)` | `to_metadata() -> Result<Metadata>` / `from_metadata(&Metadata) -> Result<Option<Self>>` (a non-Dict value: AdapterResolutionError, below) | `_to_metadata(…, RLMeshValue**)` / `_from_metadata(const RLMeshValue*, RLMeshModelSpec**)`, `*out` NULL when absent                                                                                        | `Metadata to_metadata() const` / `static std::optional<ModelSpec> from_metadata(const Metadata&)` | `Metadata ToMetadata()` / `static ModelSpec? FromMetadata(Metadata metadata)` (`null` when absent)                             |
 
+A spec may also carry `allow`, the named projections (lossy fits) it accepts, today only
+`drop_action`: discard a model output no env actuator reads, which resolve otherwise refuses
+(MissingRole) and records on the adapter when allowed. Python takes it as
+`ModelSpec(..., allow=("drop_action",))`, the wire key `allow`. TODO: `allow` on the Rust facade,
+C, C++ and C# `ModelSpec`.
+
 `to_dict` / `to_metadata` refuse a custom input with ValueError
 (`pyad/specs/model.py:60-62`). `from_metadata` returns None when the key is
 absent or holds None; a present value that is not a Dict is
