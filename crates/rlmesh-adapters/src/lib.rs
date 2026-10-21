@@ -61,7 +61,7 @@ pub mod v1 {
     };
     pub use crate::resolver::resolve;
     pub use crate::space_json::{
-        SpaceJsonError, space_dtype_name, space_kind_name, space_spec_to_json,
+        SpaceJsonError, space_dtype_name, space_kind_name, space_spec_from_json, space_spec_to_json,
     };
     pub use crate::space_view::{SpaceView, SpaceViewKind};
     pub use crate::spec::{

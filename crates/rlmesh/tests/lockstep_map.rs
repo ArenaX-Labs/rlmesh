@@ -249,15 +249,10 @@ fn a_catalog_env_maps_to_a_robot_and_its_slabs_round_trip_bit_exact() {
         assert_eq!(cam.spec.attrs["gym_key"], "[[\"Image\"]]");
         assert!(gym.part("action").is_some_and(|p| p.spec.command.is_some()));
 
-        // The info round-trips through its attr exactly as through a v1
-        // handshake (which carries the contract as the same protobuf).
+        // The info round-trips through its attr exactly: spaces with their
+        // Dict order and bounds, metadata and the handshake answers.
         let back = GymEnvInfo::from_attr(&cam.spec.attrs["gym_env"]).expect("gym_env");
-        let handshake = rlmesh_grpc::wire::env_contract_from_proto(
-            rlmesh_grpc::wire::env_contract_to_proto(&gym.info.contract),
-        )
-        .expect("v1 round trip");
-        assert_eq!(back.contract, handshake);
-        assert_eq!(back.capabilities, gym.info.capabilities);
+        assert_eq!(back, gym.info);
 
         for salt in [0_u8, 7, 200] {
             let leaves: Vec<Bytes> = gym

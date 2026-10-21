@@ -38,6 +38,7 @@ use rlmesh_grpc::env::{
     EnvCore, EnvHandshake, Environment, EpisodeMirror, proto_error_to_env_error,
 };
 use rlmesh_grpc::error::{Error as GrpcError, ProtocolError, TransportError};
+use rlmesh_grpc::wire::{meta_map_from_proto, meta_map_to_proto};
 use rlmesh_proto::env::v1::{
     JoinRequest, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
     StepResponse, join_request, join_response,
@@ -204,7 +205,9 @@ impl<E: Environment + 'static> GymEnv<E> {
             // u64 on the v2 wire, i64 in v1: the same 64 bits.
             seeds: reset.seeds.iter().map(|s| *s as i64).collect(),
             options: meta_json::optional_from_json(&reset.options_json)
-                .map_err(GymError::Malformed)?,
+                .map_err(GymError::Malformed)?
+                .as_ref()
+                .map(meta_map_to_proto),
             timeout_ms: 0,
             env_indices: reset.lanes.clone(),
             episode_ids: reset.episode_ids.iter().map(u64::to_string).collect(),
@@ -222,7 +225,7 @@ impl<E: Environment + 'static> GymEnv<E> {
             terminated: Bytes::new(),
             truncated: Bytes::new(),
             episode_ids: reset.episode_ids,
-            info_json: meta_json::optional_to_json(ok.infos.as_ref()),
+            info_json: meta_json::optional_to_json(ok.infos.map(meta_map_from_proto).as_ref()),
         })
     }
 
@@ -256,7 +259,7 @@ impl<E: Environment + 'static> GymEnv<E> {
             terminated: mask(&ok.terminated_mask, lanes),
             truncated: mask(&ok.truncated_mask, lanes),
             episode_ids: Vec::new(),
-            info_json: meta_json::optional_to_json(ok.infos.as_ref()),
+            info_json: meta_json::optional_to_json(ok.infos.map(meta_map_from_proto).as_ref()),
         })
     }
 }
@@ -466,7 +469,9 @@ impl LockstepEnv {
             epoch: Epoch(d.epoch.load(Ordering::Acquire)),
             lanes: request.env_indices.clone(),
             seeds: request.seeds.iter().map(|s| *s as u64).collect(),
-            options_json: meta_json::optional_to_json(request.options.as_ref()),
+            options_json: meta_json::optional_to_json(
+                request.options.clone().map(meta_map_from_proto).as_ref(),
+            ),
             episode_ids,
         };
         let reply = d
@@ -486,7 +491,10 @@ impl LockstepEnv {
             observation: Some(SpaceValue {
                 leaves: observation,
             }),
-            infos: meta_json::optional_from_json(&reply.info_json).map_err(GymError::Malformed)?,
+            infos: meta_json::optional_from_json(&reply.info_json)
+                .map_err(GymError::Malformed)?
+                .as_ref()
+                .map(meta_map_to_proto),
         })
     }
 
@@ -523,7 +531,10 @@ impl LockstepEnv {
             rewards: rewards_from(&reply.reward, lanes)?,
             terminated_mask: reply.terminated.to_vec(),
             truncated_mask: reply.truncated.to_vec(),
-            infos: meta_json::optional_from_json(&reply.info_json).map_err(GymError::Malformed)?,
+            infos: meta_json::optional_from_json(&reply.info_json)
+                .map_err(GymError::Malformed)?
+                .as_ref()
+                .map(meta_map_to_proto),
             completed_episodes: Vec::new(),
             env_indices: request.env_indices.clone(),
         };

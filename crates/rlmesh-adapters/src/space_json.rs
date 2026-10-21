@@ -7,19 +7,25 @@
 //! `null` (serde_json's own rendering of a non-finite `f64`): unbounded on that
 //! edge, exactly as the Python gatherer maps it.
 
-use rlmesh_spaces::scalar::{Scalar, decode_scalars};
+use rlmesh_spaces::scalar::{Scalar, decode_scalars, encode_scalars};
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
-use rlmesh_spaces::{BoxBounds, BoxSpec, DType};
+use rlmesh_spaces::{
+    BoxBounds, BoxSpec, DType, DictSpec, DiscreteSpec, ElementwiseBounds, MultiBinarySpec,
+    MultiDiscreteSpec, TextSpec, TupleSpec, TypedElementwiseBounds, TypedUniformBounds,
+    UniformBounds,
+};
 use serde_json::{Map, Value, json};
 
-/// A space that cannot be rendered: no spec at all, or typed Box bounds whose
-/// bytes do not decode in the space's dtype.
+/// A space that cannot be rendered (no spec at all, or typed Box bounds whose
+/// bytes do not decode in the space's dtype), or JSON that is no space.
 #[derive(Debug, thiserror::Error)]
 pub enum SpaceJsonError {
     #[error("space spec is missing")]
     Missing,
     #[error("{0}")]
     Bounds(String),
+    #[error("space json: {0}")]
+    Json(String),
 }
 
 /// The canonical kind name (`"box"`, `"multi_discrete"`, ...).
@@ -54,6 +60,173 @@ pub fn space_spec_to_json(space: &SpaceSpec) -> Result<Value, SpaceJsonError> {
         "dtype": space_dtype_name(space.dtype),
         "details": details(space)?,
     }))
+}
+
+/// The inverse of [`space_spec_to_json`], exact for every valid spec it
+/// renders: integer bounds keep their dtype's bytes, float bounds their bits,
+/// and a `null` bound is that edge's infinity. A composite's dtype is
+/// unspecified. A JSON object keeps no key order, so a Dict takes its order
+/// from `details.keys` when present (else the object's).
+pub fn space_spec_from_json(value: &Value) -> Result<SpaceSpec, SpaceJsonError> {
+    let field = |name: &str| value.get(name).ok_or_else(|| json_error(name));
+    let kind = field("kind")?.as_str().ok_or_else(|| json_error("kind"))?;
+    let shape = field("shape")?
+        .as_array()
+        .and_then(|dims| dims.iter().map(Value::as_i64).collect())
+        .ok_or_else(|| json_error("shape"))?;
+    let details = field("details")?;
+    let detail = |name: &str| details.get(name).ok_or_else(|| json_error(name));
+    let int = |name: &str| detail(name)?.as_i64().ok_or_else(|| json_error(name));
+    let dtype = match kind {
+        "dict" | "tuple" => DType::Unspecified,
+        _ => field("dtype")?
+            .as_str()
+            .and_then(DType::from_name)
+            .ok_or_else(|| json_error("dtype"))?,
+    };
+    let spec = match kind {
+        "box" => SpaceKind::Box(BoxSpec {
+            bounds: box_bounds(details, dtype)?,
+        }),
+        "discrete" => SpaceKind::Discrete(DiscreteSpec {
+            n: int("n")?,
+            start: int("start")?,
+        }),
+        "multi_binary" => SpaceKind::MultiBinary(MultiBinarySpec),
+        "multi_discrete" => {
+            let mut nvec = Vec::new();
+            flat_ints(detail("nvec")?, &mut nvec).ok_or_else(|| json_error("nvec"))?;
+            SpaceKind::MultiDiscrete(MultiDiscreteSpec { nvec })
+        }
+        "text" => SpaceKind::Text(TextSpec {
+            min_length: int("min_length")?,
+            max_length: int("max_length")?,
+            charset: detail("charset")?
+                .as_str()
+                .ok_or_else(|| json_error("charset"))?
+                .to_string(),
+        }),
+        "dict" => {
+            let spaces = detail("spaces")?
+                .as_object()
+                .ok_or_else(|| json_error("spaces"))?;
+            let keys: Vec<String> = match details.get("keys") {
+                Some(keys) => keys
+                    .as_array()
+                    .and_then(|keys| keys.iter().map(|k| Some(k.as_str()?.to_string())).collect())
+                    .ok_or_else(|| json_error("keys"))?,
+                None => spaces.keys().cloned().collect(),
+            };
+            let spaces = keys
+                .iter()
+                .map(|key| space_spec_from_json(spaces.get(key).ok_or_else(|| json_error(key))?))
+                .collect::<Result<_, _>>()?;
+            SpaceKind::Dict(DictSpec { keys, spaces })
+        }
+        "tuple" => SpaceKind::Tuple(TupleSpec {
+            spaces: detail("spaces")?
+                .as_array()
+                .ok_or_else(|| json_error("spaces"))?
+                .iter()
+                .map(space_spec_from_json)
+                .collect::<Result<_, _>>()?,
+        }),
+        other => return Err(SpaceJsonError::Json(format!("no space kind {other:?}"))),
+    };
+    Ok(SpaceSpec {
+        shape,
+        dtype,
+        spec: Some(spec),
+    })
+}
+
+fn json_error(field: &str) -> SpaceJsonError {
+    SpaceJsonError::Json(format!("no valid {field}"))
+}
+
+/// A flat or nested integer list, flattened row-major.
+fn flat_ints(value: &Value, out: &mut Vec<i64>) -> Option<()> {
+    match value {
+        Value::Array(items) => items.iter().try_for_each(|item| flat_ints(item, out)),
+        other => {
+            out.push(other.as_i64()?);
+            Some(())
+        }
+    }
+}
+
+fn box_bounds(details: &Value, dtype: DType) -> Result<Option<BoxBounds>, SpaceJsonError> {
+    let kind = match details.get("bounds_kind") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(kind) => kind.as_str().ok_or_else(|| json_error("bounds_kind"))?,
+    };
+    let edges = |name: &str, unbounded: f64| -> Result<Vec<Scalar>, SpaceJsonError> {
+        let value = details.get(name).ok_or_else(|| json_error(name))?;
+        let items = match value {
+            Value::Array(items) => items.as_slice(),
+            one => std::slice::from_ref(one),
+        };
+        items
+            .iter()
+            .map(|item| scalar(item, unbounded))
+            .collect::<Option<_>>()
+            .ok_or_else(|| json_error(name))
+    };
+    let floats = |name: &str, unbounded: f64| -> Result<Vec<f64>, SpaceJsonError> {
+        Ok(edges(name, unbounded)?
+            .into_iter()
+            .map(|s| match s {
+                Scalar::Float(x) => x,
+                other => other.as_i64() as f64,
+            })
+            .collect())
+    };
+    let uniform = |name: &str, unbounded: f64| -> Result<f64, SpaceJsonError> {
+        match floats(name, unbounded)?.as_slice() {
+            [x] => Ok(*x),
+            _ => Err(json_error(name)),
+        }
+    };
+    let typed = |name: &str, unbounded: f64| -> Result<Vec<u8>, SpaceJsonError> {
+        encode_scalars(&edges(name, unbounded)?, dtype)
+            .map_err(|err| SpaceJsonError::Bounds(err.to_string()))
+    };
+    let (low, high) = (f64::NEG_INFINITY, f64::INFINITY);
+    Ok(Some(match kind {
+        "unbounded" => BoxBounds::Unbounded(true),
+        "uniform" => BoxBounds::Uniform(UniformBounds {
+            low: uniform("low", low)?,
+            high: uniform("high", high)?,
+        }),
+        "elementwise" => BoxBounds::Elementwise(ElementwiseBounds {
+            low: floats("low", low)?,
+            high: floats("high", high)?,
+        }),
+        "typed_uniform" => BoxBounds::TypedUniform(TypedUniformBounds {
+            low: typed("low", low)?,
+            high: typed("high", high)?,
+        }),
+        "typed_elementwise" => BoxBounds::TypedElementwise(TypedElementwiseBounds {
+            low: typed("low", low)?,
+            high: typed("high", high)?,
+        }),
+        other => return Err(SpaceJsonError::Json(format!("no bounds kind {other:?}"))),
+    }))
+}
+
+/// One bound as a scalar: an integer stays exact (a `Uint64` above
+/// `i64::MAX` wraps, as its scalars do), `null` is `unbounded`.
+fn scalar(value: &Value, unbounded: f64) -> Option<Scalar> {
+    match value {
+        Value::Null => Some(Scalar::Float(unbounded)),
+        Value::Bool(b) => Some(Scalar::Bool(*b)),
+        Value::Number(n) if !n.is_f64() => n
+            .as_i64()
+            .or_else(|| n.as_u64().map(|u| u as i64))
+            .map(Scalar::Int),
+        Value::Number(n) => n.as_f64().map(Scalar::Float),
+        _ => None,
+    }
 }
 
 fn details(space: &SpaceSpec) -> Result<Value, SpaceJsonError> {
@@ -179,12 +352,6 @@ fn typed(bytes: &[u8], dtype: DType) -> Result<Value, SpaceJsonError> {
 
 #[cfg(test)]
 mod tests {
-    use rlmesh_spaces::scalar::encode_scalars;
-    use rlmesh_spaces::{
-        DictSpec, DiscreteSpec, ElementwiseBounds, MultiBinarySpec, MultiDiscreteSpec, TextSpec,
-        TupleSpec, TypedElementwiseBounds, TypedUniformBounds, UniformBounds,
-    };
-
     use super::*;
 
     fn space(shape: &[i64], dtype: DType, kind: SpaceKind) -> SpaceSpec {
@@ -291,6 +458,100 @@ mod tests {
             space_spec_to_json(&truncated).unwrap_err(),
             SpaceJsonError::Bounds(_)
         ));
+    }
+
+    #[test]
+    fn every_rendered_space_reads_back_exactly() {
+        let bytes = |values: &[Scalar], dtype| encode_scalars(values, dtype).unwrap();
+        let spaces = [
+            boxed(
+                &[2],
+                DType::Float64,
+                BoxBounds::Elementwise(ElementwiseBounds {
+                    low: vec![f64::NEG_INFINITY, 0.1],
+                    high: vec![1.0 / 3.0, f64::INFINITY],
+                }),
+            ),
+            boxed(
+                &[2],
+                DType::Uint64,
+                BoxBounds::TypedElementwise(TypedElementwiseBounds {
+                    low: bytes(&[Scalar::Int(0), Scalar::Int(1)], DType::Uint64),
+                    high: bytes(&[Scalar::Int(-1), Scalar::Int(i64::MAX)], DType::Uint64),
+                }),
+            ),
+            boxed(
+                &[3],
+                DType::Int8,
+                BoxBounds::TypedUniform(TypedUniformBounds {
+                    low: bytes(&[Scalar::Int(-128)], DType::Int8),
+                    high: bytes(&[Scalar::Int(127)], DType::Int8),
+                }),
+            ),
+            boxed(
+                &[1],
+                DType::Float32,
+                BoxBounds::Uniform(UniformBounds {
+                    low: f64::NEG_INFINITY,
+                    high: 2.5,
+                }),
+            ),
+            boxed(&[1], DType::Float32, BoxBounds::Unbounded(true)),
+            space(
+                &[2, 2],
+                DType::Int64,
+                SpaceKind::MultiDiscrete(MultiDiscreteSpec {
+                    nvec: vec![2, 3, 4, 5],
+                }),
+            ),
+            space(
+                &[2, 3],
+                DType::Int8,
+                SpaceKind::MultiBinary(MultiBinarySpec),
+            ),
+            space(
+                &[],
+                DType::Uint8,
+                SpaceKind::Text(TextSpec {
+                    min_length: 1,
+                    max_length: 8,
+                    charset: "ab".into(),
+                }),
+            ),
+            space(
+                &[],
+                DType::Unspecified,
+                SpaceKind::Tuple(TupleSpec {
+                    spaces: vec![space(
+                        &[],
+                        DType::Int32,
+                        SpaceKind::Discrete(DiscreteSpec { n: 4, start: -1 }),
+                    )],
+                }),
+            ),
+        ];
+        for spec in spaces {
+            let json = space_spec_to_json(&spec).unwrap();
+            assert_eq!(space_spec_from_json(&json).unwrap(), spec, "{json}");
+        }
+        // A Dict reads its order from `details.keys`.
+        let discrete = space(
+            &[],
+            DType::Int64,
+            SpaceKind::Discrete(DiscreteSpec { n: 2, start: 0 }),
+        );
+        let dict = space(
+            &[],
+            DType::Unspecified,
+            SpaceKind::Dict(DictSpec {
+                keys: vec!["b".into(), "a".into()],
+                spaces: vec![discrete.clone(), discrete],
+            }),
+        );
+        let mut json = space_spec_to_json(&dict).unwrap();
+        json["details"]["keys"] = json!(["b", "a"]);
+        assert_eq!(space_spec_from_json(&json).unwrap(), dict);
+        assert!(space_spec_from_json(&json!({"kind": "box"})).is_err());
     }
 
     #[test]

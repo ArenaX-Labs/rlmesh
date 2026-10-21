@@ -29,25 +29,24 @@
 //!
 //! Each part carries its original space (`gym_space`), keys (`gym_key`)
 //! and tag (`env_tags`) in `attrs`; the robot's first part carries the
-//! whole v1 contract and handshake (`gym_env`), from which the driver
+//! whole contract and handshake (`gym_env`), from which the driver
 //! rebuilds the exact spaces and this same map.
 
 use std::collections::BTreeMap;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
-use prost::Message as _;
-use rlmesh_adapters::v1::{EnvTags, ObsLeaf, ObsNode, space_spec_to_json};
+use rlmesh_adapters::v1::{EnvTags, ObsLeaf, ObsNode, space_spec_from_json, space_spec_to_json};
 use rlmesh_session::wire::{ChannelId, DType, Layout, PartSpec, ParticipantId};
-use rlmesh_spaces::{EnvContract, SpaceKind, SpaceSpec};
+use rlmesh_spaces::{AutoresetMode, EnvContract, SpaceKind, SpaceSpec};
 use serde_json::{Value, json};
 
 use crate::lockstep::error::GymError;
 use crate::lockstep::escape::{self, KeySeg};
+use crate::lockstep::meta_json;
 
-/// What a driver needs to drive a Gym env it cannot handshake with: the v1
-/// contract and the handshake answers, carried in `gym_env`.
+/// What a driver needs to drive a Gym env it cannot handshake with: the
+/// contract and the handshake answers, carried in `gym_env` as plain JSON
+/// (spaces in their describe form, metadata as tagged meta JSON).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GymEnvInfo {
     /// The v1 env contract (spaces, metadata and tags, `num_envs`,
@@ -70,9 +69,18 @@ impl GymEnvInfo {
     }
 
     fn to_json(&self) -> Value {
-        let contract = rlmesh_grpc::wire::env_contract_to_proto(&self.contract).encode_to_vec();
+        let c = &self.contract;
+        let space = |spec: &Option<SpaceSpec>| spec.as_ref().map(space_json).unwrap_or(Value::Null);
         json!({
-            "contract": STANDARD.encode(contract),
+            "contract": {
+                "id": c.id,
+                "render_mode": c.render_mode,
+                "num_envs": c.num_envs,
+                "autoreset_mode": c.autoreset_mode as i32,
+                "observation_space": space(&c.observation_space),
+                "action_space": space(&c.action_space),
+                "metadata": c.metadata.as_ref().map(meta_json::map_value),
+            },
             "workflow_edition": self.workflow_edition,
             "supported_workflow_editions": self.supported_workflow_editions,
             "capabilities": self.capabilities,
@@ -83,38 +91,82 @@ impl GymEnvInfo {
     pub fn from_attr(text: &str) -> Result<Self, GymError> {
         let bad = |why: String| GymError::Map(format!("gym_env: {why}"));
         let value: Value = serde_json::from_str(text).map_err(|e| bad(e.to_string()))?;
-        let field = |name: &str| value.get(name).ok_or_else(|| bad(format!("no {name}")));
-        let strings = |v: &Value| -> Result<Vec<String>, GymError> {
-            v.as_array()
-                .ok_or_else(|| bad("not a list".into()))?
-                .iter()
-                .map(|s| {
-                    s.as_str()
-                        .map(str::to_string)
-                        .ok_or_else(|| bad("not a string".into()))
-                })
-                .collect()
+        let field = |v: &'_ Value, name: &str| -> Result<Value, GymError> {
+            v.get(name)
+                .cloned()
+                .ok_or_else(|| bad(format!("no {name}")))
         };
-        let contract = STANDARD
-            .decode(
-                field("contract")?
-                    .as_str()
-                    .ok_or_else(|| bad("contract".into()))?,
-            )
-            .map_err(|e| bad(e.to_string()))?;
-        let contract = rlmesh_proto::core::v1::EnvContract::decode(contract.as_slice())
-            .map_err(|e| bad(e.to_string()))?;
-        Ok(Self {
-            contract: rlmesh_grpc::wire::env_contract_from_proto(contract)
-                .map_err(|e| bad(e.to_string()))?,
-            workflow_edition: field("workflow_edition")?
+        let text = |v: &Value, name: &str| -> Result<String, GymError> {
+            field(v, name)?
                 .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            supported_workflow_editions: strings(field("supported_workflow_editions")?)?,
-            capabilities: strings(field("capabilities")?)?,
+                .map(str::to_string)
+                .ok_or_else(|| bad(format!("{name} is not a string")))
+        };
+        let strings = |v: Value| -> Result<Vec<String>, GymError> {
+            serde_json::from_value(v).map_err(|e| bad(e.to_string()))
+        };
+        // A peer's spaces are held to the builders' invariants, as a v1
+        // handshake holds them.
+        let space = |v: Value| -> Result<Option<SpaceSpec>, GymError> {
+            match v {
+                Value::Null => Ok(None),
+                v => {
+                    let spec = space_spec_from_json(&v).map_err(|e| bad(e.to_string()))?;
+                    rlmesh_spaces::validate_space(&spec).map_err(|e| bad(e.to_string()))?;
+                    Ok(Some(spec))
+                }
+            }
+        };
+        let c = field(&value, "contract")?;
+        let number = |name: &str| field(&c, name)?.as_i64().ok_or_else(|| bad(name.into()));
+        let contract = EnvContract {
+            id: text(&c, "id")?,
+            render_mode: text(&c, "render_mode")?,
+            num_envs: u32::try_from(number("num_envs")?).map_err(|e| bad(e.to_string()))?,
+            autoreset_mode: i32::try_from(number("autoreset_mode")?)
+                .ok()
+                .and_then(|mode| AutoresetMode::try_from(mode).ok())
+                .ok_or_else(|| bad("autoreset_mode".into()))?,
+            observation_space: space(field(&c, "observation_space")?)?,
+            action_space: space(field(&c, "action_space")?)?,
+            metadata: match field(&c, "metadata")? {
+                Value::Null => None,
+                v => Some(meta_json::map_from_value(v).map_err(bad)?),
+            },
+        };
+        Ok(Self {
+            contract,
+            workflow_edition: text(&value, "workflow_edition")?,
+            supported_workflow_editions: strings(field(&value, "supported_workflow_editions")?)?,
+            capabilities: strings(field(&value, "capabilities")?)?,
         })
     }
+}
+
+/// A space as its JSON form, with each Dict's key order (`details.keys`),
+/// which a JSON object does not keep.
+fn space_json(spec: &SpaceSpec) -> Value {
+    let mut value = space_spec_to_json(spec).unwrap_or(Value::Null);
+    if let Some(SpaceKind::Dict(dict)) = &spec.spec
+        && let Some(details) = value.get_mut("details").and_then(Value::as_object_mut)
+    {
+        details.insert("keys".into(), json!(dict.keys));
+        let spaces: serde_json::Map<String, Value> = dict
+            .keys
+            .iter()
+            .zip(&dict.spaces)
+            .map(|(key, child)| (key.clone(), space_json(child)))
+            .collect();
+        details.insert("spaces".into(), Value::Object(spaces));
+    } else if let Some(SpaceKind::Tuple(tuple)) = &spec.spec
+        && let Some(details) = value.get_mut("details").and_then(Value::as_object_mut)
+    {
+        details.insert(
+            "spaces".into(),
+            Value::Array(tuple.spaces.iter().map(space_json).collect()),
+        );
+    }
+    value
 }
 
 /// One fundamental leaf of a Gym space.
