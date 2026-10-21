@@ -194,6 +194,18 @@ def _value(value: object) -> object:
     return value
 
 
+def _plain(value: Any) -> Any:
+    """A NumPy array or scalar as plain JSON data (``json.dumps``'s default)."""
+    if isinstance(value, np.ndarray | np.generic):
+        return cast("Any", value).tolist()
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
+
+
+def _json(value: Any) -> str:
+    """``info`` or reset ``options`` as JSON; NumPy values become lists and numbers."""
+    return json.dumps(value, default=_plain)
+
+
 def _action(entry: str, value: object) -> tuple[str, list[int], memoryview]:
     array: Array = np.asarray(value)
     dtype: np.dtype[Any] = array.dtype
@@ -411,14 +423,14 @@ class Robot:
             if result is None:
                 return (0.0, False, False, "")
             if isinstance(result, Mapping):
-                return (0.0, False, False, json.dumps(result) if result else "")
+                return (0.0, False, False, _json(result))
             reward, terminated, truncated, *rest = result
             info = rest[0] if rest else None
             return (
                 float(reward),
                 bool(terminated),
                 bool(truncated),
-                json.dumps(info) if info else "",
+                "" if info is None else _json(info),
             )
 
         def on_step(commands: dict[str, Any]) -> tuple[float, bool, bool, str]:
@@ -784,6 +796,29 @@ def _space(kind: str, *described: Any) -> Any:
     return box(info.min, info.max, shape, dtype=dtype)
 
 
+def _cast_actions(
+    actions: Mapping[str, Any], entries: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """Each array as its entry's dtype (same-kind casts only; others pass as given)."""
+
+    def cast_one(value: Any, space: Any) -> Any:
+        if isinstance(value, Mapping):
+            fields = cast("Mapping[str, Any]", value)
+            inner = getattr(space, "spaces", {})
+            return {k: cast_one(v, inner.get(k)) for k, v in fields.items()}
+        dtype = getattr(space, "dtype", None)
+        array: Array = np.asarray(value)
+        if dtype is None or array.dtype == dtype:
+            return array
+        if np.can_cast(array.dtype, dtype, casting="same_kind"):
+            return array.astype(dtype)
+        return array
+
+    if not isinstance(actions, Mapping):  # pyright: ignore[reportUnnecessaryIsInstance]
+        return actions
+    return {k: cast_one(v, entries.get(k)) for k, v in actions.items()}
+
+
 class GymView(_GymEnv):
     """A v2-native lockstep robot as a Gymnasium env (§12.6).
 
@@ -845,15 +880,25 @@ class GymView(_GymEnv):
         """Reset the robot (``seed`` and ``options`` reach its reset callback)."""
         super().reset(seed=seed)
         obs, _, _, _, info = self._out(
-            self._native.reset(seed, json.dumps(options) if options else "")
+            self._native.reset(seed, "" if options is None else _json(options))
         )
         return obs, info
 
     def step(
-        self, action: Mapping[str, Any]
+        self, action: Mapping[str, Any] | Any
     ) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
-        """One step: ``action`` keyed by action entry (one horizon's chunk each)."""
-        return self._out(self._native.step(_actions(action)))
+        """One step: ``action`` keyed by action entry (one horizon's chunk each).
+
+        With a single action entry, ``action`` may be its value alone. Each
+        array is cast to its entry's dtype when the kind allows it.
+        """
+        entries = cast("Any", self.action_space).spaces
+        actions: Mapping[str, Any] = (
+            cast("Mapping[str, Any]", action)
+            if isinstance(action, Mapping) or len(entries) != 1
+            else {next(iter(entries)): action}
+        )
+        return self._out(self._native.step(_actions(_cast_actions(actions, entries))))
 
     def close(self) -> None:
         """Release the lease and detach."""
