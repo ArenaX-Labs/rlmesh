@@ -6,6 +6,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
 from ..spaces import Space
+from . import _gym
 from ._remote_base import ActionT, RemoteClientBase, ValueT
 
 if TYPE_CHECKING:
@@ -40,6 +41,7 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
 
     _observation_space: Space[ValueT] | None = None
     _action_space: Space[ActionT] | None = None
+    _gym_codecs: tuple[_gym.Convert | None, _gym.Convert] | None = None
 
     def _make_client(
         self,
@@ -57,6 +59,8 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             request_timeout_seconds=request_timeout_seconds,
             workflow_edition=workflow_edition,
             **credentials,
+            # A Gymnasium face's info is the env's own, exactly.
+            **({"runtime_info": False} if self._gym_active else {}),
         )
 
     @property
@@ -92,8 +96,11 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             of the same name wins and shadows it; the client logs that once.
         """
         seeds = [seed] if seed is not None else None
+        if self._gym_active:
+            # Seeds this env's own ``np_random``, as ``gymnasium.Env.reset`` does.
+            cast("Any", _gym.gym).Env.reset(self, seed=seed)
         obs, info = self._client.reset(seeds=seeds, options=options)
-        return cast("ValueT", self._bridge.decode(obs)), info
+        return self._observation(obs), info
 
     def step(self, action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]:
         """Step the remote environment with one encoded action.
@@ -109,16 +116,28 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             step that ends an episode, else ``0``). An env key of the same name
             wins and shadows the runtime's; the client logs that once.
         """
+        if self._gym_active:
+            action = cast("ActionT", self._codecs()[1](action))
         obs, reward, terminated, truncated, info = self._client.step(
             self._bridge.encode(action)
         )
-        return (
-            cast("ValueT", self._bridge.decode(obs)),
-            reward,
-            terminated,
-            truncated,
-            info,
-        )
+        return self._observation(obs), reward, terminated, truncated, info
+
+    def _codecs(self) -> tuple[_gym.Convert | None, _gym.Convert]:
+        if self._gym_codecs is None:
+            self._gym_codecs = (
+                _gym.observation_converter(self.observation_space),
+                _gym.action_converter(self.action_space, self._space_spec("action")),
+            )
+        return self._gym_codecs
+
+    def _observation(self, wire: object) -> ValueT:
+        obs = self._bridge.decode(cast("Any", wire))
+        if self._gym_active:
+            convert = self._codecs()[0]
+            if convert is not None:
+                obs = convert(obs)
+        return cast("ValueT", obs)
 
     def __enter__(self) -> RemoteEnvBase[ValueT, ActionT]:
         return self

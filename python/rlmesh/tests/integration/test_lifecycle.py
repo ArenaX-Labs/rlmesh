@@ -1047,7 +1047,7 @@ def test_numpy_remote_vector_step_accepts_ndarray_action_batch() -> None:
             assert isinstance(observations, np.ndarray)
             observation_array = cast("NumpyArray", observations)
             assert observation_array.shape == (2, 4)
-            assert info["seed"] == [1, 2]
+            assert info["seed"].tolist() == [1, 2]
 
             actions = np.zeros(2, dtype=np.int64)
             observations, rewards, terminated, truncated, info = remote.step(actions)
@@ -1058,7 +1058,7 @@ def test_numpy_remote_vector_step_accepts_ndarray_action_batch() -> None:
             np.testing.assert_array_equal(rewards, np.asarray([1.0, 2.0]))
             np.testing.assert_array_equal(terminated, np.asarray([False, True]))
             np.testing.assert_array_equal(truncated, np.asarray([False, False]))
-            assert info["actions"] == [0, 0]
+            assert info["actions"].tolist() == [0, 0]
             assert env.last_actions_shape == (2,)
         finally:
             remote.close()

@@ -21,6 +21,7 @@ from .._value_conversion import ValueBridge
 from ..spaces import Space, space_from_spec
 from ..specs import EnvContract, SpaceSpec
 from ..types import Metadata
+from . import _gym
 from ._endpoint import Transport, normalize_connect_address
 from ._metadata import EMPTY_METADATA
 
@@ -37,6 +38,9 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
     """
 
     _bridge: ClassVar[ValueBridge]
+    #: Whether this backend is Gymnasium's (NumPy): with gymnasium installed,
+    #: its clients expose the env's own Gymnasium spaces and value types.
+    _gym: ClassVar[bool] = False
     _address: str
     _client: Any
 
@@ -228,10 +232,18 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
             else self._env_contract.action_space
         )
 
+    @property
+    def _gym_active(self) -> bool:
+        return type(self)._gym and _gym.gym is not None
+
     def _load_observation_space(self) -> Space[ValueT]:
         spec = self._space_spec("observation")
+        if self._gym_active:
+            return cast("Space[ValueT]", _gym.gym_space(spec))
         return cast("Space[ValueT]", space_from_spec(spec, bridge=self._bridge))
 
     def _load_action_space(self) -> Space[ActionT]:
         spec = self._space_spec("action")
+        if self._gym_active:
+            return cast("Space[ActionT]", _gym.gym_space(spec))
         return cast("Space[ActionT]", space_from_spec(spec, bridge=self._bridge))

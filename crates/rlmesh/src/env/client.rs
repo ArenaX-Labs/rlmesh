@@ -414,6 +414,8 @@ pub struct EnvClientCore {
     request_timeout: Option<Duration>,
     closed: bool,
     warned_shadowed_info_key: bool,
+    /// Whether `info` carries the runtime-reserved keys.
+    runtime_info: bool,
     /// The client class errors name (`RemoteEnv`, `RemoteVectorEnv`).
     name: &'static str,
 }
@@ -538,6 +540,7 @@ impl EnvClientCore {
             request_timeout: None,
             closed: false,
             warned_shadowed_info_key: false,
+            runtime_info: true,
             name: "the env client",
         })
     }
@@ -641,6 +644,12 @@ impl EnvClientCore {
         })
     }
 
+    /// Leave `info` exactly as the env produced it, without the
+    /// runtime-reserved keys (a Gymnasium face's `info`).
+    pub fn without_runtime_info(&mut self) {
+        self.runtime_info = false;
+    }
+
     /// Name the client class closed-handle errors report.
     pub fn set_name(&mut self, name: &'static str) {
         self.name = name;
@@ -656,6 +665,9 @@ impl EnvClientCore {
     /// Set a runtime-reserved info key unless the env reported its own; the
     /// first collision per client is logged.
     fn insert_runtime_info(&mut self, info: &mut MetaMap, key: &'static str, value: MetaValue) {
+        if !self.runtime_info {
+            return;
+        }
         if !info.contains_key(key) {
             info.insert(key.to_string(), value);
             return;

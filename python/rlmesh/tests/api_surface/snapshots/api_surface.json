@@ -602,6 +602,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "closed": {
+            "kind": "attribute",
+            "signature": "closed: bool"
+          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -927,6 +931,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "closed": {
+            "kind": "attribute",
+            "signature": "closed: bool"
           },
           "env_contract": {
             "kind": "property",
@@ -2736,6 +2744,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "closed": {
+            "kind": "attribute",
+            "signature": "closed: bool"
+          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -2997,6 +3009,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "closed": {
+            "kind": "attribute",
+            "signature": "closed: bool"
           },
           "env_contract": {
             "kind": "property",
@@ -3345,6 +3361,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "closed": {
+            "kind": "attribute",
+            "signature": "closed: bool"
+          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -3606,6 +3626,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "closed": {
+            "kind": "attribute",
+            "signature": "closed: bool"
           },
           "env_contract": {
             "kind": "property",
@@ -4852,6 +4876,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "closed": {
+            "kind": "attribute",
+            "signature": "closed: bool"
+          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -5113,6 +5141,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "closed": {
+            "kind": "attribute",
+            "signature": "closed: bool"
           },
           "env_contract": {
             "kind": "property",

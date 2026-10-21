@@ -102,6 +102,7 @@ impl ClientCore {
         workflow_edition: Option<String>,
         api_key: Option<&str>,
         tls_ca_file: Option<&std::path::Path>,
+        runtime_info: bool,
     ) -> PyResult<Self> {
         init_tracing(role);
         let profiler = ProfileCollector::new(role);
@@ -149,6 +150,9 @@ impl ClientCore {
             client.require_vector().map_err(to_py_err)?;
         }
         client.set_name(public);
+        if !runtime_info {
+            client.without_runtime_info();
+        }
         let _ = connect_guard.finish(0);
 
         Ok(Self {
@@ -299,7 +303,8 @@ macro_rules! client_class {
         #[pymethods]
         impl $Class {
             #[new]
-            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, api_key=None, tls_ca_file=None))]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, api_key=None, tls_ca_file=None, runtime_info=true))]
+            #[allow(clippy::too_many_arguments)]
             fn new(
                 address: &str,
                 connect_timeout_seconds: Option<f64>,
@@ -307,6 +312,7 @@ macro_rules! client_class {
                 workflow_edition: Option<String>,
                 api_key: Option<String>,
                 tls_ca_file: Option<String>,
+                runtime_info: bool,
             ) -> PyResult<Self> {
                 Ok(Self {
                     core: ClientCore::connect(
@@ -318,6 +324,7 @@ macro_rules! client_class {
                         workflow_edition,
                         api_key.as_deref(),
                         tls_ca_file.as_deref().map(std::path::Path::new),
+                        runtime_info,
                     )?,
                 })
             }
@@ -584,7 +591,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -608,7 +615,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
