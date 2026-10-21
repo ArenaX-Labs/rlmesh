@@ -1,8 +1,10 @@
 # RLMesh agent context (open-source framework)
 
 RLMesh connects models to environments for evaluation. This repo is the OSS
-framework: Rust crates in `crates/` (runtime, protocol, gRPC, spaces, adapters,
-sandbox, viewer, CLI, C API) and the `rlmesh` Python package in
+framework: Rust crates in `crates/` (the `rlmesh` facade, the v2 session
+`rlmesh-session` and its sans-IO core `rlmesh-session-core`, the cockpit,
+adapters, spaces, CLI, C API, and the v1 bridge `rlmesh-grpc`,
+`rlmesh-proto`, `rlmesh-runtime`) and the `rlmesh` Python package in
 `python/rlmesh/` (a maturin build whose extension crate is
 `python/rlmesh/rust`). The Python package is the supported surface. The
 managed platform consumes this repo as pinned releases; keep its contracts

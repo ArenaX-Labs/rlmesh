@@ -216,6 +216,7 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 
 - A lane endpoint served from Rust, C or C++ reports each range warning (`rlmesh.conformance.warning`) once per lane for the server's life, as a Python server does, instead of once for all lanes; a vector env still reports once for all its lanes.
 - The Rust `run_model` quickstart uses `Model::run` with a `Policy` and public `RunOptions` instead of the internal binding runner, and reports the episode and step totals. It still connects to the paired `serve_env` example.
+- The Rust crates are consolidated, and the workspace is versioned `0.2.0-alpha.0` because it no longer matches the published `0.1.0` crates. The v2 session is one crate, `rlmesh-session`, with `wire`, `spec`, `edge`, `record` (feature `record`), `gateway` (feature `gateway`, still the `rlmesh-gateway` binary), `lease` and `sdk` modules; `rlmesh-session-core` keeps the sans-IO core the browser build runs, and `rlmesh_session::{wire, spec}` re-export it. The facade gains `rlmesh::lockstep` (feature `lockstep`, formerly `rlmesh-gym`) and the live viewer as `rlmesh::viewer` (feature `viewer`, on by default); the recorder's AV1 writer is `rlmesh::recorder::video`. `rlmesh-sandbox` is part of the Python extension and no longer published. The hidden `rlmesh viewtest` command is gone.
 
 ### Fixed
 
