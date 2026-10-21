@@ -267,7 +267,7 @@ impl Core {
         };
         let context = self.context.clone();
         let elapsed = self.episode_started.elapsed().as_secs_f64();
-        let hud = rlmesh_viewer::Hud {
+        let hud = crate::view::Hud {
             step: self.episode.steps,
             reward: self.episode.reward,
             outcome: if self.episode.terminated {

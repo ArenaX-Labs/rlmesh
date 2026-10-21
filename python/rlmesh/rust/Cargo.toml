@@ -42,7 +42,6 @@ rlmesh-proto = { workspace = true }
 rlmesh-sandbox = { workspace = true }
 rlmesh-session = { workspace = true, features = ["record"] }
 rlmesh-spaces = { workspace = true }
-rlmesh-viewer = { workspace = true }
 
 async-trait = { workspace = true }
 bytes = { workspace = true }

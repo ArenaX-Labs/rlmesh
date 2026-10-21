@@ -1,4 +1,4 @@
-//! PyO3 wrapper over the `rlmesh-viewer` engine, fed from the Python Session loop.
+//! PyO3 wrapper over the `rlmesh::viewer` engine, fed from the Python Session loop.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -8,7 +8,8 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh_viewer::{Backend, FrameFormat, Hud, ThreadedVideoWriter, Viewer};
+use rlmesh::recorder::video::ThreadedVideoWriter;
+use rlmesh::viewer::{Backend, FrameFormat, Hud, Viewer};
 
 /// Native debug viewer, built by the Python `Session` when `view=` is set and fed
 /// one decoded HWC uint8 frame (the selected camera) per step.

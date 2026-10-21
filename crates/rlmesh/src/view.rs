@@ -306,19 +306,85 @@ pub(crate) fn read_frame(read: &crate::ReadFn, camera: &str) -> Option<Frame> {
     frame(&read(&image.into()).ok()?)
 }
 
+/// HUD payload, formatted per-backend (JSON for HTTP, a line for the terminal).
+///
+/// `fps` is the viewer's own draw rate (filled in by the viewer);
+/// every other field is supplied by the caller each step. A sentinel of `0` (or
+/// `-1` for `seed`) means "unknown / not applicable" and the backends omit it.
+#[derive(Clone)]
+#[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+pub struct Hud {
+    /// Steps in the current episode.
+    pub step: i64,
+    /// Return so far in the current episode.
+    pub reward: f64,
+    /// Episode status (`running`, `terminated`, `truncated`).
+    pub outcome: String,
+    /// Viewer draw rate (frames/sec actually painted); set by the viewer, not the caller.
+    pub fps: f64,
+    /// Smoothed model forward time in ms (the `predict` cost; ~0 on chunk-replay steps).
+    pub model_ms: f64,
+    /// Smoothed env `step()` time in ms (the simulator cost).
+    pub env_ms: f64,
+    /// Smoothed eval throughput in env steps/sec (distinct from the draw `fps`).
+    pub sps: f64,
+    /// Wall-clock seconds since the current episode's reset.
+    pub elapsed_s: f64,
+    /// 1-based current episode index; `0` when unknown (hand-driven loop).
+    pub episode: i64,
+    /// Total episodes in the run; `0` when unknown.
+    pub episodes: i64,
+    /// Current episode seed; `-1` when none/unknown.
+    pub seed: i64,
+    /// Selected source frame width; `0` until the first frame is fed.
+    pub width: u32,
+    /// Selected source frame height; `0` until the first frame is fed.
+    pub height: u32,
+    /// 1-based position within the current action chunk; `0` when not chunking.
+    pub chunk_pos: i64,
+    /// Action-chunk length (execution horizon); `0`/`1` when not chunking.
+    pub chunk_len: i64,
+}
+
+impl Default for Hud {
+    /// All-unknown HUD: zeroed counters/timings and the `-1` "no seed" sentinel (a
+    /// derived default would make `seed` read as a real seed of `0`).
+    fn default() -> Self {
+        Self {
+            step: 0,
+            reward: 0.0,
+            outcome: String::new(),
+            fps: 0.0,
+            model_ms: 0.0,
+            env_ms: 0.0,
+            sps: 0.0,
+            elapsed_s: 0.0,
+            episode: 0,
+            episodes: 0,
+            seed: -1,
+            width: 0,
+            height: 0,
+            chunk_pos: 0,
+            chunk_len: 0,
+        }
+    }
+}
+
 pub(crate) struct ViewerDriver {
     options: View,
-    viewer: Option<rlmesh_viewer::Viewer>,
+    #[cfg(feature = "viewer")]
+    viewer: Option<crate::viewer::Viewer>,
     disabled: bool,
     pub(crate) quit: bool,
     next_step: Option<Instant>,
     last: Option<Value>,
-    hud: rlmesh_viewer::Hud,
+    hud: Hud,
 }
 impl ViewerDriver {
     pub(crate) fn new(options: View) -> Self {
         Self {
             options,
+            #[cfg(feature = "viewer")]
             viewer: None,
             disabled: false,
             quit: false,
@@ -327,15 +393,25 @@ impl ViewerDriver {
             hud: Default::default(),
         }
     }
-    pub(crate) fn feed(
-        &mut self,
-        ctx: &dyn RunContext,
-        obs: Value,
-        hud: rlmesh_viewer::Hud,
-    ) -> Result<bool> {
+    pub(crate) fn feed(&mut self, ctx: &dyn RunContext, obs: Value, hud: Hud) -> Result<bool> {
         if self.disabled {
             return Ok(false);
         }
+        #[cfg(not(feature = "viewer"))]
+        {
+            let _ = (ctx, obs, hud);
+            self.disabled = true;
+            crate::warnings::warn(
+                crate::WarningCategory::UserWarning,
+                "rlmesh view: this build has no viewer (the `viewer` feature is off); viewer disabled.",
+            )?;
+            Ok(false)
+        }
+        #[cfg(feature = "viewer")]
+        self.feed_viewer(ctx, obs, hud)
+    }
+    #[cfg(feature = "viewer")]
+    fn feed_viewer(&mut self, ctx: &dyn RunContext, obs: Value, hud: Hud) -> Result<bool> {
         let mut sources = ctx.frame_sources()?;
         if self.viewer.is_none() {
             if sources.labels().is_empty() {
@@ -346,7 +422,7 @@ impl ViewerDriver {
                 )?;
                 return Ok(false);
             }
-            use rlmesh_viewer::{Backend, FrameFormat, Viewer};
+            use crate::viewer::{Backend, FrameFormat, Viewer};
             let backends = match self.options.backend {
                 ViewBackend::Terminal => vec![Backend::Terminal],
                 ViewBackend::Http => vec![Backend::Http(self.options.port)],
@@ -400,7 +476,7 @@ impl ViewerDriver {
             }
         }
         self.last = Some(obs);
-        self.hud = rlmesh_viewer::Hud {
+        self.hud = Hud {
             width: self.hud.width,
             height: self.hud.height,
             ..hud
@@ -424,7 +500,10 @@ impl ViewerDriver {
     }
     pub(crate) fn disable(&mut self) {
         self.disabled = true;
-        self.viewer = None;
+        #[cfg(feature = "viewer")]
+        {
+            self.viewer = None;
+        }
     }
     pub(crate) fn hold(&self) -> ViewHold {
         if self.disabled || self.quit || self.last.is_none() {

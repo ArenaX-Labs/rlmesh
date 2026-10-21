@@ -2,7 +2,7 @@
 //! thread for live source switching + quitting, and orchestrates per-frame drawing.
 //!
 //! Frame rendering itself — the native inline-image protocols and the truecolor
-//! half-block fallback — lives in [`crate::graphics`]. This module owns the terminal
+//! half-block fallback — lives in [`crate::viewer::graphics`]. This module owns the terminal
 //! lifecycle, key input, the HUD footer, and resize reflow. `crossterm` handles the
 //! alt-screen takeover (reversible: scrollback returns on drop), raw-mode key input,
 //! and terminal size.
@@ -18,7 +18,7 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, event, execute, terminal};
 use image::RgbImage;
 
-use crate::graphics::{self, Graphics};
+use crate::viewer::graphics::{self, Graphics};
 
 /// Owns the terminal takeover and the key thread; restores everything on drop.
 pub struct Terminal {
@@ -70,7 +70,7 @@ impl Drop for Terminal {
     }
 }
 
-/// Render one frame at the current terminal size: the image (via [`crate::graphics`])
+/// Render one frame at the current terminal size: the image (via [`crate::viewer::graphics`])
 /// plus the source-selector / HUD footer, in a single flush. Shared by the draw path
 /// and the key thread's resize reflow; each call writes a whole frame, so concurrent
 /// calls never interleave mid-escape.
@@ -179,7 +179,7 @@ fn footer(shared: &super::http::HttpShared, cols: u16, rows: u16, out: &mut Stri
 /// When the terminal is too narrow, the lowest-priority groups are dropped first
 /// (frame info, then chunk, then timing) while `step` and the reward/outcome always
 /// stay — so a narrow window still shows the essentials instead of wrapping.
-fn hud_line(hud: &super::http::Hud, cols: usize) -> String {
+fn hud_line(hud: &super::Hud, cols: usize) -> String {
     // Group A — progress (mandatory; carries `step`): "ep i/N  step S  M:SS  seed N".
     let mut a = String::new();
     if hud.episodes > 0 {
@@ -268,7 +268,7 @@ fn fmt_ms(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::Hud;
+    use crate::viewer::Hud;
 
     fn sample() -> Hud {
         Hud {

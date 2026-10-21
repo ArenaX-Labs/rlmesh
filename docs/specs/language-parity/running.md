@@ -1124,7 +1124,7 @@ relay keeps its semantics (RUN-8); only the thread its hooks run on changes
 
 - No `run`, `session`, `Session`, `RunContext`, `RunHooks`, results, `Reader`,
   `FrameSources`, `View` or `Recorder` on the facade (G-7, G-12;
-  `crates/rlmesh-viewer` is on no facade; the recorder is Python-only,
+  the live viewer is on no facade; the recorder is Python-only,
   `py/recorder/`).
 - `ModelWorker::run_local(self)` consumes the worker and closes the handler
   (`rs/model/worker.rs:263-324`; X-7, G-2), panics inside a runtime

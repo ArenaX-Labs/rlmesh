@@ -36,12 +36,16 @@ rlmesh-grpc = { workspace = true }
 rlmesh-session = { workspace = true, features = ["record"], optional = true }
 rlmesh-proto = { workspace = true }
 rlmesh-runtime = { workspace = true }
-rlmesh-viewer = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tempfile = { workspace = true }
 zip = { version = "2", default-features = false }
 futures = { workspace = true }
 image = { workspace = true, features = ["png"] }
+# The recorder's in-process AV1 episode videos.
+rav1e = { workspace = true }
+# The live viewer (feature `viewer`): terminal and HTTP backends.
+crossterm = { version = "0.29", optional = true }
+tiny_http = { version = "0.12", optional = true }
 indexmap = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
@@ -59,12 +63,16 @@ uuid = { workspace = true, features = ["v4", "v7"] }
 libc = { workspace = true }
 
 [dev-dependencies]
+re_mp4 = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tonic-health = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [features]
+default = ["viewer"]
+# The live terminal/HTTP viewer behind `View`.
+viewer = ["dep:crossterm", "dep:tiny_http", "image/jpeg"]
 # Serve envs and drive models over the v2 lockstep path (`lockstep://`).
 lockstep = [
   "dep:base64",

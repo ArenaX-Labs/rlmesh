@@ -173,11 +173,3 @@ version = "0.1.0"
 role = "core"
 publish = true
 
-[[artifact]]
-id = "cargo:rlmesh-viewer"
-ecosystem = "cargo"
-name = "rlmesh-viewer"
-manifest = "crates/rlmesh-viewer/Cargo.toml"
-version = "0.1.0"
-role = "core"
-publish = true

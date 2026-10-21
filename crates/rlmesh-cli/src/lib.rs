@@ -13,7 +13,6 @@ mod render;
 mod session;
 mod settings;
 pub mod variant;
-mod viewtest;
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -76,7 +75,6 @@ pub async fn run_cli_in(
 
     let mut profiles = match &cli.command {
         Command::Version
-        | Command::Viewtest(_)
         | Command::Check(_)
         | Command::CheckImage(_)
         | Command::Describe(_)
@@ -177,7 +175,6 @@ pub async fn run_cli_in(
         Command::Check(args) => check::check_target(&args, stdout, stdout_style),
         Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),
         Command::Describe(args) => check::describe(&args, stdout, stderr),
-        Command::Viewtest(args) => viewtest::run(&args, stderr).map(|_| 0),
     };
 
     match result {

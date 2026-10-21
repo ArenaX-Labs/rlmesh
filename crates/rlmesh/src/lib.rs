@@ -36,6 +36,9 @@
 //!   over a v2 session (`lockstep://` addresses for [`EnvServer`] and
 //!   local models). Pulls in `rlmesh-session`.
 //!
+//! - `viewer` (default): the live terminal/HTTP [`viewer`] behind
+//!   [`View`]. Without it a run's `view` warns and shows nothing.
+//!
 //! # Errors
 //!
 //! Fallible operations return [`Result`], an alias for `Result<T, Error>`.
@@ -149,6 +152,8 @@ mod tensor;
 pub mod types;
 mod value;
 mod view;
+#[cfg(feature = "viewer")]
+pub mod viewer;
 mod warnings;
 
 pub(crate) use address::{BindAddress, ConnectAddress};

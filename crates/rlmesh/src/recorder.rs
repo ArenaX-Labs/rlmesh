@@ -4,6 +4,7 @@ mod export;
 mod records;
 #[cfg(test)]
 mod tests;
+pub mod video;
 use crate::{Error, Metadata, Result, RunContext, RunHooks, RunResult, Value};
 pub use records::{EpisodeRecord, MediaRef, WorkloadRecord};
 use std::{

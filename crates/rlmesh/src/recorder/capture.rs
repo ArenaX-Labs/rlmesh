@@ -31,7 +31,7 @@ fn warn(message: impl Into<String>) {
     let _ = crate::warnings::warn(crate::WarningCategory::UserWarning, message);
 }
 struct Camera {
-    writer: rlmesh_viewer::VideoWriter,
+    writer: super::video::VideoWriter,
     staged: PathBuf,
     rel: String,
 }
@@ -113,7 +113,7 @@ impl Capture {
                 state.stage(&self.prefix, episode, &format!("{}.mp4", sanitize(camera)))?;
             // The encoder uses a u32 MP4 timebase. Saturating an unbounded fps
             // only affects rates no physical stream can produce.
-            let writer = rlmesh_viewer::VideoWriter::create(
+            let writer = super::video::VideoWriter::create(
                 &staged,
                 frame.width,
                 frame.height,

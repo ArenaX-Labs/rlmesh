@@ -11,6 +11,8 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, RgbImage};
 
+pub use crate::recorder::video::rgb_from_hwc;
+
 /// Wire encoding for a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameFormat {
@@ -21,37 +23,13 @@ pub enum FrameFormat {
 }
 
 impl FrameFormat {
+    /// The format's MIME type.
     pub fn content_type(self) -> &'static str {
         match self {
             FrameFormat::Jpeg(_) => "image/jpeg",
             FrameFormat::Png => "image/png",
         }
     }
-}
-
-/// Build an RGB frame from a contiguous HWC uint8 buffer (`channels` = 1/3/4).
-/// Grayscale expands to RGB; alpha is dropped. Returns `None` if the buffer is
-/// too short or `channels` is unsupported.
-pub fn rgb_from_hwc(buf: &[u8], width: u32, height: u32, channels: u32) -> Option<RgbImage> {
-    let (w, h, c) = (width as usize, height as usize, channels as usize);
-    let needed = w.checked_mul(h)?.checked_mul(c)?;
-    if c == 0 || buf.len() < needed {
-        return None;
-    }
-    if c == 3 {
-        return RgbImage::from_raw(width, height, buf[..needed].to_vec());
-    }
-    let mut rgb = Vec::with_capacity(w * h * 3);
-    for px in 0..w * h {
-        let base = px * c;
-        let (r, g, b) = if c == 1 {
-            (buf[base], buf[base], buf[base])
-        } else {
-            (buf[base], buf[base + 1], buf[base + 2]) // c == 4: drop alpha
-        };
-        rgb.extend_from_slice(&[r, g, b]);
-    }
-    RgbImage::from_raw(width, height, rgb)
 }
 
 /// Encode an RGB frame in the chosen wire format.

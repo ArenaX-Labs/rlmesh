@@ -1,7 +1,7 @@
 //! In-process AV1 recording: encode HWC frames to an `.mp4` with no ffmpeg.
 //!
 //! [`VideoWriter`] is the recording sink dual of the display sinks: it takes the
-//! same RGB frames the viewer already normalizes (via [`crate::frame::rgb_from_hwc`]),
+//! same RGB frames the viewer already normalizes (via [`rgb_from_hwc`]),
 //! encodes them to AV1 with `rav1e` (pure Rust, royalty-free), and muxes the
 //! bitstream into a plain MP4 (`av01` sample entry) as each packet comes out --
 //! streaming, so peak memory is one frame plus the encoder state, never the whole
@@ -18,7 +18,7 @@ use std::path::Path;
 use rav1e::config::SpeedSettings;
 use rav1e::prelude::*;
 
-use crate::frame::rgb_from_hwc;
+use image::RgbImage;
 
 /// Fixed MP4 offset where sample data begins: `ftyp` (32) + `mdat` header (16).
 const MDAT_DATA_OFFSET: u64 = 32 + 16;
@@ -26,8 +26,11 @@ const MDAT_DATA_OFFSET: u64 = 32 + 16;
 /// What [`VideoWriter::finish`] reports for the media manifest row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
+    /// Frames written.
     pub frame_count: u32,
+    /// Frame width in pixels.
     pub width: u32,
+    /// Frame height in pixels.
     pub height: u32,
 }
 
@@ -526,6 +529,31 @@ fn full_box(
     b.extend_from_slice(&flags.to_be_bytes()[1..]);
     body(b);
     close_box(b, pos);
+}
+
+/// Build an RGB frame from a contiguous HWC uint8 buffer (`channels` = 1/3/4).
+/// Grayscale expands to RGB; alpha is dropped. Returns `None` if the buffer is
+/// too short or `channels` is unsupported.
+pub fn rgb_from_hwc(buf: &[u8], width: u32, height: u32, channels: u32) -> Option<RgbImage> {
+    let (w, h, c) = (width as usize, height as usize, channels as usize);
+    let needed = w.checked_mul(h)?.checked_mul(c)?;
+    if c == 0 || buf.len() < needed {
+        return None;
+    }
+    if c == 3 {
+        return RgbImage::from_raw(width, height, buf[..needed].to_vec());
+    }
+    let mut rgb = Vec::with_capacity(w * h * 3);
+    for px in 0..w * h {
+        let base = px * c;
+        let (r, g, b) = if c == 1 {
+            (buf[base], buf[base], buf[base])
+        } else {
+            (buf[base], buf[base + 1], buf[base + 2]) // c == 4: drop alpha
+        };
+        rgb.extend_from_slice(&[r, g, b]);
+    }
+    RgbImage::from_raw(width, height, rgb)
 }
 
 #[cfg(test)]

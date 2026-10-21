@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use image::RgbImage;
 use image::imageops::FilterType;
 
-use crate::frame::{self, FrameFormat};
+use crate::viewer::frame::{self, FrameFormat};
 
 /// Upper half block (▀): one cell renders two vertically-stacked pixels.
 const UPPER_HALF: char = '\u{2580}';

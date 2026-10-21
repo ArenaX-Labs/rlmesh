@@ -12,7 +12,6 @@ default-members = [
   "crates/rlmesh-session",
   "crates/rlmesh-session-core",
   "crates/rlmesh-spaces",
-  "crates/rlmesh-viewer",
   "python/rlmesh/rust",
 ]
 members = ["crates/*", "javascript/rlmesh/native", "javascript/rlmesh/wasm", "python/rlmesh/rust"]
@@ -43,7 +42,6 @@ rlmesh-sandbox = { version = "=0.1.0", path = "crates/rlmesh-sandbox" }
 rlmesh-session = { version = "=0.1.0", path = "crates/rlmesh-session", default-features = false }
 rlmesh-session-core = { version = "=0.1.0", path = "crates/rlmesh-session-core" }
 rlmesh-spaces = { version = "=0.1.0", path = "crates/rlmesh-spaces" }
-rlmesh-viewer = { version = "=0.1.0", path = "crates/rlmesh-viewer" }
 rlmesh-wasm = { version = "=0.1.0", path = "javascript/rlmesh/wasm" }
 
 # Protocol / Transport

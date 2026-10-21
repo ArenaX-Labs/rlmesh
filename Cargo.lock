@@ -5192,25 +5192,28 @@ dependencies = [
  "blake3",
  "bytes",
  "chrono",
+ "crossterm",
  "futures",
  "image",
  "indexmap 2.14.0",
  "libc",
  "prost",
  "rand 0.10.1",
+ "rav1e",
  "rayon",
+ "re_mp4",
  "rlmesh-adapters",
  "rlmesh-grpc",
  "rlmesh-proto",
  "rlmesh-runtime",
  "rlmesh-session",
  "rlmesh-spaces",
- "rlmesh-viewer",
  "scoped-tls-hkt",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tiny_http",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -5259,7 +5262,6 @@ dependencies = [
  "keyring",
  "reqwest",
  "rlmesh-proto",
- "rlmesh-viewer",
  "rustls",
  "serde",
  "serde_json",
@@ -5359,7 +5361,6 @@ dependencies = [
  "rlmesh-sandbox",
  "rlmesh-session",
  "rlmesh-spaces",
- "rlmesh-viewer",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -5461,20 +5462,6 @@ dependencies = [
  "proptest",
  "rand 0.10.1",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "rlmesh-viewer"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "image",
- "rav1e",
- "re_mp4",
- "serde_json",
- "tempfile",
- "tiny_http",
- "tracing",
 ]
 
 [[package]]

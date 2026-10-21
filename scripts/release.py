@@ -47,7 +47,6 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
 CRATE_ORDER = [
     "rlmesh-proto",
     "rlmesh-spaces",
-    "rlmesh-viewer",
     "rlmesh-adapters",
     "rlmesh-cli",
     "rlmesh-runtime",

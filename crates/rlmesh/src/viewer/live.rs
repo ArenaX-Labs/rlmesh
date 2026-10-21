@@ -6,16 +6,19 @@ use std::time::{Duration, Instant};
 
 use tiny_http::Server;
 
-use crate::frame::{self, FrameFormat};
-use crate::http::{self, HttpShared, Hud};
-use crate::terminal::Terminal;
+use super::Hud;
+use super::http::{self, HttpShared};
+use crate::viewer::frame::{self, FrameFormat};
+use crate::viewer::terminal::Terminal;
 
 /// Where the viewer draws. Terminal is the primary backend (works over bare SSH);
 /// HTTP is the zero-terminal-impact one (watch in a browser). Enable either or
 /// both — they share one selected-source state, so switching stays in sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
+    /// In-place ANSI frames in this terminal.
     Terminal,
+    /// A local HTTP page on this port.
     Http(u16),
 }
 
