@@ -25,6 +25,9 @@ from . import _gym
 from ._endpoint import Transport, normalize_connect_address
 from ._metadata import EMPTY_METADATA
 
+# The contract metadata key the served env's `EnvSpec` travels under.
+_GYM_SPEC_KEY = "rlmesh.gym.spec"
+
 ValueT = TypeVar("ValueT")
 ActionT = TypeVar("ActionT")
 
@@ -191,7 +194,23 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         metadata = self._env_contract.metadata
         if metadata is None:
             return EMPTY_METADATA
+        metadata = {k: v for k, v in metadata.items() if k != _GYM_SPEC_KEY}
         return self._adapt_metadata(cast("Mapping[str, object]", metadata))
+
+    @property
+    def spec(self) -> Any:
+        """The served Gymnasium env's ``EnvSpec``.
+
+        ``None`` when the env has no spec or Gymnasium is not installed.
+        """
+        text = (self._env_contract.metadata or {}).get(_GYM_SPEC_KEY)
+        if not isinstance(text, str):
+            return None
+        try:
+            from gymnasium.envs.registration import EnvSpec
+        except ImportError:
+            return None
+        return EnvSpec.from_json(text)
 
     @property
     def observation_space_spec(self) -> SpaceSpec:

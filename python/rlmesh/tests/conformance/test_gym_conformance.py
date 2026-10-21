@@ -567,7 +567,6 @@ def test_an_env_served_already_wrapped_steps_as_it_does_unserved(case: str) -> N
     assert difference(want, got, scalars=True) is None
 
 
-@GAP
 def test_the_env_s_spec_is_forwarded_and_close_detaches() -> None:
     reference = make("CartPole-v1")
     env = make("CartPole-v1")

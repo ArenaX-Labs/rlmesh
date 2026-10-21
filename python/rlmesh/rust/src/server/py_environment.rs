@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::conversion::{
-    derive_autoreset_mode, encode_render_png, extract_optional_meta_attr, extract_render_mode,
+    derive_autoreset_mode, encode_render_png, extract_metadata, extract_render_mode,
     normalize_reset_result, normalize_single_step_result, normalize_vector_step_result,
 };
 use crate::spaces::{
@@ -412,7 +412,7 @@ pub fn derive_env_contract(env_ref: &Bound<'_, PyAny>) -> PyResult<(EnvContract,
         id: env_id,
         observation_space: Some(observation_space.clone()),
         action_space: Some(action_space.clone()),
-        metadata: extract_optional_meta_attr(env_ref, "metadata")?,
+        metadata: extract_metadata(env_ref)?,
         render_mode: extract_render_mode(env_ref)?,
         num_envs: num_envs as u32,
         autoreset_mode: derive_autoreset_mode(env_ref)?,

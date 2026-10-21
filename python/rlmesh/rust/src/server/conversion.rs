@@ -12,7 +12,7 @@ use rlmesh_spaces::{AutoresetMode, MetaMap};
 
 use crate::spaces::{ValueBackend, py_any_to_meta_map, py_any_to_space_value_with_backend};
 
-pub(super) fn extract_optional_meta_attr(
+fn extract_optional_meta_attr(
     obj: &Bound<'_, PyAny>,
     attr_name: &str,
 ) -> PyResult<Option<MetaMap>> {
@@ -26,6 +26,53 @@ pub(super) fn extract_optional_meta_attr(
     }
 
     Ok(Some(py_any_to_meta_map(&value)?))
+}
+
+/// The contract metadata key a Gymnasium env's `EnvSpec` travels under, as
+/// `EnvSpec.to_json()` (a client strips it from the metadata it reports).
+pub(super) const GYM_SPEC_KEY: &str = "rlmesh.gym.spec";
+
+/// `spec_json(env)`: the env's `EnvSpec` as JSON, or `None`. A spec whose
+/// kwargs or entry points are not JSON keeps its basic fields.
+const SPEC_JSON: &std::ffi::CStr = cr#"
+import dataclasses
+
+def spec_json(env):
+    spec = getattr(env, "spec", None)
+    if spec is None or not hasattr(spec, "to_json"):
+        return None
+    try:
+        return spec.to_json()
+    except Exception:
+        text = lambda v: v if isinstance(v, str) else None
+        return dataclasses.replace(
+            spec,
+            entry_point=text(spec.entry_point),
+            vector_entry_point=text(spec.vector_entry_point),
+            kwargs={},
+            additional_wrappers=(),
+        ).to_json()
+"#;
+
+/// `obj.metadata` with its `EnvSpec` (if it has one) under [`GYM_SPEC_KEY`].
+pub(super) fn extract_metadata(obj: &Bound<'_, PyAny>) -> PyResult<Option<MetaMap>> {
+    let mut metadata = extract_optional_meta_attr(obj, "metadata")?;
+    let py = obj.py();
+    let globals = PyDict::new(py);
+    py.run(SPEC_JSON, Some(&globals), None)?;
+    let spec = globals
+        .get_item("spec_json")?
+        .map(|f| f.call1((obj,)))
+        .transpose()
+        .ok()
+        .flatten()
+        .and_then(|text| text.extract::<String>().ok());
+    if let Some(spec) = spec {
+        metadata
+            .get_or_insert_with(MetaMap::new)
+            .insert(GYM_SPEC_KEY.into(), rlmesh_spaces::MetaValue::String(spec));
+    }
+    Ok(metadata)
 }
 
 pub(super) fn extract_render_mode(obj: &Bound<'_, PyAny>) -> PyResult<String> {

@@ -483,3 +483,27 @@ def test_an_env_s_builtin_exception_raises_its_class_with_its_message(
             remote.close()
     finally:
         server.shutdown()
+
+
+def test_a_spec_that_is_not_json_forwards_its_basic_fields() -> None:
+    from gymnasium.envs.registration import EnvSpec
+
+    env = gym.make("CartPole-v1").unwrapped
+    # Its own metadata: a vector env elsewhere writes the class's autoreset mode.
+    env.metadata = {"render_modes": []}
+    env.spec = EnvSpec(
+        "Mine-v0", entry_point=type(env), max_episode_steps=9, kwargs={"x": object()}
+    )
+    server = rlmesh.EnvServer(env, "lockstep://127.0.0.1:0/spec")
+    server.start()
+    try:
+        remote = rlmesh.numpy.RemoteEnv(server.address)
+        try:
+            assert remote.spec is not None
+            assert (remote.spec.id, remote.spec.max_episode_steps) == ("Mine-v0", 9)
+            assert remote.spec.kwargs == {} and remote.spec.entry_point is None
+            assert "rlmesh.gym.spec" not in remote.metadata
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()

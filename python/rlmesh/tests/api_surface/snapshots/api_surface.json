@@ -560,6 +560,10 @@
             "kind": "function",
             "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
+          },
           "step": {
             "kind": "function",
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
@@ -657,6 +661,10 @@
           "single_observation_space": {
             "kind": "property",
             "signature": "property single_observation_space: Space[ValueT]"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -855,6 +863,10 @@
             "kind": "property",
             "signature": "property source: str"
           },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
+          },
           "step": {
             "kind": "function",
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
@@ -995,6 +1007,10 @@
           "source": {
             "kind": "property",
             "signature": "property source: str"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -2702,6 +2718,10 @@
             "kind": "function",
             "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
+          },
           "step": {
             "kind": "function",
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
@@ -2799,6 +2819,10 @@
           "single_observation_space": {
             "kind": "property",
             "signature": "property single_observation_space: Space[ValueT]"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -2909,6 +2933,10 @@
           "source": {
             "kind": "property",
             "signature": "property source: str"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -3073,6 +3101,10 @@
           "source": {
             "kind": "property",
             "signature": "property source: str"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -3319,6 +3351,10 @@
             "kind": "function",
             "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
+          },
           "step": {
             "kind": "function",
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
@@ -3416,6 +3452,10 @@
           "single_observation_space": {
             "kind": "property",
             "signature": "property single_observation_space: Space[ValueT]"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -3526,6 +3566,10 @@
           "source": {
             "kind": "property",
             "signature": "property source: str"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -3690,6 +3734,10 @@
           "source": {
             "kind": "property",
             "signature": "property source: str"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -4834,6 +4882,10 @@
             "kind": "function",
             "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
+          },
           "step": {
             "kind": "function",
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
@@ -4931,6 +4983,10 @@
           "single_observation_space": {
             "kind": "property",
             "signature": "property single_observation_space: Space[ValueT]"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -5041,6 +5097,10 @@
           "source": {
             "kind": "property",
             "signature": "property source: str"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
@@ -5205,6 +5265,10 @@
           "source": {
             "kind": "property",
             "signature": "property source: str"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: Any"
           },
           "step": {
             "kind": "function",
