@@ -152,6 +152,19 @@ pub enum ProtocolError {
     UnexpectedMessage { expected: String, actual: String },
 }
 
+impl From<rlmesh_spaces::leaves::LeafError> for ProtocolError {
+    fn from(error: rlmesh_spaces::leaves::LeafError) -> Self {
+        use rlmesh_spaces::leaves::LeafError;
+        match error {
+            LeafError::Encode(message) => Self::EncodeError(message),
+            LeafError::Decode(message) => Self::DecodeError(message),
+            LeafError::OutOfRange(message) => Self::OutOfRange(message),
+            LeafError::LengthMismatch(message) => Self::LengthMismatch(message),
+            other => Self::DecodeError(other.to_string()),
+        }
+    }
+}
+
 /// Environment errors (from the environment itself).
 #[derive(Debug, Error)]
 pub struct EnvError {

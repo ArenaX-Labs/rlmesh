@@ -3,8 +3,8 @@ use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 
-use super::leaves::{decode_leaf_slab, encode_leaf_slab};
 use super::payload::{leaves_value, value_leaves};
+use rlmesh_spaces::leaves::{decode_leaf_slab, encode_leaf_slab};
 
 /// Encode `values.len()` lanes into one batched wire [`SpaceValue`] (row-major
 /// `(N, *shape)` slab per leaf).
@@ -25,7 +25,7 @@ pub fn decode_batched_partial_values(
     n: usize,
 ) -> Result<Vec<native::SpaceValue>, ProtocolError> {
     match value_leaves(payload) {
-        Some(leaves) => decode_leaf_slab(leaves, space, n),
+        Some(leaves) => Ok(decode_leaf_slab(leaves, space, n)?),
         None => Ok(Vec::new()),
     }
 }

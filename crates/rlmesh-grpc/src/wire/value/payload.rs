@@ -5,7 +5,7 @@ use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 
-use super::leaves::{decode_leaves, encode_leaves};
+use rlmesh_spaces::leaves::{decode_leaves, encode_leaves};
 
 /// Wrap leaf byte slabs into a wire [`SpaceValue`].
 pub fn leaves_value(leaves: Vec<Bytes>) -> SpaceValue {

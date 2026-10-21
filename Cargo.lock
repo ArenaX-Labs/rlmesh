@@ -5445,10 +5445,12 @@ dependencies = [
 name = "rlmesh-spaces"
 version = "0.2.0-alpha.0"
 dependencies = [
+ "bytes",
  "chacha20",
  "half",
  "proptest",
  "rand 0.10.1",
+ "rayon",
  "thiserror 2.0.18",
 ]
 

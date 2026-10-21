@@ -406,23 +406,6 @@ fn wire_decode_rejects_malformed_specs() {
 }
 
 #[test]
-fn float_to_int_rejects_two_pow_63_boundary() {
-    use super::scalars::float_to_int;
-
-    // `i64::MAX as f64` rounds up to 2^63; an exact 2^63 input must be
-    // rejected rather than saturated to i64::MAX by `as i64`.
-    let two_pow_63 = (i64::MAX as f64) + 1.0 - 1.0; // 2^63 exactly
-    assert_eq!(two_pow_63, 9223372036854775808.0);
-    let err = float_to_int(two_pow_63).expect_err("2^63 is out of i64 range");
-    assert!(err.to_string().contains("out of range"));
-
-    // The largest f64 strictly below 2^63 and i64::MIN itself both convert.
-    let below = f64::from_bits(two_pow_63.to_bits() - 1);
-    assert_eq!(float_to_int(below).unwrap(), below as i64);
-    assert_eq!(float_to_int(i64::MIN as f64).unwrap(), i64::MIN);
-}
-
-#[test]
 fn large_image_batch_roundtrips_identically_through_parallel_slab_paths() {
     // Two 120KB image leaves x 3 lanes crosses PARALLEL_SLAB_MIN_BYTES on both
     // the per-leaf-column and per-lane fan-outs; the parallel paths must stay
