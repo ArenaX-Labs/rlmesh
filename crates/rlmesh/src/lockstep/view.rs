@@ -38,8 +38,14 @@ use rlmesh_session::wire::{
     LockstepStep, PartSpec, PartValues, ParticipantId,
 };
 
+use rlmesh_spaces::{
+    BoxBounds, BoxSpec, DictSpec, MetaMap, MetaValue, Scalar, SpaceKind, SpaceSpec, SpaceValue,
+    TextSpec, TypedUniformBounds, UniformBounds,
+};
+
 use crate::lockstep::error::GymError;
 use crate::lockstep::exchange::{LockstepLink, Request};
+use crate::lockstep::meta_json;
 
 /// What one observation or action entry is.
 #[derive(Clone, Debug, PartialEq)]
@@ -407,6 +413,28 @@ impl GymView {
             .collect()
     }
 
+    /// The observation and action spaces, keyed by entry: an array entry
+    /// a `Box` spanning its dtype (a float's unbounded), a text entry a
+    /// `Text`, a multi-field entry a `Dict` of its fields.
+    pub fn spaces(&self) -> (SpaceSpec, SpaceSpec) {
+        let space = |entries: Vec<(String, Entry)>| {
+            let (keys, spaces) = entries
+                .into_iter()
+                .map(|(name, entry)| (name, entry_space(&entry)))
+                .unzip();
+            dict_space(keys, spaces)
+        };
+        (
+            space(self.observation_entries()),
+            space(self.action_entries()),
+        )
+    }
+
+    /// Lane 0's frame (PNG bytes), if the robot renders one.
+    pub async fn render(&self) -> Result<Option<Bytes>, GymError> {
+        self.link.render(0, None).await
+    }
+
     /// Resets (`seed`: one seed; `options_json`: Gym options).
     pub async fn reset(&self, seed: Option<u64>, options_json: &str) -> Result<ViewStep, GymError> {
         let reset = LockstepReset {
@@ -690,6 +718,174 @@ fn zeros(fields: &[FieldSpec]) -> Value {
         [field] => Value::Tensor(tensor(field)),
         fields => Value::Dict(fields.iter().map(|f| (f.name.clone(), tensor(f))).collect()),
     }
+}
+
+fn dict_space(keys: Vec<String>, spaces: Vec<SpaceSpec>) -> SpaceSpec {
+    SpaceSpec {
+        shape: Vec::new(),
+        dtype: rlmesh_spaces::DType::Unspecified,
+        spec: Some(SpaceKind::Dict(DictSpec { keys, spaces })),
+    }
+}
+
+fn array_space(dtype: DType, shape: &[u32]) -> SpaceSpec {
+    let native = rlmesh_spaces::DType::from_name(dtype.name()).unwrap_or_default();
+    let typed = |low: Scalar, high: Scalar| {
+        let bytes = |s| rlmesh_spaces::encode_scalars(&[s], native).unwrap_or_default();
+        BoxBounds::TypedUniform(TypedUniformBounds {
+            low: bytes(low),
+            high: bytes(high),
+        })
+    };
+    let bounds = match dtype {
+        DType::F16 | DType::F32 | DType::F64 => BoxBounds::Uniform(UniformBounds {
+            low: f64::NEG_INFINITY,
+            high: f64::INFINITY,
+        }),
+        DType::Bool => typed(Scalar::Bool(false), Scalar::Bool(true)),
+        // The dtype's own range; `u64`'s top wraps to -1, as its scalars do.
+        DType::U64 => typed(Scalar::Int(0), Scalar::Int(-1)),
+        _ => {
+            let bits = dtype.size() * 8;
+            let signed = matches!(dtype, DType::I8 | DType::I16 | DType::I32 | DType::I64);
+            let (low, high) = if signed {
+                (-(1_i128 << (bits - 1)), (1_i128 << (bits - 1)) - 1)
+            } else {
+                (0, (1_i128 << bits) - 1)
+            };
+            typed(Scalar::Int(low as i64), Scalar::Int(high as i64))
+        }
+    };
+    SpaceSpec {
+        shape: shape.iter().map(|d| i64::from(*d)).collect(),
+        dtype: native,
+        spec: Some(SpaceKind::Box(BoxSpec {
+            bounds: Some(bounds),
+        })),
+    }
+}
+
+fn entry_space(entry: &Entry) -> SpaceSpec {
+    match entry {
+        Entry::Array { dtype, shape } => array_space(*dtype, shape),
+        Entry::Text => SpaceSpec {
+            shape: Vec::new(),
+            dtype: rlmesh_spaces::DType::Uint8,
+            spec: Some(SpaceKind::Text(TextSpec {
+                min_length: 1,
+                max_length: 4096,
+                charset: String::new(),
+            })),
+        },
+        Entry::Dict(fields) => dict_space(
+            fields.iter().map(|(name, _, _)| name.clone()).collect(),
+            fields
+                .iter()
+                .map(|(_, dtype, shape)| array_space(*dtype, shape))
+                .collect(),
+        ),
+    }
+}
+
+fn tensor_value(tensor: Tensor) -> Result<SpaceValue, GymError> {
+    let dtype = rlmesh_spaces::DType::from_name(tensor.dtype.name())
+        .ok_or_else(|| GymError::Malformed(format!("dtype {}", tensor.dtype.name())))?;
+    let shape = tensor.shape.iter().map(|d| i64::from(*d)).collect();
+    rlmesh_spaces::Tensor::from_vec(tensor.data, shape, dtype)
+        .map(SpaceValue::Box)
+        .map_err(|e| GymError::Malformed(e.to_string()))
+}
+
+fn value_tensor(value: &SpaceValue, what: &str) -> Result<Tensor, GymError> {
+    let SpaceValue::Box(tensor) = value else {
+        return Err(GymError::Value(format!("{what}: not an array")));
+    };
+    Ok(Tensor {
+        dtype: DType::from_name(tensor.dtype().name())
+            .ok_or_else(|| GymError::Value(format!("{what}: dtype {}", tensor.dtype())))?,
+        shape: tensor.shape().iter().map(|d| *d as u32).collect(),
+        data: tensor.to_contiguous_bytes().into_owned(),
+    })
+}
+
+/// A view step's observation as a value of [`GymView::spaces`]' observation
+/// space.
+pub fn observation_value(observation: Vec<(String, Value)>) -> Result<SpaceValue, GymError> {
+    observation
+        .into_iter()
+        .map(|(name, value)| {
+            let value = match value {
+                Value::Tensor(tensor) => tensor_value(tensor)?,
+                Value::Text(text) => SpaceValue::Text(text),
+                Value::Dict(fields) => SpaceValue::Dict(
+                    fields
+                        .into_iter()
+                        .map(|(field, tensor)| Ok((field, tensor_value(tensor)?)))
+                        .collect::<Result<_, GymError>>()?,
+                ),
+            };
+            Ok((name, value))
+        })
+        .collect::<Result<_, _>>()
+        .map(SpaceValue::Dict)
+}
+
+/// A value of [`GymView::spaces`]' action space as [`GymView::step`]'s
+/// actions.
+pub fn action_values(action: &SpaceValue) -> Result<Vec<(String, Value)>, GymError> {
+    let SpaceValue::Dict(entries) = action else {
+        return Err(GymError::Value(
+            "an action is a dict by action entry".into(),
+        ));
+    };
+    entries
+        .iter()
+        .map(|(name, value)| {
+            let value = match value {
+                SpaceValue::Dict(fields) => Value::Dict(
+                    fields
+                        .iter()
+                        .map(|(field, v)| Ok((field.clone(), value_tensor(v, field)?)))
+                        .collect::<Result<_, GymError>>()?,
+                ),
+                SpaceValue::Text(text) => Value::Text(text.clone()),
+                other => Value::Tensor(value_tensor(other, name)?),
+            };
+            Ok((name.clone(), value))
+        })
+        .collect()
+}
+
+/// A view step's `info`: `ages_ns`, `stale`, `edge_modes` and `steps`, then
+/// the robot's own keys.
+pub fn info(step: &ViewStep) -> Result<MetaMap, GymError> {
+    let mut info = meta_json::from_json(&step.info_json).map_err(GymError::Malformed)?;
+    let map = |pairs: Vec<(String, MetaValue)>| MetaValue::Map(pairs.into_iter().collect());
+    info.insert(
+        "ages_ns".into(),
+        map(step
+            .ages_ns
+            .iter()
+            .map(|(name, age)| {
+                let age = age.map_or(MetaValue::Null, |a| MetaValue::Int(a as i64));
+                (name.clone(), age)
+            })
+            .collect()),
+    );
+    info.insert(
+        "stale".into(),
+        MetaValue::List(step.stale.iter().cloned().map(MetaValue::String).collect()),
+    );
+    info.insert(
+        "edge_modes".into(),
+        map(step
+            .edge_modes
+            .iter()
+            .map(|(name, mode)| (name.clone(), MetaValue::String((*mode).into())))
+            .collect()),
+    );
+    info.insert("steps".into(), MetaValue::Int(i64::from(step.steps)));
+    Ok(info)
 }
 
 /// The view's binder options for `robot`.

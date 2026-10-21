@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
@@ -116,6 +117,11 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             step that ends an episode, else ``0``). An env key of the same name
             wins and shadows the runtime's; the client logs that once.
         """
+        if self._drives_view:
+            # A v2-native robot's one action entry may be given alone.
+            entries = cast("dict[str, Any]", cast("Any", self.action_space).spaces)
+            if len(entries) == 1 and not isinstance(cast("Any", action), Mapping):
+                action = cast("ActionT", {next(iter(entries)): action})
         if self._gym_values:
             action = cast("ActionT", self._codecs()[1](action))
         obs, reward, terminated, truncated, info = self._client.step(

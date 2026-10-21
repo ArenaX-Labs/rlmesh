@@ -5,8 +5,8 @@
   the same traces, bit for bit, across every space kind and v1 dtype, a
   vector env with NEXT_STEP autoreset, seeds and chunking.
 - A served model (``RemoteModel``) runs a lockstep env as it runs a gRPC one.
-- :class:`rlmesh.v2.GymView` drives a v2-native robot served in lockstep; a
-  lockstep robot needs no rates or kinds.
+- ``RemoteEnv`` drives a v2-native robot served in lockstep through its Gym
+  view; a lockstep robot needs no rates or kinds.
 """
 
 from __future__ import annotations
@@ -257,7 +257,7 @@ ARM = {
 }
 
 
-def test_the_gym_view_drives_a_lockstep_robot() -> None:
+def test_remote_env_drives_a_lockstep_robot() -> None:
     with v2.Host() as host:
         robot = v2.Robot("arm1", ARM, session=host, clock="lockstep")
         q = np.zeros(2, np.float32)
@@ -281,7 +281,7 @@ def test_the_gym_view_drives_a_lockstep_robot() -> None:
         robot.serve_lockstep(step, reset, background=True)
         with pytest.raises(v2.SessionException, match="inside its step"):
             robot.publish("arm", pos=q)
-        env = v2.GymView(host)
+        env = rlmesh.numpy.RemoteEnv(f"lockstep://{host.address}/arm1")
         try:
             assert isinstance(env, gym.Env)
             observations, actions = (
@@ -307,7 +307,7 @@ def test_the_gym_view_drives_a_lockstep_robot() -> None:
             robot.close()
 
 
-def test_a_gym_view_step_is_not_delayed_by_the_signal_poll() -> None:
+def test_a_remote_env_view_step_is_not_delayed_by_the_signal_poll() -> None:
     # Blocked calls poll for Ctrl-C on a timer. Its first tick used to be
     # awaited before the call started, and it waited for the timer's next
     # millisecond, so every Gym step took over 1 ms in-process.
@@ -326,7 +326,7 @@ def test_a_gym_view_step_is_not_delayed_by_the_signal_poll() -> None:
             robot.publish("arm", pos=q)
 
         robot.serve_lockstep(step, reset, background=True)
-        env = v2.GymView(host)
+        env = rlmesh.numpy.RemoteEnv(f"lockstep://{host.address}/arm1")
         try:
             env.reset(seed=0)
             action = {"arm": np.ones(2, np.float32)}
@@ -339,50 +339,6 @@ def test_a_gym_view_step_is_not_delayed_by_the_signal_poll() -> None:
             env.close()
             robot.close()
     assert statistics.median(latencies) < 0.0005
-
-
-def test_the_gym_view_keys_a_policy_s_entries_and_plays_its_chunks() -> None:
-    policy = {
-        "hz": 25,
-        "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
-        "actions": {
-            "arm": {
-                "kind": "joints",
-                "at": "arm",
-                "command": "position",
-                "hz": 100,
-                "horizon": 4,
-            }
-        },
-    }
-    with v2.Host() as host:
-        robot = v2.Robot("arm1", ARM, session=host, clock="lockstep")
-        q = np.zeros(2, np.float32)
-        calls = []
-
-        def step(commands: dict[str, Any]) -> None:
-            nonlocal q
-            q = commands["arm"].copy()
-            calls.append(q.tolist())
-            robot.publish("arm", pos=q)
-
-        def reset(seed: int | None, options: Any) -> None:
-            robot.publish("arm", pos=q)
-
-        robot.serve_lockstep(step, reset, background=True)
-        env = v2.GymView(host, policy, robot="arm1")
-        try:
-            assert env.table is not None and "arm" in env.table
-            assert cast("Any", env.action_space)["arm"].shape == (4, 2)
-            env.reset()
-            chunk = np.arange(8, dtype=np.float32).reshape(4, 2)
-            obs, _, _, _, info = env.step({"arm": chunk})
-            assert info["steps"] == 4
-            assert calls == chunk.tolist(), "one lockstep step per action"
-            assert obs["q"].tolist() == [6.0, 7.0]
-        finally:
-            env.close()
-            robot.close()
 
 
 def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
@@ -407,7 +363,8 @@ def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
             return {"options": options}
 
         robot.serve_lockstep(step, reset, background=True)
-        env = v2.GymView(host)
+        # The session's only robot: its address without the robot.
+        env = rlmesh.numpy.RemoteEnv(f"lockstep://{host.address}")
         try:
             _, info = env.reset(seed=1, options={"first": np.arange(2)})
             assert info["options"] == {"first": [0, 1]}
@@ -419,18 +376,34 @@ def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
             robot.close()
 
 
-def test_the_gym_view_sends_a_gym_env_to_remote_env() -> None:
+def test_remote_env_picks_the_gym_path_for_a_gym_env_and_the_view_for_a_robot() -> None:
     server = rlmesh.EnvServer(CatalogEnv(), "lockstep://127.0.0.1:0/gym")
     server.start()
     try:
-        session, robot = server.address[len("lockstep://") :].rsplit("/", 1)
-        with pytest.raises(v2.SessionException, match="RemoteEnv"):
-            v2.GymView(session, robot=robot)
         remote = rlmesh.numpy.RemoteEnv(server.address)
         assert remote.observation_space["mode"] == catalog_spaces()[0]["mode"]
         remote.close()
     finally:
         server.shutdown()
+    with v2.Host() as host:
+        robot = v2.Robot("arm1", ARM, session=host, clock="lockstep")
+        q = np.zeros(2, np.float32)
+
+        def step(commands: dict[str, Any]) -> None:
+            robot.publish("arm", pos=q)
+
+        def reset(seed: int | None, options: Any) -> None:
+            robot.publish("arm", pos=q)
+
+        robot.serve_lockstep(step, reset, background=True)
+        env = rlmesh.numpy.RemoteEnv(f"lockstep://{host.address}/arm1")
+        try:
+            assert set(cast("Any", env.observation_space).spaces) == {"arm"}
+            _, info = env.reset()
+            assert {"ages_ns", "stale", "edge_modes"} <= set(info)
+        finally:
+            env.close()
+            robot.close()
 
 
 class _Raises(gym.Env):  # type: ignore[misc]

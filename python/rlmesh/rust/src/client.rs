@@ -339,6 +339,12 @@ macro_rules! client_class {
                 self.core.client.env_id().to_string()
             }
 
+            /// Whether the endpoint is a v2-native robot driven through its
+            /// Gym view (not a served Gym env).
+            fn drives_view(&self) -> bool {
+                self.core.client.drives_view()
+            }
+
             /// The workflow edition this connection negotiated with the env.
             fn selected_workflow_edition(&self) -> String {
                 self.core.client.selected_workflow_edition().to_string()

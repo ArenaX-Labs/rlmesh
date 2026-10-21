@@ -52,6 +52,9 @@ class _OkClient:
     def handshake(self) -> _Contract:
         return _Contract()
 
+    def drives_view(self) -> bool:
+        return False
+
     def env_id(self) -> str:
         return "env-id"
 
@@ -476,6 +479,9 @@ def test_attach_caps_retry_timeout_at_remaining_deadline(
         def handshake(self) -> _Contract:
             return _Contract()
 
+        def drives_view(self) -> bool:
+            return False
+
         def env_id(self) -> str:
             return "env-id"
 
@@ -554,6 +560,9 @@ def test_sandbox_vector_env_default_mode_is_auto(
 
         def handshake(self) -> _VecContract:
             return _VecContract()
+
+        def drives_view(self) -> bool:
+            return False
 
         def env_id(self) -> str:
             return "env-id"

@@ -74,7 +74,6 @@ __all__ = [
     "Tensor",
     "V2Controller",
     "V2Due",
-    "V2GymView",
     "V2Host",
     "V2LockstepRobot",
     "V2Observation",
@@ -885,43 +884,6 @@ class V2Due:
     def fields(self) -> builtins.dict[builtins.str, Tensor] | None:
         r"""
         The command fields by name (validated and clamped), or `None`.
-        """
-
-@typing.final
-class V2GymView:
-    r"""
-    A Gym env over a v2-native lockstep robot (§12.6).
-    """
-    def __new__(cls, address: builtins.str, robot: typing.Optional[builtins.str] = None, policy_json: typing.Optional[builtins.str] = None, name: builtins.str = ..., timeout_s: builtins.float = ...) -> V2GymView:
-        r"""
-        Attaches to the session at `address` (`{ip}:{port}/{tenant}/{session}`)
-        and takes one lease on `robot` (`None`: the session's only robot),
-        through `policy_json` (`None`: every part, by path).
-        """
-    def observation_entries(self) -> builtins.list[tuple[builtins.str, tuple[typing.Any, ...]]]:
-        r"""
-        `[(name, ("array", dtype, shape) | ("text", "utf8", []) | ("dict", [(field, dtype, shape)]))]`.
-        """
-    def action_entries(self) -> builtins.list[tuple[builtins.str, tuple[typing.Any, ...]]]:
-        r"""
-        The action entries, as [`Self::observation_entries`].
-        """
-    def table(self) -> typing.Optional[builtins.str]:
-        r"""
-        The binding table, with a policy.
-        """
-    def reset(self, seed: typing.Optional[builtins.int] = None, options_json: builtins.str = ...) -> typing.Any:
-        r"""
-        `(obs, reward, terminated, truncated, info, robot_info_json)`.
-        """
-    def step(self, actions: typing.Any) -> typing.Any:
-        r"""
-        One view step: `actions` keyed by action entry (an array as
-        `(dtype, shape, buffer)`, or a dict of them).
-        """
-    def close(self) -> None:
-        r"""
-        Releases the lease and detaches.
         """
 
 @typing.final

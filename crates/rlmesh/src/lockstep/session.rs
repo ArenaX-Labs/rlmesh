@@ -653,20 +653,97 @@ impl Attached {
     }
 }
 
+/// What a driver drives: a Gym env's [`LockstepClient`], or a v2-native
+/// robot's [`GymView`].
+pub enum Driven {
+    /// A Gym env (its robot declares `gym_env`).
+    Gym(LockstepClient),
+    /// Any other robot, keyed by part path.
+    View(GymView),
+}
+
+/// Attaches a driver to the robot at `address`
+/// (`lockstep://{ip}:{port}/{tenant}/{session}/{robot}`, or without
+/// `/{robot}` for the session's only robot) and waits for its parts.
+async fn attach_robot(
+    address: &str,
+    options: &ConnectOptions,
+) -> Result<(Attached, ParticipantId), GymError> {
+    if address.trim_start_matches(SCHEME).split('/').count() == 3 {
+        // The session's only robot: attach under a placeholder, then take
+        // the one owner.
+        let mut attached =
+            attach_driver(&format!("{address}/any"), options, |s| !s.parts.is_empty()).await?;
+        let snapshot = attached
+            .participant
+            .authority()
+            .ok_or_else(|| GymError::Config("no authority view".into()))?;
+        let mut owners: Vec<ParticipantId> =
+            snapshot.parts.iter().map(|p| p.owner.clone()).collect();
+        owners.sort();
+        owners.dedup();
+        let robot = match owners.as_slice() {
+            [one] => one.clone(),
+            many => {
+                return Err(GymError::Config(format!(
+                    "the session has {} robots ({}): name one",
+                    many.len(),
+                    many.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        };
+        attached.address.robot = robot.clone();
+        attached.parts = own_parts(&snapshot, &robot);
+        return Ok((attached, robot));
+    }
+    let robot = LockstepAddress::parse(address)?.robot;
+    let attached = attach_driver(address, options, |s| {
+        s.parts.iter().any(|p| p.owner == robot)
+    })
+    .await?;
+    Ok((attached, robot))
+}
+
+fn is_gym_env(parts: &[PartSpec]) -> bool {
+    parts.iter().any(|p| {
+        p.attrs
+            .contains_key(rlmesh_session::spec::normalise::attrs::GYM_ENV)
+    })
+}
+
+/// Connects a driver to the lockstep robot at `address`
+/// (`lockstep://{ip}:{port}/{tenant}/{session}/{robot}`, or without
+/// `/{robot}` for the session's only robot): a Gym env, rebuilt from its
+/// declaration,
+/// as a [`LockstepClient`]; any other robot as a [`GymView`] keyed by part
+/// path.
+pub async fn connect_driver(address: &str, options: ConnectOptions) -> Result<Driven, GymError> {
+    let (attached, robot) = attach_robot(address, &options).await?;
+    if is_gym_env(&attached.parts) {
+        return gym_client(attached, robot, options).await.map(Driven::Gym);
+    }
+    view_of(attached, robot, None, options)
+        .await
+        .map(Driven::View)
+}
+
 /// Connects a driver to the lockstep Gym env at `address`: attaches as a
 /// controller, rebuilds the env's map from its declaration, takes one
 /// lease on its commandable parts and opens the link (direct when the env
 /// is in this process).
 pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepClient, GymError> {
-    let robot = LockstepAddress::parse(address)?.robot;
-    let attached = attach_driver(address, &options, |s| {
-        s.parts.iter().any(|p| {
-            p.owner == robot
-                && p.attrs
-                    .contains_key(rlmesh_session::spec::normalise::attrs::GYM_ENV)
-        })
-    })
-    .await?;
+    let (attached, robot) = attach_robot(address, &options).await?;
+    gym_client(attached, robot, options).await
+}
+
+async fn gym_client(
+    attached: Attached,
+    robot: ParticipantId,
+    options: ConnectOptions,
+) -> Result<LockstepClient, GymError> {
     let info = attached
         .parts
         .iter()
@@ -697,50 +774,7 @@ pub async fn connect_view(
     policy: Option<(&rlmesh_session::spec::Policy, &str)>,
     options: ConnectOptions,
 ) -> Result<GymView, GymError> {
-    let robot = LockstepAddress::parse(address)?.robot;
-    let attached = attach_driver(address, &options, |s| {
-        s.parts.iter().any(|p| p.owner == robot)
-    })
-    .await?;
-    view_of(attached, robot, policy, options).await
-}
-
-/// [`connect_view`] by session address (`{ip}:{port}/{tenant}/{session}`,
-/// a v2 host's address) and robot; `None` takes the session's only robot.
-pub async fn connect_view_in(
-    session: &str,
-    robot: Option<&str>,
-    policy: Option<(&rlmesh_session::spec::Policy, &str)>,
-    options: ConnectOptions,
-) -> Result<GymView, GymError> {
-    if let Some(robot) = robot {
-        return connect_view(&format!("{SCHEME}{session}/{robot}"), policy, options).await;
-    }
-    // Any robot: attach under a placeholder, then take the one owner.
-    let placeholder = format!("{SCHEME}{session}/any");
-    let mut attached = attach_driver(&placeholder, &options, |s| !s.parts.is_empty()).await?;
-    let snapshot = attached
-        .participant
-        .authority()
-        .ok_or_else(|| GymError::Config("no authority view".into()))?;
-    let mut owners: Vec<ParticipantId> = snapshot.parts.iter().map(|p| p.owner.clone()).collect();
-    owners.sort();
-    owners.dedup();
-    let robot = match owners.as_slice() {
-        [one] => one.clone(),
-        many => {
-            return Err(GymError::Config(format!(
-                "the session has {} robots ({}): name one",
-                many.len(),
-                many.iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
-        }
-    };
-    attached.address.robot = robot.clone();
-    attached.parts = own_parts(&snapshot, &robot);
+    let (attached, robot) = attach_robot(address, &options).await?;
     view_of(attached, robot, policy, options).await
 }
 
@@ -751,12 +785,7 @@ async fn view_of(
     options: ConnectOptions,
 ) -> Result<GymView, GymError> {
     let parts = attached.parts.clone();
-    if policy.is_none()
-        && parts.iter().any(|p| {
-            p.attrs
-                .contains_key(rlmesh_session::spec::normalise::attrs::GYM_ENV)
-        })
-    {
+    if policy.is_none() && is_gym_env(&parts) {
         return Err(GymError::Config(format!(
             "robot {robot} serves a Gym env: drive it with RemoteEnv(\"{}\"), which keeps its \
              original spaces, or give the view a policy",

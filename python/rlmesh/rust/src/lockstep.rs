@@ -1,8 +1,8 @@
 //! PyO3 bindings for the lockstep clock (protocol v2 §12): a v2 robot that
-//! serves the lockstep exchange from Python callbacks, and the Gym view
-//! over one (§12.6). `rlmesh.v2.Robot(..., clock="lockstep")` and
-//! `rlmesh.v2.GymView` wrap them. v1 Gym envs and models reach lockstep
-//! through their own servers and runs (`lockstep://` addresses).
+//! serves the lockstep exchange from Python callbacks
+//! (`rlmesh.v2.Robot(..., clock="lockstep")` wraps it). Gym envs, models and
+//! `RemoteEnv` (a Gym env, or any robot through its Gym view) reach lockstep
+//! through their own servers, runs and clients (`lockstep://` addresses).
 
 use std::sync::{Arc, Mutex};
 
@@ -13,20 +13,16 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh::lockstep::view::{Entry, Frame, commands};
-use rlmesh::lockstep::{ConnectOptions, GymError, GymView, LockstepHandler, Request};
-use rlmesh_session::spec::Policy;
+use rlmesh::lockstep::view::{Frame, commands};
+use rlmesh::lockstep::{GymError, LockstepHandler, Request};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::wire::{FieldSpec, LockstepReply, PartSpec, ParticipantId};
 use tokio_util::sync::CancellationToken;
 
-use crate::session::{
-    SessionException, block_on, part_dict, runtime, timeout, value_to_py, values_from_py,
-};
+use crate::session::{SessionException, block_on, part_dict, runtime, timeout, value_to_py};
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLockstepRobot>()?;
-    m.add_class::<PyGymView>()?;
     Ok(())
 }
 
@@ -323,186 +319,5 @@ struct StopOnDrop(CancellationToken);
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
         self.0.cancel();
-    }
-}
-
-fn entry_tuple<'py>(py: Python<'py>, name: &str, entry: &Entry) -> PyResult<Bound<'py, PyAny>> {
-    let described: Py<PyAny> = match entry {
-        Entry::Array { dtype, shape } => ("array", dtype.name(), shape.clone())
-            .into_pyobject(py)?
-            .into_any()
-            .unbind(),
-        Entry::Text => ("text", "utf8", Vec::<u32>::new())
-            .into_pyobject(py)?
-            .into_any()
-            .unbind(),
-        Entry::Dict(fields) => {
-            let list = PyList::empty(py);
-            for (field, dtype, shape) in fields {
-                list.append((field.as_str(), dtype.name(), shape.clone()))?;
-            }
-            ("dict", list).into_pyobject(py)?.into_any().unbind()
-        }
-    };
-    Ok((name, described).into_pyobject(py)?.into_any())
-}
-
-/// A Gym env over a v2-native lockstep robot (§12.6).
-#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
-#[pyclass(module = "rlmesh._rlmesh", name = "V2GymView", frozen)]
-pub struct PyGymView {
-    view: Mutex<Option<Arc<GymView>>>,
-}
-
-impl PyGymView {
-    fn view(&self) -> PyResult<Arc<GymView>> {
-        self.view
-            .lock()
-            .ok()
-            .and_then(|v| v.clone())
-            .ok_or_else(|| SessionException::new_err("the Gym view is closed"))
-    }
-}
-
-fn view_step<'py>(
-    py: Python<'py>,
-    step: rlmesh::lockstep::view::ViewStep,
-) -> PyResult<Bound<'py, PyAny>> {
-    let obs = PyDict::new(py);
-    for (name, value) in step.observation {
-        obs.set_item(name, value_to_py(py, value)?)?;
-    }
-    let info = PyDict::new(py);
-    let ages = PyDict::new(py);
-    for (name, age) in step.ages_ns {
-        ages.set_item(name, age)?;
-    }
-    info.set_item("ages_ns", ages)?;
-    info.set_item("stale", step.stale)?;
-    let modes = PyDict::new(py);
-    for (name, mode) in step.edge_modes {
-        modes.set_item(name, mode)?;
-    }
-    info.set_item("edge_modes", modes)?;
-    info.set_item("steps", step.steps)?;
-    Ok((
-        obs,
-        step.reward,
-        step.terminated,
-        step.truncated,
-        info,
-        step.info_json,
-    )
-        .into_pyobject(py)?
-        .into_any())
-}
-
-#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
-#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
-#[pymethods]
-impl PyGymView {
-    /// Attaches to the session at `address` (`{ip}:{port}/{tenant}/{session}`)
-    /// and takes one lease on `robot` (`None`: the session's only robot),
-    /// through `policy_json` (`None`: every part, by path).
-    #[new]
-    #[pyo3(signature = (address, robot=None, policy_json=None, name="gym", timeout_s=10.0))]
-    fn new(
-        py: Python<'_>,
-        address: &str,
-        robot: Option<String>,
-        policy_json: Option<String>,
-        name: &str,
-        timeout_s: f64,
-    ) -> PyResult<Self> {
-        let policy = policy_json
-            .map(|json| Policy::parse(&json).map_err(PyValueError::new_err))
-            .transpose()?;
-        let options = ConnectOptions {
-            timeout: timeout(timeout_s)?,
-            ..Default::default()
-        };
-        let (address, name) = (address.to_string(), name.to_string());
-        let view = block_on(py, async move {
-            rlmesh::lockstep::connect_view_in(
-                &address,
-                robot.as_deref(),
-                policy.as_ref().map(|p| (p, name.as_str())),
-                options,
-            )
-            .await
-            .map_err(gym_err)
-        })?;
-        Ok(Self {
-            view: Mutex::new(Some(Arc::new(view))),
-        })
-    }
-
-    /// `[(name, ("array", dtype, shape) | ("text", "utf8", []) | ("dict", [(field, dtype, shape)]))]`.
-    #[gen_stub(override_return_type(
-        type_repr = "builtins.list[tuple[builtins.str, tuple[typing.Any, ...]]]",
-        imports = ("builtins", "typing")
-    ))]
-    fn observation_entries<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let list = PyList::empty(py);
-        for (name, entry) in self.view()?.observation_entries() {
-            list.append(entry_tuple(py, &name, &entry)?)?;
-        }
-        Ok(list)
-    }
-
-    /// The action entries, as [`Self::observation_entries`].
-    #[gen_stub(override_return_type(
-        type_repr = "builtins.list[tuple[builtins.str, tuple[typing.Any, ...]]]",
-        imports = ("builtins", "typing")
-    ))]
-    fn action_entries<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let list = PyList::empty(py);
-        for (name, entry) in self.view()?.action_entries() {
-            list.append(entry_tuple(py, &name, &entry)?)?;
-        }
-        Ok(list)
-    }
-
-    /// The binding table, with a policy.
-    fn table(&self) -> PyResult<Option<String>> {
-        Ok(self.view()?.table().map(str::to_string))
-    }
-
-    /// `(obs, reward, terminated, truncated, info, robot_info_json)`.
-    #[pyo3(signature = (seed=None, options_json=String::new()))]
-    fn reset<'py>(
-        &self,
-        py: Python<'py>,
-        seed: Option<u64>,
-        options_json: String,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let view = self.view()?;
-        let step = block_on(py, async move {
-            view.reset(seed, &options_json).await.map_err(gym_err)
-        })?;
-        view_step(py, step)
-    }
-
-    /// One view step: `actions` keyed by action entry (an array as
-    /// `(dtype, shape, buffer)`, or a dict of them).
-    fn step<'py>(
-        &self,
-        py: Python<'py>,
-        actions: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let actions = values_from_py(actions)?;
-        let view = self.view()?;
-        let step = block_on(
-            py,
-            async move { view.step(&actions).await.map_err(gym_err) },
-        )?;
-        view_step(py, step)
-    }
-
-    /// Releases the lease and detaches.
-    fn close(&self) {
-        if let Ok(mut view) = self.view.lock() {
-            view.take();
-        }
     }
 }

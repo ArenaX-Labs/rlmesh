@@ -122,6 +122,8 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         # Accessors read state outside the client's per-call borrow, so they
         # work while another thread is in a call.
         self._env_id: str = self._client.env_id()
+        # A v2-native robot's Gym view, not a served Gym env.
+        self._drives_view: bool = self._client.drives_view()
         self._edition_cell = self._client.edition_cell()
 
     # --- arity / backend hooks -------------------------------------------------

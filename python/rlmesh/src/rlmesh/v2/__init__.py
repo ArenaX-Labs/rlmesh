@@ -18,9 +18,9 @@ as written::
         policy.run(lambda obs: {"arm": obs["q"][None]}, duration=5.0)
 
 A robot can also run in lockstep (``Robot(..., clock="lockstep")``, §12):
-each step is one call of its ``step(commands)``, and :class:`GymView` drives
-it as a Gymnasium env. Existing Gym envs and v1 models reach lockstep
-through their own servers and runs, unchanged, at ``lockstep://`` addresses.
+each step is one call of its ``step(commands)``, and ``RemoteEnv`` at its
+``lockstep://`` address drives it as a Gymnasium env. Existing Gym envs and
+v1 models reach lockstep through their own servers and runs, unchanged.
 
 Every rule (normalisation, binding, conversions, leases, the edge, the run
 loop) runs in Rust; this module converts NumPy arrays at the boundary.
@@ -50,7 +50,6 @@ from .._rlmesh import (
     Tensor,
     V2Controller,
     V2Due,
-    V2GymView,
     V2Host,
     V2LockstepRobot,
     V2Observation,
@@ -72,7 +71,6 @@ __all__ = [
     "Binding",
     "BindingRefused",
     "Due",
-    "GymView",
     "Host",
     "Meta",
     "Observation",
@@ -762,147 +760,6 @@ class Policy:
         tb: TracebackType | None,
     ) -> None:
         self.close()
-
-
-try:
-    import gymnasium as _gym
-except ImportError:  # pragma: no cover - optional
-    _gym = None
-
-if TYPE_CHECKING:
-    from gymnasium import Env as _GymBase
-
-    _GymEnv: TypeAlias = _GymBase[dict[str, Any], dict[str, Any]]
-else:
-    _GymEnv = _gym.Env if _gym is not None else object
-
-
-def _space(kind: str, *described: Any) -> Any:
-    assert _gym is not None
-    spaces = _gym.spaces
-    if kind == "text":
-        return spaces.Text(max_length=4096)
-    if kind == "dict":
-        return spaces.Dict(
-            {name: _space("array", d, sh) for name, d, sh in described[0]}
-        )
-    dtype, shape = np.dtype(described[0]), tuple(int(d) for d in described[1])
-    box: Any = spaces.Box
-    if dtype == np.bool_:
-        return box(0, 1, shape, dtype=np.bool_)
-    if dtype.kind == "f":
-        return box(-np.inf, np.inf, shape, dtype=dtype)
-    info = np.iinfo(dtype)
-    return box(info.min, info.max, shape, dtype=dtype)
-
-
-def _cast_actions(
-    actions: Mapping[str, Any], entries: Mapping[str, Any]
-) -> Mapping[str, Any]:
-    """Each array as its entry's dtype (same-kind casts only; others pass as given)."""
-
-    def cast_one(value: Any, space: Any) -> Any:
-        if isinstance(value, Mapping):
-            fields = cast("Mapping[str, Any]", value)
-            inner = getattr(space, "spaces", {})
-            return {k: cast_one(v, inner.get(k)) for k, v in fields.items()}
-        dtype = getattr(space, "dtype", None)
-        array: Array = np.asarray(value)
-        if dtype is None or array.dtype == dtype:
-            return array
-        if np.can_cast(array.dtype, dtype, casting="same_kind"):
-            return array.astype(dtype)
-        return array
-
-    if not isinstance(actions, Mapping):  # pyright: ignore[reportUnnecessaryIsInstance]
-        return actions
-    return {k: cast_one(v, entries.get(k)) for k, v in actions.items()}
-
-
-class GymView(_GymEnv):
-    """A v2-native lockstep robot as a Gymnasium env (§12.6).
-
-    ``policy`` (a policy map) keys the observation space by its input names
-    and the action space by its action names (``[horizon, ...]``, squeezed
-    when the horizon is 1); without one, every part is keyed by its path
-    (``/`` as ``.``): a single-field part is its field, a multi-field part a
-    dict of fields. One :meth:`step` with horizon H plays H lockstep steps
-    (stopping at the episode's end), rewards summed. ``info`` carries
-    ``ages_ns``, ``stale`` and ``edge_modes``, plus the robot's own info.
-    The robot must serve lockstep (``Robot(..., clock="lockstep")``).
-    """
-
-    def __init__(
-        self,
-        session: Host | str,
-        policy: Mapping[str, Any] | None = None,
-        *,
-        robot: str | None = None,
-        name: str = "gym",
-        timeout: float = 10.0,
-    ) -> None:
-        if _gym is None:
-            raise ImportError("GymView requires gymnasium. Install gymnasium.")
-        self._native = V2GymView(
-            _address(session),
-            robot,
-            json.dumps(policy) if policy is not None else None,
-            name,
-            timeout,
-        )
-        spaces = _gym.spaces
-        observations = self._native.observation_entries()
-        actions = self._native.action_entries()
-        self.observation_space = spaces.Dict(
-            {entry: _space(*described) for entry, described in observations}
-        )
-        self.action_space = spaces.Dict(
-            {entry: _space(*described) for entry, described in actions}
-        )
-
-    @property
-    def table(self) -> str | None:
-        """The binding table (§6.8), with a policy."""
-        return self._native.table()
-
-    @staticmethod
-    def _out(raw: Any) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
-        obs, reward, terminated, truncated, info, robot_info = raw
-        observation = {entry: _value(value) for entry, value in obs.items()}
-        merged = dict(info)
-        if robot_info:
-            merged.update(json.loads(robot_info))
-        return observation, float(reward), bool(terminated), bool(truncated), merged
-
-    def reset(
-        self, *, seed: int | None = None, options: dict[str, Any] | None = None
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Reset the robot (``seed`` and ``options`` reach its reset callback)."""
-        super().reset(seed=seed)
-        obs, _, _, _, info = self._out(
-            self._native.reset(seed, "" if options is None else _json(options))
-        )
-        return obs, info
-
-    def step(
-        self, action: Mapping[str, Any] | Any
-    ) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
-        """One step: ``action`` keyed by action entry (one horizon's chunk each).
-
-        With a single action entry, ``action`` may be its value alone. Each
-        array is cast to its entry's dtype when the kind allows it.
-        """
-        entries = cast("Any", self.action_space).spaces
-        actions: Mapping[str, Any] = (
-            cast("Mapping[str, Any]", action)
-            if isinstance(action, Mapping) or len(entries) != 1
-            else {next(iter(entries)): action}
-        )
-        return self._out(self._native.step(_actions(_cast_actions(actions, entries))))
-
-    def close(self) -> None:
-        """Release the lease and detach."""
-        self._native.close()
 
 
 class Recorder:

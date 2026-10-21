@@ -103,6 +103,9 @@ class _FakeNativeClient:
     def handshake(self) -> Any:
         return SimpleNamespace(num_envs=self._num_envs)
 
+    def drives_view(self) -> bool:
+        return False
+
     def env_id(self) -> str:
         return "env-id"
 

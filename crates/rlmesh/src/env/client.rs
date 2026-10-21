@@ -331,6 +331,25 @@ enum Link {
         edition: Arc<std::sync::Mutex<String>>,
         episodes: Episodes,
     },
+    /// A v2-native lockstep robot, through its Gym view (one lane).
+    #[cfg(feature = "lockstep")]
+    View {
+        /// `None` once closed (the lease is released).
+        view: Arc<std::sync::Mutex<Option<Arc<crate::lockstep::GymView>>>>,
+        address: String,
+        edition: Arc<std::sync::Mutex<String>>,
+    },
+}
+
+/// The Gym view behind a [`Link::View`], unless closed.
+#[cfg(feature = "lockstep")]
+fn open_view(
+    view: &std::sync::Mutex<Option<Arc<crate::lockstep::GymView>>>,
+) -> Result<Arc<crate::lockstep::GymView>> {
+    view.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .ok_or_else(|| Error::Runtime("the env client is closed".into()))
 }
 
 #[cfg(feature = "lockstep")]
@@ -353,7 +372,7 @@ impl Link {
         match self {
             Self::Grpc { client, .. } => Some(client),
             #[cfg(feature = "lockstep")]
-            Self::Lockstep { .. } => None,
+            Self::Lockstep { .. } | Self::View { .. } => None,
         }
     }
 
@@ -361,7 +380,7 @@ impl Link {
         match self {
             Self::Grpc { client, .. } => client.address(),
             #[cfg(feature = "lockstep")]
-            Self::Lockstep { address, .. } => address,
+            Self::Lockstep { address, .. } | Self::View { address, .. } => address,
         }
     }
 
@@ -410,6 +429,28 @@ impl Link {
                     .map_err(lockstep_error)?;
                 episodes.reset(&lanes, &seeds, &episode_ids);
                 Ok((reset.observations, reset.info))
+            }
+            #[cfg(feature = "lockstep")]
+            Self::View { view, .. } => {
+                if !lanes.is_empty() {
+                    return Err(Error::invalid_argument("a Gym view has one lane"));
+                }
+                // A v2-native robot reads plain JSON options.
+                let options = options.map(|options| {
+                    let lowered = MetaValue::Map(options).lowered();
+                    let MetaValue::Map(options) = lowered else {
+                        unreachable!("a map lowers to a map")
+                    };
+                    crate::lockstep::meta_json::to_json(&options)
+                });
+                let step = open_view(view)?
+                    .reset(
+                        seeds.first().map(|s| *s as u64),
+                        &options.unwrap_or_default(),
+                    )
+                    .await
+                    .map_err(lockstep_error)?;
+                view_outcome(step).map(|(observation, info)| (vec![observation], Some(info)))
             }
         }
     }
@@ -481,6 +522,30 @@ impl Link {
                 result.completed_episodes = episodes.step(&result, &episode_ids, mode);
                 Ok(result)
             }
+            #[cfg(feature = "lockstep")]
+            Self::View { view, .. } => {
+                let [action] = actions else {
+                    return Err(Error::invalid_argument("a Gym view has one lane"));
+                };
+                let actions =
+                    crate::lockstep::view::action_values(action).map_err(lockstep_error)?;
+                let step = open_view(view)?
+                    .step(&actions)
+                    .await
+                    .map_err(lockstep_error)?;
+                let (reward, terminated, truncated) =
+                    (step.reward, step.terminated, step.truncated);
+                let (observation, info) = view_outcome(step)?;
+                Ok(VectorStepResult {
+                    observations: vec![observation],
+                    rewards: vec![reward],
+                    terminated: vec![terminated],
+                    truncated: vec![truncated],
+                    info: Some(info),
+                    completed_episodes: Vec::new(),
+                    episode_ids: Vec::new(),
+                })
+            }
         }
     }
 
@@ -503,8 +568,23 @@ impl Link {
                 .await
                 .map(|frame| frame.map(|frame| frame.to_vec()))
                 .map_err(lockstep_error),
+            #[cfg(feature = "lockstep")]
+            Self::View { view, .. } => open_view(view)?
+                .render()
+                .await
+                .map(|frame| frame.map(|frame| frame.to_vec()))
+                .map_err(lockstep_error),
         }
     }
+}
+
+/// A view step's observation and info.
+#[cfg(feature = "lockstep")]
+fn view_outcome(step: crate::lockstep::view::ViewStep) -> Result<(spaces::SpaceValue, MetaMap)> {
+    let info = crate::lockstep::view::info(&step).map_err(lockstep_error)?;
+    let observation =
+        crate::lockstep::view::observation_value(step.observation).map_err(lockstep_error)?;
+    Ok((observation, info))
 }
 
 /// The episodes a lockstep client's lanes run. A lockstep reply carries no
@@ -753,9 +833,15 @@ impl EnvClientCore {
         let (inner, env_contract, spaces, num_envs, session_offer, selected) = match address {
             #[cfg(feature = "lockstep")]
             ConnectAddress::Lockstep(address) => {
-                let client = crate::lockstep::connect(&address, Default::default())
+                let client = match crate::lockstep::connect_driver(&address, Default::default())
                     .await
-                    .map_err(lockstep_error)?;
+                    .map_err(lockstep_error)?
+                {
+                    crate::lockstep::Driven::Gym(client) => client,
+                    crate::lockstep::Driven::View(view) => {
+                        return Ok(Self::of_view(view, address, declared));
+                    }
+                };
                 let info = client.info();
                 let (offer, selected, _) = crate::editions::negotiate_env(info, declared)
                     .map_err(|why| lockstep_error(crate::lockstep::GymError::Config(why)))?;
@@ -827,6 +913,42 @@ impl EnvClientCore {
         })
     }
 
+    /// A client over a v2-native robot's Gym view: one lane, its spaces
+    /// keyed by part path, the edition this build runs for `declared`.
+    #[cfg(feature = "lockstep")]
+    fn of_view(view: crate::lockstep::GymView, address: String, declared: Option<&str>) -> Self {
+        let (observation_space, action_space) = view.spaces();
+        let session_offer = rlmesh_proto::SessionOffer::this_build(declared);
+        let selected = session_offer.preferred.clone().unwrap_or_default();
+        let robot = address.rsplit('/').next().unwrap_or_default().to_string();
+        Self {
+            inner: Link::View {
+                view: Arc::new(std::sync::Mutex::new(Some(Arc::new(view)))),
+                address,
+                edition: Arc::new(std::sync::Mutex::new(selected.clone())),
+            },
+            env_contract: spaces::EnvContract {
+                id: robot,
+                observation_space: Some(observation_space.clone()),
+                action_space: Some(action_space.clone()),
+                num_envs: 1,
+                ..Default::default()
+            },
+            observation_space: Arc::new(observation_space),
+            action_space: Arc::new(action_space),
+            num_envs: 1,
+            session_offer,
+            env_id: crate::mint_id(),
+            episode_ids: vec![String::new()],
+            selected_workflow_edition: selected,
+            request_timeout: None,
+            closed: false,
+            warned_shadowed_info_key: false,
+            runtime_info: true,
+            name: "the env client",
+        }
+    }
+
     /// Refuse an endpoint with more than one env (`RemoteEnv`'s arity).
     pub fn require_single(&self) -> Result<()> {
         if self.num_envs != 1 {
@@ -853,6 +975,16 @@ impl EnvClientCore {
     /// The canonical connect string of the dialed endpoint.
     pub fn address(&self) -> &str {
         self.inner.address()
+    }
+
+    /// Whether the endpoint is a v2-native robot driven through its Gym
+    /// view (not a served Gym env).
+    pub fn drives_view(&self) -> bool {
+        #[cfg(feature = "lockstep")]
+        if let Link::View { .. } = self.inner {
+            return true;
+        }
+        false
     }
 
     /// This connection's container id (UUIDv7).
@@ -905,7 +1037,7 @@ impl EnvClientCore {
                 client.pin_workflow_edition(self.selected_workflow_edition.clone());
             }
             #[cfg(feature = "lockstep")]
-            Link::Lockstep { edition, .. } => {
+            Link::Lockstep { edition, .. } | Link::View { edition, .. } => {
                 *edition
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -924,7 +1056,9 @@ impl EnvClientCore {
         EditionCell(match &self.inner {
             Link::Grpc { client, .. } => Edition::Grpc(client.pinned_edition()),
             #[cfg(feature = "lockstep")]
-            Link::Lockstep { edition, .. } => Edition::Local(Arc::clone(edition)),
+            Link::Lockstep { edition, .. } | Link::View { edition, .. } => {
+                Edition::Local(Arc::clone(edition))
+            }
         })
     }
 
@@ -1165,6 +1299,14 @@ impl EnvClientCore {
             }
             return Ok(());
         }
+        #[cfg(feature = "lockstep")]
+        if let Link::View { view, .. } = &self.inner {
+            // Dropping the view releases its lease.
+            view.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            return Ok(());
+        }
         let Some(inner) = self.inner.grpc() else {
             return Ok(());
         };
@@ -1195,7 +1337,7 @@ impl EnvClientCore {
         match &self.inner {
             Link::Grpc { client, .. } => client.prepare_close(),
             #[cfg(feature = "lockstep")]
-            Link::Lockstep { .. } => {}
+            Link::Lockstep { .. } | Link::View { .. } => {}
         }
     }
 
