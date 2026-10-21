@@ -151,7 +151,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
 
     def _observations(self, wire: object) -> ValueT:
         obs = self._bridge.decode(cast("Any", wire))
-        if self._gym_active:
+        if self._gym_values:
             convert = self._codecs()[0]
             if convert is not None:
                 obs = convert(obs)
@@ -205,7 +205,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             ended on this step, ``0`` when none did). An env key of the same
             name wins and shadows the runtime's; the client logs that once.
         """
-        if self._gym_active and not isinstance(actions, list):
+        if self._gym_values and not isinstance(actions, list):
             # One batched action (Gymnasium's form); a list stays per lane.
             actions = cast("ActionT", self._codecs()[1](actions))
         obs, rewards, terminated, truncated, info = self._client.step(

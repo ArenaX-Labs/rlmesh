@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, TypeVar, cast, final
 
 from ._authoring import EnvFactory as _EnvFactory
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
+from ._client._gym import GymEnv, GymVectorEnv
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
 from ._sandbox import (
@@ -246,7 +247,7 @@ def space_from_spec(spec: SpaceSpec) -> Space[JaxValue]:
 
 
 @final
-class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue]):
+class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue], GymEnv):  # pyright: ignore[reportIncompatibleMethodOverride, reportIncompatibleVariableOverride]
     """Experimental JAX-backed remote client for one environment.
 
     Tensor leaves decode to JAX arrays while Python primitives and nested
@@ -276,6 +277,7 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
+    _gym: ClassVar[bool] = True
 
 
 @final
@@ -307,7 +309,7 @@ class RemoteModel(RemoteModelBase[JaxValue, JaxValue]):
 
 
 @final
-class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
+class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue], GymVectorEnv):  # pyright: ignore[reportIncompatibleMethodOverride, reportIncompatibleVariableOverride]
     """Experimental JAX-backed remote client for vectorized environments.
 
     A vector client connects one model process to an endpoint that owns
@@ -333,6 +335,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
+    _gym: ClassVar[bool] = True
 
 
 class Model(ModelBase[_ObsT, _ActT]):

@@ -38,8 +38,9 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
     """
 
     _bridge: ClassVar[ValueBridge]
-    #: Whether this backend is Gymnasium's (NumPy): with gymnasium installed,
-    #: its clients expose the env's own Gymnasium spaces and value types.
+    #: Whether this client is a Gymnasium env: with gymnasium installed, it
+    #: exposes the env's own Gymnasium spaces and info; the NumPy backend
+    #: also takes Gymnasium's value types (see ``_gym_values``).
     _gym: ClassVar[bool] = False
     _address: str
     _client: Any
@@ -235,6 +236,11 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
     @property
     def _gym_active(self) -> bool:
         return type(self)._gym and _gym.gym is not None
+
+    @property
+    def _gym_values(self) -> bool:
+        """Whether values convert to Gymnasium's NumPy types; torch and jax stay tensors."""
+        return self._gym_active and getattr(self._bridge, "name", None) == "numpy"
 
     def _load_observation_space(self) -> Space[ValueT]:
         spec = self._space_spec("observation")

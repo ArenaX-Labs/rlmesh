@@ -116,7 +116,7 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             step that ends an episode, else ``0``). An env key of the same name
             wins and shadows the runtime's; the client logs that once.
         """
-        if self._gym_active:
+        if self._gym_values:
             action = cast("ActionT", self._codecs()[1](action))
         obs, reward, terminated, truncated, info = self._client.step(
             self._bridge.encode(action)
@@ -133,7 +133,7 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
 
     def _observation(self, wire: object) -> ValueT:
         obs = self._bridge.decode(cast("Any", wire))
-        if self._gym_active:
+        if self._gym_values:
             convert = self._codecs()[0]
             if convert is not None:
                 obs = convert(obs)
