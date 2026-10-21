@@ -398,7 +398,7 @@ static inline int rlmesh_abi_check(void) { return RLMESH_ABI_VERSION == rlmesh_a
 
 /* This header's package version, in SemVer. rlmesh_build_info() reports the linked
  * library's. */
-#define RLMESH_VERSION "0.1.0"
+#define RLMESH_VERSION "0.2.0-alpha.0"
 
 /* Signals: creating a model or env handle sets SIGPIPE to ignored (POSIX), unless
  * the host already installed a handler for it. The transport's socket writes

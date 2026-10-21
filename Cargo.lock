@@ -5185,7 +5185,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5228,7 +5228,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-adapters"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "image",
  "jpeg-encoder",
@@ -5240,7 +5240,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-capi"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -5252,7 +5252,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-cli"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5273,7 +5273,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-cockpit"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "bytes",
  "clap",
@@ -5292,7 +5292,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-grpc"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -5319,7 +5319,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-node"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "bytes",
  "napi",
@@ -5331,7 +5331,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-proto"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "prost",
  "prost-types",
@@ -5342,7 +5342,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-python"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5378,7 +5378,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-runtime"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -5397,7 +5397,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-session"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "axum",
  "blake3",
@@ -5428,7 +5428,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-session-core"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "blake3",
  "bytes",
@@ -5443,7 +5443,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-spaces"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "chacha20",
  "half",
@@ -5454,7 +5454,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-wasm"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 dependencies = [
  "bytes",
  "console_error_panic_hook",

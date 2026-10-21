@@ -1,6 +1,6 @@
 {
   "name": "rlmesh",
-  "version": "0.1.0",
+  "version": "0.2.0-alpha.0",
   "private": true,
   "description": "RLMesh real-time sessions (protocol v2) from the browser and Node: rlmesh-session-core in wasm, one Worker and one WebSocket per traffic class, through rlmesh-gateway",
   "license": "MIT OR Apache-2.0",
