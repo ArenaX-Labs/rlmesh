@@ -54,7 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         run_cli = None
     if run_cli is not None:
-        return int(run_cli(argv))
+        try:
+            return int(run_cli(argv))
+        except KeyboardInterrupt:
+            # A command that stops on Ctrl-C (`rlmesh host`) has returned;
+            # Python's own handler raises here afterwards.
+            return 130
 
     cargo = shutil.which("cargo")
     if repo_root is not None and cargo is not None:

@@ -43,6 +43,9 @@ pub enum Command {
     /// Print a class's describe envelope, or its `dev.rlmesh.describe` label
     /// for a custom-entrypoint image build.
     Describe(DescribeArgs),
+    /// Host v2 sessions on this machine until Ctrl-C: the default session,
+    /// and any other a participant names. Prints the address it listens on.
+    Host(HostArgs),
 }
 
 /// Shared flag selecting which named profile to act on.
@@ -319,6 +322,15 @@ pub struct CheckImageArgs {
     /// Print the report as JSON: `{"failed","warnings","not_checked","passed"}`.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Flags for `rlmesh host`.
+#[derive(Args, Debug)]
+pub struct HostArgs {
+    /// Listen here (this port and the next three) instead of 127.0.0.1 on
+    /// the well-known port (`RLMESH_PORT`, else 7447). Port 0: OS-assigned.
+    #[arg(long, value_name = "ADDR")]
+    pub listen: Option<std::net::SocketAddr>,
 }
 
 /// Flags for `rlmesh describe`.

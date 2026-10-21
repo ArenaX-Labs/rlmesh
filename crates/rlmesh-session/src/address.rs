@@ -474,8 +474,9 @@ fn listening(base: SocketAddr) -> bool {
     TcpStream::connect_timeout(&joinable(base), Duration::from_millis(200)).is_ok()
 }
 
-/// Hosts session `name` in this process on `base` (port 0: OS-assigned).
-async fn host_on(
+/// Hosts session `name` in this process on `base` (port 0: OS-assigned),
+/// and every other session of [`TENANT`] its participants name.
+pub async fn host_at(
     base: SocketAddr,
     name: &str,
     lease_grace: Duration,
@@ -528,7 +529,7 @@ pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, S
         Placement::Host(base) if base.port() != 0 && listening(base) => return join(base),
         Placement::Host(base) => base,
     };
-    match host_on(base, name, lease_grace).await {
+    match host_at(base, name, lease_grace).await {
         Ok(placed) => Ok(placed),
         // Another process holds the port: join it.
         Err(_) if base.port() != 0 && listening(base) => join(base),

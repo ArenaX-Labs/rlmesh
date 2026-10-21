@@ -49,8 +49,8 @@ pub struct Args {
         required_unless_present_any = ["session_file", "address"]
     )]
     pub session: Option<String>,
-    /// Read the session id from this file (`rlmesh-session-host
-    /// --session-file`).
+    /// Read the session id from this file (as a robot's `--session-file`
+    /// writes it).
     #[arg(long)]
     pub session_file: Option<PathBuf>,
     /// The address to serve on. Anything but loopback needs a token.

@@ -21,8 +21,8 @@
 //! In a virtual-clock session the host also runs the tick barrier (§11.3)
 //! and publishes its ticks on `host/tick`.
 //!
-//! The host is a library ([`SessionHost::start`] on any [`Transport`]) and a
-//! binary (`rlmesh-session-host`).
+//! The host is a library ([`SessionHost::start`] on any [`Transport`]);
+//! `rlmesh host` runs one in the foreground.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};

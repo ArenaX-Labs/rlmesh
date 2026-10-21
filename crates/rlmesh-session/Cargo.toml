@@ -17,10 +17,6 @@ keywords = { workspace = true }
 publish = true
 
 [[bin]]
-name = "rlmesh-session-host"
-path = "src/bin/rlmesh-session-host.rs"
-
-[[bin]]
 name = "rlmesh-gateway"
 path = "src/bin/rlmesh-gateway.rs"
 required-features = ["gateway"]
@@ -31,7 +27,7 @@ required-features = ["gateway"]
 axum = { workspace = true, features = ["ws"], optional = true }
 blake3 = { workspace = true, optional = true }
 bytes = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive"], optional = true }
 # JPEG camera channels: encode with jpeg-encoder, decode with image's
 # zune-jpeg (the workspace's existing pair, as in rlmesh-adapters).
 image = { workspace = true, features = ["jpeg"] }
@@ -51,13 +47,14 @@ tokio-rustls = { workspace = true, optional = true }
 tokio-util = { workspace = true }
 tower-http = { workspace = true, features = ["fs", "set-header"], optional = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"], optional = true }
 # One Zenoh session per traffic class: no `transport_multilink` (it pulls
 # `rsa`, RUSTSEC-2023-0071) and no pubkey auth (also `rsa`). `unstable` is
 # for per-publisher reliability, the only way Zenoh 1.10 sets it (§10.2).
 zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-stream", "unstable"] }
 
 [dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
 # Gateway handshake tests: a throwaway certificate.
 rcgen = { workspace = true }
 # The browser binding's frame tags, checked against the gateway's.
@@ -66,6 +63,7 @@ rlmesh-wasm = { path = "../../javascript/rlmesh/wasm" }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio-tungstenite = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [features]
 # The library's optional parts are on for the crate itself (its binaries
@@ -77,12 +75,14 @@ default = ["gateway", "record"]
 gateway = [
   "dep:axum",
   "dep:blake3",
+  "dep:clap",
   "dep:futures",
   "dep:rand",
   "dep:rustls",
   "dep:serde_json",
   "dep:tokio-rustls",
   "dep:tower-http",
+  "dep:tracing-subscriber",
   "tokio/net",
 ]
 # MCAP recording of a session (`record`).

@@ -28,7 +28,7 @@
 //!   session participants (bin `rlmesh-gateway`; `docs/browser.md`).
 //! - [`host`]: the [`SessionHost`]: `ctl` verbs, the published authority
 //!   snapshot, heartbeat echoes, lease expiry, virtual ticks and the history
-//!   store. A library, and a binary (`rlmesh-session-host`).
+//!   store. A library; `rlmesh host` runs one in the foreground.
 //! - [`server`]: the [`SessionServer`], a multi-session host that starts a
 //!   session's host for its first participant.
 //! - [`participant`]: the [`Participant`]: presence, heartbeats, the

@@ -3,6 +3,7 @@ mod check;
 mod cli;
 mod config;
 mod helpers;
+mod host;
 pub mod image_check;
 mod manifest;
 mod platform;
@@ -78,6 +79,7 @@ pub async fn run_cli_in(
         | Command::Check(_)
         | Command::CheckImage(_)
         | Command::Describe(_)
+        | Command::Host(_)
         | Command::Registry(cli::RegistryArgs {
             command: cli::RegistryCommand::Publish(_),
         }) => None,
@@ -175,6 +177,7 @@ pub async fn run_cli_in(
         Command::Check(args) => check::check_target(&args, stdout, stdout_style),
         Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),
         Command::Describe(args) => check::describe(&args, stdout, stderr),
+        Command::Host(args) => host::host(&args, stdout).await.map(|()| 0),
     };
 
     match result {

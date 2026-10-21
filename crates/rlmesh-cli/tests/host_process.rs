@@ -1,4 +1,4 @@
-//! The session host in its own OS process (`rlmesh-session-host`), with
+//! The session host in its own OS process (`rlmesh host`), with
 //! participants in this one, linked over per-class TCP on localhost.
 
 use std::io::{BufRead, BufReader};
@@ -6,6 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use rlmesh_session::address::{DEFAULT_SESSION, TENANT, session_id};
 use rlmesh_session::media::synthetic_frame;
 use rlmesh_session::spec::apply::Value;
 use rlmesh_session::spec::{Policy, RunOptions};
@@ -37,7 +38,7 @@ struct HostProcess {
 
 impl HostProcess {
     /// Spawns the host on free local ports, again on others when one was
-    /// taken in between (the host then exits before printing its session).
+    /// taken in between (the host then exits before printing its address).
     fn spawn() -> Self {
         for _ in 0..16 {
             if let Some(host) = Self::try_spawn() {
@@ -49,16 +50,8 @@ impl HostProcess {
 
     fn try_spawn() -> Option<Self> {
         let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh-session-host"))
-            .args([
-                "--tenant",
-                "two-process",
-                "--listen-base",
-                &base.to_string(),
-                "--lease-grace-ms",
-                "300",
-            ])
-            .env("RUST_LOG", "warn")
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
+            .args(["host", "--listen", &base.to_string()])
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -67,19 +60,17 @@ impl HostProcess {
         let mut line = String::new();
         BufReader::new(stdout)
             .read_line(&mut line)
-            .expect("session id line");
-        match line.trim().parse() {
-            Ok(session) => Some(Self {
+            .expect("address line");
+        if line.trim() == base.to_string() {
+            return Some(Self {
                 child,
-                session,
+                session: session_id(DEFAULT_SESSION),
                 base,
-            }),
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                None
-            }
+            });
         }
+        let _ = child.kill();
+        let _ = child.wait();
+        None
     }
 
     fn signal(&self, signal: i32) {
@@ -122,7 +113,7 @@ async fn join(
     .await
     .expect("transport");
     let mut config = ParticipantConfig::new(
-        TenantId::new("two-process").expect("tenant"),
+        TenantId::new(TENANT).expect("tenant"),
         host.session,
         ParticipantId::new(id).expect("id"),
         roles,
