@@ -63,6 +63,8 @@ exceptions = [
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
+# Path-only dev-dependencies (packaging strips them) are not wildcards.
+allow-wildcard-paths = true
 highlight = "simplest-path"
 
 # Architecture boundary: only protocol-aware crates may depend on rlmesh-proto

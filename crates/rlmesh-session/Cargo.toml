@@ -11,8 +11,10 @@ documentation = { workspace = true }
 license = { workspace = true }
 categories = { workspace = true }
 keywords = { workspace = true }
-# Not released until the v0.2 wire spec freezes.
-publish = false
+# Publishable so `release:rust:package` verifies the facade's `lockstep`
+# feature against it; not in the release order (scripts/release.py) until
+# the v0.2 wire spec freezes.
+publish = true
 
 [[bin]]
 name = "rlmesh-session-host"
@@ -59,7 +61,8 @@ zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-str
 # Gateway handshake tests: a throwaway certificate.
 rcgen = { workspace = true }
 # The browser binding's frame tags, checked against the gateway's.
-rlmesh-wasm = { workspace = true }
+# Path only: a dev-dependency packaging strips (the wasm crate is unpublished).
+rlmesh-wasm = { path = "../../javascript/rlmesh/wasm" }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio-tungstenite = { workspace = true }
