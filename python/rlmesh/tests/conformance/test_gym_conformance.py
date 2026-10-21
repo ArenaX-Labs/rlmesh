@@ -688,6 +688,31 @@ def test_a_vector_env_s_info_arrays_arrive_as_arrays_with_their_dtypes(
     assert difference([t[-1] for t in want], [t[-1] for t in got]) is None
 
 
+class ListInfo(gym.vector.VectorWrapper):  # type: ignore[misc]
+    """A vector env whose info carries a plain list of one entry per lane."""
+
+    def reset(self, **kwargs: Any) -> Any:
+        obs, info = self.env.reset(**kwargs)
+        return obs, {**info, "lanes": ["a", "b", "c"]}
+
+    def step(self, actions: Any) -> Any:
+        *transition, info = self.env.step(actions)
+        return (*transition, {**info, "lanes": [1, 2, 3]})
+
+
+def test_a_vector_env_s_plain_list_in_info_arrives_as_a_list() -> None:
+    def build() -> Any:
+        return ListInfo(gym.vector.SyncVectorEnv([lambda: make("CartPole-v1")] * 3))
+
+    reference = build()
+    actions = sampled(reference.action_space)
+    want = vector_rollout(reference, actions, 5)
+    with served(build()) as remote:
+        got = vector_rollout(remote, actions, 5)
+    assert all(isinstance(t[-1]["lanes"], list) for t in got)
+    assert difference(want, got) is None
+
+
 def test_remote_envs_vectorise_on_the_client_side() -> None:
     reference = gym.vector.SyncVectorEnv([lambda: make("CartPole-v1")] * 2)
     actions = sampled(reference.action_space)

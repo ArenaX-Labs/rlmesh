@@ -106,7 +106,7 @@ def observation_converter(space: Any, batched: bool = False) -> Convert | None:
 
 
 def vector_info(info: dict[str, Any], num_envs: int) -> dict[str, Any]:
-    """A vector env's info with its per-lane lists as arrays again."""
+    """A vector env's info with its per-lane lists as arrays again (v1 wire)."""
     import numpy as np
 
     out: dict[str, Any] = {}

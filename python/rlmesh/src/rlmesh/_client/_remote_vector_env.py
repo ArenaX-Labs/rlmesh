@@ -79,6 +79,11 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             **({"runtime_info": False} if self._gym_active else {}),
         )
 
+    @property
+    def _lowers_arrays(self) -> bool:
+        """Whether the transport lowers info arrays to lists (lockstep does not)."""
+        return not self._address.startswith("lockstep://")
+
     def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
         """Restore the Gymnasium ``AutoresetMode`` enum on the endpoint metadata.
 
@@ -187,7 +192,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
                 self, seed=seed if isinstance(seed, int) else None
             )
         obs, info = self._client.reset(seeds=seeds, options=options)
-        if self._gym_active:
+        if self._gym_active and self._lowers_arrays:
             info = cast("ResetInfo", _gym.vector_info(info, self.num_envs))
         return self._observations(obs), info
 
@@ -211,7 +216,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
         obs, rewards, terminated, truncated, info = self._client.step(
             self._encode_actions(cast("ActionT", actions))
         )
-        if self._gym_active:
+        if self._gym_active and self._lowers_arrays:
             info = cast("StepInfo", _gym.vector_info(info, self.num_envs))
         return (
             self._observations(obs),
