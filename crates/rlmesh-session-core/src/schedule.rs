@@ -21,12 +21,19 @@
 //!   inference in flight, for a timer outside the policy thread (not an
 //!   average over completions).
 //!
+//! [`PhaseAlign`] phases a wall-clock grid just after the publication of
+//! one sampled input, so a snapshot reads a fresh sample.
+//!
 //! Nothing here renegotiates: rates, horizons and contracts never change
 //! because something got slow.
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::time::Duration;
+
+use crate::cache::Snapshot;
+use crate::spec::Binding;
+use crate::wire::ContractMode;
 
 /// How many completion latencies the percentiles are taken over.
 const LATENCIES: usize = 1024;
@@ -392,6 +399,169 @@ impl StartSchedule {
     }
 }
 
+/// Phases a clocked run loop's starts just after the publication of one
+/// sampled input (wall clock only; sans-IO, times injected).
+///
+/// A `latest` input is published at about the replan rate, at a phase set
+/// by its publisher, and the start grid's phase is set by when the run
+/// began: the two lock wherever they happen to fall, often with each start
+/// just before the next sample, so every snapshot reads a sample nearly a
+/// full replan period old. The aligner measures the phase of the aligned
+/// input's newest sample at each snapshot (`(snapshot − capture) mod P`),
+/// takes the freshest tenth over a window of starts and moves the
+/// grid so that phase is [`Self::margin`]: once in full (always later, so no slot
+/// is skipped), then by half the remaining error per window, at most a
+/// quarter period, to follow slow drift between the publisher's clock and
+/// this one.
+///
+/// The aligned input is the first bound input with a `latest` contract
+/// (its publication follows the replan rate). `every` and `history`
+/// inputs are already fresh at any phase, and events have none.
+#[derive(Clone, Debug)]
+pub struct PhaseAlign {
+    input: usize,
+    period_ns: i64,
+    /// How far starts sit after the schedule's grid.
+    pub offset_ns: i64,
+    errors: Vec<i64>,
+    aligned: bool,
+}
+
+impl PhaseAlign {
+    /// Starts per estimate.
+    pub const WINDOW: usize = 32;
+    /// Starts before the first estimate.
+    pub const FIRST: usize = 8;
+    /// Consecutive starts reading the previous sample that move the
+    /// starts later before the window ends.
+    pub const LATE: usize = 4;
+    /// The target sample age at a start: transit plus the publisher's
+    /// loop jitter (`min(1 ms, P / 4)`).
+    const MARGIN_NS: i64 = 1_000_000;
+    /// Corrections smaller than this are left alone.
+    const DEADBAND_NS: i64 = 50_000;
+
+    /// The input `binding`'s starts align to, by index.
+    pub fn input(binding: &Binding) -> Option<usize> {
+        binding.inputs.iter().position(|row| {
+            row.channel.is_some_and(|channel| {
+                binding
+                    .contracts
+                    .iter()
+                    .any(|c| c.channel == channel && c.mode == ContractMode::Latest)
+            })
+        })
+    }
+
+    /// An aligner for `binding`, or `None` when no input sets a phase.
+    pub fn for_binding(binding: &Binding) -> Option<Self> {
+        let input = Self::input(binding)?;
+        let hz = if binding.replan_hz.is_finite() && binding.replan_hz > 0.0 {
+            binding.replan_hz
+        } else {
+            return None;
+        };
+        Some(Self::new(input, ((1e9 / hz).round() as i64).max(1)))
+    }
+
+    /// Aligns to input `input` on a grid of period `period_ns`.
+    pub fn new(input: usize, period_ns: i64) -> Self {
+        Self {
+            input,
+            period_ns,
+            offset_ns: 0,
+            errors: Vec::with_capacity(Self::WINDOW),
+            aligned: false,
+        }
+    }
+
+    /// The target phase.
+    pub fn margin(&self) -> i64 {
+        Self::MARGIN_NS.min(self.period_ns / 4)
+    }
+
+    /// Records the phase of the aligned input's newest sample in `snapshot`,
+    /// taken at `snapshot_ns` (session time).
+    pub fn sample(&mut self, snapshot: &Snapshot, snapshot_ns: i64) {
+        let capture = snapshot
+            .inputs
+            .get(self.input)
+            .and_then(|i| i.samples.last())
+            .and_then(|s| s.capture_ns);
+        if let Some(capture) = capture {
+            self.record(snapshot_ns - capture);
+        }
+    }
+
+    /// Records one sample age (snapshot minus capture).
+    pub fn record(&mut self, age_ns: i64) {
+        let phase = age_ns.rem_euclid(self.period_ns);
+        self.errors.push(self.centered(phase - self.margin()));
+    }
+
+    /// Moves the grid once a window is full; returns the change.
+    pub fn update(&mut self) -> i64 {
+        // Every one of the last few starts read the previous sample: the
+        // publisher's phase moved later (its loop stalled). Follow now
+        // rather than at the end of the window, by the smallest of them.
+        let recent = self.errors.len().checked_sub(Self::LATE);
+        if let Some(from) = recent.filter(|_| self.aligned)
+            && self.errors[from..]
+                .iter()
+                .all(|e| (-self.period_ns / 4..-Self::DEADBAND_NS).contains(e))
+        {
+            let change = self.errors[from..].iter().map(|e| -e).min().unwrap_or(0);
+            self.errors.clear();
+            self.offset_ns += change;
+            return change;
+        }
+        let window = if self.aligned {
+            Self::WINDOW
+        } else {
+            Self::FIRST
+        };
+        if self.errors.len() < window {
+            return 0;
+        }
+        self.errors.sort_unstable();
+        // The freshest tenth: the samples that land latest set the phase,
+        // so jitter in their arrival never puts one after the start.
+        let error = self.errors[self.errors.len() / 10];
+        self.errors.clear();
+        // A phase above the margin: start that much earlier, which is the
+        // same as starting `P − error` later on the next sample.
+        let p = self.period_ns;
+        let change = if (-p / 4..0).contains(&error) {
+            // The samples land just after the starts: start later, in full.
+            // Each start reads a sample almost a period old until then, and
+            // the gap this opens in the chunk coverage is under P/4.
+            -error
+        } else if error < 0 {
+            // Far later is the same phase as earlier: start sooner (which
+            // never opens a gap), at most P/2 per window.
+            (-(error + p)).max(-p / 2)
+        } else if self.aligned {
+            // Starts later than they need be: close in by halves.
+            (-error / 2).max(-p / 4)
+        } else {
+            -error
+        };
+        self.aligned = true;
+        if change.abs() < Self::DEADBAND_NS {
+            return 0;
+        }
+        self.offset_ns += change;
+        change
+    }
+
+    /// `x` wrapped into `(−P/2, P/2]`.
+    fn centered(&self, x: i64) -> i64 {
+        let p = self.period_ns;
+        let w = x.rem_euclid(p);
+        if w > p / 2 { w - p } else { w }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,5 +670,119 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    /// Starts on a 10 ms grid shifted by `offset`; samples published every
+    /// 10 ms at `publish_phase` (+ `jitter(k)`): the newest sample's age at
+    /// each start.
+    fn ages(
+        offset: i64,
+        publish_phase: i64,
+        jitter: impl Fn(i64) -> i64,
+        from: i64,
+    ) -> impl Iterator<Item = i64> {
+        (from..).map(move |k| {
+            let start = k * 10 * MS + offset;
+            // The newest publication at or before the start.
+            let mut j = (start - publish_phase).div_euclid(10 * MS) + 1;
+            while j * 10 * MS + publish_phase + jitter(j) > start {
+                j -= 1;
+            }
+            start - (j * 10 * MS + publish_phase + jitter(j))
+        })
+    }
+
+    #[test]
+    fn a_start_just_before_each_sample_moves_to_just_after_it() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        // Published 0.4 ms after each start: snapshots read a 9.6 ms old sample.
+        for age in ages(0, 400_000, |_| 0, 1).take(PhaseAlign::FIRST) {
+            assert_eq!(age, 9_600_000);
+            align.record(age);
+        }
+        let change = align.update();
+        assert_eq!(change, 1_400_000, "later, the short way");
+        for age in ages(align.offset_ns, 400_000, |_| 0, 100).take(PhaseAlign::WINDOW) {
+            assert_eq!(age, MS, "one margin old");
+            align.record(age);
+        }
+        assert_eq!(align.update(), 0, "aligned: nothing to correct");
+    }
+
+    #[test]
+    fn jitter_is_ignored_and_slow_drift_is_followed() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        // ±0.5 ms publication jitter around a 3 ms phase.
+        let jitter = |j: i64| if j % 2 == 0 { 500_000 } else { -500_000 };
+        for age in ages(0, 3 * MS, jitter, 1).take(PhaseAlign::WINDOW) {
+            align.record(age);
+        }
+        align.update();
+        let mut worst = 0;
+        // The publisher drifts 20 µs per window; the aligner keeps up.
+        for round in 0..50 {
+            let phase = 3 * MS + round * 20_000;
+            let from = 1000 + round * 100;
+            for age in ages(align.offset_ns, phase, jitter, from).take(PhaseAlign::WINDOW) {
+                worst = worst.max(age);
+                align.record(age);
+            }
+            align.update();
+        }
+        assert!(worst < 3 * MS, "ages stay near the margin, worst {worst}");
+    }
+
+    #[test]
+    fn nothing_moves_before_a_window_is_full() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        for _ in 0..PhaseAlign::FIRST - 1 {
+            align.record(9 * MS);
+        }
+        assert_eq!(align.update(), 0);
+        assert_eq!(align.offset_ns, 0);
+    }
+
+    #[test]
+    fn a_far_phase_is_reached_by_starting_earlier() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        // 4 ms old: 3 ms earlier, not 7 ms later.
+        for _ in 0..PhaseAlign::FIRST {
+            align.record(4 * MS);
+        }
+        assert_eq!(align.update(), -3 * MS);
+        // 6.5 ms after the margin is 3.5 ms before the next sample's: still
+        // earlier, by at most half a period per window.
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        for _ in 0..PhaseAlign::FIRST {
+            align.record(7_500_000);
+        }
+        assert_eq!(align.update(), -5 * MS);
+    }
+
+    #[test]
+    fn a_publisher_that_jumps_later_is_followed_within_a_few_starts() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        for age in ages(0, 8 * MS, |_| 0, 1).take(PhaseAlign::FIRST) {
+            align.record(age);
+        }
+        assert_eq!(align.update(), -MS, "2 ms old: 1 ms earlier");
+        // The publisher's loop slips 2 ms: every start now reads the
+        // previous sample, 9 ms old, until the aligner follows.
+        let mut moved = 0;
+        for (n, age) in ages(align.offset_ns, 10 * MS, |_| 0, 100)
+            .take(PhaseAlign::LATE)
+            .enumerate()
+        {
+            assert_eq!(age, 9 * MS);
+            align.record(age);
+            moved = align.update();
+            if n + 1 < PhaseAlign::LATE {
+                assert_eq!(moved, 0);
+            }
+        }
+        assert_eq!(moved, 2 * MS, "later, in full, after a few starts");
+        for age in ages(align.offset_ns, 10 * MS, |_| 0, 200).take(PhaseAlign::WINDOW) {
+            assert_eq!(age, MS);
+        }
     }
 }

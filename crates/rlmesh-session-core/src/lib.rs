@@ -13,7 +13,8 @@
 //! - [`virtual_clock`]: the virtual-mode tick barrier (§11.3).
 //! - [`clock`]: NTP-style offset estimation with an error bound.
 //! - [`cache`]: a controller's input cache and history windows (§8.8).
-//! - [`schedule`]: policy starts and slowdown reporting (§8.9, §8.10).
+//! - [`schedule`]: policy starts and slowdown reporting (§8.9, §8.10), and
+//!   the start grid's phase alignment.
 //! - [`spec`]: the physical-AI layer (§2-§8): the kind table, robot and
 //!   policy maps, binding with refuse-and-explain, conversions and delivery
 //!   contracts.
@@ -42,6 +43,6 @@ pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, Le
 pub use cache::{Cached, InputCache, InputSnapshot, Skip, Snapshot};
 pub use clock::{OffsetEstimate, OffsetEstimator, OffsetEstimatorConfig};
 pub use lease::{LeaseChange, LeaseClient, LeaseError, LeaseState};
-pub use schedule::{RunEvent, RunStats, SkipReason, StartSchedule};
+pub use schedule::{PhaseAlign, RunEvent, RunStats, SkipReason, StartSchedule};
 pub use stream::SampleStats;
 pub use virtual_clock::VirtualConfig;

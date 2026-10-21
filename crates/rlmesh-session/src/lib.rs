@@ -87,7 +87,7 @@ pub use cache::{
 pub use chunk::{ChunkDraft, ChunkPublisher};
 pub use clock::{Clock, MonotonicClock, OffsetEstimate, SystemMonotonicClock};
 pub use controller::{
-    Controller, ControllerConfig, ControllerError, PhaseAlign, Predictor, RunError, SendError, Sent,
+    Controller, ControllerConfig, ControllerError, Predictor, RunError, SendError, Sent,
 };
 pub use error::SessionError;
 pub use host::{HistoryConfig, HostConfig, SessionHost};
@@ -99,7 +99,7 @@ pub use participant::{
 pub use sample::{
     Fresh, Received, SamplePublisher, SampleStats, SampleSubscriber, SubscribeOptions,
 };
-pub use schedule::{RunEvent, RunStats, SkipReason, StartSchedule};
+pub use schedule::{PhaseAlign, RunEvent, RunStats, SkipReason, StartSchedule};
 pub use transport::{ClassQos, TrafficClass, Transport, TransportConfig, TransportTuning};
 pub use virtual_clock::VirtualConfig;
 
