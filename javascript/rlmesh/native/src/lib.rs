@@ -1,5 +1,5 @@
 //! Node-API bindings for real-time sessions (protocol v2, the v0.2 spec): an
-//! embedded session host, a robot ([`rlmesh_edge::Robot`]), a bound policy
+//! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound policy
 //! ([`rlmesh_session::Controller`]) and an MCAP recorder
 //! ([`rlmesh_record::Recorder`]), the Node and Electron twin of the PyO3
 //! binding. The `rlmesh` npm package wraps them (`src/native.ts`);
@@ -28,9 +28,9 @@ use napi::bindgen_prelude::{BigInt, Either, Uint8Array, create_custom_tokio_runt
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Error, Result, Status, tokio};
 use napi_derive::napi;
-use rlmesh_edge::{Due, EdgeConfig, EdgeMode, Rejection, Robot};
 use rlmesh_record::{RecordError, Recorder};
 use rlmesh_session::controller::sleep_until;
+use rlmesh_session::edge::{Due, EdgeConfig, EdgeMode, Rejection, Robot};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::policy::Allow;
 use rlmesh_session::spec::{BindError, Policy, RunOptions};
@@ -642,7 +642,7 @@ pub async fn connect_robot(
     let robot = Robot::declare(participant, &robot_json, EdgeConfig::default())
         .await
         .map_err(|err| match err {
-            rlmesh_edge::EdgeError::Session(err) => session_err(err),
+            rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
             other => exception(other.to_string()),
         })?;
     Ok(NativeRobot {

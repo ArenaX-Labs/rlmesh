@@ -4,7 +4,7 @@
 //! [`ChunkPublisher`], which stamps its lease token, the lease's binding,
 //! the epoch, its own id as the source and a seq (increasing per token), and
 //! checks the actions against the part's command layout (§10.6). The
-//! embodiment's edge (`rlmesh-edge`) fences, validates, splices and applies
+//! embodiment's edge ([`edge`](crate::edge)) fences, validates, splices and applies
 //! them.
 
 use std::sync::Arc;

@@ -1,14 +1,13 @@
 //! Real-time RLMesh sessions (protocol v2) on Zenoh.
 //!
 //! A session is a long-lived shared world that participants (embodiments,
-//! controllers, observers) attach to. This crate holds its authority core
-//! and its network ends; the wire format lives in [`crate::wire`] and the
-//! embodiment-side action queue in `rlmesh-edge`.
-//!
-//! The sans-IO state machines live in `rlmesh-session-core` and are
-//! re-exported here under the same paths ([`authority`], [`virtual_clock`],
-//! [`schedule`], the offset estimator in [`clock`], the input cache in
-//! [`cache`] and the receive rules in [`sample`]).
+//! controllers, observers) attach to. This crate is the one v2 dependency:
+//! the network ends over Zenoh, the [`edge`] next to an embodiment, and,
+//! re-exported from `rlmesh-session-core` (the sans-IO core the browser
+//! build shares), the [`wire`], the [`spec`] and the state machines
+//! ([`authority`], [`virtual_clock`], [`schedule`], the offset estimator in
+//! [`clock`], the input cache in [`cache`] and the receive rules in
+//! [`sample`]).
 //!
 //! - [`address`]: a session's `{ip}:{port}/{tenant}/{session}` address,
 //!   and joining it from another process.
@@ -38,6 +37,9 @@
 //! - [`controller`]: the [`Controller`] runtime language bindings wrap: a
 //!   bound policy's inputs, its leases (kept and re-requested in the
 //!   background), its chunks and its run loop.
+//! - [`edge`]: the edge runtime next to an embodiment (§9): the timed
+//!   action queue, command limits, the hold-then-safe ladder, the applied
+//!   stream and log, and the [`Robot`](edge::Robot) bindings wrap.
 //! - [`report`]: observer telemetry (§8.10), the publisher and controller
 //!   counters an observer cannot measure itself.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
@@ -56,6 +58,7 @@ pub mod cache;
 pub mod chunk;
 pub mod clock;
 pub mod controller;
+pub mod edge;
 pub mod error;
 pub mod host;
 pub mod media;

@@ -7,8 +7,8 @@ In Node 22+ and Electron's main process, `rlmesh` runs real-time sessions
 in-process: a session host, robots with their edges, and bound policies, on
 the session's own transport (Zenoh, one session per traffic class). It is
 Python's `rlmesh.v2`, one to one, over a Node-API addon
-(`javascript/rlmesh/native`, napi-rs) that binds `rlmesh-session` and
-`rlmesh-edge` directly, as PyO3 does. Every rule (normalisation, binding,
+(`javascript/rlmesh/native`, napi-rs) that binds `rlmesh-session`
+(its edge included) directly, as PyO3 does. Every rule (normalisation, binding,
 conversions, leases, the edge, the run loop) runs in Rust.
 
 A page cannot do this: it has no raw TCP or UDP. Browsers join through

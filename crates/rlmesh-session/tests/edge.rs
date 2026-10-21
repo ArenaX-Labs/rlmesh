@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use rlmesh_edge::{Edge, EdgeConfig, EdgeMode, EdgeTick, Rejection};
+use rlmesh_session::edge::{Edge, EdgeConfig, EdgeMode, EdgeTick, Rejection};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::{
     ChannelId, Fingerprint, InputRange, Lease, Mode, ParticipantId, PriorityClass, Role, SessionId,

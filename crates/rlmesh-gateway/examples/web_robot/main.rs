@@ -8,7 +8,7 @@
 //!
 //! - **Host**: a `SessionHost` on per-class TCP at `--listen-base` (class i on
 //!   port + i), lease grace `--lease-grace-ms` (250 ms).
-//! - **Robot** `arm7` (`rlmesh_edge::Robot`): `arm` (7 joints, `pos` and `vel`
+//! - **Robot** `arm7` (`rlmesh_session::edge::Robot`): `arm` (7 joints, `pos` and `vel`
 //!   at 1 kHz, position commands, `safe: stop`, hold 100 ms), `gripper`
 //!   (100 Hz, position, `safe: hold`) and `scene/cam` (640x480 at 20 Hz, JPEG
 //!   q85; `--cam raw` sends the raw RGB). The control loop runs at 1 kHz; each
@@ -32,8 +32,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
-use rlmesh_edge::{EdgeConfig, EdgeMode, Robot};
 use rlmesh_session::controller::sleep_until;
+use rlmesh_session::edge::{EdgeConfig, EdgeMode, Robot};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::wire::{DType, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId};

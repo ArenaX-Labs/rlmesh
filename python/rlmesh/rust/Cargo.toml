@@ -36,7 +36,6 @@ stub-gen = ["dep:pyo3-stub-gen"]
 [dependencies]
 rlmesh = { workspace = true, features = ["lockstep"] }
 rlmesh-adapters = { workspace = true }
-rlmesh-edge = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-gym = { workspace = true }

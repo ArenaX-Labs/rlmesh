@@ -49,7 +49,6 @@ zenoh = { workspace = true, features = ["unstable"] }
 # Handshake tests: a throwaway certificate.
 rcgen = { workspace = true }
 # The bridge tests' robot and the browser example's (examples/web_robot).
-rlmesh-edge = { workspace = true }
 # The example's model policy.
 # The browser binding's frame tags, checked against this crate's.
 rlmesh-wasm = { workspace = true }

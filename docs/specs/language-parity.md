@@ -78,7 +78,7 @@ has a Stable surface.
 
 The Node binding (R-30) is the same package's other half: in Node 22+ and
 Electron's main process, `Host`, `Robot`, `Policy` and `Rate` bind
-`rlmesh-session` and `rlmesh-edge` directly through a Node-API addon
+`rlmesh-session` (its edge included) directly through a Node-API addon
 (`javascript/rlmesh/native`), one to one with Python's `rlmesh.v2` and
 async-first like the browser. Robots, edges and device loops run here, not in
 a page. Its gate is `mise run test:js:native` (docs: [the Node

@@ -1,6 +1,6 @@
 """Python in the loop: the bench2 T1/T2 shape through ``rlmesh.v2``.
 
-The Rust ``session_bench`` (``crates/rlmesh-edge/examples``) on the same
+The Rust ``session_bench`` (``crates/rlmesh-session/examples``) on the same
 shape, with Python on both sides: an embodiment process (the session host,
 a Python robot publishing force/torque at 1 kHz and an optional 640x480 raw
 camera at 20 Hz, ticking its edge every 1 ms) and a controller process (a

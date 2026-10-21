@@ -2,7 +2,7 @@
 //! plus what each participant reports in its heartbeats.
 //!
 //! Edge-side lag metrics (`action_age_at_apply`, deadline misses, fallback
-//! time) live in `rlmesh-edge`; the heartbeat carries its queue report.
+//! time) live in [`edge`](crate::edge); the heartbeat carries its queue report.
 
 use std::collections::VecDeque;
 use std::fmt;

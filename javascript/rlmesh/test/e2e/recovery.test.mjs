@@ -1,6 +1,6 @@
 // Recovery end to end, under Node: the package's `default` entry (dist/node.js: worker_threads class
 // Workers, the real wasm, Node's WebSocket) against the example robot (a real session host, an
-// rlmesh-edge robot and a model policy) and the real rlmesh-gateway.
+// rlmesh-session edge robot and a model policy) and the real rlmesh-gateway.
 //
 //   1. a real wasm trap in the state Worker -> respawned, the same subscription keeps flowing;
 //   2. a trap in the control Worker -> the lease is revoked (worker_restart); its participant is gone,

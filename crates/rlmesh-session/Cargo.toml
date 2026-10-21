@@ -25,9 +25,8 @@ clap = { workspace = true, features = ["derive"] }
 # zune-jpeg (the workspace's existing pair, as in rlmesh-adapters).
 image = { workspace = true, features = ["jpeg"] }
 jpeg-encoder = { workspace = true }
-# The shared normaliser (robot map JSON to parts) and the binder.
-# The sans-IO state machines (authority, clock offsets, input cache,
-# schedule, virtual clock, stream rules), re-exported unchanged.
+# The sans-IO core (the wire, the spec, authority, clock offsets, input
+# cache, schedule, virtual clock, stream rules), re-exported unchanged.
 rlmesh-session-core = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
@@ -38,6 +37,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 # `rsa`, RUSTSEC-2023-0071) and no pubkey auth (also `rsa`). `unstable` is
 # for per-publisher reliability, the only way Zenoh 1.10 sets it (§10.2).
 zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-stream", "unstable"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [features]
 # QUIC links (one stream per Zenoh priority, so one connection can carry

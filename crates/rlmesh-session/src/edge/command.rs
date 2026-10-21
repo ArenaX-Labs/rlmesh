@@ -13,8 +13,8 @@
 //! rejected whole. The clamped value is what the edge dispatches and what
 //! `_applied` shows. Actions are only copied when one of them changes.
 
+use crate::wire::{CommandSpec, DType, Layout};
 use bytes::Bytes;
-use rlmesh_session::wire::{CommandSpec, DType, Layout};
 
 /// Tolerance on unit norms and orthogonality.
 const UNIT_TOLERANCE: f64 = 1e-3;
@@ -328,7 +328,7 @@ fn check_rotation(rotation: Rotation, v: &[f64]) -> Result<(), String> {
 mod tests {
     use std::time::Duration;
 
-    use rlmesh_session::wire::{FieldLimit, FieldSpec, MergePolicy};
+    use crate::wire::{FieldLimit, FieldSpec, MergePolicy};
 
     use super::*;
 

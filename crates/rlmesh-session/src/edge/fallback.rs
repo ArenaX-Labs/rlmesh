@@ -38,9 +38,9 @@
 
 use std::fmt;
 
-use rlmesh_session::wire::{EdgeMode, Epoch, LeaseToken, Mode};
+use crate::wire::{EdgeMode, Epoch, LeaseToken, Mode};
 
-use crate::queue::{ActionQueue, Delivery, QueuedAction};
+use crate::edge::queue::{ActionQueue, Delivery, QueuedAction};
 
 fn mode_index(mode: EdgeMode) -> usize {
     match mode {
@@ -459,11 +459,11 @@ fn clear(queues: &mut [ActionQueue]) {
 mod tests {
     use std::sync::Arc;
 
+    use crate::wire::{ChannelId, InputRange, ParticipantId};
     use bytes::Bytes;
-    use rlmesh_session::wire::{ChannelId, InputRange, ParticipantId};
 
     use super::*;
-    use crate::queue::{ChunkMeta, Splice};
+    use crate::edge::queue::{ChunkMeta, Splice};
 
     const MS: i64 = 1_000_000;
 

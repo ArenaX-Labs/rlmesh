@@ -13,16 +13,16 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rlmesh_session::transport::payload_bytes;
-use rlmesh_session::wire::codec;
-use rlmesh_session::wire::{ActionChunk, ChannelId, ChunkRef, ClockMode};
-use rlmesh_session::{
+use crate::transport::payload_bytes;
+use crate::wire::codec;
+use crate::wire::{ActionChunk, ChannelId, ChunkRef, ClockMode};
+use crate::{
     AuthorityView, Clock, EdgeReport, Participant, SafeReporter, SamplePublisher, TrafficClass,
 };
 use tracing::{debug, info};
 
-use crate::core::{AppliedAction, EdgeConfig, EdgeCore, EdgeStats, EdgeTick, Rejection};
-use crate::error::EdgeError;
+use crate::edge::core::{AppliedAction, EdgeConfig, EdgeCore, EdgeStats, EdgeTick, Rejection};
+use crate::edge::error::EdgeError;
 
 /// Called with every accepted chunk and its edge receive time, on the
 /// transport's callback thread: keep it short.

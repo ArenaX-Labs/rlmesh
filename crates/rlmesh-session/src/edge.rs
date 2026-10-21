@@ -15,7 +15,7 @@
 //!   transit check), validation, the queues, the ladder, the applied stream
 //!   and the applied-action log with source attribution.
 //! - [`runtime`]: [`Edge`], an [`EdgeCore`] attached to a
-//!   [`rlmesh_session::Participant`]: chunks arrive from the transport,
+//!   [`crate::Participant`]: chunks arrive from the transport,
 //!   applied samples go out on `{path}/_applied`, falls are reported to the
 //!   host (`EnterSafe`), heartbeats carry the queue report.
 //! - [`robot`]: [`Robot`], the embodiment runtime bindings wrap: a robot map
@@ -27,8 +27,6 @@
 //! pair the edge with an external or device watchdog. The `blend` and
 //! `rtc_prefix` merge policies are Later (§19) and refused at declaration.
 
-#![warn(missing_docs)]
-
 pub mod command;
 pub mod core;
 pub mod error;
@@ -37,13 +35,13 @@ pub mod queue;
 pub mod robot;
 pub mod runtime;
 
-pub use crate::core::{
+pub use crate::edge::core::{
     AppliedAction, AppliedSample, EdgeConfig, EdgeCore, EdgeStats, EdgeTick, GroupHandover,
     Rejection,
 };
+pub use crate::wire::EdgeMode;
 pub use error::EdgeError;
 pub use fallback::{ModeStats, SafeCause};
 pub use queue::{Delivery, QueueStats, QueuedAction};
-pub use rlmesh_session::wire::EdgeMode;
 pub use robot::{Due, Handover, Robot};
 pub use runtime::{Edge, OnAccept};

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use rlmesh_edge::{EdgeConfig, Robot};
 use rlmesh_gateway::security::{Origins, Policy, SUBPROTOCOL};
 use rlmesh_gateway::{AppState, Gateway, frame, router};
+use rlmesh_session::edge::{EdgeConfig, Robot};
 use rlmesh_session::transport::{open_local_listeners, payload_bytes};
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{

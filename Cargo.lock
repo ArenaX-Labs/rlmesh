@@ -5283,20 +5283,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlmesh-edge"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "rlmesh-session",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zenoh",
-]
-
-[[package]]
 name = "rlmesh-gateway"
 version = "0.1.0"
 dependencies = [
@@ -5307,7 +5293,6 @@ dependencies = [
  "futures",
  "rand 0.10.1",
  "rcgen",
- "rlmesh-edge",
  "rlmesh-session",
  "rlmesh-wasm",
  "rustls",
@@ -5383,7 +5368,6 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
- "rlmesh-edge",
  "rlmesh-record",
  "rlmesh-session",
  "tokio",
@@ -5416,7 +5400,6 @@ dependencies = [
  "rlmesh",
  "rlmesh-adapters",
  "rlmesh-cli",
- "rlmesh-edge",
  "rlmesh-grpc",
  "rlmesh-gym",
  "rlmesh-proto",
@@ -5442,7 +5425,6 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "mcap",
- "rlmesh-edge",
  "rlmesh-session",
  "tempfile",
  "thiserror 2.0.18",
@@ -5496,6 +5478,7 @@ dependencies = [
  "jpeg-encoder",
  "libc",
  "rlmesh-session-core",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

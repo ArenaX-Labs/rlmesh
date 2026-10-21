@@ -25,7 +25,7 @@ three pieces instead:
  │ main thread: rlmesh API      │          │ /control: one participant per │──ctl──│ session host          │
  │  control Worker (wasm) ──────┼─/control─│  connection (hello → attach), │──hb───│  (authority, leases,  │
  │   heartbeats, leases, chunks │          │  heartbeats and chunks as sent│──c/───│   clock mappings)     │
- │  state Worker (wasm) ────────┼─/state───│ /state, /bulk: samples as     │──d/───│ robot (rlmesh-edge)   │
+ │  state Worker (wasm) ────────┼─/state───│ /state, /bulk: samples as     │──d/───│ robot (session edge)  │
  │  bulk Worker (wasm) ─────────┼─/bulk────│  published, tagged per sub    │       │  publishers, edges    │
  └──────────────────────────────┘          └───────────────────────────────┘       └───────────────────────┘
 ```

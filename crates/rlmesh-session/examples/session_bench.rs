@@ -53,7 +53,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
-use rlmesh_edge::{Edge, EdgeConfig, EdgeMode};
+use rlmesh_session::edge::{Edge, EdgeConfig, EdgeMode};
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::spec::apply::{Tensor, Value as ActionValue};
 use rlmesh_session::spec::{Policy, RunOptions};

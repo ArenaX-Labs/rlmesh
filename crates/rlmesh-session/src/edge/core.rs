@@ -18,7 +18,7 @@
 //! the lease expired by the edge clock; it is past `valid_until`; it fails
 //! the transit check; its seq is not above the last accepted for its token;
 //! its payload does not match `count` × the command stride; or any value is
-//! invalid ([`crate::command`], §9.6). Valid actions are clamped to the
+//! invalid ([`crate::edge::command`], §9.6). Valid actions are clamped to the
 //! part's limits before they are queued, so the clamped value is what the
 //! edge dispatches and what `_applied` shows.
 //!
@@ -47,16 +47,16 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
-use rlmesh_session::wire::{
+use crate::wire::{
     ActionChunk, Applied, AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, EdgeMode, Epoch,
     FenceError, LeaseToken, Mode, PartSpec, ParticipantId,
 };
+use bytes::Bytes;
 
-use crate::command::CommandCheck;
-use crate::error::EdgeError;
-use crate::fallback::{Fallback, LeaseView, MemberLadder, ModeStats, SafeCause, TickView};
-use crate::queue::{
+use crate::edge::command::CommandCheck;
+use crate::edge::error::EdgeError;
+use crate::edge::fallback::{Fallback, LeaseView, MemberLadder, ModeStats, SafeCause, TickView};
+use crate::edge::queue::{
     ActionQueue, ChunkMeta, Delivery, QueueStats, QueuedAction, Splice, SpliceOutcome,
 };
 
@@ -762,12 +762,12 @@ impl EdgeCore {
 
 #[cfg(test)]
 mod tests {
-    use rlmesh_session::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
-    use rlmesh_session::wire::{
+    use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
+    use crate::wire::{
         ClockMapping, Command, Fingerprint, InputRange, Lease, PriorityClass, Request, Role,
         SessionId,
     };
-    use rlmesh_session::{Authority, AuthorityConfig, VirtualConfig};
+    use crate::{Authority, AuthorityConfig, VirtualConfig};
 
     use super::*;
 
@@ -1105,7 +1105,7 @@ mod tests {
                 channels: vec![cmd],
                 replan_hz: 0.0,
                 contracts: Vec::new(),
-                grids: vec![rlmesh_session::wire::ActionGrid {
+                grids: vec![crate::wire::ActionGrid {
                     channel: cmd,
                     dt: Duration::from_millis(10),
                 }],
