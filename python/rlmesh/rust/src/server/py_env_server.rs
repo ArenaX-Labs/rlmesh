@@ -707,7 +707,7 @@ async fn run_env_server<E>(
     close_env_on_shutdown: bool,
 ) -> ServeResult
 where
-    E: Environment + 'static,
+    E: Environment + rlmesh::lockstep::Served,
 {
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
     // Bound both teardown phases so the background serve thread always terminates
@@ -737,7 +737,7 @@ where
             };
             let served = binding
                 .serve(
-                    Arc::clone(&env),
+                    Arc::clone(&env) as _,
                     rlmesh::lockstep::ServeOptions {
                         workflow_edition,
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),

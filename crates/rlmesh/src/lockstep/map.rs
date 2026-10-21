@@ -60,12 +60,14 @@ pub struct GymEnvInfo {
     pub capabilities: Vec<String>,
 }
 
+/// The handshake capability of an env whose lanes step and reset
+/// individually (v1's `subset_step`).
+pub const SUBSET_STEP: &str = "subset_step";
+
 impl GymEnvInfo {
     /// Whether lanes step and reset individually (`subset_step`).
     pub fn subset_step(&self) -> bool {
-        self.capabilities
-            .iter()
-            .any(|c| c == rlmesh_proto::capabilities::ENV_SUBSET_STEP)
+        self.capabilities.iter().any(|c| c == SUBSET_STEP)
     }
 
     fn to_json(&self) -> Value {

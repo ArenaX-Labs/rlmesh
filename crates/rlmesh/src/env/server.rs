@@ -1499,9 +1499,20 @@ struct ServeParts {
     shutdown: ShutdownTrigger,
 }
 
+/// What [`drive`] serves: a transport env, natively too with the `lockstep`
+/// feature.
+#[cfg(feature = "lockstep")]
+trait Driven: Environment + crate::lockstep::Served {}
+#[cfg(feature = "lockstep")]
+impl<E: Environment + crate::lockstep::Served> Driven for E {}
+#[cfg(not(feature = "lockstep"))]
+trait Driven: Environment {}
+#[cfg(not(feature = "lockstep"))]
+impl<E: Environment> Driven for E {}
+
 /// Serve `environment`; with a foreground runner, the transport runs on a
 /// helper thread while this thread runs the runner's jobs.
-fn drive<E: Environment + Send + Sync + 'static>(
+fn drive<E: Driven + Send + Sync + 'static>(
     environment: E,
     runner: Runner,
     parts: ServeParts,
@@ -1554,7 +1565,7 @@ fn drive<E: Environment + Send + Sync + 'static>(
                         timeout: None,
                     };
                     let served = binding
-                        .serve(Arc::clone(&environment), options, cancel)
+                        .serve(Arc::clone(&environment) as _, options, cancel)
                         .await
                         .map_err(|err| Error::server(err.to_string()));
                     stop.abort();
@@ -1565,7 +1576,7 @@ fn drive<E: Environment + Send + Sync + 'static>(
             // Later token firings cannot replace that selected serve error.
             shutdown.trigger("serve ended");
             let close_result = if close_env_on_shutdown {
-                let close = async { environment.close().await.map(|_| ()) };
+                let close = async { Environment::close(&*environment).await.map(|_| ()) };
                 match await_close_with_timeout(close, Some(close_timeout)).await {
                     Ok(Ok(())) => Ok(()),
                     Ok(Err(err)) => Err(Error::Internal(err.message)),

@@ -14,10 +14,7 @@ pub use environment::{
     CloseEnvsResponse, EndpointPhases, Environment, RenderRequest, RenderResponse, ResetRequest,
     ResetResponse, StepRequest, StepResponse, lane_skew_ns,
 };
-pub use server::{
-    EnvCore, EpisodeMirror, GrpcEnvServer, env_service, env_service_from_shared, serve,
-};
-pub use wire::proto_error_to_env_error;
+pub use server::{EpisodeMirror, GrpcEnvServer, env_service, env_service_from_shared, serve};
 
 use crate::error::EnvError;
 use rlmesh_proto::env::v1::{EnvError as ProtoEnvError, EnvErrorCode as ProtoEnvErrorCode};

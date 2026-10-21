@@ -320,9 +320,7 @@ fn lockstep_error(error: crate::lockstep::GymError) -> Error {
         GymError::Closed(why) => Error::Connection(why),
         GymError::Session(error) => Error::Connection(error.to_string()),
         GymError::Map(why) | GymError::Config(why) => Error::invalid_argument(why),
-        other => Error::from_grpc(rlmesh_grpc::error::Error::Environment(
-            rlmesh_grpc::env::proto_error_to_env_error(other.to_proto()),
-        )),
+        other => Error::Environment(other.to_failure()),
     }
 }
 

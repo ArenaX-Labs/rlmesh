@@ -834,42 +834,6 @@ fn start_reset_episodes(
     env_indices.len()
 }
 
-/// The transport-free core of the env service: one env, its episode tracker
-/// and the Join semantics (validation, deadlines, the NEXT_STEP lane
-/// contract, episode accounting), with no gRPC. Another transport (the v2
-/// lockstep path) serves an env through it, so each of its requests runs
-/// exactly what the same Join request does.
-pub struct EnvCore<E: Environment> {
-    env: Arc<E>,
-    tracker: Arc<Mutex<EpisodeTracker>>,
-}
-
-impl<E: Environment> EnvCore<E> {
-    /// A core over `env`, with a fresh episode tracker.
-    pub fn new(env: Arc<E>) -> Self {
-        Self {
-            env,
-            tracker: Arc::new(Mutex::new(EpisodeTracker::new())),
-        }
-    }
-
-    /// The env.
-    pub fn env(&self) -> &Arc<E> {
-        &self.env
-    }
-
-    /// Handles one Join request as the Join stream would.
-    pub async fn handle(&self, req: JoinRequest) -> JoinResponse {
-        let supports_lanes = self.env.supports_lanes();
-        handle_env_request(req, self.env.clone(), self.tracker.clone(), supports_lanes).await
-    }
-
-    /// Completes every open episode (the end of a session).
-    pub async fn complete_all(&self, reason: &str) -> Vec<rlmesh_proto::env::v1::EpisodeMetadata> {
-        self.tracker.lock().await.complete_all(reason)
-    }
-}
-
 /// The driver's mirror of an env's episode accounting: fed the requests the
 /// driver sent and the replies it got, it fills `completed_episodes` the way
 /// the env server does. A transport whose step reply carries no episode

@@ -1,31 +1,14 @@
-//! The Gym compatibility path (§12.4): a v1 env served, and a v1 runtime
-//! driving it, over the lockstep exchange.
+//! The Gym compatibility path (§12.4), driver side: [`LockstepEnv`] is a
+//! [`RuntimeEnv`], so the v1 [`RuntimeDriver`](rlmesh_runtime::RuntimeDriver)
+//! drives a lockstep env with its chunking, prefetch, batching, autoreset
+//! handling and driver-minted episode ids unchanged. The lockstep reply
+//! carries no episode metadata; an [`EpisodeMirror`] rebuilds the
+//! completions the env server would have reported.
 //!
-//! - [`GymEnv`] is the env side: a v1 [`Environment`] behind the v1 env
-//!   service's own core ([`EnvCore`]), so a `LockstepStep` runs exactly what
-//!   the same Join step runs (validation, the NEXT_STEP lane contract,
-//!   partial resets, episode accounting). Leaf slabs become part slabs and
-//!   back without conversion (bit-exact).
-//! - [`LockstepEnv`] is the driver side: a [`RuntimeEnv`], so the v1
-//!   [`RuntimeDriver`](rlmesh_runtime::RuntimeDriver) drives a lockstep env
-//!   with its chunking, prefetch, batching, autoreset handling and
-//!   driver-minted episode ids unchanged. The lockstep reply carries no
-//!   episode metadata; an [`EpisodeMirror`] rebuilds the completions the
-//!   env server would have reported.
-//!
-//! Three readings of §12.2 the compatibility path needs:
-//!
-//! - **Reward width.** v1 rewards are `f64`; the compatibility path sends
-//!   `f64 [N]` so they stay bit-exact. Readers take `f32 [N]` or `f64 [N]`
-//!   by length.
-//! - **Info.** The v1 runtime reads `info` (success, final info), so the
-//!   compatibility path always records it: `info_json` carries the v1
-//!   `MetaMap` ([`meta_json`](mod@crate::lockstep::meta_json)); empty means unset.
-//! - **Episode ids.** v1 mints UUIDv7 strings and pushes a fresh one down
-//!   on the step that rolls a NEXT_STEP autoreset; v2 ids are `u64` and a
-//!   `LockstepStep` has no id field. The driver numbers its ids (1, 2, ...)
-//!   for `LockstepReset.episode_ids` and keeps the v1 strings itself; the
-//!   env sees the numbers as text, and a reply's `episode_ids` stays empty.
+//! v1 mints UUIDv7 episode ids and pushes a fresh one down on the step that
+//! rolls a NEXT_STEP autoreset; v2 ids are `u64`. The driver numbers its
+//! ids (1, 2, ...) for `LockstepReset.episode_ids` and keeps the v1 strings
+//! itself.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,81 +16,21 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bytes::Bytes;
-use rlmesh_grpc::env::{
-    EnvCore, EnvHandshake, Environment, EpisodeMirror, proto_error_to_env_error,
-};
+use rlmesh_grpc::env::{EnvHandshake, EpisodeMirror};
 use rlmesh_grpc::error::{Error as GrpcError, ProtocolError, TransportError};
 use rlmesh_grpc::wire::{meta_map_from_proto, meta_map_to_proto};
 use rlmesh_proto::env::v1::{
-    JoinRequest, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
-    StepResponse, join_request, join_response,
+    RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest, StepResponse,
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 use rlmesh_runtime::{RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError};
-use rlmesh_session::wire::{
-    ChannelId, Epoch, LeaseToken, LockstepReply, LockstepReset, LockstepStep, PartValues,
-};
+use rlmesh_session::wire::{ChannelId, Epoch, LeaseToken, LockstepReset, LockstepStep};
 
 use crate::lockstep::error::GymError;
-use crate::lockstep::exchange::{LockstepHandler, LockstepLink, Request};
-use crate::lockstep::map::{self, GymEnvInfo, GymMap, Side};
+use crate::lockstep::exchange::{LockstepLink, Request};
+use crate::lockstep::map::{self, GymEnvInfo, GymMap};
 use crate::lockstep::meta_json;
-use crate::lockstep::record::Tee;
-
-/// What a v1 env tells a handshake, for its `gym_env`.
-pub fn env_info<E: Environment>(env: &E, declared_edition: Option<&str>) -> GymEnvInfo {
-    let mut contract = env.env_contract().clone();
-    contract.num_envs = u32::try_from(env.num_envs()).unwrap_or(u32::MAX);
-    GymEnvInfo {
-        contract,
-        workflow_edition: rlmesh_proto::declared_workflow_edition(declared_edition).to_string(),
-        supported_workflow_editions: rlmesh_proto::supported_workflow_editions(),
-        capabilities: if env.supports_lanes() {
-            vec![rlmesh_proto::capabilities::ENV_SUBSET_STEP.to_string()]
-        } else {
-            Vec::new()
-        },
-    }
-}
-
-/// The slabs of a side's parts, by channel.
-fn tagged(side: &Side, slabs: Vec<Bytes>) -> Vec<PartValues> {
-    side.parts
-        .iter()
-        .zip(slabs)
-        .map(|(part, payload)| PartValues {
-            channel: part.spec.channel,
-            payload,
-        })
-        .collect()
-}
-
-/// The slabs of a side's parts, in part order, from messages by channel.
-fn ordered(side: &Side, values: &[PartValues]) -> Result<Vec<Bytes>, GymError> {
-    side.parts
-        .iter()
-        .map(|part| {
-            values
-                .iter()
-                .find(|v| v.channel == part.spec.channel)
-                .map(|v| v.payload.clone())
-                .ok_or_else(|| GymError::Malformed(format!("no slab for part {}", part.spec.path)))
-        })
-        .collect()
-}
-
-fn leaves(value: Option<SpaceValue>) -> Vec<Bytes> {
-    value.map(|v| v.leaves).unwrap_or_default()
-}
-
-fn rewards_bytes(rewards: &[f64], lanes: usize) -> Bytes {
-    let mut out = Vec::with_capacity(lanes * 8);
-    for lane in 0..lanes {
-        out.extend_from_slice(&rewards.get(lane).copied().unwrap_or(0.0).to_le_bytes());
-    }
-    Bytes::from(out)
-}
+use crate::lockstep::served::{ordered, tagged};
 
 fn rewards_from(bytes: &[u8], lanes: usize) -> Result<Vec<f64>, GymError> {
     if bytes.len() == lanes * 8 {
@@ -132,172 +55,12 @@ fn rewards_from(bytes: &[u8], lanes: usize) -> Result<Vec<f64>, GymError> {
     }
 }
 
-fn mask(bytes: &[u8], lanes: usize) -> Bytes {
-    let mut out = vec![0_u8; lanes];
-    for (lane, b) in bytes.iter().take(lanes).enumerate() {
-        out[lane] = u8::from(*b != 0);
-    }
-    Bytes::from(out)
-}
-
-/// The env side: a v1 env answering lockstep requests.
-pub struct GymEnv<E: Environment> {
-    core: EnvCore<E>,
-    map: GymMap,
-    num_envs: usize,
-    request_id: AtomicU64,
-    tee: Option<Tee>,
-}
-
-impl<E: Environment + 'static> GymEnv<E> {
-    /// Serves `env` with `map` (channels bound).
-    pub fn new(env: Arc<E>, map: GymMap) -> Self {
-        let num_envs = env.num_envs().max(1);
-        Self {
-            core: EnvCore::new(env),
-            map,
-            num_envs,
-            request_id: AtomicU64::new(1),
-            tee: None,
-        }
-    }
-
-    /// Tees every request and reply into a recording (§13).
-    #[must_use]
-    pub fn with_tee(mut self, tee: Tee) -> Self {
-        self.tee = Some(tee);
-        self
-    }
-
-    /// The map it serves.
-    pub fn map(&self) -> &GymMap {
-        &self.map
-    }
-
-    /// Completes every open episode (the session ended).
-    pub async fn complete_all(&self, reason: &str) {
-        let _ = self.core.complete_all(reason).await;
-    }
-
-    async fn call(&self, kind: join_request::Kind) -> Result<join_response::Kind, GymError> {
-        let request_id = self.request_id.fetch_add(1, Ordering::Relaxed).to_string();
-        let response = self
-            .core
-            .handle(JoinRequest {
-                request_id,
-                kind: Some(kind),
-            })
-            .await;
-        match response.kind {
-            Some(join_response::Kind::Error(error)) => Err(GymError::Env(error)),
-            Some(kind) => Ok(kind),
-            None => Err(GymError::Malformed("an empty env response".into())),
-        }
-    }
-
-    async fn reset(&self, reset: LockstepReset) -> Result<LockstepReply, GymError> {
-        let lanes = if reset.lanes.is_empty() {
-            self.num_envs
-        } else {
-            reset.lanes.len()
-        };
-        let request = ResetRequest {
-            // u64 on the v2 wire, i64 in v1: the same 64 bits.
-            seeds: reset.seeds.iter().map(|s| *s as i64).collect(),
-            options: meta_json::optional_from_json(&reset.options_json)
-                .map_err(GymError::Malformed)?
-                .as_ref()
-                .map(meta_map_to_proto),
-            timeout_ms: 0,
-            env_indices: reset.lanes.clone(),
-            episode_ids: reset.episode_ids.iter().map(u64::to_string).collect(),
-        };
-        let join_response::Kind::Reset(ok) = self.call(join_request::Kind::Reset(request)).await?
-        else {
-            return Err(GymError::Malformed("not a reset response".into()));
-        };
-        let slabs = map::pack(&self.map.observation, &leaves(ok.observation), lanes)?;
-        Ok(LockstepReply {
-            epoch: reset.epoch,
-            step: 0,
-            observations: tagged(&self.map.observation, slabs),
-            reward: Bytes::new(),
-            terminated: Bytes::new(),
-            truncated: Bytes::new(),
-            episode_ids: reset.episode_ids,
-            info_json: meta_json::optional_to_json(ok.infos.map(meta_map_from_proto).as_ref()),
-        })
-    }
-
-    async fn step(&self, step: &LockstepStep) -> Result<LockstepReply, GymError> {
-        let lanes = if step.lanes.is_empty() {
-            self.num_envs
-        } else {
-            step.lanes.len()
-        };
-        let action = map::unpack(
-            &self.map.action,
-            &ordered(&self.map.action, &step.commands)?,
-            lanes,
-        )?;
-        let request = StepRequest {
-            action: Some(SpaceValue { leaves: action }),
-            timeout_ms: 0,
-            env_indices: step.lanes.clone(),
-            episode_ids: Vec::new(),
-        };
-        let join_response::Kind::Step(ok) = self.call(join_request::Kind::Step(request)).await?
-        else {
-            return Err(GymError::Malformed("not a step response".into()));
-        };
-        let slabs = map::pack(&self.map.observation, &leaves(ok.observation), lanes)?;
-        Ok(LockstepReply {
-            epoch: step.epoch,
-            step: step.step,
-            observations: tagged(&self.map.observation, slabs),
-            reward: rewards_bytes(&ok.rewards, lanes),
-            terminated: mask(&ok.terminated_mask, lanes),
-            truncated: mask(&ok.truncated_mask, lanes),
-            episode_ids: Vec::new(),
-            info_json: meta_json::optional_to_json(ok.infos.map(meta_map_from_proto).as_ref()),
-        })
-    }
-}
-
-#[async_trait]
-impl<E: Environment + 'static> LockstepHandler for GymEnv<E> {
-    async fn handle(&self, request: Request) -> Result<LockstepReply, GymError> {
-        let tee = self.tee.as_ref().map(|_| request.clone());
-        let reply = match request {
-            Request::Reset(reset) => self.reset(reset).await,
-            Request::Step(step) => self.step(&step).await,
-        };
-        if let (Some(tee), Some(request), Ok(reply)) = (&self.tee, tee, &reply) {
-            tee.record(request, reply.clone());
-        }
-        reply
-    }
-
-    async fn render(&self, request: RenderRequest) -> Result<RenderResponse, GymError> {
-        let join_response::Kind::Render(frame) =
-            self.call(join_request::Kind::Render(request)).await?
-        else {
-            return Err(GymError::Malformed("not a render response".into()));
-        };
-        Ok(frame)
-    }
-
-    fn concurrent(&self) -> bool {
-        self.core.env().supports_lanes()
-    }
-}
-
 /// Maps a lockstep failure onto the runtime's env error, classified as the
 /// gRPC env client classifies the same failure.
 fn runtime_error(operation: &'static str, error: GymError) -> RuntimeError {
     let recoverable = error.is_recoverable();
     let source = match error {
-        GymError::Env(error) => GrpcError::Environment(proto_error_to_env_error(error)),
+        GymError::Env(error) => GrpcError::Environment(error.to_wire()),
         GymError::Timeout(t) => GrpcError::Timeout(t),
         GymError::Closed(why) => GrpcError::Transport(TransportError::ConnectFailed(why)),
         other => GrpcError::Protocol(ProtocolError::DecodeError(other.to_string())),
@@ -549,7 +312,15 @@ impl LockstepEnv {
     /// service answers it.
     pub async fn render_v1(&self, request: RenderRequest) -> Result<RenderResponse, GymError> {
         let timeout = Self::timeout(request.timeout_ms);
-        self.inner.link.render(request, timeout).await
+        let lane = request.env_indices.first().copied().unwrap_or(0);
+        let frame = self.inner.link.render(lane, timeout).await?;
+        Ok(rlmesh_grpc::wire::render_result_to_proto(
+            &rlmesh_spaces::RenderResult {
+                frame: frame.map(|frame| rlmesh_spaces::RenderFrame {
+                    frame: frame.to_vec(),
+                }),
+            },
+        ))
     }
 
     /// Releases the lease and detaches (idempotent); every clone is closed.

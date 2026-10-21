@@ -9,11 +9,12 @@
 //!   a Zenoh query on `l/{robot}` otherwise.
 //! - [`map`]: a Gym env as a robot (§12.5): spaces and v1 tags to a robot
 //!   map, leaf slabs to part slabs and back, bit-exact.
-//! - [`compat`]: the v1 env behind the lockstep exchange
-//!   ([`GymEnv`], on the v1 env service's own core), and a
-//!   lockstep env as a v1 [`RuntimeEnv`](rlmesh_runtime::RuntimeEnv)
-//!   ([`LockstepEnv`]), so the v1 runtime's chunking,
-//!   prefetch, batching, autoreset and episode ids run unchanged.
+//! - [`served`]: a served env behind the lockstep exchange ([`GymEnv`] over
+//!   a [`Served`] env, on native values).
+//! - [`compat`]: a lockstep env as a v1
+//!   [`RuntimeEnv`](rlmesh_runtime::RuntimeEnv) ([`LockstepEnv`]), so the v1
+//!   runtime's chunking, prefetch, batching, autoreset and episode ids run
+//!   unchanged.
 //! - [`session`]: attach, declare, arm and one lease grant; addresses
 //!   (`lockstep://...`).
 //! - [`view`]: the Gym view over a v2-native robot (§12.6).
@@ -31,6 +32,7 @@ pub mod exchange;
 pub mod map;
 pub mod meta_json;
 pub mod record;
+pub mod served;
 pub mod session;
 pub mod view;
 pub mod virtual_mode;
@@ -45,10 +47,11 @@ pub mod adapters {
     };
 }
 
-pub use compat::{GymEnv, Keep, LockstepEnv};
+pub use compat::{Keep, LockstepEnv};
 pub use error::GymError;
 pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
+pub use served::{GymEnv, Reset, Served, Step};
 pub use session::{
     ConnectOptions, Declared, LockstepAddress, LockstepBinding, ServeOptions, bind, check, connect,
     connect_view, connect_view_in, is_lockstep_address, lockstep_robot_map,

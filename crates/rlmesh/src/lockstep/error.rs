@@ -1,7 +1,9 @@
 //! What can go wrong on the lockstep path.
 
-use rlmesh_proto::env::v1::{EnvError as ProtoEnvError, EnvErrorCode};
 use rlmesh_session::SessionError;
+use serde_json::{Value, json};
+
+use crate::{EnvironmentError, ErrorCode};
 
 /// A lockstep failure.
 #[derive(Debug, thiserror::Error)]
@@ -13,9 +15,9 @@ pub enum GymError {
     /// A message or payload does not fit the map.
     #[error("malformed lockstep message: {0}")]
     Malformed(String),
-    /// The env answered with an error (a v1 env error, unchanged).
+    /// The env answered with an error.
     #[error("env error: {}", .0.message)]
-    Env(ProtoEnvError),
+    Env(EnvironmentError),
     /// The env refused the step: a stale epoch or lease token, or an e-stop.
     #[error("lockstep step refused: {0}")]
     Refused(String),
@@ -37,13 +39,27 @@ pub enum GymError {
 }
 
 impl GymError {
-    /// This error as a v1 env error (what a lockstep error reply carries).
-    pub fn to_proto(&self) -> ProtoEnvError {
+    /// An env failure with `code`.
+    pub fn env(code: ErrorCode, message: impl Into<String>, recoverable: bool) -> Self {
+        Self::Env(EnvironmentError {
+            code,
+            message: message.into(),
+            is_recoverable: recoverable,
+        })
+    }
+
+    /// This error as the env failure a lockstep error reply carries.
+    pub fn to_failure(&self) -> EnvironmentError {
+        let failure = |code, message: String| EnvironmentError {
+            code,
+            message,
+            is_recoverable: false,
+        };
         match self {
             Self::Env(error) => error.clone(),
-            Self::Refused(message) => proto(EnvErrorCode::NotReady, message.clone(), false),
-            Self::Malformed(message) => proto(EnvErrorCode::InvalidAction, message.clone(), false),
-            other => proto(EnvErrorCode::Internal, other.to_string(), false),
+            Self::Refused(message) => failure(ErrorCode::NotReady, message.clone()),
+            Self::Malformed(message) => failure(ErrorCode::InvalidAction, message.clone()),
+            other => failure(ErrorCode::Internal, other.to_string()),
         }
     }
 
@@ -57,12 +73,38 @@ impl GymError {
     }
 }
 
-fn proto(code: EnvErrorCode, message: String, recoverable: bool) -> ProtoEnvError {
-    ProtoEnvError {
-        code: code as i32,
-        message,
-        is_recoverable: recoverable,
-        debug_info: String::new(),
-        interrupted_episodes: Vec::new(),
-    }
+const CODES: [ErrorCode; 10] = [
+    ErrorCode::Unspecified,
+    ErrorCode::Timeout,
+    ErrorCode::InvalidAction,
+    ErrorCode::NotReady,
+    ErrorCode::Busy,
+    ErrorCode::Unsupported,
+    ErrorCode::Internal,
+    ErrorCode::Crashed,
+    ErrorCode::Cancelled,
+    ErrorCode::Closed,
+];
+
+/// An env failure as a lockstep error reply: `{code, message, recoverable}`.
+pub fn failure_to_json(failure: &EnvironmentError) -> Vec<u8> {
+    json!({
+        "code": failure.code.as_str(),
+        "message": failure.message,
+        "recoverable": failure.is_recoverable,
+    })
+    .to_string()
+    .into_bytes()
+}
+
+/// The inverse of [`failure_to_json`]; `None` for anything else (a
+/// transport-level error reply).
+pub fn failure_from_json(bytes: &[u8]) -> Option<EnvironmentError> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    let code = value.get("code")?.as_str()?;
+    Some(EnvironmentError {
+        code: CODES.into_iter().find(|c| c.as_str() == code)?,
+        message: value.get("message")?.as_str()?.to_string(),
+        is_recoverable: value.get("recoverable")?.as_bool()?,
+    })
 }

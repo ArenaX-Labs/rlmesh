@@ -23,7 +23,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
-use rlmesh_grpc::env::Environment;
 use rlmesh_session::transport::{Endpoints, TransportTuning, zenoh_config};
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, CtlStatus, Epoch, Fingerprint, LeaseToken, Mode, PartSpec,
@@ -36,13 +35,14 @@ use rlmesh_session::{
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::lockstep::compat::{GymEnv, Keep, LockstepEnv, env_info};
+use crate::lockstep::compat::{Keep, LockstepEnv};
 use crate::lockstep::error::GymError;
 use crate::lockstep::exchange::{
     DirectLink, Gate, Gated, LockstepHandler, LockstepLink, ZenohLink, serve_zenoh,
 };
-use crate::lockstep::map::{GymEnvInfo, GymMap};
+use crate::lockstep::map::{self, GymEnvInfo, GymMap};
 use crate::lockstep::record::Tee;
+use crate::lockstep::served::{GymEnv, Served};
 use crate::lockstep::view::{self, GymView};
 
 /// The address scheme.
@@ -234,6 +234,21 @@ pub fn check(contract: rlmesh_spaces::EnvContract) -> Result<(), GymError> {
     GymMap::new(info, GYM_HZ).map(|_| ())
 }
 
+/// What a served env tells a handshake, for its `gym_env`.
+fn env_info(env: &dyn Served, declared: Option<&str>) -> GymEnvInfo {
+    let (workflow_edition, supported_workflow_editions) = crate::editions::env_offer(declared);
+    GymEnvInfo {
+        contract: env.contract(),
+        workflow_edition,
+        supported_workflow_editions,
+        capabilities: if env.subset_step() {
+            vec![map::SUBSET_STEP.to_string()]
+        } else {
+            Vec::new()
+        },
+    }
+}
+
 /// A lockstep address bound for serving: the session joined or hosted.
 pub struct LockstepBinding {
     address: LockstepAddress,
@@ -284,9 +299,9 @@ impl LockstepBinding {
     /// Attaches as the robot, declares the env's robot map (§12.5), arms
     /// and serves the env over the lockstep exchange until `shutdown`
     /// fires.
-    pub async fn serve<E: Environment + 'static>(
+    pub async fn serve(
         self,
-        env: Arc<E>,
+        env: Arc<dyn Served>,
         options: ServeOptions,
         shutdown: CancellationToken,
     ) -> Result<(), GymError> {

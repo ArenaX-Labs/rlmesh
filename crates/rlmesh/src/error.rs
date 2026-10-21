@@ -616,6 +616,27 @@ impl EnvironmentError {
             is_recoverable: value.is_recoverable,
         }
     }
+
+    /// The inverse of [`Self::from_wire`].
+    #[cfg(feature = "lockstep")]
+    pub(crate) fn to_wire(&self) -> EnvError {
+        let code = match self.code {
+            ErrorCode::Unspecified => EnvErrorCode::Unspecified,
+            ErrorCode::Timeout => EnvErrorCode::Timeout,
+            ErrorCode::InvalidAction => EnvErrorCode::InvalidAction,
+            ErrorCode::NotReady => EnvErrorCode::NotReady,
+            ErrorCode::Busy => EnvErrorCode::Busy,
+            ErrorCode::Unsupported => EnvErrorCode::Unsupported,
+            ErrorCode::Internal => EnvErrorCode::Internal,
+            ErrorCode::Crashed => EnvErrorCode::Crashed,
+            ErrorCode::Cancelled => EnvErrorCode::Cancelled,
+            ErrorCode::Closed => EnvErrorCode::Closed,
+        };
+        EnvError {
+            is_recoverable: self.is_recoverable,
+            ..EnvError::new(code, self.message.clone())
+        }
+    }
 }
 
 #[cfg(test)]

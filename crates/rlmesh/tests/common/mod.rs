@@ -2,7 +2,8 @@
 //! dtype, v1 tags a LIBERO-style `ModelSpec` resolves against, NEXT_STEP or
 //! DISABLED autoreset, scalar, vector or lane endpoints, and deterministic
 //! dynamics (a pure function of seed, lane, step and the last action), so
-//! two runs fed the same requests answer the same bytes.
+//! two runs fed the same requests answer the same bytes. It answers the v1
+//! env service and, through the same code, the lockstep path's [`Served`].
 
 #![allow(dead_code, clippy::unwrap_used)]
 
@@ -11,11 +12,16 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use rlmesh::lockstep::{Reset, Served, Step};
 use rlmesh_grpc::env::{
     CloseEnvsResponse, EndpointPhases, Environment, RenderRequest, RenderResponse, ResetRequest,
     ResetResponse, StepRequest, StepResponse,
 };
 use rlmesh_grpc::error::EnvError;
+use rlmesh_grpc::wire::{
+    decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
+    meta_map_to_proto,
+};
 use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue as ProtoMeta, meta_value::Kind};
 use rlmesh_spaces::{
     AutoresetMode, BoxBounds, BoxSpec, DType, DictSpec, DiscreteSpec, EnvContract, MetaValue,
@@ -581,5 +587,97 @@ impl Environment for CatalogEnv {
 
     async fn close(&self) -> Result<CloseEnvsResponse, EnvError> {
         Ok(CloseEnvsResponse::default())
+    }
+}
+
+fn failure(error: EnvError) -> rlmesh::EnvironmentError {
+    rlmesh::EnvironmentError {
+        code: rlmesh::ErrorCode::Internal,
+        message: error.message,
+        is_recoverable: error.is_recoverable,
+    }
+}
+
+/// The lockstep path's view of the same env: each call runs the v1 one.
+#[async_trait]
+impl Served for CatalogEnv {
+    fn contract(&self) -> EnvContract {
+        self.contract.clone()
+    }
+
+    fn subset_step(&self) -> bool {
+        self.lane_endpoint
+    }
+
+    async fn reset(
+        &self,
+        lanes: &[u32],
+        seeds: Vec<i64>,
+        options: Option<rlmesh_spaces::MetaMap>,
+    ) -> Result<Reset, rlmesh::EnvironmentError> {
+        let width = if lanes.is_empty() {
+            self.num_envs()
+        } else {
+            lanes.len()
+        };
+        let (ok, _) = Environment::reset(
+            self,
+            ResetRequest {
+                seeds,
+                options: options.as_ref().map(meta_map_to_proto),
+                env_indices: lanes.to_vec(),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(failure)?;
+        Ok(Reset {
+            observations: decode_batched_partial_values(
+                ok.observation.as_ref(),
+                self.observation_space(),
+                width,
+            )
+            .unwrap(),
+            info: ok.infos.map(meta_map_from_proto),
+        })
+    }
+
+    async fn step(
+        &self,
+        lanes: &[u32],
+        actions: Vec<SpaceValue>,
+    ) -> Result<Step, rlmesh::EnvironmentError> {
+        let width = actions.len();
+        let action = encode_batched_partial_values(&actions, self.action_space()).unwrap();
+        let (ok, _) = Environment::step(
+            self,
+            StepRequest {
+                action: Some(action),
+                env_indices: lanes.to_vec(),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(failure)?;
+        Ok(Step {
+            observations: decode_batched_partial_values(
+                ok.observation.as_ref(),
+                self.observation_space(),
+                width,
+            )
+            .unwrap(),
+            rewards: ok.rewards,
+            terminated: ok.terminated_mask.iter().map(|b| *b != 0).collect(),
+            truncated: ok.truncated_mask.iter().map(|b| *b != 0).collect(),
+            info: ok.infos.map(meta_map_from_proto),
+        })
+    }
+
+    async fn render(&self, _lane: u32) -> Result<Option<Vec<u8>>, rlmesh::EnvironmentError> {
+        Ok(None)
+    }
+
+    async fn close(&self) -> Result<(), rlmesh::EnvironmentError> {
+        Ok(())
     }
 }

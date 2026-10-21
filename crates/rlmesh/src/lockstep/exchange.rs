@@ -16,9 +16,9 @@
 //! | same host or remote | [`ZenohLink`]: a query on `l/{robot}` over the lockstep class session, answered by [`serve_zenoh`] |
 //!
 //! A reset is the same query with the selector parameter `reset`, a render
-//! the selector parameter `render` (a v1 `RenderRequest` in, a v1
-//! `RenderResponse` out, as on the Join stream); an error reply carries a v1
-//! `EnvError`.
+//! the selector parameter `render` (the lane as a little-endian `u32` in, the
+//! frame's PNG bytes out, empty for none); an error reply carries the env's
+//! failure as JSON (`{code, message, recoverable}`).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -26,8 +26,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use prost::Message as _;
-use rlmesh_proto::env::v1::{EnvError as ProtoEnvError, RenderRequest, RenderResponse};
 use rlmesh_session::transport::payload_bytes;
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{
@@ -38,7 +36,7 @@ use tracing::{debug, warn};
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::query::ConsolidationMode;
 
-use crate::lockstep::error::GymError;
+use crate::lockstep::error::{GymError, failure_from_json, failure_to_json};
 
 /// The selector parameter of a reset query.
 const RESET: &str = "reset";
@@ -63,9 +61,9 @@ pub trait LockstepHandler: Send + Sync + 'static {
     /// Answers one request.
     async fn handle(&self, request: Request) -> Result<LockstepReply, GymError>;
 
-    /// Renders a frame, as a v1 env renders one; by default there is none.
-    async fn render(&self, _request: RenderRequest) -> Result<RenderResponse, GymError> {
-        Ok(RenderResponse::default())
+    /// Renders lane `lane`'s frame as PNG bytes; by default there is none.
+    async fn render(&self, _lane: u32) -> Result<Option<Bytes>, GymError> {
+        Ok(None)
     }
 
     /// Whether several lane-scoped requests may run at once (a lane
@@ -208,8 +206,8 @@ impl LockstepHandler for Gated {
         self.inner.handle(request).await
     }
 
-    async fn render(&self, request: RenderRequest) -> Result<RenderResponse, GymError> {
-        self.inner.render(request).await
+    async fn render(&self, lane: u32) -> Result<Option<Bytes>, GymError> {
+        self.inner.render(lane).await
     }
 
     fn concurrent(&self) -> bool {
@@ -227,12 +225,9 @@ pub trait LockstepLink: Send + Sync + 'static {
         timeout: Option<Duration>,
     ) -> Result<LockstepReply, GymError>;
 
-    /// Asks the env for a render frame.
-    async fn render(
-        &self,
-        request: RenderRequest,
-        timeout: Option<Duration>,
-    ) -> Result<RenderResponse, GymError>;
+    /// Asks the env for lane `lane`'s frame (PNG bytes).
+    async fn render(&self, lane: u32, timeout: Option<Duration>)
+    -> Result<Option<Bytes>, GymError>;
 }
 
 /// `future` bounded by `timeout`, when there is one.
@@ -263,10 +258,10 @@ impl LockstepLink for DirectLink {
 
     async fn render(
         &self,
-        request: RenderRequest,
+        lane: u32,
         timeout: Option<Duration>,
-    ) -> Result<RenderResponse, GymError> {
-        within(timeout, self.0.render(request)).await
+    ) -> Result<Option<Bytes>, GymError> {
+        within(timeout, self.0.render(lane)).await
     }
 }
 
@@ -352,14 +347,11 @@ impl ZenohLink {
             .map_err(|_| GymError::Timeout(timeout))?;
         match reply.result() {
             Ok(sample) => Ok(payload_bytes(sample.payload())),
-            Err(err) => {
-                let bytes = payload_bytes(err.payload());
-                match ProtoEnvError::decode(bytes) {
-                    Ok(error) if !error.message.is_empty() => Err(GymError::Env(error)),
-                    // A Zenoh-level error (the queryable is gone).
-                    _ => Err(GymError::Timeout(timeout)),
-                }
-            }
+            Err(err) => match failure_from_json(&payload_bytes(err.payload())) {
+                Some(failure) if !failure.message.is_empty() => Err(GymError::Env(failure)),
+                // A Zenoh-level error (the queryable is gone).
+                _ => Err(GymError::Timeout(timeout)),
+            },
         }
     }
 }
@@ -383,13 +375,13 @@ impl LockstepLink for ZenohLink {
 
     async fn render(
         &self,
-        request: RenderRequest,
+        lane: u32,
         timeout: Option<Duration>,
-    ) -> Result<RenderResponse, GymError> {
-        let reply = self
-            .query(&self.render_selector, request.encode_to_vec(), timeout)
+    ) -> Result<Option<Bytes>, GymError> {
+        let frame = self
+            .query(&self.render_selector, lane.to_le_bytes().to_vec(), timeout)
             .await?;
-        RenderResponse::decode(reply).map_err(|e| GymError::Malformed(e.to_string()))
+        Ok((!frame.is_empty()).then_some(frame))
     }
 }
 
@@ -414,7 +406,7 @@ async fn answer(query: &zenoh::query::Query, key: &str, result: Result<LockstepR
 async fn answer_bytes(query: &zenoh::query::Query, key: &str, result: Result<Vec<u8>, GymError>) {
     let sent = match result {
         Ok(payload) => query.reply(key, payload).express(true).await,
-        Err(err) => query.reply_err(err.to_proto().encode_to_vec()).await,
+        Err(err) => query.reply_err(failure_to_json(&err.to_failure())).await,
     };
     if let Err(err) = sent {
         warn!(%err, "lockstep reply not sent");
@@ -448,9 +440,12 @@ pub async fn serve_zenoh(
         }
         if query.parameters().contains_key(RENDER) {
             let payload = query.payload().map(payload_bytes).unwrap_or_default();
-            let result = match RenderRequest::decode(payload) {
-                Ok(request) => handler.render(request).await.map(|r| r.encode_to_vec()),
-                Err(err) => Err(GymError::Malformed(err.to_string())),
+            let result = match <[u8; 4]>::try_from(payload.as_ref()) {
+                Ok(lane) => handler
+                    .render(u32::from_le_bytes(lane))
+                    .await
+                    .map(|frame| frame.map(|f| f.to_vec()).unwrap_or_default()),
+                Err(_) => Err(GymError::Malformed("a render names one u32 lane".into())),
             };
             answer_bytes(&query, &key, result).await;
             continue;
