@@ -18,10 +18,12 @@ publish = false
 # wasm32-unknown-unknown, and `mise run check:sans-io` keeps it that way
 # (clippy.toml here bans the clock and thread calls).
 [dependencies]
+blake3 = { workspace = true }
 bytes = { workspace = true }
-# Delivery contracts (authority) and bindings (input cache).
-rlmesh-spec = { workspace = true }
 rlmesh-wire = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
 
 [lints]
 workspace = true

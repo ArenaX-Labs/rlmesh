@@ -11,7 +11,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as rlmesh from '../../dist/node.js';
 
-const SPEC = new URL('../../../../crates/rlmesh-spec/tests/', import.meta.url);
+const SPEC = new URL('../../../../crates/rlmesh-session-core/tests/', import.meta.url);
 const WAIT_MS = 10_000;
 
 const UR_JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'];

@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rlmesh_edge::{EdgeConfig, EdgeMode, Robot};
+use rlmesh_session::spec::apply::{Tensor, Value};
+use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
     Predictor, RunError, SessionHost, SkipReason, SystemMonotonicClock, Transport, TransportConfig,
 };
-use rlmesh_spec::apply::{Tensor, Value};
-use rlmesh_spec::{Policy, RunOptions};
 use rlmesh_wire::{DType, LeaseToken, PriorityClass, Role, SessionId, TenantId};
 
 const WAIT: Duration = Duration::from_secs(10);

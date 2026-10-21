@@ -11,8 +11,8 @@
 //! then center-crops; `pad` scales uniformly to fit inside it then
 //! letterboxes (zeros; NaN for depth); `stretch` scales each axis.
 
-use crate::plan::Fit;
-use crate::policy::Resample;
+use crate::spec::plan::Fit;
+use crate::spec::policy::Resample;
 
 /// An image: `height × width × channels`, row-major, one `T` per element.
 #[derive(Clone, Debug, PartialEq)]

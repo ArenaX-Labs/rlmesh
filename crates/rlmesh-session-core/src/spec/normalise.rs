@@ -20,7 +20,7 @@
 //! }
 //! ```
 //!
-//! A core kind's fields come from the kind table ([`crate::kinds`]); its
+//! A core kind's fields come from the kind table ([`crate::spec::kinds`]); its
 //! `fields` key, where it has one (joints, hand, imu), lists which optional
 //! fields it publishes, and they are packed in the table's order. A custom
 //! kind declares its fields as an object of `name: [dtype, shape]`, in
@@ -50,10 +50,10 @@ use serde::de::value::MapAccessDeserializer;
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde_json::{Value, json};
 
-use crate::canonical;
-use crate::kinds::{Kind, joint_quantity, quantity};
-use crate::rotation::Rotation;
-use crate::units::{NORMALIZED, Quantity};
+use crate::spec::canonical;
+use crate::spec::kinds::{Kind, joint_quantity, quantity};
+use crate::spec::rotation::Rotation;
+use crate::spec::units::{NORMALIZED, Quantity};
 
 /// The longest frame, mode, behaviour or group id.
 const MAX_NAME_LEN: usize = 64;

@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use rlmesh_wire::part::CommandSpec;
 
-use crate::bind::{Binding, Dir, NamesClash, Problem, Refusal, Status};
-use crate::contract;
+use crate::spec::bind::{Binding, Dir, NamesClash, Problem, Refusal, Status};
+use crate::spec::contract;
 
 /// `x` to three significant digits (integers above 100 kept whole).
 pub fn num(x: f64) -> String {
@@ -114,7 +114,7 @@ fn header(
 fn names_block(
     clash: &NamesClash,
     entries: &[&Problem],
-    run: &crate::bind::RunCall,
+    run: &crate::spec::bind::RunCall,
 ) -> Vec<String> {
     let subjects: Vec<String> = entries
         .iter()

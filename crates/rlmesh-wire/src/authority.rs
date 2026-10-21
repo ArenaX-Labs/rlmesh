@@ -158,7 +158,7 @@ impl ClockMapping {
 }
 
 /// A controller's binding, as the host recorded it (§6.8, §9.7). The binder
-/// (`rlmesh-spec`) produces the table and its fingerprint; the host keeps
+/// (`rlmesh_session_core::spec`) produces the table and its fingerprint; the host keeps
 /// what fencing and scheduling need.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BindingRecord {

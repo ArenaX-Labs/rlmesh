@@ -31,19 +31,19 @@ use rlmesh_wire::part::{DType, Encoding, FieldSpec, MAX_CHUNK_BYTES, PartSpec};
 use rlmesh_wire::{ActionGrid, ChannelId, Fingerprint, ParticipantId, StreamContract};
 use serde_json::{Value, json};
 
-use crate::canonical;
-use crate::contract;
-use crate::explain::{hz, ms, num};
-use crate::kinds::{Kind, quantity};
-use crate::normalise::attrs;
-use crate::plan::{Delivered, Delivery, Fit, Order, Plan, Size, Step};
-use crate::policy::{
+use crate::spec::canonical;
+use crate::spec::contract;
+use crate::spec::explain::{hz, ms, num};
+use crate::spec::kinds::{Kind, quantity};
+use crate::spec::normalise::attrs;
+use crate::spec::plan::{Delivered, Delivery, Fit, Order, Plan, Size, Step};
+use crate::spec::policy::{
     Action, Allow, Allows, ChunkStart, Entry, ImageFormat, ImageLayout, Input, Names, Policy,
     Resample, RunOptions, Source,
 };
-use crate::rotation::{self, Rotation, RotationChange};
-use crate::selector::{Selector, below};
-use crate::units::{self, Quantity, UnitChange};
+use crate::spec::rotation::{self, Rotation, RotationChange};
+use crate::spec::selector::{Selector, below};
+use crate::spec::units::{self, Quantity, UnitChange};
 
 /// The most capture assignments the binder enumerates.
 pub const MAX_ASSIGNMENTS: usize = 4096;
@@ -2333,7 +2333,7 @@ impl<'a> Binder<'a> {
                 };
                 let dtype = input.dtype.unwrap_or(DType::F32);
                 (
-                    format!("zeros {} [{n}] per field", crate::plan::short(dtype)),
+                    format!("zeros {} [{n}] per field", crate::spec::plan::short(dtype)),
                     fields
                         .iter()
                         .map(|f| Delivered {
@@ -2354,7 +2354,7 @@ impl<'a> Binder<'a> {
                     .clone()
                     .unwrap_or_else(|| vec![slot.entry.kind_name.replace('/', "_")]);
                 (
-                    format!("zeros {} {shape:?}", crate::plan::short(dtype)),
+                    format!("zeros {} {shape:?}", crate::spec::plan::short(dtype)),
                     names
                         .into_iter()
                         .map(|name| Delivered {

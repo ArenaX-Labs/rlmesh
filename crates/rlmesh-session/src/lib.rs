@@ -14,7 +14,7 @@
 //!   and joining it from another process.
 //! - [`authority`]: epoch, roster, the DISARMED/ARMED/ACTIVE/SAFE/ESTOP mode
 //!   machine with a latched e-stop, the part table with host-assigned,
-//!   never-reused ids (normalised by `rlmesh-spec`), bindings, and the
+//!   never-reused ids (normalised by [`spec`]), bindings, and the
 //!   lease table: all-or-none grants
 //!   bound to a binding, priority classes
 //!   (`safety > operator > model > scripted`), command groups, TTLs,
@@ -64,6 +64,7 @@ pub mod participant;
 pub mod report;
 pub mod sample;
 pub use rlmesh_session_core::schedule;
+pub use rlmesh_session_core::spec;
 pub mod transport;
 pub use rlmesh_session_core::virtual_clock;
 

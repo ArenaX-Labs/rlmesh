@@ -11,8 +11,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
+use crate::spec::Binding;
 use bytes::Bytes;
-use rlmesh_spec::Binding;
 use rlmesh_wire::{Applied, ChannelId, Epoch, InputRange};
 
 /// One sample as the cache keeps it.
@@ -369,7 +369,7 @@ impl InputCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_spec::{Policy, RunOptions, bind, normalise};
+    use crate::spec::{Policy, RunOptions, bind, normalise};
     use rlmesh_wire::version::SPEC_VERSION;
     use rlmesh_wire::{EdgeMode, LeaseToken, ParticipantId};
 

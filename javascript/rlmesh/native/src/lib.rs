@@ -31,14 +31,14 @@ use napi_derive::napi;
 use rlmesh_edge::{Due, EdgeConfig, EdgeMode, Rejection, Robot};
 use rlmesh_record::{RecordError, Recorder};
 use rlmesh_session::controller::sleep_until;
+use rlmesh_session::spec::apply::{Tensor, Value};
+use rlmesh_session::spec::policy::Allow;
+use rlmesh_session::spec::{BindError, Policy, RunOptions};
 use rlmesh_session::{
     Clock, Controller, ControllerConfig, ControllerError, HostConfig, Observation, ObserveError,
     Predictor, RunError, RunEvent, SendError, Sent, SessionAddress, SessionError, SessionHost,
     SkipReason, Snapshot, SystemMonotonicClock, Transport,
 };
-use rlmesh_spec::apply::{Tensor, Value};
-use rlmesh_spec::policy::Allow;
-use rlmesh_spec::{BindError, Policy, RunOptions};
 use rlmesh_wire::{CtlStatus, DType, Encoding, PartSpec, PriorityClass, Role, SessionId, TenantId};
 
 /// The first line of an error's message, naming its kind for the wrapper.
@@ -123,8 +123,8 @@ fn bind_err(err: BindError) -> Error {
             .iter()
             .map(|p| {
                 let dir = match p.dir {
-                    rlmesh_spec::bind::Dir::In => "input",
-                    rlmesh_spec::bind::Dir::Out => "action",
+                    rlmesh_session::spec::bind::Dir::In => "input",
+                    rlmesh_session::spec::bind::Dir::Out => "action",
                 };
                 format!("[{:?},{dir:?},{:?}]", p.code.name(), p.entry)
             })

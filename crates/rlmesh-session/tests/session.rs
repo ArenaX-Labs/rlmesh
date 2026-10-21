@@ -9,12 +9,12 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
+use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::{
     ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
     SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig, VirtualConfig,
 };
-use rlmesh_spec::{Policy, RunOptions};
 use rlmesh_wire::codec;
 use rlmesh_wire::{
     ChannelId, ClockMode, ContractMode, CtlStatus, Encoding, Epoch, FenceError, Fingerprint,

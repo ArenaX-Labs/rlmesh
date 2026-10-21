@@ -15,8 +15,8 @@ use pyo3::types::{PyDict, PyList};
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh_gym::view::{Entry, Frame, commands};
 use rlmesh_gym::{ConnectOptions, GymError, GymView, LockstepHandler, Request};
-use rlmesh_spec::Policy;
-use rlmesh_spec::apply::{Tensor, Value};
+use rlmesh_session::spec::Policy;
+use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_wire::{FieldSpec, LockstepReply, PartSpec, ParticipantId};
 use tokio_util::sync::CancellationToken;
 
@@ -158,8 +158,12 @@ impl PyLockstepRobot {
     #[new]
     fn new(py: Python<'_>, address: &str, name: &str, robot_json: String) -> PyResult<Self> {
         let robot = ParticipantId::new(name).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let parts = rlmesh_spec::normalise(&robot, rlmesh_wire::version::SPEC_VERSION, &robot_json)
-            .map_err(|e| PyValueError::new_err(e.message))?;
+        let parts = rlmesh_session::spec::normalise(
+            &robot,
+            rlmesh_wire::version::SPEC_VERSION,
+            &robot_json,
+        )
+        .map_err(|e| PyValueError::new_err(e.message))?;
         let address = format!("{}{address}/{name}", rlmesh_gym::session::SCHEME);
         let binding = block_on(py, async move {
             rlmesh_gym::bind(&address).await.map_err(gym_err)

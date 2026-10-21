@@ -7,13 +7,13 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rlmesh_session::media::synthetic_frame;
+use rlmesh_session::spec::apply::Value;
+use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::free_local_base;
 use rlmesh_session::{
     Inputs, ObserveError, Participant, ParticipantConfig, SessionError, SubscribeOptions,
     Transport, TransportConfig,
 };
-use rlmesh_spec::apply::Value;
-use rlmesh_spec::{Policy, RunOptions};
 use rlmesh_wire::version::SPEC_VERSION;
 use rlmesh_wire::{
     ContractMode, CtlStatus, Fingerprint, Mode, ParticipantId, PriorityClass, Role, SessionId,
@@ -265,10 +265,10 @@ async fn a_terminated_host_shuts_down_cleanly() {
         .expect("watch");
 }
 
-/// The conformance fixtures of `rlmesh-spec` (§14, §15).
+/// The conformance fixtures of `rlmesh_session::spec` (§14, §15).
 fn fixture(kind: &str, name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rlmesh-spec/tests/fixtures")
+        .join("../rlmesh-session-core/tests/fixtures")
         .join(kind)
         .join(format!("{name}.json"));
     std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()))
@@ -297,10 +297,11 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
     let robot_id = robot.id().clone();
     // The other process normalised the authored map with the kind table, and
     // fingerprints the declaration as this one would.
-    let normalised = rlmesh_spec::normalise(&robot_id, SPEC_VERSION, &map).expect("normalise");
+    let normalised =
+        rlmesh_session::spec::normalise(&robot_id, SPEC_VERSION, &map).expect("normalise");
     assert_eq!(
         view.contract.get(&robot_id),
-        Some(&rlmesh_spec::normalise::fingerprint(&normalised))
+        Some(&rlmesh_session::spec::normalise::fingerprint(&normalised))
     );
     let wrist = view.part_at(&robot_id, "wrist/ft").expect("wrist/ft");
     assert_eq!(

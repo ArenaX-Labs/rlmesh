@@ -17,7 +17,7 @@ import numpy as np
 import rlmesh.v2 as rlmesh
 
 SECONDS = float(os.environ.get("BENCH_SECONDS", "10"))
-SPEC = Path(__file__).resolve().parents[3] / "crates" / "rlmesh-spec" / "tests" / "fixtures"
+SPEC = Path(__file__).resolve().parents[3] / "crates" / "rlmesh-session-core" / "tests" / "fixtures"
 UR10E = json.loads((SPEC / "robots" / "ur10e.json").read_text())
 JOINTS = [
     "shoulder_pan_joint",

@@ -28,7 +28,6 @@ zenoh = { workspace = true }
 
 [dev-dependencies]
 rlmesh-edge = { workspace = true }
-rlmesh-spec = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 

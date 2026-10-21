@@ -3,8 +3,8 @@
 
 use std::path::PathBuf;
 
-use rlmesh_spec::apply::{Tensor, Value};
-use rlmesh_spec::{Binding, Policy, RunOptions, bind, normalise};
+use rlmesh_session_core::spec::apply::{Tensor, Value};
+use rlmesh_session_core::spec::{Binding, Policy, RunOptions, bind, normalise};
 use rlmesh_wire::part::{DType, Layout, PartSpec};
 use rlmesh_wire::version::SPEC_VERSION;
 use rlmesh_wire::{ChannelId, ParticipantId};

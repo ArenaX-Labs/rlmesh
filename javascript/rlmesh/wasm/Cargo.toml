@@ -36,7 +36,6 @@ web-time = "1"
 
 [dev-dependencies]
 # Test fixtures: robot maps normalised as the host would.
-rlmesh-spec = { workspace = true }
 wasm-bindgen-test = "0.3"
 
 [lints]

@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use rlmesh_gym::view::{Entry, Frame, commands};
 use rlmesh_gym::{ConnectOptions, GymError, LockstepHandler, Request};
-use rlmesh_spec::Policy;
-use rlmesh_spec::apply::{Tensor, Value};
+use rlmesh_session::spec::Policy;
+use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_wire::{DType, LockstepReply, PartSpec};
 
 const UR10E: &str = r#"{

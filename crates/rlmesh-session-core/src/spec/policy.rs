@@ -30,11 +30,11 @@ use rlmesh_wire::{PartPath, ParticipantId};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::contract::MAX_HISTORY;
-use crate::kinds::Kind;
-use crate::normalise::{FieldDecl, Ordered};
-use crate::rotation::Rotation;
-use crate::selector::{RUN_OPTIONS, Selector};
+use crate::spec::contract::MAX_HISTORY;
+use crate::spec::kinds::Kind;
+use crate::spec::normalise::{FieldDecl, Ordered};
+use crate::spec::rotation::Rotation;
+use crate::spec::selector::{RUN_OPTIONS, Selector};
 
 /// The longest entry name.
 const MAX_ENTRY_NAME: usize = 128;

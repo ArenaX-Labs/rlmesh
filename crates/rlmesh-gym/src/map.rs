@@ -492,13 +492,17 @@ impl GymMap {
 
         // Normalise here: the exact field layout, as the host will have it.
         let robot = ParticipantId::new("gym").map_err(|e| bad(e.to_string()))?;
-        let specs = rlmesh_spec::normalise(&robot, rlmesh_wire::version::SPEC_VERSION, &robot_json)
-            .map_err(|e| {
-                bad(format!(
-                    "the Gym robot map does not normalise: {}",
-                    e.message
-                ))
-            })?;
+        let specs = rlmesh_session::spec::normalise(
+            &robot,
+            rlmesh_wire::version::SPEC_VERSION,
+            &robot_json,
+        )
+        .map_err(|e| {
+            bad(format!(
+                "the Gym robot map does not normalise: {}",
+                e.message
+            ))
+        })?;
         let mut observation = Side {
             leaves: obs_leaves,
             parts: Vec::new(),

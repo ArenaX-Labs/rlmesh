@@ -588,14 +588,16 @@ pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepE
     let robot = LockstepAddress::parse(address)?.robot;
     let attached = attach_driver(address, &options, |s| {
         s.parts.iter().any(|p| {
-            p.owner == robot && p.attrs.contains_key(rlmesh_spec::normalise::attrs::GYM_ENV)
+            p.owner == robot
+                && p.attrs
+                    .contains_key(rlmesh_session::spec::normalise::attrs::GYM_ENV)
         })
     })
     .await?;
     let info = attached
         .parts
         .iter()
-        .find_map(|p| p.attrs.get(rlmesh_spec::normalise::attrs::GYM_ENV))
+        .find_map(|p| p.attrs.get(rlmesh_session::spec::normalise::attrs::GYM_ENV))
         .ok_or_else(|| GymError::Map(format!("robot {robot} is not a Gym env")))
         .and_then(|text| GymEnvInfo::from_attr(text))?;
     let mut map = GymMap::new(info, GYM_HZ)?;
@@ -619,7 +621,7 @@ pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepE
 /// by path).
 pub async fn connect_view(
     address: &str,
-    policy: Option<(&rlmesh_spec::Policy, &str)>,
+    policy: Option<(&rlmesh_session::spec::Policy, &str)>,
     options: ConnectOptions,
 ) -> Result<GymView, GymError> {
     let robot = LockstepAddress::parse(address)?.robot;
@@ -635,7 +637,7 @@ pub async fn connect_view(
 pub async fn connect_view_in(
     session: &str,
     robot: Option<&str>,
-    policy: Option<(&rlmesh_spec::Policy, &str)>,
+    policy: Option<(&rlmesh_session::spec::Policy, &str)>,
     options: ConnectOptions,
 ) -> Result<GymView, GymError> {
     if let Some(robot) = robot {
@@ -672,14 +674,15 @@ pub async fn connect_view_in(
 async fn view_of(
     attached: Attached,
     robot: ParticipantId,
-    policy: Option<(&rlmesh_spec::Policy, &str)>,
+    policy: Option<(&rlmesh_session::spec::Policy, &str)>,
     options: ConnectOptions,
 ) -> Result<GymView, GymError> {
     let parts = attached.parts.clone();
     let (table, fingerprint, channels) = match policy {
         Some((policy, name)) => {
-            let binding = rlmesh_spec::bind(policy, &parts, &view::run_options(name, &robot))
-                .map_err(|e| GymError::Map(e.to_string()))?;
+            let binding =
+                rlmesh_session::spec::bind(policy, &parts, &view::run_options(name, &robot))
+                    .map_err(|e| GymError::Map(e.to_string()))?;
             (
                 binding.table_text(),
                 Some(binding.fingerprint),

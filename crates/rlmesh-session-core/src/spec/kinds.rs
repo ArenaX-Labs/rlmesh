@@ -21,7 +21,7 @@ use std::fmt;
 
 use rlmesh_wire::path::is_identifier;
 
-use crate::units::Quantity;
+use crate::spec::units::Quantity;
 
 /// The longest kind name, namespace or name.
 const MAX_KIND_LEN: usize = 32;

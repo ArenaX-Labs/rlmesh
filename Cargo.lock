@@ -5275,7 +5275,6 @@ dependencies = [
  "half",
  "image",
  "rlmesh-session",
- "rlmesh-spec",
  "rlmesh-wire",
  "serde_json",
  "tokio",
@@ -5290,7 +5289,6 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "rlmesh-session",
- "rlmesh-spec",
  "rlmesh-wire",
  "serde_json",
  "thiserror 2.0.18",
@@ -5313,7 +5311,6 @@ dependencies = [
  "rcgen",
  "rlmesh-edge",
  "rlmesh-session",
- "rlmesh-spec",
  "rlmesh-wasm",
  "rlmesh-wire",
  "rustls",
@@ -5372,7 +5369,6 @@ dependencies = [
  "rlmesh-runtime",
  "rlmesh-session",
  "rlmesh-spaces",
- "rlmesh-spec",
  "rlmesh-wire",
  "serde",
  "serde_json",
@@ -5394,7 +5390,6 @@ dependencies = [
  "rlmesh-edge",
  "rlmesh-record",
  "rlmesh-session",
- "rlmesh-spec",
  "rlmesh-wire",
  "tokio",
 ]
@@ -5434,7 +5429,6 @@ dependencies = [
  "rlmesh-sandbox",
  "rlmesh-session",
  "rlmesh-spaces",
- "rlmesh-spec",
  "rlmesh-viewer",
  "rlmesh-wire",
  "serde",
@@ -5456,7 +5450,6 @@ dependencies = [
  "mcap",
  "rlmesh-edge",
  "rlmesh-session",
- "rlmesh-spec",
  "rlmesh-wire",
  "tempfile",
  "thiserror 2.0.18",
@@ -5510,7 +5503,6 @@ dependencies = [
  "jpeg-encoder",
  "libc",
  "rlmesh-session-core",
- "rlmesh-spec",
  "rlmesh-wire",
  "thiserror 2.0.18",
  "tokio",
@@ -5524,9 +5516,12 @@ dependencies = [
 name = "rlmesh-session-core"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "bytes",
- "rlmesh-spec",
  "rlmesh-wire",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
 ]
 
 [[package]]
@@ -5538,17 +5533,6 @@ dependencies = [
  "proptest",
  "rand 0.10.1",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "rlmesh-spec"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "rlmesh-wire",
- "serde",
- "serde_json",
- "serde_path_to_error",
 ]
 
 [[package]]
@@ -5573,7 +5557,6 @@ dependencies = [
  "console_error_panic_hook",
  "js-sys",
  "rlmesh-session-core",
- "rlmesh-spec",
  "rlmesh-wire",
  "wasm-bindgen",
  "wasm-bindgen-test",

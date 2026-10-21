@@ -41,7 +41,6 @@ zenoh = { workspace = true }
 bytes = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu"] }
 image = { workspace = true, features = ["png"] }
-rlmesh-spec = { workspace = true }
 
 [lints]
 workspace = true

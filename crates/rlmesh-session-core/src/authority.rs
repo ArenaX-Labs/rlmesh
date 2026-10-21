@@ -7,7 +7,7 @@
 //! without a network and the host only has to serialise calls into it.
 //!
 //! - **Parts** come from an embodiment's authored map, normalised by the
-//!   host with the shared normaliser ([`rlmesh_spec::normalise()`]); the
+//!   host with the shared normaliser ([`crate::spec::normalise()`]); the
 //!   snapshot carries each robot's declaration fingerprint. Channel ids are
 //!   host-assigned and never reused within the session: re-declaring a path
 //!   with a changed schema retires its id and assigns a new one. A
@@ -19,7 +19,7 @@
 //!   re-issues the holder's leases under a fresh token, so in-flight chunks
 //!   of the old binding are fenced (Codex finding 2).
 //! - **Delivery contracts** (§8.2) come with a binding, one per bound input
-//!   stream. The host admits them ([`rlmesh_spec::contract::admit`]), derives
+//!   stream. The host admits them ([`crate::spec::contract::admit`]), derives
 //!   one publication plan per stream from every attached controller's
 //!   contracts and publishes it as a [`Demand`]; the stream's publisher
 //!   installs it and acknowledges the revision ([`Command::DemandAck`]).
@@ -47,7 +47,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use rlmesh_spec::contract;
+use crate::spec::contract;
 use rlmesh_wire::authority::fence;
 use rlmesh_wire::part::PartSpec;
 use rlmesh_wire::tick::VirtualTick;
@@ -826,8 +826,8 @@ impl Authority {
         events: &mut Vec<AuthorityEvent>,
     ) -> Result<(), CtlError> {
         self.require_role(from, Role::Embodiment)?;
-        let declared = rlmesh_spec::normalise(from, spec_version, robot_json)?;
-        let fingerprint = rlmesh_spec::normalise::fingerprint(&declared);
+        let declared = crate::spec::normalise(from, spec_version, robot_json)?;
+        let fingerprint = crate::spec::normalise::fingerprint(&declared);
         let current: BTreeMap<&str, &PartSpec> = self
             .parts
             .values()

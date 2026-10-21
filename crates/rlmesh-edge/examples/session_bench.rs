@@ -55,14 +55,14 @@ use std::time::Duration;
 use bytes::Bytes;
 use rlmesh_edge::{Edge, EdgeConfig, EdgeMode};
 use rlmesh_session::media::{decode_image, synthetic_frame};
+use rlmesh_session::spec::apply::{Tensor, Value as ActionValue};
+use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::free_local_base;
 use rlmesh_session::{
     AuthorityEvent, ChunkDraft, Clock, Controller, ControllerConfig, HostConfig, LeaseEnd,
     Observation, Offer, Participant, ParticipantConfig, Predictor, SessionHost, SubscribeOptions,
     SystemMonotonicClock, Transport, TransportConfig,
 };
-use rlmesh_spec::apply::{Tensor, Value as ActionValue};
-use rlmesh_spec::{Policy, RunOptions};
 use rlmesh_wire::{
     Fingerprint, InputRange, Mode, ParticipantId, PriorityClass, Role, Sample, SessionId, TenantId,
 };

@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import * as rlmesh from '../dist/node.js';
 
 const SECONDS = Number(process.env.BENCH_SECONDS ?? 10);
-const SPEC = new URL('../../../crates/rlmesh-spec/tests/fixtures/', import.meta.url);
+const SPEC = new URL('../../../crates/rlmesh-session-core/tests/fixtures/', import.meta.url);
 const UR10E = JSON.parse(readFileSync(new URL('robots/ur10e.json', SPEC), 'utf8'));
 const JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'];
 const POLICY = {

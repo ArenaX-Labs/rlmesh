@@ -21,11 +21,11 @@ use std::fmt;
 
 use rlmesh_wire::part::{DType, FieldSpec, Layout, PartSpec};
 
-use crate::bind::{ActionRow, InputRow};
-use crate::image::{Image, crop_cut, fit_resize, fit_resize_depth};
-use crate::kinds::Kind;
-use crate::plan::{Delivered, Delivery, Order, Step};
-use crate::rotation::{self, Rotation};
+use crate::spec::bind::{ActionRow, InputRow};
+use crate::spec::image::{Image, crop_cut, fit_resize, fit_resize_depth};
+use crate::spec::kinds::Kind;
+use crate::spec::plan::{Delivered, Delivery, Order, Step};
+use crate::spec::rotation::{self, Rotation};
 
 /// A dense little-endian, C-contiguous array.
 #[derive(Clone, Debug, PartialEq)]

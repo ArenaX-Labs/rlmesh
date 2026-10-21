@@ -129,8 +129,8 @@ pub fn admit(contract: &StreamContract, part: &PartSpec, applied: bool) -> Resul
             return Err(format!(
                 "{path}: a window of {} at {} Hz spans {} s (at most 10 s)",
                 contract.history,
-                crate::explain::hz(s),
-                crate::explain::seconds(span)
+                crate::spec::explain::hz(s),
+                crate::spec::explain::seconds(span)
             ));
         }
     }
@@ -145,10 +145,10 @@ pub fn admit(contract: &StreamContract, part: &PartSpec, applied: bool) -> Resul
         if bound < interval && !part.event {
             return Err(format!(
                 "{path}: max_age_ms {} is below the {} ms between samples of {}@{}",
-                crate::explain::ms(bound),
-                crate::explain::ms(interval),
+                crate::spec::explain::ms(bound),
+                crate::spec::explain::ms(interval),
                 mode_name(contract.mode),
-                crate::explain::hz(d)
+                crate::spec::explain::hz(d)
             ));
         }
     }
@@ -172,7 +172,7 @@ pub fn label(contract: &StreamContract) -> String {
         mode => format!(
             "{}@{}",
             mode_name(mode),
-            crate::explain::hz(contract.delivery_hz)
+            crate::spec::explain::hz(contract.delivery_hz)
         ),
     }
 }
@@ -222,7 +222,7 @@ pub fn plan<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::normalise::normalise;
+    use crate::spec::normalise::normalise;
     use rlmesh_wire::{ChannelId, ParticipantId, version::SPEC_VERSION};
 
     fn part(json: &str) -> PartSpec {

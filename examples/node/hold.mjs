@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { Host, Policy, Rate, Robot } from '../../javascript/rlmesh/dist/node.js';
 
-const UR10E = JSON.parse(readFileSync(new URL('../../crates/rlmesh-spec/tests/fixtures/robots/ur10e.json', import.meta.url), 'utf8'));
+const UR10E = JSON.parse(readFileSync(new URL('../../crates/rlmesh-session-core/tests/fixtures/robots/ur10e.json', import.meta.url), 'utf8'));
 const JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'];
 const HOLD = {
   hz: 50,

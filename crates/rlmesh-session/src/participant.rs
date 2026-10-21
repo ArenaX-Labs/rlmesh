@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, O
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use rlmesh_spec::{BindError, Binding, Policy, RunOptions};
+use crate::spec::{BindError, Binding, Policy, RunOptions};
 use rlmesh_wire::codec;
 use rlmesh_wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_wire::{
@@ -673,7 +673,7 @@ impl Participant {
     pub fn bind(&self, policy: &Policy, options: &RunOptions) -> Result<Binding, BindError> {
         let view = self.shared.view.borrow();
         let parts = view.as_ref().map_or(&[][..], |v| v.parts.as_slice());
-        rlmesh_spec::bind(policy, parts, options)
+        crate::spec::bind(policy, parts, options)
     }
 
     /// Declares a binding the binder produced: its fingerprint, its table,

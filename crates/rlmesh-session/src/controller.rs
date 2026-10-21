@@ -37,10 +37,10 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use crate::spec::apply::{ApplyError, Value};
+use crate::spec::policy::ChunkStart;
+use crate::spec::{BindError, Binding, Policy, RunOptions};
 use bytes::Bytes;
-use rlmesh_spec::apply::{ApplyError, Value};
-use rlmesh_spec::policy::ChunkStart;
-use rlmesh_spec::{BindError, Binding, Policy, RunOptions};
 use rlmesh_wire::{
     ChannelId, ClockMode, ContractMode, Epoch, InputRange, Lease, Mode, ParticipantId, RunCounters,
 };

@@ -2,15 +2,15 @@
 //! the §14 reference robots, and every §6.7 refusal, as golden binding
 //! tables and refusal messages under `tests/golden/`.
 //!
-//! `RLMESH_BLESS=1 cargo test -p rlmesh-spec --test bind` rewrites the
+//! `RLMESH_BLESS=1 cargo test -p rlmesh-session-core --test bind` rewrites the
 //! golden files; review the diff like code.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rlmesh_spec::bind::{BindError, Binding, Code, Status};
-use rlmesh_spec::policy::Allow;
-use rlmesh_spec::{Policy, RunOptions, bind, normalise};
+use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status};
+use rlmesh_session_core::spec::policy::Allow;
+use rlmesh_session_core::spec::{Policy, RunOptions, bind, normalise};
 use rlmesh_wire::version::SPEC_VERSION;
 use rlmesh_wire::{ChannelId, ContractMode, PartSpec, ParticipantId};
 
@@ -68,7 +68,11 @@ fn bound(policy_name: &str, robot_name: &str, options: RunOptions) -> Binding {
     }
 }
 
-fn refused(policy_name: &str, robot_name: &str, options: RunOptions) -> rlmesh_spec::Refusal {
+fn refused(
+    policy_name: &str,
+    robot_name: &str,
+    options: RunOptions,
+) -> rlmesh_session_core::spec::Refusal {
     let parts = robot(robot_name);
     match bind(&policy(policy_name), &parts, &options) {
         Ok(binding) => panic!("{policy_name} on {robot_name} bound:\n{binding}"),
@@ -84,7 +88,7 @@ fn plan(binding: &Binding, entry: &str) -> String {
         .unwrap_or_else(|| panic!("no input {entry}"))
 }
 
-fn codes(refusal: &rlmesh_spec::Refusal) -> Vec<(Code, String)> {
+fn codes(refusal: &rlmesh_session_core::spec::Refusal) -> Vec<(Code, String)> {
     refusal
         .problems
         .iter()
@@ -754,7 +758,7 @@ fn fingerprints_follow_the_table() {
             .all(|g| g.dt == Duration::from_nanos(66_666_667))
     );
     assert_eq!(
-        rlmesh_spec::canonical::fingerprint(&a.table_json()),
+        rlmesh_session_core::spec::canonical::fingerprint(&a.table_json()),
         a.fingerprint
     );
 }

@@ -45,7 +45,6 @@ rlmesh-record = { workspace = true }
 rlmesh-sandbox = { workspace = true }
 rlmesh-session = { workspace = true }
 rlmesh-spaces = { workspace = true }
-rlmesh-spec = { workspace = true }
 rlmesh-viewer = { workspace = true }
 rlmesh-wire = { workspace = true }
 

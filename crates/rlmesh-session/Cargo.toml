@@ -26,7 +26,6 @@ clap = { workspace = true, features = ["derive"] }
 image = { workspace = true, features = ["jpeg"] }
 jpeg-encoder = { workspace = true }
 # The shared normaliser (robot map JSON to parts) and the binder.
-rlmesh-spec = { workspace = true }
 # The sans-IO state machines (authority, clock offsets, input cache,
 # schedule, virtual clock, stream rules), re-exported unchanged.
 rlmesh-session-core = { workspace = true }

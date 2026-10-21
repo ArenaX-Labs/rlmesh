@@ -21,7 +21,7 @@ import pytest
 import rlmesh.v2 as rlmesh
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SPEC = REPO_ROOT / "crates" / "rlmesh-spec" / "tests"
+SPEC = REPO_ROOT / "crates" / "rlmesh-session-core" / "tests"
 WAIT = 10.0
 
 UR_JOINTS = [

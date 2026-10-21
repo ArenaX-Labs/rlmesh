@@ -1,6 +1,6 @@
 //! Runs under Node through `wasm-bindgen-test-runner` (no browser):
 //! `mise run test:js:wasm`. Fixtures are real v2 messages, encoded by
-//! `rlmesh-wire` and normalised by `rlmesh-spec`.
+//! `rlmesh-wire` and normalised by `rlmesh_session_core::spec`.
 #![cfg(target_arch = "wasm32")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use js_sys::{Array, Float64Array, Reflect, Uint8Array};
-use rlmesh_spec::normalise;
+use rlmesh_session_core::spec::normalise;
 use rlmesh_wasm::frame;
 use rlmesh_wasm::*;
 use rlmesh_wire::codec;

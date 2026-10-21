@@ -6,8 +6,8 @@
 
 use bytes::Bytes;
 use rlmesh_cockpit::{Input, Model, ModelConfig};
+use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::{Authority, AuthorityConfig};
-use rlmesh_spec::{Policy, RunOptions};
 use rlmesh_wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_wire::{
     ActionChunk, Applied, ChannelId, ClockMapping, Command, DType, EdgeMode, Epoch, Health,
@@ -103,7 +103,7 @@ impl World {
         )
         .expect("declare");
         let parts: Vec<_> = w.auth.parts().cloned().collect();
-        let binding = rlmesh_spec::bind(
+        let binding = rlmesh_session::spec::bind(
             &Policy::parse(POLICY).expect("policy"),
             &parts,
             &RunOptions::named("reach"),

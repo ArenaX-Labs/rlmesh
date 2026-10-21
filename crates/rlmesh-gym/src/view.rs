@@ -29,10 +29,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use bytes::Bytes;
-use rlmesh_spec::apply::{Tensor, Value};
-use rlmesh_spec::bind::{ActionRow, InputRow};
-use rlmesh_spec::plan::Delivery;
-use rlmesh_spec::{Policy, RunOptions};
+use rlmesh_session::spec::apply::{Tensor, Value};
+use rlmesh_session::spec::bind::{ActionRow, InputRow};
+use rlmesh_session::spec::plan::Delivery;
+use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_wire::{
     ChannelId, DType, Epoch, FieldSpec, Layout, LeaseToken, LockstepReply, LockstepReset,
     LockstepStep, PartSpec, PartValues, ParticipantId,
@@ -327,7 +327,7 @@ impl GymView {
                 (inputs, outputs, None, BTreeMap::new())
             }
             Some((policy, options)) => {
-                let binding = rlmesh_spec::bind(policy, parts, &options)
+                let binding = rlmesh_session::spec::bind(policy, parts, &options)
                     .map_err(|e| GymError::Map(e.to_string()))?;
                 let mut depth = BTreeMap::new();
                 for row in &binding.inputs {

@@ -52,7 +52,6 @@ rcgen = { workspace = true }
 # The bridge tests' robot and the browser example's (examples/web_robot).
 rlmesh-edge = { workspace = true }
 # The example's model policy.
-rlmesh-spec = { workspace = true }
 # The browser binding's frame tags, checked against this crate's.
 rlmesh-wasm = { workspace = true }
 tokio-tungstenite = { workspace = true }

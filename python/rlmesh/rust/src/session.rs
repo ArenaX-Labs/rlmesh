@@ -27,14 +27,14 @@ use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh_edge::{Due, EdgeConfig, EdgeMode, Rejection, Robot};
 use rlmesh_record::{RecordError, Recorder};
 use rlmesh_session::controller::sleep_until;
+use rlmesh_session::spec::apply::{Tensor, Value};
+use rlmesh_session::spec::policy::Allow;
+use rlmesh_session::spec::{BindError, Policy, RunOptions};
 use rlmesh_session::{
     Clock, Controller, ControllerConfig, ControllerError, HostConfig, Observation, ObserveError,
     Participant, ParticipantConfig, Predictor, RunError, RunEvent, SendError, Sent, SessionError,
     SessionHost, SkipReason, Snapshot, SystemMonotonicClock, Transport, TransportConfig,
 };
-use rlmesh_spec::apply::{Tensor, Value};
-use rlmesh_spec::policy::Allow;
-use rlmesh_spec::{BindError, Policy, RunOptions};
 use rlmesh_wire::{
     CtlStatus, DType, PartSpec, ParticipantId, PriorityClass, Role, SessionId, TenantId,
 };
@@ -181,8 +181,8 @@ pub(crate) fn bind_err(err: BindError) -> PyErr {
                     (
                         p.code.name().to_string(),
                         match p.dir {
-                            rlmesh_spec::bind::Dir::In => "input",
-                            rlmesh_spec::bind::Dir::Out => "action",
+                            rlmesh_session::spec::bind::Dir::In => "input",
+                            rlmesh_session::spec::bind::Dir::Out => "action",
                         }
                         .to_string(),
                         p.entry.clone(),
@@ -420,7 +420,7 @@ pub(crate) fn part_dict<'py>(py: Python<'py>, part: &PartSpec) -> PyResult<Bound
     Ok(d)
 }
 
-/// An `rlmesh_spec` tensor as a native `Tensor` (zero-copy when its buffer
+/// An `rlmesh_session::spec` tensor as a native `Tensor` (zero-copy when its buffer
 /// is 8-byte aligned, §8.11; one copy otherwise).
 pub(crate) fn tensor_to_py<'py>(py: Python<'py>, tensor: Tensor) -> PyResult<Bound<'py, PyAny>> {
     let dtype = rlmesh_spaces::DType::from_name(tensor.dtype.name()).ok_or_else(|| {

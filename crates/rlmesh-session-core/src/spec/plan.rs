@@ -12,9 +12,9 @@ use std::fmt;
 
 use rlmesh_wire::part::DType;
 
-use crate::explain::num;
-use crate::policy::{Allow, Resample};
-use crate::rotation::Rotation;
+use crate::spec::explain::num;
+use crate::spec::policy::{Allow, Resample};
+use crate::spec::rotation::Rotation;
 
 /// An image size, `width × height`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

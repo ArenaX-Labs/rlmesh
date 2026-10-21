@@ -34,12 +34,12 @@ use std::time::Duration;
 use clap::Parser;
 use rlmesh_edge::{EdgeConfig, EdgeMode, Robot};
 use rlmesh_session::controller::sleep_until;
+use rlmesh_session::spec::apply::{Tensor, Value};
+use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
     Predictor, SessionHost, SystemMonotonicClock, Transport, TransportConfig,
 };
-use rlmesh_spec::apply::{Tensor, Value};
-use rlmesh_spec::{Policy, RunOptions};
 use rlmesh_wire::{DType, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
 const ROBOT: &str = "arm7";

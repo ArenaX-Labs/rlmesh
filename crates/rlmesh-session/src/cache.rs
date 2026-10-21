@@ -46,9 +46,9 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::spec::Binding;
+use crate::spec::apply::{ApplyError, Value};
 use bytes::Bytes;
-use rlmesh_spec::Binding;
-use rlmesh_spec::apply::{ApplyError, Value};
 use rlmesh_wire::{ChannelId, Epoch, HistoryQuery, StreamSpec};
 
 use crate::error::SessionError;
