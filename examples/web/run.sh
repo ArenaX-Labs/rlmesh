@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 [ -f examples/web/dist/index.html ] || { echo "examples/web/dist missing: run 'mise run build:js --demo'" >&2; exit 1; }
-[ "${SKIP_BUILD:-}" = 1 ] || cargo build --release -p rlmesh-gateway --bin rlmesh-gateway --example web_robot
+[ "${SKIP_BUILD:-}" = 1 ] || cargo build --release -p rlmesh-session --bin rlmesh-gateway --example web_robot
 target="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/release"
 logs="${XDG_CACHE_HOME:-$HOME/.cache}/rlmesh-web"
 mkdir -p "$logs"

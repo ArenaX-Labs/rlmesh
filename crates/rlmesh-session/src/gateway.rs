@@ -14,8 +14,6 @@
 //!
 //! `docs/browser.md` describes the binding and the security model.
 
-#![warn(missing_docs)]
-
 pub mod bridge;
 pub mod config;
 pub mod frame;

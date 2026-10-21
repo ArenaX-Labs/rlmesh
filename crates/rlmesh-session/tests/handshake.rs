@@ -1,3 +1,4 @@
+#![cfg(feature = "gateway")]
 //! Real WebSocket handshakes against the gateway's security layer (no
 //! session needed): the same `security::guard` middleware and
 //! `security::limit` upgrade settings the gateway uses, on an echo route.
@@ -10,8 +11,8 @@ use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use futures::{SinkExt, StreamExt};
-use rlmesh_gateway::security::{self, Origins, Policy, SUBPROTOCOL, TOKEN_PREFIX};
-use rlmesh_gateway::tls;
+use rlmesh_session::gateway::security::{self, Origins, Policy, SUBPROTOCOL, TOKEN_PREFIX};
+use rlmesh_session::gateway::tls;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;

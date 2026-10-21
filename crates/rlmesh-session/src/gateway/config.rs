@@ -15,11 +15,11 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
+use crate::SessionAddress;
+use crate::wire::{PriorityClass, SessionId, TenantId};
 use clap::Parser;
-use rlmesh_session::SessionAddress;
-use rlmesh_session::wire::{PriorityClass, SessionId, TenantId};
 
-use crate::security::{self, Origins, Policy};
+use crate::gateway::security::{self, Origins, Policy};
 
 /// Bridges browsers to an RLMesh real-time session (protocol v2): one
 /// WebSocket per traffic class (`/control`, `/state`, `/bulk`), each browser
@@ -195,7 +195,7 @@ impl Config {
                     tenant: TenantId::new(args.tenant).map_err(|e| e.to_string())?,
                     session: session
                         .parse()
-                        .map_err(|e: rlmesh_session::wire::IdError| e.to_string())?,
+                        .map_err(|e: crate::wire::IdError| e.to_string())?,
                 }
             }
         };

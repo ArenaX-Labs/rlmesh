@@ -5283,30 +5283,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlmesh-gateway"
-version = "0.1.0"
-dependencies = [
- "axum",
- "blake3",
- "bytes",
- "clap",
- "futures",
- "rand 0.10.1",
- "rcgen",
- "rlmesh-session",
- "rlmesh-wasm",
- "rustls",
- "serde_json",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "zenoh",
-]
-
-[[package]]
 name = "rlmesh-grpc"
 version = "0.1.0"
 dependencies = [
@@ -5455,18 +5431,28 @@ dependencies = [
 name = "rlmesh-session"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "blake3",
  "bytes",
  "clap",
+ "futures",
  "image",
  "jpeg-encoder",
  "libc",
  "mcap",
+ "rand 0.10.1",
+ "rcgen",
  "rlmesh-session-core",
+ "rlmesh-wasm",
+ "rustls",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
  "tokio-util",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
  "zenoh",

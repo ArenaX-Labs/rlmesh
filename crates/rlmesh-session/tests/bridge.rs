@@ -1,3 +1,4 @@
+#![cfg(feature = "gateway")]
 //! The gateway against a real session host and robot: a browser connection
 //! is a participant of its own, its heartbeats and chunks are its own, its
 //! leases are the host's, and samples arrive byte for byte as published.
@@ -9,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use rlmesh_gateway::security::{Origins, Policy, SUBPROTOCOL};
-use rlmesh_gateway::{AppState, Gateway, frame, router};
 use rlmesh_session::edge::{EdgeConfig, Robot};
+use rlmesh_session::gateway::security::{Origins, Policy, SUBPROTOCOL};
+use rlmesh_session::gateway::{AppState, Gateway, frame, router};
 use rlmesh_session::transport::{open_local_listeners, payload_bytes};
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{

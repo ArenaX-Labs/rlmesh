@@ -6,6 +6,6 @@
 # The tests start target/release/examples/web_robot and target/release/rlmesh-gateway
 # themselves, on random ports, and kill them afterwards.
 set -euo pipefail
-cargo build --release -p rlmesh-gateway --bin rlmesh-gateway --example web_robot
+cargo build --release -p rlmesh-session --bin rlmesh-gateway --example web_robot
 RLMESH_E2E_TARGET="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/release" \
   node javascript/rlmesh/test/run.mjs --e2e

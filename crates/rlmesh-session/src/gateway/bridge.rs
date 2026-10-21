@@ -34,14 +34,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use bytes::Bytes;
-use rlmesh_session::transport::{TrafficClass, payload_bytes, stream_qos};
-use rlmesh_session::wire::codec;
-use rlmesh_session::wire::{
+use crate::transport::{TrafficClass, payload_bytes, stream_qos};
+use crate::wire::codec;
+use crate::wire::{
     AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
     Fingerprint, PartSpec, ParticipantId, PriorityClass, Role, SessionId, SessionKeys, TenantId,
 };
-use rlmesh_session::{MonotonicClock, Participant, ParticipantConfig, SessionError, Transport};
+use crate::{MonotonicClock, Participant, ParticipantConfig, SessionError, Transport};
+use bytes::Bytes;
 use serde_json::json;
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -50,7 +50,7 @@ use zenoh::Wait;
 use zenoh::bytes::ZBytes;
 use zenoh::qos::{CongestionControl, Priority};
 
-use crate::frame;
+use crate::gateway::frame;
 
 /// What goes out on a browser socket.
 #[derive(Clone, Debug, PartialEq)]
@@ -567,8 +567,7 @@ impl BrowserLink {
             Err(err) => return report("error", format!("request: {err}")),
         };
         let p = &self.participant;
-        let result: Result<Vec<rlmesh_session::wire::Lease>, CtlError> = if request.from != self.id
-        {
+        let result: Result<Vec<crate::wire::Lease>, CtlError> = if request.from != self.id {
             Err(CtlError::new(
                 CtlStatus::Forbidden,
                 format!("{} cannot send verbs as {}", self.id, request.from),

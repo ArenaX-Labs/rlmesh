@@ -18,21 +18,36 @@ publish = false
 name = "rlmesh-session-host"
 path = "src/bin/rlmesh-session-host.rs"
 
+[[bin]]
+name = "rlmesh-gateway"
+path = "src/bin/rlmesh-gateway.rs"
+required-features = ["gateway"]
+
 [dependencies]
+# The browser gateway (feature `gateway`): WebSockets, static files with
+# COOP/COEP, TLS on the ring provider and the per-browser token.
+axum = { workspace = true, features = ["ws"], optional = true }
+blake3 = { workspace = true, optional = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 # JPEG camera channels: encode with jpeg-encoder, decode with image's
 # zune-jpeg (the workspace's existing pair, as in rlmesh-adapters).
 image = { workspace = true, features = ["jpeg"] }
 jpeg-encoder = { workspace = true }
+futures = { workspace = true, optional = true }
 # Session recordings (§13), feature `record`.
 mcap = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
 # The sans-IO core (the wire, the spec, authority, clock offsets, input
 # cache, schedule, virtual clock, stream rules), re-exported unchanged.
 rlmesh-session-core = { workspace = true }
+rustls = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-rustls = { workspace = true, optional = true }
 tokio-util = { workspace = true }
+tower-http = { workspace = true, features = ["fs", "set-header"], optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 # One Zenoh session per traffic class: no `transport_multilink` (it pulls
@@ -41,14 +56,32 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-stream", "unstable"] }
 
 [dev-dependencies]
+# Gateway handshake tests: a throwaway certificate.
+rcgen = { workspace = true }
+# The browser binding's frame tags, checked against the gateway's.
+rlmesh-wasm = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }
 
 [features]
 # The library's optional parts are on for the crate itself (its binaries
 # and tests); the workspace dependency turns them off, so a binding opts in
 # to what it ships.
-default = ["record"]
+default = ["gateway", "record"]
+# The browser gateway (`gateway`, bin `rlmesh-gateway`): one WebSocket per
+# traffic class, each browser a session participant.
+gateway = [
+  "dep:axum",
+  "dep:blake3",
+  "dep:futures",
+  "dep:rand",
+  "dep:rustls",
+  "dep:serde_json",
+  "dep:tokio-rustls",
+  "dep:tower-http",
+  "tokio/net",
+]
 # MCAP recording of a session (`record`).
 record = ["dep:mcap"]
 # QUIC links (one stream per Zenoh priority, so one connection can carry

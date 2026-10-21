@@ -109,7 +109,7 @@ with `--session`/`--session-file`.
 ## Security model
 
 `rlmesh-gateway` exposes a robot session to web pages, so it is locked down
-by default (`crates/rlmesh-gateway/src/security.rs`):
+by default (`crates/rlmesh-session/src/gateway/security.rs`):
 
 - **Bind:** `127.0.0.1` by default. A non-loopback `--bind` refuses to start
   without a token, and without TLS (the token would cross the network in

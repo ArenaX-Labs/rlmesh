@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use axum::serve::ListenerExt;
 use clap::Parser;
-use rlmesh_gateway::{AppState, Args, Config, Gateway, router, tls};
+use rlmesh_session::gateway::{AppState, Args, Config, Gateway, router, tls};
 use rlmesh_session::{Transport, TransportConfig};
 use tracing::{error, info};
 

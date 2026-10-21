@@ -22,6 +22,8 @@
 //! - [`virtual_clock`]: the virtual-mode tick barrier (§11.3), sans-IO.
 //! - [`clock`]: clock domains and NTP-style offset estimation with an error
 //!   bound, fed by heartbeats.
+//! - `gateway` (feature `gateway`): the browser gateway, WebSockets to
+//!   session participants (bin `rlmesh-gateway`; `docs/browser.md`).
 //! - [`host`]: the [`SessionHost`]: `ctl` verbs, the published authority
 //!   snapshot, heartbeat echoes, lease expiry, virtual ticks and the history
 //!   store. A library, and a binary (`rlmesh-session-host`).
@@ -62,6 +64,8 @@ pub mod clock;
 pub mod controller;
 pub mod edge;
 pub mod error;
+#[cfg(feature = "gateway")]
+pub mod gateway;
 pub mod host;
 pub mod media;
 pub mod metrics;

@@ -12,7 +12,7 @@ mise run demo:web     # builds the wasm, the package and this page, then runs th
 
 `run.sh` starts two processes (logs in `~/.cache/rlmesh-web/`):
 
-- **The example robot** (`crates/rlmesh-gateway/examples/web_robot`): a session
+- **The example robot** (`crates/rlmesh-session/examples/web_robot`): a session
   host, the robot `arm7` (`rlmesh_session::edge::Robot`) and a model policy, in one
   process. `arm7/arm` is 7 joints (`pos` and `vel`) at 1 kHz with position
   commands (`safe: stop`, held 100 ms); `arm7/gripper` is 100 Hz; and

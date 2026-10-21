@@ -3,7 +3,7 @@
 //! the production crates.
 //!
 //! ```text
-//! cargo run -p rlmesh-gateway --example web_robot -- --listen-base 127.0.0.1:17600 --session-file session.id
+//! cargo run -p rlmesh-session --example web_robot -- --listen-base 127.0.0.1:17600 --session-file session.id
 //! ```
 //!
 //! - **Host**: a `SessionHost` on per-class TCP at `--listen-base` (class i on

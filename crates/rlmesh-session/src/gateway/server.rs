@@ -5,7 +5,7 @@
 //!   "priority": "model"}`); the gateway attaches a participant for the
 //!   connection and answers with its id, then the authority snapshot. From
 //!   then on binary frames carry `ctl` requests and replies, heartbeats and
-//!   echoes, chunks and authority updates ([`crate::frame`]).
+//!   echoes, chunks and authority updates ([`crate::gateway::frame`]).
 //! - `/state` and `/bulk`: JSON `{"type": "subscribe", "id": 0, "path":
 //!   "arm7/arm"}` (and `unsubscribe`); samples come back as `SAMPLE` frames.
 //!   State connections queue 64 frames, bulk ones 4; a full queue drops the
@@ -30,9 +30,9 @@ use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{debug, info, warn};
 
-use crate::bridge::{Gateway, Outbound, report};
-use crate::config::parse_priority;
-use crate::security::{self, Policy, SubAdd, SubscriptionSet};
+use crate::gateway::bridge::{Gateway, Outbound, report};
+use crate::gateway::config::parse_priority;
+use crate::gateway::security::{self, Policy, SubAdd, SubscriptionSet};
 
 /// How long a control connection may take to say hello.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
