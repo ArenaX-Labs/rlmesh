@@ -225,15 +225,17 @@ impl LaneActor {
         let thread = std::thread::Builder::new()
             .name(format!("rlmesh-lane-{index}"))
             .spawn(move || {
-                // Multi-thread (one worker): the env's calls still run on
-                // this thread, inside `block_on`, and a `block_in_place`
-                // there (Zenoh's, dropping a session) is allowed, where a
-                // current-thread runtime panics.
+                // The env's calls run on this thread with the lane runtime's
+                // handle current (its one worker drives timers and I/O) but
+                // outside any `block_on`: a callback may block, start another
+                // runtime (a sync rlmesh client) or block in place (Zenoh,
+                // dropping a session), none of which a runtime context allows.
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(1)
                     .enable_all()
                     .build()
                     .expect("lane runtime");
+                let _handle = runtime.enter();
                 for Envelope { job, enqueued } in rx {
                     // The wait in the mailbox is this op's queue time.
                     let queue_ns = elapsed_ns(enqueued);
@@ -244,22 +246,22 @@ impl LaneActor {
                     };
                     match job {
                         Job::Reset(req, reply) => {
-                            let result = runtime.block_on(env.reset(req));
+                            let result = futures::executor::block_on(env.reset(req));
                             let phases = stamp(&mut env);
                             let _ = reply.send(result.map(|ok| (ok, phases)));
                         }
                         Job::Step(req, reply) => {
-                            let result = runtime.block_on(env.step(req));
+                            let result = futures::executor::block_on(env.step(req));
                             let phases = stamp(&mut env);
                             let _ = reply.send(result.map(|ok| (ok, phases)));
                         }
                         Job::Render(req, reply) => {
-                            let result = runtime.block_on(env.render(req));
+                            let result = futures::executor::block_on(env.render(req));
                             let phases = stamp(&mut env);
                             let _ = reply.send(result.map(|ok| (ok, phases)));
                         }
                         Job::Close(req, reply) => {
-                            let result = runtime.block_on(env.close(req));
+                            let result = futures::executor::block_on(env.close(req));
                             let phases = stamp(&mut env);
                             let _ = reply.send(result.map(|ok| (ok, phases)));
                         }
@@ -368,6 +370,8 @@ mod tests {
         drop_block: Duration,
         /// Step blocks in place, as Zenoh does when a session drops there.
         blocks_in_place: bool,
+        /// Step blocks on a runtime of its own, as a sync client does.
+        blocks_on_a_runtime: bool,
     }
 
     impl Drop for SleepyEnv {
@@ -406,6 +410,7 @@ mod tests {
                 threads,
                 drop_block: Duration::ZERO,
                 blocks_in_place: false,
+                blocks_on_a_runtime: false,
             }
         }
 
@@ -456,6 +461,13 @@ mod tests {
             std::thread::sleep(self.delay);
             if self.blocks_in_place {
                 tokio::task::block_in_place(|| ());
+            }
+            if self.blocks_on_a_runtime {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("a client's runtime")
+                    .block_on(tokio::time::sleep(Duration::from_millis(1)));
             }
             Ok(spaces::request::StepResult {
                 observation: Some(Self::obs()),
@@ -554,6 +566,21 @@ mod tests {
         let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut env = SleepyEnv::new(Duration::ZERO, threads);
         env.blocks_in_place = true;
+        let lanes = LaneEnv::new(vec![env]).expect("one lane");
+        let (result, _) = lanes
+            .step(0, spaces::request::StepRequest::default())
+            .await
+            .expect("step");
+        assert_eq!(result.reward, 1.0);
+    }
+
+    #[tokio::test]
+    async fn a_lane_call_may_run_a_runtime_of_its_own() {
+        // A Python env relaying to a sync client (a RemoteEnv) blocks on the
+        // client's runtime inside its callback.
+        let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut env = SleepyEnv::new(Duration::ZERO, threads);
+        env.blocks_on_a_runtime = true;
         let lanes = LaneEnv::new(vec![env]).expect("one lane");
         let (result, _) = lanes
             .step(0, spaces::request::StepRequest::default())

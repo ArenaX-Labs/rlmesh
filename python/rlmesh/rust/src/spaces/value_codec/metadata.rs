@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyInt, PyList, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyInt, PyList, PyMapping, PyTuple};
 use rlmesh_spaces::{DType, MetaMap, MetaValue};
 
 use super::normalization::normalize_metadata_value;
@@ -21,8 +21,14 @@ pub(crate) fn meta_map_to_pydict<'py>(
 
 pub(crate) fn py_any_to_meta_map(value: &Bound<'_, PyAny>) -> PyResult<MetaMap> {
     let normalized = normalize_metadata_value(value)?;
-    let dict = normalized.cast::<PyDict>()?;
-    fields(dict, "")
+    if let Ok(dict) = normalized.cast::<PyDict>() {
+        return fields(dict, "");
+    }
+    // Any other mapping (a client's read-only `mappingproxy`) as a dict.
+    let mapping = normalized.cast::<PyMapping>()?;
+    let dict = PyDict::new(value.py());
+    dict.update(mapping)?;
+    fields(&dict, "")
 }
 
 /// A dict's entries, each refusal naming its key path (`['a'][0]`).

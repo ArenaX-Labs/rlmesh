@@ -1135,6 +1135,40 @@ def test_a_model_is_reusable_after_a_predict_failure_and_an_interrupt() -> None:
     assert closes == [1]
 
 
+def test_an_open_remote_env_serves_and_runs_as_a_local_env() -> None:
+    """A client is an env: serve it, or run it in a wrapper, and its sync calls
+    block on its own runtime from the serving lane."""
+
+    class Relay:
+        def __init__(self, env: Any) -> None:
+            self.env = env
+            self.observation_space = env.observation_space
+            self.action_space = env.action_space
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> Any:
+            return self.env.reset(seed=seed, options=options)
+
+        def step(self, action: Any) -> Any:
+            return self.env.step(action)
+
+        def close(self) -> None:
+            return None
+
+    inner = rlmesh.EnvServer(CountEnv(episode_len=2), ":0/env")
+    inner.start()
+    try:
+        with rlmesh.numpy.RemoteEnv(inner.address) as remote:
+            assert _model().run(Relay(remote), episodes=2).total_steps == 4
+            relay = rlmesh.EnvServer(remote, ":0/relay")
+            relay.start()
+            try:
+                assert _model().run(relay.address, episodes=2).total_steps == 4
+            finally:
+                relay.shutdown()
+    finally:
+        inner.shutdown()
+
+
 def test_a_borrowed_env_is_left_open_by_the_native_run() -> None:
     closed: list[int] = []
 
