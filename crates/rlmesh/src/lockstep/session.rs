@@ -734,16 +734,14 @@ async fn gym_client(
     map.bind_channels(&attached.parts)?;
     let channels: Vec<ChannelId> = map.action.parts.iter().map(|p| p.spec.channel).collect();
     let table = format!("{{\"lockstep\":{:?}}}", robot.to_string());
+    let session = attached.address.session.to_string();
     let (link, epoch, token, held) = attached
         .lease(table, None, channels, options.direct, options.timeout)
         .await?;
-    Ok(LockstepClient::with_keep(
-        link,
-        map,
-        epoch,
-        token,
-        Some(Box::new(held)),
-    ))
+    Ok(
+        LockstepClient::with_keep(link, map, epoch, token, Some(Box::new(held)))
+            .in_session(session),
+    )
 }
 
 /// Connects a Gym view (§12.6) to the v2-native lockstep robot at

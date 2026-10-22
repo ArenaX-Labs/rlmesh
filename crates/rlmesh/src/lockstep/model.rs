@@ -13,6 +13,11 @@
 //! class session, as a lockstep env does. The driver side is a
 //! [`ModelLink`].
 //!
+//! A driver invites the model into its own session (`ModelRequest::Join`,
+//! sent in the model's): the model joins it under its name and answers
+//! there too, so predicts stay in the session the driver runs. It leaves
+//! when the driver says so, or when it is the session's last participant.
+//!
 //! A probe (the selector parameter `probe`) is answered with an empty
 //! reply, so a driver knows the route to the model is up.
 
@@ -161,6 +166,10 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 .options(route, episode, trial_index)
                 .await
                 .map(ModelReply::Options),
+            // The serving loop answers invitations.
+            ModelRequest::Join { .. } | ModelRequest::Leave { .. } => Err(Error::invalid_argument(
+                "an invitation reaches a model through its session",
+            )),
         };
         self.in_flight.fetch_sub(1, Ordering::Relaxed);
         let reply = result.unwrap_or_else(|error| ModelReply::Fault(fault_of(&error)));
@@ -398,12 +407,123 @@ fn encode_frames(
         .collect()
 }
 
-/// Answers `service` on `key` until `cancel` fires. Requests run side by
-/// side; the handler's lock orders forwards.
-pub async fn serve_zenoh<H: ModelHandler + 'static>(
+/// The sessions a served model joined at its drivers' invitation, each
+/// answered with the same service.
+struct Joins<H> {
+    name: ParticipantId,
+    service: Arc<ModelService<H>>,
+    timeout: Duration,
+    shutdown: CancellationToken,
+    /// Each session's inviters still in it, and what stops answering there.
+    sessions: std::sync::Mutex<HashMap<String, (usize, CancellationToken)>>,
+}
+
+impl<H: ModelHandler + 'static> Joins<H> {
+    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, (usize, CancellationToken)>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Joins the session at `text` (once per session), answering there
+    /// until its inviters leave or nobody else is left.
+    async fn join(self: &Arc<Self>, text: &str) -> Result<(), ModelFault> {
+        if let Some((inviters, _)) = self.sessions().get_mut(text) {
+            *inviters += 1;
+            return Ok(());
+        }
+        let address: SessionAddress = text
+            .parse()
+            .map_err(|e: SessionError| fault("INVALID_REQUEST", e.to_string(), false))?;
+        let participant = address
+            .join(
+                self.name.as_str(),
+                vec![Role::Controller],
+                PriorityClass::Model,
+                self.timeout,
+            )
+            .await
+            .map_err(|e| {
+                fault(
+                    "UNAVAILABLE",
+                    format!(
+                        "model {} can't reach the session at {text}: {e}; serve the env at an \
+                         address its host can reach",
+                        self.name
+                    ),
+                    false,
+                )
+            })?;
+        let cancel = self.shutdown.child_token();
+        self.sessions()
+            .insert(text.to_string(), (1, cancel.clone()));
+        // Alone in the session: every inviter is gone, whether or not it
+        // said so.
+        let mut roster = participant.watch();
+        let (alone, me) = (cancel.clone(), self.name.clone());
+        tokio::spawn(async move {
+            while roster.changed().await.is_ok() {
+                let only_me = roster
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|s| s.roster.iter().all(|p| p.id == me));
+                if only_me {
+                    alone.cancel();
+                    break;
+                }
+            }
+        });
+        let (joins, text) = (Arc::clone(self), text.to_string());
+        tokio::spawn(async move {
+            if let Err(err) = answer_in(joins.clone(), participant, address.base, cancel).await {
+                warn!(%err, session = %text, "model left an invited session");
+            }
+            joins.sessions().remove(&text);
+        });
+        Ok(())
+    }
+
+    /// One inviter of the session at `text` left.
+    fn leave(&self, text: &str) {
+        let mut sessions = self.sessions();
+        if let Some((inviters, cancel)) = sessions.get_mut(text) {
+            *inviters -= 1;
+            if *inviters == 0 {
+                cancel.cancel();
+                sessions.remove(text);
+            }
+        }
+    }
+}
+
+/// Answers on `participant`'s session (hosted at `base`) until `cancel`
+/// fires, then leaves it. Boxed: an invitation answered there serves the
+/// invited session with this same future.
+fn answer_in<H: ModelHandler + 'static>(
+    joins: Arc<Joins<H>>,
+    participant: Participant,
+    base: std::net::SocketAddr,
+    cancel: CancellationToken,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), GymError>> + Send>> {
+    Box::pin(async move {
+        let lockstep = lockstep_session(participant.transport(), base).await?;
+        let key = participant.keys().model(&joins.name);
+        info!(model = %joins.name, %key, "model serving");
+        let served = serve_zenoh(lockstep.clone(), key, joins, cancel).await;
+        if !participant.transport().is_shared() {
+            let _ = lockstep.close().await;
+        }
+        participant.close().await;
+        served
+    })
+}
+
+/// Answers the model's requests on `key` until `cancel` fires. Requests run
+/// side by side; the handler's lock orders forwards.
+async fn serve_zenoh<H: ModelHandler + 'static>(
     session: zenoh::Session,
     key: String,
-    service: Arc<ModelService<H>>,
+    joins: Arc<Joins<H>>,
     cancel: CancellationToken,
 ) -> Result<(), GymError> {
     let queryable = session
@@ -419,7 +539,7 @@ pub async fn serve_zenoh<H: ModelHandler + 'static>(
                 Err(_) => break,
             },
         };
-        let (service, key) = (service.clone(), key.clone());
+        let (joins, key) = (joins.clone(), key.clone());
         tokio::spawn(async move {
             let arrived = Instant::now();
             let (reply, timing) = if query.parameters().contains_key(PROBE) {
@@ -427,7 +547,19 @@ pub async fn serve_zenoh<H: ModelHandler + 'static>(
             } else {
                 let payload = query.payload().map(payload_bytes).unwrap_or_default();
                 match decode_model_request(payload) {
+                    Ok(ModelRequest::Join { session }) => {
+                        let joined = joins.join(&session).await;
+                        (
+                            joined.map_or_else(ModelReply::Fault, |()| ModelReply::Done),
+                            None,
+                        )
+                    }
+                    Ok(ModelRequest::Leave { session }) => {
+                        joins.leave(&session);
+                        (ModelReply::Done, None)
+                    }
                     Ok(request) => {
+                        let service = &joins.service;
                         let decoded = arrived.elapsed();
                         let (reply, mut timing) = service.answer(request).await;
                         timing.decode_ns =
@@ -585,26 +717,28 @@ impl ModelBinding {
                 timeout,
             )
             .await?;
-        let lockstep = lockstep_session(participant.transport(), self.session.base).await?;
-        let key = participant.keys().model(&self.name);
-        info!(model = %self.name, %key, "model serving");
-        let served = serve_zenoh(lockstep.clone(), key, service.clone(), shutdown).await;
-        if !participant.transport().is_shared() {
-            let _ = lockstep.close().await;
-        }
-        participant.close().await;
-        served
+        let joins = Arc::new(Joins {
+            name: self.name.clone(),
+            service: Arc::clone(service),
+            timeout,
+            shutdown: shutdown.clone(),
+            sessions: std::sync::Mutex::default(),
+        });
+        answer_in(joins, participant, self.session.base, shutdown).await
     }
 }
 
 /// A driver's connection to a served model: its participant in the
-/// model's session, and the link.
+/// model's session (or the session it invited the model into), and the
+/// link.
 pub struct ModelConnection {
     /// The link to the model.
     pub link: ModelLink,
     participant: Participant,
     lockstep: Option<zenoh::Session>,
-    placed: Placed,
+    placed: Option<Placed>,
+    /// The session the model was invited into, which it leaves at close.
+    invited: Option<String>,
 }
 
 impl ModelConnection {
@@ -616,37 +750,99 @@ impl ModelConnection {
         let model = ParticipantId::new(parsed.participant.clone().unwrap_or_default())
             .map_err(|e| GymError::Config(e.to_string()))?;
         let placed = place(&parsed, LEASE_GRACE).await?;
-        let participant = placed
-            .address
+        let mut connection = Self::join(&placed.address, &model, id, timeout).await?;
+        connection.placed = Some(placed);
+        Ok(connection)
+    }
+
+    /// Invites the model this connects to into `session` (a session
+    /// address, which this driver runs in) and connects to it there,
+    /// leaving the model's own session: predicts then stay in `session`.
+    /// Refused when the model can't reach it.
+    pub async fn invite(
+        self,
+        session: &str,
+        id: &str,
+        timeout: Duration,
+    ) -> Result<Self, GymError> {
+        let model = ParticipantId::new(
+            self.link
+                .key
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+        )
+        .map_err(|e| GymError::Config(e.to_string()))?;
+        let request = ModelRequest::Join {
+            session: session.to_string(),
+        };
+        let invited = self.link.call(&request, Some(timeout)).await;
+        self.close().await;
+        match invited? {
+            (ModelReply::Done, _) => {}
+            (ModelReply::Fault(fault), _) => return Err(GymError::Config(fault.message)),
+            (other, _) => {
+                return Err(GymError::Malformed(format!(
+                    "a model answered an invitation with {other:?}"
+                )));
+            }
+        }
+        let address: SessionAddress = session.parse()?;
+        let mut connection = Self::join(&address, &model, id, timeout).await?;
+        connection.invited = Some(session.to_string());
+        Ok(connection)
+    }
+
+    /// Joins `session` as `id` and waits up to `timeout` for `model` to
+    /// answer there.
+    async fn join(
+        session: &SessionAddress,
+        model: &ParticipantId,
+        id: &str,
+        timeout: Duration,
+    ) -> Result<Self, GymError> {
+        let participant = session
             .join(id, vec![Role::Controller], PriorityClass::Model, timeout)
             .await?;
-        let session = lockstep_session(participant.transport(), placed.address.base).await?;
-        let link = ModelLink::new(session.clone(), participant.keys().model(&model));
+        let lockstep_session = lockstep_session(participant.transport(), session.base).await?;
+        let link = ModelLink::new(lockstep_session.clone(), participant.keys().model(model));
         link.wait_ready(timeout).await.map_err(|err| match err {
             GymError::Timeout(_) => GymError::Session(SessionError::Config(format!(
-                "no model {model} answered at {address} within {timeout:?}"
+                "no model {model} answered at {} within {timeout:?}",
+                session.participant(model.as_str())
             ))),
             other => other,
         })?;
-        let lockstep = (!participant.transport().is_shared()).then_some(session);
+        let lockstep = (!participant.transport().is_shared()).then_some(lockstep_session);
         Ok(Self {
             link,
             participant,
             lockstep,
-            placed,
+            placed: None,
+            invited: None,
         })
     }
 
-    /// Leaves the model's session.
+    /// Leaves the model's session (asking an invited model to leave it).
     pub async fn close(self) {
+        if let Some(session) = &self.invited {
+            let leave = ModelRequest::Leave {
+                session: session.clone(),
+            };
+            if let Err(err) = self.link.call(&leave, Some(Duration::from_secs(5))).await {
+                tracing::debug!(%err, "model client: leave");
+            }
+        }
         if let Err(err) = self.participant.detach().await {
             tracing::debug!(%err, "model client: detach");
         }
         if let Some(lockstep) = self.lockstep {
             let _ = lockstep.close().await;
         }
-        let mut placed = self.placed;
-        let _ = placed.close().await;
+        if let Some(mut placed) = self.placed {
+            let _ = placed.close().await;
+        }
     }
 }
 
@@ -660,6 +856,8 @@ pub struct ServedModel {
 struct Remote {
     address: String,
     timeout: Duration,
+    /// The session the run drives in, which the model is invited into.
+    target: std::sync::Mutex<Option<String>>,
     connection: Mutex<Option<ModelConnection>>,
     /// Each resolved route's action space, to decode its frames.
     spaces: std::sync::Mutex<HashMap<String, SpaceSpec>>,
@@ -674,11 +872,21 @@ impl Remote {
         let mut connection = self.connection.lock().await;
         if connection.is_none() {
             let id = format!("driver-{}", crate::lockstep::session::uuid_suffix());
-            *connection = Some(
-                ModelConnection::connect(&self.address, &id, self.timeout)
+            let mut connected = ModelConnection::connect(&self.address, &id, self.timeout)
+                .await
+                .map_err(link_error)?;
+            let target = self
+                .target
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(session) = target {
+                connected = connected
+                    .invite(&session, &id, self.timeout)
                     .await
-                    .map_err(link_error)?,
-            );
+                    .map_err(link_error)?;
+            }
+            *connection = Some(connected);
         }
         Ok(connection
             .as_ref()
@@ -721,6 +929,7 @@ impl ServedModel {
             remote: Arc::new(Remote {
                 address: address.into(),
                 timeout,
+                target: std::sync::Mutex::default(),
                 connection: Mutex::default(),
                 spaces: std::sync::Mutex::default(),
                 last: std::sync::Mutex::default(),
@@ -871,6 +1080,18 @@ impl ModelHandler for ServedModel {
     }
 
     async fn on_close(&mut self) -> crate::Result<()> {
+        self.remote.close().await;
+        Ok(())
+    }
+
+    /// Invites the model into `session` at the next connect, leaving its
+    /// own session (a connection made before closes).
+    async fn join(&mut self, session: &str) -> crate::Result<()> {
+        *self
+            .remote
+            .target
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session.to_string());
         self.remote.close().await;
         Ok(())
     }

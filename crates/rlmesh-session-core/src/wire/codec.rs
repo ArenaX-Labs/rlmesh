@@ -842,6 +842,12 @@ pub fn encode_model_request(request: &ModelRequest) -> Vec<u8> {
             episode: episodes_to_pb(std::slice::from_ref(episode)).pop(),
             trial_index: *trial_index,
         }),
+        ModelRequest::Join { session } => Kind::Join(pb::ModelJoin {
+            session: session.clone(),
+        }),
+        ModelRequest::Leave { session } => Kind::Leave(pb::ModelLeave {
+            session: session.clone(),
+        }),
     };
     pb::ModelRequest { kind: Some(kind) }.encode_to_vec()
 }
@@ -893,6 +899,8 @@ pub fn decode_model_request(buf: Bytes) -> Result<ModelRequest, WireError> {
                 .unwrap_or_default(),
             trial_index: r.trial_index,
         },
+        Kind::Join(j) => ModelRequest::Join { session: j.session },
+        Kind::Leave(l) => ModelRequest::Leave { session: l.session },
     })
 }
 
@@ -2377,6 +2385,12 @@ mod tests {
                 route: "cartpole".into(),
                 episode: episode("a"),
                 trial_index: Some(2),
+            },
+            ModelRequest::Join {
+                session: "10.0.0.5:7447/bench".into(),
+            },
+            ModelRequest::Leave {
+                session: "10.0.0.5:7447/bench".into(),
             },
         ] {
             let decoded = decode_model_request(Bytes::from(encode_model_request(&request)));

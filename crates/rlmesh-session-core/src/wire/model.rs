@@ -6,6 +6,9 @@
 //! driver ◀──ModelReply::Predicted{outcomes}──────── model
 //! ```
 //!
+//! A driver first invites the model into its own session
+//! (`ModelRequest::Join`), so predicts travel there.
+//!
 //! A route is one env as the model sees it: its contract, resolved once.
 //! A predict carries any number of routes' rows (groups), so one caller's
 //! envs share one forward pass when the model fuses them; each group gets
@@ -126,6 +129,17 @@ pub enum ModelRequest {
         episode: ModelEpisode,
         /// Its trial.
         trial_index: Option<u64>,
+    },
+    /// Invites the model into the driver's session (its address), where it
+    /// then answers predicts.
+    Join {
+        /// The session address.
+        session: String,
+    },
+    /// Ends an invitation.
+    Leave {
+        /// The session address.
+        session: String,
     },
 }
 

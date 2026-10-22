@@ -94,6 +94,8 @@ struct Driver {
 #[derive(Clone)]
 pub struct LockstepClient {
     inner: Arc<Driver>,
+    /// The session the env is in (its address), when connected through one.
+    session: Option<String>,
 }
 
 impl LockstepClient {
@@ -125,7 +127,19 @@ impl LockstepClient {
                 keep: tokio::sync::Mutex::new(keep),
                 last: std::sync::Mutex::default(),
             }),
+            session: None,
         }
+    }
+
+    /// The client of the env in `session` (a session address).
+    pub(crate) fn in_session(mut self, session: String) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// The session the env is in (its address), when connected through one.
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
     }
 
     /// The env's contract and handshake.

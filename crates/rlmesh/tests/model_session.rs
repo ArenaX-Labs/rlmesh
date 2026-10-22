@@ -252,3 +252,62 @@ async fn a_served_model_is_a_handler_a_driver_drives_like_a_local_one() {
     cancel.cancel();
     served.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_served_model_answers_in_the_session_it_is_invited_into() {
+    use rlmesh::binding::model::ResolveOptions;
+    use rlmesh::lockstep::ServedModel;
+
+    let binding = ModelBinding::bind(":0/echo").await.unwrap();
+    let address = binding.address();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let service = Arc::new(ModelService::new(Echo, String::new()));
+    let served = tokio::spawn(binding.serve(service, Duration::from_secs(2), cancel.clone()));
+    let mut target = rlmesh_session::address::host_at(
+        "127.0.0.1:0".parse().unwrap(),
+        "bench",
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+    let session = target.address.to_string();
+
+    let mut model = ServedModel::new(address.clone(), Duration::from_secs(10));
+    model.join(&session).await.unwrap();
+    let resolve = |model: &ServedModel| {
+        let routes = model.route_setup().unwrap();
+        async move {
+            routes
+                .resolve_adapter(
+                    "a",
+                    &contract(),
+                    ResolveOptions {
+                        execution_horizon: 1,
+                        delivers_history: false,
+                    },
+                )
+                .await
+        }
+    };
+    resolve(&model).await.unwrap();
+    // The model now answers in the target session too.
+    let there = ModelConnection::connect(
+        &format!("{session}/echo"),
+        "observer",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    there.close().await;
+    model.on_close().await.unwrap();
+
+    // A session the model can't reach is refused, naming it.
+    let mut model = ServedModel::new(address, Duration::from_secs(10));
+    model.join("127.0.0.1:1/nowhere").await.unwrap();
+    let err = resolve(&model).await.unwrap_err();
+    assert!(err.to_string().contains("can't reach"), "{err}");
+
+    cancel.cancel();
+    served.await.unwrap().unwrap();
+    target.close().await.unwrap();
+}

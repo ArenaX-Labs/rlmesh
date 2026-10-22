@@ -244,6 +244,14 @@ impl ModelHandler for NestedHandler {
         Ok(())
     }
 
+    async fn join(&mut self, session: &str) -> rlmesh::Result<()> {
+        self.outer.join(session).await?;
+        for inner in self.nested.inners.values() {
+            inner.handler.lock().await.join(session).await?;
+        }
+        Ok(())
+    }
+
     async fn on_close(&mut self) -> rlmesh::Result<()> {
         let closed = self.outer.on_close().await;
         for inner in self.nested.inners.values() {

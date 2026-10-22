@@ -261,6 +261,13 @@ pub trait ModelHandler: Send {
         Ok(())
     }
 
+    /// The session a run drives in (a session address), before its route
+    /// resolves: a model served elsewhere is invited into it, so its
+    /// predicts stay there. Defaults to nothing.
+    async fn join(&mut self, _session: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// The options this model adds to the env resets that start its
     /// episodes, obtained once when a run begins and called off the predict
     /// lock (see [`ModelResetOptions`]). Defaults to `None`: it adds none.
@@ -321,6 +328,10 @@ impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
 
     async fn on_close(&mut self) -> Result<()> {
         (**self).on_close().await
+    }
+
+    async fn join(&mut self, session: &str) -> Result<()> {
+        (**self).join(session).await
     }
 
     fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {

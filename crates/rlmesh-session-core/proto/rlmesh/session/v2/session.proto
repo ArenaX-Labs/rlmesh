@@ -843,6 +843,14 @@ message ModelRelease {
 }
 
 message ModelDescribe {}
+// Invites the model into the driver's session (its address), so predicts
+// stay there; Leave ends that.
+message ModelJoin {
+  string session = 1;
+}
+message ModelLeave {
+  string session = 1;
+}
 // Asks for the options the model adds to the reset that starts `episode`.
 message ModelResetOptions {
   string route = 1;
@@ -858,6 +866,8 @@ message ModelRequest {
     ModelRelease release = 4;
     ModelDescribe describe = 5;
     ModelResetOptions reset_options = 6;
+    ModelJoin join = 7;
+    ModelLeave leave = 8;
   }
 }
 

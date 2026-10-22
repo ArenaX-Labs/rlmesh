@@ -92,6 +92,7 @@ where
         num_envs,
         subset_step,
         workflow_edition,
+        session,
     } = connect_env(&options).await?;
     // The handler returns typed actions the runtime encodes against this space;
     // a missing one would fail every predict, so reject at connect, not mid-run.
@@ -118,6 +119,11 @@ where
              buffered frames. Use num_envs=1, a lane endpoint, or execution_horizon=1.",
             options.execution_horizon,
         )));
+    }
+
+    // A model served elsewhere answers in the env's session.
+    if let Some(session) = &session {
+        handler.join(session).await?;
     }
 
     // The driver delivers every replayed step as a history row, so a stacked
@@ -176,6 +182,8 @@ struct Connected {
     subset_step: bool,
     /// The edition negotiated with the env.
     workflow_edition: rlmesh_proto::Edition,
+    /// The session the env is in (its address), on the v2 path.
+    session: Option<String>,
 }
 
 /// Dials the env and handshakes: as a v2 lockstep driver (a participant
@@ -242,6 +250,7 @@ async fn connect_grpc_env(options: &LocalRun) -> Result<Connected> {
         num_envs: handshake.num_envs,
         workflow_edition: handshake.workflow_edition,
         env: DrivenEnv::Grpc(Box::new(EnvClientRuntimeEnv::new(env))),
+        session: None,
     })
 }
 
@@ -328,6 +337,7 @@ impl LockstepEnv {
             num_envs: (info.contract.num_envs as usize).max(1),
             subset_step: info.subset_step(),
             workflow_edition,
+            session: client.session().map(str::to_string),
             env: DrivenEnv::Lockstep(Self::new(client)),
         })
     }
