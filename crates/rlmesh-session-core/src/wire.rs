@@ -16,8 +16,8 @@
 //!   packing ([`part`]), delivery contracts, action grids and publication
 //!   plans ([`contract`]), samples, batches and history queries ([`sample`]),
 //!   timed action chunks ([`action`]), the virtual-mode tick protocol
-//!   ([`tick`]), the lockstep fast path ([`lockstep`]) and served models
-//!   ([`model`]);
+//!   ([`tick`]), the lockstep fast path ([`lockstep`]), served models
+//!   ([`model`]) and the endpoint timing their replies carry ([`timing`]);
 //! - [`codec`]: the one module that knows the byte encoding.
 //!
 //! Every type outside [`codec`] is plain Rust: no generated code, no
@@ -64,6 +64,7 @@ pub mod path;
 pub mod report;
 pub mod sample;
 pub mod tick;
+pub mod timing;
 pub mod version;
 
 pub use action::{ActionChunk, ChunkRef, InputRange};
@@ -92,3 +93,4 @@ pub use path::PartPath;
 pub use report::{ParticipantReport, PublisherCounters, RunCounters};
 pub use sample::{Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange};
 pub use tick::{Step, TickState, VirtualTick};
+pub use timing::EndpointTiming;

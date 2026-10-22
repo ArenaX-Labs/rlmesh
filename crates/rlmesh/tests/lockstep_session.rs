@@ -113,6 +113,13 @@ async fn a_driver_over_the_lockstep_session_steps_and_a_stale_token_is_refused()
     let reply = env.step(&[], &actions(1, 2), None).await.unwrap();
     assert_eq!(reply.rewards.len(), 2);
     assert_eq!(reply.terminated.len(), 2);
+    // The reply carries what the env measured, as v1's endpoint phases.
+    let timing = env.last_timing().expect("a step is timed");
+    assert!(
+        timing.total_ns.is_some() && timing.user_ns.is_some(),
+        "{timing:?}"
+    );
+    assert!(timing.total_ns >= timing.user_ns, "{timing:?}");
 
     // Keep the epoch, forge the token: the env refuses it from its own view.
     let (epoch, _) = env.authority();

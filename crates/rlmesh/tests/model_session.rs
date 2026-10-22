@@ -111,7 +111,7 @@ async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
         .unwrap();
     let call = |request: ModelRequest| {
         let link = &model.link;
-        async move { link.call(&request, None).await.unwrap() }
+        async move { link.call(&request, None).await.unwrap().0 }
     };
 
     assert_eq!(
@@ -148,6 +148,20 @@ async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
         fault.message.contains("\"b\" was not resolved"),
         "{fault:?}"
     );
+
+    // Each reply carries what the model measured, as v1's endpoint phases.
+    let (_, timing) = model
+        .link
+        .call(&ModelRequest::Predict(vec![group("a", &[1.0])]), None)
+        .await
+        .unwrap();
+    let timing = timing.expect("a predict is timed");
+    assert!(
+        timing.total_ns.is_some() && timing.user_ns.is_some(),
+        "{timing:?}"
+    );
+    assert!(timing.total_ns >= timing.user_ns, "{timing:?}");
+    assert_eq!(timing.in_flight, Some(1));
 
     // A released route is gone.
     assert_eq!(

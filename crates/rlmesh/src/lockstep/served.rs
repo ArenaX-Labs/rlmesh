@@ -21,7 +21,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use rlmesh_session::wire::{LockstepReply, LockstepReset, LockstepStep, PartValues};
+use rlmesh_session::wire::timing::ns;
+use rlmesh_session::wire::{
+    EndpointTiming, LockstepReply, LockstepReset, LockstepStep, PartValues,
+};
 use rlmesh_spaces::leaves::{decode_leaf_slab, encode_leaf_slab};
 use rlmesh_spaces::{EnvContract, MetaMap, SpaceSpec, SpaceValue};
 
@@ -233,13 +236,21 @@ impl GymEnv {
             meta_json::optional_from_json(&reset.options_json).map_err(GymError::Malformed)?;
         // u64 on the v2 wire, i64 for the env: the same 64 bits.
         let seeds = reset.seeds.iter().map(|s| *s as i64).collect();
+        let called = std::time::Instant::now();
         let ok = self
             .env
             .reset(&reset.lanes, seeds, options)
             .await
             .map_err(GymError::Env)?;
+        let user_ns = ns(called.elapsed());
+        let encoded = std::time::Instant::now();
         let slabs = self.observations(&ok.observations, lanes)?;
         Ok(LockstepReply {
+            timing: Some(EndpointTiming {
+                user_ns,
+                encode_ns: ns(encoded.elapsed()),
+                ..EndpointTiming::default()
+            }),
             epoch: reset.epoch,
             step: 0,
             observations: tagged(&self.map.observation, slabs),
@@ -253,6 +264,7 @@ impl GymEnv {
 
     async fn step(&self, step: &LockstepStep) -> Result<LockstepReply, GymError> {
         let lanes = self.width("subset step", &step.lanes, 0)?;
+        let decoded = std::time::Instant::now();
         let leaves = map::unpack(
             &self.map.action,
             &ordered(&self.map.action, &step.commands)?,
@@ -262,13 +274,23 @@ impl GymEnv {
         // A wrong-width action is the client's fault, as on the v1 wire.
         let actions = decode_leaf_slab(&leaves, space, lanes)
             .map_err(|e| GymError::env(ErrorCode::InvalidAction, e.to_string(), true))?;
+        let decode_ns = ns(decoded.elapsed());
+        let called = std::time::Instant::now();
         let ok = self
             .env
             .step(&step.lanes, actions)
             .await
             .map_err(GymError::Env)?;
+        let user_ns = ns(called.elapsed());
+        let encoded = std::time::Instant::now();
         let slabs = self.observations(&ok.observations, lanes)?;
         Ok(LockstepReply {
+            timing: Some(EndpointTiming {
+                decode_ns,
+                user_ns,
+                encode_ns: ns(encoded.elapsed()),
+                ..EndpointTiming::default()
+            }),
             epoch: step.epoch,
             step: step.step,
             observations: tagged(&self.map.observation, slabs),

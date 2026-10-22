@@ -173,6 +173,7 @@ impl Frame {
             truncated: Bytes::from(vec![u8::from(self.truncated)]),
             episode_ids: Vec::new(),
             info_json: self.info_json,
+            timing: None,
         }
     }
 }

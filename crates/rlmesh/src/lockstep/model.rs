@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rlmesh_session::address::{Address, LEASE_GRACE, Placed, SessionAddress, place};
@@ -26,9 +26,10 @@ use rlmesh_session::transport::payload_bytes;
 use rlmesh_session::wire::codec::{
     decode_model_reply, decode_model_request, encode_model_reply, encode_model_request,
 };
+use rlmesh_session::wire::timing::ns;
 use rlmesh_session::wire::{
-    ModelFault, ModelGroup, ModelOutcome, ModelReply, ModelRequest, ModelResolve, ModelResolved,
-    ParticipantId, PriorityClass, Role,
+    EndpointTiming, ModelFault, ModelGroup, ModelOutcome, ModelReply, ModelRequest, ModelResolve,
+    ModelResolved, ParticipantId, PriorityClass, Role,
 };
 use rlmesh_session::{Participant, SessionError};
 use rlmesh_spaces::leaves::encode_leaf_slab;
@@ -109,6 +110,7 @@ pub struct ModelService<H> {
     setup: Option<Arc<dyn ModelRouteSetup>>,
     routes: Mutex<HashMap<String, Arc<Route>>>,
     describe: String,
+    in_flight: std::sync::atomic::AtomicU32,
 }
 
 impl<H: ModelHandler + 'static> ModelService<H> {
@@ -121,16 +123,25 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             setup,
             routes: Mutex::default(),
             describe,
+            in_flight: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
-    /// Answers one request.
-    pub async fn answer(&self, request: ModelRequest) -> ModelReply {
+    /// Answers one request, with what answering it measured.
+    pub async fn answer(&self, request: ModelRequest) -> (ModelReply, EndpointTiming) {
+        use std::sync::atomic::Ordering;
+        let in_flight = self.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut timing = EndpointTiming {
+            in_flight: Some(in_flight),
+            ..EndpointTiming::default()
+        };
         let result = match request {
             ModelRequest::Resolve(resolve) => self.resolve(resolve).await.map(ModelReply::Resolved),
-            ModelRequest::Predict(groups) => Ok(ModelReply::Predicted(self.predict(groups).await)),
+            ModelRequest::Predict(groups) => Ok(ModelReply::Predicted(
+                self.predict(groups, &mut timing).await,
+            )),
             ModelRequest::Reset { route, episode_ids } => self
-                .reset(&route, episode_ids)
+                .reset(&route, episode_ids, &mut timing)
                 .await
                 .map(|()| ModelReply::Done),
             ModelRequest::Release { route } => {
@@ -138,7 +149,9 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             }
             ModelRequest::Describe => Ok(ModelReply::Described(self.describe.clone())),
         };
-        result.unwrap_or_else(|error| ModelReply::Fault(fault_of(&error)))
+        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        let reply = result.unwrap_or_else(|error| ModelReply::Fault(fault_of(&error)));
+        (reply, timing)
     }
 
     async fn resolve(&self, request: ModelResolve) -> Result<ModelResolved, Error> {
@@ -238,7 +251,12 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         Ok((observation, route))
     }
 
-    async fn predict(&self, groups: Vec<ModelGroup>) -> Vec<ModelOutcome> {
+    async fn predict(
+        &self,
+        groups: Vec<ModelGroup>,
+        timing: &mut EndpointTiming,
+    ) -> Vec<ModelOutcome> {
+        let started = Instant::now();
         let mut prepared = Vec::with_capacity(groups.len());
         let mut batch = Vec::with_capacity(groups.len());
         for group in groups {
@@ -250,14 +268,21 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 Err(error) => prepared.push(Err(error)),
             }
         }
-        let mut frames = self
-            .handler
-            .lock()
-            .await
-            .predict_grouped(batch)
-            .await
-            .into_iter();
-        prepared
+        timing.decode_ns = ns(started.elapsed());
+        let waited = Instant::now();
+        let mut handler = self.handler.lock().await;
+        timing.queue_ns = ns(waited.elapsed());
+        let called = Instant::now();
+        let mut frames = handler.predict_grouped(batch).await.into_iter();
+        timing.user_ns = ns(called.elapsed());
+        timing.adapter_ns = Some(handler.take_adapter_ns()).filter(|ns| *ns != 0);
+        if let Some(held) = handler.held_state() {
+            timing.held_episodes = Some(u32::try_from(held.episodes).unwrap_or(u32::MAX));
+            timing.held_state_bytes = Some(held.bytes);
+        }
+        drop(handler);
+        let encoded = Instant::now();
+        let outcomes = prepared
             .into_iter()
             .map(|group| {
                 let (rows, route) = group.map_err(|e| fault_of(&e))?;
@@ -271,18 +296,29 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                     .map_err(|e| fault_of(&e))?;
                 encode_frames(frames, rows, &route.action_space).map_err(|e| fault_of(&e))
             })
-            .collect()
+            .collect();
+        timing.encode_ns = ns(encoded.elapsed());
+        outcomes
     }
 
-    async fn reset(&self, route: &str, episode_ids: Vec<String>) -> Result<(), Error> {
+    async fn reset(
+        &self,
+        route: &str,
+        episode_ids: Vec<String>,
+        timing: &mut EndpointTiming,
+    ) -> Result<(), Error> {
+        let called = Instant::now();
         if let Some(setup) = &self.setup {
             setup.reset_adapter(route, &episode_ids).await?;
         }
-        self.handler
-            .lock()
-            .await
-            .reset_adapter(route, episode_ids)
-            .await
+        let waited = Instant::now();
+        let mut handler = self.handler.lock().await;
+        timing.queue_ns = ns(waited.elapsed());
+        let reset = handler.reset_adapter(route, episode_ids).await;
+        // The route's cleanup and the model's own hook, less the lock wait.
+        let queued = timing.queue_ns.unwrap_or(0);
+        timing.user_ns = ns(called.elapsed()).map(|total| total.saturating_sub(queued));
+        reset
     }
 
     async fn release(&self, route: &str) -> Result<(), Error> {
@@ -350,17 +386,28 @@ pub async fn serve_zenoh<H: ModelHandler + 'static>(
         };
         let (service, key) = (service.clone(), key.clone());
         tokio::spawn(async move {
-            let reply = if query.parameters().contains_key(PROBE) {
-                ModelReply::Done
+            let arrived = Instant::now();
+            let (reply, timing) = if query.parameters().contains_key(PROBE) {
+                (ModelReply::Done, None)
             } else {
                 let payload = query.payload().map(payload_bytes).unwrap_or_default();
                 match decode_model_request(payload) {
-                    Ok(request) => service.answer(request).await,
-                    Err(err) => ModelReply::Fault(fault("INVALID_REQUEST", err.to_string(), false)),
+                    Ok(request) => {
+                        let decoded = arrived.elapsed();
+                        let (reply, mut timing) = service.answer(request).await;
+                        timing.decode_ns =
+                            ns(decoded).map(|wire| wire + timing.decode_ns.unwrap_or(0));
+                        timing.total_ns = ns(arrived.elapsed());
+                        (reply, Some(timing))
+                    }
+                    Err(err) => (
+                        ModelReply::Fault(fault("INVALID_REQUEST", err.to_string(), false)),
+                        None,
+                    ),
                 }
             };
             if let Err(err) = query
-                .reply(&key, encode_model_reply(&reply))
+                .reply(&key, encode_model_reply(&reply, timing.as_ref()))
                 .express(true)
                 .await
             {
@@ -412,12 +459,13 @@ impl ModelLink {
         }
     }
 
-    /// Sends one request and waits for its reply.
+    /// Sends one request and waits for its reply and what the model
+    /// measured answering it.
     pub async fn call(
         &self,
         request: &ModelRequest,
         timeout: Option<Duration>,
-    ) -> Result<ModelReply, GymError> {
+    ) -> Result<(ModelReply, Option<EndpointTiming>), GymError> {
         let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
         let replies = self
             .session
@@ -580,6 +628,8 @@ struct Remote {
     connection: Mutex<Option<ModelConnection>>,
     /// Each resolved route's action space, to decode its frames.
     spaces: std::sync::Mutex<HashMap<String, SpaceSpec>>,
+    /// What the model measured answering the last predict.
+    last: std::sync::Mutex<EndpointTiming>,
 }
 
 impl Remote {
@@ -600,12 +650,19 @@ impl Remote {
     }
 
     async fn call(&self, request: ModelRequest) -> Result<ModelReply, Error> {
-        let reply = self
+        let predict = matches!(request, ModelRequest::Predict(_));
+        let (reply, timing) = self
             .link()
             .await?
             .call(&request, None)
             .await
             .map_err(link_error)?;
+        if predict {
+            *self
+                .last
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = timing.unwrap_or_default();
+        }
         match reply {
             ModelReply::Fault(fault) => Err(error_of(fault)),
             reply => Ok(reply),
@@ -629,6 +686,7 @@ impl ServedModel {
                 timeout,
                 connection: Mutex::default(),
                 spaces: std::sync::Mutex::default(),
+                last: std::sync::Mutex::default(),
             }),
         }
     }
@@ -744,6 +802,30 @@ impl ModelHandler for ServedModel {
                 })
             })
             .collect()
+    }
+
+    /// The model's held frame windows, as its last predict reported them.
+    fn held_state(&self) -> Option<crate::model::handler::HeldState> {
+        let last = *self
+            .remote
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(crate::model::handler::HeldState {
+            episodes: u64::from(last.held_episodes?),
+            bytes: last.held_state_bytes.unwrap_or(0),
+        })
+    }
+
+    /// The adapter share of the last predict, as the model reported it.
+    fn take_adapter_ns(&mut self) -> u64 {
+        self.remote
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .adapter_ns
+            .take()
+            .unwrap_or(0)
     }
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {

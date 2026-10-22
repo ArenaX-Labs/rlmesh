@@ -14,6 +14,7 @@
 use bytes::Bytes;
 
 use crate::wire::ids::{ChannelId, Epoch, LeaseToken};
+use crate::wire::timing::EndpointTiming;
 
 /// An N-lane slab of one part.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,4 +74,6 @@ pub struct LockstepReply {
     pub episode_ids: Vec<u64>,
     /// Gymnasium `info`, as JSON (only when `record_info` is on).
     pub info_json: String,
+    /// What the env measured answering.
+    pub timing: Option<EndpointTiming>,
 }

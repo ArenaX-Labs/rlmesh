@@ -100,6 +100,7 @@ fn reply(n: u64, observation: &Bytes) -> LockstepReply {
         truncated: Bytes::from_static(&[0]),
         episode_ids: vec![7],
         info_json: String::new(),
+        timing: None,
     }
 }
 

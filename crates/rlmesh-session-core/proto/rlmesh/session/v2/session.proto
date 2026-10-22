@@ -724,6 +724,31 @@ message LockstepReply {
   repeated uint64 episode_ids = 7;
   // Only when record_info is on.
   string info_json = 8;
+  EndpointTiming timing = 9;
+}
+
+// What an endpoint measured answering one request, in ns (v1's endpoint
+// phases): an absent field was not measured.
+message EndpointTiming {
+  // Arrival to reply.
+  optional uint64 total_ns = 1;
+  // Decoding the request.
+  optional uint64 decode_ns = 2;
+  // The env's or model's own work, user code included.
+  optional uint64 user_ns = 3;
+  // Encoding the reply.
+  optional uint64 encode_ns = 4;
+  // Waiting before the handler ran (a lock, the authority view).
+  optional uint64 queue_ns = 5;
+  // Model: requests in flight when this one was dispatched.
+  optional uint32 in_flight = 6;
+  // Model: adapter work inside user_ns (a sub-span).
+  optional uint64 adapter_ns = 7;
+  // Model: episodes with held frame windows, and their bytes.
+  optional uint32 held_episodes = 8;
+  optional uint64 held_state_bytes = 9;
+  // Env: straggler skew across a vector env's lanes.
+  optional uint64 lane_skew_ns = 10;
 }
 
 // Served models: one request/reply on m/{model}. A driver resolves a route
@@ -838,4 +863,5 @@ message ModelReply {
     string describe_json = 4;
     ModelFault fault = 5;
   }
+  EndpointTiming timing = 6;
 }

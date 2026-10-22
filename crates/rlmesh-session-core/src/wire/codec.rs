@@ -60,6 +60,7 @@ use crate::wire::sample::{
     Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange,
 };
 use crate::wire::tick::{Step, TickState, VirtualTick};
+use crate::wire::timing::EndpointTiming;
 
 /// Generated `rlmesh.session.v2` messages: private, so the schema can move
 /// without touching any public type.
@@ -609,6 +610,36 @@ pub fn decode_chunk(buf: Bytes) -> Result<ActionChunk, WireError> {
 
 // --- lockstep ----------------------------------------------------------------
 
+fn endpoint_timing_to_pb(t: &EndpointTiming) -> pb::EndpointTiming {
+    pb::EndpointTiming {
+        total_ns: t.total_ns,
+        decode_ns: t.decode_ns,
+        user_ns: t.user_ns,
+        encode_ns: t.encode_ns,
+        queue_ns: t.queue_ns,
+        in_flight: t.in_flight,
+        adapter_ns: t.adapter_ns,
+        held_episodes: t.held_episodes,
+        held_state_bytes: t.held_state_bytes,
+        lane_skew_ns: t.lane_skew_ns,
+    }
+}
+
+fn endpoint_timing_from_pb(t: pb::EndpointTiming) -> EndpointTiming {
+    EndpointTiming {
+        total_ns: t.total_ns,
+        decode_ns: t.decode_ns,
+        user_ns: t.user_ns,
+        encode_ns: t.encode_ns,
+        queue_ns: t.queue_ns,
+        in_flight: t.in_flight,
+        adapter_ns: t.adapter_ns,
+        held_episodes: t.held_episodes,
+        held_state_bytes: t.held_state_bytes,
+        lane_skew_ns: t.lane_skew_ns,
+    }
+}
+
 fn values_to_pb(values: &[PartValues]) -> Vec<pb::PartValues> {
     values
         .iter()
@@ -694,6 +725,7 @@ pub fn encode_lockstep_reply(reply: &LockstepReply) -> Vec<u8> {
         truncated: reply.truncated.clone(),
         episode_ids: reply.episode_ids.clone(),
         info_json: reply.info_json.clone(),
+        timing: reply.timing.as_ref().map(endpoint_timing_to_pb),
     }
     .encode_to_vec()
 }
@@ -710,6 +742,7 @@ pub fn decode_lockstep_reply(buf: Bytes) -> Result<LockstepReply, WireError> {
         truncated: r.truncated,
         episode_ids: r.episode_ids,
         info_json: r.info_json,
+        timing: r.timing.map(endpoint_timing_from_pb),
     })
 }
 
@@ -847,8 +880,8 @@ pub fn decode_model_request(buf: Bytes) -> Result<ModelRequest, WireError> {
     })
 }
 
-/// Encodes a served model's reply.
-pub fn encode_model_reply(reply: &ModelReply) -> Vec<u8> {
+/// Encodes a served model's reply and what the model measured answering.
+pub fn encode_model_reply(reply: &ModelReply, timing: Option<&EndpointTiming>) -> Vec<u8> {
     use pb::model_reply::Kind;
     let kind = match reply {
         ModelReply::Resolved(r) => Kind::Resolved(pb::ModelResolved {
@@ -878,16 +911,23 @@ pub fn encode_model_reply(reply: &ModelReply) -> Vec<u8> {
         ModelReply::Described(json) => Kind::DescribeJson(json.clone()),
         ModelReply::Fault(fault) => Kind::Fault(fault_to_pb(fault)),
     };
-    pb::ModelReply { kind: Some(kind) }.encode_to_vec()
+    pb::ModelReply {
+        kind: Some(kind),
+        timing: timing.map(endpoint_timing_to_pb),
+    }
+    .encode_to_vec()
 }
 
-/// Decodes a served model's reply. The slabs slice `buf` (no copy).
-pub fn decode_model_reply(buf: Bytes) -> Result<ModelReply, WireError> {
+/// Decodes a served model's reply and its timing. The slabs slice `buf`
+/// (no copy).
+pub fn decode_model_reply(buf: Bytes) -> Result<(ModelReply, Option<EndpointTiming>), WireError> {
     use pb::model_reply::Kind;
-    let kind = pb::ModelReply::decode(buf)?
+    let reply = pb::ModelReply::decode(buf)?;
+    let timing = reply.timing.map(endpoint_timing_from_pb);
+    let kind = reply
         .kind
         .ok_or_else(|| WireError::malformed("model reply", "no kind (a newer reply?)"))?;
-    Ok(match kind {
+    let reply = match kind {
         Kind::Resolved(r) => ModelReply::Resolved(ModelResolved {
             native_chunk: r.native_chunk,
             history: r.history.map(|h| (h.keys, h.prunable)),
@@ -911,7 +951,8 @@ pub fn decode_model_reply(buf: Bytes) -> Result<ModelReply, WireError> {
         Kind::Done(_) => ModelReply::Done,
         Kind::DescribeJson(json) => ModelReply::Described(json),
         Kind::Fault(fault) => ModelReply::Fault(fault_from_pb(fault)),
-    })
+    };
+    Ok((reply, timing))
 }
 
 // --- conversions -------------------------------------------------------------
@@ -2266,6 +2307,11 @@ mod tests {
             truncated: Bytes::from_static(&[1]),
             episode_ids: vec![7],
             info_json: String::new(),
+            timing: Some(EndpointTiming {
+                total_ns: Some(9),
+                lane_skew_ns: Some(1),
+                ..EndpointTiming::default()
+            }),
         };
         assert_eq!(
             decode_lockstep_reply(Bytes::from(encode_lockstep_reply(&reply))).expect("decode"),
@@ -2326,8 +2372,14 @@ mod tests {
             ModelReply::Described("{\"kind\":\"model\"}".into()),
             ModelReply::Fault(fault),
         ] {
-            let decoded = decode_model_reply(Bytes::from(encode_model_reply(&reply)));
-            assert_eq!(decoded.expect("decode"), reply);
+            let timing = EndpointTiming {
+                user_ns: Some(7),
+                held_episodes: Some(2),
+                ..EndpointTiming::default()
+            };
+            let decoded =
+                decode_model_reply(Bytes::from(encode_model_reply(&reply, Some(&timing))));
+            assert_eq!(decoded.expect("decode"), (reply, Some(timing)));
         }
         assert!(decode_model_request(Bytes::new()).is_err());
     }

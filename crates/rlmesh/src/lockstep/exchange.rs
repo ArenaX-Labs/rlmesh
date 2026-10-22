@@ -28,6 +28,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use rlmesh_session::transport::payload_bytes;
 use rlmesh_session::wire::codec;
+use rlmesh_session::wire::timing::ns;
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, LockstepReply, LockstepReset, LockstepStep, Mode, ParticipantId,
 };
@@ -187,7 +188,9 @@ impl Gated {
 #[async_trait]
 impl LockstepHandler for Gated {
     async fn handle(&self, request: Request) -> Result<LockstepReply, GymError> {
-        if self.gate.check(&request).is_err() {
+        let arrived = std::time::Instant::now();
+        let waited = self.gate.check(&request).is_err();
+        if waited {
             // The driver may hold a lease (or epoch) the env's view has not
             // seen yet: wait for the view, then decide.
             let deadline = tokio::time::Instant::now() + VIEW_CATCH_UP;
@@ -203,7 +206,12 @@ impl LockstepHandler for Gated {
                 let _ = tokio::time::timeout_at(deadline, changed).await;
             }
         }
-        self.inner.handle(request).await
+        let queue_ns = waited.then(|| ns(arrived.elapsed())).flatten();
+        let mut reply = self.inner.handle(request).await?;
+        if queue_ns.is_some() {
+            reply.timing.get_or_insert_default().queue_ns = queue_ns;
+        }
+        Ok(reply)
     }
 
     async fn render(&self, lane: u32) -> Result<Option<Bytes>, GymError> {
@@ -413,6 +421,26 @@ async fn answer_bytes(query: &zenoh::query::Query, key: &str, result: Result<Vec
     }
 }
 
+/// `handled`'s reply with the exchange's own timing: the wire decode added
+/// to the handler's, the handler's whole call as its work when it measured
+/// none, and the total since arrival.
+async fn timed(
+    handled: impl std::future::Future<Output = Result<LockstepReply, GymError>>,
+    arrived: std::time::Instant,
+    decode: std::time::Duration,
+) -> Result<LockstepReply, GymError> {
+    let called = std::time::Instant::now();
+    let mut reply = handled.await?;
+    let call = called.elapsed();
+    let timing = reply.timing.get_or_insert_default();
+    timing.decode_ns = ns(decode).map(|wire| wire + timing.decode_ns.unwrap_or(0));
+    if timing.user_ns.is_none() {
+        timing.user_ns = ns(call);
+    }
+    timing.total_ns = ns(arrived.elapsed());
+    Ok(reply)
+}
+
 /// Serves `handler` on `key` until `cancel` fires.
 pub async fn serve_zenoh(
     session: zenoh::Session,
@@ -450,6 +478,7 @@ pub async fn serve_zenoh(
             answer_bytes(&query, &key, result).await;
             continue;
         }
+        let arrived = std::time::Instant::now();
         let request = match decode_request(&query) {
             Ok(request) => request,
             Err(err) => {
@@ -457,6 +486,7 @@ pub async fn serve_zenoh(
                 continue;
             }
         };
+        let decode_ns = arrived.elapsed();
         // Lane-scoped requests of a lane endpoint run side by side (as on
         // v1's Join stream); everything else is served in order, inline.
         let lane_scoped = match &request {
@@ -466,11 +496,11 @@ pub async fn serve_zenoh(
         if concurrent && lane_scoped {
             let (handler, key) = (handler.clone(), key.clone());
             tokio::spawn(async move {
-                let result = handler.handle(request).await;
+                let result = timed(handler.handle(request), arrived, decode_ns).await;
                 answer(&query, &key, result).await;
             });
         } else {
-            let result = handler.handle(request).await;
+            let result = timed(handler.handle(request), arrived, decode_ns).await;
             answer(&query, &key, result).await;
         }
     }

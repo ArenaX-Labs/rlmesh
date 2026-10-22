@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use rlmesh_session::wire::{ChannelId, Epoch, LeaseToken, LockstepReset, LockstepStep};
+use rlmesh_session::wire::{
+    ChannelId, EndpointTiming, Epoch, LeaseToken, LockstepReset, LockstepStep,
+};
 use rlmesh_spaces::leaves::{decode_leaf_slab, encode_leaf_slab};
 use rlmesh_spaces::{MetaMap, SpaceSpec, SpaceValue};
 
@@ -69,6 +71,8 @@ struct Driver {
     /// Kept alive for the run (its heartbeats keep the lease), until
     /// [`LockstepClient::close`] releases it.
     keep: tokio::sync::Mutex<Option<Box<dyn Keep>>>,
+    /// What the env measured answering the last reset or step.
+    last: std::sync::Mutex<Option<EndpointTiming>>,
 }
 
 /// A driver of a lockstep Gym env. Clones share one link.
@@ -104,6 +108,7 @@ impl LockstepClient {
                 step: AtomicU64::new(0),
                 episodes: AtomicU64::new(0),
                 keep: tokio::sync::Mutex::new(keep),
+                last: std::sync::Mutex::default(),
             }),
         }
     }
@@ -116,6 +121,24 @@ impl LockstepClient {
     /// The robot map.
     pub fn map(&self) -> &GymMap {
         &self.inner.map
+    }
+
+    /// What the env measured answering the last reset or step (v1's
+    /// endpoint phases), when it measured.
+    pub fn last_timing(&self) -> Option<EndpointTiming> {
+        *self
+            .inner
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn timed(&self, timing: Option<EndpointTiming>) {
+        *self
+            .inner
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = timing;
     }
 
     /// The epoch and lease token its steps carry.
@@ -188,6 +211,7 @@ impl LockstepClient {
             episode_ids: (first..first + width as u64).collect(),
         };
         let reply = d.link.call(Request::Reset(reset), timeout).await?;
+        self.timed(reply.timing);
         Ok(Reset {
             observations: self.observations(&reply.observations, width)?,
             info: meta_json::optional_from_json(&reply.info_json).map_err(GymError::Malformed)?,
@@ -215,6 +239,7 @@ impl LockstepClient {
             commands,
         };
         let reply = d.link.call(Request::Step(step), timeout).await?;
+        self.timed(reply.timing);
         Ok(Step {
             observations: self.observations(&reply.observations, width)?,
             rewards: rewards_from(&reply.reward, width)?,
