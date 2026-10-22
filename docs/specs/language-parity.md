@@ -18,12 +18,40 @@ Python's Stable surface
 field names. The wire contract (`crates/rlmesh-proto/proto/`) is frozen and
 this spec does not change it.
 
+## Sessions in 0.2
+
+Python 0.2 serves and dials envs and models only on v2 session addresses
+(`[host/][session/]participant`, the protocol's lockstep clock). The C ABI
+follows it in the shared Rust core, so C, C++, C#, Unity and Unreal do too:
+
+- An env server and `rlmesh_model_serve` take a participant address
+  (`:0/env`, `host:port/session/name`); with no address an env server is
+  `:0/env`, as Python's `EnvServer` is. A run, a remote env and a remote
+  model dial session addresses; a run refuses a v1 endpoint and an open
+  remote env handle with Python's errors. An env's builtin exception class
+  (`ValueError`) arrives as a Python env's does.
+- Open: native metadata (info, reset options) still carries an array as its
+  nested lists (COR-P10), where Python 0.2 keeps a NumPy array an array; the
+  gate holds that row as a strict xfail until it is decided.
+- Still v1 in the native languages, until v1 is deleted: a `tcp://` or
+  `unix://` bind or dial, and the options only that wire has (remote
+  shutdown, idle and drain timeouts, endpoint tokens, TLS and API keys).
+- The C and C++ names are not yet Python 0.2's: `Session` (Python's
+  `Model.bind` and `Binding`) and `RemoteModel` (Python's `Model(address)`).
+  The code samples in the area files still show v1 endpoints.
+- `python/rlmesh/tests/conformance/native_gate.py` runs the Gymnasium gate's
+  rows over each language's env, model and clients against Python 0.2:
+  `test:cxx` for C++ and the Unreal plugin's game-thread env, `test:csharp`
+  for C# and the Unity host on .NET (Unity's Editor and player gates, D-44,
+  still need Unity).
+
 ## C# and the v2 protocol
 
 The RLMesh protocol is being redesigned for v2: clocked sessions, typed
 channels, timed action chunks, leases and an edge runtime, on a Zenoh data
 plane with a Rust core, every language a thin binding over the core's C ABI.
-v0.2 ships on the current wire; v2 is a clean break after it. So:
+v0.2 ships its envs and models on v2 sessions ([above](#sessions-in-02)); the
+rest of v2 is a clean break after it. So:
 
 - **The C# column is a design record.** It records how C# maps onto the v1
   surface, and why, for the v2 bindings to learn from. It is not a backlog:

@@ -26,7 +26,12 @@ plain gymnasium and the same env behind `rlmesh.numpy.RemoteEnv` /
 `RemoteVectorEnv`, over gRPC and a v2 session, and compares every
 observation, reward, flag and info bit for bit; its docstring lists the
 documented differences. MuJoCo cases skip when `mujoco` is not installed
-(`uv sync --group mujoco`).
+(`uv sync --group mujoco`). `native_gate.py` beside it runs the same rows
+over an env, a model and clients written in another language, against
+Python on a session: `test:cxx` runs it for C++ and the Unreal plugin's
+game-thread env, `test:csharp` for C# and the Unity host, each naming its gate
+program in `RLMESH_NATIVE_GATE`; a row the language cannot express is skipped
+with the reason it prints.
 
 Run only what a change can affect (changed crates since `origin/main`, their dependents, and Python when reachable):
 
