@@ -977,6 +977,15 @@ impl EnvClientCore {
         self.inner.address()
     }
 
+    /// The session the env is in (its address), on the v2 path.
+    pub fn session(&self) -> Option<&str> {
+        match &self.inner {
+            #[cfg(feature = "lockstep")]
+            Link::Lockstep { client, .. } => client.session(),
+            _ => None,
+        }
+    }
+
     /// Whether the endpoint is a v2-native robot driven through its Gym
     /// view (not a served Gym env).
     pub fn drives_view(&self) -> bool {

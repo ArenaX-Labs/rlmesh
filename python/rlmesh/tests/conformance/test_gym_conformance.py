@@ -310,20 +310,22 @@ def test_an_action_space_reaches_the_env_bit_exact(name: str) -> None:
     assert_matches(lambda: SpaceEnv(action_space=copy.deepcopy(SPACES[name])))
 
 
-def test_info_round_trips_as_the_env_produced_it() -> None:
-    def info(t: int) -> dict[str, Any]:
-        return {
-            "nested": {"a": {"b": t, "c": [1, 2.5, "x"]}, "flag": t % 2 == 0},
-            "nan": float("nan"),
-            "inf": -float("inf"),
-            "bytes": b"\x00\xff",
-            "$dollar": 1,
-            "none": None,
-            "third": 1 / 3,
-            "is_success": t >= 3,
-        }
+def rich_info(t: int) -> dict[str, Any]:
+    """Step ``t``'s info: every JSON-like kind, and keys that need escaping."""
+    return {
+        "nested": {"a": {"b": t, "c": [1, 2.5, "x"]}, "flag": t % 2 == 0},
+        "nan": float("nan"),
+        "inf": -float("inf"),
+        "bytes": b"\x00\xff",
+        "$dollar": 1,
+        "none": None,
+        "third": 1 / 3,
+        "is_success": t >= 3,
+    }
 
-    assert_matches(lambda: SpaceEnv(info=info))
+
+def test_info_round_trips_as_the_env_produced_it() -> None:
+    assert_matches(lambda: SpaceEnv(info=rich_info))
 
 
 GYM_ENVS = [
@@ -486,18 +488,20 @@ def test_what_the_wire_cannot_carry_is_refused_at_once_by_name(case: str) -> Non
     assert time.perf_counter() - started < 2
 
 
+RESET_OPTIONS = {
+    "goal": np.arange(3, dtype=np.int16),
+    "scale": np.float32(0.5),
+    "mode": "hard",
+    "nested": {"weights": np.ones((2, 2))},
+}
+
+
 def test_reset_options_reach_the_env_as_given() -> None:
-    options = {
-        "goal": np.arange(3, dtype=np.int16),
-        "scale": np.float32(0.5),
-        "mode": "hard",
-        "nested": {"weights": np.ones((2, 2))},
-    }
     env = SpaceEnv()
     with served(env) as remote:
-        remote.reset(seed=0, options=options)
+        remote.reset(seed=0, options=RESET_OPTIONS)
         remote.reset()
-    assert difference([options, None], env.options) is None
+    assert difference([RESET_OPTIONS, None], env.options) is None
 
 
 def test_an_unseeded_reset_continues_the_envs_random_stream() -> None:

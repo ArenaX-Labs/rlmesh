@@ -634,7 +634,7 @@ int main(int argc, char **argv) {
     remote_auth(variant, env, model, &ev, &s, &attrs);
   } else if (!strcmp(op, "busy_remote")) {
     RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
-    so.address = "tcp://127.0.0.1:0";
+    so.address = ":0/env";
     RLMeshEnvServer *server = NULL;
     OK(rlmesh_env_server_new(&env, 1, &so, &server));
     OK(rlmesh_env_server_start(server));

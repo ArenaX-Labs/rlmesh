@@ -277,7 +277,7 @@ void missing_dict_action_keys() {
   struct DictCounter : Counter {
     Space action_space() const { return Dict({{"nested", Dict({{"choice", Discrete(3)}})}}); }
   };
-  EnvServer server(DictCounter{}, rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+  EnvServer server(DictCounter{}, rlmesh::EnvServerOptions{}.with_address(":0/env"));
   server.start();
   RemoteEnv remote(rlmesh::RemoteEnvOptions{}.with_address(server.address()));
   remote.reset();
@@ -308,7 +308,7 @@ void session_target_lifetimes() {
                  rlmesh::ModelOptions{}.with_on_close([&] { ++closed; }));
   };
   auto make_server = [] {
-    EnvServer server(Counter{}, rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+    EnvServer server(Counter{}, rlmesh::EnvServerOptions{}.with_address(":0/env"));
     server.start();
     return server;
   };
@@ -335,11 +335,10 @@ void session_target_lifetimes() {
   }
   assert(closed == 3);
   Model served([](const Value&) { return 0; });
-  const auto address = [] {
-    // Reserve an OS-selected TCP port, then release it for the model server.
-    EnvServer reservation(Counter{}, rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
-    return reservation.address();
-  }();
+  // The model joins the session of a host env; each session target below is
+  // another session, which the served model is invited into.
+  auto host = make_server();
+  const auto address = host.address().substr(0, host.address().rfind('/')) + "/policy";
   ext::CancelToken stop;
 #if defined(__unix__) || defined(__APPLE__)
   struct sigaction before_int{}, before_term{}, during{};
@@ -612,8 +611,7 @@ void vector_and_chunks() {
     }
   };
   Model model(BatchPolicy{});
-  EnvServer server(VectorEnv(BatchCounter{}),
-                   rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+  EnvServer server(VectorEnv(BatchCounter{}), rlmesh::EnvServerOptions{}.with_address(":0/env"));
   server.start();
   {
     RemoteVectorEnv remote(rlmesh::RemoteEnvOptions{}.with_address(server.address()));
@@ -657,9 +655,9 @@ void factories_remote_describe() {
   Factory factory;
   auto made = factory.make_env();
   assert(factory.builds == 1);
-  auto factory_server = ext::start(factory, "tcp://127.0.0.1:0");
+  auto factory_server = ext::start(factory, ":0/env");
   assert(ext::env_server_describe_json(factory_server).find("c++") != std::string::npos);
-  auto second_server = ext::start(factory, "tcp://127.0.0.1:0");
+  auto second_server = ext::start(factory, ":0/env");
   assert(rlmesh::run(RANDOM_SAMPLE, factory_server).total_steps() == 2);
   factory_server.shutdown();
   assert(rlmesh::run(RANDOM_SAMPLE, second_server).total_steps() == 2);
@@ -681,16 +679,13 @@ void factories_remote_describe() {
   assert(to_string(v).find("Variant") != std::string::npos);
   EnvServer server(
       Counter{},
-      rlmesh::EnvServerOptions{}
-          .with_address("tcp://127.0.0.1:0")
-          .with_options(ServeOptions{}.with_allow_remote_shutdown(true).with_workflow_edition(
-              std::string(current_workflow_edition()))));
+      rlmesh::EnvServerOptions{}.with_address(":0/env").with_options(
+          ServeOptions{}.with_workflow_edition(std::string(current_workflow_edition()))));
   server.start();
   {
     RemoteEnv remote(rlmesh::RemoteEnvOptions{}.with_address(server.address()));
     assert(!remote.env_id().empty());
     assert(remote.env_contract().id() == "CppCounter-v0");
-    assert(model.run(remote).total_steps() == 2);
     auto [o, i] = remote.reset(0);
     (void)i;
     auto [next, r, t, tr, info] = remote.step(0);
@@ -700,6 +695,7 @@ void factories_remote_describe() {
     assert(r == 1 && !t && !tr);
     remote.close();
   }
+  assert(model.run(server).total_steps() == 2);
   assert(!ext::env_server_describe_json(server).empty());
   assert(!server.wait(Duration(0)));
   server.shutdown();

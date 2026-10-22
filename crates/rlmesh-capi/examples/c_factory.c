@@ -100,7 +100,7 @@ static void* serve_factory(void* data) {
   Serving* work = (Serving*)data;
   RLMeshEnvFactoryServeOptions opts = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
   opts.cancel = work->cancel;
-  work->result = rlmesh_env_factory_serve(work->state->factory, "tcp://127.0.0.1:0", &opts);
+  work->result = rlmesh_env_factory_serve(work->state->factory, ":0/env", &opts);
   return NULL;
 }
 int main(void) {
@@ -225,7 +225,7 @@ int main(void) {
   rlmesh_ext_cancel_token_free(alias); /* original token still owns the pending fire */
   RLMeshEnvFactoryServeOptions fso = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
   fso.cancel = cancel;
-  CHECK(rlmesh_env_factory_serve(state.factory, "tcp://127.0.0.1:0", &fso) == RLMESH_ERR_CANCELLED);
+  CHECK(rlmesh_env_factory_serve(state.factory, ":0/env", &fso) == RLMESH_ERR_CANCELLED);
   CHECK(state.prepares == 1 && state.makes == 1);
   Serving work = {&state, cancel, RLMESH_OK};
   pthread_t thread;

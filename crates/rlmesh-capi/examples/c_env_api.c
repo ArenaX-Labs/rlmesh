@@ -66,6 +66,7 @@ static void wait_error_outputs(const RLMeshEnvVtable* vtable, const RLMeshEnvAtt
   serve.has_idle_timeout_seconds = true;
   serve.idle_timeout_seconds = 0.01;
   RLMeshEnvServerOptions options = RLMESH_ENV_SERVER_OPTIONS_INIT;
+  options.address = "tcp://127.0.0.1:0"; /* idle shutdown is v1-only */
   options.options = &serve;
   RLMeshEnvServer* server = NULL;
   CHECK(rlmesh_env_server_new(&env, 1, &options, &server) == RLMESH_OK);
@@ -137,7 +138,8 @@ int main(void) {
   CHECK(rlmesh_env_contract_num_envs(contract) == 1);
   RLMeshBytes address = {NULL, 0, 0};
   CHECK(rlmesh_env_server_address(server, &address) == RLMESH_OK);
-  CHECK(address.len > 6 && memcmp(address.data, "tcp://", 6) == 0);
+  /* By default a server is the env of a session of its own. */
+  CHECK(address.len > 4 && memcmp(address.data + address.len - 4, "/env", 4) == 0);
   rlmesh_bytes_free(address);
   CHECK(rlmesh_env_server_start(server) == RLMESH_OK);
   bool stopped = true;

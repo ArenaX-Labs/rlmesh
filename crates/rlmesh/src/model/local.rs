@@ -192,7 +192,7 @@ pub(crate) struct Connected {
 
 /// Dials the env and handshakes: as a v2 lockstep driver (a participant
 /// address, §12), whose declaration answers the handshake. A build without
-/// the `lockstep` feature (the C API) still dials v1 gRPC endpoints.
+/// the `lockstep` feature still dials v1 gRPC endpoints.
 async fn connect_env(options: &LocalRun) -> Result<Connected> {
     #[cfg(feature = "lockstep")]
     {
@@ -216,8 +216,9 @@ async fn connect_env(options: &LocalRun) -> Result<Connected> {
     connect_grpc_env(options).await
 }
 
-/// The v1 wire's env, for a build without the `lockstep` feature.
-// TODO: delete with v1 env serving, once the C API serves sessions.
+/// The v1 wire's env, for a build without the `lockstep` feature (no
+/// in-repo consumer: Python and the C API build it).
+// TODO: delete with v1 env serving and the feature's opt-out.
 #[cfg(not(feature = "lockstep"))]
 async fn connect_grpc_env(options: &LocalRun) -> Result<Connected> {
     if crate::address::is_v2(&options.address) {

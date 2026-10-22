@@ -510,7 +510,7 @@ int main(int argc, char **argv) {
       remote_auth(variant, env, model, state);
     } else if (op == "busy_remote") {
       EnvServer server(Counter{state},
-                       EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+                       EnvServerOptions{}.with_address(":0/env"));
       server.start();
       RemoteEnv remote(RemoteEnvOptions{}.with_address(server.address()));
       remote.reset(0);

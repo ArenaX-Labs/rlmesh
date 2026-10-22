@@ -55,5 +55,5 @@ rules = ["R-22"]
 operation = "remote_auth"
 variant = "local_model_https_env"
 languages = ["rust", "c", "cpp"]
-why = "Python 0.2 serves and reaches models on sessions: no RemoteModel, and no api key or TLS on the address (session security, safety step 6)."
-expect = { error = "ConnectionError", text = "TLS handshake with 127.0.0.1:PORT failed: received corrupt message of type InvalidContentType" }
+why = "A run dials only session addresses: an https:// env endpoint is v1, refused before any dial (TLS is the session's security config, safety step 6)."
+expect = { error = "ValueError", text = "Model.run(\"https://127.0.0.1:PORT\"): a v1 env endpoint, which rlmesh 0.2 no longer dials; serve the env at a session address (EnvServer(env, \":0/name\")) and run against that, or pass the env object itself" }

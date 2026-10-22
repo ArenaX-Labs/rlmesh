@@ -59,16 +59,36 @@ impl Mode {
     }
 }
 
-/// `Model::run` / `run_async`.
+/// What a run drives: a local [`Model`]'s engine, or a model served on a
+/// session (a [`RemoteModel`](crate::RemoteModel) at a session address),
+/// which the run invites into its env's session.
+#[derive(Clone, Copy)]
+pub(crate) enum Driven<'m> {
+    Local(&'m Model),
+    #[cfg(feature = "lockstep")]
+    Served(&'m crate::RemoteModel),
+}
+
+/// Makes the run's model handler, given the run's adapter context.
+type MakeHandler =
+    Box<dyn FnOnce(Arc<LibraryContext>) -> Box<dyn crate::model::ModelHandler> + Send>;
+
+/// `Model::run` / `run_async`, and `run` of a served model.
 pub(crate) async fn run_model(
-    model: &Model,
+    model: Driven<'_>,
     env: EnvTarget<'_>,
     options: RunOptions<'_>,
     mode: Mode,
 ) -> Result<RunResult> {
-    let shared = model.shared();
-    shared.check_not_reentrant("run()")?;
-    shared.admit()?;
+    let shared = match model {
+        Driven::Local(model) => Some(model.shared()),
+        #[cfg(feature = "lockstep")]
+        Driven::Served(_) => None,
+    };
+    if let Some(shared) = shared {
+        shared.check_not_reentrant("run()")?;
+        shared.admit()?;
+    }
     let RunOptions {
         episodes,
         seeds,
@@ -91,10 +111,36 @@ pub(crate) async fn run_model(
     }
     // RUN-5: what the options alone decide, before anything dials.
     let budget = episode_budget(episodes, seeds.as_deref())?;
-    check_horizon(execution_horizon, shared.decl.native_chunk)?;
+    check_horizon(
+        execution_horizon,
+        shared.and_then(|shared| shared.decl.native_chunk),
+    )?;
     let caps = check_caps(max_episode_steps, max_episode)?;
     let prefetch_lead = check_prefetch(prefetch_lead)?;
-    let _slot = shared.claim_run()?;
+    let make_handler: MakeHandler = match model {
+        Driven::Local(model) => {
+            let shared = Arc::clone(model.shared());
+            let trust = trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints);
+            Box::new(move |context| {
+                Box::new(crate::model::bridge::engine_handler_configured(
+                    shared,
+                    trust,
+                    instruction,
+                    Some(context),
+                ))
+            })
+        }
+        #[cfg(feature = "lockstep")]
+        Driven::Served(model) => {
+            served_options(trust_entrypoints, instruction.as_deref())?;
+            let served = crate::lockstep::ServedModel::new(
+                model.address(),
+                model.connect_timeout().unwrap_or(SERVED_CONNECT),
+            );
+            Box::new(move |_| Box::new(served))
+        }
+    };
+    let _slot = shared.map(|shared| shared.claim_run()).transpose()?;
     let driver = CancellationToken::new();
     let watch = CancelWatch::start(cancel.into_iter().collect(), driver.clone())?;
     let context = LibraryContext::new();
@@ -107,11 +153,11 @@ pub(crate) async fn run_model(
             EditionSources {
                 call: workflow_edition.as_deref(),
                 option: None,
-                declared: shared.decl.workflow_edition.as_deref(),
+                declared: shared.and_then(|shared| shared.decl.workflow_edition.as_deref()),
             },
-            shared.decl.authored,
+            shared.is_some_and(|shared| shared.decl.authored),
         )?;
-        if execution_horizon > 1 && !shared.decl.has_chunk() {
+        if execution_horizon > 1 && shared.is_some_and(|shared| !shared.decl.has_chunk()) {
             crate::warnings::warn(
                 crate::WarningCategory::UserWarning,
                 format!(
@@ -123,9 +169,7 @@ pub(crate) async fn run_model(
         let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let plan = Plan {
             ended: ended.clone(),
-            shared: Arc::clone(shared),
-            trust: trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints),
-            instruction,
+            make_handler,
             budget,
             seeds: seeds.unwrap_or_default(),
             caps,
@@ -183,6 +227,31 @@ pub(crate) async fn run_model(
     }
 }
 
+/// How long a run waits to reach a served model when its `RemoteModel` sets
+/// no connect timeout, as Python's `Model(address)`.
+#[cfg(feature = "lockstep")]
+pub(crate) const SERVED_CONNECT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Refuses what a served model cannot take from its driver: it owns its
+/// adapter, and its instruction is its own.
+#[cfg(feature = "lockstep")]
+pub(crate) fn served_options(
+    trust_entrypoints: Option<bool>,
+    instruction: Option<&str>,
+) -> Result<()> {
+    if trust_entrypoints.is_some() {
+        return Err(Error::invalid_argument(
+            "trust_entrypoints is not supported for a served model: it resolves its own adapter",
+        ));
+    }
+    if instruction.is_some() {
+        return Err(Error::invalid_argument(
+            "instruction= is not supported for a served model",
+        ));
+    }
+    Ok(())
+}
+
 /// A factory-made env remains owned until its explicit close, including on a
 /// dropped run future. Cleanup runs on a plain thread and outlives the future.
 #[derive(Default)]
@@ -208,9 +277,7 @@ impl Drop for OwnedMadeEnv {
 
 struct Plan {
     ended: Arc<std::sync::atomic::AtomicBool>,
-    shared: Arc<crate::model::facade::Shared>,
-    trust: bool,
-    instruction: Option<String>,
+    make_handler: MakeHandler,
     budget: u64,
     seeds: Vec<i64>,
     caps: super::options::Caps,
@@ -269,6 +336,15 @@ async fn run_body(
                 loopback: None,
                 shutdown: None,
             })
+        }
+        // An open client holds a session env's lease, which the run needs.
+        #[cfg(feature = "lockstep")]
+        EnvKind::Remote(handle) if crate::address::is_v2(handle.remote_address()) => {
+            return Err(Error::Type(
+                "run(RemoteEnv(address)) is gone in rlmesh 0.2: an open RemoteEnv holds its \
+                 env's lease, so close it and pass the address: run(address)"
+                    .into(),
+            ));
         }
         // The native loop dials a caller's client's address itself.
         EnvKind::Remote(handle) => Some(Dial {
@@ -349,17 +425,11 @@ async fn run_body(
         }
         None => Arc::new(crate::run::runtime::NoopRuntimeHooks),
     };
-    let shared = Arc::clone(&plan.shared);
-    let trust = plan.trust;
     let connected = Arc::clone(&context);
     let adapter_context = context.clone();
+    let make_handler = plan.make_handler;
     let core = async move {
-        let mut handler = crate::model::bridge::engine_handler_configured(
-            shared,
-            trust,
-            plan.instruction,
-            Some(adapter_context),
-        );
+        let mut handler = make_handler(adapter_context);
         drive_local(&mut handler, run, driver, runtime_hooks, &move |contract| {
             if let Ok(contract) = crate::EnvContract::from_wire(contract) {
                 connected.connect(contract);

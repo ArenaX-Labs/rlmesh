@@ -78,7 +78,7 @@ cc -std=c11 -I crates/rlmesh-capi/include serve.c \
 Serve an environment. The env is a vtable of callbacks plus your own state pointer:
 
 ```c
-/* serve.c: a three-step counter env on 127.0.0.1:5555 */
+/* serve.c: a three-step counter env on 127.0.0.1:7447/counter */
 #include <rlmesh.h>
 #include <stdio.h>
 
@@ -122,7 +122,7 @@ int main(void) {
 
   vtable.reset = counter_reset;
   vtable.step = counter_step;
-  options.address = "127.0.0.1:5555";
+  options.address = "127.0.0.1:7447/counter";
 
   status = rlmesh_discrete_new(4, NULL, &observation_space);
   if (status == RLMESH_OK) status = rlmesh_discrete_new(2, NULL, &action_space);
@@ -134,7 +134,7 @@ int main(void) {
   }
   if (status == RLMESH_OK) status = rlmesh_env_server_new(&env, 1, &options, &server);
   if (status == RLMESH_OK) {
-    puts("serving on 127.0.0.1:5555");
+    puts("serving on 127.0.0.1:7447/counter");
     status = rlmesh_env_server_serve(server); /* blocks until shutdown or Ctrl-C */
   }
   if (status != RLMESH_OK && status != RLMESH_ERR_CANCELLED) {
@@ -177,7 +177,7 @@ int main(void) {
   status = rlmesh_model_new(&vtable, NULL, NULL, &model);
   if (status == RLMESH_OK) {
     status =
-        rlmesh_model_run(model, rlmesh_address_target("127.0.0.1:5555"), &options, &result);
+        rlmesh_model_run(model, rlmesh_address_target("127.0.0.1:7447/counter"), &options, &result);
   }
   if (status != RLMESH_OK) {
     fprintf(stderr, "error: %s\n", rlmesh_last_error_message());
@@ -318,7 +318,7 @@ RLMeshValue* info = NULL;
 const int64_t seed = 0;
 bool done = false;
 
-if (rlmesh_model_session(model, rlmesh_address_target("127.0.0.1:5555"), NULL, &session) ==
+if (rlmesh_model_session(model, rlmesh_address_target("127.0.0.1:7447/counter"), NULL, &session) ==
         RLMESH_OK &&
     rlmesh_session_reset(session, &seed, NULL, &observation, &info) == RLMESH_OK) {
   while (!done) {
@@ -348,7 +348,7 @@ rlmesh_session_free(session);
 
 ### Remote clients
 
-`rlmesh_remote_env_new` connects to a served env so you can step it directly, Gymnasium style; `rlmesh_remote_vector_env_new` does the same for a vector env. `rlmesh_remote_model_new` points at a served model; it validates its options without connecting, and runs and sessions connect as they need to. Addresses are `host:port`, `tcp://host:port` or `unix:///path/to.sock`, or set `host`, `port`, `path` and `transport` separately in the options.
+`rlmesh_remote_env_new` connects to a served env so you can step it directly, Gymnasium style; `rlmesh_remote_vector_env_new` does the same for a vector env. `rlmesh_remote_model_new` points at a served model; it validates its options without connecting, and runs and sessions connect as they need to. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an env server with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately in the options) still serve and connect remote clients until v1 is removed; a run refuses them.
 
 ```c
 RLMeshRemoteEnvOptions options = RLMESH_REMOTE_ENV_OPTIONS_INIT;
@@ -359,7 +359,7 @@ RLMeshValue* action = NULL;
 double reward = 0.0;
 bool terminated = false, truncated = false;
 
-options.address = "127.0.0.1:5555";
+options.address = "127.0.0.1:7447/counter";
 options.has_request_timeout_seconds = true;
 options.request_timeout_seconds = 5.0;
 if (rlmesh_remote_env_new(&options, &env) == RLMESH_OK &&
@@ -457,7 +457,7 @@ The header is C11 and also compiles warning-free as C++98, C++17 and C++20. It b
 
 ## Development
 
-- `mise run dev:heavy -- mise run test:cxx`: compile the headers as C11, C++98, C++17 and C++20, build and run every example, and exercise C and C++ models and envs over real gRPC. `CC` and `CXX` override the compilers; locally, the default checks both zig’s bundled Clang and GCC when installed, at both C++ standards.
+- `mise run dev:heavy -- mise run test:cxx`: compile the headers as C11, C++98, C++17 and C++20, build and run every example, exercise C and C++ models and envs on real sessions, and run the Gymnasium gate against Python. `CC` and `CXX` override the compilers; locally, the default checks both zig’s bundled Clang and GCC when installed, at both C++ standards.
 - `mise run test:cxx:pkg`: build the package, then build `examples/consumer` against it through pkg-config, `find_package` and FetchContent.
 - `mise run fmt:cxx`: format the headers and examples.
 

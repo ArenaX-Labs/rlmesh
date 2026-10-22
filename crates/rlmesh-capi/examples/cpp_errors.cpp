@@ -56,18 +56,12 @@ int main() {
   } catch (const rlmesh::ext::CancelledError& e) {
     assert(std::string(e.what()) == "cancelled");
   }
-  rlmesh::EnvServer server(RecoverableEnv{},
-                           rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+  rlmesh::EnvServer server(RecoverableEnv{}, rlmesh::EnvServerOptions{}.with_address(":0/env"));
   server.start();
-  // TODO: dial a session address once the C API serves envs on sessions (the
-  // parity step). Until then this env is a v1 endpoint, which Python 0.2
-  // refuses; this probe alone lifts the refusal to keep checking the wire.
   const std::string probe = R"PY(uv run --no-sync python -c '
 import sys
 import rlmesh
-import rlmesh._client._remote_base as remote_base
 import rlmesh.numpy
-remote_base.refuse_v1_address = lambda where, address: None
 env = rlmesh.numpy.RemoteEnv(sys.argv[1])
 with env:
     env.reset()

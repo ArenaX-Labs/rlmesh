@@ -1,6 +1,6 @@
 # RLMesh C++ API
 
-RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. `rlmesh.hpp` is the C++ API: a header-only library over the RLMesh C ABI that lets you write environments and policies as ordinary C++ classes or lambdas, serve them over gRPC, and run evaluations against anything else that speaks RLMesh.
+RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. `rlmesh.hpp` is the C++ API: a header-only library over the RLMesh C ABI that lets you write environments and policies as ordinary C++ classes or lambdas, serve them in RLMesh sessions, and run evaluations against anything else that speaks RLMesh.
 
 RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Session`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
@@ -30,7 +30,7 @@ target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 Serve an environment. Any class with Gymnasium-shaped `observation_space`, `action_space`, `reset` and `step` members is an env:
 
 ```cpp
-// serve.cpp: a three-step counter env on 127.0.0.1:5555
+// serve.cpp: a three-step counter env on 127.0.0.1:7447/counter
 #include <cstdio>
 #include <rlmesh.hpp>
 
@@ -56,7 +56,7 @@ class Counter {
 };
 
 int main() try {
-  auto options = rlmesh::EnvServerOptions{}.with_address("127.0.0.1:5555");
+  auto options = rlmesh::EnvServerOptions{}.with_address("127.0.0.1:7447/counter");
   rlmesh::EnvServer server(Counter{}, options);
   std::printf("serving on %s\n", server.address().c_str());
   server.serve();  // blocks until shutdown; Ctrl-C throws rlmesh::ext::CancelledError
@@ -79,7 +79,7 @@ Run a model against it from another process. A lambda from observation to action
 int main() try {
   rlmesh::Model model([](const rlmesh::Value& /*observation*/) { return rlmesh::Value(0); });
   auto options = rlmesh::RunOptions{}.with_episodes(3);
-  rlmesh::RunResult result = model.run("127.0.0.1:5555", options);
+  rlmesh::RunResult result = model.run("127.0.0.1:7447/counter", options);
   std::printf("%zu episodes, %lld steps, mean reward %.1f\n", result.num_episodes(),
               static_cast<long long>(result.total_steps()), result.mean_reward());
   return 0;
@@ -198,13 +198,13 @@ PrintEpisodes hooks;
 rlmesh::RunOptions options;
 options.seeds = {0, 1, 2};
 options.hooks = &hooks;
-model.run("127.0.0.1:5555", options);
+model.run("127.0.0.1:7447/counter", options);
 ```
 
 For step-by-step control, open a `Session`. Nothing connects until first use, and closing a session never closes the model:
 
 ```cpp
-rlmesh::Session session = model.session("127.0.0.1:5555");
+rlmesh::Session session = model.session("127.0.0.1:7447/counter");
 auto [observation, info] = session.reset(0);
 bool done = false;
 while (!done) {
@@ -220,11 +220,11 @@ session.close();
 
 ### Remote clients
 
-`rlmesh::RemoteEnv` and `RemoteVectorEnv` connect at construction and step a served env directly, Gymnasium style. `rlmesh::RemoteModel` points at a served model; it validates its options without connecting, and runs and sessions connect as they need to. Addresses are `host:port`, `tcp://host:port` or `unix:///path/to.sock`, or set `host`, `port`, `path` and `transport` separately.
+`rlmesh::RemoteEnv` and `RemoteVectorEnv` connect at construction and step a served env directly, Gymnasium style. `rlmesh::RemoteModel` points at a served model; it validates its options without connecting, and runs and sessions connect as they need to. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an `EnvServer` with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately) still serve and connect remote clients until v1 is removed; a run refuses them.
 
 ```cpp
 rlmesh::RemoteEnvOptions connection;
-connection.address = "127.0.0.1:5555";
+connection.address = "127.0.0.1:7447/counter";
 connection.request_timeout = std::chrono::seconds(5);
 rlmesh::RemoteEnv env(connection);
 
@@ -232,7 +232,7 @@ auto [observation, info] = env.reset(0);
 auto [next, reward, terminated, truncated, step_info] = env.step(env.action_space().sample());
 env.close();
 
-rlmesh::RunResult baseline = rlmesh::run(rlmesh::RANDOM_SAMPLE, "127.0.0.1:5555");
+rlmesh::RunResult baseline = rlmesh::run(rlmesh::RANDOM_SAMPLE, "127.0.0.1:7447/counter");
 ```
 
 ### Adapters
@@ -260,7 +260,7 @@ Failures throw a class from one hierarchy, so you can catch as broadly or narrow
 
 ```cpp
 try {
-  model.run("127.0.0.1:5555");
+  model.run("127.0.0.1:7447/counter");
 } catch (const rlmesh::OSError& error) {  // ConnectionError, TimeoutError
   std::fprintf(stderr, "could not reach the env: %s\n", error.what());
 } catch (const rlmesh::EnvironmentException& error) {

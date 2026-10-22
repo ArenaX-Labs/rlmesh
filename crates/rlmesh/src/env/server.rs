@@ -61,8 +61,10 @@ impl fmt::Display for Transport {
 /// appending a field is a minor change by project policy.
 #[derive(Clone, Debug)]
 pub struct EnvServerOptions {
-    /// The bind address (`tcp://host:port` or `unix:///path`); `None` uses the
-    /// helpers below, or `tcp://127.0.0.1:0`. Excludes the helpers.
+    /// The bind address: a session participant address (`:0/env`,
+    /// `host:port/session/name`), or a v1 `tcp://host:port` or
+    /// `unix:///path`; `None` uses the helpers below, or `:0/env` (a session
+    /// of its own on an OS-assigned local port). Excludes the helpers.
     pub address: Option<String>,
     /// TCP host helper (default `127.0.0.1`).
     pub host: Option<String>,
@@ -1159,6 +1161,11 @@ fn normalize_bind_address(options: &EnvServerOptions) -> Result<String> {
             ));
         }
         return Ok(address.clone());
+    }
+    // In a session of its own on an OS-assigned local port, as Python's.
+    #[cfg(feature = "lockstep")]
+    if !helpers {
+        return Ok(":0/env".to_string());
     }
     let tcp_helpers = options.host.is_some() || options.port.is_some();
     if options.path.is_some() && tcp_helpers {

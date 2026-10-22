@@ -404,7 +404,9 @@ pub fn env_factory_native_start<F: crate::EnvFactory>(
 ) -> Result<crate::EnvServer> {
     // Validate inputs before subscribing: a refused call must not consume a
     // pre-fired token. These reads invoke no C factory hooks.
-    crate::ext::BindAddress::parse(address)?;
+    if !crate::address::is_v2(address) {
+        crate::ext::BindAddress::parse(address)?;
+    }
     if let Some(edition) = options
         .workflow_edition
         .as_deref()

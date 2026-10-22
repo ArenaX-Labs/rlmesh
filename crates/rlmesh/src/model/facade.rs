@@ -1165,9 +1165,8 @@ impl CancelWatcher {
 }
 
 /// One serve, blocking the calling thread: validate, resolve the edition,
-/// bind, serve until stopped, then close the model.
-// TODO: serves the v1 wire for the C API; at the parity step a model joins
-// a session here (`lockstep::ModelBinding`), as Python's does.
+/// bind, serve until stopped, then close the model. A session address joins
+/// the session as the model participant it names, as Python's serve does.
 fn serve_blocking(
     shared: &Arc<Shared>,
     address: &str,
@@ -1192,18 +1191,39 @@ fn serve_blocking(
             "predict_concurrency must be at least 1",
         ));
     }
-    let token = crate::serve_options::model_endpoint_token(ext.token)?.unwrap_or_default();
-    let address = BindAddress::parse(address)?;
     // The call's edition wins over the environment variable; a served peer
     // is authored, so a floating one warns (COR-6, COR-7).
-    serve.workflow_edition = crate::editions::resolve_native(
-        EditionSources {
-            call: serve.workflow_edition.as_deref(),
-            option: None,
-            declared: shared.decl.workflow_edition.as_deref(),
-        },
-        true,
-    )?;
+    let edition = |serve: &ServeOptions| {
+        crate::editions::resolve_native(
+            EditionSources {
+                call: serve.workflow_edition.as_deref(),
+                option: None,
+                declared: shared.decl.workflow_edition.as_deref(),
+            },
+            true,
+        )
+    };
+    let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
+    #[cfg(feature = "lockstep")]
+    if crate::address::is_v2(address) {
+        crate::binding::check_session_model_serve(&serve)?;
+        crate::serve_options::check_session_token(
+            crate::serve_options::MODEL_ENDPOINT_TOKEN_ENV,
+            ext.token.is_some(),
+        )?;
+        if ext.predict_concurrency.is_some() {
+            return Err(Error::invalid_argument(
+                "predict_concurrency: a session model runs one forward at a time (gone in \
+                 rlmesh 0.2 for a session address)",
+            ));
+        }
+        let edition = edition(&serve)?;
+        let join = serve.close_timeout.unwrap_or(SESSION_JOIN);
+        return serve_session(shared, address, edition, join, foreground, tokens);
+    }
+    let token = crate::serve_options::model_endpoint_token(ext.token)?.unwrap_or_default();
+    let address = BindAddress::parse(address)?;
+    serve.workflow_edition = edition(&serve)?;
     serve.drain_timeout = Some(serve.drain_timeout.unwrap_or(SERVE_GRACE));
     let close_timeout = serve.close_timeout.unwrap_or(SERVE_GRACE);
     serve.close_timeout = Some(close_timeout);
@@ -1216,11 +1236,70 @@ fn serve_blocking(
         serve,
     ))?;
     let trigger = bound.shutdown_trigger();
+    serve_until_stopped(
+        shared,
+        trigger,
+        foreground,
+        tokens,
+        close_timeout,
+        bound.serve(),
+    )
+}
+
+/// How long a session model's join and close may take when the options set
+/// no `close_timeout`, as Python's serve.
+#[cfg(feature = "lockstep")]
+const SESSION_JOIN: Duration = Duration::from_secs(30);
+
+/// Joins the session of the participant address `address` as the model and
+/// answers whoever drives it there, until stopped.
+#[cfg(feature = "lockstep")]
+fn serve_session(
+    shared: &Arc<Shared>,
+    address: &str,
+    edition: Option<String>,
+    join: Duration,
+    foreground: bool,
+    tokens: Vec<crate::ext::CancelToken>,
+) -> Result<()> {
+    let handler = super::bridge::engine_handler(Arc::clone(shared));
+    let service = Arc::new(
+        crate::lockstep::ModelService::new(handler, String::new()).declaring(edition.as_deref()),
+    );
+    let binding = crate::run::drive::block_on_library(crate::lockstep::ModelBinding::bind(address))
+        .map_err(crate::env::client::lockstep_error)?;
+    tracing::info!(address = %binding.address(), "model serving");
+    let trigger = ShutdownTrigger::new();
+    let stopped = trigger.clone();
+    let serve = async move {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let stop = cancel.clone();
+        let relay = tokio::spawn(async move {
+            stopped.cancelled_owned().await;
+            stop.cancel();
+        });
+        let result = binding.serve(service, join, cancel).await;
+        relay.abort();
+        result.map_err(crate::env::client::lockstep_error)
+    };
+    serve_until_stopped(shared, trigger, foreground, tokens, join, serve)
+}
+
+/// Serves until `trigger` fires (a signal, a cancel token, the model's
+/// close), then closes the model: the cancellation class when a token or
+/// SIGINT stopped it.
+fn serve_until_stopped(
+    shared: &Arc<Shared>,
+    trigger: ShutdownTrigger,
+    foreground: bool,
+    tokens: Vec<crate::ext::CancelToken>,
+    close_timeout: Duration,
+    serve: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
     let serve_id = shared.register_serve(trigger.clone())?;
     let signals = foreground.then(|| crate::env::signals::enter(trigger.clone()));
-    let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
     let watcher = CancelWatcher::start(tokens, trigger);
-    let result = crate::run::drive::block_on_library(bound.serve());
+    let result = crate::run::drive::block_on_library(serve);
     shared.deregister_serve(serve_id);
     let cancelled = watcher.stop();
     let interrupted = signals.as_ref().is_some_and(|scope| scope.interrupted());

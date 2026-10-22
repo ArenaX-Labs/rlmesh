@@ -344,7 +344,7 @@ static void factories(void) {
   RLMeshServeOptions serve = RLMESH_SERVE_OPTIONS_INIT;
   serve.workflow_edition = rlmesh_current_workflow_edition();
   RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
-  so.address = "tcp://127.0.0.1:0";
+  so.address = ":0/env";
   so.options = &serve;
   so.close_env_on_shutdown = false;
   RLMeshExtEnvServerOptions ext = RLMESH_EXT_ENV_SERVER_OPTIONS_INIT;

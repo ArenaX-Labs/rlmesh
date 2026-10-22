@@ -29,7 +29,6 @@ use crate::binding::env::{CoreConnect, EnvClientCore};
 use crate::binding::model::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
 use crate::binding::model::{ModelClient, ModelConnect};
 use crate::env::client::Lendable;
-use crate::model::engine::AdaptedModelHandler;
 use crate::model::handler::{ModelHandler, PredictFrames, ResolveOptions};
 use crate::spaces::Space;
 use crate::value::space_codec;
@@ -113,10 +112,11 @@ impl Telemetry {
     }
 }
 
-/// A local model's per-session engine state.
+/// A model's per-session engine state: a local model's engine, or the
+/// handler of a model served on a session (no shared state of its own).
 struct LocalModel {
-    shared: Arc<crate::model::facade::Shared>,
-    handler: AdaptedModelHandler,
+    shared: Option<Arc<crate::model::facade::Shared>>,
+    handler: Box<dyn ModelHandler + Sync>,
     env_id: String,
     session_id: String,
     /// The horizon the session asked for; engaged only with a chunk corner.
@@ -125,6 +125,26 @@ struct LocalModel {
     wants_history: bool,
     replay: VecDeque<Value>,
     history: Vec<HistoryFrame>,
+}
+
+impl LocalModel {
+    fn port(
+        shared: Option<Arc<crate::model::facade::Shared>>,
+        handler: Box<dyn ModelHandler + Sync>,
+        requested_horizon: u32,
+    ) -> ModelPort {
+        ModelPort::Local(Box::new(LocalModel {
+            shared,
+            handler,
+            env_id: crate::mint_id(),
+            session_id: format!("session-{}", crate::mint_id()),
+            requested_horizon,
+            horizon: 1,
+            wants_history: false,
+            replay: VecDeque::new(),
+            history: Vec::new(),
+        }))
+    }
 }
 
 enum ModelPort {
@@ -388,7 +408,7 @@ impl Core {
 
     fn check_model_open(&self) -> Result<()> {
         match &self.model {
-            ModelPort::Local(model) => model.shared.admit(),
+            ModelPort::Local(model) => model.shared.as_ref().map_or(Ok(()), |s| s.admit()),
             ModelPort::Remote(_) | ModelPort::Random(_) => Ok(()),
         }
     }
@@ -479,11 +499,20 @@ impl Core {
                 );
             }
             ModelPort::Local(model) => {
-                model.horizon = if model.shared.decl.has_chunk() {
-                    model.requested_horizon
-                } else {
-                    1
+                // A served model answers the horizon it can.
+                model.horizon = match &model.shared {
+                    Some(shared) if !shared.decl.has_chunk() => 1,
+                    _ => model.requested_horizon,
                 };
+                // A model served elsewhere answers in the env's session.
+                if let EnvPort::Remote {
+                    client: Some(client),
+                    ..
+                } = &self.env
+                    && let Some(session) = client.session()
+                {
+                    model.handler.join(session).await?;
+                }
                 if let Some(route_setup) = model.handler.route_setup() {
                     let needs = route_setup
                         .resolve_adapter(
@@ -1023,11 +1052,16 @@ impl Core {
         if let ModelPort::Remote(model) = &mut self.model {
             first = first.and(model.close().await);
         }
-        if let ModelPort::Local(model) = &mut self.model
-            && self.connected.is_some()
-            && let Some(route_setup) = model.handler.route_setup()
-        {
-            first = first.and(route_setup.release_adapter(&model.env_id).await);
+        if let ModelPort::Local(model) = &mut self.model {
+            if self.connected.is_some()
+                && let Some(route_setup) = model.handler.route_setup()
+            {
+                first = first.and(route_setup.release_adapter(&model.env_id).await);
+            }
+            // A served model's connection leaves; a local model stays open.
+            if model.shared.is_none() {
+                first = first.and(model.handler.on_close().await);
+            }
         }
         match &mut self.env {
             // A caller's client: shut down on the opt-in, never closed here.
@@ -1179,17 +1213,11 @@ impl<'a> Session<'a> {
                     Some(context.clone()),
                 );
                 (
-                    ModelPort::Local(Box::new(LocalModel {
-                        shared: Arc::clone(shared),
-                        handler,
-                        env_id: crate::mint_id(),
-                        session_id: format!("session-{}", crate::mint_id()),
-                        requested_horizon: execution_horizon,
-                        horizon: 1,
-                        wants_history: false,
-                        replay: VecDeque::new(),
-                        history: Vec::new(),
-                    })),
+                    LocalModel::port(
+                        Some(Arc::clone(shared)),
+                        Box::new(handler),
+                        execution_horizon,
+                    ),
                     edition,
                 )
             }
@@ -1215,6 +1243,68 @@ impl<'a> Session<'a> {
                 (ModelPort::Random(None), edition)
             }
         };
+        Self::assemble(model_port, edition, context, env, close_env, view, cancel)
+    }
+
+    /// Bind a model served on a session to `env`: a run's own loop on the
+    /// model's handler, which joins the env's session when it answers.
+    #[cfg(feature = "lockstep")]
+    pub(crate) fn create_served(
+        model: &'a RemoteModel,
+        env: EnvTarget<'a>,
+        options: SessionOptions,
+    ) -> Result<Session<'a>> {
+        let SessionOptions {
+            close_env,
+            trust_entrypoints,
+            instruction,
+            view,
+            execution_horizon,
+            workflow_edition,
+            cancel,
+        } = options;
+        if let Some(view) = &view {
+            view.validate()?;
+        }
+        super::native::served_options(trust_entrypoints, instruction.as_deref())?;
+        check_horizon(execution_horizon, None)?;
+        let edition = crate::editions::resolve_native(
+            crate::editions::EditionSources {
+                call: workflow_edition.as_deref(),
+                option: None,
+                declared: None,
+            },
+            false,
+        )?;
+        let handler = crate::lockstep::ServedModel::new(
+            model.address(),
+            model
+                .connect_timeout()
+                .unwrap_or(super::native::SERVED_CONNECT),
+        );
+        let port = LocalModel::port(None, Box::new(handler), execution_horizon);
+        Self::assemble(
+            port,
+            edition,
+            LibraryContext::new(),
+            env,
+            close_env,
+            view,
+            cancel,
+        )
+    }
+
+    /// The session around a model port: the env's port and the caller's side.
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        model_port: ModelPort,
+        edition: Option<String>,
+        context: Arc<LibraryContext>,
+        env: EnvTarget<'a>,
+        close_env: bool,
+        view: Option<crate::View>,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<Session<'a>> {
         let (port, queue) = caller_channel();
         let mut lent = None;
         let (env_port, caller_env, server) = match env.0 {
@@ -1970,8 +2060,9 @@ impl Drop for Session<'_> {
             // Queue the owned episode end before a later model close can refuse it.
             if self.core.episode.open
                 && let ModelPort::Local(model) = &self.core.model
+                && let Some(shared) = &model.shared
             {
-                let _ = model.shared.queue_episode_end(self.core.episode.id.clone());
+                let _ = shared.queue_episode_end(self.core.episode.id.clone());
                 self.core.episode.open = false;
             }
             let made = match &mut self.env {

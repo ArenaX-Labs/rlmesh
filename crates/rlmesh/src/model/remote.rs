@@ -820,6 +820,10 @@ impl RemoteModel {
         options: crate::SessionOptions,
     ) -> Result<crate::Session<'a>> {
         crate::run::drive::refuse_in_async_context("RemoteModel::session")?;
+        #[cfg(feature = "lockstep")]
+        if crate::address::is_v2(self.address()) {
+            return crate::Session::create_served(self, env.into(), options);
+        }
         crate::run::drive::block_on_library(crate::Session::create_remote(
             self,
             env.into(),
@@ -834,6 +838,10 @@ impl RemoteModel {
         env: impl Into<crate::EnvTarget<'a>>,
         options: crate::SessionOptions,
     ) -> Result<crate::Session<'a>> {
+        #[cfg(feature = "lockstep")]
+        if crate::address::is_v2(self.address()) {
+            return crate::Session::create_served(self, env.into(), options);
+        }
         crate::run::drive::in_library(crate::Session::create_remote(
             self,
             env.into(),

@@ -90,7 +90,7 @@ int main(void) {
   CHECK(rlmesh_model_run(model, rlmesh_address_target("tcp://127.0.0.1:1"), &rt.options, &report) ==
         RLMESH_ERR_TYPE);
   RLMeshModelServeOptions serve = {0};
-  CHECK(rlmesh_model_serve(model, "tcp://127.0.0.1:0", &serve) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(rlmesh_model_serve(model, ":0/env", &serve) == RLMESH_ERR_INVALID_ARGUMENT);
   rlmesh_model_free(model);
   RLMeshEpisodeResult episode = RLMESH_EPISODE_RESULT_INIT;
   episode.steps = 4;

@@ -1,9 +1,8 @@
-//! Facade-backed environment servers and sized serve options.
+//! Facade-backed environment servers and sized serve options. A server is a
+//! session participant (`:0/env` by default), as Python's `EnvServer` is.
 //!
-//! TODO: the C API still serves envs on the v1 gRPC wire (it builds `rlmesh`
-//! without the `lockstep` feature). The parity step that follows 0.2's Python
-//! surface moves it, C++ and C# onto session addresses and deletes v1 env
-//! serving from `rlmesh-grpc`.
+//! TODO: delete the v1 binds (`tcp://`, `unix://`) with v1 env serving in
+//! `rlmesh-grpc`.
 #![allow(unsafe_code)] // C strings, sized options and borrowed handles.
 use crate::abi::{
     sizing,

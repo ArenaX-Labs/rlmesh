@@ -20,8 +20,10 @@ thread_local! {
 
 /// Default options with a short drain, so a test does not wait out the 5 s
 /// cap on its own client's idle connection.
+/// A v1 server: these tests cover the gRPC wire's own serving options.
 fn quick() -> EnvServerOptions {
     EnvServerOptions {
+        address: Some("tcp://127.0.0.1:0".into()),
         options: Some(crate::ServeOptions {
             drain_timeout: Some(Duration::from_millis(100)),
             ..Default::default()

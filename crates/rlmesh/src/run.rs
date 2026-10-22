@@ -48,7 +48,7 @@ impl Model {
     ) -> Result<RunResult> {
         drive::refuse_in_async_context("Model::run")?;
         drive::run_sync(native::run_model(
-            self,
+            native::Driven::Local(self),
             env_or_address.into(),
             options,
             Mode::Sync,
@@ -63,7 +63,13 @@ impl Model {
         env_or_address: impl Into<EnvTarget<'e>>,
         options: RunOptions<'_>,
     ) -> Result<RunResult> {
-        native::run_model(self, env_or_address.into(), options, Mode::Async).await
+        native::run_model(
+            native::Driven::Local(self),
+            env_or_address.into(),
+            options,
+            Mode::Async,
+        )
+        .await
     }
 
     /// Bind this model to `env` for driving by hand. Nothing dials until
@@ -97,6 +103,16 @@ pub fn run<'a>(
 ) -> Result<RunResult> {
     match model.into().0 {
         ModelKind::Model(model) => model.run(env, options),
+        #[cfg(feature = "lockstep")]
+        ModelKind::Remote(model) if crate::address::is_v2(model.address()) => {
+            drive::refuse_in_async_context("run")?;
+            drive::run_sync(native::run_model(
+                native::Driven::Served(model),
+                env.into(),
+                options,
+                Mode::Sync,
+            ))
+        }
         ModelKind::Remote(model) => {
             drive::refuse_in_async_context("run")?;
             drive::run_sync(run_session_loop(
@@ -121,6 +137,16 @@ pub async fn run_async<'a>(
 ) -> Result<RunResult> {
     match model.into().0 {
         ModelKind::Model(model) => model.run_async(env, options).await,
+        #[cfg(feature = "lockstep")]
+        ModelKind::Remote(model) if crate::address::is_v2(model.address()) => {
+            native::run_model(
+                native::Driven::Served(model),
+                env.into(),
+                options,
+                Mode::Async,
+            )
+            .await
+        }
         ModelKind::Remote(model) => {
             run_session_loop(Some(model), env.into(), options, Mode::Async).await
         }

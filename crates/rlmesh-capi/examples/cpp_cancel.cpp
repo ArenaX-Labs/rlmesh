@@ -199,7 +199,7 @@ void remote_calls() {
   Gate gate;
   auto script = std::make_shared<Script>();
   script->gate = &gate;
-  EnvServer server(Env(script), EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+  EnvServer server(Env(script), EnvServerOptions{}.with_address(":0/env"));
   server.start();
   RemoteEnv remote(RemoteEnvOptions{}.with_address(server.address()));
   ext::CancelToken token, refused;
@@ -237,7 +237,7 @@ void remote_calls() {
   }
   server.shutdown();
   // A refused closed call leaves the firing pending for another handle.
-  EnvServer next(Env(Script{}), EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+  EnvServer next(Env(Script{}), EnvServerOptions{}.with_address(":0/env"));
   next.start();
   RemoteEnv fresh(RemoteEnvOptions{}.with_address(next.address()));
   cancelled([&] { ext::reset(fresh, token); });
@@ -266,8 +266,7 @@ struct VectorScript {
 };
 void vector_calls() {
   Gate gate;
-  EnvServer server(VectorEnv(VectorScript{&gate}),
-                   EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+  EnvServer server(VectorEnv(VectorScript{&gate}), EnvServerOptions{}.with_address(":0/env"));
   server.start();
   RemoteVectorEnv remote(RemoteEnvOptions{}.with_address(server.address()));
   ext::CancelToken token;
@@ -333,7 +332,7 @@ void immediate_completion() {
     session.step(Value(0));
 
     auto remote_script = std::make_shared<Script>();
-    EnvServer server(Env(remote_script), EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+    EnvServer server(Env(remote_script), EnvServerOptions{}.with_address(":0/env"));
     server.start();
     RemoteEnv remote(RemoteEnvOptions{}.with_address(server.address()));
     remote.reset();
@@ -351,8 +350,7 @@ void immediate_completion() {
     server.shutdown();
 
     auto vector_script = std::make_shared<VectorScript>();
-    EnvServer vector_server(VectorEnv(vector_script),
-                            EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+    EnvServer vector_server(VectorEnv(vector_script), EnvServerOptions{}.with_address(":0/env"));
     vector_server.start();
     RemoteVectorEnv vector(RemoteEnvOptions{}.with_address(vector_server.address()));
     auto actions = std::get<0>(vector.reset());
@@ -374,8 +372,7 @@ void shared_server_token() {
   // X-13 deferred test: one firing reaches the server and an X-12 call.
   ext::CancelToken token;
   Factory factory;
-  auto server =
-      ext::start(factory, "tcp://127.0.0.1:0", EnvFactoryServeOptions{}.with_cancel(token));
+  auto server = ext::start(factory, ":0/env", EnvFactoryServeOptions{}.with_cancel(token));
   Gate gate;
   auto script = std::make_shared<Script>();
   script->gate = &gate;

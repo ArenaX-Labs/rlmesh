@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Compile the C/C++ ABI, build C and C++ env/model smokes, check native runtime declarations and C++17/C++20 parity, and run model/env gRPC flows"
+#MISE description="Compile the C/C++ ABI, build C and C++ env/model smokes, check native runtime declarations and C++17/C++20 parity, and run model/env session flows and the Gymnasium gate against Python"
 #MISE dir="{{ config_root }}"
 
 # The C/C++ analogue of the Python build+typecheck+test gates: the cdylib + the
@@ -263,4 +263,9 @@ for compiler in "${compilers[@]}"; do
   fi
   grep -qE 'rlmesh.hpp requires C\+\+17' "$tmp/oldstandard.log"
 done
+echo "==> C++ on sessions: the Gymnasium gate's rows against Python 0.2 ($CXX)"
+$CXX -std=c++17 "${warn[@]}" -pedantic-errors "${cxx_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/cpp_gate.cpp "${link[@]}" -o "$tmp/cpp_gate"
+RLMESH_NATIVE_GATE="$tmp/cpp_gate" uv run --no-sync pytest -q -p no:cacheprovider \
+  python/rlmesh/tests/conformance/native_gate.py
 echo "==> test:cxx OK"

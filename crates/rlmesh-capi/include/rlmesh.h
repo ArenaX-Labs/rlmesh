@@ -2651,6 +2651,8 @@ typedef struct RLMeshExtEnvServerOptions {
 
 typedef struct RLMeshEnvServerOptions {
   size_t struct_size;
+  /* A session participant address (":0/env", "host:port/session/name"), or a
+   * v1 tcp:// or unix:// endpoint; NULL with no helper is ":0/env". */
   const char* address;
   const char* host;
   const char* path;
@@ -3083,6 +3085,8 @@ typedef struct RLMeshModelServeOptions {
 } RLMeshModelServeOptions;
 #define RLMESH_MODEL_SERVE_OPTIONS_INIT {sizeof(RLMeshModelServeOptions), NULL, NULL, NULL}
 
+/* address is the participant address the model joins its session as
+ * (":0/policy", "host:port/session/policy"), or a v1 bind address. */
 RLMESH_API RLMeshStatus
 rlmesh_model_serve(RLMeshModel* model, const char* address,
                    const RLMeshModelServeOptions* options /* NULL = INIT */);

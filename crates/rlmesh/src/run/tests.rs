@@ -1247,7 +1247,8 @@ fn a_native_run_through_an_open_v2_handle_says_the_handle_holds_the_env() {
     let mut remote =
         crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
             .unwrap();
-    // A v2 handle holds its env's lease from connect: the run says so.
+    // A v2 handle holds its env's lease from connect: the run refuses it
+    // with Python's upgrade error.
     let err = ones()
         .run(
             &mut remote,
@@ -1257,10 +1258,10 @@ fn a_native_run_through_an_open_v2_handle_says_the_handle_holds_the_env() {
             },
         )
         .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::RuntimeError, "{err}");
+    assert_eq!(err.class(), ErrorClass::TypeError, "{err}");
     assert!(
         err.to_string()
-            .starts_with("the target env already has an active session"),
+            .starts_with("run(RemoteEnv(address)) is gone in rlmesh 0.2"),
         "{err}"
     );
     remote.close().unwrap();

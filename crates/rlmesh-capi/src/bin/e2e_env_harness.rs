@@ -1,7 +1,8 @@
 //! End-to-end loopback harness for the env side: spawn a compiled C/C++ env
-//! binary (`<bin> 127.0.0.1:0`), read the address it prints
-//! (`listening on <address>`), drive a model against it, then close the
-//! binary's stdin and expect a graceful exit. The inverse of `e2e_harness`.
+//! binary (`<bin> :0/env`, a session on an OS-assigned port), read the
+//! address it prints (`listening on <address>`), drive a model against it,
+//! then close the binary's stdin and expect a graceful exit. The inverse of
+//! `e2e_harness`.
 //!
 //! Usage: `e2e_env_harness <env-binary>`. Asserts that the env published its
 //! adapter tags and `trial_index` reset option, that three seeded, trial-indexed
@@ -46,7 +47,7 @@ fn main() -> ExitCode {
         return fail("usage: e2e_env_harness <env-binary>");
     };
     let mut child = match Command::new(&binary)
-        .arg("127.0.0.1:0")
+        .arg(":0/env")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

@@ -1,8 +1,8 @@
 //! A C policy vtable over the facade Model and its episode store.
+//! `rlmesh_model_serve` joins the session of a participant address as the
+//! model, as Python's `Model.serve` does.
 //!
-//! TODO: `rlmesh_model_serve` and the remote model still use the v1 gRPC
-//! model server, which Python left for sessions in 0.2. The parity step moves
-//! C, C++ and C# onto session addresses and deletes the v1 model server
+//! TODO: delete its v1 binds with the v1 model server
 //! (`rlmesh::model::server`, `rlmesh-grpc`'s model service).
 #![allow(unsafe_code)] // FFI callbacks, borrowed contexts and ownership transfer.
 use crate::abi::{
