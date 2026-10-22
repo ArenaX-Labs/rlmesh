@@ -754,22 +754,23 @@ pub struct ModelConnection {
     model: ParticipantId,
     participant: Participant,
     lockstep: Option<zenoh::Session>,
-    placed: Option<Placed>,
+    /// The model's own session, when this connects there.
+    own: Option<SessionAddress>,
     /// The session the model was invited into, which it leaves at close.
     invited: Option<String>,
 }
 
 impl ModelConnection {
     /// Connects to the model at the participant address `address`: joins
-    /// its session as `id` and waits up to `timeout` for the model to
-    /// answer.
+    /// its session as `id` (never hosting it: the model's process does)
+    /// and waits up to `timeout` for the model to answer.
     pub async fn connect(address: &str, id: &str, timeout: Duration) -> Result<Self, GymError> {
         let parsed = Address::participant(address).map_err(|e| GymError::Config(e.to_string()))?;
         let model = ParticipantId::new(parsed.participant.clone().unwrap_or_default())
             .map_err(|e| GymError::Config(e.to_string()))?;
-        let placed = place(&parsed, LEASE_GRACE).await?;
-        let mut connection = Self::join(&placed.address, &model, id, timeout).await?;
-        connection.placed = Some(placed);
+        let own = parsed.joining()?;
+        let mut connection = Self::join(&own, &model, id, timeout).await?;
+        connection.own = Some(own);
         Ok(connection)
     }
 
@@ -831,7 +832,7 @@ impl ModelConnection {
             model: model.clone(),
             participant,
             lockstep,
-            placed: None,
+            own: None,
             invited: None,
         })
     }
@@ -839,12 +840,12 @@ impl ModelConnection {
     /// Whether the model answers in `session` (a session address): its own
     /// session, which it needs no invitation into.
     pub fn answers_in(&self, session: &str) -> bool {
-        let Some(placed) = &self.placed else {
+        let Some(own) = &self.own else {
             return false;
         };
-        session.parse::<SessionAddress>().is_ok_and(|session| {
-            session.base == placed.address.base && session.session == placed.address.session
-        })
+        session
+            .parse::<SessionAddress>()
+            .is_ok_and(|session| session.base == own.base && session.session == own.session)
     }
 
     /// The workflow editions the model declared in its session, from the
@@ -873,9 +874,6 @@ impl ModelConnection {
         }
         if let Some(lockstep) = self.lockstep {
             let _ = lockstep.close().await;
-        }
-        if let Some(mut placed) = self.placed {
-            let _ = placed.close().await;
         }
     }
 }

@@ -342,3 +342,34 @@ async fn a_served_model_declares_its_workflow_editions_in_the_roster() {
     cancel.cancel();
     served.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_driver_waits_for_a_model_not_up_yet_and_never_hosts_its_session() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let address = format!("127.0.0.1:{port}/echo");
+    let connecting = tokio::spawn({
+        let address = address.clone();
+        async move { ModelConnection::connect(&address, "driver", Duration::from_secs(10)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let listening = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+    assert!(!listening, "the driver hosted the model's session");
+
+    let binding = ModelBinding::bind(&address).await.unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let service = Arc::new(ModelService::new(Echo, String::new()));
+    let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
+    let first = connecting.await.unwrap().unwrap();
+    first.close().await;
+    // The model's session is its own: a driver leaving it leaves it serving.
+    let again = ModelConnection::connect(&address, "driver", Duration::from_secs(10))
+        .await
+        .unwrap();
+    again.close().await;
+    cancel.cancel();
+    served.await.unwrap().unwrap();
+}

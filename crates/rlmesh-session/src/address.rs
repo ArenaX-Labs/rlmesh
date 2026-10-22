@@ -263,6 +263,18 @@ impl Address {
         session_id(self.session_name())
     }
 
+    /// The session this address names, resolved for joining and never
+    /// hosted here: the local host on [`well_known_port`] when it names
+    /// none.
+    pub fn joining(&self) -> Result<SessionAddress, SessionError> {
+        let base = match self.placement() {
+            Placement::Local => SocketAddr::from((Ipv4Addr::LOCALHOST, well_known_port()?)),
+            Placement::Host(base) => joinable(base),
+            Placement::Join(host, port) => resolve(&self.to_string(), &host, port)?,
+        };
+        SessionAddress::new(base, self.session_name())
+    }
+
     /// Where the hosting rule puts the session.
     pub fn placement(&self) -> Placement {
         let Some(host) = &self.host else {
@@ -373,13 +385,7 @@ impl FromStr for SessionAddress {
     type Err = SessionError;
 
     fn from_str(text: &str) -> Result<Self, SessionError> {
-        let address = Address::session(text)?;
-        let base = match address.placement() {
-            Placement::Local => SocketAddr::from((Ipv4Addr::LOCALHOST, well_known_port()?)),
-            Placement::Host(base) => joinable(base),
-            Placement::Join(host, port) => resolve(text, &host, port)?,
-        };
-        Self::new(base, address.session_name())
+        Address::session(text)?.joining()
     }
 }
 
