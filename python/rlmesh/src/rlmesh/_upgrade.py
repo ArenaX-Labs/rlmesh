@@ -2,33 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from typing import NoReturn
-
-#: Set while a part still on the v1 wire (the ``rlmesh.serve`` entrypoint and
-#: the sandboxes it serves in) serves or dials a v1 endpoint.
-# TODO: delete with the v1 env wire once `rlmesh.serve` and `Sandbox` join
-# sessions.
-_V1_ENDPOINTS: ContextVar[bool] = ContextVar("rlmesh_v1_endpoints", default=False)
-
-
-@contextmanager
-def v1_endpoints() -> Iterator[None]:
-    """Let the parts still on the v1 wire serve and dial v1 endpoints."""
-    token = _V1_ENDPOINTS.set(True)
-    try:
-        yield
-    finally:
-        _V1_ENDPOINTS.reset(token)
 
 
 def refuse_v1_address(where: str, address: str) -> None:
     """Refuse ``address`` when it is a v1 endpoint (0.2 uses session addresses)."""
     from ._rlmesh import is_v2_address
 
-    if is_v2_address(address) or _V1_ENDPOINTS.get():
+    if is_v2_address(address):
         return
     raise ValueError(
         f"{where}({address!r}): {address!r} is a v1 endpoint, which rlmesh 0.2 no "
@@ -107,5 +88,4 @@ __all__ = [
     "refuse_v1_address",
     "removed",
     "session",
-    "v1_endpoints",
 ]

@@ -3,7 +3,6 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use rlmesh_grpc::EnvClient;
 use serde::Serialize;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -11,7 +10,10 @@ use uuid::Uuid;
 use crate::sandbox::source::ResolvedEnvironmentSourceRef;
 use crate::sandbox::{EffectiveSandboxSpec, EnvironmentSourceRef, hf, shell_quote};
 
-const DEFAULT_CONTAINER_PORT: u16 = 50051;
+/// The ports a session host listens on, one per traffic class.
+const SESSION_PORTS: u16 = rlmesh_session::transport::TrafficClass::ALL.len() as u16;
+/// The participant a built env serves as in its container's session.
+const ENV_NAME: &str = "env";
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTAINER_LOG_TAIL_BYTES: usize = 64 * 1024;
 
@@ -108,12 +110,14 @@ pub async fn run_container_async(
 ) -> Result<StartedContainer> {
     let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
     let bootstrap_json = render_bootstrap_json(spec)?;
+    let host_port = free_session_ports()?;
     let output = Command::new("docker")
         .args(docker_run_args(
             &container_name,
             &artifact.image_id,
             &bootstrap_json,
             std::process::id(),
+            host_port,
         ))
         .output()
         .context("failed to start docker container")?;
@@ -126,14 +130,7 @@ pub async fn run_container_async(
     }
 
     let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let host_port = match resolve_published_port(&container_id) {
-        Ok(port) => port,
-        Err(err) => {
-            let _ = stop_container(&container_id);
-            return Err(err);
-        }
-    };
-    let address = format!("tcp://127.0.0.1:{host_port}");
+    let address = format!("127.0.0.1:{host_port}/{ENV_NAME}");
     if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
         let hint = spec.rlmesh_package.skew_hint();
         let report = startup_failure_report(&container_id, &container_name, &err, hint.as_deref());
@@ -387,10 +384,16 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
     let deadline = Instant::now() + timeout;
 
     loop {
+        let options = rlmesh::lockstep::ConnectOptions {
+            timeout: READY_PROBE_TIMEOUT,
+            ..Default::default()
+        };
         let probe = tokio::time::timeout(READY_PROBE_TIMEOUT, async {
-            let mut client = EnvClient::connect(address).await?;
-            client.handshake().await?;
-            Ok::<_, rlmesh_grpc::error::Error>(())
+            rlmesh::lockstep::connect(address, options)
+                .await?
+                .close()
+                .await;
+            Ok::<_, rlmesh::lockstep::GymError>(())
         })
         .await;
 
@@ -400,7 +403,7 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
                 if let Some(state) = container_terminated(container_id) {
                     bail!("sandbox container exited before ready ({state})");
                 }
-                if err.is_fatal_handshake() || Instant::now() >= deadline {
+                if Instant::now() >= deadline {
                     return Err(err.into());
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -459,14 +462,12 @@ fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     Ok(format!(
         "# syntax=docker/dockerfile:1.7\n\n\
 FROM {}\n\n\
-ENV RLMESH_PORT={DEFAULT_CONTAINER_PORT}\n\
 ENV PYTHONUNBUFFERED=1\n\n\
 WORKDIR /opt/rlmesh\n\
 {}\
 {}\
 \n\
 RUN sh -lc {}\n\n\
-EXPOSE {DEFAULT_CONTAINER_PORT}\n\
 ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
         spec.base_image,
         source_copy,
@@ -722,6 +723,7 @@ fn docker_run_args(
     image_id: &str,
     bootstrap_json: &str,
     owner_pid: u32,
+    host_port: u16,
 ) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
@@ -748,42 +750,44 @@ fn docker_run_args(
     args.extend([
         "--env".to_string(),
         format!("RLMESH_BOOTSTRAP_JSON={bootstrap_json}"),
+        // The env serves in a session the container hosts on all its
+        // interfaces, on the host's own port numbers, so a session address
+        // means the same inside the container and out; its participants
+        // join as clients, which the host routes for.
+        "--env".to_string(),
+        format!("RLMESH_ADDRESS=0.0.0.0:{host_port}"),
+        "--env".to_string(),
+        format!("RLMESH_NAME={ENV_NAME}"),
+        "--env".to_string(),
+        format!("{}=1", rlmesh_session::address::JOIN_AS_CLIENT_VAR),
         "--name".to_string(),
         container_name.to_string(),
-        // Let docker pick a free host port (binding it atomically) instead of
-        // reserving one ourselves and racing between releasing it and `docker
-        // run`. The assigned port is read back via `docker port`.
         "-p".to_string(),
-        format!("127.0.0.1:0:{DEFAULT_CONTAINER_PORT}"),
+        format!(
+            "127.0.0.1:{host_port}-{last}:{host_port}-{last}",
+            last = host_port + SESSION_PORTS - 1
+        ),
         image_id.to_string(),
     ]);
     args
 }
 
-/// Read back the host port docker published for the container's gRPC port.
-fn resolve_published_port(container_id: &str) -> Result<u16> {
-    let output = Command::new("docker")
-        .args(["port", container_id, &DEFAULT_CONTAINER_PORT.to_string()])
-        .output()
-        .context("failed to read published docker port")?;
-    if !output.status.success() {
-        bail!(
-            "docker port failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+/// A base port on 127.0.0.1 with the session ports after it free, to publish
+/// a container's session host on. Free when checked: `docker run` reports a
+/// port taken since.
+pub(crate) fn free_session_ports() -> Result<u16> {
+    use std::net::TcpListener;
+    for _ in 0..64 {
+        let first = TcpListener::bind(("127.0.0.1", 0)).context("no free local port")?;
+        let base = first.local_addr()?.port();
+        let Some(last) = base.checked_add(SESSION_PORTS - 1) else {
+            continue;
+        };
+        if (base + 1..=last).all(|port| TcpListener::bind(("127.0.0.1", port)).is_ok()) {
+            return Ok(base);
+        }
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_published_port(&stdout).ok_or_else(|| {
-        anyhow!("could not parse published port from docker port output: {stdout:?}")
-    })
-}
-
-/// Parse the host port from `docker port` output lines like
-/// `127.0.0.1:49153` or `0.0.0.0:49153` (one mapping per line).
-fn parse_published_port(raw: &str) -> Option<u16> {
-    raw.lines()
-        .filter_map(|line| line.trim().rsplit_once(':'))
-        .find_map(|(_, port)| port.trim().parse::<u16>().ok())
+    bail!("found no {SESSION_PORTS} consecutive free ports on 127.0.0.1")
 }
 
 /// A rlmesh-owned container candidate for reaping: its id, the recorded owner
@@ -1018,8 +1022,8 @@ mod tests {
         BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness, bounded_build_memory,
         builder_name, confirmed_terminal_summary, current_pid_namespace_id, docker_run_args,
         format_startup_failure_report, is_docker_size, is_orphan, owner_pid_liveness,
-        parse_container_state, parse_owned_containers, parse_published_port, pid_is_alive,
-        render_bootstrap_json, render_dockerfile, resolve_build_memory, shell_quote, tail_text,
+        parse_container_state, parse_owned_containers, pid_is_alive, render_bootstrap_json,
+        render_dockerfile, resolve_build_memory, shell_quote, tail_text,
     };
     use crate::sandbox::source::{GymSourceRef, ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::sandbox::{
@@ -1118,7 +1122,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_do_not_auto_remove_container() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, 40000);
 
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
@@ -1134,16 +1138,21 @@ mod tests {
     }
 
     #[test]
-    fn docker_run_args_publish_ephemeral_host_port() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+    fn docker_run_args_publish_the_session_ports_on_loopback() {
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, 40000);
 
-        assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
-        assert!(!args.iter().any(|arg| arg.starts_with("127.0.0.1:4")));
+        assert!(
+            args.iter()
+                .any(|arg| arg == "127.0.0.1:40000-40003:40000-40003")
+        );
+        assert!(args.iter().any(|arg| arg == "RLMESH_ADDRESS=0.0.0.0:40000"));
+        assert!(args.iter().any(|arg| arg == "RLMESH_NAME=env"));
+        assert!(args.iter().any(|arg| arg == "RLMESH_JOIN_AS_CLIENT=1"));
     }
 
     #[test]
     fn docker_run_args_label_container_for_reaping() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, 40000);
 
         let label_idx = args.iter().position(|arg| arg == "--label");
         assert!(label_idx.is_some(), "containers must carry an owner label");
@@ -1155,7 +1164,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_stamp_owner_pid_label() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, 40000);
 
         // The owner-pid label must be present so the reaper can tell a live
         // owner's container apart from an orphan.
@@ -1171,7 +1180,7 @@ mod tests {
         let Some(pid_namespace) = current_pid_namespace_id() else {
             return;
         };
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, 40000);
 
         assert!(
             args.iter()
@@ -1187,6 +1196,7 @@ mod tests {
             "sha256:abc",
             "{\"spec\":{\"kind\":\"gym\"}}",
             4242,
+            40000,
         );
 
         let env_idx = args.iter().position(|arg| arg == "--env");
@@ -1341,21 +1351,6 @@ mod tests {
         // unlikely to exist on a normal system.
         assert!(pid_is_alive(std::process::id()));
         assert!(!pid_is_alive(u32::MAX));
-    }
-
-    #[test]
-    fn parse_published_port_reads_host_port() {
-        assert_eq!(parse_published_port("127.0.0.1:49153\n"), Some(49153));
-        assert_eq!(parse_published_port("0.0.0.0:50000"), Some(50000));
-        // IPv6 mappings appear with bracketed hosts; last colon-separated field is the port.
-        assert_eq!(parse_published_port("[::]:51000\n"), Some(51000));
-        // First parseable mapping wins when docker lists several bindings.
-        assert_eq!(
-            parse_published_port("0.0.0.0:49153\n[::]:49153\n"),
-            Some(49153)
-        );
-        assert_eq!(parse_published_port(""), None);
-        assert_eq!(parse_published_port("garbage"), None);
     }
 
     #[test]

@@ -835,6 +835,17 @@ impl ModelConnection {
         })
     }
 
+    /// Whether the model answers in `session` (a session address): its own
+    /// session, which it needs no invitation into.
+    pub fn answers_in(&self, session: &str) -> bool {
+        let Some(placed) = &self.placed else {
+            return false;
+        };
+        session.parse::<SessionAddress>().is_ok_and(|session| {
+            session.base == placed.address.base && session.session == placed.address.session
+        })
+    }
+
     /// The workflow editions the model declared in its session, from the
     /// roster; `None` when it declared none.
     pub fn workflow_editions(&self) -> Option<rlmesh_proto::SessionOffer> {
@@ -902,7 +913,9 @@ impl Remote {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            if let Some(session) = target {
+            // A model already in the run's session (an env served into the
+            // model's own) answers there as it is.
+            if let Some(session) = target.filter(|session| !connected.answers_in(session)) {
                 connected = connected
                     .invite(&session, &id, self.timeout)
                     .await

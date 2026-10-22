@@ -1,5 +1,6 @@
 //! Docker-backed packaging for RLMesh environments, and its Python functions
-//! (`sandbox_start_env`, `sandbox_stop_env`, `sandbox_reap_orphans`).
+//! (`sandbox_start_env`, `sandbox_stop_env`, `sandbox_reap_orphans`,
+//! `sandbox_session_ports`).
 //!
 //! [`start_env`] resolves an [`EnvironmentSourceRef`] (a gymnasium env id or an
 //! `hf://` HuggingFace repo), builds a sandbox image around it, and starts a
@@ -28,7 +29,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub use error::SandboxError;
-pub(crate) use python::{sandbox_reap_orphans, sandbox_start_env, sandbox_stop_env};
+pub(crate) use python::{
+    sandbox_reap_orphans, sandbox_session_ports, sandbox_start_env, sandbox_stop_env,
+};
 pub use source::EnvironmentSourceRef;
 pub(crate) use wheel::ResolvedRLMeshPackage;
 

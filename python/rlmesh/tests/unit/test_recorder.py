@@ -274,7 +274,7 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
 
     rec = Recorder(fps=20)
     session: Any = _context(_Client(), None)
-    hooks = rec.capture(model="m", env="e", task="t", session=session)
+    hooks = rec.capture(model="m", env="e", task="t", binding=session)
     hooks.on_episode_start(episode=0, seed=0)
     for _ in range(4):
         hooks.on_step(_step_event())
@@ -293,7 +293,7 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
 def test_capture_smoke_with_a_real_run(tmp_path: Path, path: str) -> None:
     """Recorder.capture works through a real run's hook path, on either loop.
 
-    Deliberately omits ``session=``: the hooks must adopt the run's context via
+    Deliberately omits ``binding=``: the hooks must adopt the run's context via
     ``RunHooks.on_run_start`` and auto-discover the image role from it.
     """
     np = pytest.importorskip("numpy")
@@ -478,7 +478,7 @@ def test_auto_discovery_records_image_role_named_render() -> None:
         return role_img
 
     rec = Recorder()
-    hooks = rec.capture(model="m", env="e", task="t", session=session)
+    hooks = rec.capture(model="m", env="e", task="t", binding=session)
     hooks.on_episode_start(episode=0, seed=0)
     hooks.on_step(_step_event(read=read))
     hooks.on_episode_end(_episode(0, reward=1.0, success=True))
@@ -510,7 +510,7 @@ def test_auto_discovery_reads_render_role_without_render_source() -> None:
         return role_img
 
     rec = Recorder()
-    hooks = rec.capture(model="m", env="e", task="t", session=session)
+    hooks = rec.capture(model="m", env="e", task="t", binding=session)
     hooks.on_episode_start(episode=0, seed=0)
     hooks.on_step(_step_event(read=read))
     hooks.on_episode_end(_episode(0, reward=1.0, success=True))
@@ -586,7 +586,7 @@ def test_env_video_eager_copy_survives_overwrite(
 
 
 def test_capture_defers_camera_discovery_to_first_step() -> None:
-    """capture(session=) must not read the contract before the session connects."""
+    """capture(binding=) must not read the contract before the env connects."""
     rec = Recorder()
 
     class _Spy:
@@ -605,7 +605,7 @@ def test_capture_defers_camera_discovery_to_first_step() -> None:
             return FrameSources(roles=(), render_label=None, render=None)
 
     spy: Any = _Spy()
-    hooks = rec.capture(model="m", env="e", task="t", session=spy)
+    hooks = rec.capture(model="m", env="e", task="t", binding=spy)
     assert _Spy.reads == 0
 
     hooks.on_episode_start(episode=0, seed=0)
@@ -634,7 +634,7 @@ def test_explicit_empty_cameras_skips_discovery() -> None:
             return FrameSources(roles=(), render_label=None, render=None)
 
     spy: Any = _Spy()
-    hooks = rec.capture(model="m", env="e", task="t", cameras=[], session=spy)
+    hooks = rec.capture(model="m", env="e", task="t", cameras=[], binding=spy)
     hooks.on_episode_start(episode=0, seed=0)
     hooks.on_step(_step_event())
     hooks.on_episode_end(_episode(0, reward=1.0, success=True))
@@ -843,7 +843,7 @@ def test_explicit_render_camera_falls_back_to_render_source() -> None:
     session: Any = _context(_Client(), None)
     rec = Recorder()
     hooks = rec.capture(
-        model="m", env="e", task="t", cameras=["render"], session=session
+        model="m", env="e", task="t", cameras=["render"], binding=session
     )
     hooks.on_episode_start(episode=0, seed=0)
     hooks.on_step(_step_event())
@@ -904,22 +904,22 @@ def test_env_video_outside_the_run_directory_is_refused(
     rec.close()
 
 
-def test_on_run_start_prefers_explicit_session() -> None:
-    """A session passed to capture(session=...) wins over the running one."""
+def test_on_run_start_prefers_an_explicit_binding() -> None:
+    """A context passed to capture(binding=...) wins over the running one."""
     from rlmesh.recorder.hooks import CaptureHooks
 
     rec = Recorder()
     explicit: Any = _context(None, None)
     other: Any = _context(None, None)
-    hooks = rec.capture(model="m", env="e", task="t", session=explicit)
+    hooks = rec.capture(model="m", env="e", task="t", binding=explicit)
     assert isinstance(hooks, CaptureHooks)
     hooks.on_run_start(other)
-    assert hooks._session is explicit  # pyright: ignore[reportPrivateUsage]
+    assert hooks._binding is explicit  # pyright: ignore[reportPrivateUsage]
 
     adopted = rec.capture(model="m", env="e", task="t")
     assert isinstance(adopted, CaptureHooks)
     adopted.on_run_start(other)
-    assert adopted._session is other  # pyright: ignore[reportPrivateUsage]
+    assert adopted._binding is other  # pyright: ignore[reportPrivateUsage]
 
 
 def test_capture_warnings_never_raise_under_warnings_as_errors() -> None:
@@ -1009,3 +1009,8 @@ def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None
     assert all(
         e.predict_ms is not None and e.step_ms is not None for e in result.episodes
     )
+
+
+def test_capture_refuses_the_0_1_session_keyword() -> None:
+    with pytest.raises(TypeError, match=r"capture\(\.\.\., binding=\.\.\.\)"):
+        Recorder().capture(model="m", env="e", session=object())

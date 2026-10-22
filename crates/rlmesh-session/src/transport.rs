@@ -228,6 +228,10 @@ pub struct TransportTuning {
     pub drop_wait: Option<Duration>,
     /// TLS material for `tls/` and `quic/` endpoints.
     pub tls: Option<TlsFiles>,
+    /// Join as a Zenoh client: listen nowhere and reach everyone through
+    /// the host dialed, which routes for its clients. A peer (the default)
+    /// talks to the other peers directly.
+    pub client: bool,
 }
 
 impl Default for TransportTuning {
@@ -237,6 +241,7 @@ impl Default for TransportTuning {
             keep_alive: 4,
             drop_wait: None,
             tls: None,
+            client: false,
         }
     }
 }
@@ -316,9 +321,10 @@ impl TransportConfig {
     }
 }
 
-/// A peer-mode Zenoh config: multicast scouting off, so it listens on
-/// `listen` and dials `connect` and nothing else (sessions on one host never
-/// discover each other by accident).
+/// A peer-mode Zenoh config (client mode when `tuning.client`, which listens
+/// nowhere): multicast scouting off, so it listens on `listen` and dials
+/// `connect` and nothing else (sessions on one host never discover each
+/// other by accident).
 pub fn zenoh_config(
     endpoints: &Endpoints,
     tuning: &TransportTuning,
@@ -333,9 +339,14 @@ pub fn zenoh_config(
         let quoted: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
         format!("[{}]", quoted.join(","))
     };
-    set(&mut config, "mode", "\"peer\"".into())?;
+    let (mode, listen) = if tuning.client {
+        ("\"client\"", list(&[]))
+    } else {
+        ("\"peer\"", list(&endpoints.listen))
+    };
+    set(&mut config, "mode", mode.into())?;
     set(&mut config, "scouting/multicast/enabled", "false".into())?;
-    set(&mut config, "listen/endpoints", list(&endpoints.listen))?;
+    set(&mut config, "listen/endpoints", listen)?;
     set(&mut config, "connect/endpoints", list(&endpoints.connect))?;
     let lease_ms = u64::try_from(tuning.lease.as_millis())
         .unwrap_or(u64::MAX)
@@ -380,6 +391,7 @@ pub fn zenoh_config(
 pub struct Transport {
     sessions: [zenoh::Session; 4],
     shared: bool,
+    client: bool,
 }
 
 impl std::fmt::Debug for Transport {
@@ -405,7 +417,10 @@ impl Transport {
             Layout::Shared(endpoints) => {
                 let session = zenoh::open(zenoh_config(endpoints, &config.tuning)?).await?;
                 debug!(zid = %session.zid(), "transport open (shared)");
-                Ok(Self::from_session(session))
+                Ok(Self {
+                    client: config.tuning.client,
+                    ..Self::from_session(session)
+                })
             }
             Layout::PerClass(classes) => {
                 let mut opened = Vec::with_capacity(4);
@@ -420,6 +435,7 @@ impl Transport {
                 Ok(Self {
                     sessions,
                     shared: false,
+                    client: config.tuning.client,
                 })
             }
         }
@@ -430,12 +446,18 @@ impl Transport {
         Self {
             sessions: [session.clone(), session.clone(), session.clone(), session],
             shared: true,
+            client: false,
         }
     }
 
     /// Whether every class shares one session.
     pub fn is_shared(&self) -> bool {
         self.shared
+    }
+
+    /// Whether it joined as a Zenoh client (see [`TransportTuning::client`]).
+    pub fn is_client(&self) -> bool {
+        self.client
     }
 
     /// The session of `class`.
@@ -560,6 +582,7 @@ mod tests {
                 private_key: "key.pem".into(),
             }),
             drop_wait: Some(Duration::from_micros(50)),
+            client: false,
         };
         let endpoints = Endpoints {
             listen: vec!["tcp/127.0.0.1:0".into()],
@@ -576,6 +599,17 @@ mod tests {
         assert_eq!(get("transport/link/tls/root_ca_certificate"), "\"ca.pem\"");
         assert!(get("connect/endpoints").contains("tcp/10.0.0.1:7447"));
         assert_eq!(get("scouting/multicast/enabled"), "false");
+        assert_eq!(get("mode"), "\"peer\"");
+
+        let client = TransportTuning {
+            client: true,
+            ..TransportTuning::default()
+        };
+        let config = zenoh_config(&endpoints, &client).expect("every key is valid");
+        let get = |key: &str| config.get_json(key).expect(key);
+        assert_eq!(get("mode"), "\"client\"");
+        assert_eq!(get("listen/endpoints"), "[]");
+        assert!(get("connect/endpoints").contains("tcp/10.0.0.1:7447"));
     }
 
     #[test]

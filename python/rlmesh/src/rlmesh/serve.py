@@ -2,9 +2,10 @@
 
 ``python -m rlmesh.serve my_pkg:Policy`` serves a model; ``--env my_pkg:Env``
 serves an environment. The target may be a ``Model`` subclass, an :class:`EnvFactory`,
-or a bare predict / make-env callable. Serves on ``RLMESH_ADDRESS``
-(default ``0.0.0.0:50051``); point your Dockerfile ``ENTRYPOINT`` here instead of
-hand-writing a serve loop.
+or a bare predict / make-env callable. Serves as ``RLMESH_NAME`` (default
+``model``, or ``env``) in the session at ``RLMESH_ADDRESS`` (default
+``0.0.0.0:7447``, hosted here); point your Dockerfile ``ENTRYPOINT`` here
+instead of hand-writing a serve loop.
 """
 
 from __future__ import annotations
@@ -135,11 +136,10 @@ if TYPE_CHECKING:
 
 __all__ = ["main", "serve_env", "serve_model", "startup_marks"]
 
-# Where a model serves by default: the default session, hosted in this process
-# on the well-known port, on all interfaces (a container's published ports).
-_MODEL_ADDRESS = "0.0.0.0:7447"
-# TODO: an env joins a session too once the sandboxes do.
-_ENV_ADDRESS = "0.0.0.0:50051"
+# Where a model or env serves by default: the default session, hosted in this
+# process on the well-known port, on all interfaces (a container's published
+# ports).
+_ADDRESS = "0.0.0.0:7447"
 
 # Frameworks whose obs/action seam carries device tensors. numpy and the default
 # Auto backend have no device, so a device= is meaningless (and unsupported) there.
@@ -210,17 +210,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--address",
         default=os.environ.get("RLMESH_ADDRESS") or None,
         help=(
-            "Where to serve. A model joins the session there (default "
-            f"{_MODEL_ADDRESS}, which hosts it on all interfaces); an env serves "
-            f"the v1 wire there (default {_ENV_ADDRESS}). Defaults to RLMESH_ADDRESS."
+            f"The session to serve in (default {_ADDRESS}, which hosts it here on "
+            "all interfaces). Defaults to RLMESH_ADDRESS."
         ),
     )
     parser.add_argument(
         "--name",
-        default=os.environ.get("RLMESH_NAME") or "model",
+        default=os.environ.get("RLMESH_NAME") or None,
         help=(
-            "The model's participant name in its session, reached at "
-            "'<address>/<name>'. Defaults to RLMESH_NAME, then 'model'. Model only."
+            "The participant name in the session, reached at '<address>/<name>'. "
+            "Defaults to RLMESH_NAME, then 'model' (or 'env' with --env)."
         ),
     )
     parser.add_argument(
@@ -322,7 +321,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _mark("imports")
             serve_env(
                 env,
-                args.address or _ENV_ADDRESS,
+                f"{(args.address or _ADDRESS).rstrip('/')}/{args.name or 'env'}",
                 num_envs=num_envs,
                 vectorization_mode=vectorization_mode,
                 framework=args.framework,
@@ -335,8 +334,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _mark("imports")
             serve_model(
                 model,
-                args.address or _MODEL_ADDRESS,
-                name=args.name,
+                args.address or _ADDRESS,
+                name=args.name or "model",
                 binding=binding,
                 workflow_edition=args.workflow_edition,
             )
@@ -464,7 +463,7 @@ def serve_env(
     workflow_edition: str | None = None,
     **make_kwargs: object,
 ) -> None:
-    """Host an environment on ``address`` (blocking).
+    """Serve an environment at the participant address ``address`` (blocking).
 
     An :class:`EnvFactory` class/instance is constructed via ``prepare()`` +
     ``make(**make_kwargs)`` and its ``tags`` published; a bare make-env callable is
@@ -552,18 +551,14 @@ def serve_env(
         option=workflow_edition,
         declared=getattr(env_source, "workflow_edition", None),
     )
-    from ._upgrade import v1_endpoints
-
-    # The container entrypoint still serves the v1 wire.
-    with v1_endpoints():
-        server = EnvServer(
-            env,
-            address,
-            tags=cast("Any", tags),
-            framework=env_framework,
-            device=_gate_device(device, env_framework),
-            options=options,
-        )
+    server = EnvServer(
+        env,
+        address,
+        tags=cast("Any", tags),
+        framework=env_framework,
+        device=_gate_device(device, env_framework),
+        options=options,
+    )
     _mark("env")
     _stamp_startup("env", server.address, env_source, env, options=options)
     server.serve()

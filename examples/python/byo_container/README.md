@@ -1,40 +1,44 @@
 # Bring-your-own container (env + model)
 
-Hand-written Dockerfiles that produce RLMesh-compatible env and model images — the v0.1 replacement for recipe authoring. You own the Dockerfile and a small entrypoint; RLMesh runs the image. The same image works locally and on RLMesh Managed.
+Hand-written Dockerfiles that produce RLMesh-compatible env and model images — the replacement for recipe authoring. You own the Dockerfile and a small entrypoint; RLMesh runs the image. The same image works locally and on RLMesh Managed.
 
-- `env/` — serves a Gymnasium env over the RLMesh protocol on port 50051. Dial it with `rlmesh.RemoteEnv(address)`.
-- `model/` — serves a policy on an RLMesh session hosted on port 7447, as the participant `model`.
+- `env/` — hosts an RLMesh session on port 7447 and serves a Gymnasium env in it as the participant `env`.
+- `model/` — hosts an RLMesh session on port 7447 and serves a policy in it as the participant `model`.
+
+A session host listens on four consecutive ports (7447-7450), one per traffic class.
 
 ## Quick start
 
 ```bash
-# Env: build and serve
 docker build -t my-env:latest env
-docker run --rm -p 50051:50051 my-env:latest
-
-# Model: build, then drive it against the env with the symmetric loop
 docker build -t my-model:latest model
 ```
 
 ```python
 import rlmesh
 
-env = rlmesh.RemoteEnv("127.0.0.1:50051")
-sess = rlmesh.session(rlmesh.SandboxModel("image://my-model:latest"), env)  # starts the container
-obs, _ = sess.reset()
-while not sess.done:
-    action = sess.predict(obs)
-    obs, reward, terminated, truncated, _ = sess.step(action)
+# Each sandbox starts its container and publishes the session's ports on loopback.
+with rlmesh.SandboxEnv("image://my-env:latest") as env:
+    obs, _ = env.reset()
+    obs, reward, terminated, truncated, _ = env.step(env.action_space.sample())
+
+model = rlmesh.SandboxModel("image://my-model:latest")
+with model:
+    result = model.run(MyLocalEnv(), episodes=1)  # the env is served in the model's session
+    with model.bind(MyLocalEnv()) as binding:  # or step by hand
+        obs, _ = binding.reset()
+        while not binding.done:
+            obs, reward, terminated, truncated, _ = binding.step()
 ```
 
-`rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)` runs your prebuilt tag directly — no recipe, no build — and opens a route configured from the env's contract. A model served on a session is reached by its participant address and run against the env:
+`SandboxModel("image://<tag>")` runs your prebuilt tag directly — no recipe, no build. Its `run` and `bind` drive the model as `rlmesh.Model(address)` does, serving a local env in the session the container hosts, which it can reach. A model served on a session you started yourself is reached by its participant address:
 
 ```python
-result = rlmesh.Model(model_address).run(rlmesh.RemoteEnv(env_address), episodes=1)
+result = rlmesh.Model("127.0.0.1:7447/model").run(env, episodes=1)
 ```
 
 ## The bare protocol contract
 
-Both containers serve on `RLMESH_ADDRESS`: the env serves the environment (default `0.0.0.0:50051`), and the model hosts a session there (default `0.0.0.0:7447`) and serves the policy in it as `RLMESH_NAME` (default `model`). A client drives them with the loop above.
+Both containers host a session on `RLMESH_ADDRESS` (default `0.0.0.0:7447`) and serve in it as `RLMESH_NAME` (`env` or `model`). A sandbox picks four free ports, hosts the session on them and publishes them to the same numbers on loopback, so a session address means the same inside the container and out. It also sets `RLMESH_JOIN_AS_CLIENT=1`, under which the container's participants join as clients of its session host, which routes for them: the machine outside reaches that host through the published ports, but not the participants' own listeners.
 
-**Beta footgun:** the protocol handshake pins a provisional edition and fails closed — a hand-built container's `rlmesh` build must be compatible with the host's until the edition seals at GA. Pin the same `rlmesh` version in your Dockerfile as the host that drives it.
+An image must be built with rlmesh 0.2: one built with rlmesh 0.1 serves the v1 wire, and a sandbox refuses it, naming the image. Pin the same `rlmesh` version in your Dockerfile as the host that drives it.

@@ -11,8 +11,16 @@ from typing import Any
 
 import pytest
 import rlmesh
-from rlmesh._sandbox import _sources
+from rlmesh._sandbox import _model, _sources
 from rlmesh._sandbox import session as sandbox
+
+
+@pytest.fixture(autouse=True)
+def _session_ports(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Containers publish on 40000-40003 and serve at once."""
+    monkeypatch.setattr(sandbox, "_sandbox_session_ports", lambda: 40000)
+    monkeypatch.setattr(_model, "wait_serving", lambda *_args: None)
+
 
 # --- resolve_source_kind -----------------------------------------------------
 
@@ -84,7 +92,7 @@ def test_prebuilt_run_cmd_is_hardened_with_image_last() -> None:
         "img:1",
         env_vars={"RLMESH_MAKE_KWARGS": '{"suite": "a"}'},
         gpus="2",
-        container_port=50051,
+        host_port=40000,
         owner_pid=123,
         owner_pid_ns=None,
         devices=["nvidia.com/gpu=all"],
@@ -98,6 +106,8 @@ def test_prebuilt_run_cmd_is_hardened_with_image_last() -> None:
     v_idxs = [i for i, a in enumerate(cmd) if a == "-v"]
     assert [cmd[i + 1] for i in v_idxs] == ["/h/a:/c/a", "/h/b:/c/b:ro"]
     assert cmd[cmd.index("-e") + 1] == 'RLMESH_MAKE_KWARGS={"suite": "a"}'
+    # The session's four ports, in order, on loopback, to the same numbers.
+    assert cmd[cmd.index("-p") + 1] == "127.0.0.1:40000-40003:40000-40003"
     assert cmd[-1] == "img:1"  # image always last
 
 
@@ -123,20 +133,12 @@ def _docker_dispatch(captured: dict[str, list[str]]) -> Any:
                 stderr = ""
 
             return _P()
-        if cmd[:2] == ["docker", "port"]:
-
-            class _Q:
-                returncode = 0
-                stdout = "127.0.0.1:49200\n"
-                stderr = ""
-
-            return _Q()
         raise AssertionError(f"unexpected docker call: {cmd}")
 
     return fake_run
 
 
-def test_start_prebuilt_container_injects_binding_and_reads_port(
+def test_start_prebuilt_container_injects_binding_and_serves_in_a_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, list[str]] = {}
@@ -146,6 +148,7 @@ def test_start_prebuilt_container_injects_binding_and_reads_port(
     info = sandbox.start_prebuilt_container(
         "libero:latest",
         requested_source="libero:latest",
+        name="env",
         binding={"suite": "libero_spatial", "task_id": 3},
         num_envs=4,
         vectorization_mode="sync",
@@ -162,8 +165,13 @@ def test_start_prebuilt_container_injects_binding_and_reads_port(
     # num_envs/mode ride alongside the binding as their own env vars.
     assert any(a.startswith("RLMESH_NUM_ENVS=4") for a in run_cmd)
     assert any(a.startswith("RLMESH_VECTORIZATION_MODE=sync") for a in run_cmd)
+    # It hosts a session on all its interfaces and serves in it as env.
+    assert "RLMESH_ADDRESS=0.0.0.0:40000" in run_cmd
+    assert "RLMESH_NAME=env" in run_cmd
+    # Its participants join as clients of its host, which routes for them.
+    assert "RLMESH_JOIN_AS_CLIENT=1" in run_cmd
     assert info.container_id == "container-9"
-    assert info.address == "127.0.0.1:49200"
+    assert info.address == "127.0.0.1:40000/env"
     assert info.resolved_source == "docker://libero:latest"
 
 
@@ -200,7 +208,7 @@ def test_prebuilt_run_cmd_emits_user_before_image() -> None:
         "img:1",
         env_vars={},
         gpus=None,
-        container_port=50051,
+        host_port=40000,
         owner_pid=123,
         owner_pid_ns=None,
         user="1000",
@@ -215,7 +223,7 @@ def test_prebuilt_run_cmd_default_emits_no_user_flag() -> None:
         "img:1",
         env_vars={},
         gpus=None,
-        container_port=50051,
+        host_port=40000,
         owner_pid=123,
         owner_pid_ns=None,
     )
@@ -243,6 +251,7 @@ def test_start_prebuilt_container_forwards_user(
     sandbox.start_prebuilt_container(
         "libero:latest",
         requested_source="libero:latest",
+        name="env",
         binding={},
         user="1000:1000",
     )
@@ -298,7 +307,7 @@ def test_sandbox_model_runtime_and_rejects_build_runtime_params() -> None:
             rlmesh.SandboxModel("m:latest", **{name: "x"})  # type: ignore[arg-type]
 
 
-# --- Docker hang guard, pre-pull, and port-failure diagnostics ----------------
+# --- Docker hang guard and pre-pull -------------------------------------------
 
 
 def test_run_docker_converts_timeout_into_daemon_error(
@@ -347,74 +356,9 @@ def test_start_prebuilt_container_pre_pulls_missing_image(
     monkeypatch.setattr(_sources.subprocess, "run", fake_run)
 
     info = sandbox.start_prebuilt_container(
-        "img:9", requested_source="img:9", binding={}
+        "img:9", requested_source="img:9", name="env", binding={}
     )
 
     assert pulls == [["docker", "pull", "img:9"]]
     assert info.container_id == "container-9"
     assert "pulling image 'img:9'" in capsys.readouterr().err
-
-
-def test_port_failure_on_crashed_container_appends_logs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An instantly-crashing container loses the docker-port race; the error
-    must say it exited and include its recent logs, not just "no host port"."""
-
-    def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
-        if cmd[:3] == ["docker", "image", "inspect"]:
-
-            class _I:
-                returncode = 0
-                stdout = "[]\n"
-                stderr = ""
-
-            return _I()
-        if cmd[:3] == ["docker", "run", "-d"]:
-
-            class _P:
-                returncode = 0
-                stdout = "container-9\n"
-                stderr = ""
-
-            return _P()
-        if cmd[:2] == ["docker", "port"]:
-
-            class _NoPort:
-                returncode = 0
-                stdout = ""
-                stderr = ""
-
-            return _NoPort()
-        if cmd[:2] == ["docker", "inspect"]:
-
-            class _Exited:
-                returncode = 0
-                stdout = "false\n"
-                stderr = ""
-
-            return _Exited()
-        if cmd[:2] == ["docker", "logs"]:
-
-            class _Logs:
-                returncode = 0
-                stdout = "traceback: kaboom\n"
-                stderr = ""
-
-            return _Logs()
-        raise AssertionError(f"unexpected docker call: {cmd}")
-
-    stopped: list[str] = []
-    monkeypatch.setattr(sandbox, "reap_orphans", lambda: None)
-    monkeypatch.setattr(
-        sandbox,
-        "_sandbox_stop_env",
-        lambda *, container_id: stopped.append(container_id),
-    )
-    monkeypatch.setattr(_sources.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="exited during startup") as excinfo:
-        sandbox.start_prebuilt_container("img:1", requested_source="img:1", binding={})
-
-    assert "traceback: kaboom" in str(excinfo.value)
-    assert stopped == ["container-9"]

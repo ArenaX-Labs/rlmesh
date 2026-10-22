@@ -140,6 +140,22 @@ pub fn sandbox_reap_orphans(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
+/// A base port on 127.0.0.1 with the session ports after it free, to publish
+/// a prebuilt container's session host on.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def sandbox_session_ports() -> int: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn sandbox_session_ports() -> PyResult<u16> {
+    super::docker::free_session_ports().map_err(|err| PyRuntimeError::new_err(err.to_string()))
+}
+
 struct SandboxStartResult {
     requested_source: String,
     resolved_source: String,

@@ -3,23 +3,31 @@
 The model-side sibling of ``SandboxEnv``. The source is a prebuilt
 ``image://<tag>`` container you built yourself (BYO); construction is inert -- it
 records the tag but starts nothing. ``serve()`` (or use as a context manager)
-starts a long-lived container serving the policy as a model endpoint.
+starts a long-lived container serving the policy in the session it hosts;
+``run(env)`` and ``bind(env)`` drive it there.
 """
 
 from __future__ import annotations
 
-from typing import NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from .._upgrade import removed
 from ._sources import looks_like_gym_id
 from .session import (
+    SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
     SandboxRuntime,
     normalize_gpus,
     normalize_user,
     reject_sandbox_option_params,
     start_prebuilt_container,
     string_sequence,
+    wait_serving,
 )
+
+if TYPE_CHECKING:
+    from .._models import Binding, RunResult
+    from .._models.base import ModelBase
+    from ..types import LocalEnvTarget
 
 __all__ = ["SandboxModel"]
 
@@ -79,7 +87,12 @@ class SandboxModel:
     run`` flags -- ``gpus`` for CUDA compute, or ``devices=["nvidia.com/gpu=all"]``
     (a CDI ref, full graphics+compute) and ``volumes=[...]`` for large local
     checkpoints/assets. A model is always a prebuilt image, so there is no build
-    config (no ``SandboxBuild``).
+    config (no ``SandboxBuild``). The image must be built with rlmesh 0.2; one
+    built with 0.1 is refused, naming it.
+
+    :meth:`run` and :meth:`bind` drive the served model as
+    ``rlmesh.Model(address)`` does, serving a local env in the session the
+    container hosts, which it reaches.
     """
 
     def __init__(
@@ -88,6 +101,7 @@ class SandboxModel:
         /,
         *,
         runtime: SandboxRuntime | None = None,
+        connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
         **params: object,
     ) -> None:
         self._image = _resolve_model_source(source)
@@ -98,47 +112,76 @@ class SandboxModel:
         self._volumes = string_sequence("volumes", run.volumes)
         self._user = normalize_user(run.user)
         self._binding = dict(params)
+        self._connect_timeout = connect_timeout_seconds
         self._address: str | None = None
         self._container_id: str | None = None
+        self._model: ModelBase[Any, Any] | None = None
         self._closed = False
 
-    def _serve_image(self) -> SandboxModel:
-        """Start a long-lived container for a prebuilt image tag (serve mode).
+    def serve(self) -> SandboxModel:
+        """Start a long-lived container serving the policy, once it answers.
 
-        Delegates to the shared :func:`start_prebuilt_container` (the same path the
-        env sandbox uses), passing ``num_envs``/``vectorization_mode`` as ``None`` so
-        the container serves in single (model) mode -- a model is never vectorized.
-        The container enters serve mode because no ``RLMESH_DRIVE_ENV_ADDRESS`` is set
-        (the BYO model protocol); the model's construction params, if any, ride in as
-        ``RLMESH_MAKE_KWARGS``. The port is published on a Docker-assigned host port
-        and read back (no host-side bind/close, so no TOCTOU race); on port-discovery
-        failure the helper stops the container before re-raising, so nothing leaks.
+        Delegates to the shared :func:`start_prebuilt_container` (the same path
+        the env sandbox uses) without an eval shape -- a model is never
+        vectorized; the model's construction params, if any, ride in as
+        ``RLMESH_MAKE_KWARGS``. A container that does not answer is stopped
+        before the error is raised, so nothing leaks.
+
+        Idempotent: a second call returns the already-running handle. The model
+        is reachable at :attr:`address` until :meth:`shutdown`.
         """
+        if self._address is not None:
+            return self
+        from .._rlmesh import model_answers, sandbox_stop_env
+
         info = start_prebuilt_container(
             self._image,
             requested_source=self._image,
+            name="model",
             binding=self._binding,
             gpus=self._gpus,
             devices=self._devices,
             volumes=self._volumes,
             user=self._user,
         )
+        try:
+            wait_serving(
+                info,
+                self._connect_timeout,
+                lambda attempt: model_answers(info.address, attempt),
+            )
+        except BaseException:
+            sandbox_stop_env(container_id=info.container_id)
+            raise
         self._container_id = info.container_id
         self._address = info.address
         self._closed = False
         return self
 
-    def serve(self) -> SandboxModel:
-        """Start a long-lived container serving the policy as a model endpoint.
+    def run(self, env: LocalEnvTarget, **options: Any) -> RunResult:
+        """Run the served model against ``env``, as :meth:`rlmesh.Model.run` does.
 
-        The prebuilt ``image://`` image is run in serve mode.
-
-        Idempotent: a second call returns the already-running handle. The endpoint
-        is reachable at :attr:`address` until :meth:`shutdown`.
+        Serves the container first; a local env is served in its session.
         """
-        if self._address is not None:
-            return self
-        return self._serve_image()
+        return self._served().run(env, **options)
+
+    def bind(self, env: LocalEnvTarget, **options: Any) -> Binding[Any, Any]:
+        """Bind the served model to ``env``, as :meth:`rlmesh.Model.bind` does.
+
+        Serves the container first; a local env is served in its session.
+        """
+        return self._served().bind(env, **options)
+
+    def _served(self) -> ModelBase[Any, Any]:
+        """The served model, reached at :attr:`address`."""
+        self.serve()
+        if self._model is None:
+            from .._native import Model
+
+            model = Model(self.address)
+            model._env_session = self.address.rsplit("/", 1)[0]  # pyright: ignore[reportPrivateUsage]
+            self._model = model
+        return self._model
 
     def session(self, *args: object, **kwargs: object) -> NoReturn:
         """Removed in 0.2: a model is bound to an env with ``bind(target)``."""
@@ -167,6 +210,9 @@ class SandboxModel:
 
     def shutdown(self) -> None:
         """Stop the served container, if any. Idempotent; safe to call repeatedly."""
+        if self._model is not None:
+            self._model.close()
+            self._model = None
         if self._closed or self._container_id is None:
             return
         from .._rlmesh import sandbox_stop_env

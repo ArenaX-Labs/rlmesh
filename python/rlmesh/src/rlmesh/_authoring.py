@@ -201,7 +201,7 @@ class EnvFactory(ABC):
         workflow_edition: str | None = None,
         **make_kwargs: Any,
     ) -> None:
-        """Host this env on ``address`` (blocking): ``prepare()`` + ``make(**make_kwargs)``, publish ``tags``.
+        """Serve this env at the participant address ``address`` (blocking): ``prepare()`` + ``make(**make_kwargs)``, publish ``tags``.
 
         The named keywords are *serving* options, forwarded to
         :func:`rlmesh.serve.serve_env` (``num_envs > 1`` fans ``make`` out into a

@@ -96,7 +96,7 @@ class CaptureHooks(RunHooks):
         stager: MediaStager,
         prefix: str,
         cameras: list[str] | None,
-        session: RunContext | None,
+        binding: RunContext | None,
         video_keys: tuple[str, ...],
         included_in_metrics: bool,
     ) -> None:
@@ -104,14 +104,14 @@ class CaptureHooks(RunHooks):
         self._stager = stager
         self._prefix = prefix
         self._cameras = tuple(cameras) if cameras is not None else ()
-        self._session = session
+        self._binding = binding
         self._video_keys = video_keys
         self._included = included_in_metrics
         #: An explicit ``cameras`` list (even empty) is honored as-is; ``None`` defers
-        #: discovery to the first step, when the session's contract is populated.
+        #: discovery to the first step, when the run's contract is populated.
         self._resolved = cameras is not None
         self._explicit = cameras is not None
-        #: Memoized ``render()`` thunk (resolved once from the session), or ``None``.
+        #: Memoized ``render()`` thunk (resolved once from the run context), or ``None``.
         self._render: Callable[[], object] | None = None
         self._render_resolved = False
         self._render_camera: str | None = RENDER_CAMERA if cameras is not None else None
@@ -124,21 +124,21 @@ class CaptureHooks(RunHooks):
         self._video_path: str | None = None
 
     def on_run_start(self, context: RunContext) -> None:
-        """Adopt the run's context, so ``capture(session=...)`` is optional.
+        """Adopt the run's context, so ``capture(binding=...)`` is optional.
 
-        An explicitly passed session wins (a hand-driven loop can still wire
+        An explicitly passed context wins (a hand-driven loop can still wire
         one in); otherwise the running loop's context is used for source
         discovery and the ``render()`` frame.
         """
-        if self._session is None:
-            self._session = context
+        if self._binding is None:
+            self._binding = context
 
     def on_episode_start(self, *, episode: int, seed: int | None) -> None:
         """Reset the per-episode writers and env-video path."""
         if (
-            self._session is not None
+            self._binding is not None
             and (self._cameras or not self._explicit)
-            and self._session.num_envs > 1
+            and self._binding.num_envs > 1
         ):
             raise ValueError(
                 "recorder captures frames from a single env: a vector env's "
@@ -150,17 +150,17 @@ class CaptureHooks(RunHooks):
     def _render_thunk(self) -> Callable[[], object] | None:
         if not self._render_resolved:
             self._render_resolved = True
-            if self._session is not None:
+            if self._binding is not None:
                 self._render = self._discover().render
         return self._render
 
     def _discover(self) -> FrameSources:
         """The run's frame sources, via the viewer's own discovery."""
-        session = self._session
-        if session is None:
+        binding = self._binding
+        if binding is None:
             return FrameSources(roles=(), render_label=None, render=None)
         try:
-            return session.frame_sources()
+            return binding.frame_sources()
         except Exception:
             return FrameSources(roles=(), render_label=None, render=None)
 
@@ -168,7 +168,7 @@ class CaptureHooks(RunHooks):
         if self._resolved:
             return
         self._resolved = True
-        if self._session is None:
+        if self._binding is None:
             return
         sources = self._discover()
         self._render = sources.render
@@ -177,7 +177,7 @@ class CaptureHooks(RunHooks):
         self._cameras = sources.labels
         if not self._cameras:
             _warn(
-                "recorder: no render() or image roles discovered from the session; "
+                "recorder: no render() or image roles discovered from the run; "
                 "recording metrics only"
             )
 

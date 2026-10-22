@@ -92,6 +92,7 @@ __all__ = [
     "discrete_space_spec",
     "is_v2_address",
     "local_run_session",
+    "model_answers",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
     "nested_predict",
@@ -101,6 +102,7 @@ __all__ = [
     "resolve_workflow_edition_rungs",
     "run_cli",
     "sandbox_reap_orphans",
+    "sandbox_session_ports",
     "sandbox_start_env",
     "sandbox_stop_env",
     "space_spec_from_gym_space",
@@ -1182,6 +1184,8 @@ def is_v2_address(text: str) -> bool: ...
 
 def local_run_session() -> str: ...
 
+def model_answers(address: str, timeout_s: float) -> None: ...
+
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
 def multi_discrete_space_spec(nvec: list[int], dtype: str | None = None) -> SpaceSpec: ...
@@ -1211,6 +1215,8 @@ def resolve_workflow_edition_rungs(*, call: typing.Optional[builtins.str] = None
 def run_cli(args: list[str]) -> int: ...
 
 def sandbox_reap_orphans() -> None: ...
+
+def sandbox_session_ports() -> int: ...
 
 def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None) -> SandboxRunInfo: ...
 

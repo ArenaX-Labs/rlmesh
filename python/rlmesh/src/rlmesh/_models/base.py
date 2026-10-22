@@ -9,6 +9,7 @@ import functools
 import inspect
 import math
 import threading
+import uuid
 import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -703,6 +704,10 @@ class ModelBase(Generic[ObsT, ActT]):
         #: A served model's participant address (``Model("lab:7447/openpi")``):
         #: runs, bindings and serves then drive that model.
         self._served_address: str | None = None
+        #: The host a run or binding serves a local env on, each in a session
+        #: of its own, when not this process's: a sandboxed model's, which its
+        #: container can reach.
+        self._env_session: str | None = None
         #: The random baseline (``Model(RANDOM_SAMPLE)``): runs and bindings
         #: sample the env's action space.
         self._random = False
@@ -1577,7 +1582,8 @@ class ModelBase(Generic[ObsT, ActT]):
         """Serve the local env ``env_obj`` in this process for one run or binding.
 
         In a session of this process's shared host, so the driver calls the
-        env directly. A local single env's spec/tags pairing is pre-flighted
+        env directly; or in a fresh session on :attr:`_env_session`'s host
+        when set. A local single env's spec/tags pairing is pre-flighted
         here, so a mismatch surfaces as the typed ``AdapterResolutionError``
         (a vector env's local spaces are batched while tags describe one lane,
         so its check stays at the route resolve).
@@ -1604,9 +1610,14 @@ class ModelBase(Generic[ObsT, ActT]):
         # possibly landing on a different edition than the runtime tier.
         resolved = resolved_by_caller.set(True)
         try:
+            address = (
+                f"{self._env_session}/run-{uuid.uuid4().hex[:12]}/env"
+                if self._env_session is not None
+                else f"{load_native('local_run_session')()}/env"
+            )
             server = EnvServer(
                 cast("VectorServerEnvLike", env_obj),
-                f"{load_native('local_run_session')()}/env",
+                address,
                 framework=getattr(env_obj, "_bridge", None),
                 options=(
                     load_native("ServeOptions")(workflow_edition=workflow_edition)

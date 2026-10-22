@@ -6,18 +6,19 @@ from pathlib import Path
 
 import grpc
 import rlmesh
+import rlmesh._client._remote_base as remote_base
 import rlmesh.numpy
-from rlmesh._upgrade import v1_endpoints
 
 address, scenario, *expected_text = sys.argv[1:]
 
-
 # TODO: dial a session address once the C API serves envs on sessions (the
-# parity step); until then a C#-served env is a v1 endpoint, which Python 0.2
-# reaches only through the v1 escape.
+# parity step). Until then a C#-served env is a v1 endpoint, which Python 0.2
+# refuses; this test client alone lifts the refusal to keep checking the wire.
+remote_base.refuse_v1_address = lambda where, address: None
+
+
 def remote_env() -> rlmesh.numpy.RemoteEnv:
-    with v1_endpoints():
-        return rlmesh.numpy.RemoteEnv(address)
+    return rlmesh.numpy.RemoteEnv(address)
 
 
 def random_episodes(count: int) -> None:

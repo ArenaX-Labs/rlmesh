@@ -145,9 +145,10 @@ class Recorder:
         task: str | None = None,
         config: dict[str, Any] | None = None,
         cameras: list[str] | None = None,
-        session: RunContext | None = None,
+        binding: RunContext | None = None,
         video_info_keys: tuple[str, ...] = DEFAULT_VIDEO_INFO_KEYS,
         included_in_metrics: bool = True,
+        session: object = None,
     ) -> RunHooks:
         """A :class:`~rlmesh.RunHooks` that records a live run into a new workload.
 
@@ -162,7 +163,7 @@ class Recorder:
         * ``cameras`` -- explicit sources to record each step: env image roles
           (read as HWC) and/or ``"render"`` for the env's ``render()`` frame.
           ``cameras=[]`` opts out of frames entirely (metrics only).
-        * ``session`` -- a :class:`~rlmesh.RunContext`, only needed when
+        * ``binding`` -- a :class:`~rlmesh.RunContext`, only needed when
           driving the hooks by hand (outside a run or a binding); an explicitly
           passed one also wins over the running loop's. The ``render()`` frame
           is reachable on a binding and, on ``Model.run``, for a local env
@@ -170,8 +171,16 @@ class Recorder:
 
         ``video_info_keys`` name the step-``info`` keys checked for an env-produced
         video file path (the env renders its own video); the file is copied into the
-        bundle. Recorded frames are encoded to AV1 mp4 in process.
+        bundle. Recorded frames are encoded to AV1 mp4 in process. ``session``
+        is 0.1's name for ``binding`` and is refused.
         """
+        if session is not None:
+            from .._upgrade import removed
+
+            removed(
+                "Recorder.capture(session=...)",
+                "the run context is binding=: Recorder.capture(..., binding=...)",
+            )
         workload = self._new_workload(model, env, task, config)
         ordinal = len(self._result_set.workloads) - 1
         prefix = f"w{ordinal:03d}-{sanitize_part(model)}/{sanitize_part(workload.task)}"
@@ -180,7 +189,7 @@ class Recorder:
             stager=self._stager,
             prefix=prefix,
             cameras=cameras,
-            session=session,
+            binding=binding,
             video_keys=tuple(video_info_keys),
             included_in_metrics=included_in_metrics,
         )

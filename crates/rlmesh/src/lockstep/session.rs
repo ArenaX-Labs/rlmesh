@@ -207,7 +207,12 @@ pub async fn lockstep_session(
         listen: vec![format!("tcp/{}", SocketAddr::new(listen_ip(base), 0))],
         connect: vec![format!("tcp/{base}")],
     };
-    let mut config = zenoh_config(&endpoints, &TransportTuning::default())?;
+    // A client participant's lockstep session is a client too.
+    let tuning = TransportTuning {
+        client: transport.is_client(),
+        ..TransportTuning::default()
+    };
+    let mut config = zenoh_config(&endpoints, &tuning)?;
     // Return once the host is connected rather than waiting out the scouting
     // delay for gossiped peers: a driver probes the queryable it calls
     // (`wait_ready`) before its first request anyway.

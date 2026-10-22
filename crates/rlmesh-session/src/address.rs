@@ -29,7 +29,7 @@ use crate::error::SessionError;
 use crate::host::HostConfig;
 use crate::participant::{Participant, ParticipantConfig};
 use crate::server::SessionServer;
-use crate::transport::{Transport, TransportConfig, open_local_listeners};
+use crate::transport::{Transport, TransportConfig, TransportTuning, open_local_listeners};
 use crate::wire::{ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
 /// The well-known port a session host listens on (control class; the other
@@ -49,6 +49,9 @@ pub fn well_known_port() -> Result<u16, SessionError> {
         Err(_) => Ok(DEFAULT_PORT),
     }
 }
+/// The environment variable (`1`) under which participants join as Zenoh
+/// clients of the host they dial: a sandbox sets it on its container.
+pub const JOIN_AS_CLIENT_VAR: &str = "RLMESH_JOIN_AS_CLIENT";
 /// The session an address names when it names none.
 pub const DEFAULT_SESSION: &str = "default";
 /// The tenant every local session runs in.
@@ -430,10 +433,20 @@ impl SessionAddress {
         } else {
             IpAddr::from([0, 0, 0, 0])
         };
-        let transport = Transport::open(&TransportConfig::per_class_tcp(
-            Some(SocketAddr::new(listen_ip, 0)),
-            Some(self.base),
-        )?)
+        // A sandbox container's participants sit behind its published ports:
+        // the machine outside reaches the container's session host but not
+        // their own listeners, and peers do not route for each other. So the
+        // sandbox starts its container with JOIN_AS_CLIENT_VAR set, and there
+        // participants join as Zenoh clients, which the host routes for.
+        // Everywhere else they join as peers, which talk directly.
+        let tuning = TransportTuning {
+            client: std::env::var_os(JOIN_AS_CLIENT_VAR).is_some_and(|value| value == "1"),
+            ..TransportTuning::default()
+        };
+        let transport = Transport::open(
+            &TransportConfig::per_class_tcp(Some(SocketAddr::new(listen_ip, 0)), Some(self.base))?
+                .with_tuning(tuning),
+        )
         .await?;
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),

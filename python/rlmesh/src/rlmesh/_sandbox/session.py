@@ -5,15 +5,16 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from os import PathLike, fspath
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from .._rlmesh import sandbox_session_ports as _sandbox_session_ports
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
-from .._upgrade import v1_endpoints
 from ._sources import (
     docker_image_exists,
     docker_pull,
@@ -24,16 +25,24 @@ from ._sources import (
 if TYPE_CHECKING:
     from .._client._endpoint import Transport
 
-#: Default seconds a sandbox env client waits for its container to become
-#: reachable. The server only binds its port after the env factory's ``make()``
-#: runs, so a heavy env (large sim/asset load -- e.g. a LIBERO task suite takes
-#: ~12s) needs headroom; matches ``SandboxModel``'s 30s default. Overridable per
-#: construction via ``SandboxEnv(..., connect_timeout_seconds=...)``.
+#: Default seconds a sandbox waits for its container to start serving. The
+#: server only joins its session after the env factory's ``make()`` (or the
+#: model's ``load()``) runs, so a heavy env (large sim/asset load -- e.g. a
+#: LIBERO task suite takes ~12s) needs headroom. Overridable per construction
+#: via ``SandboxEnv(..., connect_timeout_seconds=...)``.
 SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 30.0
 
-#: Port an rlmesh-serving container binds inside the container (the templated
-#: entrypoint default, ``RLMESH_ADDRESS=0.0.0.0:50051``).
-CONTAINER_SERVE_PORT = 50051
+#: The ports a session host listens on, one per traffic class, consecutive.
+SESSION_PORTS = 4
+
+#: The longest one readiness attempt waits, so an image that will never
+#: answer is told apart between attempts.
+_READY_ATTEMPT_SECONDS = 1.0
+
+#: An HTTP/2 client preface and an empty SETTINGS frame: what a v1 (gRPC)
+#: server answers with a SETTINGS frame of its own.
+_H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" + bytes([0, 0, 0, 4, 0, 0, 0, 0, 0])
+_H2_SETTINGS = 0x04
 
 
 def normalize_gpus(gpus: str | int | None) -> str | None:
@@ -137,11 +146,92 @@ class _SandboxStartInfo(TypedDict):
     container_id: str
 
 
-# Only these are retried while the container boots (mirrors ``SandboxModel``): a
-# refused/unavailable connection or a connect timeout. The native env client dials
-# once and fails fast against a not-yet-listening port, so the wait-for-ready loop
-# lives in Python, not in the timeout handed to the native client.
+# Only these are retried while the container boots: a refused/unavailable
+# connection or a connect timeout.
 _TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
+
+
+def _base(address: str) -> tuple[str, int]:
+    """The host and base port of a sandbox's ``host:port/name`` address."""
+    host, _, port = address.split("/", 1)[0].rpartition(":")
+    return host, int(port)
+
+
+def _accepts(address: str) -> bool:
+    """Whether something listens on the base port behind ``address``.
+
+    Until then, joining would host the session here instead of reaching the
+    container's.
+    """
+    try:
+        with socket.create_connection(_base(address), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _answers_v1(address: str) -> bool:
+    """Whether the container behind ``address`` answers the v1 gRPC wire.
+
+    An image built with rlmesh 0.1 serves gRPC (HTTP/2) where a 0.2 one hosts
+    its session: it answers an HTTP/2 preface with a SETTINGS frame.
+    """
+    try:
+        with socket.create_connection(_base(address), timeout=0.5) as conn:
+            conn.sendall(_H2_PREFACE)
+            head = conn.recv(9)
+    except OSError:
+        return False
+    return len(head) == 9 and head[3] == _H2_SETTINGS
+
+
+def wait_serving(
+    sandbox: SandboxInfo, timeout: float, ready: Callable[[float], None]
+) -> None:
+    """Wait up to ``timeout`` seconds for the container to serve, or raise.
+
+    ``ready(attempt_timeout)`` connects to what it serves, raising a dial
+    error until it answers. An image built with rlmesh 0.1 (it answers the
+    v1 wire) is refused naming it, and a dial error against an exited
+    container fails fast with its recent logs; an inspect failure is reported
+    as such instead of being misread as an exit.
+    """
+    deadline = time.monotonic() + timeout
+    short_id = sandbox.container_id[:12]
+    source = sandbox.requested_source
+    while True:
+        attempt = min(_READY_ATTEMPT_SECONDS, max(deadline - time.monotonic(), 0.1))
+        try:
+            if not _accepts(sandbox.address):
+                raise ConnectionError(f"nothing listens at {sandbox.address} yet")
+            ready(attempt)
+            return
+        except _TRANSIENT_DIAL_ERRORS as exc:
+            if _answers_v1(sandbox.address):
+                raise ValueError(
+                    f"{source!r} was built with rlmesh 0.1; rebuild it with rlmesh "
+                    "0.2: a 0.2 sandbox joins the session its container hosts, and "
+                    "this image serves the v1 wire instead"
+                ) from exc
+            running = _container_running(sandbox.container_id)
+            if running is None:
+                raise RuntimeError(
+                    f"could not inspect sandbox container {short_id} for "
+                    f"{source!r} (docker daemon busy?); last dial error: {exc}"
+                ) from exc
+            if not running:
+                raise RuntimeError(
+                    f"sandbox container {short_id} for {source!r} exited before "
+                    f"becoming ready; recent logs:\n"
+                    f"{_container_logs(sandbox.container_id)}"
+                ) from exc
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"sandbox container {short_id} for {source!r} did not become "
+                    f"ready within {timeout:.0f}s; recent logs:\n"
+                    f"{_container_logs(sandbox.container_id)}"
+                ) from exc
+            time.sleep(0.1)
 
 
 def _container_running(container_id: str) -> bool | None:
@@ -209,56 +299,22 @@ class SandboxLifecycle:
         raise NotImplementedError
 
     def _attach(self, connect_timeout_seconds: float) -> None:
-        """Attach the client to the started container, retrying while it boots.
+        """Attach the client to the started container once it serves.
 
-        The rlmesh server only binds its port after the env factory's ``make()`` runs in
-        the container, and the native client dials once and fails fast against a
-        not-yet-listening port -- so the wait-for-ready loop lives here (mirroring
-        ``SandboxModel._dial_with_retry``), not in the timeout handed to the native
-        client. Each retry's native timeout is capped at the remaining deadline so the
-        total wait never exceeds ``connect_timeout_seconds``. A dial error against an
-        already-exited container is terminal: it fails fast with the container's recent
-        logs rather than retrying for the whole timeout, and an inspect failure is
-        reported as such instead of being misread as an exit. Stops the container on
-        any failure so it is never leaked; ``_closed`` is only set once that stop
-        succeeds, so ``close()``/``__del__`` can retry a failed stop instead of leaking
-        the container for the process lifetime (mirroring :meth:`_stop`).
+        Stops the container on any failure so it is never leaked; ``_closed``
+        is only set once that stop succeeds, so ``close()``/``__del__`` can
+        retry a failed stop instead of leaking the container for the process
+        lifetime (mirroring :meth:`_stop`).
         """
         sandbox = self.sandbox
-        deadline = time.monotonic() + connect_timeout_seconds
-        attempt_timeout = connect_timeout_seconds
         try:
-            while True:
-                try:
-                    # The container still serves the v1 wire.
-                    with v1_endpoints():
-                        self._initialize(
-                            sandbox.address, connect_timeout_seconds=attempt_timeout
-                        )
-                    return
-                except _TRANSIENT_DIAL_ERRORS as exc:
-                    short_id = sandbox.container_id[:12]
-                    running = _container_running(sandbox.container_id)
-                    if running is None:
-                        raise RuntimeError(
-                            f"could not inspect sandbox container {short_id} for "
-                            f"{self._source!r} (docker daemon busy?); last dial "
-                            f"error: {exc}"
-                        ) from exc
-                    if not running:
-                        raise RuntimeError(
-                            f"sandbox container {short_id} for {self._source!r} exited "
-                            f"before becoming ready; recent logs:\n"
-                            f"{_container_logs(sandbox.container_id)}"
-                        ) from exc
-                    if time.monotonic() >= deadline:
-                        raise RuntimeError(
-                            f"sandbox container {short_id} for {self._source!r} did not "
-                            f"become ready within {connect_timeout_seconds:.0f}s; recent "
-                            f"logs:\n{_container_logs(sandbox.container_id)}"
-                        ) from exc
-                    time.sleep(0.1)
-                    attempt_timeout = max(deadline - time.monotonic(), 0.1)
+            wait_serving(
+                sandbox,
+                connect_timeout_seconds,
+                lambda attempt: self._initialize(
+                    sandbox.address, connect_timeout_seconds=attempt
+                ),
+            )
         except BaseException:
             try:
                 _sandbox_stop_env(container_id=sandbox.container_id)
@@ -344,6 +400,7 @@ def start_sandbox_container(
         return start_prebuilt_container(
             resolved,
             requested_source=source,
+            name="env",
             binding=binding,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
@@ -372,6 +429,7 @@ def start_prebuilt_container(
     image: str,
     *,
     requested_source: str,
+    name: str,
     binding: Mapping[str, object],
     num_envs: int | None = None,
     vectorization_mode: str | None = None,
@@ -382,10 +440,12 @@ def start_prebuilt_container(
 ) -> SandboxInfo:
     """Run a prebuilt rlmesh-serving image and return its connection info.
 
-    The image runs as-is (its own ``CMD``); the binding and eval shape are injected
-    as environment variables (``RLMESH_MAKE_KWARGS`` etc.), the serve port is
-    published on a Docker-assigned host port, and the host port is read back. No
-    build and no rlmesh pin -- the image is whatever the publisher baked.
+    The image runs as-is (its own ``CMD``), hosting a session on
+    ``RLMESH_ADDRESS`` and serving in it as ``RLMESH_NAME`` (``name``); the
+    binding and eval shape are injected as environment variables
+    (``RLMESH_MAKE_KWARGS`` etc.), and the session's ports are published on
+    consecutive loopback ports, which its participants dial. No build and no
+    rlmesh pin -- the image is whatever the publisher baked.
 
     ``num_envs`` / ``vectorization_mode`` are the vectorized-env eval shape: when
     left ``None`` (the model path -- a model is never vectorized) the corresponding
@@ -394,9 +454,7 @@ def start_prebuilt_container(
 
     A missing image is pulled here, announced on stderr, rather than invisibly
     inside ``docker run`` -- a multi-GB pull with no progress line reads as a
-    hang. Port discovery failure stops the started container before re-raising
-    (never leaked) and, when the container crashed at startup, replaces the
-    opaque "published no host port" with its recent logs.
+    hang.
     """
     if shutil.which("docker") is None:
         raise RuntimeError(
@@ -409,7 +467,15 @@ def start_prebuilt_container(
         if not pulled:
             detail = f":\n{pull_stderr}" if pull_stderr else ""
             raise RuntimeError(f"could not pull prebuilt image {image!r}{detail}")
-    env_vars: dict[str, str] = {}
+    host_port = _sandbox_session_ports()
+    # The container hosts its session on the host's own port numbers, so a
+    # session address means the same inside it and out, and its participants
+    # join as clients, which its host routes for (see JOIN_AS_CLIENT_VAR).
+    env_vars = {
+        "RLMESH_ADDRESS": f"0.0.0.0:{host_port}",
+        "RLMESH_NAME": name,
+        "RLMESH_JOIN_AS_CLIENT": "1",
+    }
     if binding:
         env_vars["RLMESH_MAKE_KWARGS"] = binding_json(binding)
     if num_envs and num_envs != 1:
@@ -424,7 +490,7 @@ def start_prebuilt_container(
         devices=devices,
         volumes=volumes,
         user=user,
-        container_port=CONTAINER_SERVE_PORT,
+        host_port=host_port,
         owner_pid=os.getpid(),
         owner_pid_ns=pid_namespace_id(),
     )
@@ -434,26 +500,10 @@ def start_prebuilt_container(
             f"failed to start prebuilt container ({proc.returncode}):\n{proc.stderr}"
         )
     container_id = proc.stdout.strip()
-    try:
-        port = _resolve_published_port(container_id)
-    except BaseException as exc:
-        running = _container_running(container_id)
-        logs = _container_logs(container_id) if running is False else ""
-        try:
-            _sandbox_stop_env(container_id=container_id)
-        except Exception:
-            pass
-        if running is False:
-            raise RuntimeError(
-                f"prebuilt container {container_id[:12]} for image {image!r} "
-                f"exited during startup before publishing a port ({exc}); "
-                f"recent logs:\n{logs}"
-            ) from exc
-        raise
     return SandboxInfo(
         requested_source=requested_source,
         resolved_source=f"docker://{image}",
-        address=f"127.0.0.1:{port}",
+        address=f"127.0.0.1:{host_port}/{name}",
         container_id=container_id,
     )
 
@@ -463,7 +513,7 @@ def prebuilt_run_cmd(
     *,
     env_vars: Mapping[str, str],
     gpus: str | None,
-    container_port: int,
+    host_port: int,
     owner_pid: int,
     owner_pid_ns: str | None,
     devices: Sequence[str] | None = None,
@@ -474,7 +524,9 @@ def prebuilt_run_cmd(
 
     The one place container hardening lives (``--cap-drop ALL``,
     ``--security-opt no-new-privileges``, owner labels for orphan reaping), shared
-    by the env and model prebuilt paths so the flags never drift apart. The image
+    by the env and model prebuilt paths so the flags never drift apart. The
+    session's ports publish on loopback from ``host_port``, in order, to the
+    same numbers inside. The image
     is always last and env vars precede it, so callers/tests can rely on argv shape.
     ``devices`` -> ``--device`` (incl. CDI refs like ``nvidia.com/gpu=all``),
     ``volumes`` -> ``-v`` mounts, and ``user`` -> ``--user``, all before the env
@@ -485,7 +537,8 @@ def prebuilt_run_cmd(
         "run",
         "-d",
         "-p",
-        f"127.0.0.1:0:{container_port}",
+        f"127.0.0.1:{host_port}-{host_port + SESSION_PORTS - 1}:"
+        f"{host_port}-{host_port + SESSION_PORTS - 1}",
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -509,32 +562,6 @@ def prebuilt_run_cmd(
         cmd += ["-e", f"{key}={value}"]
     cmd.append(image)
     return cmd
-
-
-def parse_published_port(stdout: str, container_port: int) -> int:
-    """Parse the host port from ``docker port`` output, or raise.
-
-    The host port is the last ``:``-separated field of any mapping line, so an
-    IPv6 binding like ``[::]:51000`` parses, not just IPv4 prefixes.
-    """
-    for line in stdout.splitlines():
-        _, sep, port = line.strip().rpartition(":")
-        if sep and port.isdigit():
-            return int(port)
-    raise RuntimeError(
-        f"container published no host port for {container_port}; "
-        f"docker port output:\n{stdout}"
-    )
-
-
-def _resolve_published_port(container_id: str) -> int:
-    proc = run_docker(["docker", "port", container_id, str(CONTAINER_SERVE_PORT)])
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"failed to read published port for container "
-            f"({proc.returncode}):\n{proc.stderr}"
-        )
-    return parse_published_port(proc.stdout, CONTAINER_SERVE_PORT)
 
 
 def reap_orphans() -> None:
@@ -699,8 +726,8 @@ def reject_sandbox_option_params(params: Mapping[str, object]) -> None:
 
 
 __all__ = [
-    "CONTAINER_SERVE_PORT",
     "SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS",
+    "SESSION_PORTS",
     "SandboxBuild",
     "SandboxInfo",
     "SandboxLifecycle",
@@ -708,7 +735,6 @@ __all__ = [
     "binding_json",
     "normalize_gpus",
     "normalize_user",
-    "parse_published_port",
     "prebuilt_run_cmd",
     "reap_orphans",
     "reject_sandbox_option_params",
@@ -716,4 +742,5 @@ __all__ = [
     "start_prebuilt_container",
     "start_sandbox_container",
     "string_sequence",
+    "wait_serving",
 ]

@@ -504,6 +504,33 @@ pub fn predict_seed(episode_seed: i64, predict_index: u64) -> i64 {
     rlmesh::predict_seed(episode_seed, predict_index)
 }
 
+/// Waits up to `timeout_s` seconds for the model at the participant address
+/// `address` to answer: ConnectionError when it does not. A sandbox's
+/// readiness check.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def model_answers(address: str, timeout_s: float) -> None: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn model_answers(py: Python<'_>, address: &str, timeout_s: f64) -> PyResult<()> {
+    let timeout = crate::session::timeout(timeout_s)?;
+    let id = format!("probe-{}", uuid::Uuid::new_v4().simple());
+    py.detach(|| {
+        model_runtime().block_on(async {
+            let connection = rlmesh::lockstep::ModelConnection::connect(address, &id, timeout)
+                .await
+                .map_err(|err| pyo3::exceptions::PyConnectionError::new_err(err.to_string()))?;
+            connection.close().await;
+            Ok(())
+        })
+    })
+}
+
 /// The leading-axis length of a neutral chunk value: a tensor-like exposes
 /// `shape` (native `Tensor`, numpy array), a Dict chunk carries the axis
 /// inside each leaf (probe the first value), a plain sequence its `len`.

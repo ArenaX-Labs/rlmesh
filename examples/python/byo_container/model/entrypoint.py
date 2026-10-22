@@ -4,8 +4,9 @@ You write a Dockerfile (see the sibling ``Dockerfile``) and this entrypoint, and
 RLMesh runs the image. The container hosts a session on ``RLMESH_ADDRESS``
 (default ``0.0.0.0:7447``) and serves the policy in it as ``RLMESH_NAME``
 (default ``model``); a client runs it with
-``rlmesh.Model("<host>:7447/model").run(env)`` -- and RLMesh Managed runs the
-same image. ``docker push`` the tag to a registry it can reach.
+``rlmesh.Model("<host>:7447/model").run(env)`` un-managed, or
+``rlmesh.SandboxModel("image://<tag>").run(env)`` managed -- and RLMesh Managed
+runs the same image. ``docker push`` the tag to a registry it can reach.
 
 The lazy path: skip this file entirely and set the Dockerfile ENTRYPOINT to
 ``python -m rlmesh.serve my_pkg:MyPolicy`` -- it serves the MyPolicy model below

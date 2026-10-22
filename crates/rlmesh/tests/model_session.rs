@@ -303,6 +303,14 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
     there.close().await;
     model.on_close().await.unwrap();
 
+    // Its own session needs no invitation.
+    let own = ModelConnection::connect(&address, "observer", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(own.answers_in(address.rsplit_once('/').unwrap().0));
+    assert!(!own.answers_in(&session));
+    own.close().await;
+
     // A session the model can't reach is refused, naming it.
     let mut model = ServedModel::new(address, Duration::from_secs(10));
     model.join("127.0.0.1:1/nowhere").await.unwrap();
