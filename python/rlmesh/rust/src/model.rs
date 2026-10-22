@@ -958,12 +958,15 @@ impl PyModel {
                 .declaring(workflow_edition),
         );
         let serving = Arc::clone(&self.serving);
+        let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
+        // SIGTERM stops the serve gracefully, as an env server's (`docker
+        // stop`); restored when the serve returns. SIGINT stays Python's.
+        let _sigterm = rlmesh::binding::foreground_sigterm_scope(shutdown.clone());
         py.detach(|| {
             model_runtime().block_on(async move {
                 let binding = rlmesh::lockstep::ModelBinding::bind(&participant)
                     .await
                     .map_err(crate::lockstep::gym_err)?;
-                let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
                 {
                     let mut serving = serving.lock().expect("serving lock poisoned");
                     if serving.stopped {
