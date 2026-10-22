@@ -433,12 +433,60 @@ def test_run_on_an_open_handle_explains_the_lease_conflict() -> None:
         server.shutdown()
 
 
-def test_the_viewer_stays_a_binding_option() -> None:
-    import inspect
+class _ScriptedViewer:
+    """A stand-in ViewerDriver: skips after the steps in ``skip_after``
+    (counted across the run), quits after step ``quit_after``."""
 
-    assert "view" not in inspect.signature(rlmesh.Model.run).parameters
-    with pytest.raises(TypeError, match=r"model\.bind\(env, view=\.\.\.\)"):
-        rlmesh.run(_model(), CountEnv(), view="terminal")
+    def __init__(self, skip_after: tuple[int, ...] = (), quit_after: int = 0) -> None:
+        self.skip_after, self.quit_after = skip_after, quit_after
+        self.steps = 0
+        self.feeds: list[tuple[int, int]] = []
+        self.held: list[bool] = []
+
+    def feed(self, *, obs: Any, steps: int, episode: int, **_hud: Any) -> None:
+        assert obs.shape == (2,)
+        self.feeds.append((episode, steps))
+
+    def pace(self) -> float:
+        self.steps += 1
+        return 0.0
+
+    def consume_skip(self) -> bool:
+        return self.steps in self.skip_after
+
+    def quit_requested(self) -> bool:
+        return self.steps == self.quit_after
+
+    def close(self, *, hold: bool = True) -> None:
+        self.held.append(hold)
+
+
+def _watch(monkeypatch: pytest.MonkeyPatch, viewer: _ScriptedViewer) -> None:
+    import rlmesh._models._view as view_mod
+
+    monkeypatch.setattr(view_mod, "ViewerDriver", lambda _view: viewer)
+
+
+def test_a_viewer_skip_truncates_the_episode_and_the_run_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    viewer = _ScriptedViewer(skip_after=(2, 5))
+    _watch(monkeypatch, viewer)
+    result = rlmesh.run(_model(), CountEnv(episode_len=0), episodes=2, view=True)
+    # A skip lands on the step after it was asked for.
+    assert [(e.steps, e.truncated) for e in result.episodes] == [(3, True), (3, True)]
+    assert viewer.feeds[:3] == [(0, 0), (0, 1), (0, 2)]
+    assert viewer.held == [True]
+
+
+def test_a_viewer_quit_returns_the_partial_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    viewer = _ScriptedViewer(quit_after=2)
+    _watch(monkeypatch, viewer)
+    result = _model().run(CountEnv(episode_len=0), episodes=3, view="terminal")
+    assert [(e.steps, e.truncated) for e in result.episodes] == [(3, True)]
+    assert viewer.held == [True]
 
 
 # ---------------------------------------------------------------------------

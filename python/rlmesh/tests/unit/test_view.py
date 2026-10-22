@@ -168,17 +168,13 @@ def test_resolve_render_picks_convention_by_signature() -> None:
 
 
 def test_view_outcome_prefers_info_over_terminated() -> None:
-    import rlmesh
+    from rlmesh._models._eval import episode_outcome
 
-    with rlmesh.Model(lambda obs: 0).bind(_DoneEnv()) as binding:
-        assert binding._outcome(False, False) == ""
-        binding._info = {"is_success": False}
-        assert binding._outcome(True, False) == "failure"
-        binding._info = {"is_success": True}
-        assert binding._outcome(True, False) == "success"
-        binding._info = {}
-        assert binding._outcome(True, False) == "done"  # outcome unknown: not success
-        assert binding._outcome(False, True) == "timeout"
+    assert episode_outcome(False, False, {}) == ""
+    assert episode_outcome(True, False, {"is_success": False}) == "failure"
+    assert episode_outcome(True, False, {"is_success": True}) == "success"
+    assert episode_outcome(True, False, {}) == "done"  # outcome unknown: not success
+    assert episode_outcome(False, True, {}) == "timeout"
 
 
 def test_pyviewer_api_smoke() -> None:
@@ -549,8 +545,6 @@ def test_run_with_a_local_model_takes_view_false_as_none() -> None:
         def close(self) -> None:
             pass
 
-    with pytest.raises(TypeError, match=r"bind\(env, view=\.\.\.\)"):
-        rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=True)
     with pytest.raises(TypeError, match="view must be"):
         rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=cast("Any", 3))
     result = rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=False)

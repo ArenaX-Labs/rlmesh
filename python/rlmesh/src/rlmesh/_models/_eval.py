@@ -22,7 +22,7 @@ from ._connect import (
 )
 from ._read import Reader, resolve_read_adapter
 from ._resolve import resolve_adapter
-from ._view import FrameSources, discover_frame_sources
+from ._view import FrameSources, ViewerDriver, discover_frame_sources
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import Advisory
@@ -87,6 +87,18 @@ def episode_success(info: Mapping[str, Any]) -> bool | None:
         if key in info and (flag := _success_flag(info[key])) is not None:
             return flag
     return None
+
+
+def episode_outcome(terminated: bool, truncated: bool, info: Mapping[str, Any]) -> str:
+    """The viewer's word for how a step ended its episode ("" while it runs)."""
+    if not (terminated or truncated):
+        return ""
+    success = episode_success(info)
+    if success is None:
+        return "done" if terminated else "timeout"
+    if success:
+        return "success"
+    return "failure" if terminated else "timeout"
 
 
 #: The runtime's bounds on the native loop's caps (``Option<i64>`` steps and a
@@ -486,6 +498,10 @@ class NativeRunContext:
         finally:
             self._hook_thread = previous
 
+    @property
+    def client(self) -> object | None:
+        return self._client
+
     def bind_client(self, client: object | None) -> None:
         self._client = client
         self._bridge = adapter_env_bridge(client)
@@ -530,6 +546,7 @@ class _NativeEpisode:
     seed: int | None
     trial: int | None
     steps: int = 0
+    reward: float = 0.0
 
 
 @dataclass
@@ -549,11 +566,23 @@ class NativeHookRelay:
     the terminal flags the runtime already knows (so a ``StepEvent`` is exact,
     never reconstructed). ``results`` collects the completed episodes for
     :meth:`RunHooks.on_run_end` on a run that fails midway.
+
+    A ``view`` watches the first lane of each group and paces the steps; its
+    skip and quit come back from :meth:`step` as "skip" (the runtime truncates
+    the live episodes at the next step) and "quit" (it truncates them and
+    stops starting new ones).
     """
 
-    def __init__(self, hooks: RunHooks, context: NativeRunContext) -> None:
+    def __init__(
+        self,
+        hooks: RunHooks,
+        context: NativeRunContext,
+        view: ViewerDriver | None = None,
+    ) -> None:
         self._hooks = hooks
         self._context = context
+        self._view = view
+        self._outcome = ""
         self._episodes: dict[str, _NativeEpisode] = {}
         self._groups: dict[int, _NativeGroup] = {}
         self.results: list[EpisodeResult] = []
@@ -574,6 +603,21 @@ class NativeHookRelay:
     def observation(self, env_index: int, ids: list[str], values: list[Any]) -> None:
         decoded = [self._context.decode(v) for v in values]
         self._groups[env_index] = _NativeGroup(ids, decoded)
+        episode = self._episodes.get(ids[0]) if ids else None
+        if self._view is not None and episode is not None:
+            context = self._context
+            self._view.feed(
+                contract=context.contract,
+                client=context.client,
+                obs=decoded[0],
+                read=context.read,
+                steps=episode.steps,
+                reward=episode.reward,
+                outcome=self._outcome,
+                episode=episode.index,
+                seed=episode.seed,
+            )
+            self._outcome = ""
 
     def action(self, env_index: int, values: list[Any]) -> None:
         self._groups[env_index].actions = [self._context.decode(v) for v in values]
@@ -588,7 +632,7 @@ class NativeHookRelay:
         info: Mapping[str, Any] | None,
         predict_ms: float,
         step_ms: float,
-    ) -> None:
+    ) -> str | None:
         group = self._groups[env_index]
         actions = group.actions or []
         for lane, episode_id in enumerate(group.ids):
@@ -616,8 +660,18 @@ class NativeHookRelay:
                 read=partial(self._context.read, observation),
             )
             episode.steps += 1
+            episode.reward += rewards[lane]
+            if lane == 0:
+                self._outcome = episode_outcome(terminated[0], truncated[0], info or {})
             with self._context.dispatch():
                 self._hooks.on_step(event)
+        view = self._view
+        if view is None:
+            return None
+        view.pace()
+        if view.quit_requested():
+            return "quit"
+        return "skip" if view.consume_skip() else None
 
     def episode_completed(
         self,

@@ -1339,6 +1339,7 @@ class ModelBase(Generic[ObsT, ActT]):
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
         workflow_edition: str | None = None,
+        view: ViewArg = None,
     ) -> RunResult:
         """Drive this model against an env on the native runtime loop.
 
@@ -1420,8 +1421,12 @@ class ModelBase(Generic[ObsT, ActT]):
         the :class:`~rlmesh.EpisodeResult` handed to ``on_episode_end`` is the
         same record the result holds. On a vectorized env episodes
         interleave. ``instruction`` overrides the text input of a spec'd model
-        in its declared shape, exactly as on the session loop. The live viewer
-        (``view=``) is a :meth:`session` option.
+        in its declared shape, exactly as on the session loop.
+
+        ``view`` watches the run live (``True``, a backend name, or a
+        :class:`~rlmesh.View`), the first lane of a vectorized env: skipping
+        truncates the episodes in flight and the run goes on, and quitting
+        truncates them and returns the partial result.
         """
         self._calls.check_open("run()")
         # One run at a time (RUN-9): a second run while one is in progress
@@ -1446,6 +1451,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 prefetch_lead=prefetch_lead,
                 trial_index_base=trial_index_base,
                 workflow_edition=workflow_edition,
+                view=view,
             )
         finally:
             self._run_slot.release()
@@ -1466,6 +1472,7 @@ class ModelBase(Generic[ObsT, ActT]):
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
         workflow_edition: str | None = None,
+        view: ViewArg = None,
     ) -> RunResult:
         """:meth:`run`'s body, holding the model's run slot."""
         from ._eval import (
@@ -1494,10 +1501,12 @@ class ModelBase(Generic[ObsT, ActT]):
             EpisodeResult,
             NativeHookRelay,
             NativeRunContext,
+            RunHooks,
             RunResult,
             TelemetryRow,
             resolve_episode_budget,
         )
+        from ._view import ViewerDriver, resolve_view
 
         episodes = resolve_episode_budget(episodes, seeds)
 
@@ -1506,11 +1515,15 @@ class ModelBase(Generic[ObsT, ActT]):
             self._trust_entrypoints = trust_entrypoints
         relay: NativeHookRelay | None = None
         run_context = NativeRunContext(trust=bool(self._trust_entrypoints))
+        resolved_view = resolve_view(view)
+        viewer = ViewerDriver(resolved_view) if resolved_view is not None else None
         self._instruction = instruction
+        failed = True
         try:
-            if hooks is not None:
+            if hooks is not None or viewer is not None:
                 self._native_run = run_context
-                relay = NativeHookRelay(hooks, run_context)
+                relay = NativeHookRelay(hooks or RunHooks(), run_context, viewer)
+            if hooks is not None:
                 with run_context.dispatch():
                     hooks.on_run_start(run_context)
             if episodes == 0:
@@ -1538,6 +1551,7 @@ class ModelBase(Generic[ObsT, ActT]):
                     workflow_edition=declared_edition,
                     relay=relay,
                 )
+            failed = False
         except BaseException:
             # The run's own exception wins over anything on_run_end raises.
             if hooks is not None:
@@ -1550,6 +1564,8 @@ class ModelBase(Generic[ObsT, ActT]):
             self._trust_entrypoints = previous_trust
             self._instruction = None
             self._native_run = None
+            if viewer is not None:
+                viewer.close(hold=not failed)
 
         result = RunResult(
             episodes=tuple(
@@ -2027,17 +2043,9 @@ def run(
     whose arrays it expects (``rlmesh.numpy.Model(fn)``), the library never
     picks one. A model instance is borrowed and stays usable afterwards; a
     model built here from a subclass class is closed when the call returns.
-    The live viewer is a binding's: ``model.bind(env, view=...)``.
     """
     from ._eval import RANDOM_SAMPLE
-    from ._view import resolve_view
 
-    # False is "no viewer", as None is; a wrong type stays a TypeError.
-    if resolve_view(view) is not None:
-        removed(
-            "rlmesh.run(model, env, view=...)",
-            "the live viewer watches a binding: model.bind(env, view=...)",
-        )
     if _served_handle(model):
         removed(
             "rlmesh.run(SandboxModel(...), env)",
@@ -2063,6 +2071,7 @@ def run(
             prefetch_lead=prefetch_lead,
             workflow_edition=workflow_edition,
             trial_index_base=trial_index_base,
+            view=view,
         )
     finally:
         # A model built here is this call's own; an instance is the caller's

@@ -20,8 +20,9 @@ pub use driver::{
 };
 pub use hooks::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError, LogEvent, LogLevel,
-    NoopRuntimeHooks, ObservationEmittedEvent, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
-    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
+    NoopRuntimeHooks, ObservationEmittedEvent, RunDirective, RuntimeEnvContext, RuntimeHooks,
+    SessionEndedEvent, SessionFailedEvent, SessionStartedEvent, StepCompletedEvent,
+    TelemetrySnapshotEvent,
 };
 pub use rlmesh_proto::EndpointPhases;
 pub use spec::{

@@ -8,4 +8,4 @@ pub use events::{
     ObservationEmittedEvent, RuntimeEnvContext, SessionEndedEvent, SessionFailedEvent,
     SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
-pub use traits::{HookError, NoopRuntimeHooks, RuntimeHooks};
+pub use traits::{HookError, NoopRuntimeHooks, RunDirective, RuntimeHooks};

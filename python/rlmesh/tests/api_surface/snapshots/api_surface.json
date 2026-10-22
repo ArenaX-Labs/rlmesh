@@ -400,7 +400,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -2645,7 +2645,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -3279,7 +3279,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -4821,7 +4821,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
           },
           "serve": {
             "kind": "function",

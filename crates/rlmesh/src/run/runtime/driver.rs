@@ -33,7 +33,7 @@ use crate::model::handler::{ModelHandler, ModelResetOptions, PredictFrames};
 use crate::model::types::{EpisodeInfo, HistoryFrame, ModelObservation};
 use crate::run::runtime::hooks::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
-    ObservationEmittedEvent, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
+    ObservationEmittedEvent, RunDirective, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
     SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
 use crate::run::runtime::spec::{
@@ -1357,14 +1357,17 @@ where
         let mut completed_episodes = self.env_completions(state, &groups[gid], &response);
 
         // Then the lanes the step or time cap ends, skipping those the env
-        // just ended. Both run ahead of the step event so it can carry the
-        // terminal flags; a cap is never configured under NEXT_STEP, so
-        // nothing here precedes a roll it should follow.
+        // just ended, and every live lane an observer ends early. Both run
+        // ahead of the step event so it can carry the terminal flags; a cap
+        // is never configured under NEXT_STEP, so nothing here precedes a
+        // roll it should follow.
+        let directive = self.hooks.directive();
         let capped = self.capped_completions(
             state,
             &positions,
             &completed_episodes,
             response.infos.as_ref(),
+            directive != RunDirective::Continue && self.driver_owns_resets(),
         );
         completed_episodes.extend(capped);
         let lane_ids = state.episode_ids_at(&positions);
@@ -1504,10 +1507,11 @@ where
         // whose resets the DRIVER owns: that budget is the slot counter, checked
         // at reset by `claim_slots`. A group left holding only surplus lanes
         // (a lane group rolled past the budget under NEXT_STEP) stops now.
-        let budget_spent = self
-            .spec
-            .max_episodes
-            .is_some_and(|limit| state.total_episodes() >= limit as i64);
+        let budget_spent = directive == RunDirective::Stop
+            || self
+                .spec
+                .max_episodes
+                .is_some_and(|limit| state.total_episodes() >= limit as i64);
         if ((!lane_group || !self.driver_owns_resets()) && budget_spent)
             || state.all_surplus_at(&positions)
         {
@@ -1796,20 +1800,22 @@ where
     /// start time) and this step's `infos`, which carry each lane's last
     /// reported outcome; `validate()` guarantees driver-owned resets (autoreset
     /// `DISABLED`) whenever a cap is configured, so the reset path restarts
-    /// these lanes exactly like env-reported completions.
+    /// these lanes exactly like env-reported completions. `ended` caps every
+    /// live lane (an observer ended the episode).
     fn capped_completions(
         &self,
         state: &RouteState,
         positions: &[usize],
         env_completed: &[EpisodeMetadata],
         infos: Option<&rlmesh_proto::spaces::v1::MetaMap>,
+        ended: bool,
     ) -> Vec<EpisodeMetadata> {
         let step_cap = self.spec.max_episode_steps.or_else(|| {
             self.driver_owns_resets()
                 .then_some(self.spec.edition_defaults().default_max_episode_steps)
         });
         let time_cap = self.spec.max_episode_seconds;
-        if step_cap.is_none() && time_cap.is_none() {
+        if step_cap.is_none() && time_cap.is_none() && !ended {
             return Vec::new();
         }
         let env_done: Vec<u32> = env_completed
@@ -1830,7 +1836,7 @@ where
                 let steps_capped = step_cap.is_some_and(|cap| slot.step >= cap);
                 let elapsed_seconds = (now_ns - slot.started_at_ns).max(0) as f64 / 1e9;
                 let time_capped = time_cap.is_some_and(|cap| elapsed_seconds >= cap);
-                (steps_capped || time_capped).then(|| EpisodeMetadata {
+                (ended || steps_capped || time_capped).then(|| EpisodeMetadata {
                     episode_id: episode.episode_id.clone(),
                     seed: None,
                     env_index,

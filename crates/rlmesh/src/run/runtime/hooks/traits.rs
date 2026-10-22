@@ -16,6 +16,16 @@ pub enum HookError {
     Message(String),
 }
 
+/// What an observer asks of the loop at a group's next step: a live viewer's
+/// skip (end the episode, truncated) and quit (that, and start no more).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RunDirective {
+    #[default]
+    Continue,
+    EndEpisode,
+    Stop,
+}
+
 /// A [`RuntimeHooks`] that ignores every event — the default when a session
 /// installs no observer.
 #[derive(Debug, Default)]
@@ -79,5 +89,11 @@ pub trait RuntimeHooks: Send + Sync {
 
     async fn log(&self, _event: LogEvent) -> Result<(), HookError> {
         Ok(())
+    }
+
+    /// Asked before each step's completions: an `EndEpisode` is taken once,
+    /// a `Stop` holds. Only a loop that owns resets can end an episode early.
+    fn directive(&self) -> RunDirective {
+        RunDirective::Continue
     }
 }

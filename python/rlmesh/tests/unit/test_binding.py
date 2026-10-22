@@ -947,5 +947,3 @@ def test_the_0_1_session_shapes_name_bind() -> None:
     ):
         with pytest.raises(TypeError, match=r"bind\(target\)"):
             call()
-    with pytest.raises(TypeError, match=r"bind\(env, view=\.\.\.\)"):
-        rlmesh.run(model, _TinyEnv(), view="terminal")

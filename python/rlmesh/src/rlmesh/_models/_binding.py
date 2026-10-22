@@ -15,6 +15,7 @@ from ._eval import (
     RunHooks,
     RunResult,
     StepEvent,
+    episode_outcome,
     episode_success,
 )
 from ._read import Reader, resolve_read_adapter
@@ -193,7 +194,7 @@ class Binding(Generic[ObsT, ActT]):
         self._predict_ms.append(predict_ms)
         self._step_ms.append(step_ms)
         self._info = info
-        self._feed_view(obs, outcome=self._outcome(terminated, truncated))
+        self._feed_view(obs, outcome=episode_outcome(terminated, truncated, info))
         # The viewer's skip (or quit) ends the episode as a truncation.
         if self._view is not None and (
             self._view.consume_skip() or self._view.quit_requested()
@@ -290,16 +291,6 @@ class Binding(Generic[ObsT, ActT]):
         self._episodes.append(result)
         if self._hooks is not None:
             self._hooks.on_episode_end(result)
-
-    def _outcome(self, terminated: bool, truncated: bool) -> str:
-        if not (terminated or truncated):
-            return ""
-        success = episode_success(self._info)
-        if success is None:
-            return "done" if terminated else "timeout"
-        if success:
-            return "success"
-        return "failure" if terminated else "timeout"
 
     def _feed_view(self, obs: object, outcome: str = "") -> None:
         if self._view is None:

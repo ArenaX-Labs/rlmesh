@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use rlmesh::binding::model::CallerJobs;
 use rlmesh::binding::{
     ActionReceivedEvent, CancellationToken, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    ObservationEmittedEvent, RuntimeHooks, StepCompletedEvent,
+    ObservationEmittedEvent, RunDirective, RuntimeHooks, StepCompletedEvent,
 };
 use rlmesh_grpc::wire::{
     Bytes, decode_batched_partial_values, leaves_value, meta_map_from_proto, space_spec_from_proto,
@@ -23,12 +23,15 @@ type RelayCall = Box<dyn for<'py> FnOnce(Python<'py>, &Bound<'py, PyAny>) -> PyR
 /// data, one method call per event, each awaited inline by the driver (so the
 /// env is idle while a hook runs) and run on the thread that called
 /// `Model.run` (RUN-8). The first exception a call raises is kept with its
-/// original type and cancels the run; every later event is dropped.
+/// original type and cancels the run; every later event is dropped. The
+/// relay's `step` may return "skip" (end the live episodes) or "quit" (stop
+/// the run), which the driver applies at the next step.
 pub(crate) struct PyRunHooks {
     relay: Arc<Py<PyAny>>,
     cancellation: CancellationToken,
     jobs: CallerJobs,
     error: Mutex<Option<PyErr>>,
+    directive: Arc<Mutex<RunDirective>>,
 }
 
 impl PyRunHooks {
@@ -38,6 +41,7 @@ impl PyRunHooks {
             cancellation,
             jobs,
             error: Mutex::new(None),
+            directive: Arc::default(),
         }
     }
 
@@ -134,26 +138,43 @@ impl RuntimeHooks for PyRunHooks {
 
     async fn step_completed(&self, event: StepCompletedEvent) -> Result<(), HookError> {
         let info = event.infos.map(meta_map_from_proto);
+        let directive = Arc::clone(&self.directive);
         self.deliver(Box::new(move |py, relay| {
             let info = info.map(|info| meta_map_to_pydict(py, &info)).transpose()?;
-            relay
-                .call_method1(
-                    "step",
-                    (
-                        event.env_index,
-                        event.rewards,
-                        event.terminated,
-                        event.truncated,
-                        event.autoreset_roll,
-                        info,
-                        event.predict_ms,
-                        event.step_ms,
-                    ),
-                )
-                .map(drop)
+            let asked = relay.call_method1(
+                "step",
+                (
+                    event.env_index,
+                    event.rewards,
+                    event.terminated,
+                    event.truncated,
+                    event.autoreset_roll,
+                    info,
+                    event.predict_ms,
+                    event.step_ms,
+                ),
+            )?;
+            let asked = match asked.extract::<Option<String>>()?.as_deref() {
+                Some("skip") => RunDirective::EndEpisode,
+                Some("quit") => RunDirective::Stop,
+                _ => return Ok(()),
+            };
+            let mut directive = directive.lock().unwrap_or_else(|e| e.into_inner());
+            if *directive != RunDirective::Stop {
+                *directive = asked;
+            }
+            Ok(())
         }))
         .await;
         Ok(())
+    }
+
+    fn directive(&self) -> RunDirective {
+        let mut directive = self.directive.lock().unwrap_or_else(|e| e.into_inner());
+        match *directive {
+            RunDirective::EndEpisode => std::mem::take(&mut *directive),
+            held => held,
+        }
     }
 
     async fn episode_completed(&self, event: EpisodeCompletedEvent) -> Result<(), HookError> {
