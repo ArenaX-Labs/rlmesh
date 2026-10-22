@@ -785,6 +785,8 @@ message ModelResolved {
   optional uint32 native_chunk = 1;
   // Present when the route keeps frame windows.
   ModelHistoryNeeds history = 2;
+  // The model adds options to the resets that start its episodes.
+  bool reset_options = 3;
 }
 
 message ModelHistoryRow {
@@ -841,6 +843,12 @@ message ModelRelease {
 }
 
 message ModelDescribe {}
+// Asks for the options the model adds to the reset that starts `episode`.
+message ModelResetOptions {
+  string route = 1;
+  ModelEpisode episode = 2;
+  optional uint64 trial_index = 3;
+}
 
 message ModelRequest {
   oneof kind {
@@ -849,6 +857,7 @@ message ModelRequest {
     ModelReset reset = 3;
     ModelRelease release = 4;
     ModelDescribe describe = 5;
+    ModelResetOptions reset_options = 6;
   }
 }
 
@@ -862,6 +871,8 @@ message ModelReply {
     // The model's describe envelope (JSON), empty when it has none.
     string describe_json = 4;
     ModelFault fault = 5;
+    // The reset options (a JSON object), empty when the model adds none.
+    string options_json = 7;
   }
   EndpointTiming timing = 6;
 }

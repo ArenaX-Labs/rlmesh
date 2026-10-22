@@ -833,6 +833,15 @@ pub fn encode_model_request(request: &ModelRequest) -> Vec<u8> {
             route: route.clone(),
         }),
         ModelRequest::Describe => Kind::Describe(pb::ModelDescribe {}),
+        ModelRequest::ResetOptions {
+            route,
+            episode,
+            trial_index,
+        } => Kind::ResetOptions(pb::ModelResetOptions {
+            route: route.clone(),
+            episode: episodes_to_pb(std::slice::from_ref(episode)).pop(),
+            trial_index: *trial_index,
+        }),
     };
     pb::ModelRequest { kind: Some(kind) }.encode_to_vec()
 }
@@ -877,6 +886,13 @@ pub fn decode_model_request(buf: Bytes) -> Result<ModelRequest, WireError> {
         },
         Kind::Release(r) => ModelRequest::Release { route: r.route },
         Kind::Describe(_) => ModelRequest::Describe,
+        Kind::ResetOptions(r) => ModelRequest::ResetOptions {
+            route: r.route,
+            episode: episodes_from_pb(r.episode.into_iter().collect())
+                .pop()
+                .unwrap_or_default(),
+            trial_index: r.trial_index,
+        },
     })
 }
 
@@ -893,6 +909,7 @@ pub fn encode_model_reply(reply: &ModelReply, timing: Option<&EndpointTiming>) -
                     keys: keys.clone(),
                     prunable: *prunable,
                 }),
+            reset_options: r.reset_options,
         }),
         ModelReply::Predicted(outcomes) => Kind::Predicted(pb::ModelPredicted {
             outcomes: outcomes
@@ -909,6 +926,7 @@ pub fn encode_model_reply(reply: &ModelReply, timing: Option<&EndpointTiming>) -
         }),
         ModelReply::Done => Kind::Done(pb::ModelDone {}),
         ModelReply::Described(json) => Kind::DescribeJson(json.clone()),
+        ModelReply::Options(json) => Kind::OptionsJson(json.clone()),
         ModelReply::Fault(fault) => Kind::Fault(fault_to_pb(fault)),
     };
     pb::ModelReply {
@@ -931,6 +949,7 @@ pub fn decode_model_reply(buf: Bytes) -> Result<(ModelReply, Option<EndpointTimi
         Kind::Resolved(r) => ModelReply::Resolved(ModelResolved {
             native_chunk: r.native_chunk,
             history: r.history.map(|h| (h.keys, h.prunable)),
+            reset_options: r.reset_options,
         }),
         Kind::Predicted(p) => ModelReply::Predicted(
             p.outcomes
@@ -950,6 +969,7 @@ pub fn decode_model_reply(buf: Bytes) -> Result<(ModelReply, Option<EndpointTimi
         ),
         Kind::Done(_) => ModelReply::Done,
         Kind::DescribeJson(json) => ModelReply::Described(json),
+        Kind::OptionsJson(json) => ModelReply::Options(json),
         Kind::Fault(fault) => ModelReply::Fault(fault_from_pb(fault)),
     };
     Ok((reply, timing))
@@ -2353,6 +2373,11 @@ mod tests {
                 route: "cartpole".into(),
             },
             ModelRequest::Describe,
+            ModelRequest::ResetOptions {
+                route: "cartpole".into(),
+                episode: episode("a"),
+                trial_index: Some(2),
+            },
         ] {
             let decoded = decode_model_request(Bytes::from(encode_model_request(&request)));
             assert_eq!(decoded.expect("decode"), request);
@@ -2366,10 +2391,12 @@ mod tests {
             ModelReply::Resolved(ModelResolved {
                 native_chunk: Some(8),
                 history: Some((vec!["image".into()], false)),
+                reset_options: true,
             }),
             ModelReply::Predicted(vec![Ok(vec![slab(5), slab(6)]), Err(fault.clone())]),
             ModelReply::Done,
             ModelReply::Described("{\"kind\":\"model\"}".into()),
+            ModelReply::Options("{\"friction\":0.1}".into()),
             ModelReply::Fault(fault),
         ] {
             let timing = EndpointTiming {

@@ -50,6 +50,9 @@ pub struct ModelResolved {
     /// (the driver then sends every replayed step as history), and whether
     /// rows may be pruned to them.
     pub history: Option<(Vec<String>, bool)>,
+    /// Whether the model adds options to the resets that start its
+    /// episodes (the driver then asks before each).
+    pub reset_options: bool,
 }
 
 /// A step the driver executed from a chunk without predicting.
@@ -114,6 +117,16 @@ pub enum ModelRequest {
     },
     /// Asks for the model's describe envelope.
     Describe,
+    /// Asks for the options the model adds to the reset that starts
+    /// `episode`, as trial `trial_index`.
+    ResetOptions {
+        /// The route.
+        route: String,
+        /// The episode the reset starts.
+        episode: ModelEpisode,
+        /// Its trial.
+        trial_index: Option<u64>,
+    },
 }
 
 /// A served model's reply.
@@ -127,6 +140,8 @@ pub enum ModelReply {
     Done,
     /// The describe envelope (JSON), empty when the model has none.
     Described(String),
+    /// The reset options (a JSON object), empty when the model adds none.
+    Options(String),
     /// The request failed as a whole.
     Fault(ModelFault),
 }

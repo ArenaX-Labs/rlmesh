@@ -271,7 +271,10 @@ def test_a_wrapper_predicts_through_a_local_inner_model() -> None:
     assert actions == [[-0.5, -0.5], [-1.5, -1.5], [-2.5, -2.5]]
 
 
-def test_reset_options_reach_each_episode_reset() -> None:
+@pytest.mark.parametrize("served", [False, True])
+def test_reset_options_reach_each_episode_reset(
+    served: bool, session_port: int
+) -> None:
     import rlmesh
 
     received: list[Any] = []
@@ -293,7 +296,11 @@ def test_reset_options_reach_each_episode_reset() -> None:
             asked.append(dict(episode))
             return {"friction": 0.1 * len(asked)}
 
-    result = Perturb().run(OptionsEnv(), seeds=[3, 4])
+    if served:
+        with _served(Perturb(), session_port) as address:
+            result = rlmesh.Model(address).run(OptionsEnv(), seeds=[3, 4])
+    else:
+        result = Perturb().run(OptionsEnv(), seeds=[3, 4])
     assert result.num_episodes == 2
     assert [o and round(float(o["friction"]), 3) for o in received] == [0.1, 0.2]
     assert [a["seed"] for a in asked] == [3, 4]

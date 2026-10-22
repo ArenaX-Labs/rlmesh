@@ -44,7 +44,9 @@ use crate::Error;
 use crate::lockstep::error::GymError;
 use crate::lockstep::map::contract_from_json;
 use crate::lockstep::session::lockstep_session;
-use crate::model::handler::{ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions};
+use crate::model::handler::{
+    ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames, ResolveOptions,
+};
 use crate::model::types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
 
 /// The selector parameter of a probe.
@@ -108,6 +110,7 @@ struct Route {
 pub struct ModelService<H> {
     handler: Arc<Mutex<H>>,
     setup: Option<Arc<dyn ModelRouteSetup>>,
+    reset_options: Option<Arc<dyn ModelResetOptions>>,
     routes: Mutex<HashMap<String, Arc<Route>>>,
     describe: String,
     in_flight: std::sync::atomic::AtomicU32,
@@ -118,9 +121,11 @@ impl<H: ModelHandler + 'static> ModelService<H> {
     /// envelope, JSON; empty for none).
     pub fn new(handler: H, describe: String) -> Self {
         let setup = handler.route_setup();
+        let reset_options = handler.reset_options();
         Self {
             handler: Arc::new(Mutex::new(handler)),
             setup,
+            reset_options,
             routes: Mutex::default(),
             describe,
             in_flight: std::sync::atomic::AtomicU32::new(0),
@@ -148,6 +153,14 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 self.release(&route).await.map(|()| ModelReply::Done)
             }
             ModelRequest::Describe => Ok(ModelReply::Described(self.describe.clone())),
+            ModelRequest::ResetOptions {
+                route,
+                episode,
+                trial_index,
+            } => self
+                .options(route, episode, trial_index)
+                .await
+                .map(ModelReply::Options),
         };
         self.in_flight.fetch_sub(1, Ordering::Relaxed);
         let reply = result.unwrap_or_else(|error| ModelReply::Fault(fault_of(&error)));
@@ -197,7 +210,29 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         Ok(ModelResolved {
             native_chunk: needs.native_chunk,
             history: needs.history.map(|h| (h.keys, h.prunable)),
+            reset_options: self.reset_options.is_some(),
         })
+    }
+
+    /// The options the model adds to the reset that starts `episode`.
+    async fn options(
+        &self,
+        route: String,
+        episode: rlmesh_session::wire::ModelEpisode,
+        trial_index: Option<u64>,
+    ) -> Result<String, Error> {
+        let Some(source) = &self.reset_options else {
+            return Ok(String::new());
+        };
+        let episode = EpisodeInfo {
+            episode_id: episode.id,
+            seed: episode.seed,
+            env_id: route,
+        };
+        let options = source.reset_options(&episode, trial_index).await?;
+        Ok(crate::lockstep::meta_json::optional_to_json(
+            options.as_ref(),
+        ))
     }
 
     async fn route(&self, name: &str) -> Result<Arc<Route>, Error> {
@@ -630,6 +665,8 @@ struct Remote {
     spaces: std::sync::Mutex<HashMap<String, SpaceSpec>>,
     /// What the model measured answering the last predict.
     last: std::sync::Mutex<EndpointTiming>,
+    /// A resolved route said the model adds reset options.
+    reset_options: std::sync::atomic::AtomicBool,
 }
 
 impl Remote {
@@ -687,6 +724,7 @@ impl ServedModel {
                 connection: Mutex::default(),
                 spaces: std::sync::Mutex::default(),
                 last: std::sync::Mutex::default(),
+                reset_options: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -836,6 +874,38 @@ impl ModelHandler for ServedModel {
         self.remote.close().await;
         Ok(())
     }
+
+    fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
+        self.remote
+            .reset_options
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .then(|| Arc::new(ServedRoutes(self.remote.clone())) as _)
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelResetOptions for ServedRoutes {
+    async fn reset_options(
+        &self,
+        episode: &EpisodeInfo,
+        trial_index: Option<u64>,
+    ) -> crate::Result<Option<rlmesh_spaces::MetaMap>> {
+        let reply = self
+            .0
+            .call(ModelRequest::ResetOptions {
+                route: episode.env_id.clone(),
+                episode: rlmesh_session::wire::ModelEpisode {
+                    id: episode.episode_id.clone(),
+                    seed: episode.seed,
+                },
+                trial_index,
+            })
+            .await?;
+        let ModelReply::Options(json) = reply else {
+            return Err(unexpected(&reply));
+        };
+        crate::lockstep::meta_json::optional_from_json(&json).map_err(Error::Protocol)
+    }
 }
 
 /// A served model's routes: resolved, reset and released on the model.
@@ -862,6 +932,11 @@ impl ModelRouteSetup for ServedRoutes {
         let ModelReply::Resolved(resolved) = reply else {
             return Err(unexpected(&reply));
         };
+        if resolved.reset_options {
+            self.0
+                .reset_options
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         if let Some(space) = &env_contract.action_space {
             self.0
                 .spaces
