@@ -19,6 +19,7 @@
 //! name identifies its [`SessionId::named`]. The tenant is fixed
 //! ([`TENANT`]) and never part of an address.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::str::FromStr;
@@ -443,11 +444,19 @@ impl SessionAddress {
             client: std::env::var_os(JOIN_AS_CLIENT_VAR).is_some_and(|value| value == "1"),
             ..TransportTuning::default()
         };
-        let transport = Transport::open(
-            &TransportConfig::per_class_tcp(Some(SocketAddr::new(listen_ip, 0)), Some(self.base))?
-                .with_tuning(tuning),
-        )
-        .await?;
+        let transport = match local_host(self.base) {
+            Some(transport) => transport,
+            None => {
+                Transport::open(
+                    &TransportConfig::per_class_tcp(
+                        Some(SocketAddr::new(listen_ip, 0)),
+                        Some(self.base),
+                    )?
+                    .with_tuning(tuning),
+                )
+                .await?
+            }
+        };
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),
             self.session,
@@ -497,11 +506,33 @@ impl Placed {
     /// Stops the host, if this process runs it (participants see it leave).
     pub async fn close(&mut self) -> Result<(), SessionError> {
         if let Some((host, transport)) = self.hosted.take() {
+            local_hosts()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&self.address.base);
             host.shutdown().await;
             transport.close().await?;
         }
         Ok(())
     }
+}
+
+/// The transports of the session hosts this process runs, by the address
+/// participants join them at. A participant joining one rides its sessions
+/// instead of a loopback link: a link has a lease, which a starved process
+/// can let lapse, and then loses the host it is running itself.
+fn local_hosts() -> &'static std::sync::Mutex<HashMap<SocketAddr, Transport>> {
+    static HOSTS: std::sync::OnceLock<std::sync::Mutex<HashMap<SocketAddr, Transport>>> =
+        std::sync::OnceLock::new();
+    HOSTS.get_or_init(Default::default)
+}
+
+fn local_host(base: SocketAddr) -> Option<Transport> {
+    local_hosts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&base)
+        .map(Transport::ridden)
 }
 
 /// Whether a session host answers on `base` (its control listener accepts).
@@ -528,6 +559,10 @@ pub async fn host_at(
     config.lease_grace = lease_grace.max(Duration::from_millis(1));
     config.health_log = None;
     let host = SessionServer::start(transport.clone(), config).await?;
+    local_hosts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(address.base, transport.clone());
     Ok(Placed {
         address,
         hosted: Some((host, transport)),
@@ -778,6 +813,35 @@ mod tests {
         assert!(!second.hosts(), "the port is taken: join it");
         assert_eq!(second.address, first.address);
         first.close().await.expect("close");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_participant_of_a_host_in_this_process_rides_its_sessions() {
+        // No loopback link between a process and itself: no lease a starved
+        // process could let lapse, losing the host it runs.
+        let mut host = place(
+            &Address::session(":0").expect("parse"),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("host");
+        let participant = host
+            .address
+            .join(
+                "p",
+                vec![Role::Observer],
+                PriorityClass::Scripted,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("join");
+        let hosting = &host.hosted.as_ref().expect("hosted here").1;
+        assert_eq!(
+            participant.transport().control().zid(),
+            hosting.control().zid()
+        );
+        participant.close().await;
+        host.close().await.expect("close");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

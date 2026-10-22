@@ -200,7 +200,7 @@ pub async fn lockstep_session(
     transport: &Transport,
     base: SocketAddr,
 ) -> Result<zenoh::Session, GymError> {
-    if transport.is_shared() {
+    if transport.is_shared() || transport.is_in_process() {
         return Ok(transport.control().clone());
     }
     let endpoints = Endpoints {
@@ -435,8 +435,11 @@ impl LockstepBinding {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&local_key);
+        // Its clone of the participant goes first, so the robot leaves before
+        // its binding stops a host it runs.
         watcher.abort();
-        if !participant.transport().is_shared() {
+        let _ = watcher.await;
+        if !(participant.transport().is_shared() || participant.transport().is_in_process()) {
             let _ = lockstep.close().await;
         }
         if let Some(recorder) = recorder

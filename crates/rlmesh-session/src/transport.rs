@@ -392,6 +392,9 @@ pub struct Transport {
     sessions: [zenoh::Session; 4],
     shared: bool,
     client: bool,
+    /// The sessions of a session host this process runs, which its own
+    /// participants ride (see [`Self::is_in_process`]).
+    in_process: bool,
 }
 
 impl std::fmt::Debug for Transport {
@@ -436,6 +439,7 @@ impl Transport {
                     sessions,
                     shared: false,
                     client: config.tuning.client,
+                    in_process: false,
                 })
             }
         }
@@ -447,12 +451,28 @@ impl Transport {
             sessions: [session.clone(), session.clone(), session.clone(), session],
             shared: true,
             client: false,
+            in_process: false,
         }
     }
 
     /// Whether every class shares one session.
     pub fn is_shared(&self) -> bool {
         self.shared
+    }
+
+    /// Whether these are the sessions of a session host this process runs,
+    /// ridden by a participant of it: it opens no links of its own (no
+    /// lease a starved process could let lapse) and closes none.
+    pub fn is_in_process(&self) -> bool {
+        self.in_process
+    }
+
+    /// This transport, ridden by a participant of the host it serves.
+    pub(crate) fn ridden(&self) -> Self {
+        Self {
+            in_process: true,
+            ..self.clone()
+        }
     }
 
     /// Whether it joined as a Zenoh client (see [`TransportTuning::client`]).

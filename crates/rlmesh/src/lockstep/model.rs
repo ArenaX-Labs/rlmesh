@@ -526,7 +526,7 @@ fn answer_in<H: ModelHandler + 'static>(
         let key = participant.keys().model(&joins.name);
         info!(model = %joins.name, %key, "model serving");
         let served = serve_zenoh(lockstep.clone(), key, joins, cancel).await;
-        if !participant.transport().is_shared() {
+        if !(participant.transport().is_shared() || participant.transport().is_in_process()) {
             let _ = lockstep.close().await;
         }
         participant.close().await;
@@ -824,7 +824,9 @@ impl ModelConnection {
             ))),
             other => other,
         })?;
-        let lockstep = (!participant.transport().is_shared()).then_some(lockstep_session);
+        let lockstep = (!(participant.transport().is_shared()
+            || participant.transport().is_in_process()))
+        .then_some(lockstep_session);
         Ok(Self {
             link,
             model: model.clone(),

@@ -398,10 +398,12 @@ pub struct Participant {
     shared: Arc<Shared>,
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
+    // Dropped in order: the watch on the host goes before this token, whose
+    // loss can stop the session (and with it the host's token).
+    _host: zenoh::pubsub::Subscriber<()>,
     _liveliness: zenoh::liveliness::LivelinessToken,
     _state: zenoh::pubsub::Subscriber<()>,
     _echo: zenoh::pubsub::Subscriber<()>,
-    _host: zenoh::pubsub::Subscriber<()>,
 }
 
 /// Resolves when the host this transport reaches can never serve
