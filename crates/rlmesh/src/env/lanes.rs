@@ -225,7 +225,12 @@ impl LaneActor {
         let thread = std::thread::Builder::new()
             .name(format!("rlmesh-lane-{index}"))
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
+                // Multi-thread (one worker): the env's calls still run on
+                // this thread, inside `block_on`, and a `block_in_place`
+                // there (Zenoh's, dropping a session) is allowed, where a
+                // current-thread runtime panics.
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
                     .enable_all()
                     .build()
                     .expect("lane runtime");
@@ -361,6 +366,8 @@ mod tests {
         threads: std::sync::Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>,
         /// How long this env's drop blocks: a stand-in for a wedged `close()`.
         drop_block: Duration,
+        /// Step blocks in place, as Zenoh does when a session drops there.
+        blocks_in_place: bool,
     }
 
     impl Drop for SleepyEnv {
@@ -398,6 +405,7 @@ mod tests {
                 delay,
                 threads,
                 drop_block: Duration::ZERO,
+                blocks_in_place: false,
             }
         }
 
@@ -446,6 +454,9 @@ mod tests {
                 .unwrap()
                 .push(std::thread::current().id());
             std::thread::sleep(self.delay);
+            if self.blocks_in_place {
+                tokio::task::block_in_place(|| ());
+            }
             Ok(spaces::request::StepResult {
                 observation: Some(Self::obs()),
                 reward: 1.0,
@@ -534,6 +545,21 @@ mod tests {
             elapsed < LANE_JOIN_GRACE * 2,
             "LaneEnv::drop must give up on a wedged lane after the grace, took {elapsed:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_lane_call_may_block_in_place() {
+        // A Python env's callback can drop a Zenoh session (a garbage-collected
+        // client), which blocks in place; that must not panic the lane.
+        let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut env = SleepyEnv::new(Duration::ZERO, threads);
+        env.blocks_in_place = true;
+        let lanes = LaneEnv::new(vec![env]).expect("one lane");
+        let (result, _) = lanes
+            .step(0, spaces::request::StepRequest::default())
+            .await
+            .expect("step");
+        assert_eq!(result.reward, 1.0);
     }
 
     #[tokio::test]
