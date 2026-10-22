@@ -51,9 +51,6 @@ class Model(ModelBase[_ObsT, _ActT]):
     """
 
     _bridge: ClassVar[ValueBridge] = identity_bridge
-    # Without this, run(address) falls back to the numpy RemoteEnv (forcing the
-    # optional numpy dep and decoding observations as ndarrays instead of Values).
-    _remote_env_cls = RemoteEnv
 
 
 @final

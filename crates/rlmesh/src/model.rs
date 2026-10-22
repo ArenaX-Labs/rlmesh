@@ -2,6 +2,8 @@
 //! [`Model`] handle, the per-episode context, and the engine plumbing the
 //! bindings drive (re-exported through `binding`).
 
+#[cfg(feature = "lockstep")]
+pub(crate) mod bind;
 pub(crate) mod bridge;
 mod context;
 pub(crate) mod engine;

@@ -483,7 +483,7 @@ def test_run_serves_a_torch_factory_env_torch_actions() -> None:
     assert isinstance(built[0].seen_actions[0], torch.Tensor)
 
 
-def test_adapted_session_accepts_a_torch_factory_observation() -> None:
+def test_an_adapted_binding_accepts_a_torch_factory_observation() -> None:
     import rlmesh.adapters as adapt
     from rlmesh.torch import Model
 
@@ -494,12 +494,12 @@ def test_adapted_session_accepts_a_torch_factory_observation() -> None:
     built: list[_TorchStrictEnv] = []
     model = Model(lambda obs: torch.zeros(3), spec=spec)
     try:
-        with model.session(_torch_factory(built, tagged=True)) as session:
-            result = session.run()
+        with model.bind(_torch_factory(built, tagged=True)) as binding:
+            binding.reset()
+            binding.step()
     finally:
         model.close()
 
-    assert result.num_episodes == 1
     assert isinstance(built[0].seen_actions[0], torch.Tensor)
 
 

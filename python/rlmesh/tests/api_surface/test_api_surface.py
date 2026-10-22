@@ -10,6 +10,7 @@ def test_root_namespace_is_small() -> None:
         "ENV_RESET_OPTIONS_KEY",
         "NO_ADAPTER",
         "RANDOM_SAMPLE",
+        "Binding",
         "BuildInfo",
         "EnvFactory",
         "EnvServer",

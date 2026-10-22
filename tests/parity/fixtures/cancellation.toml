@@ -3,6 +3,8 @@ id = "cancel_single_step"
 family = "Cancellation"
 rules = ["R-18"]
 operation = "cancel_step"
+languages = ["rust", "c", "cpp"]
+why = "Python serves a local env on a host thread, where a KeyboardInterrupt the env raises is an env failure; Ctrl-C itself interrupts the caller."
 expect = { error = "KeyboardInterrupt", episode_ends_before_reset = 0, episode_ends = 1, reusable = true }
 
 [[scenario]]
@@ -10,6 +12,8 @@ id = "cancel_session_run"
 family = "Cancellation"
 rules = ["R-18"]
 operation = "cancel_run"
+languages = ["rust", "c", "cpp"]
+why = "Python serves a local env on a host thread, where a KeyboardInterrupt the env raises is an env failure; Ctrl-C itself interrupts the caller."
 expect = { error = "KeyboardInterrupt", episode_ends = 1, run_ends = 1, partial_episodes = 0, reusable = true }
 
 [[scenario]]

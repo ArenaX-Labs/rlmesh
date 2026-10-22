@@ -2116,43 +2116,6 @@ def test_image_input_stack_round_trips_and_omits_default() -> None:
         ).to_dict()
 
 
-def test_vector_env_rejected_by_single_env_eval_loop() -> None:
-    # The SESSION's per-episode loop reads scalar reward/termination, so it rejects
-    # any vector env (num_envs>1) up front instead of crashing on array truthiness
-    # deep in the step loop. (Model.run drives vector envs through the native
-    # runtime loop instead, so only the interactive session rejects them.)
-    from rlmesh.numpy import Model
-
-    env = image_env(4, 4)
-    contract: Any = SimpleNamespace(
-        metadata=env.tags.to_metadata(),
-        observation_space=env.obs_space,
-        action_space=env.action_space,
-        num_envs=2,
-    )
-    # A steppable env-like object; the vector env is rejected before any step.
-    fake_env: Any = SimpleNamespace(
-        env_contract=contract,
-        reset=lambda **_kw: ({}, {}),
-        step=lambda _action: ({}, 0.0, True, False, {}),
-    )
-
-    def predict(payload: dict[str, Any]) -> Any:
-        return np.zeros(SMOLVLA.output.dim, dtype=np.float32)
-
-    model = Model(
-        predict,
-        spec=adapt.ModelSpec(
-            input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=2)},
-            output=SMOLVLA.output,
-        ),
-    )
-    import rlmesh
-
-    with pytest.raises(ValueError, match="num_envs=2"):
-        rlmesh.session(model, fake_env).run(episodes=1)
-
-
 def test_stateful_adapter_allowed_on_vector_route() -> None:
     # Frame-stacking state is now episode-keyed in the native serving engine, so
     # a served stateful adapter resolves against a vectorized route -- the old
@@ -4311,7 +4274,7 @@ class _StackedFrameEnv:
         pass
 
 
-def _drive_stacked_session(horizon: int, steps: int) -> list[Any]:
+def _drive_stacked_binding(horizon: int, steps: int) -> list[Any]:
     """Drive a stacked model for `steps` env steps; return the payloads it saw."""
     from rlmesh.numpy import Model
 
@@ -4332,24 +4295,23 @@ def _drive_stacked_session(horizon: int, steps: int) -> list[Any]:
             return np.zeros((chunk, 7), dtype=np.float32)
 
     model = _Chunky(spec=spec)
-    sess = model.session(
+    with model.bind(
         _StackedFrameEnv(env.tags, env.obs_space, env.action_space),
         execution_horizon=horizon,
-    )
-    obs, _info = sess.reset()
-    for _ in range(steps):
-        obs, *_rest = sess.step(sess.predict(obs))
-    sess.close()
+    ) as binding:
+        binding.reset()
+        for _ in range(steps):
+            binding.step()
     return seen
 
 
 def test_a_stacked_window_is_the_same_at_every_execution_horizon() -> None:
     # The horizon invariant: chunk replay changes WHEN the model runs, never WHAT
-    # it sees. Every fourth payload of a single-step session must equal the
-    # payloads a horizon-4 session assembled at the same env steps -- which only
+    # it sees. Every fourth payload of a single-step binding must equal the
+    # payloads a horizon-4 binding assembled at the same env steps -- which only
     # holds because a replayed step still ticks the frame window.
-    every_step = _drive_stacked_session(1, 12)
-    chunked = _drive_stacked_session(4, 12)
+    every_step = _drive_stacked_binding(1, 12)
+    chunked = _drive_stacked_binding(4, 12)
     assert len(every_step) == 12
     assert len(chunked) == 3
     for index, payload in enumerate(chunked):
@@ -4385,7 +4347,7 @@ def test_image_stride_sugar_builds_the_declared_offsets() -> None:
 
 def test_frame_history_budget_is_gated_at_connect() -> None:
     # A window is live memory for the whole episode: a mis-set stride turns a
-    # modest stack into gigabytes, so the session refuses it where the number is
+    # modest stack into gigabytes, so a binding refuses it where the number is
     # already known rather than at the allocation that OOMs.
     from rlmesh.numpy import Model
 
@@ -4394,13 +4356,10 @@ def test_frame_history_budget_is_gated_at_connect() -> None:
         input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=4, stride=32)},
         output=SMOLVLA.output,
     )
-    sess = Model(lambda obs: np.zeros(7, dtype=np.float32), spec=spec).session(
-        _StackedFrameEnv(env.tags, env.obs_space, env.action_space)
-    )
-    with pytest.raises(ValueError, match="over the 64-byte ceiling"):
+    model = Model(lambda obs: np.zeros(7, dtype=np.float32), spec=spec)
+    with pytest.raises(Exception, match="64-byte"):
         with _frame_history_limit(64):
-            sess.reset()
-    sess.close()
+            model.bind(_StackedFrameEnv(env.tags, env.obs_space, env.action_space))
 
 
 @contextlib.contextmanager

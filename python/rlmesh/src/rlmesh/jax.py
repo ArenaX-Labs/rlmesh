@@ -322,8 +322,8 @@ class Model(ModelBase[_ObsT, _ActT]):
 
     Generic over the observation/action types, defaulting to ``JaxValue``:
     wrapping an annotated predict callable infers them (``Model(predict)`` with
-    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``session`` a
-    ``Session[X, Y]``); subclasses and unannotated sources bind ``JaxValue``.
+    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``bind`` a
+    ``Binding[X, Y]``); subclasses and unannotated sources bind ``JaxValue``.
 
     Examples:
         >>> from rlmesh.jax import Model
@@ -334,9 +334,6 @@ class Model(ModelBase[_ObsT, _ActT]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
-    # Without this, run(address) falls back to the numpy RemoteEnv and decodes
-    # observations as ndarrays instead of JAX arrays.
-    _remote_env_cls: ClassVar[type | None] = RemoteEnv
 
 
 @final

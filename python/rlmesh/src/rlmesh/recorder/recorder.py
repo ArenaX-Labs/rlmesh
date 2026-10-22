@@ -1,7 +1,7 @@
 """The :class:`Recorder` -- capture eval runs, export a portable bundle.
 
-Path-agnostic by design: every OSS execution path (pure ``rlmesh.run``, a
-``session().run``, or a hand-driven session) converges on the same
+Path-agnostic by design: every OSS execution path (``rlmesh.run`` or a
+:class:`~rlmesh.Binding` stepped by hand) converges on the same
 :class:`~rlmesh.RunResult`, so :meth:`Recorder.add` records from that return value
 with no runtime changes. :meth:`Recorder.capture` returns a
 :class:`~rlmesh.RunHooks` for live per-episode capture (and media) on the
@@ -45,11 +45,12 @@ class Recorder:
         rec.add(result, model="smolvla", env="libero", task="libero-spatial-0")
         rec.export("results/run.zip")
 
-    Example -- with media, on the session path::
+    Example -- with media::
 
         rec = rlmesh.Recorder()
-        sess = rlmesh.session(model, env)
-        sess.run(
+        rlmesh.run(
+            model,
+            env,
             episodes=50,
             hooks=rec.capture(model="smolvla", env="libero", task="libero-spatial-0"),
         )
@@ -65,7 +66,7 @@ class Recorder:
     ) -> None:
         """Create a recorder.
 
-        Frames captured on the session path are encoded to AV1 mp4 in process (pure
+        Captured frames are encoded to AV1 mp4 in process (pure
         Rust, no ffmpeg); ``fps`` sets the recorded playback rate and ``quality``
         (1..=100, higher is better/larger) trades file size against fidelity.
         """
@@ -153,7 +154,7 @@ class Recorder:
         Frame sourcing:
 
         * By default the recorded sources are auto-discovered on the first step
-          from the session running the hooks (received via
+          from the run context driving the hooks (received via
           :meth:`~rlmesh.RunHooks.on_run_start`): the env's ``render()`` frame
           (when it exposes an rgb render mode) plus every declared image role,
           each to its own video -- exactly the sources the live viewer offers,
@@ -161,11 +162,11 @@ class Recorder:
         * ``cameras`` -- explicit sources to record each step: env image roles
           (read as HWC) and/or ``"render"`` for the env's ``render()`` frame.
           ``cameras=[]`` opts out of frames entirely (metrics only).
-        * ``session`` -- only needed when driving the hooks by hand (outside
-          a ``run``); an explicitly passed session also wins over the running
-          loop's :class:`~rlmesh.RunContext`. The ``render()`` frame is reachable
-          on the session loop and, on the native ``Model.run`` loop, for a local
-          env object; a vector env is refused unless ``cameras=[]``.
+        * ``session`` -- a :class:`~rlmesh.RunContext`, only needed when
+          driving the hooks by hand (outside a run or a binding); an explicitly
+          passed one also wins over the running loop's. The ``render()`` frame
+          is reachable on a binding and, on ``Model.run``, for a local env
+          object; a vector env is refused unless ``cameras=[]``.
 
         ``video_info_keys`` name the step-``info`` keys checked for an env-produced
         video file path (the env renders its own video); the file is copied into the

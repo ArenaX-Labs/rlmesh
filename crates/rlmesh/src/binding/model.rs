@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "lockstep")]
+pub use crate::model::bind::{Binding, BoundStep};
 pub use crate::model::engine::AdaptedModelHandler;
 pub use crate::model::handler::{
     HeldState, HistoryNeeds, ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames,

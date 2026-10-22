@@ -358,29 +358,6 @@ macro_rules! client_class {
                 }
             }
 
-            /// The env's handshake offer, `(CAN, WANT)`: the editions it
-            /// advertised and the one it declared (`None` when it declared
-            /// none). A served-model session hands this to `PyModelClient` so
-            /// the three-way floor sees the env's real offer.
-            fn session_offer(&self) -> (Vec<String>, Option<String>) {
-                let offer = self.core.client.session_offer();
-                (offer.editions.clone(), offer.preferred.clone())
-            }
-
-            /// Pin the env to the session edition a served-model session
-            /// settled on (its three-way floor), sent as the first Join
-            /// message. Call before the first reset.
-            fn pin_workflow_edition(
-                slf: &Bound<'_, Self>,
-                selected_workflow_edition: &str,
-            ) -> PyResult<()> {
-                let mut this = Self::lock(slf)?;
-                this.core
-                    .client
-                    .pin_workflow_edition(selected_workflow_edition);
-                Ok(())
-            }
-
             fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 let _span = self.core.span("handshake");
                 self.core.env_contract_py(py)
@@ -602,8 +579,6 @@ class PyEnvClient:
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
     def edition_cell(self) -> PyEditionCell: ...
-    def session_offer(self) -> tuple[list[str], str | None]: ...
-    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -626,8 +601,6 @@ class PyVectorEnvClient:
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
     def edition_cell(self) -> PyEditionCell: ...
-    def session_offer(self) -> tuple[list[str], str | None]: ...
-    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -678,15 +651,6 @@ pub fn normalize_connect_address(
         .map_err(to_py_err)
 }
 
-/// Parse a client timeout given in seconds: `None` and zero are no timeout;
-/// negative or non-finite is ValueError (RMT-4).
-pub(crate) fn optional_timeout(
-    value: Option<f64>,
-    field: &'static str,
-) -> PyResult<Option<Duration>> {
-    rlmesh::binding::env::client_timeout_from_secs(value, field).map_err(to_py_err)
-}
-
 fn decode_options(
     py: Python<'_>,
     options: Option<Py<PyAny>>,
@@ -716,7 +680,7 @@ fn info_to_pydict<'py>(
 
 /// A wire PNG frame as a uint8 tensor; an undecodable frame is
 /// `ProtocolException` (RMT-P3).
-fn decode_render_frame<'py>(py: Python<'py>, png: &[u8]) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn decode_render_frame<'py>(py: Python<'py>, png: &[u8]) -> PyResult<Bound<'py, PyAny>> {
     let (shape, raw) = rlmesh::binding::env::decode_render_frame(png).map_err(to_py_err)?;
     tensor_from_shape(py, raw, shape, "uint8")
 }

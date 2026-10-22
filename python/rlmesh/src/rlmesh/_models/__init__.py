@@ -9,31 +9,32 @@ connects a predict callable to an env.
 
 from __future__ import annotations
 
+from .._upgrade import session
 from ._adapter_mode import NO_ADAPTER
+from ._binding import Binding
 from ._eval import (
     RANDOM_SAMPLE,
     EpisodeResult,
     RunContext,
     RunHooks,
     RunResult,
-    Session,
     StepEvent,
     TelemetryRow,
 )
 from ._read import Reader
 from ._view import FrameSources, View
-from .base import run, session
+from .base import run
 
 __all__ = [
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
+    "Binding",
     "EpisodeResult",
     "FrameSources",
     "Reader",
     "RunContext",
     "RunHooks",
     "RunResult",
-    "Session",
     "StepEvent",
     "TelemetryRow",
     "View",

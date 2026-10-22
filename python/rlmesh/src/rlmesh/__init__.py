@@ -33,13 +33,13 @@ from ._metadata import sanitize_metadata
 from ._models import (
     NO_ADAPTER,
     RANDOM_SAMPLE,
+    Binding,
     EpisodeResult,
     FrameSources,
     Reader,
     RunContext,
     RunHooks,
     RunResult,
-    Session,
     StepEvent,
     TelemetryRow,
     View,
@@ -73,6 +73,7 @@ from ._rlmesh import (
 )
 from ._sandbox import SandboxBuild, SandboxRuntime
 from ._server import EnvServer
+from ._upgrade import Session
 from ._variants import Variant
 from .params import Param, ParamSpec, Vector
 from .recorder import Recorder
@@ -128,6 +129,7 @@ __all__ = [
     "ENV_RESET_OPTIONS_KEY",
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
+    "Binding",
     "BuildInfo",
     "EnvFactory",
     "EnvServer",

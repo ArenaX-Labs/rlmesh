@@ -392,8 +392,8 @@ class Model(ModelBase[_ObsT, _ActT]):
 
     Generic over the observation/action types, defaulting to ``TorchValue``:
     wrapping an annotated predict callable infers them (``Model(predict)`` with
-    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``session`` a
-    ``Session[X, Y]``); subclasses and unannotated sources bind ``TorchValue``.
+    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``bind`` a
+    ``Binding[X, Y]``); subclasses and unannotated sources bind ``TorchValue``.
 
     Examples:
         >>> from rlmesh.torch import Model
@@ -404,7 +404,6 @@ class Model(ModelBase[_ObsT, _ActT]):
     """
 
     _bridge: ClassVar[ValueBridge] = _torch_bridge
-    _remote_env_cls: ClassVar[type | None] = RemoteEnv
 
 
 @final

@@ -289,7 +289,7 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
     rec.close()
 
 
-@pytest.mark.parametrize("path", ["session", "native"])
+@pytest.mark.parametrize("path", ["bind", "native"])
 def test_capture_smoke_with_a_real_run(tmp_path: Path, path: str) -> None:
     """Recorder.capture works through a real run's hook path, on either loop.
 
@@ -332,30 +332,20 @@ def test_capture_smoke_with_a_real_run(tmp_path: Path, path: str) -> None:
     )
     env = adapt.tag(_ImageEnv(), tags)
 
+    from rlmesh.numpy import Model
+
     rec = Recorder(fps=12)
-    if path == "session":
-        with rlmesh.session(rlmesh.RANDOM_SAMPLE, env) as sess:
-            result = sess.run(
-                seeds=[123],
-                hooks=rec.capture(model="random", env="image-env", task="smoke"),
-            )
+    model = Model(lambda obs: np.zeros(1, np.float32), spec=rlmesh.NO_ADAPTER)
+    hooks = rec.capture(model="zeros", env="image-env", task="smoke")
+    if path == "bind":
+        with model.bind(env, hooks=hooks) as binding:
+            binding.reset(seed=123)
+            while not binding.done:
+                binding.step()
     else:
-        from rlmesh.numpy import Model
+        model.run(env, seeds=[123], hooks=hooks)
 
-        model = Model(lambda obs: np.zeros(1, np.float32), spec=rlmesh.NO_ADAPTER)
-        try:
-            result = model.run(
-                env,
-                seeds=[123],
-                hooks=rec.capture(model="zeros", env="image-env", task="smoke"),
-            )
-        except ConnectionError as exc:
-            if "Operation not permitted" in str(exc):
-                pytest.skip("local tcp bind is not permitted in this environment")
-            raise
-
-    assert result.num_episodes == 1
-    assert result.episodes[0].steps == 2
+    assert [episode.steps for episode in rec.workloads[0].episodes] == [2]
     media = rec.workloads[0].episodes[0].media
     assert len(media) == 1
     ref = media[0]
@@ -955,7 +945,7 @@ def test_capture_warnings_never_raise_under_warnings_as_errors() -> None:
     rec.close()
 
 
-@pytest.mark.parametrize("path", ["session", "native"])
+@pytest.mark.parametrize("path", ["bind", "native"])
 def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None:
     """One timing definition: the record ``capture()`` builds from the episode
     delivered to ``on_episode_end`` equals the one ``add(result)`` builds from
@@ -992,16 +982,24 @@ def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None
     model = Model(lambda obs: np.zeros(1, np.float32))
     live = Recorder()
     hooks = live.capture(model="m", env="e", task="t", cameras=[])
-    try:
-        if path == "session":
-            with model.session(_Env()) as sess:
-                result = sess.run(seeds=[1, 2], hooks=hooks)
-        else:
-            result = model.run(_Env(), seeds=[1, 2], hooks=hooks)
-    except ConnectionError as exc:
-        if "Operation not permitted" in str(exc):
-            pytest.skip("local tcp bind is not permitted in this environment")
-        raise
+    if path == "bind":
+        # A binding hands its result to on_run_end alone; keep it.
+        ended: list[RunResult] = []
+        record = hooks.on_run_end
+
+        def on_run_end(result: RunResult) -> None:
+            ended.append(result)
+            record(result)
+
+        hooks.on_run_end = on_run_end
+        with model.bind(_Env(), hooks=hooks) as binding:
+            for seed in (1, 2):
+                binding.reset(seed=seed)
+                while not binding.done:
+                    binding.step()
+        (result,) = ended
+    else:
+        result = model.run(_Env(), seeds=[1, 2], hooks=hooks)
     post_hoc = Recorder()
     post_hoc.add(result, model="m", env="e", task="t")
     captured = live.to_dict()["workloads"][0]["episodes"]

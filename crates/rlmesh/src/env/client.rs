@@ -353,7 +353,7 @@ fn open_view(
 }
 
 #[cfg(feature = "lockstep")]
-fn lockstep_error(error: crate::lockstep::GymError) -> Error {
+pub(crate) fn lockstep_error(error: crate::lockstep::GymError) -> Error {
     use crate::lockstep::GymError;
     match error {
         GymError::Timeout(timeout) => Error::Timeout(timeout),

@@ -174,16 +174,16 @@ where
 }
 
 /// A connected env: what the driver steps, and what the connection learned.
-struct Connected {
-    env: DrivenEnv,
-    contract: spaces::EnvContract,
-    num_envs: usize,
+pub(crate) struct Connected {
+    pub(crate) env: DrivenEnv,
+    pub(crate) contract: spaces::EnvContract,
+    pub(crate) num_envs: usize,
     /// Lanes reset and step individually.
     subset_step: bool,
     /// The edition negotiated with the env.
     workflow_edition: rlmesh_proto::Edition,
     /// The session the env is in (its address), on the v2 path.
-    session: Option<String>,
+    pub(crate) session: Option<String>,
 }
 
 /// Dials the env and handshakes: as a v2 lockstep driver (a participant
@@ -256,7 +256,7 @@ async fn connect_grpc_env(options: &LocalRun) -> Result<Connected> {
 
 /// The env a local run drives.
 #[derive(Clone)]
-enum DrivenEnv {
+pub(crate) enum DrivenEnv {
     #[cfg(not(feature = "lockstep"))]
     Grpc(Box<EnvClientRuntimeEnv>),
     #[cfg(feature = "lockstep")]
@@ -314,9 +314,14 @@ impl LockstepEnv {
         Self { client }
     }
 
+    /// The client driving the env.
+    pub(crate) fn client(&self) -> &crate::lockstep::LockstepClient {
+        &self.client
+    }
+
     /// Connects to the lockstep env at `address`, negotiating the edition
     /// with `declared` (the runtime's WANT) from its declaration.
-    async fn connect(address: &str, declared: Option<&str>) -> Result<Connected> {
+    pub(crate) async fn connect(address: &str, declared: Option<&str>) -> Result<Connected> {
         let client = crate::lockstep::connect(address, Default::default())
             .await
             .map_err(|err| Error::Connection(err.to_string()))?;

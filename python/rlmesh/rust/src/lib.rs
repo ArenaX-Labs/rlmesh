@@ -1,4 +1,5 @@
 mod adapters;
+mod bind;
 mod client;
 mod hooks;
 mod lifecycle;
@@ -168,7 +169,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<server::PyEnvServer>()?;
     m.add_class::<server::PyVectorEnvServer>()?;
     m.add_class::<model::PyModel>()?;
-    m.add_class::<model::PyModelClient>()?;
+    m.add_class::<bind::PyBinding>()?;
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
     m.add_class::<client::PyEditionCell>()?;

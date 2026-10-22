@@ -3,18 +3,15 @@
 The model-side sibling of ``SandboxEnv``. The source is a prebuilt
 ``image://<tag>`` container you built yourself (BYO); construction is inert -- it
 records the tag but starts nothing. ``serve()`` (or use as a context manager)
-starts a long-lived container serving the policy as a model endpoint;
-``rlmesh.session(model, env)`` (or ``model.session(env)``) serves it and binds it to an
-env for the drive loop.
+starts a long-lived container serving the policy as a model endpoint.
 """
 
 from __future__ import annotations
 
-import time
-from typing import TYPE_CHECKING, Any
+from typing import NoReturn
 
-from ..types import EnvTarget, ViewArg
-from ._sources import looks_like_gym_id, run_docker
+from .._upgrade import removed
+from ._sources import looks_like_gym_id
 from .session import (
     SandboxRuntime,
     normalize_gpus,
@@ -24,23 +21,9 @@ from .session import (
     string_sequence,
 )
 
-if TYPE_CHECKING:
-    from rlmesh._rlmesh import PyModelClient
-
-    from .._models._eval import Session
-    from ..specs import EnvContract
-
 __all__ = ["SandboxModel"]
 
 _IMAGE_SCHEMES = ("image://", "docker://")
-
-# Only these are retried while the container boots: a refused/unavailable
-# connection (ConnectionError/OSError) or a connect timeout. Deterministic
-# config errors -- a missing/invalid contract space (RuntimeError/TypeError,
-# raised before the client even dials) -- are NOT here, so they fail fast. Each
-# retry first re-checks the container is still running, so a dial error against
-# an already-exited container also fails fast (with logs) rather than retrying.
-_TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
 
 
 def _resolve_model_source(source: object) -> str:
@@ -130,7 +113,6 @@ class SandboxModel:
         ``RLMESH_MAKE_KWARGS``. The port is published on a Docker-assigned host port
         and read back (no host-side bind/close, so no TOCTOU race); on port-discovery
         failure the helper stops the container before re-raising, so nothing leaks.
-        Readiness is the caller's connect-with-retry (see :meth:`session`).
         """
         info = start_prebuilt_container(
             self._image,
@@ -158,182 +140,13 @@ class SandboxModel:
             return self
         return self._serve_image()
 
-    def session(
-        self,
-        env: EnvTarget,
-        *,
-        instruction: str | None = None,
-        close_env: bool = False,
-        trust_entrypoints: bool | None = None,
-        execution_horizon: int = 1,
-        connect_timeout_seconds: float = 30.0,
-        view: ViewArg = None,
-        workflow_edition: str | None = None,
-    ) -> Session[Any, Any]:
-        """Serve this model and bind it to ``env``, returning a neutral :class:`rlmesh.Session`.
-
-        Binds a sandboxed model to one env: starts the model
-        container (idempotent), then opens a route configured from the env's contract so
-        the *same* drive loop works for both pairs::
-
-            with rlmesh.SandboxEnv("gym://CartPole-v1") as env:
-                sess = rlmesh.session(
-                    rlmesh.SandboxModel("image://my-model:latest"), env
-                )
-                obs, _ = sess.reset()
-                while not sess.done:
-                    obs, reward, terminated, truncated, _ = sess.step(sess.predict(obs))
-
-        Closing the session stops the container it started. ``instruction`` /
-        ``trust_entrypoints`` cannot be honored by a served container and raise
-        ``ValueError`` when set rather than being silently dropped. ``view`` opts into
-        the built-in live viewer over this session's env loop (see :func:`rlmesh.run`). ``execution_horizon``
-        requests open-loop action chunking: the runtime executes that many actions of each
-        predicted chunk before re-planning (1 = re-plan every step; only engages if the served
-        policy defines a chunk corner). Retries the connection while the container starts, up to
-        ``connect_timeout_seconds``.
-        """
-        if instruction is not None:
-            raise ValueError(
-                "instruction= is not supported on a SandboxModel session: a "
-                "served model takes the instruction from the env; set it on "
-                "the env instead"
-            )
-        if trust_entrypoints is not None:
-            raise ValueError(
-                "trust_entrypoints= applies to local model entrypoints and is "
-                "not supported on a SandboxModel session; remove it"
-            )
-        from .._client._remote_model import (
-            dial_env_address,
-            env_contract_of,
-            env_session_offer,
-            remote_session,
+    def session(self, *args: object, **kwargs: object) -> NoReturn:
+        """Removed in 0.2: a model is bound to an env with ``bind(target)``."""
+        _ = args, kwargs
+        removed(
+            "SandboxModel.session(env)",
+            "SandboxModel(...).bind(target) returns a Binding you step by hand",
         )
-        from .._editions import resolve_workflow_edition
-        from .._load_native import load_native
-
-        workflow_edition = resolve_workflow_edition(call=workflow_edition)
-
-        # Only tear down on failure if THIS call started the container; a handle the
-        # caller is managing (context manager / reuse) must survive a failed bind
-        # (serve() is idempotent and returns early when already serving).
-        started_here = self._address is None
-        env, owns_env = dial_env_address(env)
-        self.serve()
-        try:
-            contract = env_contract_of(env)
-            client = self._dial_with_retry(
-                load_native("PyModelClient"),
-                contract,
-                connect_timeout_seconds,
-                execution_horizon,
-                workflow_edition,
-                env_session_offer(env),
-            )
-            # Hand ownership (and so container teardown on session close) only to a
-            # session that actually started the container. A caller-managed handle
-            # (serve()/context manager) must survive its sessions closing.
-            try:
-                return remote_session(
-                    client,
-                    env,
-                    owner=self if started_here else None,
-                    close_env=close_env,
-                    owns_env=owns_env,
-                    view=view,
-                )
-            except BaseException:
-                try:
-                    client.close()
-                except Exception:
-                    pass
-                raise
-        except BaseException:
-            if started_here:
-                self.shutdown()
-            raise
-
-    def _dial_with_retry(
-        self,
-        client_cls: type[PyModelClient],
-        contract: EnvContract,
-        connect_timeout_seconds: float,
-        execution_horizon: int = 1,
-        workflow_edition: str | None = None,
-        env_offer: tuple[list[str], str | None] | None = None,
-    ) -> PyModelClient:
-        """Dial the serving container, retrying while it is still starting.
-
-        Retries only genuine transient startup failures (see
-        :data:`_TRANSIENT_DIAL_ERRORS`): a deterministic contract/config error
-        (e.g. a missing observation space) fails fast instead of being retried
-        for the whole timeout and then masked as "did not become ready". If the
-        container has exited/crashed, fail fast with its recent logs.
-        """
-        deadline = time.monotonic() + connect_timeout_seconds
-        last_error: BaseException | None = None
-        while True:
-            try:
-                return client_cls(
-                    self.address,
-                    contract,
-                    execution_horizon=execution_horizon,
-                    connect_timeout_seconds=max(deadline - time.monotonic(), 0.1),
-                    workflow_edition=workflow_edition,
-                    env_offer=env_offer,
-                )
-            except _TRANSIENT_DIAL_ERRORS as exc:  # the container may still be starting
-                last_error = exc
-                running = self._container_running()
-                if running is None:
-                    raise RuntimeError(
-                        f"could not inspect model container for image "
-                        f"{self._image!r} at {self.address} (docker daemon "
-                        f"busy?); last dial error: {exc}"
-                    ) from last_error
-                if not running:
-                    raise RuntimeError(
-                        f"model container for image {self._image!r} at "
-                        f"{self.address} exited before becoming ready; recent "
-                        f"logs:\n{self._container_logs()}"
-                    ) from last_error
-                if time.monotonic() >= deadline:
-                    raise RuntimeError(
-                        f"model container for image {self._image!r} at "
-                        f"{self.address} did not become ready within "
-                        f"{connect_timeout_seconds:.0f}s; recent logs:\n"
-                        f"{self._container_logs()}"
-                    ) from last_error
-                time.sleep(0.1)
-
-    def _container_running(self) -> bool | None:
-        """Whether the served container is still running, or None if unknowable.
-
-        ``None`` means the inspect itself failed (daemon busy/erroring), which
-        the dial loop reports as "could not inspect" rather than misreading a
-        busy daemon as an exited container.
-        """
-        if self._container_id is None:
-            return False
-        proc = run_docker(
-            ["docker", "inspect", "-f", "{{.State.Running}}", self._container_id]
-        )
-        if proc.returncode != 0:
-            return None
-        return proc.stdout.strip() == "true"
-
-    def _container_logs(self, tail: int = 50) -> str:
-        """Recent container logs for error messages, degrading instead of raising."""
-        if self._container_id is None:
-            return ""
-        try:
-            proc = run_docker(
-                ["docker", "logs", "--tail", str(tail), self._container_id]
-            )
-        except RuntimeError as exc:
-            return f"<no logs: {exc}>"
-        return (proc.stdout + proc.stderr).strip()
 
     @property
     def address(self) -> str:

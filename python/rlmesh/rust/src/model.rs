@@ -9,12 +9,10 @@ use rlmesh::binding::model::{
     AdaptedModelHandler, EpisodeInfo, ModelHandler, ModelObservation, ModelWorker, PredictFn,
     PredictFrames, RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
 };
-use rlmesh::binding::model::{ModelClient, ModelConnect};
 use rlmesh::ext::{BindAddress, ConnectAddress};
 use rlmesh_adapters::v1::Value;
-use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
+use rlmesh_spaces::{EnvContract, SpaceValue};
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,8 +20,8 @@ use crate::adapters::{PyCustomTransform, PyEncodings, decode_value, encode_value
 use crate::hooks::PyRunHooks;
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::{
-    ValueBackend, batched_space_values_to_py_neutral, env_contract_to_py, extract_space_spec,
-    make_space, py_any_to_batched_space_values_with_backend, py_any_to_meta_map,
+    ValueBackend, batched_space_values_to_py_neutral, env_contract_to_py,
+    py_any_to_batched_space_values_with_backend, py_any_to_meta_map,
     py_any_to_space_value_with_backend, space_value_to_py_neutral,
 };
 use crate::telemetry::{ProfileCollector, init_tracing};
@@ -90,7 +88,7 @@ struct PyPredict {
     nested: Option<Arc<crate::nested::Nested>>,
 }
 
-type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
+pub(crate) type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
@@ -842,6 +840,8 @@ pub struct PyModel {
     /// The workers of the models this model calls from its predict, by the
     /// Python `id` of each.
     inners: std::sync::Mutex<Vec<(u64, Py<PyModel>)>>,
+    /// The random baseline (`RANDOM_SAMPLE`) rather than the callbacks.
+    random: bool,
 }
 
 #[derive(Default)]
@@ -855,6 +855,9 @@ impl PyModel {
     /// model, the route resolver. The engine owns the per-route adapter state and
     /// frame buffers; this layer only supplies the host (Python) callbacks.
     fn build_handler(&self) -> Box<dyn ModelHandler> {
+        if self.random {
+            return Box::<crate::bind::RandomSample>::default();
+        }
         if let Some((address, timeout)) = &self.served {
             return Box::new(rlmesh::lockstep::ServedModel::new(
                 address.clone(),
@@ -1010,6 +1013,7 @@ impl PyModel {
             served: None,
             reset_options_fn,
             inners: Default::default(),
+            random: false,
         })
     }
 
@@ -1036,7 +1040,53 @@ impl PyModel {
             served: Some((address.to_string(), crate::session::timeout(timeout_s)?)),
             reset_options_fn: None,
             inners: Default::default(),
+            random: false,
         })
+    }
+
+    /// The random baseline: samples the env's action space.
+    #[staticmethod]
+    fn random_sample(py: Python<'_>) -> Self {
+        init_tracing("model_worker");
+        Self {
+            predict_fn: py.None(),
+            predict_chunk_fn: None,
+            predict_batch_fn: None,
+            predict_chunk_batch_fn: None,
+            allow_fusion: true,
+            native_chunk: None,
+            configure_fn: None,
+            on_episode_end: None,
+            on_close: None,
+            on_route_drop: None,
+            profiler: ProfileCollector::new("model_worker"),
+            last_error: LastPyError::default(),
+            serving: Arc::default(),
+            served: None,
+            reset_options_fn: None,
+            inners: Default::default(),
+            random: true,
+        }
+    }
+
+    /// Binds the model to the env at the session address `env_address`, to
+    /// step by hand.
+    #[pyo3(signature = (env_address, execution_horizon=1, workflow_edition=None))]
+    fn bind(
+        &self,
+        py: Python<'_>,
+        env_address: &str,
+        execution_horizon: u32,
+        workflow_edition: Option<String>,
+    ) -> PyResult<crate::bind::PyBinding> {
+        crate::bind::PyBinding::connect(
+            py,
+            self.build_handler(),
+            Arc::clone(&self.last_error),
+            env_address,
+            execution_horizon,
+            workflow_edition,
+        )
     }
 
     /// The workers of the models this model calls from its predict, by the
@@ -1229,6 +1279,9 @@ class PyModel:
     @staticmethod
     def served(address: str, timeout_s: float = 30.0) -> PyModel: ...
     def set_inner_models(self, inners: list[tuple[int, PyModel]]) -> None: ...
+    @staticmethod
+    def random_sample() -> PyModel: ...
+    def bind(self, env_address: str, execution_horizon: int = 1, workflow_edition: str | None = None) -> PyBinding: ...
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
@@ -1237,230 +1290,10 @@ class PyModel:
     }
 }
 
-#[cfg(feature = "stub-gen")]
-submit! {
-    gen_methods_from_python! {
-        r#"
-class PyModelClient:
-    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
-    def address(self) -> str: ...
-    def env_id(self) -> str: ...
-    def selected_workflow_edition(self) -> str: ...
-    def observation_space(self) -> Space: ...
-    def action_space(self) -> Space: ...
-    def reset(self, seed: int | None = None) -> None: ...
-    def predict(self, observation: Value) -> Value: ...
-    def close(self) -> None: ...
-"#
-    }
-}
-
 impl Drop for PyModel {
     fn drop(&mut self) {
         self.profiler.log_summary_once();
     }
-}
-
-/// Client handle to a model (policy) server: the model-side mirror of
-/// `PyEnvClient`. Bound to one env contract (one route) for its lifetime; the
-/// Python layer creates one per `rlmesh.session(model, env)`.
-#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
-#[pyclass(module = "rlmesh._rlmesh")]
-pub struct PyModelClient {
-    inner: ModelClient,
-    runtime: &'static tokio::runtime::Runtime,
-    observation_space: SpaceSpec,
-    action_space: SpaceSpec,
-    address: String,
-}
-
-#[pymethods]
-impl PyModelClient {
-    #[new]
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, env_offer=None, api_key=None, tls_ca_file=None))]
-    fn new(
-        py: Python<'_>,
-        address: &str,
-        env_contract: &Bound<'_, PyAny>,
-        execution_horizon: u32,
-        connect_timeout_seconds: Option<f64>,
-        request_timeout_seconds: Option<f64>,
-        workflow_edition: Option<String>,
-        env_offer: Option<(Vec<String>, Option<String>)>,
-        api_key: Option<String>,
-        tls_ca_file: Option<String>,
-    ) -> PyResult<Self> {
-        init_tracing("model_client");
-        let contract = native_env_contract_from_py(env_contract)?;
-        // `native_env_contract_from_py` always carries both spaces.
-        let observation_space = contract.observation_space.clone().unwrap_or_default();
-        let action_space = contract.action_space.clone().unwrap_or_default();
-        let connect_timeout =
-            crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
-        let request_timeout =
-            crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
-        let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
-        // A sandbox dials loopback; this checks what it passes.
-        let auth = rlmesh::binding::client_auth(
-            address,
-            api_key.as_deref(),
-            tls_ca_file.as_deref().map(std::path::Path::new),
-            false,
-        )
-        .map_err(to_py_err)?;
-        // The env's handshake offer as the Python session captured it. Without
-        // one the env tier stands in as this build, UNDECLARED: it must not
-        // inherit `declared`, the runtime tier's WANT, or a refusal would print
-        // a WANT the env never sent.
-        let env_offer = env_offer.map(|(editions, preferred)| rlmesh_proto::SessionOffer {
-            editions,
-            preferred,
-        });
-        let runtime = model_runtime();
-        let address = address.to_string();
-        let mut inner = py.detach(|| {
-            runtime
-                .block_on(ModelClient::connect_with(
-                    &address,
-                    contract,
-                    ModelConnect {
-                        token: auth.token(),
-                        trust: auth.trust().clone(),
-                        env_offer,
-                        declared: declared.as_deref(),
-                        connect_timeout,
-                        request_timeout,
-                    },
-                ))
-                .map_err(to_py_err)
-        })?;
-        // Opt the served model into chunking (h > 1): pinned on ConfigureRoute and
-        // replayed open-loop by RemoteModel. 1 = no chunking.
-        inner.set_execution_horizon(execution_horizon);
-        let address = inner.address().to_string();
-        Ok(Self {
-            inner,
-            runtime,
-            observation_space,
-            action_space,
-            address,
-        })
-    }
-
-    fn address(&self) -> String {
-        self.address.clone()
-    }
-
-    /// The env (adapter) routing key this client uses with the model — a UUIDv7
-    /// minted at connect.
-    fn env_id(&self) -> String {
-        self.inner.env_id().to_string()
-    }
-
-    /// The workflow edition this session settled on: the floor across the env,
-    /// the model, and this runtime.
-    fn selected_workflow_edition(&self) -> String {
-        self.inner.selected_workflow_edition().to_string()
-    }
-
-    fn observation_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(make_space(py, &self.observation_space)?.into_any().unbind())
-    }
-
-    fn action_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(make_space(py, &self.action_space)?.into_any().unbind())
-    }
-
-    /// Begin a new episode (next predict marks a reset boundary). `seed` (the
-    /// explicit reset seed, if any) rides on every predict of the episode as
-    /// the served model's `context["episode_seed"]`.
-    #[pyo3(signature = (seed=None))]
-    fn reset(&mut self, seed: Option<i64>) {
-        self.inner.reset(seed);
-    }
-
-    fn predict(&mut self, py: Python<'_>, observation: Py<PyAny>) -> PyResult<Py<PyAny>> {
-        let value = py_any_to_space_value_with_backend(
-            py,
-            observation.bind(py),
-            &self.observation_space,
-            ValueBackend::Native,
-        )?;
-        let runtime = self.runtime;
-        let inner = &mut self.inner;
-        let action = py.detach(|| block_on_polling_signals(runtime, inner.predict(value)))?;
-        Ok(space_value_to_py_neutral(py, &action, &self.action_space)?.unbind())
-    }
-
-    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
-        let runtime = self.runtime;
-        let inner = &mut self.inner;
-        py.detach(|| block_on_polling_signals(runtime, inner.close()))
-    }
-}
-
-/// Run one model RPC on `runtime` with the GIL released, polling Python
-/// signals so Ctrl-C abandons it as it does an env call (RMT-P9). The
-/// request bound is the facade client's (RMT-4).
-fn block_on_polling_signals<T>(
-    runtime: &tokio::runtime::Runtime,
-    rpc: impl Future<Output = rlmesh::Result<T>>,
-) -> PyResult<T> {
-    runtime.block_on(async move {
-        let mut rpc = std::pin::pin!(rpc);
-        let mut poll = crate::client::signal_poll();
-        loop {
-            tokio::select! {
-                result = &mut rpc => return result.map_err(to_py_err),
-                _ = poll.tick() => {
-                    crate::client::check_signals()?;
-                }
-            }
-        }
-    })
-}
-
-/// Reconstruct a native `EnvContract` from a Python contract object (the value
-/// `RemoteEnv.env_contract` returns). Duck-typed via getattr because the pyclass
-/// `PyEnvContract` is `skip_from_py_object` and its native `inner` cannot be
-/// extracted directly. Carries `metadata` (the env's adapter tags) so the
-/// served model can resolve its adapter from the route's contract.
-fn native_env_contract_from_py(contract: &Bound<'_, PyAny>) -> PyResult<EnvContract> {
-    let id: String = contract.getattr("id")?.extract()?;
-    let num_envs: u32 = contract.getattr("num_envs")?.extract()?;
-    let render_mode: String = contract
-        .getattr("render_mode")?
-        .extract::<Option<String>>()?
-        .unwrap_or_default();
-    let observation_space = extract_space_spec(&contract.getattr("observation_space")?)
-        .ok_or_else(|| {
-            pyo3::exceptions::PyTypeError::new_err(
-                "env contract observation_space is not an RLMesh space spec",
-            )
-        })?;
-    let action_space = extract_space_spec(&contract.getattr("action_space")?).ok_or_else(|| {
-        pyo3::exceptions::PyTypeError::new_err(
-            "env contract action_space is not an RLMesh space spec",
-        )
-    })?;
-    let metadata_obj = contract.getattr("metadata")?;
-    let metadata = if metadata_obj.is_none() {
-        None
-    } else {
-        Some(py_any_to_meta_map(&metadata_obj)?)
-    };
-    Ok(EnvContract {
-        id,
-        action_space: Some(action_space),
-        observation_space: Some(observation_space),
-        metadata,
-        render_mode,
-        num_envs,
-        // The driving loop is user-owned and single-env; autoreset mode does not
-        // affect the client route, so the contract default is fine here.
-        autoreset_mode: Default::default(),
-    })
 }
 
 #[cfg(test)]

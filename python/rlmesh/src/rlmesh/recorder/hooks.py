@@ -1,13 +1,13 @@
 """Live capture: a :class:`~rlmesh.RunHooks` that records into a workload.
 
-This is the ``run(hooks=...)`` tie-in, on either loop. It observes the eval and, per
+This is the ``run(hooks=...)`` / ``bind(hooks=...)`` tie-in. It observes the eval and, per
 episode, records the outcome plus any media the env exposes -- per-step image frames
 read through the run's own reader and streamed straight into a native AV1 writer (one
 frame in memory at a time), and/or an env-produced video file whose path the env
 leaves in the step ``info`` (that path comes from the env, which may be remote, so it
 is copied only when it names a regular file inside the run directory). The env's
-``render()`` frame is captured when the run can reach it: always on the session loop,
-and on the native ``Model.run`` loop for a local env object (not an address target).
+``render()`` frame is captured when the run can reach it: always on a binding, and on
+``Model.run`` for a local env object (not an address target).
 Frames come from one env: a vector env is refused unless ``cameras=[]``.
 
 All capture is best-effort: a camera that fails to read or encode is warned once and

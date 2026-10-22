@@ -367,9 +367,8 @@ def obs_node_from_dict(node: object) -> ObsNode:
 class ObservationRoles:
     """The observation roles an environment declares, grouped by kind.
 
-    Returned by :attr:`EnvTags.observation_roles` and
-    :meth:`rlmesh.Session.observation_roles`. Each group lists role strings in
-    declaration order; an env that declares no tags yields empty groups.
+    Returned by :attr:`EnvTags.observation_roles`. Each group lists role strings
+    in declaration order; an env that declares no tags yields empty groups.
 
     Attributes:
         images: Roles of :class:`ImageTag` leaves.

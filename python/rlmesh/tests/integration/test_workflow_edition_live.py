@@ -98,12 +98,11 @@ def test_public_wrappers_forward_the_call_pin(
     random_baseline: bool,
 ) -> None:
     monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)
-    policy = rlmesh.RANDOM_SAMPLE if random_baseline else model()
-    with rlmesh.session(
-        policy, served_env, workflow_edition=declared_edition
-    ) as session:
-        session.reset()
-        assert session.selected_workflow_edition == COHORT
+    policy = rlmesh.Model(rlmesh.RANDOM_SAMPLE) if random_baseline else model()
+    # The process declares an edition no env accepts: the call's pin is what
+    # lets these connect.
+    with policy.bind(served_env, workflow_edition=declared_edition) as binding:
+        binding.reset()
     result = rlmesh.run(
         policy, served_env, episodes=1, workflow_edition=declared_edition
     )

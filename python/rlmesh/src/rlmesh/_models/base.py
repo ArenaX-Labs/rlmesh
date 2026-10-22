@@ -24,6 +24,7 @@ from typing import (
 )
 
 from .._editions import _caller_stacklevel  # pyright: ignore[reportPrivateUsage]
+from .._upgrade import model_session, removed
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
 from ._calls import ModelCalls
@@ -34,7 +35,9 @@ if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
     from rlmesh.params import ParamSpec
 
-    from ._eval import NativeRunContext, RunHooks, RunResult, Session
+    from .._server import EnvServer
+    from ._binding import Binding
+    from ._eval import NativeRunContext, RunHooks, RunResult
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -58,6 +61,26 @@ _NATIVE_CHUNK_WITHOUT_CORNER = (
     "defines no predict_chunk() / predict_chunk_batch(). Add a chunk "
     "corner, or drop native_chunk."
 )
+
+
+def _random_only(observation: object) -> object:
+    """``Model(RANDOM_SAMPLE)``'s predict: the baseline acts only in a run or binding."""
+    _ = observation
+    raise TypeError(
+        "RANDOM_SAMPLE samples the env's action space: run or bind it to an env"
+    )
+
+
+def _release_local(server: EnvServer | None, env: object, *, close: bool) -> None:
+    """Stop a binding's in-process env server, and close its env on ``close``."""
+    try:
+        if server is not None:
+            server.shutdown()
+    finally:
+        if close:
+            env_close = getattr(env, "close", None)
+            if callable(env_close):
+                env_close()
 
 
 def _served_handle(model: object) -> bool:
@@ -509,8 +532,6 @@ class ModelBase(Generic[ObsT, ActT]):
     """
 
     _bridge: ClassVar[ValueBridge]
-    #: Framework remote-env client used when ``run`` is given a bare address.
-    _remote_env_cls: ClassVar[type | None] = None
     #: The model's content: a ``ModelSpec``, ``NO_ADAPTER``, or ``None``. Set it as a
     #: class attribute when subclassing; the ``spec=`` kwarg overrides it per instance.
     spec: object | None = None
@@ -682,6 +703,14 @@ class ModelBase(Generic[ObsT, ActT]):
         #: A served model's participant address (``Model("lab:7447/openpi")``):
         #: runs, bindings and serves then drive that model.
         self._served_address: str | None = None
+        #: The random baseline (``Model(RANDOM_SAMPLE)``): runs and bindings
+        #: sample the env's action space.
+        self._random = False
+        from ._coerce import RANDOM_SAMPLE
+
+        if source is RANDOM_SAMPLE:
+            self._random = True
+            source = _random_only
         if isinstance(source, str):
             source = self._served(source)
         #: Whether this subclass loads in ``__init__`` (after its declarations
@@ -1096,9 +1125,8 @@ class ModelBase(Generic[ObsT, ActT]):
         it from the env's contract and the native worker applies it around the
         raw predict. A spec-less / ``NO_ADAPTER`` model serves its own predict.
 
-        Built lazily on the first serve-path call, not in ``__init__``: a model
-        driven locally (``run()`` / ``session()`` against an in-process loop)
-        never needs the native worker, and the worker's callbacks close over
+        Built lazily on the first serve, run or bind, not in ``__init__``: a
+        model only called directly (``predict``) never needs the native worker, and the worker's callbacks close over
         ``self`` -- a reference cycle through a native class the Python cycle
         collector cannot free -- so an unserved model should not pay for one.
         """
@@ -1111,6 +1139,10 @@ class ModelBase(Generic[ObsT, ActT]):
             served: PyModel = load_native("PyModel").served(self._served_address)
             self._worker = served
             return served
+        if self._random:
+            random: PyModel = load_native("PyModel").random_sample()
+            self._worker = random
+            return random
 
         spec = self.spec
         bridge = self._bridge
@@ -1341,8 +1373,7 @@ class ModelBase(Generic[ObsT, ActT]):
         reported, or seen by ``hooks``. ``max_episode_steps`` /
         ``max_episode_seconds`` truncate an episode at a step / wall-clock cap,
         and a non-terminating env is bounded regardless: without an explicit
-        cap the runtime truncates any episode at 100,000 steps (the same
-        built-in bound as :meth:`Session.run <rlmesh.Session.run>`). Explicit
+        cap the runtime truncates any episode at 100,000 steps. Explicit
         seeds and caps need the runtime to own resets, so they are refused
         before any episode starts on an autoresetting vector env (drive it
         with ``episodes``; on a driver-reset vector env seeds are consumed one
@@ -1376,8 +1407,8 @@ class ModelBase(Generic[ObsT, ActT]):
         ``hooks`` observes the loop: a :class:`~rlmesh.RunHooks` receives the
         runtime's own events -- episode starts, every step as a
         :class:`~rlmesh.StepEvent` with the terminal flags the runtime knows at
-        that step, and episode ends -- in the same per-episode order as
-        :meth:`Session.run <rlmesh.Session.run>`, with
+        that step, and episode ends -- in the same per-episode order as a
+        :class:`~rlmesh.Binding`, with
         :meth:`RunHooks.on_run_start <rlmesh.RunHooks.on_run_start>` receiving a
         :class:`~rlmesh.RunContext` for role reads and frame discovery. Hooks
         never change the result: it is the runtime's report either way, and
@@ -1519,7 +1550,7 @@ class ModelBase(Generic[ObsT, ActT]):
             episodes=tuple(
                 EpisodeResult(
                     # The runtime reports 1-based slot ordinals; EpisodeResult.index
-                    # is 0-based, matching Session.run, the hooks, and
+                    # is 0-based, matching a Binding, the hooks, and
                     # trial == trial_index_base + index.
                     index=episode["index"] - 1,
                     seed=episode["seed"],
@@ -1542,6 +1573,55 @@ class ModelBase(Generic[ObsT, ActT]):
                 hooks.on_run_end(result)
         return result
 
+    def _serve_here(self, env_obj: object, workflow_edition: str | None) -> EnvServer:
+        """Serve the local env ``env_obj`` in this process for one run or binding.
+
+        In a session of this process's shared host, so the driver calls the
+        env directly. A local single env's spec/tags pairing is pre-flighted
+        here, so a mismatch surfaces as the typed ``AdapterResolutionError``
+        (a vector env's local spaces are batched while tags describe one lane,
+        so its check stays at the route resolve).
+        """
+        from .._editions import resolved_by_caller
+        from .._load_native import load_native
+        from .._server import EnvServer, VectorServerEnvLike
+
+        if (
+            not hasattr(env_obj, "single_observation_space")
+            and self._served_address is None
+            and not self._random
+        ):
+            from ._connect import local_contract
+            from ._resolve import resolve_adapter
+
+            resolve_adapter(
+                self.spec,
+                local_contract(env_obj),
+                trust_entrypoints=self._trust_entrypoints,
+            )
+        # The in-process server is part of THIS call, so it takes the caller's
+        # already-resolved declaration verbatim instead of re-resolving and
+        # possibly landing on a different edition than the runtime tier.
+        resolved = resolved_by_caller.set(True)
+        try:
+            server = EnvServer(
+                cast("VectorServerEnvLike", env_obj),
+                f"{load_native('local_run_session')()}/env",
+                framework=getattr(env_obj, "_bridge", None),
+                options=(
+                    load_native("ServeOptions")(workflow_edition=workflow_edition)
+                    if workflow_edition is not None
+                    else None
+                ),
+                # The env is borrowed (or built here): its close() is the
+                # caller's decision, not the in-process server's.
+                close_env_on_shutdown=False,
+            )
+        finally:
+            resolved_by_caller.reset(resolved)
+        server.start()
+        return server
+
     def _run_native(
         self,
         env_or_address: object,
@@ -1560,7 +1640,7 @@ class ModelBase(Generic[ObsT, ActT]):
         """Normalize the env target, drive the native loop, return the report.
 
         Target handling follows :func:`~rlmesh._models._connect.classify_env_target`
-        (the same precedence ``session()`` uses): a bare address is dialed; a
+        (the same precedence ``bind()`` uses): a bare address is dialed; a
         remote handle is dialed by its own address (it cannot be re-served); a
         local env or a built :class:`~rlmesh.EnvFactory` env is served in this
         process for the duration of the run. ``close_env`` maps per kind:
@@ -1606,52 +1686,13 @@ class ModelBase(Generic[ObsT, ActT]):
             env_obj = factory_env(payload)
         try:
             if address is None:
-                from .._server import EnvServer, VectorServerEnvLike
-
-                if (
-                    not hasattr(env_obj, "single_observation_space")
-                    and self._served_address is None
-                ):
-                    from ._connect import local_contract
-                    from ._resolve import resolve_adapter
-
-                    resolve_adapter(
-                        self.spec,
-                        local_contract(env_obj),
-                        trust_entrypoints=self._trust_entrypoints,
-                    )
-                from .._editions import resolved_by_caller
-                from .._load_native import load_native
-
-                # The in-process server is part of THIS call, so it takes the run's
-                # already-resolved declaration verbatim instead of re-resolving and
-                # possibly landing on a different edition than the runtime tier.
-                resolved = resolved_by_caller.set(True)
-                try:
-                    server = EnvServer(
-                        cast("VectorServerEnvLike", env_obj),
-                        # In-process on the v2 lockstep path, in a session of
-                        # this process's shared host: the run's driver calls
-                        # the env directly.
-                        f"{load_native('local_run_session')()}/env",
-                        framework=getattr(env_obj, "_bridge", None),
-                        options=(
-                            load_native("ServeOptions")(
-                                workflow_edition=workflow_edition
-                            )
-                            if workflow_edition is not None
-                            else None
-                        ),
-                        # The env is borrowed (or built above): its close() is this
-                        # call's decision, not the in-process server's.
-                        close_env_on_shutdown=False,
-                    )
-                finally:
-                    resolved_by_caller.reset(resolved)
-                server.start()
+                server = self._serve_here(env_obj, workflow_edition)
                 address = server.address
                 if self._native_run is not None:
                     self._native_run.bind_client(env_obj)
+                    # The route resolve refines it; a model with no resolve
+                    # (served, RANDOM_SAMPLE) reads roles off this one.
+                    self._native_run.contract = server.env_contract
             return self._run_local_for_episodes(
                 address,
                 episodes=episodes,
@@ -1690,65 +1731,88 @@ class ModelBase(Generic[ObsT, ActT]):
                     if callable(close):
                         close()
 
-    def session(
+    # The 0.1 shape, refused with its 0.2 form.
+    session = model_session
+
+    def bind(
         self,
-        env_or_address: LocalEnvTarget,
+        target: LocalEnvTarget,
         *,
-        instruction: str | None = None,
-        close_env: bool = False,
-        trust_entrypoints: bool | None = None,
-        execution_horizon: int = 1,
+        hooks: RunHooks | None = None,
         view: ViewArg = None,
+        execution_horizon: int = 1,
+        close_env: bool = False,
         workflow_edition: str | None = None,
-    ) -> Session[ObsT, ActT]:
-        """Bind this model to an env and return a :class:`Session` to drive by hand.
+    ) -> Binding[ObsT, ActT]:
+        """Bind this model to one env and return a :class:`Binding` to step by hand.
 
-        The manual counterpart of :meth:`run`: drive ``reset`` / ``predict`` / ``step``
-        yourself, or call :meth:`Session.run` to pump whole episodes -- as many times
-        as you like; the caller-held session (its connection, viewer, and adapter
-        state) stays open until you close it (``close()`` or the ``with`` block).
-        Closing it never closes this model: it is yours, usable for the next
-        session or run until you call :meth:`close`.
-        ``env_or_address`` is an env object, an :class:`~rlmesh.EnvFactory`, a
-        remote-env handle, or an address string (see :meth:`run`).
-        ``execution_horizon`` (> 1) executes that many actions per predicted chunk, one
-        per env step, when this model defines :meth:`predict_chunk` (see :meth:`run`).
-        ``workflow_edition`` declares the semantics this session runs under, with
-        the same precedence as :meth:`run`; it reaches the wire only for a dialed
-        address (a local env object negotiates nothing).
+        The manual counterpart of :meth:`run`, on the same loop: ``reset`` starts
+        an episode and ``step()`` steps it under this model's action (or
+        ``step(action)`` under yours). ``target`` is an env object, an
+        :class:`~rlmesh.EnvFactory`, an :class:`~rlmesh.EnvServer` or a session
+        address (see :meth:`run`); a local env is served in this process for the
+        binding's life, and a vector env is refused (a binding drives one lane).
+        ``execution_horizon`` (> 1) replays that many actions of each chunk this
+        model predicts. ``hooks`` and ``view`` see each reset and step as a
+        run's would. Closing the binding never closes this model; ``close_env``
+        opts a local env into closing with it.
         """
-        from ._eval import Session
+        from ._binding import Binding
+        from ._connect import classify_env_target
+        from ._eval import check_execution_horizon
 
-        self._calls.check_open("session()")
-        declared_edition = self._declared_workflow_edition(workflow_edition)
+        self._calls.check_open("bind()")
+        declared = self._declared_workflow_edition(workflow_edition)
         self._require_device_support()
-        if execution_horizon > 1 and self._raw_predict_chunk is None:
+        check_execution_horizon(execution_horizon, self._native_chunk())
+        if (
+            execution_horizon > 1
+            and self._raw_predict_chunk is None
+            and not (self._served_address or self._random)
+        ):
             warnings.warn(
                 f"execution_horizon={execution_horizon} was requested but "
                 "the model defines no predict_chunk(); running un-chunked.",
                 stacklevel=_caller_stacklevel(),
             )
-        return Session._create(  # pyright: ignore[reportPrivateUsage]
-            predict=self._raw_predict,
-            predict_chunk=self._raw_predict_chunk,
-            spec=self.spec,
-            env=env_or_address,
-            device=self.device,
-            on_episode_end=self._on_episode_end,
-            trust_entrypoints=(
-                self._trust_entrypoints
-                if trust_entrypoints is None
-                else trust_entrypoints
-            ),
+        kind, payload = classify_env_target(target)
+        if close_env and kind == "address":
+            from .._upgrade import refuse_remote_close_env
+
+            refuse_remote_close_env(payload)
+        if kind == "handle":
+            removed(
+                "bind(RemoteEnv(address))",
+                "an open RemoteEnv holds its env's lease, so close it and "
+                "pass the address: bind(address)",
+            )
+        env_obj: object = payload
+        if kind == "factory":
+            from ._connect import factory_env
+
+            env_obj = factory_env(payload)
+        server = None
+        try:
+            if kind == "address":
+                address = cast(str, payload)
+            else:
+                server = self._serve_here(env_obj, declared)
+                address = server.address
+            native = self._install_worker().bind(address, execution_horizon, declared)
+        except BaseException:
+            _release_local(server, env_obj, close=kind == "factory")
+            raise
+        return Binding._create(  # pyright: ignore[reportPrivateUsage]
+            native=native,
             bridge=self._bridge,
-            remote_env_cls=type(self)._remote_env_cls,
-            instruction=instruction,
-            close_env=close_env,
-            execution_horizon=execution_horizon,
-            native_chunk=self._native_chunk(),
+            hooks=hooks,
             view=view,
-            workflow_edition=declared_edition,
-            model_calls=self._calls,
+            release=functools.partial(
+                _release_local,
+                server,
+                env_obj,
+                close=kind == "factory" or (close_env and kind == "env"),
+            ),
         )
 
     def serve(
@@ -1919,149 +1983,11 @@ def as_model(model: object) -> ModelBase[Any, Any]:
     if isinstance(model, type) and issubclass(model, ModelBase):
         return cast("ModelBase[Any, Any]", model())
     raise TypeError(
-        "rlmesh.run() / rlmesh.session() take a Model; wrap a predict callable or "
+        "rlmesh.run() takes a Model; wrap a predict callable or "
         "policy object in the framework Model whose arrays it expects -- "
         "rlmesh.numpy.Model(fn), rlmesh.torch.Model(fn), rlmesh.jax.Model(fn) -- or "
         "rlmesh.Model(fn) for raw RLMesh values."
     )
-
-
-@overload
-def session(
-    model: ModelBase[ObsT, ActT],
-    env: LocalEnvTarget,
-    *,
-    instruction: str | None = None,
-    close_env: bool = False,
-    trust_entrypoints: bool | None = None,
-    execution_horizon: int = 1,
-    view: ViewArg = None,
-    workflow_edition: str | None = None,
-) -> Session[ObsT, ActT]: ...
-@overload
-def session(
-    model: type[Any],
-    env: EnvTarget,
-    *,
-    instruction: str | None = None,
-    close_env: bool = False,
-    trust_entrypoints: bool | None = None,
-    execution_horizon: int = 1,
-    view: ViewArg = None,
-    workflow_edition: str | None = None,
-) -> Session[Any, Any]: ...
-@overload
-def session(
-    model: object,
-    env: EnvTarget,
-    *,
-    instruction: str | None = None,
-    close_env: bool = False,
-    trust_entrypoints: bool | None = None,
-    execution_horizon: int = 1,
-    view: ViewArg = None,
-    workflow_edition: str | None = None,
-) -> Session[Any, Any]: ...
-def session(
-    model: object,
-    env: EnvTarget,
-    *,
-    instruction: str | None = None,
-    close_env: bool = False,
-    trust_entrypoints: bool | None = None,
-    execution_horizon: int = 1,
-    view: ViewArg = None,
-    workflow_edition: str | None = None,
-) -> Session[Any, Any]:
-    """Bind a model to an env and return a :class:`Session` to drive by hand or via run().
-
-    ``model`` is a local :class:`Model` (instance, subclass class, or a bare predict
-    callable) or a served handle (:class:`SandboxModel`); ``env``
-    is a local env, an :class:`~rlmesh.EnvFactory`, a remote-env handle, or an address
-    string. A spec'd model resolves its adapter from the env's tags -- a local env must
-    carry them (via :func:`rlmesh.adapters.tag` or an :class:`~rlmesh.EnvFactory`).
-    A *served* model rejects ``instruction=`` (the env's own instruction is used).
-
-    The returned session is yours: :meth:`Session.run` leaves it open, so drive it
-    (or re-run it) as often as you like, then close it via ``close()`` or the
-    ``with`` block. Closing it releases the connection and episode state; a model
-    instance you passed stays open (a model built here from a class is closed
-    with the session).
-
-    Pass :data:`rlmesh.RANDOM_SAMPLE` as ``model`` for a random baseline: each step
-    samples the env's action space, no spec or adapter involved.
-
-    ``workflow_edition`` declares the contract for this call and takes precedence
-    over the environment variable, class declaration, and project manifest.
-
-    ``model`` is a :class:`Model` instance or subclass class, a served handle, or
-    :data:`rlmesh.RANDOM_SAMPLE`; a bare predict callable or policy object is
-    refused -- wrap it in the framework ``Model`` whose arrays it expects
-    (``rlmesh.numpy.Model(fn)``), the library never picks one. Typing: a
-    :class:`Model` instance flows its observation/action types onto the returned
-    ``Session`` (``predict``/``step`` are typed accordingly); a class source or
-    served handle yields ``Session[Any, Any]``.
-    """
-    from .._editions import resolve_workflow_edition
-    from ._adapter_mode import NO_ADAPTER
-    from ._eval import RANDOM_SAMPLE, Session
-
-    if model is RANDOM_SAMPLE:
-        if execution_horizon > 1:
-            warnings.warn(
-                f"execution_horizon={execution_horizon} was requested but "
-                "RANDOM_SAMPLE defines no predict_chunk(); running un-chunked.",
-                stacklevel=_caller_stacklevel(),
-            )
-        # A random baseline samples the env's action space and ignores observations,
-        # so it adapts nothing -- skip adapter resolution even on a tagged env.
-        return Session._create(  # pyright: ignore[reportPrivateUsage]
-            env=env,
-            # RANDOM_SAMPLE is a private sentinel Session special-cases by
-            # identity; cast keeps it out of the public `predict` signature.
-            predict=cast("Any", RANDOM_SAMPLE),
-            spec=NO_ADAPTER,
-            instruction=instruction,
-            close_env=close_env,
-            trust_entrypoints=bool(trust_entrypoints),
-            execution_horizon=execution_horizon,
-            view=view,
-            workflow_edition=resolve_workflow_edition(call=workflow_edition),
-        )
-    # A handle that knows how to bind itself -- Model, SandboxModel -- has
-    # its own ``.session``; a subclass class is instantiated, anything else refused.
-    binder = getattr(model, "session", None)
-    if callable(binder) and not isinstance(model, type):
-        return cast(
-            "Session[Any, Any]",
-            binder(
-                env,
-                instruction=instruction,
-                close_env=close_env,
-                trust_entrypoints=trust_entrypoints,
-                execution_horizon=execution_horizon,
-                view=view,
-                **(
-                    {"workflow_edition": workflow_edition}
-                    if workflow_edition is not None
-                    else {}
-                ),
-            ),
-        )
-    local = as_model(model)
-    sess = local.session(
-        cast("LocalEnvTarget", env),
-        instruction=instruction,
-        close_env=close_env,
-        trust_entrypoints=trust_entrypoints,
-        execution_horizon=execution_horizon,
-        view=view,
-        workflow_edition=workflow_edition,
-    )
-    if local is not model:
-        # Built here from a class: the session owns it and closes it.
-        sess._on_close = local.close  # pyright: ignore[reportPrivateUsage]
-    return sess
 
 
 def run(
@@ -2084,97 +2010,55 @@ def run(
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
 
-    A *local* model (a :class:`Model` instance or subclass class) runs on
-    :meth:`Model.run`'s native runtime loop -- single or vectorized env, batched
-    predict corners, runtime-enforced seeds/caps; see its docstring for the
-    parameter surface. A bare predict callable or policy object is refused: wrap
-    it in the framework ``Model`` whose arrays it expects
-    (``rlmesh.numpy.Model(fn)``), the library never picks one. ``prefetch_lead``
-    (> 0) is the native loop's async inference: the next chunk is predicted
-    while that many replay frames of the current one remain, from an observation
-    up to ``prefetch_lead`` steps stale, so the result is not comparable to a
-    synchronous run. A served :class:`SandboxModel` (and
-    the :data:`rlmesh.RANDOM_SAMPLE` baseline) runs through its own session
-    loop, which supports every parameter except ``prefetch_lead``. ``hooks``
-    and ``instruction`` work on both; the live viewer (``view``) is the session
-    loop's alone -- a local model takes it on :meth:`Model.session`. A model
-    instance is borrowed and stays usable afterwards; a model built here from a
-    subclass class is closed when the call returns.
-
-    ``workflow_edition`` declares the contract for this call with the same
-    precedence as :func:`rlmesh.session`.
+    ``model`` is a :class:`Model` instance or subclass class (see
+    :meth:`Model.run` for the parameters), or :data:`rlmesh.RANDOM_SAMPLE` for a
+    random baseline that samples the env's action space. A bare predict
+    callable or policy object is refused: wrap it in the framework ``Model``
+    whose arrays it expects (``rlmesh.numpy.Model(fn)``), the library never
+    picks one. A model instance is borrowed and stays usable afterwards; a
+    model built here from a subclass class is closed when the call returns.
+    The live viewer is a binding's: ``model.bind(env, view=...)``.
     """
     from ._eval import RANDOM_SAMPLE
+    from ._view import resolve_view
 
-    if model is not RANDOM_SAMPLE and not _served_handle(model):
-        from ._view import resolve_view
-
-        # False is "no viewer", as None is; a wrong type stays a TypeError.
-        if resolve_view(view) is not None:
-            raise TypeError(
-                "view is a session() option for a local model: use "
-                "model.session(env, view=...).run(...) for it."
-            )
-        local = as_model(model)
-        try:
-            return local.run(
-                cast("LocalEnvTarget", env),
-                seeds=seeds,
-                episodes=episodes,
-                max_episode_steps=max_episode_steps,
-                max_episode_seconds=max_episode_seconds,
-                hooks=hooks,
-                instruction=instruction,
-                close_env=close_env,
-                trust_entrypoints=trust_entrypoints,
-                execution_horizon=execution_horizon,
-                prefetch_lead=prefetch_lead,
-                workflow_edition=workflow_edition,
-                trial_index_base=trial_index_base,
-            )
-        finally:
-            # A model built here from a class is this call's own; an instance
-            # is the caller's and stays open.
-            if local is not model:
-                local.close()
-    if prefetch_lead != 0:
-        raise ValueError(
-            f"prefetch_lead={prefetch_lead} drives the native runtime loop; a "
-            "served model or RANDOM_SAMPLE runs through the Python session loop, "
-            "which does not prefetch. Remove prefetch_lead or run a local Model."
+    # False is "no viewer", as None is; a wrong type stays a TypeError.
+    if resolve_view(view) is not None:
+        removed(
+            "rlmesh.run(model, env, view=...)",
+            "the live viewer watches a binding: model.bind(env, view=...)",
         )
-    from ._eval import check_episode_caps, resolve_episode_budget
+    if _served_handle(model):
+        removed(
+            "rlmesh.run(SandboxModel(...), env)",
+            "SandboxModel(...).run(env), with the sandbox on a session",
+        )
+    if model is RANDOM_SAMPLE:
+        from .._native import Model
 
-    # What the options alone decide fails before the session dials anything.
-    resolve_episode_budget(episodes, seeds)
-    check_episode_caps(max_episode_steps, max_episode_seconds)
-    if trial_index_base < 0:
-        raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
-    sess = session(
-        model,
-        env,
-        instruction=instruction,
-        close_env=close_env,
-        trust_entrypoints=trust_entrypoints,
-        execution_horizon=execution_horizon,
-        view=view,
-        workflow_edition=workflow_edition,
-    )
+        model = Model(RANDOM_SAMPLE)
+    local = as_model(model)
     try:
-        result = sess.run(
+        return local.run(
+            cast("LocalEnvTarget", env),
             seeds=seeds,
             episodes=episodes,
             max_episode_steps=max_episode_steps,
             max_episode_seconds=max_episode_seconds,
             hooks=hooks,
+            instruction=instruction,
+            close_env=close_env,
+            trust_entrypoints=trust_entrypoints,
+            execution_horizon=execution_horizon,
+            prefetch_lead=prefetch_lead,
+            workflow_edition=workflow_edition,
             trial_index_base=trial_index_base,
         )
-    except BaseException:
-        with contextlib.suppress(Exception):
-            sess._close(failed=True)  # pyright: ignore[reportPrivateUsage]
-        raise
-    sess.close()
-    return result
+    finally:
+        # A model built here is this call's own; an instance is the caller's
+        # and stays open.
+        if local is not model:
+            local.close()
 
 
-__all__ = ["LifecycleCallback", "ModelBase", "PredictFn", "run", "session"]
+__all__ = ["LifecycleCallback", "ModelBase", "PredictFn", "run"]

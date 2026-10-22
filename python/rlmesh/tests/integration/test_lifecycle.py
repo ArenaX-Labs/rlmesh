@@ -1070,11 +1070,11 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
     assert calls == ["episode_end", "close"]
 
 
-def test_hand_driven_session_fires_episode_end_between_episodes() -> None:
-    """A stateful model driven BY HAND (reset/predict/step, not run()) still gets
-    its per-episode reset between episodes: on_episode_end fires once per episode
-    boundary (at the next reset, and at session close for the last), so a stateful
-    local policy clears its state the same as on the run()/served paths.
+def test_a_binding_fires_episode_end_between_episodes() -> None:
+    """A stateful model driven BY HAND (reset/step, not run()) still gets its
+    per-episode reset between episodes: on_episode_end fires once per episode,
+    so a stateful local policy clears its state the same as on the run()/served
+    paths.
     """
     import rlmesh
 
@@ -1084,17 +1084,14 @@ def test_hand_driven_session_fires_episode_end_between_episodes() -> None:
     ends: list[int] = []
 
     try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
         model = rlmesh.Model(
             lambda _observation: 0, on_episode_end=lambda: ends.append(1)
         )
-        with model.session(remote) as sess:
+        with model.bind(server.address) as binding:
             for _ in range(2):
-                obs, _info = sess.reset()
-                while not sess.done:
-                    obs, *_rest = sess.step(sess.predict(obs))
-        # Two episodes by hand: episode_end fired once per boundary (the second
-        # reset ends episode 1; session close ends episode 2).
+                binding.reset()
+                while not binding.done:
+                    binding.step()
         assert sum(ends) == 2
     finally:
         server.shutdown()

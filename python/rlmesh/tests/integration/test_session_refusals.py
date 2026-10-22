@@ -59,7 +59,7 @@ def test_session_clients_refuse_credentials_and_owner_shutdown() -> None:
         with pytest.raises(ValueError, match=r"server\.shutdown\(\)"):
             model.run(server.address, close_env=True)
         with pytest.raises(ValueError, match=r"server\.shutdown\(\)"):
-            model.session(server.address, close_env=True)
+            model.bind(server.address, close_env=True)
         with rlmesh.RemoteEnv(server.address) as remote:
             with pytest.raises(TypeError, match=r"server\.shutdown\(\)"):
                 remote.shutdown()

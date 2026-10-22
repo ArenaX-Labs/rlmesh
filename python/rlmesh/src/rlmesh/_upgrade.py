@@ -59,6 +59,36 @@ def removed(old: str, new: str) -> NoReturn:
     raise TypeError(f"{old} is gone in rlmesh 0.2: {new}")
 
 
+def Session(*args: object, **kwargs: object) -> NoReturn:  # noqa: N802 -- the 0.1 name
+    """Removed in 0.2: ``model.bind(target)`` returns a :class:`Binding`."""
+    _ = args, kwargs
+    removed(
+        "Session",
+        "model.bind(target) returns a Binding you step by hand "
+        "(reset(), step(), step(action))",
+    )
+
+
+def session(*args: object, **kwargs: object) -> NoReturn:
+    """Removed in 0.2: ``model.bind(target)`` drives a model on one env by hand."""
+    _ = args, kwargs
+    removed(
+        "rlmesh.session(model, env)",
+        "model.bind(target) returns a Binding you step by hand; "
+        "rlmesh.session(address) is reserved for the session as a place",
+    )
+
+
+def model_session(self: object, *args: object, **kwargs: object) -> NoReturn:
+    """Removed in 0.2: ``model.bind(target)`` drives a model on one env by hand."""
+    _ = self, args, kwargs
+    removed(
+        "Model.session(env)",
+        "model.bind(target) returns a Binding you step by hand "
+        "(reset(), step(), step(action))",
+    )
+
+
 def RemoteModel(*args: object, **kwargs: object) -> NoReturn:  # noqa: N802 -- the 0.1 name
     """Removed in 0.2: ``Model(address)`` wraps a model served elsewhere."""
     _ = args, kwargs
@@ -71,8 +101,11 @@ def RemoteModel(*args: object, **kwargs: object) -> NoReturn:  # noqa: N802 -- t
 
 __all__ = [
     "RemoteModel",
+    "Session",
+    "model_session",
     "refuse_remote_close_env",
     "refuse_v1_address",
     "removed",
+    "session",
     "v1_endpoints",
 ]

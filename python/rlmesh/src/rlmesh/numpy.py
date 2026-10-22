@@ -278,8 +278,8 @@ class Model(ModelBase[_ObsT, _ActT]):
 
     Generic over the observation/action types, defaulting to ``NumpyValue``:
     wrapping an annotated predict callable infers them (``Model(predict)`` with
-    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``session`` a
-    ``Session[X, Y]``); subclasses and unannotated sources bind ``NumpyValue``.
+    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``bind`` a
+    ``Binding[X, Y]``); subclasses and unannotated sources bind ``NumpyValue``.
 
     Examples:
         >>> from rlmesh.numpy import Model
@@ -290,7 +290,6 @@ class Model(ModelBase[_ObsT, _ActT]):
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
-    _remote_env_cls: ClassVar[type | None] = RemoteEnv
 
 
 @final

@@ -211,20 +211,18 @@ def test_adapted_model_runs_against_local_tagged_env() -> None:
     assert adapter_rows and adapter_rows[0].avg > 0.0
 
 
-@pytest.mark.parametrize("path", ["session", "native"])
 @pytest.mark.parametrize(
     ("container", "expected"),
     [("str", "follow the override"), ("list", ["follow the override"])],
 )
 def test_instruction_override_reaches_predict_in_declared_shape(
-    container: str, expected: object, path: str
+    container: str, expected: object
 ) -> None:
     """``run(..., instruction=)`` overrides the text input in its declared shape.
 
     The env publishes its own instruction ("pick up the cube"); the override must
     win and land as a bare ``str`` for ``container='str'`` and as ``[instruction]``
-    for ``container='list'`` -- on the session loop and the native loop alike,
-    and only for the run that asked.
+    for ``container='list'`` -- and only for the run that asked.
     """
     pytest.importorskip("numpy")
 
@@ -250,22 +248,11 @@ def test_instruction_override_reaches_predict_in_declared_shape(
 
     tagged = adapt.tag(env_obj, _tags())
     model = Model(predict, spec=spec)
-    if path == "session":
-        with rlmesh.session(model, tagged, instruction="follow the override") as sess:
-            sess.run(episodes=1)
-    else:
-        try:
-            model.run(tagged, episodes=1, instruction="follow the override")
-        except ConnectionError as exc:
-            if "Operation not permitted" in str(exc):
-                pytest.skip("local tcp bind is not permitted in this environment")
-            raise
-
+    model.run(tagged, episodes=1, instruction="follow the override")
     assert seen["instruction"] == expected
 
-    if path == "native":
-        model.run(tagged, episodes=1)
-        assert seen["instruction"] != expected, "the override is scoped to its run"
+    model.run(tagged, episodes=1)
+    assert seen["instruction"] != expected, "the override is scoped to its run"
 
 
 # (framework module, leaf tensor type, zeros constructor) for the cross-framework
@@ -331,7 +318,7 @@ def test_adapted_model_runs_against_env_factory() -> None:
     spec = _model_spec()
     captured: dict[str, Any] = {}
 
-    # Pass the EnvFactory straight in: session/run builds + tags + drives it locally.
+    # Pass the EnvFactory straight in: run builds + tags + drives it locally.
     result = Model(_arm_predict(spec, captured), spec=spec).run(
         TinyArmFactory(), episodes=1
     )

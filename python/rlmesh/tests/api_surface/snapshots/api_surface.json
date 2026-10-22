@@ -6,6 +6,7 @@
       "ENV_RESET_OPTIONS_KEY",
       "NO_ADAPTER",
       "RANDOM_SAMPLE",
+      "Binding",
       "BuildInfo",
       "EnvFactory",
       "EnvServer",
@@ -59,6 +60,53 @@
       "types"
     ],
     "objects": {
+      "Binding": {
+        "kind": "class",
+        "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close()"
+          },
+          "contract": {
+            "kind": "property",
+            "signature": "property contract: Any"
+          },
+          "done": {
+            "kind": "property",
+            "signature": "property done: bool"
+          },
+          "frame_sources": {
+            "kind": "function",
+            "signature": "frame_sources()"
+          },
+          "num_envs": {
+            "kind": "property",
+            "signature": "property num_envs: int"
+          },
+          "read": {
+            "kind": "function",
+            "signature": "read(observation: object, item: object)"
+          },
+          "render": {
+            "kind": "function",
+            "signature": "render()"
+          },
+          "render_mode": {
+            "kind": "property",
+            "signature": "property render_mode: str"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset(*, seed: int | None = None, options: Mapping[str, Any] | None = None)"
+          },
+          "step": {
+            "kind": "function",
+            "signature": "step(action: ActT | None = None)"
+          }
+        },
+        "signature": "Binding()",
+        "stability": "Stable"
+      },
       "BuildInfo": {
         "kind": "class",
         "members": {
@@ -293,6 +341,10 @@
             "kind": "attribute",
             "signature": "allow_fusion: bool"
           },
+          "bind": {
+            "kind": "function",
+            "signature": "bind(target: LocalEnvTarget, *, hooks: RunHooks | None = None, view: ViewArg = None, execution_horizon: int = 1, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -355,8 +407,8 @@
             "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
           },
           "session": {
-            "kind": "function",
-            "signature": "session(env_or_address: LocalEnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[ObsT, ActT]"
+            "kind": "attribute",
+            "signature": "session"
           },
           "spec": {
             "kind": "attribute",
@@ -886,7 +938,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None, workflow_edition: str | None = None)"
+            "signature": "session(*args: object, **kwargs: object)"
           },
           "shutdown": {
             "kind": "function",
@@ -1046,62 +1098,8 @@
         "stability": "Stable"
       },
       "Session": {
-        "kind": "class",
-        "members": {
-          "close": {
-            "kind": "function",
-            "signature": "close()"
-          },
-          "contract": {
-            "kind": "property",
-            "signature": "property contract: Any"
-          },
-          "done": {
-            "kind": "property",
-            "signature": "property done: bool"
-          },
-          "frame_sources": {
-            "kind": "function",
-            "signature": "frame_sources()"
-          },
-          "num_envs": {
-            "kind": "property",
-            "signature": "property num_envs: int"
-          },
-          "observation_roles": {
-            "kind": "function",
-            "signature": "observation_roles()"
-          },
-          "predict": {
-            "kind": "function",
-            "signature": "predict(observation: ObsT)"
-          },
-          "read": {
-            "kind": "function",
-            "signature": "read(observation: object, item: object)"
-          },
-          "reader": {
-            "kind": "function",
-            "signature": "reader(*items: object)"
-          },
-          "reset": {
-            "kind": "function",
-            "signature": "reset(*, seed: int | None = None, trial_index: int | None = None)"
-          },
-          "run": {
-            "kind": "function",
-            "signature": "run(*, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, trial_index_base: int = 0)"
-          },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
-          "step": {
-            "kind": "function",
-            "signature": "step(action: ActT)"
-          }
-        },
-        "signature": "Session()",
+        "kind": "function",
+        "signature": "Session(*args: object, **kwargs: object) -> NoReturn",
         "stability": "Stable"
       },
       "StepEvent": {
@@ -1393,7 +1391,7 @@
       },
       "session": {
         "kind": "function",
-        "signature": "session(model: object, env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None)",
+        "signature": "session(*args: object, **kwargs: object)",
         "stability": "Stable"
       },
       "spaces": {
@@ -2581,6 +2579,10 @@
             "kind": "attribute",
             "signature": "allow_fusion: bool"
           },
+          "bind": {
+            "kind": "function",
+            "signature": "bind(target: LocalEnvTarget, *, hooks: RunHooks | None = None, view: ViewArg = None, execution_horizon: int = 1, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -2642,8 +2644,8 @@
             "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
           },
           "session": {
-            "kind": "function",
-            "signature": "session(env_or_address: LocalEnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[ObsT, ActT]"
+            "kind": "attribute",
+            "signature": "session"
           },
           "spec": {
             "kind": "attribute",
@@ -2974,7 +2976,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
+            "signature": "session(*args: object, **kwargs: object) -> NoReturn"
           },
           "shutdown": {
             "kind": "function",
@@ -3202,6 +3204,10 @@
             "kind": "attribute",
             "signature": "allow_fusion: bool"
           },
+          "bind": {
+            "kind": "function",
+            "signature": "bind(target: LocalEnvTarget, *, hooks: RunHooks | None = None, view: ViewArg = None, execution_horizon: int = 1, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -3264,8 +3270,8 @@
             "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
           },
           "session": {
-            "kind": "function",
-            "signature": "session(env_or_address: LocalEnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[ObsT, ActT]"
+            "kind": "attribute",
+            "signature": "session"
           },
           "spec": {
             "kind": "attribute",
@@ -3601,7 +3607,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
+            "signature": "session(*args: object, **kwargs: object) -> NoReturn"
           },
           "shutdown": {
             "kind": "function",
@@ -4733,6 +4739,10 @@
             "kind": "attribute",
             "signature": "allow_fusion: bool"
           },
+          "bind": {
+            "kind": "function",
+            "signature": "bind(target: LocalEnvTarget, *, hooks: RunHooks | None = None, view: ViewArg = None, execution_horizon: int = 1, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -4794,8 +4804,8 @@
             "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
           },
           "session": {
-            "kind": "function",
-            "signature": "session(env_or_address: LocalEnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[ObsT, ActT]"
+            "kind": "attribute",
+            "signature": "session"
           },
           "spec": {
             "kind": "attribute",
@@ -5126,7 +5136,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
+            "signature": "session(*args: object, **kwargs: object) -> NoReturn"
           },
           "shutdown": {
             "kind": "function",

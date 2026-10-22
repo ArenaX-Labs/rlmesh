@@ -174,14 +174,6 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         """
         return cast("str", self._edition_cell.get())
 
-    def _session_offer(self) -> tuple[list[str], str | None]:
-        """The env's handshake offer ``(CAN, WANT)``, for a served-model session's floor."""
-        return cast("tuple[list[str], str | None]", self._client.session_offer())
-
-    def _pin_workflow_edition(self, selected_workflow_edition: str) -> None:
-        """Pin the env to a served-model session's floor before its first reset."""
-        self._client.pin_workflow_edition(selected_workflow_edition)
-
     @property
     def env_contract(self) -> EnvContract:
         """Environment contract returned by the endpoint handshake."""

@@ -16,7 +16,7 @@ from rlmesh.adapters import AdapterResolutionError
 
 
 class ScriptedEnv:
-    """Count starts and closes; optionally interrupt exactly one step."""
+    """Count starts and closes."""
 
     def __init__(self):
         self.metadata = {rlmesh.ENV_RESET_OPTIONS_KEY: ["trial_index"]}
@@ -24,7 +24,6 @@ class ScriptedEnv:
         self.action_space = spaces.Discrete(3)
         self.steps = self.closes = self.starts = 0
         self.seed = self.trial = None
-        self.interrupt = False
 
     def reset(self, *, seed=None, options=None):
         self.starts += 1
@@ -35,9 +34,6 @@ class ScriptedEnv:
     def step(self, action):
         self.starts += 1
         self.steps += 1
-        if self.interrupt:
-            self.interrupt = False
-            raise KeyboardInterrupt
         return self.steps, 1.0, self.steps >= 2, False, {}
 
     def close(self):
@@ -116,8 +112,8 @@ def execute(case):
                     remote.step({"path": {}})
                     raise AssertionError("missing Dict key accepted")
         if operation == "reset_order":
-            with model.session(env) as session:
-                observation, info = session.reset(seed=37, trial_index=11)
+            with model.bind(env) as binding:
+                observation, info = binding.reset(seed=37, options={"trial_index": 11})
                 return dict(
                     seed=env.seed,
                     trial_index=env.trial,
@@ -246,51 +242,18 @@ def execute(case):
                 return observed
             finally:
                 warnings.showwarning = original
-        session = model.session(env)
+        binding = model.bind(env)
         try:
-            obs = 0
-            if operation not in ("cancel_run", "hook_error"):
-                obs, _ = session.reset(seed=0)
+            if operation != "hook_error":
+                binding.reset(seed=0)
             if operation == "borrow":
-                session.close()
+                binding.close()
                 observed = {
                     "env_closes": env.closes,
                     "model_closes": policy.closes,
                     "episode_ends": policy.ends,
                 }
                 model.run(env)
-                observed["reusable"] = True
-                return observed
-            if operation in ("cancel_step", "cancel_run"):
-                env.interrupt = True
-
-                class Hooks(rlmesh.RunHooks):
-                    ends = 0
-                    partial = -1
-
-                    def on_run_end(self, result):
-                        self.ends += 1
-                        self.partial = result.num_episodes
-
-                hooks = Hooks()
-                try:
-                    if operation == "cancel_step":
-                        session.step(0)
-                    else:
-                        session.run(hooks=hooks)
-                except KeyboardInterrupt as error:
-                    observed = error_record(error)
-                else:
-                    raise AssertionError("interrupted call succeeded")
-                observed["episode_ends_before_reset"] = policy.ends
-                if operation == "cancel_step":
-                    session.reset(seed=0)
-                observed.update(
-                    episode_ends=policy.ends,
-                    run_ends=hooks.ends,
-                    partial_episodes=hooks.partial,
-                )
-                session.step(0)
                 observed["reusable"] = True
                 return observed
             if operation == "hook_error":
@@ -305,8 +268,9 @@ def execute(case):
                         self.ends += 1
 
                 hooks = FailHook()
+                binding.close()
                 try:
-                    session.run(hooks=hooks)
+                    model.run(env, hooks=hooks)
                 except TypeError as error:
                     observed = error_record(error)
                     observed["run_ends"] = hooks.ends
@@ -335,11 +299,11 @@ def execute(case):
                 )
                 if variant == "ModelRecoverable":
                     policy.failure = cls("scripted failure", is_recoverable=True)
-                session.predict(obs)
+                binding.step()
                 raise AssertionError("scripted error succeeded")
             raise AssertionError(operation)
         finally:
-            session.close()
+            binding.close()
     except BaseException as error:
         if isinstance(error, (AssertionError, SystemExit)):
             raise

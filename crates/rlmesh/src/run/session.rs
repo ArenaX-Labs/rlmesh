@@ -1,5 +1,8 @@
 //! `Session<'a>`: a model bound to one env, driven by hand or by
 //! `Session::run`.
+//!
+//! TODO: the C API's session; Python moved to `model::bind::Binding`. Port
+//! the C, C++ and C# bindings to `Binding` at the parity step and delete this.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;

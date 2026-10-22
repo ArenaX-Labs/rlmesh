@@ -7,12 +7,10 @@ An env opts into a reserved `reset(options=)` key by naming it in
 
 from __future__ import annotations
 
-import warnings
 from typing import Any, ClassVar, cast
 
 import pytest
 import rlmesh
-from rlmesh._models._connect import declares_reset_option, reset_env
 
 
 class _TinyEnv:
@@ -74,89 +72,6 @@ def test_make_stamps_the_declaration_without_mutating_the_class() -> None:
 def test_make_stamps_nothing_when_no_option_is_declared() -> None:
     env = _PlainFactory().make()
     assert rlmesh.ENV_RESET_OPTIONS_KEY not in dict(env.metadata)
-
-
-def test_declares_reset_option_reads_the_stamped_list() -> None:
-    class _Contract:
-        def __init__(self, metadata: Any) -> None:
-            self.metadata = metadata
-
-    assert declares_reset_option(
-        _Contract({rlmesh.ENV_RESET_OPTIONS_KEY: ["trial_index"]}), "trial_index"
-    )
-    assert declares_reset_option(
-        _Contract({rlmesh.ENV_RESET_OPTIONS_KEY: "trial_index"}), "trial_index"
-    )
-    assert not declares_reset_option(
-        _Contract({rlmesh.ENV_RESET_OPTIONS_KEY: ["something_else"]}), "trial_index"
-    )
-    assert not declares_reset_option(_Contract({}), "trial_index")
-    assert not declares_reset_option(_Contract(None), "trial_index")
-
-
-def test_reset_env_forwards_options_only_when_given() -> None:
-    env = _TinyEnv()
-    reset_env(env, 3, None)
-    reset_env(env, None, {"trial_index": 7})
-
-    assert env.resets == [
-        {"seed": 3, "options": None},
-        {"seed": None, "options": {"trial_index": 7}},
-    ]
-
-
-def test_session_reset_sends_the_ordinal_to_a_declaring_env() -> None:
-    env = _TrialFactory().make()
-    with rlmesh.session(rlmesh.Model(lambda obs: 0), env) as sess:
-        sess.reset(seed=1, trial_index=4)
-    assert env.resets[-1]["options"] == {"trial_index": 4}
-
-
-def test_session_reset_warns_and_drops_the_ordinal_for_an_undeclared_env() -> None:
-    env = _PlainFactory().make()
-    with rlmesh.session(rlmesh.Model(lambda obs: 0), env) as sess:
-        with pytest.warns(UserWarning, match="declares no"):
-            sess.reset(trial_index=4)
-    assert env.resets[-1]["options"] is None
-
-
-def test_session_run_walks_trial_ordinals_by_default() -> None:
-    # The ordinal is on by default (base 0): a declaring env receives 0, 1, 2
-    # without the caller asking for anything.
-    declared = _TrialFactory().make()
-    with rlmesh.session(rlmesh.Model(lambda obs: 0), declared) as sess:
-        result = sess.run(episodes=3)
-    assert [episode.trial for episode in result.episodes] == [0, 1, 2]
-    assert [reset["options"] for reset in declared.resets] == [
-        {"trial_index": 0},
-        {"trial_index": 1},
-        {"trial_index": 2},
-    ]
-
-
-def test_session_run_never_sends_the_key_to_an_undeclared_env() -> None:
-    # Delivery is what the declaration gates; the result still records the
-    # ordinal each episode walked, as the native loop's report does.
-    plain = _PlainFactory().make()
-    with rlmesh.session(rlmesh.Model(lambda obs: 0), plain) as sess:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            result = sess.run(episodes=2)
-    assert [episode.trial for episode in result.episodes] == [0, 1]
-    assert all(reset["options"] is None for reset in plain.resets)
-
-
-def test_session_run_walks_trial_ordinals_from_the_base() -> None:
-    declared = _TrialFactory().make()
-    with rlmesh.session(rlmesh.Model(lambda obs: 0), declared) as sess:
-        result = sess.run(episodes=2, trial_index_base=10)
-        with pytest.raises(ValueError, match="trial_index_base"):
-            sess.run(episodes=1, trial_index_base=-1)
-    assert [episode.trial for episode in result.episodes] == [10, 11]
-    assert [reset["options"] for reset in declared.resets] == [
-        {"trial_index": 10},
-        {"trial_index": 11},
-    ]
 
 
 def test_trial_index_helper_reads_the_reserved_key() -> None:
