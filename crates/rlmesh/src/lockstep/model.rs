@@ -447,8 +447,9 @@ impl<H: ModelHandler + 'static> Joins<H> {
                 fault(
                     "UNAVAILABLE",
                     format!(
-                        "model {} can't reach the session at {text}: {e}; serve the env at an \
-                         address its host can reach",
+                        "model {} can't reach the session at {text}: {e}; run `rlmesh host` \
+                         somewhere both machines can reach, pass `session=`, or serve the env \
+                         at an address its host can reach",
                         self.name
                     ),
                     false,
