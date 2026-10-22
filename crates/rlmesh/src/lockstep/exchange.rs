@@ -20,8 +20,8 @@
 //! frame's PNG bytes out, empty for none); an error reply carries the env's
 //! failure as JSON (`{code, message, recoverable}`).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -251,8 +251,18 @@ async fn within<T>(
     }
 }
 
-/// The same-process link: a function call, no serialisation.
-pub struct DirectLink(pub Arc<dyn LockstepHandler>);
+/// The same-process link: a function call, no serialisation. It holds
+/// the handler weakly, so a client outliving the env's server fails as a
+/// remote one would instead of stepping an env that stopped serving.
+pub struct DirectLink(pub Weak<dyn LockstepHandler>);
+
+impl DirectLink {
+    fn handler(&self) -> Result<Arc<dyn LockstepHandler>, GymError> {
+        self.0
+            .upgrade()
+            .ok_or_else(|| GymError::Closed("the env stopped serving".into()))
+    }
+}
 
 #[async_trait]
 impl LockstepLink for DirectLink {
@@ -261,7 +271,7 @@ impl LockstepLink for DirectLink {
         request: Request,
         timeout: Option<Duration>,
     ) -> Result<LockstepReply, GymError> {
-        within(timeout, self.0.handle(request)).await
+        within(timeout, self.handler()?.handle(request)).await
     }
 
     async fn render(
@@ -269,7 +279,7 @@ impl LockstepLink for DirectLink {
         lane: u32,
         timeout: Option<Duration>,
     ) -> Result<Option<Bytes>, GymError> {
-        within(timeout, self.0.render(lane)).await
+        within(timeout, self.handler()?.render(lane)).await
     }
 }
 

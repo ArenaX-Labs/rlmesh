@@ -98,7 +98,7 @@ class _FakeNativeClient:
         self.closed = False
 
     def address(self) -> str:
-        return "tcp://127.0.0.1:5555"
+        return "127.0.0.1:5555/env"
 
     def handshake(self) -> Any:
         return SimpleNamespace(num_envs=self._num_envs)
@@ -125,7 +125,7 @@ def test_accessors_read_state_cached_at_construction(
 
     fake = _FakeNativeClient(num_envs=3)
     monkeypatch.setattr(RemoteVectorEnv, "_make_client", lambda self, a, c, r, e: fake)
-    env = RemoteVectorEnv("127.0.0.1:5555")
+    env = RemoteVectorEnv("127.0.0.1:5555/env")
     fake.env_id = None  # type: ignore[method-assign]
     assert env.env_id == "env-id"
     assert env.num_envs == 3
@@ -153,6 +153,6 @@ def test_client_timeouts_pass_through_to_native(
 
     monkeypatch.setattr(RemoteVectorEnv, "_make_client", fake_make)
     RemoteVectorEnv(
-        "127.0.0.1:5555", connect_timeout_seconds=1.5, request_timeout_seconds=2.5
+        "127.0.0.1:5555/env", connect_timeout_seconds=1.5, request_timeout_seconds=2.5
     )
     assert captured == {"connect": 1.5, "request": 2.5}

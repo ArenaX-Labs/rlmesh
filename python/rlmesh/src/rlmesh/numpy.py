@@ -222,7 +222,7 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue], GymEnv):  # pyright: igno
 
     Examples:
         >>> from rlmesh.numpy import RemoteEnv
-        >>> env = RemoteEnv("127.0.0.1:5555")
+        >>> env = RemoteEnv("127.0.0.1:5555/env")
         >>> observation, info = env.reset(seed=42)
         >>> observation, reward, terminated, truncated, info = env.step(0)
         >>> env.close()
@@ -258,7 +258,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue], GymVectorEnv)
 
     Examples:
         >>> from rlmesh.numpy import RemoteVectorEnv
-        >>> envs = RemoteVectorEnv("127.0.0.1:5555")
+        >>> envs = RemoteVectorEnv("127.0.0.1:5555/env")
         >>> observations, infos = envs.reset(seed=42)
         >>> actions = [envs.single_action_space.sample() for _ in range(envs.num_envs)]
         >>> observations, rewards, terminations, truncations, infos = envs.step(actions)

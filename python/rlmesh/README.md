@@ -36,7 +36,7 @@ import gymnasium as gym
 from rlmesh import EnvServer
 
 env = gym.make("CartPole-v1")
-EnvServer(env, "127.0.0.1:5555").serve()
+EnvServer(env, "127.0.0.1:5555/cartpole").serve()
 ```
 
 In another process, connect to it as a remote environment:
@@ -44,7 +44,7 @@ In another process, connect to it as a remote environment:
 ```python
 from rlmesh.numpy import RemoteEnv
 
-env = RemoteEnv("127.0.0.1:5555")
+env = RemoteEnv("127.0.0.1:5555/cartpole")
 observation, info = env.reset(seed=0)
 
 terminated = truncated = False

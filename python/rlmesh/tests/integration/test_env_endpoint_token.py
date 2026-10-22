@@ -1,86 +1,27 @@
-"""The Python env serving path enforces the deployment endpoint credential."""
+"""A set env endpoint token fails serving: 0.2 sessions cannot check one yet."""
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-import textwrap
-
 import pytest
 
-# Each child process defines its own env: the deployment variable is read at
-# bind, and setting it in this process could authenticate unrelated servers.
-_CHILD_ENV = """
-import rlmesh
-from rlmesh import spaces
 
-class Env:
-    observation_space = spaces.Discrete(2)
-    action_space = spaces.Discrete(2)
-    def reset(self, *, seed=None, options=None):
-        return 0, {}
-    def step(self, action):
-        return 0, 0.0, True, False, {}
-    def close(self):
-        pass
-"""
-
-
-def _run_child(script: str, token: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-c", _CHILD_ENV + textwrap.dedent(script)],
-        env={**os.environ, "RLMESH_ENV_ENDPOINT_TOKEN": token},
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
-
-@pytest.mark.parametrize("token", ["", " \t\n"])
-def test_env_server_rejects_blank_environment_token(token: str) -> None:
-    result = _run_child('rlmesh.EnvServer(Env(), "127.0.0.1:0")', token)
-    assert result.returncode != 0
-    assert "RLMESH_ENV_ENDPOINT_TOKEN must not be empty" in result.stderr
-
-
-@pytest.mark.parametrize(
-    ("token", "problem"),
-    [
-        ("private-value\n", "has leading or trailing whitespace"),
-        ("private\x1bvalue", "contains a control character"),
-    ],
-)
-def test_env_server_rejects_token_a_header_cannot_carry(
-    token: str, problem: str
+@pytest.mark.parametrize("token", ["deployment-token", ""])
+def test_env_server_refuses_a_set_endpoint_token(
+    token: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A secret file's trailing newline fails startup instead of locking clients out."""
-    result = _run_child('rlmesh.EnvServer(Env(), "127.0.0.1:0")', token)
-    assert result.returncode != 0
-    assert f"RLMESH_ENV_ENDPOINT_TOKEN {problem}" in result.stderr
-    assert "private" not in result.stderr
+    import rlmesh
+    from rlmesh import spaces
 
+    class Env:
+        observation_space = spaces.Discrete(2)
+        action_space = spaces.Discrete(2)
 
-def test_environment_token_is_enforced_and_reaches_run_loopback() -> None:
-    result = _run_child(
-        """
-        server = rlmesh.EnvServer(Env(), "127.0.0.1:0")
-        server.start()
-        try:
-            try:
-                rlmesh.RemoteEnv(server.address)
-            except ConnectionError as error:
-                assert "rejected the API key" in str(error), error
-            else:
-                raise AssertionError("a client without the token must be rejected")
-        finally:
-            server.shutdown()
+        def reset(self, *, seed: int | None = None, options: object = None):
+            return 0, {}
 
-        # run() stands up its own loopback env server, which enforces the
-        # deployment token; its in-process client must present it.
-        result = rlmesh.Model(lambda observation: 0).run(Env(), episodes=1)
-        assert result.num_episodes == 1
-        """,
-        "deployment-token",
-    )
-    assert result.returncode == 0, result.stderr
+        def step(self, action: object):
+            return 0, 0.0, True, False, {}
+
+    monkeypatch.setenv("RLMESH_ENV_ENDPOINT_TOKEN", token)
+    with pytest.raises(ValueError, match="safety step 6"):
+        rlmesh.EnvServer(Env(), ":0/env")

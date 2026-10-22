@@ -1,4 +1,9 @@
 //! Facade-backed environment servers and sized serve options.
+//!
+//! TODO: the C API still serves envs on the v1 gRPC wire (it builds `rlmesh`
+//! without the `lockstep` feature). The parity step that follows 0.2's Python
+//! surface moves it, C++ and C# onto session addresses and deletes v1 env
+//! serving from `rlmesh-grpc`.
 #![allow(unsafe_code)] // C strings, sized options and borrowed handles.
 use crate::abi::{
     sizing,

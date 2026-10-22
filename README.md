@@ -26,7 +26,7 @@ Serve an env:
 import gymnasium as gym
 import rlmesh
 
-rlmesh.EnvServer(gym.make("CartPole-v1"), "127.0.0.1:5555").serve()
+rlmesh.EnvServer(gym.make("CartPole-v1"), "127.0.0.1:5555/cartpole").serve()
 ```
 
 Use it from somewhere else:
@@ -34,7 +34,7 @@ Use it from somewhere else:
 ```python
 from rlmesh.numpy import RemoteEnv
 
-env = RemoteEnv("127.0.0.1:5555")
+env = RemoteEnv("127.0.0.1:5555/cartpole")
 obs, info = env.reset(seed=0)
 
 done = False
@@ -49,23 +49,18 @@ More in [`examples/python`](examples/python): adapters, Docker sandboxes, bring-
 
 ### Endpoint authentication
 
-A served model or env requires a key when it is started with
+A Rust, C or C++ served model or env requires a key when it is started with
 `RLMESH_MODEL_ENDPOINT_TOKEN` / `RLMESH_ENV_ENDPOINT_TOKEN`. Clients send one
 with `api_key=` (`authorization: Bearer <key>`), and an `https://` address
 dials over TLS, so a policy behind a TLS load balancer drives your local env
-directly:
-
-```python
-import rlmesh
-
-model = rlmesh.RemoteModel("https://models.example.com", api_key="...")
-result = rlmesh.run(model, MyEnv(), episodes=10)
-```
+directly. Python 0.2 serves envs on sessions, which check no endpoint token
+yet: a set `RLMESH_ENV_ENDPOINT_TOKEN` fails `EnvServer` there, so keep the
+session's network private.
 
 Without `api_key`, clients read `RLMESH_API_KEY`, and send it only to
 `https://` addresses. `tls_ca_file=` trusts a private CA bundle instead of the
-system roots. The same options exist in Rust (`RemoteModelOptions::api_key`),
-C (`RLMeshRemoteModelOptions.api_key`) and C++ (`with_api_key`).
+system roots. The options are `RemoteModelOptions::api_key` in Rust,
+`RLMeshRemoteModelOptions.api_key` in C and `with_api_key` in C++.
 
 Servers send HTTP/2 keepalive PINGs on idle connections. They detect a dead
 peer and keep NAT mappings and proxies that count PINGs as traffic alive, but

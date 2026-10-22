@@ -44,7 +44,7 @@ class ShortChunk(Model):
 
 @pytest.mark.parametrize("as_error", [False, True])
 def test_engine_short_chunk_warning_keeps_category_and_call_site(as_error):
-    server = rlmesh.EnvServer(TaggedEnv(), "127.0.0.1:0", tags=TaggedEnv.tags)
+    server = rlmesh.EnvServer(TaggedEnv(), ":0/env", tags=TaggedEnv.tags)
     server.start()
     model = ShortChunk()
     try:

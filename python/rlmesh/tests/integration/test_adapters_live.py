@@ -140,17 +140,18 @@ def test_adapted_model_runs_against_tagged_server() -> None:
     def on_episode_end() -> None:
         seen["episode_ends"] = cast(int, seen["episode_ends"]) + 1
 
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
+    server = rlmesh.EnvServer(env_obj, ":0/env", tags=tags)
     server.start()
     try:
-        client = RemoteEnv(server.address)
-        # The tags published via EnvServer(tags=) survive the
-        # round-trip through the contract metadata.
-        recovered = adapt.EnvTags.from_metadata(client.env_contract.metadata or {})
+        with RemoteEnv(server.address) as client:
+            # The tags published via EnvServer(tags=) survive the
+            # round-trip through the contract metadata.
+            recovered = adapt.EnvTags.from_metadata(client.env_contract.metadata or {})
         assert recovered == tags
 
-        Model(predict, spec=spec, on_episode_end=on_episode_end).run(client, episodes=1)
-        client.close()
+        Model(predict, spec=spec, on_episode_end=on_episode_end).run(
+            server.address, episodes=1
+        )
     finally:
         server.shutdown()
 
@@ -351,7 +352,7 @@ def test_resolve_from_contract_describes_the_pairing() -> None:
     spec = _model_spec()
     env_obj = TinyArmEnv()
 
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
+    server = rlmesh.EnvServer(env_obj, ":0/env", tags=tags)
     server.start()
     try:
         client = RemoteEnv(server.address)
@@ -514,12 +515,10 @@ def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
             return chunk
 
     env_obj = TinyArmEnv()
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
+    server = rlmesh.EnvServer(env_obj, ":0/env", tags=_tags())
     server.start()
     try:
-        client = RemoteEnv(server.address)
-        ChunkModel().run(client, episodes=1, execution_horizon=2)
-        client.close()
+        ChunkModel().run(server.address, episodes=1, execution_horizon=2)
     finally:
         server.shutdown()
 
@@ -550,14 +549,12 @@ def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
             return single
 
     env_obj = TinyArmEnv()
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
+    server = rlmesh.EnvServer(env_obj, ":0/env", tags=_tags())
     server.start()
     try:
-        client = RemoteEnv(server.address)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            PlainModel().run(client, episodes=1, execution_horizon=2)
-        client.close()
+            PlainModel().run(server.address, episodes=1, execution_horizon=2)
     finally:
         server.shutdown()
 

@@ -59,11 +59,17 @@ int main() {
   rlmesh::EnvServer server(RecoverableEnv{},
                            rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
   server.start();
+  // TODO: dial a session address once the C API serves envs on sessions (the
+  // parity step); until then Python 0.2 reaches a v1 endpoint only through the
+  // v1 escape.
   const std::string probe = R"PY(uv run --no-sync python -c '
 import sys
 import rlmesh
 import rlmesh.numpy
-with rlmesh.numpy.RemoteEnv(sys.argv[1]) as env:
+from rlmesh._upgrade import v1_endpoints
+with v1_endpoints():
+    env = rlmesh.numpy.RemoteEnv(sys.argv[1])
+with env:
     env.reset()
     try:
         env.step(0)

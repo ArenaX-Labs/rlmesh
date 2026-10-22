@@ -173,7 +173,7 @@ def test_envserver_device_requires_a_framework() -> None:
 
     # device= without a torch/jax framework is rejected before any socket binds.
     with pytest.raises(ValueError, match=r"device=.* requires"):
-        rlmesh.EnvServer(cast("Any", _NumpyEnv()), "127.0.0.1:0", device="cpu")
+        rlmesh.EnvServer(cast("Any", _NumpyEnv()), ":0/env", device="cpu")
 
 
 def test_step_accepts_legacy_four_tuple() -> None:
@@ -325,7 +325,7 @@ def test_envserver_vector_tags_skip_space_validation(
                     num_envs=2, single_observation_space=0, single_action_space=0
                 ),
             ),
-            "127.0.0.1:0",
+            ":0/env",
             tags=cast("Any", object()),
         )
     assert captured["validate"] is False
@@ -333,7 +333,7 @@ def test_envserver_vector_tags_skip_space_validation(
     with pytest.raises(_StopError):
         rlmesh.EnvServer(
             cast("Any", SimpleNamespace(observation_space=0, action_space=0)),
-            "127.0.0.1:0",
+            ":0/env",
             tags=cast("Any", object()),
         )
     assert captured["validate"] is True

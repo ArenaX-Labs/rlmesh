@@ -1,6 +1,14 @@
 use crate::*;
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 
+/// Where a test serves an env its runs dial: a session address on the v2
+/// build, which dials no v1 endpoint, and a v1 endpoint otherwise.
+pub(crate) const ENV_ADDRESS: &str = if cfg!(feature = "lockstep") {
+    ":0/env"
+} else {
+    "tcp://127.0.0.1:0"
+};
+
 #[test]
 fn reexports_space_types() {
     let spec = binding::spaces::EnvContract {

@@ -66,7 +66,7 @@ def _model() -> Any:
 
 
 def test_back_to_back_sessions_release_the_join_slot() -> None:
-    server = rlmesh.EnvServer(CountEnv(), "127.0.0.1:0")
+    server = rlmesh.EnvServer(CountEnv(), ":0/env")
     server.start()
     model = _model()
     try:
@@ -412,23 +412,19 @@ def test_run_max_episode_steps_truncates_via_the_runtime() -> None:
     assert len(env.seen_seeds) == 2
 
 
-def test_run_on_a_driven_handle_explains_the_session_conflict() -> None:
-    """A RemoteEnv handle that was driven holds the env's single session slot;
-    run() (which dials the handle's address) surfaces a clear pointer instead
-    of the raw wire error."""
-    try:
-        server = rlmesh.EnvServer(CountEnv(), "127.0.0.1:0")
-    except ConnectionError as exc:
-        if "Operation not permitted" in str(exc):
-            pytest.skip("local tcp bind is not permitted in this environment")
-        raise
+def test_run_on_an_open_handle_explains_the_lease_conflict() -> None:
+    """An open RemoteEnv holds its env's lease: run() refuses the handle,
+    naming the address form, and a run on the address points at the holder."""
+    server = rlmesh.EnvServer(CountEnv(), ":0/env")
     server.start()
     try:
         handle = rlmesh.numpy.RemoteEnv(server.address)
-        handle.reset()
-        with pytest.raises(RuntimeError, match=r"close\(\) the handle"):
+        with pytest.raises(TypeError, match=r"run\(address\)"):
             _model().run(handle, episodes=1)
+        with pytest.raises(RuntimeError, match=r"close\(\) it before run"):
+            _model().run(server.address, episodes=1)
         handle.close()
+        assert _model().run(server.address, episodes=1).num_episodes == 1
     finally:
         server.shutdown()
 
@@ -789,7 +785,7 @@ def test_an_uneven_budget_is_exact_on_a_lockstep_vector_env(
 
 def test_an_uneven_budget_is_exact_on_driver_reset_lanes() -> None:
     lanes = [CountEnv(episode_len=1), CountEnv(episode_len=3)]
-    server = rlmesh.EnvServer(cast("Any", lanes), host="127.0.0.1", port=0)
+    server = rlmesh.EnvServer(cast("Any", lanes), ":0/env")
     try:
         server.start()
     except (OSError, ConnectionError) as exc:
@@ -904,7 +900,7 @@ def test_hooks_on_a_next_step_vector_env_whose_lanes_roll_apart() -> None:
 
 def test_hooks_on_driver_reset_lanes() -> None:
     lanes = [CountEnv(episode_len=2), CountEnv(episode_len=2)]
-    server = rlmesh.EnvServer(cast("Any", lanes), host="127.0.0.1", port=0)
+    server = rlmesh.EnvServer(cast("Any", lanes), ":0/env")
     try:
         server.start()
     except (OSError, ConnectionError) as exc:
@@ -932,7 +928,7 @@ def test_session_served_env_context_carries_stable_episode_identity() -> None:
         return np.zeros(2, np.float32)
 
     try:
-        server = rlmesh.EnvServer(CountEnv(episode_len=3), host="127.0.0.1", port=0)
+        server = rlmesh.EnvServer(CountEnv(episode_len=3), ":0/env")
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")

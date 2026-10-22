@@ -224,6 +224,8 @@ struct Plan {
 /// Where the driver dials, and what the run releases afterwards.
 struct Dial<'e> {
     address: String,
+    /// The v1 endpoint token a run's own loopback checks.
+    #[cfg(not(feature = "lockstep"))]
     token: String,
     loopback: Option<EnvServer>,
     /// A served env to shut down afterwards (`close_env` on an `EnvServer`).
@@ -253,6 +255,7 @@ async fn run_body(
     let remote = match &env {
         EnvKind::Address(address) => Some(Dial {
             address: address.clone(),
+            #[cfg(not(feature = "lockstep"))]
             token: String::new(),
             loopback: None,
             shutdown: None,
@@ -261,6 +264,7 @@ async fn run_body(
             let server: &EnvServer = server;
             Some(Dial {
                 address: server.address().to_string(),
+                #[cfg(not(feature = "lockstep"))]
                 token: server.token().unwrap_or_default().to_string(),
                 loopback: None,
                 shutdown: None,
@@ -269,6 +273,7 @@ async fn run_body(
         // The native loop dials a caller's client's address itself.
         EnvKind::Remote(handle) => Some(Dial {
             address: handle.remote_address().to_string(),
+            #[cfg(not(feature = "lockstep"))]
             token: String::new(),
             loopback: None,
             shutdown: None,
@@ -312,6 +317,7 @@ async fn run_body(
             server.start()?;
             Dial {
                 address: server.address().to_string(),
+                #[cfg(not(feature = "lockstep"))]
                 token: server.token().unwrap_or_default().to_string(),
                 loopback: Some(server),
                 shutdown: None,
@@ -322,6 +328,7 @@ async fn run_body(
     let is_local = local.is_some();
     let run = LocalRun {
         address: dial.address.clone(),
+        #[cfg(not(feature = "lockstep"))]
         token: dial.token.clone(),
         episodes: plan.budget,
         base_seed: None,
@@ -368,8 +375,10 @@ async fn run_body(
         .drive(core, &mut queue, &mut side)
         .await
         .map_err(|err| match err {
+            // v1's Join stream and a v2 session's lease refuse a second
+            // driver alike.
             Error::Runtime(message) | Error::Connection(message)
-                if message.contains("active Join session") =>
+                if message.contains("active Join session") || message.contains("LeaseBusy") =>
             {
                 Error::Runtime(
                     "the target env already has an active session: a RemoteEnv / \

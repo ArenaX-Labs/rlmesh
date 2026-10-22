@@ -2,11 +2,10 @@
 //! v1 and v2 trace equivalence (§12.4, the wave 5 release gate's
 //! "semantically equivalent" half).
 //!
-//! The same catalog-style env and the same model run over v1 (the env behind
-//! the gRPC Join stream) and over v2 (the env as a lockstep robot in a
-//! session, at its participant address), and every trace must match the v1
-//! runtime's, kept as golden files in `tests/golden/lockstep`
-//! (`RLMESH_WRITE_GOLDEN=1` rewrites them from a v1 run):
+//! A catalog-style env and a model run over v2 (the env as a lockstep robot
+//! in a session, at its participant address), and every trace must match
+//! what the v1 runtime left for the same env and model (the env behind the
+//! gRPC Join stream), kept as golden files in `tests/golden/lockstep`:
 //!
 //! - what the env received and answered, per lane: reset seeds and options,
 //!   the exact action bytes, the observation leaf bytes, rewards (bit
@@ -21,8 +20,8 @@
 //! prefetch; a 4-lane vector env with NEXT_STEP autoreset and one batched
 //! predict per step; a 3-lane lane endpoint with DISABLED autoreset, so
 //! the driver resets lanes one by one (partial resets, per-lane seeds) and
-//! chunks per lane; and the managed shape, a served (gRPC) model server
-//! driven by the v1 runtime over a lockstep env, unchanged.
+//! chunks per lane; and the managed shape, a model served on a session
+//! driving a lockstep env as v1's gRPC model server did.
 
 #![allow(clippy::unwrap_used, clippy::print_stderr)]
 
@@ -145,27 +144,16 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-/// Serves `env` over v1 (gRPC) or v2 (lockstep) and returns its address.
-fn serve(rt: &tokio::runtime::Runtime, env: CatalogEnv, v2: bool) -> String {
-    if v2 {
-        let binding = rt.block_on(rlmesh::lockstep::bind(":0/catalog")).unwrap();
-        let address = binding.address();
-        rt.spawn(binding.serve(
-            Arc::new(env),
-            rlmesh::lockstep::ServeOptions::default(),
-            tokio_util::sync::CancellationToken::new(),
-        ));
-        return address;
-    }
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    rt.spawn(rlmesh_grpc::env::serve(env, addr));
-    std::thread::sleep(Duration::from_millis(200));
-    format!("tcp://127.0.0.1:{port}")
+/// Serves `env` as a lockstep robot and returns its address.
+fn serve(rt: &tokio::runtime::Runtime, env: CatalogEnv) -> String {
+    let binding = rt.block_on(rlmesh::lockstep::bind(":0/catalog")).unwrap();
+    let address = binding.address();
+    rt.spawn(binding.serve(
+        Arc::new(env),
+        rlmesh::lockstep::ServeOptions::default(),
+        tokio_util::sync::CancellationToken::new(),
+    ));
+    address
 }
 
 fn options(env: &CatalogEnv) -> Trace {
@@ -184,11 +172,11 @@ struct Shape {
     unordered: bool,
 }
 
-fn run_once(shape: &Shape, v2: bool) -> Traces {
+fn run_once(shape: &Shape) -> Traces {
     let rt = runtime();
     let env = CatalogEnv::new(shape.num_envs, shape.autoreset, shape.lanes);
     let trace = options(&env);
-    let address = serve(&rt, env, v2);
+    let address = serve(&rt, env);
     let log = Arc::new(Mutex::new(Vec::new()));
     let model = Model::new(
         CatalogPolicy { log: log.clone() },
@@ -258,28 +246,23 @@ fn run_once(shape: &Shape, v2: bool) -> Traces {
 }
 
 /// Checks `traces` against the golden file `name`: the traces the v1
-/// runtime left (written, from a v1 run, when `RLMESH_WRITE_GOLDEN` is set).
+/// runtime left before it was deleted.
 fn golden(name: &str, traces: &Traces) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden/lockstep")
         .join(format!("{name}.txt"));
-    let text = format!("{traces:#?}\n");
-    if std::env::var_os("RLMESH_WRITE_GOLDEN").is_some() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, text).unwrap();
-        return;
-    }
     let kept = std::fs::read_to_string(&path).unwrap();
-    assert!(kept == text, "traces differ from {}", path.display());
+    assert!(
+        kept == format!("{traces:#?}\n"),
+        "traces differ from {}",
+        path.display()
+    );
 }
 
 fn assert_equivalent(name: &str, shape: &Shape) {
-    let v1 = run_once(shape, false);
-    assert!(!v1.steps.is_empty() && !v1.model.is_empty());
-    golden(name, &v1);
-    if std::env::var_os("RLMESH_WRITE_GOLDEN").is_none() {
-        golden(name, &run_once(shape, true));
-    }
+    let traces = run_once(shape);
+    assert!(!traces.steps.is_empty() && !traces.model.is_empty());
+    golden(name, &traces);
 }
 
 #[test]
@@ -399,7 +382,7 @@ fn run_managed() -> Traces {
     let rt = runtime();
     let env = CatalogEnv::new(4, AutoresetMode::NextStep, false);
     let trace = options(&env);
-    let env_address = serve(&rt, env, true);
+    let env_address = serve(&rt, env);
     let log = Arc::new(Mutex::new(Vec::new()));
     let model = Model::new(
         CatalogPolicy { log: log.clone() },
@@ -452,11 +435,6 @@ fn run_managed() -> Traces {
 
 #[test]
 fn a_model_served_on_a_session_drives_a_lockstep_env_unchanged() {
-    // Its golden file is the v1 runtime's (a gRPC model server); no run here
-    // may rewrite it.
-    if std::env::var_os("RLMESH_WRITE_GOLDEN").is_some() {
-        return;
-    }
     let traces = run_managed();
     assert!(!traces.model.is_empty() && traces.episodes.len() >= 9);
     golden("served_model", &traces);

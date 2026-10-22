@@ -45,7 +45,7 @@ def _connect(address: str) -> rlmesh.RemoteEnv:
 
 
 def test_a_failed_close_is_an_rlmesh_exception_with_the_serve_prefix():
-    server = rlmesh.EnvServer(_Env(close_error=ValueError("boom")), "127.0.0.1:0")
+    server = rlmesh.EnvServer(_Env(close_error=ValueError("boom")), ":0/env")
     server.start()
     with pytest.raises(rlmesh.RLMeshException) as raised:
         server.shutdown()
@@ -53,7 +53,7 @@ def test_a_failed_close_is_an_rlmesh_exception_with_the_serve_prefix():
 
 
 def test_a_foreground_serve_failure_has_the_serve_prefix():
-    server = rlmesh.EnvServer(_Env(close_error=ValueError("boom")), "127.0.0.1:0")
+    server = rlmesh.EnvServer(_Env(close_error=ValueError("boom")), ":0/env")
     result: list[BaseException] = []
 
     def serve() -> None:
@@ -75,7 +75,7 @@ def test_a_foreground_serve_failure_has_the_serve_prefix():
 
 def test_shutdown_from_a_callback_under_start_only_triggers_the_drain():
     env = _Env()
-    server = rlmesh.EnvServer(env, "127.0.0.1:0")
+    server = rlmesh.EnvServer(env, ":0/env")
     env.server = server
     server.start()
     remote = _connect(server.address)
@@ -111,7 +111,7 @@ class _Vector:
 def test_a_background_vector_env_runs_on_one_thread():
     """ENV-P7: one dedicated thread, never the blocking pool."""
     env = _Vector()
-    server = rlmesh.EnvServer(env, "127.0.0.1:0")
+    server = rlmesh.EnvServer(env, ":0/env")
     server.start()
     remote = rlmesh.RemoteVectorEnv(server.address)
     remote.reset(seed=[0, 1])
@@ -132,7 +132,7 @@ def test_foreground_callback_shutdown_marks_stopped_before_serve_finishes():
             return 0, {}
 
     env = Stops()
-    server = rlmesh.EnvServer(env, "127.0.0.1:0")
+    server = rlmesh.EnvServer(env, ":0/env")
     env.server = server
     worker = threading.Thread(target=server.serve)
     worker.start()

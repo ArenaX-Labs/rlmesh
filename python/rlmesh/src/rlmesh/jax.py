@@ -269,7 +269,7 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue], GymEnv):  # pyright: ignore[r
 
     Examples:
         >>> from rlmesh.jax import RemoteEnv
-        >>> env = RemoteEnv("127.0.0.1:5555")  # doctest: +SKIP
+        >>> env = RemoteEnv("127.0.0.1:5555/env")  # doctest: +SKIP
         >>> observation, info = env.reset(seed=42)  # doctest: +SKIP
         >>> observation, reward, terminated, truncated, info = env.step(
         ...     0
@@ -302,7 +302,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue], GymVectorEnv):  #
 
     Examples:
         >>> from rlmesh.jax import RemoteVectorEnv
-        >>> envs = RemoteVectorEnv("127.0.0.1:5555")  # doctest: +SKIP
+        >>> envs = RemoteVectorEnv("127.0.0.1:5555/env")  # doctest: +SKIP
         >>> observations, infos = envs.reset(seed=42)  # doctest: +SKIP
         >>> envs.close()  # doctest: +SKIP
     """

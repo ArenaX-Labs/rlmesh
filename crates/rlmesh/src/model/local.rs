@@ -6,7 +6,7 @@ use crate::run::runtime::{
     RuntimeError, RuntimeHooks, RuntimeReport, RuntimeSessionSpec,
 };
 use async_trait::async_trait;
-use rlmesh_grpc::wire::{env_contract_from_proto, env_contract_to_proto};
+use rlmesh_grpc::wire::env_contract_to_proto;
 
 use super::handler::ModelHandler;
 #[cfg(feature = "lockstep")]
@@ -16,6 +16,8 @@ use crate::{Error, Result, binding::spaces};
 /// One native run's resolved inputs.
 pub(crate) struct LocalRun {
     pub(crate) address: String,
+    /// The v1 endpoint token, for a build that still dials v1 (no `lockstep`).
+    #[cfg(not(feature = "lockstep"))]
     pub(crate) token: String,
     /// The resolved budget (at least 1).
     pub(crate) episodes: u64,
@@ -51,6 +53,7 @@ where
     }
     let run = LocalRun {
         address: options.env_address.to_string(),
+        #[cfg(not(feature = "lockstep"))]
         token: options.token,
         episodes,
         base_seed: options.base_seed,
@@ -176,13 +179,30 @@ struct Connected {
 }
 
 /// Dials the env and handshakes: as a v2 lockstep driver (a participant
-/// address, §12, with the `lockstep` feature), whose declaration answers the
-/// handshake, or over gRPC.
+/// address, §12), whose declaration answers the handshake. A build without
+/// the `lockstep` feature (the C API) still dials v1 gRPC endpoints.
 async fn connect_env(options: &LocalRun) -> Result<Connected> {
+    #[cfg(feature = "lockstep")]
+    {
+        if !crate::address::is_v2(&options.address) {
+            return Err(Error::invalid_argument(format!(
+                "Model.run({:?}): a v1 env endpoint, which rlmesh 0.2 no longer dials; \
+                 serve the env at a session address (EnvServer(env, \":0/name\")) and run \
+                 against that, or pass the env object itself",
+                options.address
+            )));
+        }
+        LockstepEnv::connect(&options.address, options.workflow_edition.as_deref()).await
+    }
+    #[cfg(not(feature = "lockstep"))]
+    connect_grpc_env(options).await
+}
+
+/// The v1 wire's env, for a build without the `lockstep` feature.
+// TODO: delete with v1 env serving, once the C API serves sessions.
+#[cfg(not(feature = "lockstep"))]
+async fn connect_grpc_env(options: &LocalRun) -> Result<Connected> {
     if crate::address::is_v2(&options.address) {
-        #[cfg(feature = "lockstep")]
-        return LockstepEnv::connect(&options.address, options.workflow_edition.as_deref()).await;
-        #[cfg(not(feature = "lockstep"))]
         return Err(Error::invalid_argument(format!(
             "{}: this build has no v2 lockstep transport (the `lockstep` feature)",
             options.address
@@ -211,7 +231,7 @@ async fn connect_env(options: &LocalRun) -> Result<Connected> {
             &handshake.capabilities,
             rlmesh_proto::capabilities::ENV_SUBSET_STEP,
         ),
-        contract: env_contract_from_proto(handshake.env_contract)
+        contract: rlmesh_grpc::wire::env_contract_from_proto(handshake.env_contract)
             .map_err(|err| Error::Protocol(format!("invalid spaces spec from env: {err}")))?,
         num_envs: handshake.num_envs,
         workflow_edition: handshake.workflow_edition,
@@ -222,6 +242,7 @@ async fn connect_env(options: &LocalRun) -> Result<Connected> {
 /// The env a local run drives.
 #[derive(Clone)]
 enum DrivenEnv {
+    #[cfg(not(feature = "lockstep"))]
     Grpc(Box<EnvClientRuntimeEnv>),
     #[cfg(feature = "lockstep")]
     Lockstep(LockstepEnv),
@@ -234,6 +255,7 @@ impl RuntimeEnv for DrivenEnv {
         request: EnvResetRequest,
     ) -> std::result::Result<RuntimeEnvReset, RuntimeError> {
         match self {
+            #[cfg(not(feature = "lockstep"))]
             Self::Grpc(env) => env.reset(request).await,
             #[cfg(feature = "lockstep")]
             Self::Lockstep(env) => env.reset(request).await,
@@ -245,6 +267,7 @@ impl RuntimeEnv for DrivenEnv {
         request: EnvStepRequest,
     ) -> std::result::Result<RuntimeEnvStep, RuntimeError> {
         match self {
+            #[cfg(not(feature = "lockstep"))]
             Self::Grpc(env) => env.step(request).await,
             #[cfg(feature = "lockstep")]
             Self::Lockstep(env) => env.step(request).await,
@@ -253,6 +276,7 @@ impl RuntimeEnv for DrivenEnv {
 
     async fn close(&mut self, timeout: Duration) -> std::result::Result<(), String> {
         match self {
+            #[cfg(not(feature = "lockstep"))]
             Self::Grpc(env) => env.close(timeout).await,
             #[cfg(feature = "lockstep")]
             Self::Lockstep(env) => env.close(timeout).await,

@@ -78,6 +78,7 @@ fn ones() -> Model {
 
 fn quick() -> EnvServerOptions {
     EnvServerOptions {
+        address: Some(crate::tests::ENV_ADDRESS.into()),
         options: Some(crate::ServeOptions {
             drain_timeout: Some(Duration::from_millis(100)),
             ..Default::default()
@@ -1165,7 +1166,8 @@ fn back_to_back_sessions_release_the_join_slot() {
     server.shutdown().unwrap();
 }
 
-#[tokio::test]
+// Multi-threaded: a v2 handle's drop blocks in place on zenoh.
+#[tokio::test(flavor = "multi_thread")]
 async fn back_to_back_async_drops_release_the_join_slot() {
     let server = crate::EnvServer::new(Steps::new(), quick()).unwrap();
     server.start().unwrap();
@@ -1189,6 +1191,7 @@ async fn back_to_back_async_drops_release_the_join_slot() {
     server.shutdown_async().await.unwrap();
 }
 
+#[cfg(not(feature = "lockstep"))]
 #[test]
 fn a_native_run_dials_a_borrowed_remote_env_s_address() {
     let server = steps_server();
@@ -1208,6 +1211,33 @@ fn a_native_run_dials_a_borrowed_remote_env_s_address() {
     assert_eq!(result.num_episodes(), 1);
     // A handle that was driven holds the slot, and the run says so.
     remote.reset(None, None).unwrap();
+    let err = ones()
+        .run(
+            &mut remote,
+            RunOptions {
+                episodes: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::RuntimeError, "{err}");
+    assert!(
+        err.to_string()
+            .starts_with("the target env already has an active session"),
+        "{err}"
+    );
+    remote.close().unwrap();
+    server.shutdown().unwrap();
+}
+
+#[cfg(feature = "lockstep")]
+#[test]
+fn a_native_run_through_an_open_v2_handle_says_the_handle_holds_the_env() {
+    let server = steps_server();
+    let mut remote =
+        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
+            .unwrap();
+    // A v2 handle holds its env's lease from connect: the run says so.
     let err = ones()
         .run(
             &mut remote,

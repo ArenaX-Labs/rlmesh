@@ -324,7 +324,7 @@ class TestOneTimeWarning:
     def test_the_warning_names_the_env_server_construction_site(self) -> None:
         # One hop deeper than the resolver's direct callers: EnvServer.__init__.
         with pytest.warns(UserWarning, match="no workflow edition declared") as records:
-            server = rlmesh.EnvServer(_two_step_env(), "127.0.0.1:0")
+            server = rlmesh.EnvServer(_two_step_env(), ":0/env")
         server.shutdown()
         assert Path(records[0].filename) == Path(__file__)
 

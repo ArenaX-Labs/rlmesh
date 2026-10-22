@@ -4,6 +4,8 @@ family = "Remote auth"
 rules = ["R-22"]
 operation = "remote_auth"
 variant = "invalid_header"
+languages = ["rust", "c", "cpp"]
+why = "Python 0.2 serves and reaches models on sessions: no RemoteModel, and no api key or TLS on the address (session security, safety step 6)."
 expect = { error = "ValueError", text = "the api_key cannot be sent in the authorization header: it contains a control character" }
 
 [[scenario]]
@@ -12,6 +14,8 @@ family = "Remote auth"
 rules = ["R-22"]
 operation = "remote_auth"
 variant = "api_key_rejected"
+languages = ["rust", "c", "cpp"]
+why = "Python 0.2 serves and reaches models on sessions: no RemoteModel, and no api key or TLS on the address (session security, safety step 6)."
 expect = { error = "ConnectionError", text = "could not connect to a model at 'unix://SOCKET': the server rejected the API key; pass the key it expects as api_key (or set RLMESH_API_KEY for an https:// address)" }
 
 [[scenario]]
@@ -20,6 +24,8 @@ family = "Remote auth"
 rules = ["R-22"]
 operation = "remote_auth"
 variant = "api_key_accepted"
+languages = ["rust", "c", "cpp"]
+why = "Python 0.2 serves and reaches models on sessions: no RemoteModel, and no api key or TLS on the address (session security, safety step 6)."
 expect = { episodes = 1, steps = 2, env_closes = 0 }
 
 [[scenario]]
@@ -28,6 +34,8 @@ family = "Remote auth"
 rules = ["R-22"]
 operation = "remote_auth"
 variant = "https_to_plaintext"
+languages = ["rust", "c", "cpp"]
+why = "Python 0.2 serves and reaches models on sessions: no RemoteModel, and no api key or TLS on the address (session security, safety step 6)."
 expect = { error = "ConnectionError", text = "could not connect to a model at 'https://127.0.0.1:PORT'; is the model being served? (TLS handshake with 127.0.0.1:PORT failed: received corrupt message of type InvalidContentType)" }
 
 [[scenario]]
@@ -36,6 +44,8 @@ family = "Remote auth"
 rules = ["R-17"]
 operation = "remote_auth"
 variant = "local_env"
+languages = ["rust", "c", "cpp"]
+why = "Python 0.2 serves and reaches models on sessions: no RemoteModel, and no api key or TLS on the address (session security, safety step 6)."
 expect = { episodes = 1, steps = 2, env_closes = 0 }
 
 [[scenario]]
@@ -44,4 +54,6 @@ family = "Remote auth"
 rules = ["R-22"]
 operation = "remote_auth"
 variant = "local_model_https_env"
+languages = ["rust", "c", "cpp"]
+why = "Python 0.2 serves and reaches models on sessions: no RemoteModel, and no api key or TLS on the address (session security, safety step 6)."
 expect = { error = "ConnectionError", text = "TLS handshake with 127.0.0.1:PORT failed: received corrupt message of type InvalidContentType" }

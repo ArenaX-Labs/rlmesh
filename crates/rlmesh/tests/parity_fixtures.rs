@@ -1,5 +1,9 @@
 //! The shared TOML scenarios, projected losslessly by tests/parity/support.py.
-
+//!
+//! They pin the v1 wire the C API and the languages on it share, so they run
+//! without `lockstep` (`mise run parity:fixtures`): that build's runs dial
+//! sessions, not v1 endpoints.
+#![cfg(not(feature = "lockstep"))]
 // Fixture setup and synchronization panic on unexpected state.
 #![allow(clippy::unwrap_used)]
 use std::path::PathBuf;

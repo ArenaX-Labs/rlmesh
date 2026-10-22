@@ -74,7 +74,7 @@ def served_env(declared_edition: str, monkeypatch: pytest.MonkeyPatch) -> Iterat
     monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
     server = rlmesh.EnvServer(
         CountEnv(),
-        "127.0.0.1:0",
+        ":0/env",
         options=ServeOptions(workflow_edition=declared_edition),
     )
     server.start()

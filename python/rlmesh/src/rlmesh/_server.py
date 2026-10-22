@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 from ._client import Transport, normalize_bind_address
 from ._editions import serve_options_declaring
 from ._load_native import load_native
+from ._upgrade import refuse_endpoint_token, refuse_v1_address
 from ._value_conversion import resolve_bridge
 from .specs import EnvContract
 from .types import EnvLike, VectorEnvLike
@@ -131,20 +132,23 @@ class EnvServer:
             flight), so a slow lane never holds the others; a single env is the
             one-lane case of the same server. A natively vectorized env (the
             ``VectorEnvLike`` shape) is served by the vector server instead.
-        address: Optional bind address. Supports ``"tcp://host:port"``,
-            ``"host:port"``, ``"port"``, and ``"unix:///path/to/socket.sock"``.
-            Defaults to ``"tcp://127.0.0.1:0"`` when omitted.
-        host: TCP host helper used when ``address`` is omitted.
-        port: TCP port helper used when ``address`` is omitted.
-        path: Unix socket path helper used when ``address`` is omitted.
-        transport: Explicit transport selector.
+        address: The env's participant address in a session:
+            ``"host:port/name"``, ``":0/name"`` (an OS-assigned local port) or
+            ``"session/name"``. Defaults to ``":0/env"``. A v1 endpoint
+            (``"host:port"``, ``"tcp://..."``, ``"unix://..."``, or the
+            ``host``/``port``/``path``/``transport`` helpers) raises a
+            ``ValueError`` naming the session form.
+        host: 0.1 TCP host helper; refused (see ``address``).
+        port: 0.1 TCP port helper; refused (see ``address``).
+        path: 0.1 Unix socket path helper; refused (see ``address``).
+        transport: 0.1 transport selector; refused (see ``address``).
         options: Optional serve lifecycle options controlling remote shutdown,
             idle shutdown, drain timeout, close timeout, and the workflow
             edition this endpoint declares (see :doc:`/editions/index`). An
             edition set here is declared verbatim; options without one take
             ``RLMESH_WORKFLOW_EDITION``, then ``[tool.rlmesh]``.
-            ``RLMESH_ENV_ENDPOINT_TOKEN``, when set, requires that token on
-            every env RPC; an empty or whitespace-only value fails construction.
+            ``RLMESH_ENV_ENDPOINT_TOKEN``, when set, fails construction: 0.2
+            sessions check no endpoint token yet.
         tags: Optional adapter env tags
             (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its
@@ -179,7 +183,7 @@ class EnvServer:
         ...
         ...     def close(self):
         ...         return None
-        >>> server = EnvServer(TinyEnv(), "localhost:5555")  # doctest: +SKIP
+        >>> server = EnvServer(TinyEnv(), "localhost:5555/tiny")  # doctest: +SKIP
         >>> server.serve()  # doctest: +SKIP
 
     ``close_env_on_shutdown`` (default ``True``) calls the env's ``close()`` when
@@ -298,6 +302,11 @@ class EnvServer:
             path=path,
             transport=transport,
         )
+        if normalized_address is None:
+            # In a session of its own, on an OS-assigned local port.
+            normalized_address = ":0/env"
+        refuse_v1_address("EnvServer", normalized_address)
+        refuse_endpoint_token("RLMESH_ENV_ENDPOINT_TOKEN")
         server_cls = load_native("PyVectorEnvServer" if is_vector else "PyEnvServer")
         if options is None or options.workflow_edition is None:
             # A served env declares an edition like any other participant.

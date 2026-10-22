@@ -46,7 +46,7 @@ fn served_env() -> (EnvServer, String) {
     let server = EnvServer::new(
         Steps { step: 0 },
         EnvServerOptions {
-            address: Some("tcp://127.0.0.1:0".into()),
+            address: Some(crate::tests::ENV_ADDRESS.into()),
             options: Some(crate::ServeOptions {
                 drain_timeout: Some(Duration::from_millis(100)),
                 ..Default::default()
@@ -450,7 +450,7 @@ fn served_gripper() -> (EnvServer, String) {
     let server = EnvServer::new(
         Gripper { step: 0 },
         EnvServerOptions {
-            address: Some("tcp://127.0.0.1:0".into()),
+            address: Some(crate::tests::ENV_ADDRESS.into()),
             tags: Some(crate::ext::env_tags_from_json(GRIPPER_TAGS).unwrap()),
             options: Some(crate::ServeOptions {
                 drain_timeout: Some(Duration::from_millis(100)),

@@ -5,13 +5,19 @@ from pathlib import Path
 
 import numpy as np
 import rlmesh.numpy
+from rlmesh._upgrade import v1_endpoints
 
 
 def drive(address: str, episodes: int, *, counter: bool = False) -> None:
     """Assert observations, rewards and episode boundaries over the real wire."""
-    with rlmesh.numpy.RemoteEnv(
-        address, connect_timeout_seconds=10, request_timeout_seconds=10
-    ) as env:
+    # TODO: dial a session address once the C API serves envs on sessions (the
+    # parity step); until then the host is a v1 endpoint, which Python 0.2
+    # reaches only through the v1 escape.
+    with v1_endpoints():
+        env = rlmesh.numpy.RemoteEnv(
+            address, connect_timeout_seconds=10, request_timeout_seconds=10
+        )
+    with env:
         for episode in range(episodes):
             observation, info = env.reset(seed=episode)
             if counter:

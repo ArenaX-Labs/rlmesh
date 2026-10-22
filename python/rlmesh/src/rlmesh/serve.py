@@ -530,14 +530,18 @@ def serve_env(
         option=workflow_edition,
         declared=getattr(env_source, "workflow_edition", None),
     )
-    server = EnvServer(
-        env,
-        address,
-        tags=cast("Any", tags),
-        framework=env_framework,
-        device=_gate_device(device, env_framework),
-        options=options,
-    )
+    from ._upgrade import v1_endpoints
+
+    # The container entrypoint still serves the v1 wire.
+    with v1_endpoints():
+        server = EnvServer(
+            env,
+            address,
+            tags=cast("Any", tags),
+            framework=env_framework,
+            device=_gate_device(device, env_framework),
+            options=options,
+        )
     _mark("env")
     _stamp_startup("env", server.address, env_source, env, options=options)
     server.serve()

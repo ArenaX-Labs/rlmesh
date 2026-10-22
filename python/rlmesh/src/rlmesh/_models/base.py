@@ -504,7 +504,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
         from rlmesh.numpy import Model
 
-        result = Model(lambda observation: 0).run("127.0.0.1:5555", seeds=[0])
+        result = Model(lambda observation: 0).run("127.0.0.1:5555/env", seeds=[0])
         print(result.mean_reward)
     """
 
@@ -1262,8 +1262,9 @@ class ModelBase(Generic[ObsT, ActT]):
         across an episode boundary is discarded.
 
         ``env_or_address`` is a bare address string the loop dials, an object
-        with an ``address`` (:class:`~rlmesh.EnvServer`, ``RemoteEnv`` /
-        ``RemoteVectorEnv``), or a local env object -- served in this process for
+        with an ``address`` (:class:`~rlmesh.EnvServer`; an open ``RemoteEnv``
+        is refused, as it holds its env's lease), or a local env object -- served
+        in this process for
         the duration of the run (tag it via
         :func:`rlmesh.adapters.tag` for a spec'd model). Both the model and a
         caller's env are borrowed: the run releases what it created (the
@@ -1524,11 +1525,21 @@ class ModelBase(Generic[ObsT, ActT]):
         if kind == "address":
             address = cast(str, payload)
         elif kind == "handle":
+            from .._client._remote_base import RemoteClientBase
+            from .._rlmesh import is_v2_address
+            from .._upgrade import removed
+
             handle_address = getattr(payload, "address", None)
             if not isinstance(handle_address, str):
                 raise TypeError(
                     "this env handle exposes env_contract but no dialable "
                     "address; pass the env's address string instead"
+                )
+            if isinstance(payload, RemoteClientBase) and is_v2_address(handle_address):
+                removed(
+                    "run(RemoteEnv(address))",
+                    "an open RemoteEnv holds its env's lease, so close it and "
+                    "pass the address: run(address)",
                 )
             address = handle_address
         elif kind == "factory":
@@ -1597,13 +1608,11 @@ class ModelBase(Generic[ObsT, ActT]):
                 hooks=relay,
             )
         except (RuntimeError, ConnectionError) as error:
-            if "active Join session" in str(error):
+            if "LeaseBusy" in str(error):
                 raise RuntimeError(
-                    "the target env already has an active session: a RemoteEnv / "
-                    "RemoteVectorEnv handle that was driven with reset()/step() "
-                    "holds the env's single session slot. close() the handle (or "
-                    "its open session) before run(), or drive it interactively "
-                    "via session()."
+                    "the target env already has an active session: another "
+                    "driver (an open RemoteEnv / RemoteVectorEnv, or another "
+                    "run) holds the env's lease. close() it before run()."
                 ) from error
             raise
         finally:

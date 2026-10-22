@@ -64,7 +64,15 @@ mod tests {
         let server = rlmesh::EnvServer::new(
             serve_env::CounterEnv::new()?,
             rlmesh::EnvServerOptions {
-                address: Some("tcp://127.0.0.1:0".into()),
+                // The v2 build dials sessions, not v1 endpoints.
+                address: Some(
+                    if cfg!(feature = "lockstep") {
+                        ":0/counter"
+                    } else {
+                        "tcp://127.0.0.1:0"
+                    }
+                    .into(),
+                ),
                 ..Default::default()
             },
         )?;

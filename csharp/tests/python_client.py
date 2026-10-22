@@ -7,8 +7,30 @@ from pathlib import Path
 import grpc
 import rlmesh
 import rlmesh.numpy
+from rlmesh._upgrade import v1_endpoints
 
 address, scenario, *expected_text = sys.argv[1:]
+
+
+# TODO: dial a session address once the C API serves envs on sessions (the
+# parity step); until then a C#-served env is a v1 endpoint, which Python 0.2
+# reaches only through the v1 escape.
+def remote_env() -> rlmesh.numpy.RemoteEnv:
+    with v1_endpoints():
+        return rlmesh.numpy.RemoteEnv(address)
+
+
+def random_episodes(count: int) -> None:
+    """The episodes ``rlmesh.run(rlmesh.RANDOM_SAMPLE, ...)`` ran on v1."""
+    with remote_env() as env:
+        for _ in range(count):
+            env.reset()
+            done = False
+            while not done:
+                _, _, terminated, truncated, _ = env.step(env.action_space.sample())
+                done = terminated or truncated
+
+
 if scenario == "normal":
     # Reuse the repository's raw protobuf probe codec; no generated stubs or
     # dependency on Python's private env-client internals is needed.
@@ -35,12 +57,11 @@ if scenario == "normal":
     # option changes handshake language is not supported by the real ABI.
     assert codec._string(peer, 3), "missing native PeerInfo language"
 
-    result = rlmesh.run(rlmesh.RANDOM_SAMPLE, address, episodes=3)
-    assert result is not None
+    random_episodes(3)
 elif scenario == "dict":
     import numpy as np
 
-    with rlmesh.numpy.RemoteEnv(address) as env:
+    with remote_env() as env:
         observation, info = env.reset()
         assert info["z"] == 9 and info["a"] == 8, info
         step = env.step(0)
@@ -53,10 +74,9 @@ elif scenario == "dict":
             np.testing.assert_array_equal(
                 value["state"], np.array([5, 6], dtype=np.uint8)
             )
-    result = rlmesh.run(rlmesh.RANDOM_SAMPLE, address, episodes=2)
-    assert result is not None
+    random_episodes(2)
 else:
-    with rlmesh.numpy.RemoteEnv(address) as env:
+    with remote_env() as env:
         env.reset()
         try:
             env.step(0)

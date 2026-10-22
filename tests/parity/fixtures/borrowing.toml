@@ -18,6 +18,8 @@ id = "busy_remote_handle"
 family = "Borrowing"
 rules = ["R-17"]
 operation = "busy_remote"
+languages = ["rust", "c", "cpp"]
+why = "In Python 0.2 an open RemoteEnv holds its env's lease, so run() refuses the handle with an upgrade error."
 expect = { error = "RuntimeError", text = "the target env already has an active session: a RemoteEnv / RemoteVectorEnv handle that was driven with reset()/step() holds the env's single session slot. close() the handle (or its open session) before run(), or drive it interactively via session().", reusable = true }
 
 [[scenario]]
@@ -55,4 +57,6 @@ id = "second_session_busy_env"
 family = "Borrowing"
 rules = ["R-17"]
 operation = "busy_session"
+languages = ["rust", "c", "cpp"]
+why = "Python 0.2 holds an env by lease: the session host refuses a second driver, not the v1 Join stream."
 expect = { error = "ConnectionError", text = "FailedPrecondition: environment already has an active Join session; only one client may be connected at a time", reusable = true }

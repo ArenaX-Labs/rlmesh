@@ -38,4 +38,4 @@ class _Spaceless:
 def test_an_env_without_spaces_is_a_type_error():
     """ENV-P4: missing spaces are TypeError, checked before tags."""
     with pytest.raises(TypeError, match="env must have 'observation_space'"):
-        rlmesh.EnvServer(cast("Any", _Spaceless()), "127.0.0.1:0")
+        rlmesh.EnvServer(cast("Any", _Spaceless()), ":0/env")

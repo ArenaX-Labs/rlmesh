@@ -129,12 +129,13 @@ fn local() -> &'static Mutex<HashMap<String, Weak<dyn LockstepHandler>>> {
     LOCAL.get_or_init(Mutex::default)
 }
 
-fn local_handler(key: &str) -> Option<Arc<dyn LockstepHandler>> {
+fn local_handler(key: &str) -> Option<Weak<dyn LockstepHandler>> {
     local()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(key)
-        .and_then(Weak::upgrade)
+        .filter(|handler| handler.strong_count() > 0)
+        .cloned()
 }
 
 /// A fresh session on this process's shared in-process host, for a run's

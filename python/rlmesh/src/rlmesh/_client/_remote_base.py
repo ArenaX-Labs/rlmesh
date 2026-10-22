@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar, Generic, Literal, TypeVar, cast
 
 from .._editions import resolve_workflow_edition
+from .._upgrade import refuse_v1_address
 from .._value_conversion import ValueBridge
 from ..spaces import Space, space_from_spec
 from ..specs import EnvContract, SpaceSpec
@@ -101,6 +102,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
             path=path,
             transport=transport,
         )
+        refuse_v1_address(type(self).__name__, normalized_address)
         # Dials, handshakes and checks the arity; a dial failure already
         # reads "could not connect to an env at ...".
         # Only the credentials given travel, as keywords.

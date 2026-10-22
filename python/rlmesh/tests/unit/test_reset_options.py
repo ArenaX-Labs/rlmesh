@@ -217,9 +217,7 @@ def test_served_env_without_an_options_parameter_still_resets() -> None:
     from rlmesh.numpy import RemoteEnv
 
     try:
-        server = rlmesh.EnvServer(
-            cast("Any", _NoOptionsEnv()), host="127.0.0.1", port=0
-        )
+        server = rlmesh.EnvServer(cast("Any", _NoOptionsEnv()), ":0/env")
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -243,7 +241,7 @@ def test_native_run_delivers_the_ordinal_over_the_wire() -> None:
 
     env = _TrialFactory().make()
     try:
-        server = rlmesh.EnvServer(env, host="127.0.0.1", port=0)
+        server = rlmesh.EnvServer(env, ":0/env")
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")

@@ -58,8 +58,9 @@ def _assert_ok(result: subprocess.CompletedProcess[str]) -> None:
 
 
 def _serve_example(relative: str) -> Iterator[str]:
-    """Start a server example on a free port and yield its address."""
-    address = f"127.0.0.1:{_free_port()}"
+    """Start a server example hosting its session on a free port and yield
+    the env's address."""
+    address = f"127.0.0.1:{_free_port()}/env"
     process = subprocess.Popen(
         [sys.executable, str(EXAMPLES / relative), "--address", address],
         stdout=subprocess.PIPE,
@@ -79,7 +80,7 @@ def _serve_example(relative: str) -> Iterator[str]:
 
 
 def _wait_until_listening(address: str, process: subprocess.Popen[str]) -> None:
-    host, port = address.rsplit(":", 1)
+    host, port = address.split("/", 1)[0].rsplit(":", 1)
     deadline = time.monotonic() + SERVER_STARTUP_TIMEOUT
     while time.monotonic() < deadline:
         if process.poll() is not None:

@@ -27,6 +27,7 @@ struct SmokeEnv {
 
 impl SmokeEnv {
     /// A smoke env that records the reset seed it was asked to use into `sink`.
+    #[cfg(not(feature = "lockstep"))]
     fn recording(sink: Arc<Mutex<Vec<Option<i64>>>>) -> Self {
         Self {
             reset_seeds: Some(sink),
@@ -166,6 +167,8 @@ async fn shutdown_and_join(server: tokio::task::JoinHandle<Result<()>>) {
         .unwrap();
 }
 
+// The v1 run path, which the v2 build no longer dials.
+#[cfg(not(feature = "lockstep"))]
 #[tokio::test]
 async fn user_set_base_seed_reaches_the_env_reset_seeds() {
     async fn run_with_base_seed(base_seed: Option<i64>) -> Vec<Option<i64>> {
@@ -251,6 +254,8 @@ fn episode_budget_resolves_like_python() {
 }
 
 /// A run with no explicit budget runs one episode, not "until the env ends".
+// The v1 run path, which the v2 build no longer dials.
+#[cfg(not(feature = "lockstep"))]
 #[tokio::test]
 async fn run_local_defaults_to_one_episode() {
     let bound = crate::binding::env::WireEnvServer::new(SmokeEnv::new())
@@ -277,6 +282,8 @@ async fn run_local_defaults_to_one_episode() {
 
 /// A run borrows the model: `on_close` fires only when the caller asks with
 /// `close_model(true)`.
+// The v1 run path, which the v2 build no longer dials.
+#[cfg(not(feature = "lockstep"))]
 #[tokio::test]
 async fn run_local_borrows_the_model_unless_asked_to_close_it() {
     let bound = crate::binding::env::WireEnvServer::new(SmokeEnv::new())
@@ -1176,6 +1183,7 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
 /// the env delivers a fresh (non-terminal, reward-0) observation. The env never
 /// mints ids — the runtime pushes them down and the env server's tracker adopts
 /// them; this env only drives the masks the tracker keys on.
+#[cfg(not(feature = "lockstep"))]
 struct AutoresetVectorEnv {
     obs_space: spaces::SpaceSpec,
     action_space: spaces::SpaceSpec,
@@ -1185,6 +1193,7 @@ struct AutoresetVectorEnv {
     pending: Vec<bool>,
 }
 
+#[cfg(not(feature = "lockstep"))]
 impl AutoresetVectorEnv {
     fn new(terminal_after: Vec<usize>) -> Self {
         let n = terminal_after.len();
@@ -1220,6 +1229,7 @@ impl AutoresetVectorEnv {
 }
 
 #[async_trait]
+#[cfg(not(feature = "lockstep"))]
 impl crate::binding::env::VectorEnv for AutoresetVectorEnv {
     fn observation_space(&self) -> &spaces::SpaceSpec {
         &self.obs_space
@@ -1297,12 +1307,14 @@ impl crate::binding::env::VectorEnv for AutoresetVectorEnv {
 
 /// Records the per-row episode ids it sees in predict and the ids it is asked to
 /// evict via the explicit ResetAdapter op.
+#[cfg(not(feature = "lockstep"))]
 #[derive(Clone, Default)]
 struct IdRecordingHandler {
     predict_ids: Arc<Mutex<Vec<Vec<String>>>>,
     evicted_ids: Arc<Mutex<Vec<String>>>,
 }
 
+#[cfg(not(feature = "lockstep"))]
 #[async_trait]
 impl ModelHandler for IdRecordingHandler {
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
@@ -1321,6 +1333,8 @@ impl ModelHandler for IdRecordingHandler {
     }
 }
 
+// The v1 run path, which the v2 build no longer dials.
+#[cfg(not(feature = "lockstep"))]
 #[tokio::test]
 async fn run_local_refuses_chunking_on_a_vector_env() {
     // Chunk replay is whole-batch: one lane ending mid-chunk discards every
@@ -1355,6 +1369,8 @@ async fn run_local_refuses_chunking_on_a_vector_env() {
     );
 }
 
+// The v1 run path, which the v2 build no longer dials.
+#[cfg(not(feature = "lockstep"))]
 #[tokio::test]
 async fn next_step_episode_ids_round_trip_through_the_real_env_server() {
     // End-to-end across the REAL gRPC stack (runtime driver -> EnvClient -> env
@@ -2722,6 +2738,8 @@ async fn model_endpoint_environment_token_is_enforced() {
 
 /// `RunLocalOptions::token` is the only way an in-process run can reach a
 /// token-protected env server, so the env client must be built with it.
+// The v1 run path, which the v2 build no longer dials.
+#[cfg(not(feature = "lockstep"))]
 #[tokio::test]
 async fn run_local_options_token_reaches_a_token_protected_env() {
     let bound = crate::binding::env::WireEnvServer::new(SmokeEnv::new())

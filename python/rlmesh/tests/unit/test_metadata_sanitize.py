@@ -141,7 +141,7 @@ def _connect_with_retry(factory: Callable[[str], RemoteT], address: str) -> Remo
 
 def test_sanitized_info_survives_a_served_reset() -> None:
     try:
-        server = rlmesh.EnvServer(_RichInfoEnv(), host="127.0.0.1", port=0)
+        server = rlmesh.EnvServer(_RichInfoEnv(), ":0/env")
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -193,7 +193,7 @@ class _TensorInfoEnv(_RichInfoEnv):
 
 def test_the_metadata_codec_encodes_a_tensor_as_lists() -> None:
     try:
-        server = rlmesh.EnvServer(_TensorInfoEnv(), host="127.0.0.1", port=0)
+        server = rlmesh.EnvServer(_TensorInfoEnv(), ":0/env")
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
+from .._upgrade import v1_endpoints
 from ._sources import (
     docker_image_exists,
     docker_pull,
@@ -229,9 +230,11 @@ class SandboxLifecycle:
         try:
             while True:
                 try:
-                    self._initialize(
-                        sandbox.address, connect_timeout_seconds=attempt_timeout
-                    )
+                    # The container still serves the v1 wire.
+                    with v1_endpoints():
+                        self._initialize(
+                            sandbox.address, connect_timeout_seconds=attempt_timeout
+                        )
                     return
                 except _TRANSIENT_DIAL_ERRORS as exc:
                     short_id = sandbox.container_id[:12]
