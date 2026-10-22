@@ -191,7 +191,8 @@ class _TensorInfoEnv(_RichInfoEnv):
         return 0, {"grid": _int32_tensor([1, 2, 3, 4], [2, 2])}
 
 
-def test_the_metadata_codec_encodes_a_tensor_as_lists() -> None:
+def test_the_metadata_codec_carries_a_tensor_as_an_array() -> None:
+    np = pytest.importorskip("numpy")
     try:
         server = rlmesh.EnvServer(_TensorInfoEnv(), ":0/env")
     except ConnectionError as exc:
@@ -203,7 +204,9 @@ def test_the_metadata_codec_encodes_a_tensor_as_lists() -> None:
         remote = _connect_with_retry(rlmesh.RemoteEnv, server.address)
         try:
             _obs, info = remote.reset(seed=1)
-            assert info["grid"] == [[1, 2], [3, 4]]
+            # As a NumPy array travels (COR-P10).
+            assert np.asarray(info["grid"]).dtype == np.int32
+            assert np.asarray(info["grid"]).tolist() == [[1, 2], [3, 4]]
         finally:
             remote.close()
     finally:

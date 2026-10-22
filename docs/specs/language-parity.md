@@ -30,9 +30,9 @@ follows it in the shared Rust core, so C, C++, C#, Unity and Unreal do too:
   model dial session addresses; a run refuses a v1 endpoint and an open
   remote env handle with Python's errors. An env's builtin exception class
   (`ValueError`) arrives as a Python env's does.
-- Open: native metadata (info, reset options) still carries an array as its
-  nested lists (COR-P10), where Python 0.2 keeps a NumPy array an array; the
-  gate holds that row as a strict xfail until it is decided.
+- Arrays in metadata (info, reset options) travel as arrays in every
+  language: a NumPy array, an `rlmesh.Tensor` and a native `Tensor` alike
+  (COR-P10, COR-26).
 - Still v1 in the native languages, until v1 is deleted: a `tcp://` or
   `unix://` bind or dial, and the options only that wire has (remote
   shutdown, idle and drain timeouts, endpoint tokens, TLS and API keys).

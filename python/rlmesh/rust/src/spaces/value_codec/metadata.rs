@@ -82,14 +82,14 @@ fn py_any_to_meta_value(value: &Bound<'_, PyAny>, path: &str) -> PyResult<MetaVa
     if normalized.is_none() {
         return Ok(MetaValue::Null);
     }
-    // An `rlmesh.Tensor` is the nested list of its elements: the shared
-    // `Value` encoding (COR-26, COR-P10).
+    // An `rlmesh.Tensor` travels as an array, as a NumPy array does (COR-26,
+    // COR-P10).
     if let Some(tensor) = extract_tensor(&normalized)? {
         let tensor = rlmesh::binding::tensor_from_core(tensor.inner.clone())
             .map_err(crate::types::to_py_err)?;
-        return rlmesh::binding::meta_value_to_wire(&rlmesh::Value::Tensor(tensor))
-            // The one refusal is an element past int64.
-            .map_err(|err| PyValueError::new_err(format!("metadata value at {path}: {err}")));
+        return Ok(MetaValue::Tensor(
+            rlmesh::binding::tensor_core(&tensor).clone(),
+        ));
     }
     // `bytes` must be matched before the sequence and integer paths: it is
     // neither a list nor a scalar, and carries raw binary exactly.

@@ -180,11 +180,6 @@ def test_render_returns_the_envs_frame() -> None:
         assert difference(reference.render(), remote.render()) is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="COR-P10: native metadata carries an array as its nested lists, where "
-    "Python 0.2 keeps a NumPy array an array (owner decision)",
-)
 def test_reset_options_reach_the_env_as_given() -> None:
     with native_env("reset_options") as remote:
         _, info = remote.reset(seed=0, options=RESET_OPTIONS)

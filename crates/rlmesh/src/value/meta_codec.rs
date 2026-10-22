@@ -1,15 +1,15 @@
 //! [`Metadata`] on the wire.
 //!
-//! `None` → Null; `Bool`, `Int`, `Float`, `Bytes` and `List` keep their
-//! kind; `Text` → String; `Dict` → Map; `Tuple` → List; a `Tensor` → its
-//! elements as nested Lists by shape in C order (a 0-d tensor as its bare
-//! element), preserving element order. Decoding yields only the wire kinds,
-//! with maps in the wire's sorted key order.
+//! `None` → Null; `Bool`, `Int`, `Float`, `Bytes`, `List` and `Tensor` keep
+//! their kind (an array travels as an array, as a NumPy array does); `Text`
+//! → String; `Dict` → Map; `Tuple` → List. Decoding yields only the wire
+//! kinds, with maps in the wire's sorted key order and an object array as
+//! its nested lists.
 
-use rlmesh_spaces::{DType as CoreDType, MetaMap, MetaValue, Scalar, decode_scalars};
+use rlmesh_spaces::{MetaMap, MetaValue};
 
 use super::{Metadata, Value};
-use crate::{Error, Result, Tensor};
+use crate::{Result, Tensor};
 
 /// Encode a map for the wire.
 pub(crate) fn metadata_to_wire(map: &Metadata) -> Result<MetaMap> {
@@ -31,7 +31,7 @@ pub(crate) fn value_to_wire(value: &Value) -> Result<MetaValue> {
             MetaValue::List(items.iter().map(value_to_wire).collect::<Result<_>>()?)
         }
         Value::Dict(map) => MetaValue::Map(metadata_to_wire(map)?),
-        Value::Tensor(tensor) => tensor_to_wire(tensor)?,
+        Value::Tensor(tensor) => MetaValue::Tensor(tensor.core().clone()),
     })
 }
 
@@ -53,66 +53,10 @@ pub(crate) fn value_from_wire(value: MetaValue) -> Value {
         MetaValue::Bytes(bytes) => Value::Bytes(bytes),
         MetaValue::List(items) => Value::List(items.into_iter().map(value_from_wire).collect()),
         MetaValue::Map(map) => Value::Dict(metadata_from_wire(map)),
-        // The facade's metadata carries arrays as their nested lists.
-        array @ (MetaValue::Tensor(_) | MetaValue::Array { .. }) => {
-            value_from_wire(array.lowered())
-        }
+        MetaValue::Tensor(tensor) => Value::Tensor(Tensor::wrap(tensor)),
+        // The facade has no object array: its nested lists.
+        array @ MetaValue::Array { .. } => value_from_wire(array.lowered()),
     }
-}
-
-fn tensor_to_wire(tensor: &Tensor) -> Result<MetaValue> {
-    let core = tensor.core();
-    let dtype = core.dtype();
-    let bytes = core.to_contiguous_bytes();
-    let elements: Vec<MetaValue> = if dtype == CoreDType::Uint64 {
-        bytes
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|raw| {
-                let number = u64::from_le_bytes(*raw);
-                i64::try_from(number).map(MetaValue::Int).map_err(|_| {
-                    Error::invalid_argument(format!(
-                        "metadata integer {number} does not fit int64; RLMesh metadata \
-                         integers must be in [-2**63, 2**63) -- store a larger value as a \
-                         string instead"
-                    ))
-                })
-            })
-            .collect::<Result<_>>()?
-    } else {
-        decode_scalars(&bytes, dtype)
-            .map_err(|err| Error::invalid_argument(err.to_string()))?
-            .into_iter()
-            .map(|scalar| match scalar {
-                Scalar::Bool(flag) => MetaValue::Bool(flag),
-                Scalar::Int(number) => MetaValue::Int(number),
-                Scalar::Float(number) => MetaValue::Float(number),
-            })
-            .collect()
-    };
-    let shape = tensor.shape();
-    if shape.is_empty() {
-        return Ok(elements.into_iter().next().unwrap_or(MetaValue::Null));
-    }
-    let mut elements = elements.into_iter();
-    Ok(nest(&mut elements, shape))
-}
-
-/// The next `shape[0]` items, each nested by the rest of `shape`.
-fn nest(elements: &mut impl Iterator<Item = MetaValue>, shape: &[usize]) -> MetaValue {
-    let (&len, rest) = shape.split_first().unwrap_or((&0, &[]));
-    MetaValue::List(
-        (0..len)
-            .map(|_| {
-                if rest.is_empty() {
-                    elements.next().unwrap_or(MetaValue::Null)
-                } else {
-                    nest(elements, rest)
-                }
-            })
-            .collect(),
-    )
 }
 
 #[cfg(test)]
@@ -151,18 +95,13 @@ mod tests {
             wire["t"],
             MetaValue::List(vec![MetaValue::Int(1), MetaValue::String("a".into())])
         );
-        let row = |a, b, c| {
-            MetaValue::List(vec![
-                MetaValue::Int(a),
-                MetaValue::Int(b),
-                MetaValue::Int(c),
-            ])
-        };
+        // Arrays travel as arrays, 0-d ones too.
+        let grid = i32_tensor(&[1, 2, 3, 4, 5, 6], &[2, 3]);
+        assert_eq!(wire["grid"], MetaValue::Tensor(grid.core().clone()));
         assert_eq!(
-            wire["grid"],
-            MetaValue::List(vec![row(1, 2, 3), row(4, 5, 6)])
+            wire["scalar"],
+            MetaValue::Tensor(i32_tensor(&[7], &[]).core().clone())
         );
-        assert_eq!(wire["scalar"], MetaValue::Int(7));
         // Decoding yields the wire kinds, in sorted key order.
         let back = metadata_from_wire(wire);
         assert_eq!(back.keys().collect::<Vec<_>>()[0], "b");
@@ -171,29 +110,6 @@ mod tests {
             &Value::List(vec![Value::Int(1), Value::from("a")])
         );
         assert_eq!(back.get("flag").unwrap(), &Value::Bool(true));
-    }
-
-    #[test]
-    fn a_uint64_above_int64_is_a_value_error() {
-        let bytes = u64::MAX.to_le_bytes();
-        let big = Tensor::new(&bytes, &[1], DType::Uint64).unwrap();
-        let err = value_to_wire(&Value::Tensor(big)).unwrap_err();
-        assert_eq!(err.class(), crate::ErrorClass::ValueError);
-        assert!(err.to_string().contains("does not fit int64"), "{err}");
-    }
-
-    #[test]
-    fn bool_and_float_elements_keep_their_kind() {
-        let flags = Tensor::new(&[1, 0], &[2], DType::Bool).unwrap();
-        assert_eq!(
-            value_to_wire(&Value::Tensor(flags)).unwrap(),
-            MetaValue::List(vec![MetaValue::Bool(true), MetaValue::Bool(false)])
-        );
-        let bytes: Vec<u8> = [0.5f32, 1.5].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let floats = Tensor::new(&bytes, &[2], DType::Float32).unwrap();
-        assert_eq!(
-            value_to_wire(&Value::Tensor(floats)).unwrap(),
-            MetaValue::List(vec![MetaValue::Float(0.5), MetaValue::Float(1.5)])
-        );
+        assert_eq!(back.get("grid").unwrap(), &Value::Tensor(grid));
     }
 }
