@@ -29,8 +29,8 @@ use rlmesh_proto::spaces::v1::MetaMap;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::model::handler::{ModelHandler, PredictFrames};
-use crate::model::types::{HistoryFrame, ModelObservation};
+use crate::model::handler::{ModelHandler, ModelResetOptions, PredictFrames};
+use crate::model::types::{EpisodeInfo, HistoryFrame, ModelObservation};
 use crate::run::runtime::hooks::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
     ObservationEmittedEvent, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
@@ -254,6 +254,8 @@ pub struct RuntimeDriver<E, M> {
     /// A lane's episode ended mid-chunk on the whole-vector group, discarding
     /// every lane's buffered frames; warned once per session.
     vector_replay_warned: bool,
+    /// The options the model adds to the resets that start its episodes.
+    reset_options: Option<Arc<dyn ModelResetOptions>>,
 }
 
 /// Where a group is in its env lifecycle.
@@ -393,6 +395,7 @@ where
         Self {
             spec,
             env,
+            reset_options: model.reset_options(),
             model: Arc::new(tokio::sync::Mutex::new(model)),
             contract: Arc::new(contract),
             prefetch_lead: 0,
@@ -862,6 +865,19 @@ where
             state.mark_surplus(surplus);
         }
         state.note_episode_seeds(&episode_ids, &seeds);
+        // Who the model's reset options are for (none asked without a source).
+        let starts: Vec<EpisodeInfo> = match self.reset_options {
+            Some(_) => episode_ids
+                .iter()
+                .enumerate()
+                .map(|(lane, episode_id)| EpisodeInfo {
+                    episode_id: episode_id.clone(),
+                    seed: seeds.get(lane).copied(),
+                    env_id: state.env_id().to_string(),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         let trials = self.planned_trial_indices(state, width);
         state.note_episode_trials(&episode_ids, &trials);
         let group = &mut groups[gid];
@@ -871,7 +887,8 @@ where
         // evicted, and the new episodes start from their reset observation.
         group.history.clear();
         group.pending_roll.clear();
-        let request = EnvResetRequest {
+        let reset_options = self.reset_options.clone();
+        let mut request = EnvResetRequest {
             seeds,
             options: self.trial_options(&trials),
             env_indices: if group.whole {
@@ -896,9 +913,15 @@ where
         group.phase = EnvPhase::Resetting;
         env_ops.spawn(async move {
             let started = Instant::now();
-            let result = match tokio::time::timeout(timeout, env.reset(request)).await {
-                Ok(result) => result,
-                Err(_) => Err(timeout_error),
+            let result = match model_reset_options(reset_options, &starts, &trials).await {
+                Ok(options) => {
+                    request.options = merge_options(options, request.options.take());
+                    match tokio::time::timeout(timeout, env.reset(request)).await {
+                        Ok(result) => result,
+                        Err(_) => Err(timeout_error),
+                    }
+                }
+                Err(err) => Err(err),
             };
             EnvOutcome::Reset {
                 group: gid,
@@ -2071,6 +2094,53 @@ fn observation_bytes(observation: &ModelObservation) -> u64 {
 }
 
 /// A model error as the driver's, keeping its recoverable flag.
+/// The options the model adds for the lanes `starts` a reset starts as
+/// `trials`: one lane's map, or for several lanes each key as a per-lane list
+/// (`None` where a lane did not set it).
+async fn model_reset_options(
+    source: Option<Arc<dyn ModelResetOptions>>,
+    starts: &[EpisodeInfo],
+    trials: &[u64],
+) -> Result<Option<rlmesh_spaces::MetaMap>, RuntimeError> {
+    use rlmesh_spaces::MetaValue;
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    let mut lanes = Vec::with_capacity(starts.len());
+    for (lane, episode) in starts.iter().enumerate() {
+        let options = source
+            .reset_options(episode, trials.get(lane).copied())
+            .await
+            .map_err(model_error)?;
+        lanes.push(options.unwrap_or_default());
+    }
+    if let [only] = lanes.as_mut_slice() {
+        return Ok(Some(std::mem::take(only)));
+    }
+    let keys: std::collections::BTreeSet<&String> = lanes.iter().flat_map(|l| l.keys()).collect();
+    Ok(Some(
+        keys.into_iter()
+            .map(|key| {
+                let values = lanes
+                    .iter()
+                    .map(|lane| lane.get(key).cloned().unwrap_or(MetaValue::Null))
+                    .collect();
+                (key.clone(), MetaValue::List(values))
+            })
+            .collect(),
+    ))
+}
+
+/// The model's reset options under the runtime's own reserved ones.
+fn merge_options(
+    model: Option<rlmesh_spaces::MetaMap>,
+    reserved: Option<rlmesh_spaces::MetaMap>,
+) -> Option<rlmesh_spaces::MetaMap> {
+    let mut options = model.unwrap_or_default();
+    options.extend(reserved.unwrap_or_default());
+    (!options.is_empty()).then_some(options)
+}
+
 fn model_error(error: crate::Error) -> RuntimeError {
     RuntimeError::model_rpc_with_recoverability("model", error.is_transient(), error)
 }

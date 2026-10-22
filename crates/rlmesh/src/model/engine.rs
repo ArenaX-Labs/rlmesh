@@ -51,8 +51,8 @@ use rlmesh_adapters::v1::{
 };
 
 use super::handler::{
-    HeldState, HistoryNeeds, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions,
-    RouteNeeds,
+    HeldState, HistoryNeeds, ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames,
+    ResolveOptions, RouteNeeds,
 };
 use super::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 use super::types::{EpisodeInfo, ModelObservation};
@@ -1159,6 +1159,22 @@ fn predict_grouped_fused(
         .collect()
 }
 
+/// A model's reset options, asked of its predict hole on a blocking thread.
+struct PredictResetOptions(Arc<dyn PredictFn>);
+
+#[async_trait]
+impl ModelResetOptions for PredictResetOptions {
+    async fn reset_options(
+        &self,
+        episode: &EpisodeInfo,
+        trial_index: Option<u64>,
+    ) -> Result<Option<rlmesh_spaces::MetaMap>> {
+        let predict = Arc::clone(&self.0);
+        let episode = episode.clone();
+        crate::warnings::blocking(move || predict.reset_options(&episode, trial_index)).await?
+    }
+}
+
 #[async_trait]
 impl ModelHandler for AdaptedModelHandler {
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<SpaceValue>> {
@@ -1237,6 +1253,12 @@ impl ModelHandler for AdaptedModelHandler {
 
     fn take_adapter_ns(&mut self) -> u64 {
         self.adapter_ns.swap(0, Ordering::Relaxed)
+    }
+
+    fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
+        self.predict
+            .has_reset_options()
+            .then(|| Arc::new(PredictResetOptions(Arc::clone(&self.predict))) as _)
     }
 
     fn held_state(&self) -> Option<HeldState> {

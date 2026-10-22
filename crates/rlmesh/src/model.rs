@@ -29,8 +29,8 @@ pub use types::predict_seed;
 pub(crate) use engine::AdaptedModelHandler;
 #[allow(unused_imports)]
 pub(crate) use handler::{
-    HeldState, HistoryNeeds, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions,
-    RouteNeeds,
+    HeldState, HistoryNeeds, ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames,
+    ResolveOptions, RouteNeeds,
 };
 #[allow(unused_imports)]
 pub(crate) use predict_fn::{PredictFn, RouteConfig, RouteResolver};

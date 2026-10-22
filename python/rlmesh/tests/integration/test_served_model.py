@@ -197,3 +197,105 @@ def test_old_model_shapes_say_what_replaced_them() -> None:
         rlmesh.RemoteModel("127.0.0.1:5555")
     with pytest.raises(ValueError, match="pass name="):
         rlmesh.Model(lambda obs: 0).serve("lab:7447/bench")
+
+
+def _perturbed_run(inner: Any) -> list[Any]:
+    """Run a Perturb wrapper around ``inner`` for one episode on a Box env;
+    return the actions the env received."""
+    import gymnasium as gym
+    import numpy as np
+    import rlmesh
+
+    class BoxEnv:
+        observation_space = gym.spaces.Box(-10.0, 10.0, (2,), np.float32)
+        action_space = gym.spaces.Box(-10.0, 10.0, (2,), np.float32)
+
+        def __init__(self) -> None:
+            self.n = 0
+            self.actions: list[Any] = []
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+            _ = seed, options
+            self.n = 0
+            return np.zeros(2, np.float32), {}
+
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            self.n += 1
+            self.actions.append(np.asarray(action).tolist())
+            return np.full(2, self.n, np.float32), 1.0, self.n >= 3, False, {}
+
+        def close(self) -> None:
+            return None
+
+    class Perturb(rlmesh.numpy.Model):
+        def __init__(self, inner: Any) -> None:
+            self.inner = inner
+
+        def predict(self, observation: Any) -> Any:
+            return self.inner.predict(observation + 0.5)
+
+    env = BoxEnv()
+    result = Perturb(inner).run(env, episodes=1)
+    assert result.episodes[0].steps == 3
+    return env.actions
+
+
+def test_a_wrapper_predicts_through_a_served_inner_model(session_port: int) -> None:
+    import numpy as np
+    import rlmesh
+
+    seen: list[list[float]] = []
+
+    class Policy(rlmesh.numpy.Model):
+        def predict(self, observation: Any) -> Any:
+            seen.append(observation.tolist())
+            return np.asarray(observation * 2, np.float32)
+
+    with _served(Policy(), session_port) as address:
+        inner = rlmesh.numpy.Model(address)
+        actions = _perturbed_run(inner)
+        # Outside a run of the model that holds it, a served model refuses.
+        with pytest.raises(TypeError, match="served elsewhere"):
+            inner.predict(np.zeros(2, np.float32))
+    # The inner model saw the perturbed observations, per step of the episode.
+    assert seen == [[0.5, 0.5], [1.5, 1.5], [2.5, 2.5]]
+    assert actions == [[1.0, 1.0], [3.0, 3.0], [5.0, 5.0]]
+
+
+def test_a_wrapper_predicts_through_a_local_inner_model() -> None:
+    import numpy as np
+    import rlmesh
+
+    inner = rlmesh.numpy.Model(lambda observation: np.asarray(-observation, np.float32))
+    actions = _perturbed_run(inner)
+    assert actions == [[-0.5, -0.5], [-1.5, -1.5], [-2.5, -2.5]]
+
+
+def test_reset_options_reach_each_episode_reset() -> None:
+    import rlmesh
+
+    received: list[Any] = []
+
+    class OptionsEnv(ThreeStepEnv):
+        def reset(
+            self, *, seed: int | None = None, options: dict[str, object] | None = None
+        ) -> tuple[int, dict[str, object]]:
+            received.append(options)
+            return super().reset(seed=seed, options=options)
+
+    asked: list[dict[str, Any]] = []
+
+    class Perturb(rlmesh.Model):
+        def predict(self, observation: Any) -> Any:
+            return 0
+
+        def reset_options(self, episode: Any) -> dict[str, Any]:
+            asked.append(dict(episode))
+            return {"friction": 0.1 * len(asked)}
+
+    result = Perturb().run(OptionsEnv(), seeds=[3, 4])
+    assert result.num_episodes == 2
+    assert [o and round(float(o["friction"]), 3) for o in received] == [0.1, 0.2]
+    assert [a["seed"] for a in asked] == [3, 4]
+    assert [a["trial_index"] for a in asked] == [0, 1]
+    assert all(a["episode_id"] for a in asked)

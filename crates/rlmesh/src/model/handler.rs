@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::types::ModelObservation;
+use super::types::{EpisodeInfo, ModelObservation};
 use crate::{Result, binding::spaces};
 
 /// Resolves per-env adapter state (e.g. an env→model adapter) when an adapter is
@@ -260,6 +260,27 @@ pub trait ModelHandler: Send {
     async fn on_close(&mut self) -> Result<()> {
         Ok(())
     }
+
+    /// The options this model adds to the env resets that start its
+    /// episodes, obtained once when a run begins and called off the predict
+    /// lock (see [`ModelResetOptions`]). Defaults to `None`: it adds none.
+    fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
+        None
+    }
+}
+
+/// The options a model adds to the env reset that starts one of its
+/// episodes, merged under the runtime's own reserved keys. A NEXT_STEP
+/// autoreset restarts lanes inside the env, with no reset to carry them.
+#[async_trait]
+pub trait ModelResetOptions: Send + Sync {
+    /// The options for `episode`, which a reset is about to start as trial
+    /// `trial_index`; `None` adds none.
+    async fn reset_options(
+        &self,
+        episode: &EpisodeInfo,
+        trial_index: Option<u64>,
+    ) -> Result<Option<rlmesh_spaces::MetaMap>>;
 }
 
 /// Forwards every call to the handler behind the pointer.
@@ -300,6 +321,10 @@ impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
 
     async fn on_close(&mut self) -> Result<()> {
         (**self).on_close().await
+    }
+
+    fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
+        (**self).reset_options()
     }
 }
     )*};

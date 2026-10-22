@@ -905,13 +905,43 @@ class ModelBase(Generic[ObsT, ActT]):
     def predict(self, observation: ObsT) -> ActT:
         """Map one observation to an action (or an action chunk per ``spec``).
 
-        Override when subclassing ``Model``; the default raises. A model built by
-        wrapping a predict callable uses that callable instead of this method.
+        Override when subclassing ``Model``. A model built by wrapping a predict
+        callable, or a served one (``Model("host:port/name")``), predicts here
+        only as another model's part: held as an attribute of a model a run,
+        bind or serve drives (``self.inner = inner``), ``self.inner.predict(obs)``
+        in that model's ``predict`` answers the episode it is answering. Its
+        observation is in the env's format, so the calling model is spec-less.
         """
-        raise NotImplementedError(
-            "Model subclasses must override predict(), or construct a Model by "
-            "wrapping a predict callable, e.g. Model(lambda obs: ...)."
-        )
+        from .._load_native import load_native
+
+        try:
+            action = load_native("nested_predict")(
+                id(self), self._bridge.encode(observation)
+            )
+        except LookupError:
+            if self._served_address is not None:
+                raise TypeError(
+                    f"Model({self._served_address!r}) is served elsewhere and "
+                    "predicts per env: run it, bind it to a target, serve it, or "
+                    "call it from the predict of a model that holds it"
+                ) from None
+            raise NotImplementedError(
+                "Model subclasses must override predict(), or construct a Model by "
+                "wrapping a predict callable, e.g. Model(lambda obs: ...)."
+            ) from None
+        return cast(ActT, self._bridge.decode(action))
+
+    def reset_options(self, episode: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """Optional: options to add to the env reset that starts ``episode``.
+
+        ``episode`` holds the ``episode_id``, its ``seed`` and its
+        ``trial_index``. A run asks before each reset it sends, and the env's
+        ``reset(options=...)`` receives them (the runtime's own reserved keys
+        win a clash). A reset of several lanes gets each key as a per-lane
+        list. An env that autoresets (``NEXT_STEP``) restarts its lanes itself,
+        with no reset to carry them. The default adds none.
+        """
+        return None
 
     def predict_chunk(self, observation: ObsT) -> ActT:
         """Optional: map one observation to a CHUNK of actions (leading axis = chunk).
@@ -978,6 +1008,17 @@ class ModelBase(Generic[ObsT, ActT]):
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
+        authored_init = cls.__dict__.get("__init__")
+        if callable(authored_init):
+            # A model that only sets its parts (``self.inner = inner``) need
+            # not call super().__init__(): the base builds the model after it.
+            @functools.wraps(authored_init)
+            def init(self: ModelBase[Any, Any], *args: Any, **kwargs: Any) -> None:
+                authored_init(self, *args, **kwargs)
+                if "_calls" not in self.__dict__:
+                    super(cls, self).__init__()
+
+            cls.__init__ = init  # type: ignore[method-assign]
         authored_close = cls.__dict__.get("close")
         if callable(authored_close):
             # An authored close() is the model's close hook: it runs at most once,
@@ -1213,8 +1254,15 @@ class ModelBase(Generic[ObsT, ActT]):
 
         # The serve's close is this model's own (`serve` calls close() when the
         # server stops), so the worker carries no close hook.
+        # Asked per reset only when the model defines its own.
+        defines = next(c for c in type(self).__mro__ if "reset_options" in c.__dict__)
+        reset_options = cast(
+            "Callable[[Mapping[str, Any]], object] | None",
+            self._calls.gated(self.reset_options) if defines is not ModelBase else None,
+        )
         worker: PyModel = load_native("PyModel")(
             predict_fn=predict_neutral,
+            reset_options_fn=reset_options,
             configure_fn=configure,
             on_episode_end=self._on_episode_end,
             on_close=None,
@@ -1225,6 +1273,16 @@ class ModelBase(Generic[ObsT, ActT]):
             native_chunk=self._native_chunk(),
             on_route_drop=self._drop_env_entries,
         )
+        # The models this one holds as parts predict through their own
+        # workers on the episodes this one answers.
+        parts: list[ModelBase[Any, Any]] = [
+            part
+            for part in vars(self).values()
+            if isinstance(part, ModelBase) and part is not self
+        ]
+        inners = [(id(part), part._install_worker()) for part in parts]
+        if inners:
+            worker.set_inner_models(inners)
         self._worker = worker
         return worker
 

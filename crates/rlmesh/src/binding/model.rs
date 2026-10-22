@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 pub use crate::model::engine::AdaptedModelHandler;
 pub use crate::model::handler::{
-    HeldState, HistoryNeeds, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions,
-    RouteNeeds,
+    HeldState, HistoryNeeds, ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames,
+    ResolveOptions, RouteNeeds,
 };
 pub use crate::model::local::EnvClientRuntimeEnv;
 #[cfg(feature = "lockstep")]

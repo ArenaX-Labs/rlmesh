@@ -37,7 +37,7 @@ use crate::types::to_py_err;
 /// constructed model, and Python's cycle collector cannot reclaim a pyclass
 /// (no `__traverse__`), so those runtimes leaked for the process lifetime —
 /// exhausting the default macOS 256-fd limit in model-heavy test suites.
-fn model_runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn model_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -84,6 +84,10 @@ struct PyPredict {
     /// The last exception a host callback raised, kept so the in-process run
     /// re-raises the user's own exception instead of its stringified copy.
     last_error: LastPyError,
+    /// The model's `reset_options(episode)`, when it defines one.
+    reset_options_fn: Option<Py<PyAny>>,
+    /// The models this model calls from its predict (`self.inner.predict`).
+    nested: Option<Arc<crate::nested::Nested>>,
 }
 
 type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
@@ -272,7 +276,11 @@ impl PredictFn for PyPredict {
                 .then(|| observation.route.episodes.first())
                 .flatten();
             let context = episode_context_dict(py, episode)?;
-            let action = self.predict_fn.call1(py, (obs, context))?;
+            // An inner model's predict answers this one episode.
+            let contract = observation.env_contract.as_ref();
+            let action = crate::nested::scoped(self.nested.as_ref(), episode, contract, || {
+                self.predict_fn.call1(py, (obs, context))
+            })?;
             let action_space = observation
                 .env_contract
                 .as_ref()
@@ -354,8 +362,11 @@ impl PredictFn for PyPredict {
             })?;
             let obs = space_value_to_py_neutral(py, lane, observation_space)?;
             // Guaranteed exactly one lane by the num_envs == 1 check above.
-            let context = episode_context_dict(py, observation.route.episodes.first())?;
-            let chunk = predict_chunk_fn.call1(py, (obs, horizon as u32, context))?;
+            let episode = observation.route.episodes.first();
+            let context = episode_context_dict(py, episode)?;
+            let chunk = crate::nested::scoped(self.nested.as_ref(), episode, contract, || {
+                predict_chunk_fn.call1(py, (obs, horizon as u32, context))
+            })?;
             let chunk = chunk.bind(py);
             let frames_len = leading_axis_len(chunk).unwrap_or(horizon);
             let frames = py_any_to_batched_space_values_with_backend(
@@ -448,6 +459,32 @@ impl PredictFn for PyPredict {
 
     fn on_route_release(&self, env_id: &str) -> rlmesh::Result<()> {
         self.on_route_reset(env_id)
+    }
+
+    fn has_reset_options(&self) -> bool {
+        self.reset_options_fn.is_some()
+    }
+
+    fn reset_options(
+        &self,
+        episode: &EpisodeInfo,
+        trial_index: Option<u64>,
+    ) -> rlmesh::Result<Option<rlmesh_spaces::MetaMap>> {
+        let Some(reset_options) = self.reset_options_fn.as_ref() else {
+            return Ok(None);
+        };
+        Python::attach(|py| -> PyResult<Option<rlmesh_spaces::MetaMap>> {
+            let start = pyo3::types::PyDict::new(py);
+            start.set_item("episode_id", &episode.episode_id)?;
+            start.set_item("seed", episode.seed)?;
+            start.set_item("trial_index", trial_index)?;
+            let options = reset_options.call1(py, (start,))?;
+            if options.is_none(py) {
+                return Ok(None);
+            }
+            py_any_to_meta_map(options.bind(py)).map(Some)
+        })
+        .map_err(|err| self.internal(err))
     }
 }
 
@@ -800,6 +837,11 @@ pub struct PyModel {
     /// A served model's participant address and connect timeout: the
     /// worker then drives that model instead of the callbacks.
     served: Option<(String, Duration)>,
+    /// The model's `reset_options(episode)`, when it defines one.
+    reset_options_fn: Option<Py<PyAny>>,
+    /// The workers of the models this model calls from its predict, by the
+    /// Python `id` of each.
+    inners: std::sync::Mutex<Vec<(u64, Py<PyModel>)>>,
 }
 
 #[derive(Default)]
@@ -819,6 +861,17 @@ impl PyModel {
                 *timeout,
             ));
         }
+        let nested = Python::attach(|py| {
+            let inners = self.inners.lock().expect("inner models lock poisoned");
+            (!inners.is_empty()).then(|| {
+                crate::nested::Nested::new(
+                    inners
+                        .iter()
+                        .map(|(key, inner)| (*key, inner.borrow(py).build_handler()))
+                        .collect(),
+                )
+            })
+        });
         let predict = Python::attach(|py| PyPredict {
             predict_fn: self.predict_fn.clone_ref(py),
             predict_chunk_fn: self.predict_chunk_fn.as_ref().map(|cb| cb.clone_ref(py)),
@@ -834,13 +887,22 @@ impl PyModel {
             on_route_drop: self.on_route_drop.as_ref().map(|cb| cb.clone_ref(py)),
             short_warned: Default::default(),
             last_error: Arc::clone(&self.last_error),
+            reset_options_fn: self.reset_options_fn.as_ref().map(|cb| cb.clone_ref(py)),
+            nested: nested.clone(),
         });
         let resolver: Option<Arc<dyn RouteResolver>> =
             self.configure_fn.as_ref().map(|configure| {
                 let configure_fn = Python::attach(|py| configure.clone_ref(py));
                 Arc::new(PyRouteResolver { configure_fn }) as Arc<dyn RouteResolver>
             });
-        Box::new(AdaptedModelHandler::new(Arc::new(predict), resolver))
+        let handler = Box::new(AdaptedModelHandler::new(Arc::new(predict), resolver));
+        match nested {
+            Some(nested) => Box::new(crate::nested::NestedHandler {
+                outer: handler,
+                nested,
+            }),
+            None => handler,
+        }
     }
 
     /// Serves the model as the participant `name` in the session at
@@ -913,7 +975,7 @@ impl PyModel {
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None, on_route_drop=None))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None, on_route_drop=None, reset_options_fn=None))]
     #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
     fn new(
         predict_fn: Py<PyAny>,
@@ -926,6 +988,7 @@ impl PyModel {
         allow_fusion: bool,
         native_chunk: Option<u32>,
         on_route_drop: Option<Py<PyAny>>,
+        reset_options_fn: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
         init_tracing("model_worker");
         let profiler = ProfileCollector::new("model_worker");
@@ -945,6 +1008,8 @@ impl PyModel {
             last_error: LastPyError::default(),
             serving: Arc::default(),
             served: None,
+            reset_options_fn,
+            inners: Default::default(),
         })
     }
 
@@ -969,7 +1034,16 @@ impl PyModel {
             last_error: LastPyError::default(),
             serving: Arc::default(),
             served: Some((address.to_string(), crate::session::timeout(timeout_s)?)),
+            reset_options_fn: None,
+            inners: Default::default(),
         })
+    }
+
+    /// The workers of the models this model calls from its predict, by the
+    /// Python `id` of each: a run, bind or serve of this model drives them
+    /// on its episodes.
+    fn set_inner_models(&self, inners: Vec<(u64, Py<PyModel>)>) {
+        *self.inners.lock().expect("inner models lock poisoned") = inners;
     }
 
     /// Stop every serve running on this worker (drain, then return), and any
@@ -1151,9 +1225,10 @@ import collections.abc
 import typing
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None, reset_options_fn: collections.abc.Callable[[dict[str, typing.Any]], typing.Any] | None = None) -> None: ...
     @staticmethod
     def served(address: str, timeout_s: float = 30.0) -> PyModel: ...
+    def set_inner_models(self, inners: list[tuple[int, PyModel]]) -> None: ...
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
@@ -1414,6 +1489,8 @@ mod review_regressions {
                 on_close: None,
                 on_route_drop: None,
                 short_warned: Default::default(),
+                reset_options_fn: None,
+                nested: None,
                 last_error: Default::default(),
             };
             {
