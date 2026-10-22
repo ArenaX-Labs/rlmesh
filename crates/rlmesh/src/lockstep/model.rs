@@ -118,6 +118,9 @@ pub struct ModelService<H> {
     reset_options: Option<Arc<dyn ModelResetOptions>>,
     routes: Mutex<HashMap<String, Arc<Route>>>,
     describe: String,
+    /// The workflow edition the model declares and every one it runs, shown
+    /// in the roster of each session it answers in.
+    editions: (String, Vec<String>),
     in_flight: std::sync::atomic::AtomicU32,
 }
 
@@ -133,8 +136,16 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             reset_options,
             routes: Mutex::default(),
             describe,
+            editions: crate::editions::offer(None),
             in_flight: std::sync::atomic::AtomicU32::new(0),
         }
+    }
+
+    /// Declares the workflow edition the model was authored against (`None`:
+    /// this build's current).
+    pub fn declaring(mut self, workflow_edition: Option<&str>) -> Self {
+        self.editions = crate::editions::offer(workflow_edition);
+        self
     }
 
     /// Answers one request, with what answering it measured.
@@ -180,15 +191,17 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         if request.route.is_empty() {
             return Err(Error::invalid_argument("a resolve names no route"));
         }
-        if !request.workflow_edition.is_empty() {
-            rlmesh_proto::parse_retained_edition(&request.workflow_edition).map_err(|why| {
-                Error::invalid_argument(format!(
-                    "the driver pinned workflow edition {:?}, which this model build does not \
-                     implement: {why}",
-                    request.workflow_edition
-                ))
-            })?;
-        }
+        let workflow_edition = (!request.workflow_edition.is_empty())
+            .then(|| {
+                rlmesh_proto::parse_retained_edition(&request.workflow_edition).map_err(|why| {
+                    Error::invalid_argument(format!(
+                        "the driver pinned workflow edition {:?}, which this model build does \
+                         not implement: {why}",
+                        request.workflow_edition
+                    ))
+                })
+            })
+            .transpose()?;
         let value: serde_json::Value = serde_json::from_str(&request.contract_json)
             .map_err(|e| Error::invalid_argument(format!("env contract: {e}")))?;
         let contract =
@@ -205,6 +218,7 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                     ResolveOptions {
                         execution_horizon: request.execution_horizon,
                         delivers_history: request.delivers_history,
+                        workflow_edition,
                     },
                 )
                 .await?;
@@ -436,11 +450,12 @@ impl<H: ModelHandler + 'static> Joins<H> {
             .parse()
             .map_err(|e: SessionError| fault("INVALID_REQUEST", e.to_string(), false))?;
         let participant = address
-            .join(
+            .join_declaring(
                 self.name.as_str(),
                 vec![Role::Controller],
                 PriorityClass::Model,
                 self.timeout,
+                self.service.editions.clone(),
             )
             .await
             .map_err(|e| {
@@ -711,11 +726,12 @@ impl ModelBinding {
         // priority, so the roster shows it, and never takes a lease.
         let participant: Participant = self
             .session
-            .join(
+            .join_declaring(
                 self.name.as_str(),
                 vec![Role::Controller],
                 PriorityClass::Model,
                 timeout,
+                service.editions.clone(),
             )
             .await?;
         let joins = Arc::new(Joins {
@@ -735,6 +751,7 @@ impl ModelBinding {
 pub struct ModelConnection {
     /// The link to the model.
     pub link: ModelLink,
+    model: ParticipantId,
     participant: Participant,
     lockstep: Option<zenoh::Session>,
     placed: Option<Placed>,
@@ -766,15 +783,7 @@ impl ModelConnection {
         id: &str,
         timeout: Duration,
     ) -> Result<Self, GymError> {
-        let model = ParticipantId::new(
-            self.link
-                .key
-                .rsplit('/')
-                .next()
-                .unwrap_or_default()
-                .to_string(),
-        )
-        .map_err(|e| GymError::Config(e.to_string()))?;
+        let model = self.model.clone();
         let request = ModelRequest::Join {
             session: session.to_string(),
         };
@@ -818,10 +827,22 @@ impl ModelConnection {
         let lockstep = (!participant.transport().is_shared()).then_some(lockstep_session);
         Ok(Self {
             link,
+            model: model.clone(),
             participant,
             lockstep,
             placed: None,
             invited: None,
+        })
+    }
+
+    /// The workflow editions the model declared in its session, from the
+    /// roster; `None` when it declared none.
+    pub fn workflow_editions(&self) -> Option<rlmesh_proto::SessionOffer> {
+        let snapshot = self.participant.watch().borrow().clone()?;
+        let model = snapshot.roster.into_iter().find(|p| p.id == self.model)?;
+        (!model.workflow_editions.is_empty()).then(|| rlmesh_proto::SessionOffer {
+            editions: model.workflow_editions,
+            preferred: Some(model.workflow_edition).filter(|edition| !edition.is_empty()),
         })
     }
 
@@ -893,6 +914,16 @@ impl Remote {
             .as_ref()
             .map(|c| c.link.clone())
             .unwrap_or_else(|| unreachable!()))
+    }
+
+    async fn workflow_editions(&self) -> Result<Option<rlmesh_proto::SessionOffer>, Error> {
+        self.link().await?;
+        Ok(self
+            .connection
+            .lock()
+            .await
+            .as_ref()
+            .and_then(ModelConnection::workflow_editions))
     }
 
     async fn call(&self, request: ModelRequest) -> Result<ModelReply, Error> {
@@ -1097,6 +1128,10 @@ impl ModelHandler for ServedModel {
         Ok(())
     }
 
+    async fn workflow_editions(&mut self) -> crate::Result<Option<rlmesh_proto::SessionOffer>> {
+        self.remote.workflow_editions().await
+    }
+
     fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
         self.remote
             .reset_options
@@ -1148,7 +1183,10 @@ impl ModelRouteSetup for ServedRoutes {
                 contract_json: crate::lockstep::map::contract_to_json(env_contract).to_string(),
                 execution_horizon: options.execution_horizon,
                 delivers_history: options.delivers_history,
-                workflow_edition: String::new(),
+                workflow_edition: options
+                    .workflow_edition
+                    .map(|edition| edition.to_string())
+                    .unwrap_or_default(),
             }))
             .await?;
         let ModelReply::Resolved(resolved) = reply else {

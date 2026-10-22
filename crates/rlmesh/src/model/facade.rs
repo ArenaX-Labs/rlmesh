@@ -1166,6 +1166,8 @@ impl CancelWatcher {
 
 /// One serve, blocking the calling thread: validate, resolve the edition,
 /// bind, serve until stopped, then close the model.
+// TODO: serves the v1 wire for the C API; at the parity step a model joins
+// a session here (`lockstep::ModelBinding`), as Python's does.
 fn serve_blocking(
     shared: &Arc<Shared>,
     address: &str,

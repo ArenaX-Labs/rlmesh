@@ -53,9 +53,10 @@ A Rust, C or C++ served model or env requires a key when it is started with
 `RLMESH_MODEL_ENDPOINT_TOKEN` / `RLMESH_ENV_ENDPOINT_TOKEN`. Clients send one
 with `api_key=` (`authorization: Bearer <key>`), and an `https://` address
 dials over TLS, so a policy behind a TLS load balancer drives your local env
-directly. Python 0.2 serves envs on sessions, which check no endpoint token
-yet: a set `RLMESH_ENV_ENDPOINT_TOKEN` fails `EnvServer` there, so keep the
-session's network private.
+directly. Python 0.2 serves envs and models on sessions, which check no
+endpoint token yet: a set `RLMESH_ENV_ENDPOINT_TOKEN` fails `EnvServer` and a
+set `RLMESH_MODEL_ENDPOINT_TOKEN` fails `Model.serve`, so keep the session's
+network private.
 
 Without `api_key`, clients read `RLMESH_API_KEY`, and send it only to
 `https://` addresses. `tls_ca_file=` trusts a private CA bundle instead of the

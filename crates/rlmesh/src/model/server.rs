@@ -711,6 +711,7 @@ async fn handle_resolve_adapter(
                 ResolveOptions {
                     execution_horizon,
                     delivers_history: request.delivers_history,
+                    workflow_edition: floor.as_ref().map(|floor| floor.edition),
                 },
             )
             .await

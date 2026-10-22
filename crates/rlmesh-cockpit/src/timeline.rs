@@ -456,6 +456,8 @@ mod tests {
                     protocol_minor: 0,
                     supports: vec![],
                     requires: vec![],
+                    workflow_edition: String::new(),
+                    workflow_editions: vec![],
                 })
                 .collect(),
             leases,

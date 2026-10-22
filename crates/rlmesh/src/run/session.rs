@@ -492,6 +492,8 @@ impl Core {
                             ResolveOptions {
                                 execution_horizon: model.horizon,
                                 delivers_history: true,
+                                // The C API's session pins a v1 model at connect.
+                                workflow_edition: None,
                             },
                         )
                         .await?;

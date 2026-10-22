@@ -844,6 +844,8 @@ mod tests {
                         protocol_minor: PROTOCOL_MINOR,
                         supports: Vec::new(),
                         requires: Vec::new(),
+                        workflow_edition: String::new(),
+                        workflow_editions: Vec::new(),
                     },
                 );
             }

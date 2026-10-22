@@ -101,6 +101,10 @@ pub struct ParticipantInfo {
     pub supports: Vec<String>,
     /// Features it cannot run without.
     pub requires: Vec<String>,
+    /// The workflow edition it declares (empty: none).
+    pub workflow_edition: String,
+    /// Every workflow edition it runs.
+    pub workflow_editions: Vec<String>,
 }
 
 impl ParticipantInfo {
@@ -401,6 +405,10 @@ pub enum Command {
         /// Features it cannot run without (refused with
         /// [`CtlStatus::Incompatible`] when the host lacks one).
         requires: Vec<String>,
+        /// The workflow edition it declares (empty: none).
+        workflow_edition: String,
+        /// Every workflow edition it runs.
+        workflow_editions: Vec<String>,
     },
     /// Leave, releasing leases and removing owned parts.
     Detach,

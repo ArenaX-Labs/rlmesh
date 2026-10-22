@@ -298,19 +298,15 @@ def test_run_warns_once_per_episode_for_an_undeclared_short_chunk() -> None:
 def test_close_stops_a_running_serve_which_then_returns() -> None:
     """``close()`` is terminal: it stops a running serve (drain) and fires the
     hook once (MDL-P2)."""
-    import socket
     import threading
 
     closes: list[str] = []
     model = rlmesh.Model(lambda obs: 0, on_close=lambda: closes.append("closed"))
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
     errors: list[BaseException] = []
 
     def serve() -> None:
         try:
-            model.serve(f"127.0.0.1:{port}")
+            model.serve(":0", name="model")
         except BaseException as error:  # pragma: no cover - surfaced below
             errors.append(error)
 
@@ -323,7 +319,7 @@ def test_close_stops_a_running_serve_which_then_returns() -> None:
     assert errors == []
     assert closes == ["closed"]
     with pytest.raises(RuntimeError, match="the model is closed"):
-        model.serve(f"127.0.0.1:{port}")
+        model.serve(":0", name="model")
 
 
 def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:

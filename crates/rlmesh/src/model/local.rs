@@ -91,7 +91,7 @@ where
         contract: env_contract,
         num_envs,
         subset_step,
-        workflow_edition,
+        edition,
         session,
     } = connect_env(&options).await?;
     // The handler returns typed actions the runtime encodes against this space;
@@ -125,6 +125,9 @@ where
     if let Some(session) = &session {
         handler.join(session).await?;
     }
+    let workflow_edition = edition
+        .with_model(handler, options.workflow_edition.as_deref())
+        .await?;
 
     // The driver delivers every replayed step as a history row, so a stacked
     // adapter's window advances on every step at any horizon; the route answers
@@ -138,6 +141,7 @@ where
                 crate::model::ResolveOptions {
                     execution_horizon: options.execution_horizon,
                     delivers_history: true,
+                    workflow_edition: Some(workflow_edition),
                 },
             )
             .await?;
@@ -181,7 +185,7 @@ pub(crate) struct Connected {
     /// Lanes reset and step individually.
     subset_step: bool,
     /// The edition negotiated with the env.
-    workflow_edition: rlmesh_proto::Edition,
+    pub(crate) edition: RunEdition,
     /// The session the env is in (its address), on the v2 path.
     pub(crate) session: Option<String>,
 }
@@ -248,10 +252,44 @@ async fn connect_grpc_env(options: &LocalRun) -> Result<Connected> {
         contract: rlmesh_grpc::wire::env_contract_from_proto(handshake.env_contract)
             .map_err(|err| Error::Protocol(format!("invalid spaces spec from env: {err}")))?,
         num_envs: handshake.num_envs,
-        workflow_edition: handshake.workflow_edition,
+        edition: RunEdition {
+            selected: handshake.workflow_edition.to_string(),
+            env: None,
+        },
         env: DrivenEnv::Grpc(Box::new(EnvClientRuntimeEnv::new(env))),
         session: None,
     })
+}
+
+/// The edition a connection to an env negotiated, and the env's offer.
+pub(crate) struct RunEdition {
+    /// The edition selected with the env, as spelled on the wire.
+    selected: String,
+    /// The env's offer, on the v2 path.
+    env: Option<rlmesh_proto::SessionOffer>,
+}
+
+impl RunEdition {
+    /// The edition a run executes at: the env's, or with a model served
+    /// elsewhere that declared its editions, the floor across the env, the
+    /// model and the driver's `declared` WANT (pinned on the model's route).
+    pub(crate) async fn with_model<H: ModelHandler + ?Sized>(
+        self,
+        handler: &mut H,
+        declared: Option<&str>,
+    ) -> Result<rlmesh_proto::Edition> {
+        let selected = match (&self.env, handler.workflow_editions().await?) {
+            // TODO: pin the env to the floor on reset once an edition changes
+            // what an env does; while one edition exists, the floor is the env's.
+            (Some(env), Some(model)) => {
+                rlmesh_grpc::env_floor(env, &model, declared)
+                    .map_err(Error::from_grpc)?
+                    .selected_workflow_edition
+            }
+            _ => self.selected,
+        };
+        rlmesh_proto::parse_retained_edition(&selected).map_err(Error::Protocol)
+    }
 }
 
 /// The env a local run drives.
@@ -335,13 +373,16 @@ impl LockstepEnv {
         // The driver checks the env's contract as a v1 handshake did.
         rlmesh_grpc::wire::check_proto_contract(&info.contract)
             .map_err(|err| Error::invalid_argument(err.to_string()))?;
-        let (_, _, workflow_edition) =
+        let (env, selected, _) =
             crate::editions::negotiate_env(info, declared).map_err(Error::Protocol)?;
         Ok(Connected {
             contract: info.contract.clone(),
             num_envs: (info.contract.num_envs as usize).max(1),
             subset_step: info.subset_step(),
-            workflow_edition,
+            edition: RunEdition {
+                selected,
+                env: Some(env),
+            },
             session: client.session().map(str::to_string),
             env: DrivenEnv::Lockstep(Self::new(client)),
         })

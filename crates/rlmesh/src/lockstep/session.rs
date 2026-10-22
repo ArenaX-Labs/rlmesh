@@ -246,7 +246,7 @@ pub fn check(contract: rlmesh_spaces::EnvContract) -> Result<(), GymError> {
 
 /// What a served env tells a handshake, for its `gym_env`.
 fn env_info(env: &dyn Served, declared: Option<&str>) -> GymEnvInfo {
-    let (workflow_edition, supported_workflow_editions) = crate::editions::env_offer(declared);
+    let (workflow_edition, supported_workflow_editions) = crate::editions::offer(declared);
     GymEnvInfo {
         contract: env.contract(),
         workflow_edition,

@@ -218,6 +218,7 @@ async fn a_served_model_is_a_handler_a_driver_drives_like_a_local_one() {
             ResolveOptions {
                 execution_horizon: 3,
                 delivers_history: false,
+                workflow_edition: None,
             },
         )
         .await
@@ -284,6 +285,7 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
                     ResolveOptions {
                         execution_horizon: 1,
                         delivers_history: false,
+                        workflow_edition: None,
                     },
                 )
                 .await
@@ -310,4 +312,25 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
     cancel.cancel();
     served.await.unwrap().unwrap();
     target.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_served_model_declares_its_workflow_editions_in_the_roster() {
+    let binding = ModelBinding::bind(":0/echo").await.unwrap();
+    let address = binding.address();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let declared = rlmesh::current_workflow_edition();
+    let service = Arc::new(ModelService::new(Echo, String::new()).declaring(Some(declared)));
+    let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
+    let model = ModelConnection::connect(&address, "driver", Duration::from_secs(10))
+        .await
+        .unwrap();
+
+    let offer = model.workflow_editions().expect("the model's editions");
+    assert_eq!(offer.preferred.as_deref(), Some(declared));
+    assert!(!offer.editions.is_empty(), "{offer:?}");
+
+    model.close().await;
+    cancel.cancel();
+    served.await.unwrap().unwrap();
 }

@@ -36,11 +36,11 @@ pub fn current_workflow_edition() -> &'static str {
     rlmesh_proto::WORKFLOW_EDITION_BASE
 }
 
-/// What an env declaring `declared` offers a handshake: the edition it runs
+/// What a participant declaring `declared` offers: the edition it runs
 /// (this build's current when it declares none) and every edition this
 /// build runs.
 #[cfg(feature = "lockstep")]
-pub(crate) fn env_offer(declared: Option<&str>) -> (String, Vec<String>) {
+pub(crate) fn offer(declared: Option<&str>) -> (String, Vec<String>) {
     (
         rlmesh_proto::declared_workflow_edition(declared).to_string(),
         rlmesh_proto::supported_workflow_editions(),

@@ -405,6 +405,26 @@ impl SessionAddress {
         priority: PriorityClass,
         host_timeout: Duration,
     ) -> Result<Participant, SessionError> {
+        self.join_declaring(
+            id,
+            roles,
+            priority,
+            host_timeout,
+            (String::new(), Vec::new()),
+        )
+        .await
+    }
+
+    /// [`Self::join`], declaring the workflow edition the participant runs
+    /// at (empty: none) and every one it runs, for the roster.
+    pub async fn join_declaring(
+        &self,
+        id: &str,
+        roles: Vec<Role>,
+        priority: PriorityClass,
+        host_timeout: Duration,
+        (workflow_edition, workflow_editions): (String, Vec<String>),
+    ) -> Result<Participant, SessionError> {
         let listen_ip = if self.base.ip().is_loopback() {
             self.base.ip()
         } else {
@@ -424,6 +444,8 @@ impl SessionAddress {
         );
         config.clock = SystemMonotonicClock.shared();
         config.host_timeout = host_timeout;
+        config.workflow_edition = workflow_edition;
+        config.workflow_editions = workflow_editions;
         Participant::attach(transport, config)
             .await
             .map_err(|err| match err {

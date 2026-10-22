@@ -66,6 +66,9 @@ pub struct ResolveOptions {
     /// A runtime that does not is refused a stacked adapter at a horizon above
     /// 1, since the window would hold only decision-point frames.
     pub delivers_history: bool,
+    /// The workflow edition the run executes at, which a model served
+    /// elsewhere is pinned to (`None`: unpinned).
+    pub workflow_edition: Option<rlmesh_proto::Edition>,
 }
 
 /// What a resolved route needs from the runtime, answered on
@@ -268,6 +271,14 @@ pub trait ModelHandler: Send {
         Ok(())
     }
 
+    /// The workflow editions a model served elsewhere declared in its
+    /// session, after [`join`](Self::join): a run executes at the floor
+    /// across the env, the model and itself. Defaults to `None`, which
+    /// leaves the run at the env's edition.
+    async fn workflow_editions(&mut self) -> Result<Option<rlmesh_proto::SessionOffer>> {
+        Ok(None)
+    }
+
     /// The options this model adds to the env resets that start its
     /// episodes, obtained once when a run begins and called off the predict
     /// lock (see [`ModelResetOptions`]). Defaults to `None`: it adds none.
@@ -332,6 +343,10 @@ impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
 
     async fn join(&mut self, session: &str) -> Result<()> {
         (**self).join(session).await
+    }
+
+    async fn workflow_editions(&mut self) -> Result<Option<rlmesh_proto::SessionOffer>> {
+        (**self).workflow_editions().await
     }
 
     fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {

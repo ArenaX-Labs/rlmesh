@@ -393,8 +393,10 @@ class TestServeOptionsDeclaring:
         served: list[ServeOptions | None] = []
 
         class Worker:
-            def serve(self, address: str, options: ServeOptions | None) -> None:
-                _ = address
+            def serve(
+                self, address: str, name: str, options: ServeOptions | None
+            ) -> None:
+                _ = address, name
                 served.append(options)
 
             def stop_serving(self) -> None:
@@ -403,7 +405,9 @@ class TestServeOptionsDeclaring:
         model = rlmesh.Model(lambda obs: obs)
         monkeypatch.setattr(model, "_install_worker", Worker)
         monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)
-        model.serve("127.0.0.1:0", options=ServeOptions(workflow_edition=EDITION))
+        model.serve(
+            "127.0.0.1:0", name="policy", options=ServeOptions(workflow_edition=EDITION)
+        )
         assert served[0] is not None
         assert served[0].workflow_edition == EDITION
 

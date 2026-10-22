@@ -74,6 +74,10 @@ pub struct ParticipantConfig {
     /// Features it cannot run without (the attach is refused when the
     /// session lacks one).
     pub requires: Vec<String>,
+    /// The workflow edition it declares (empty: none).
+    pub workflow_edition: String,
+    /// Every workflow edition it runs.
+    pub workflow_editions: Vec<String>,
 }
 
 impl ParticipantConfig {
@@ -99,6 +103,8 @@ impl ParticipantConfig {
             host_timeout: Duration::from_secs(10),
             supports: Vec::new(),
             requires: Vec::new(),
+            workflow_edition: String::new(),
+            workflow_editions: Vec::new(),
         }
     }
 }
@@ -560,6 +566,8 @@ impl Participant {
                 protocol_minor: PROTOCOL_MINOR,
                 supports: config.supports.clone(),
                 requires: config.requires.clone(),
+                workflow_edition: config.workflow_edition.clone(),
+                workflow_editions: config.workflow_editions.clone(),
             })
             .await?;
 

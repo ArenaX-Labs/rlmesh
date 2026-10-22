@@ -1,4 +1,9 @@
 //! A C policy vtable over the facade Model and its episode store.
+//!
+//! TODO: `rlmesh_model_serve` and the remote model still use the v1 gRPC
+//! model server, which Python left for sessions in 0.2. The parity step moves
+//! C, C++ and C# onto session addresses and deletes the v1 model server
+//! (`rlmesh::model::server`, `rlmesh-grpc`'s model service).
 #![allow(unsafe_code)] // FFI callbacks, borrowed contexts and ownership transfer.
 use crate::abi::{
     sizing,

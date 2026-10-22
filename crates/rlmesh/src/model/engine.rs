@@ -2303,6 +2303,7 @@ mod fused_route_tests {
                     ResolveOptions {
                         execution_horizon: horizon,
                         delivers_history: false,
+                        workflow_edition: None,
                     },
                 )
                 .await
@@ -2674,6 +2675,7 @@ mod fused_route_tests {
                     ResolveOptions {
                         execution_horizon: 10,
                         delivers_history: false,
+                        workflow_edition: None,
                     },
                 )
                 .await
@@ -2850,6 +2852,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history: false,
+                    workflow_edition: None,
                 },
             )
             .await
@@ -3245,6 +3248,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history,
+                    workflow_edition: None,
                 },
             )
             .await?;
@@ -3287,6 +3291,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: 4,
                     delivers_history: true,
+                    workflow_edition: None,
                 },
             )
             .await
@@ -3351,6 +3356,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: 1,
                     delivers_history: true,
+                    workflow_edition: None,
                 },
             )
             .await
@@ -3607,6 +3613,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history,
+                    workflow_edition: None,
                 },
             )
             .await?;
@@ -3864,6 +3871,7 @@ mod fused_route_tests {
                     ResolveOptions {
                         execution_horizon: 1,
                         delivers_history: true,
+                        workflow_edition: None,
                     },
                 )
                 .await

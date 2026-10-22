@@ -3,7 +3,7 @@
 Hand-written Dockerfiles that produce RLMesh-compatible env and model images — the v0.1 replacement for recipe authoring. You own the Dockerfile and a small entrypoint; RLMesh runs the image. The same image works locally and on RLMesh Managed.
 
 - `env/` — serves a Gymnasium env over the RLMesh protocol on port 50051. Dial it with `rlmesh.RemoteEnv(address)`.
-- `model/` — serves a policy as an RLMesh model endpoint on port 50051.
+- `model/` — serves a policy on an RLMesh session hosted on port 7447, as the participant `model`.
 
 ## Quick start
 
@@ -35,6 +35,6 @@ result = rlmesh.Model(model_address).run(rlmesh.RemoteEnv(env_address), episodes
 
 ## The bare protocol contract
 
-Both containers serve on `RLMESH_ADDRESS` (default `0.0.0.0:50051`): the env serves the environment, the model serves the policy. A client drives them with the loop above.
+Both containers serve on `RLMESH_ADDRESS`: the env serves the environment (default `0.0.0.0:50051`), and the model hosts a session there (default `0.0.0.0:7447`) and serves the policy in it as `RLMESH_NAME` (default `model`). A client drives them with the loop above.
 
 **Beta footgun:** the protocol handshake pins a provisional edition and fails closed — a hand-built container's `rlmesh` build must be compatible with the host's until the edition seals at GA. Pin the same `rlmesh` version in your Dockerfile as the host that drives it.

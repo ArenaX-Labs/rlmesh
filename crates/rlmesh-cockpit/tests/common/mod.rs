@@ -89,6 +89,8 @@ impl World {
                     protocol_minor: PROTOCOL_MINOR,
                     supports: vec![],
                     requires: vec![],
+                    workflow_edition: String::new(),
+                    workflow_editions: vec![],
                 },
             )
             .expect("attach");

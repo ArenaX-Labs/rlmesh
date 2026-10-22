@@ -56,16 +56,18 @@ pub fn env_endpoint_token() -> Result<Option<String>> {
     crate::serve_options::env_endpoint_token(None)
 }
 
-/// Refuses the serve options a session-served participant cannot honor.
-pub fn check_session_serve(options: &crate::ServeOptions) -> Result<()> {
-    options.check_session()
+/// Refuses what a session-served model cannot honor: those options and an
+/// `RLMESH_MODEL_ENDPOINT_TOKEN`.
+pub fn check_session_model_serve(options: &crate::ServeOptions) -> Result<()> {
+    options.check_session()?;
+    crate::serve_options::check_session_token(crate::serve_options::MODEL_ENDPOINT_TOKEN_ENV, false)
 }
 
 /// Refuses what a session-served env cannot honor: those options and an
 /// `RLMESH_ENV_ENDPOINT_TOKEN`.
 pub fn check_session_env_serve(options: &crate::ServeOptions) -> Result<()> {
     options.check_session()?;
-    crate::serve_options::check_session_env_token(false)
+    crate::serve_options::check_session_token(crate::serve_options::ENV_ENDPOINT_TOKEN_ENV, false)
 }
 
 /// The shared [`crate::spaces::SpaceSpec`] for a wire spec.

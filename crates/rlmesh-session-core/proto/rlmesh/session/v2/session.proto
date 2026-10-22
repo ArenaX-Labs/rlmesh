@@ -64,6 +64,9 @@ message ParticipantInfo {
   // Features it implements and features it cannot run without.
   repeated string supports = 7;
   repeated string requires = 8;
+  // The workflow edition it declares (empty: none) and every one it runs.
+  string workflow_edition = 9;
+  repeated string workflow_editions = 10;
 }
 
 // A time-bounded grant of command authority over one commandable part,
@@ -399,6 +402,10 @@ message Attach {
   // Features it cannot run without; the host refuses the attach
   // (CTL_STATUS_INCOMPATIBLE) when it lacks one.
   repeated string requires = 6;
+  // The workflow edition it declares (empty: none) and every one it runs,
+  // which the roster shows the driver that negotiates a run's edition.
+  string workflow_edition = 7;
+  repeated string workflow_editions = 8;
 }
 
 message Detach {}

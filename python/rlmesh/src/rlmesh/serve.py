@@ -135,6 +135,12 @@ if TYPE_CHECKING:
 
 __all__ = ["main", "serve_env", "serve_model", "startup_marks"]
 
+# Where a model serves by default: the default session, hosted in this process
+# on the well-known port, on all interfaces (a container's published ports).
+_MODEL_ADDRESS = "0.0.0.0:7447"
+# TODO: an env joins a session too once the sandboxes do.
+_ENV_ADDRESS = "0.0.0.0:50051"
+
 # Frameworks whose obs/action seam carries device tensors. numpy and the default
 # Auto backend have no device, so a device= is meaningless (and unsupported) there.
 _DEVICE_FRAMEWORKS = ("torch", "jax")
@@ -201,7 +207,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--env", help="module:Class for an environment")
     parser.add_argument(
-        "--address", default=os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
+        "--address",
+        default=os.environ.get("RLMESH_ADDRESS") or None,
+        help=(
+            "Where to serve. A model joins the session there (default "
+            f"{_MODEL_ADDRESS}, which hosts it on all interfaces); an env serves "
+            f"the v1 wire there (default {_ENV_ADDRESS}). Defaults to RLMESH_ADDRESS."
+        ),
+    )
+    parser.add_argument(
+        "--name",
+        default=os.environ.get("RLMESH_NAME") or "model",
+        help=(
+            "The model's participant name in its session, reached at "
+            "'<address>/<name>'. Defaults to RLMESH_NAME, then 'model'. Model only."
+        ),
     )
     parser.add_argument(
         "--framework",
@@ -302,7 +322,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _mark("imports")
             serve_env(
                 env,
-                args.address,
+                args.address or _ENV_ADDRESS,
                 num_envs=num_envs,
                 vectorization_mode=vectorization_mode,
                 framework=args.framework,
@@ -315,7 +335,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _mark("imports")
             serve_model(
                 model,
-                args.address,
+                args.address or _MODEL_ADDRESS,
+                name=args.name,
                 binding=binding,
                 workflow_edition=args.workflow_edition,
             )
@@ -343,10 +364,11 @@ def serve_model(
     model_source: object,
     address: str,
     *,
+    name: str = "model",
     binding: dict[str, Any] | None = None,
     workflow_edition: str | None = None,
 ) -> None:
-    """Host a model on ``address`` (blocking).
+    """Serve a model in the session at ``address`` as ``name`` (blocking).
 
     Resolves the source to a serveable ``Model``: a ``Model`` subclass class is
     instantiated, an existing ``Model`` instance is used directly, and a bare predict
@@ -371,8 +393,8 @@ def serve_model(
         option=workflow_edition,
         declared=getattr(type(model), "workflow_edition", None),
     )
-    _stamp_startup("model", address, model, options=options)
-    model.serve(address, options=options)
+    _stamp_startup("model", f"{address.rstrip('/')}/{name}", model, options=options)
+    model.serve(address, name=name, options=options)
 
 
 def _warn_without_spec(model: object) -> None:

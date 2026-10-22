@@ -484,6 +484,8 @@ impl Authority {
                 protocol_minor,
                 supports,
                 requires,
+                workflow_edition,
+                workflow_editions,
             } => {
                 if roles.is_empty() {
                     return Err(CtlError::new(
@@ -510,6 +512,8 @@ impl Authority {
                         protocol_minor,
                         supports,
                         requires,
+                        workflow_edition,
+                        workflow_editions,
                     },
                 );
                 applied.events.push(AuthorityEvent::Attached {
@@ -1795,6 +1799,8 @@ mod tests {
             protocol_minor: PROTOCOL_MINOR,
             supports: Vec::new(),
             requires: Vec::new(),
+            workflow_edition: String::new(),
+            workflow_editions: Vec::new(),
         }
     }
 
@@ -2600,6 +2606,8 @@ mod tests {
             protocol_minor: PROTOCOL_MINOR + 1,
             supports: vec!["merge.blend".into()],
             requires,
+            workflow_edition: String::new(),
+            workflow_editions: Vec::new(),
         };
         assert_eq!(
             Fixture::status(f.run("future", future(vec!["merge.blend".into()]), 0)),

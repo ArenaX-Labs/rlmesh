@@ -7,9 +7,9 @@ use pyo3_stub_gen::inventory::submit;
 use rlmesh::Error as RLMeshError;
 use rlmesh::binding::model::{
     AdaptedModelHandler, EpisodeInfo, ModelHandler, ModelObservation, ModelWorker, PredictFn,
-    PredictFrames, RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
+    PredictFrames, RouteConfig, RouteResolver, RunLocalOptions,
 };
-use rlmesh::ext::{BindAddress, ConnectAddress};
+use rlmesh::ext::ConnectAddress;
 use rlmesh_adapters::v1::Value;
 use rlmesh_spaces::{EnvContract, SpaceValue};
 use std::collections::HashMap;
@@ -89,8 +89,6 @@ struct PyPredict {
 }
 
 pub(crate) type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
-
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 impl PyPredict {
     /// A raised `ModelException` becomes a model failure carrying its
@@ -909,12 +907,14 @@ impl PyModel {
     }
 
     /// Serves the model as the participant `name` in the session at
-    /// `address` until a signal or [`stop_serving`](Self::stop_serving).
+    /// `address`, declaring `workflow_edition`, until a signal or
+    /// [`stop_serving`](Self::stop_serving).
     fn serve_on_session(
         &self,
         py: Python<'_>,
         address: &str,
         name: &str,
+        workflow_edition: Option<&str>,
         close: Duration,
     ) -> PyResult<()> {
         let participant = if address.trim().is_empty() {
@@ -926,10 +926,10 @@ impl PyModel {
         let describe = rlmesh::binding::peer_info_override()
             .and_then(|info| info.extra.get(rlmesh::DESCRIBE_METADATA_KEY).cloned())
             .unwrap_or_default();
-        let service = Arc::new(rlmesh::lockstep::ModelService::new(
-            self.build_handler(),
-            describe,
-        ));
+        let service = Arc::new(
+            rlmesh::lockstep::ModelService::new(self.build_handler(), describe)
+                .declaring(workflow_edition),
+        );
         let serving = Arc::clone(&self.serving);
         py.detach(|| {
             model_runtime().block_on(async move {
@@ -1193,76 +1193,30 @@ impl PyModel {
         report_to_py(py, &report)
     }
 
-    #[pyo3(signature = (address, options=None, name=None))]
+    /// Serves the model as the participant `name` in the session at
+    /// `address`, until a signal or [`stop_serving`](Self::stop_serving).
+    #[pyo3(signature = (address, name, options=None))]
     fn serve(
         &self,
         py: Python<'_>,
         address: &str,
+        name: &str,
         options: Option<PyServeOptions>,
-        name: Option<&str>,
     ) -> PyResult<()> {
         let run_span = tracing::info_span!("rlmesh.model.serve", address = address);
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.serve.total");
-        if let Some(name) = name {
-            let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
-            rlmesh::binding::check_session_serve(&options).map_err(to_py_err)?;
-            let close = options.close_timeout.unwrap_or(Duration::from_secs(30));
-            self.serve_on_session(py, address, name, close)?;
-            let _ = total_guard.finish(0);
-            return Ok(());
-        }
-
-        let address = BindAddress::parse(address).map_err(to_py_err)?;
-        let mut options = options.map(PyServeOptions::into_rust).unwrap_or_default();
-        // Same bounded teardown as EnvServer: a signal must not wait out a
-        // client's whole session before the server stops.
-        options.drain_timeout = options.drain_timeout.or(Some(SHUTDOWN_GRACE));
-        options.close_timeout = options.close_timeout.or(Some(SHUTDOWN_GRACE));
-        let handler = self.build_handler();
-        let serving = Arc::clone(&self.serving);
-
-        // Same signal contract as EnvServer: SIGINT/SIGTERM drain and close the
-        // model; Python's own SIGINT handler still raises KeyboardInterrupt after.
-        py.detach(|| {
-            model_runtime().block_on(async move {
-                let bound = ModelWorker::new(handler)
-                    .bind_async(ServeModelOptions::new(address).serve_options(options))
-                    .await
-                    .map_err(to_py_err)?;
-                let shutdown = bound.shutdown_trigger();
-                {
-                    // The model's close() stops this serve, also when it began
-                    // before the server was bound.
-                    let mut serving = serving.lock().expect("serving lock poisoned");
-                    if serving.stopped {
-                        shutdown.trigger("model closed");
-                    }
-                    serving.triggers.push(shutdown.clone());
-                }
-                crate::server::py_env_server::spawn_signal_shutdown(shutdown.clone());
-                let mut serve = std::pin::pin!(bound.serve());
-                // A signal Python's own handler caught (before the tokio
-                // listeners were armed, or on a platform without them) is only
-                // visible through check_signals: poll it like the run loop does.
-                let mut poll = crate::client::signal_poll();
-                loop {
-                    tokio::select! {
-                        result = &mut serve => return result.map_err(to_py_err),
-                        _ = poll.tick() => {
-                            if let Err(err) = crate::client::check_signals() {
-                                shutdown.trigger("python signal");
-                                let _ = (&mut serve).await;
-                                return Err(err);
-                            }
-                        }
-                    }
-                }
-            })
-        })?;
-
+        let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
+        rlmesh::binding::check_session_model_serve(&options).map_err(to_py_err)?;
+        let close = options.close_timeout.unwrap_or(Duration::from_secs(30));
+        self.serve_on_session(
+            py,
+            address,
+            name,
+            options.workflow_edition.as_deref(),
+            close,
+        )?;
         let _ = total_guard.finish(0);
-        self.profiler.log_summary_once();
         Ok(())
     }
 }
@@ -1285,7 +1239,7 @@ class PyModel:
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
-    def serve(self, address: str, options: ServeOptions | None = None, name: str | None = None) -> None: ...
+    def serve(self, address: str, name: str, options: ServeOptions | None = None) -> None: ...
 "#
     }
 }

@@ -111,14 +111,14 @@ impl ServeOptions {
     }
 }
 
-/// Refuses an env endpoint token on a session (`configured`, or set in
-/// `RLMESH_ENV_ENDPOINT_TOKEN`): 0.2 sessions cannot check one yet.
-pub(crate) fn check_session_env_token(configured: bool) -> Result<()> {
-    if configured || std::env::var_os(ENV_ENDPOINT_TOKEN_ENV).is_some() {
+/// Refuses an endpoint token on a session (`configured`, or set in `var`,
+/// `RLMESH_ENV_ENDPOINT_TOKEN` or `RLMESH_MODEL_ENDPOINT_TOKEN`): 0.2
+/// sessions cannot check one yet.
+pub(crate) fn check_session_token(var: &str, configured: bool) -> Result<()> {
+    if configured || std::env::var_os(var).is_some() {
         return Err(Error::invalid_argument(format!(
-            "{ENV_ENDPOINT_TOKEN_ENV} is set, but rlmesh 0.2 sessions check no endpoint token \
-             yet (participant credentials arrive with safety step 6); isolate the session's \
-             network and unset it"
+            "{var} is set, but rlmesh 0.2 sessions check no endpoint token yet (participant \
+             credentials arrive with safety step 6); isolate the session's network and unset it"
         )));
     }
     Ok(())

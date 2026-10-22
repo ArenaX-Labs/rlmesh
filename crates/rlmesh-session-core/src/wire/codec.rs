@@ -1170,6 +1170,8 @@ fn participant_to_pb(p: &ParticipantInfo) -> pb::ParticipantInfo {
         protocol_minor: p.protocol_minor,
         supports: p.supports.clone(),
         requires: p.requires.clone(),
+        workflow_edition: p.workflow_edition.clone(),
+        workflow_editions: p.workflow_editions.clone(),
     }
 }
 
@@ -1183,6 +1185,8 @@ fn participant_from_pb(p: pb::ParticipantInfo) -> Result<ParticipantInfo, WireEr
         protocol_minor: p.protocol_minor,
         supports: p.supports,
         requires: p.requires,
+        workflow_edition: p.workflow_edition,
+        workflow_editions: p.workflow_editions,
     })
 }
 
@@ -1464,6 +1468,8 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             protocol_minor,
             supports,
             requires,
+            workflow_edition,
+            workflow_editions,
         } => Verb::Attach(pb::Attach {
             name: name.clone(),
             roles: roles.iter().map(|r| role_to_pb(*r) as i32).collect(),
@@ -1471,6 +1477,8 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             protocol_minor: *protocol_minor,
             supports: supports.clone(),
             requires: requires.clone(),
+            workflow_edition: workflow_edition.clone(),
+            workflow_editions: workflow_editions.clone(),
         }),
         Command::Detach => Verb::Detach(pb::Detach {}),
         Command::Arm => Verb::Arm(pb::Arm {}),
@@ -1558,6 +1566,8 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
             protocol_minor: a.protocol_minor,
             supports: a.supports,
             requires: a.requires,
+            workflow_edition: a.workflow_edition,
+            workflow_editions: a.workflow_editions,
         },
         Verb::Detach(_) => Command::Detach,
         Verb::Arm(_) => Command::Arm,
@@ -1813,6 +1823,8 @@ mod tests {
                 protocol_minor: PROTOCOL_MINOR,
                 supports: vec!["frame.fixed".into()],
                 requires: vec!["merge.blend".into()],
+                workflow_edition: "2026.06".into(),
+                workflow_editions: vec!["2026.06".into()],
             }],
             leases: vec![Lease {
                 channel: ChannelId(1),
@@ -1918,6 +1930,8 @@ mod tests {
                 protocol_minor: 3,
                 supports: vec!["frame.fixed".into()],
                 requires: vec!["merge.blend".into()],
+                workflow_edition: "2026.06".into(),
+                workflow_editions: vec!["2026.06".into()],
             },
             Command::DeclareParts {
                 spec_version: 1,

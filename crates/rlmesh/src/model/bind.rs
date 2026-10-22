@@ -98,6 +98,10 @@ impl Binding {
         if let Some(session) = &connected.session {
             handler.join(session).await?;
         }
+        let workflow_edition = connected
+            .edition
+            .with_model(handler.as_mut(), workflow_edition)
+            .await?;
         let env_id = crate::mint_id();
         let setup = handler.route_setup();
         let mut history = false;
@@ -109,6 +113,7 @@ impl Binding {
                     ResolveOptions {
                         execution_horizon,
                         delivers_history: true,
+                        workflow_edition: Some(workflow_edition),
                     },
                 )
                 .await?;

@@ -14,6 +14,8 @@ The client **declares** every edition it can operate under in `HandshakeRequest.
 - An empty intersection does not set `compatible = false`, which reflects protocol generation alone: such a peer handshakes successfully and the session then fails at the runtime's floor, with a diagnostic naming what each tier (env, model, runtime) offered. The response lists the server's supported editions for that diagnostic, but there is no second round trip because the client's offer was already complete.
 - Servers accept only editions they explicitly support. A server never accepts an unknown edition on the assumption that it is probably compatible; forward compatibility lives in the client's offer set, not in server leniency.
 
+On a session (rlmesh 0.2) the same offers travel without a handshake. A served model declares its edition and every one it runs on `Attach` (`workflow_edition`, `workflow_editions`), and the session's roster shows them; an env publishes its offer in its env info. The driver takes the floor across the env, the model and itself and pins it on the model's `ModelResolve.workflow_edition`. A model that declares no editions in the roster is pinned to the env's edition. Nothing pins the env yet: with one edition, the floor is always the env's own.
+
 ## Declaring an Edition
 
 An edition is a **sticky declaration**: you write down the edition you authored against, and upgrading the rlmesh package never changes how your env or model behaves. It is the same idea as NixOS's `system.stateVersion`. Declare it once, in source, and leave it there until you deliberately move it.

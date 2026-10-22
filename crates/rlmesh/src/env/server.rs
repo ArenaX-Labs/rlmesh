@@ -603,7 +603,10 @@ impl EnvServer {
         // Step 8: the endpoint token, before binding.
         let ext = options.ext.clone().unwrap_or_default();
         if session {
-            crate::serve_options::check_session_env_token(ext.token.is_some())?;
+            crate::serve_options::check_session_token(
+                crate::serve_options::ENV_ENDPOINT_TOKEN_ENV,
+                ext.token.is_some(),
+            )?;
         }
         let token = env_endpoint_token(ext.token.clone())?;
         let checked_token = token.clone().filter(|token| !token.is_empty());

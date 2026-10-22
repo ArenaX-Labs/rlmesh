@@ -195,7 +195,7 @@ def test_old_model_shapes_say_what_replaced_them() -> None:
         rlmesh.Model("127.0.0.1:5555")
     with pytest.raises(TypeError, match=r'Model\("host:port/name"\)'):
         rlmesh.RemoteModel("127.0.0.1:5555")
-    with pytest.raises(ValueError, match="pass name="):
+    with pytest.raises(TypeError, match="without a name is gone"):
         rlmesh.Model(lambda obs: 0).serve("lab:7447/bench")
 
 

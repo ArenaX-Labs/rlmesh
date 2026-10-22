@@ -1822,23 +1822,24 @@ class ModelBase(Generic[ObsT, ActT]):
         name: str | None = None,
         options: ServeOptions | None = None,
     ) -> None:
-        """Host this model as an endpoint (blocking).
+        """Serve this model on a session (blocking).
 
-        With a session address (``"lab:7447"``, ``":0"``, ``"bench"``), the
-        model joins that session as the participant ``name`` and answers
-        whoever drives it, until closed or interrupted: ``Model("lab:7447/
-        openpi")`` reaches it.
+        The model joins the session at ``address`` (``"lab:7447"``, ``":0"``,
+        ``"bench"``) as the participant ``name`` and answers whoever drives
+        it, until closed or interrupted: ``Model("lab:7447/openpi")`` reaches
+        it. A run invites it into the session its env is in.
 
-        A spec'd model resolves its adapter per env from the env contract the
-        ``resolve_adapter`` handshake delivers, then applies it around predict; a
-        spec-less / ``NO_ADAPTER`` model serves its own predict directly.
+        A spec'd model resolves its adapter per env from the env contract each
+        route's resolve delivers, then applies it around predict; a spec-less /
+        ``NO_ADAPTER`` model serves its own predict directly.
 
-        ``RLMESH_MODEL_ENDPOINT_TOKEN``, when set, requires that bearer token on
-        every model RPC. An empty or whitespace-only value fails startup.
-        When unset, the endpoint serves without authentication.
+        A session checks no endpoint token yet, so a set
+        ``RLMESH_MODEL_ENDPOINT_TOKEN`` is refused: keep the session on a
+        private network.
 
-        The endpoint declares a workflow edition on every handshake: ``options``'
-        own ``workflow_edition`` if it sets one, else the resolved declaration
+        The model declares a workflow edition in the session's roster, where a
+        driver negotiates the run's edition: ``options``' own
+        ``workflow_edition`` if it sets one, else the resolved declaration
         (``RLMESH_WORKFLOW_EDITION``, :attr:`workflow_edition`, ``[tool.rlmesh]``).
         """
         from .._editions import serve_options_declaring
@@ -1852,11 +1853,12 @@ class ModelBase(Generic[ObsT, ActT]):
             call=options.workflow_edition if options is not None else None,
             declared=self._class_workflow_edition(),
         )
-        from .._rlmesh import is_v2_address
-
-        if is_v2_address(address) and not name:
-            raise ValueError(
-                f"serve({address!r}) joins a session: pass name= to name the model in it"
+        if not name:
+            removed(
+                f"Model.serve({address!r}) without a name",
+                "a model serves on a session as a named participant: "
+                f"model.serve({address!r}, name='policy') is reached at "
+                "'<host:port>/policy'",
             )
         worker = self._install_worker()
         # close() stops this serve (drain); the serve then returns and its own
@@ -1864,10 +1866,7 @@ class ModelBase(Generic[ObsT, ActT]):
         token = self._calls.register_serve(worker.stop_serving)
         _serving_models[id(self)] = self
         try:
-            if name is not None:
-                worker.serve(address, declared, name)
-            else:
-                worker.serve(address, declared)
+            worker.serve(address, name, declared)
         except BaseException:
             self._calls.deregister_serve(token)
             with contextlib.suppress(Exception):

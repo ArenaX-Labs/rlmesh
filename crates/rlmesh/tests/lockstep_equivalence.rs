@@ -343,6 +343,7 @@ async fn drive_managed(
             ResolveOptions {
                 execution_horizon: 1,
                 delivers_history: true,
+                workflow_edition: None,
             },
         )
         .await
