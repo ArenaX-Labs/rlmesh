@@ -160,6 +160,24 @@ role = "core"
 publish = true
 
 [[artifact]]
+id = "cargo:rlmesh-session-core"
+ecosystem = "cargo"
+name = "rlmesh-session-core"
+manifest = "crates/rlmesh-session-core/Cargo.toml"
+version = "0.2.0-alpha.0"
+role = "core"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh-session"
+ecosystem = "cargo"
+name = "rlmesh-session"
+manifest = "crates/rlmesh-session/Cargo.toml"
+version = "0.2.0-alpha.0"
+role = "core"
+publish = true
+
+[[artifact]]
 id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"

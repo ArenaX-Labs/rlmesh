@@ -11,9 +11,6 @@ documentation = { workspace = true }
 license = { workspace = true }
 categories = { workspace = true }
 keywords = { workspace = true }
-# Publishable so `release:rust:package` verifies the facade's `lockstep`
-# feature against it; not in the release order (scripts/release.py) until
-# the v0.2 wire spec freezes.
 publish = true
 
 [package.metadata.cargo-machete]

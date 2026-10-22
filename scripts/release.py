@@ -48,6 +48,8 @@ CRATE_ORDER = [
     "rlmesh-proto",
     "rlmesh-spaces",
     "rlmesh-adapters",
+    "rlmesh-session-core",
+    "rlmesh-session",
     "rlmesh-cli",
     "rlmesh-runtime",
     "rlmesh-grpc",
