@@ -442,6 +442,8 @@ impl LockstepBinding {
         if !(participant.transport().is_shared() || participant.transport().is_in_process()) {
             let _ = lockstep.close().await;
         }
+        // The tee writes off the critical path: what it holds goes in first.
+        handler.flush().await;
         if let Some(recorder) = recorder
             && let Err(err) = recorder.finish().await
         {

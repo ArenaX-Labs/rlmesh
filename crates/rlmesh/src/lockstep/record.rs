@@ -15,22 +15,36 @@ use rlmesh_session::wire::{Layout, LockstepReply, PartSpec, PartValues, Sample};
 
 use crate::lockstep::exchange::Request;
 
+/// One exchange to record, or a flush to acknowledge once all before it are.
+#[allow(clippy::large_enum_variant)] // Exchanges are what the channel carries.
+enum Teed {
+    Exchange(Request, LockstepReply),
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
 /// Hands lockstep traffic to the recorder.
 #[derive(Clone)]
 pub struct Tee {
-    tx: mpsc::Sender<(Request, LockstepReply)>,
+    tx: mpsc::Sender<Teed>,
 }
 
 impl Tee {
     /// Tees into `tee` for a robot with `parts`, `lanes` lanes and a
     /// notional `tick_ns`.
     pub fn new(tee: SampleTee, parts: Vec<PartSpec>, lanes: usize, tick_ns: u64) -> Self {
-        let (tx, rx) = mpsc::channel::<(Request, LockstepReply)>();
+        let (tx, rx) = mpsc::channel::<Teed>();
         std::thread::Builder::new()
             .name("rlmesh-lockstep-tee".into())
             .spawn(move || {
-                while let Ok((request, reply)) = rx.recv() {
-                    write(&tee, &parts, lanes, tick_ns, &request, &reply);
+                while let Ok(teed) = rx.recv() {
+                    match teed {
+                        Teed::Exchange(request, reply) => {
+                            write(&tee, &parts, lanes, tick_ns, &request, &reply);
+                        }
+                        Teed::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
                 }
             })
             .ok();
@@ -39,7 +53,15 @@ impl Tee {
 
     /// Records one exchange.
     pub fn record(&self, request: Request, reply: LockstepReply) {
-        let _ = self.tx.send((request, reply));
+        let _ = self.tx.send(Teed::Exchange(request, reply));
+    }
+
+    /// Waits until every exchange recorded so far is written.
+    pub async fn flush(&self) {
+        let (done, flushed) = tokio::sync::oneshot::channel();
+        if self.tx.send(Teed::Flush(done)).is_ok() {
+            let _ = flushed.await;
+        }
     }
 }
 

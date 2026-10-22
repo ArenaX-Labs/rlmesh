@@ -305,6 +305,12 @@ impl GymEnv {
 
 #[async_trait]
 impl LockstepHandler for GymEnv {
+    async fn flush(&self) {
+        if let Some(tee) = &self.tee {
+            tee.flush().await;
+        }
+    }
+
     async fn handle(&self, request: Request) -> Result<LockstepReply, GymError> {
         let tee = self.tee.as_ref().map(|_| request.clone());
         let reply = match request {

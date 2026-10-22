@@ -72,6 +72,10 @@ pub trait LockstepHandler: Send + Sync + 'static {
     fn concurrent(&self) -> bool {
         false
     }
+
+    /// Waits until everything answered so far is recorded; by default
+    /// nothing is.
+    async fn flush(&self) {}
 }
 
 /// The env's local authority view, read per step.
@@ -220,6 +224,10 @@ impl LockstepHandler for Gated {
 
     fn concurrent(&self) -> bool {
         self.inner.concurrent()
+    }
+
+    async fn flush(&self) {
+        self.inner.flush().await;
     }
 }
 
