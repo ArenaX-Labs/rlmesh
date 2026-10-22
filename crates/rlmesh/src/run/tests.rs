@@ -79,10 +79,7 @@ fn ones() -> Model {
 fn quick() -> EnvServerOptions {
     EnvServerOptions {
         address: Some(crate::tests::ENV_ADDRESS.into()),
-        options: Some(crate::ServeOptions {
-            drain_timeout: Some(Duration::from_millis(100)),
-            ..Default::default()
-        }),
+        options: Some(crate::tests::env_serve_options()),
         ..Default::default()
     }
 }
@@ -1166,8 +1163,7 @@ fn back_to_back_sessions_release_the_join_slot() {
     server.shutdown().unwrap();
 }
 
-// Multi-threaded: a v2 handle's drop blocks in place on zenoh.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn back_to_back_async_drops_release_the_join_slot() {
     let server = crate::EnvServer::new(Steps::new(), quick()).unwrap();
     server.start().unwrap();
@@ -1188,6 +1184,20 @@ async fn back_to_back_async_drops_release_the_join_slot() {
         remote.reset_async(None, None).await.unwrap();
         drop(remote);
     }
+    server.shutdown_async().await.unwrap();
+}
+
+#[cfg(feature = "lockstep")]
+#[tokio::test]
+async fn a_v2_handle_connects_and_drops_inside_a_current_thread_runtime() {
+    let server = crate::EnvServer::new(Steps::new(), quick()).unwrap();
+    server.start().unwrap();
+    let mut remote =
+        crate::RemoteEnv::new_async(crate::RemoteEnvOptions::default().address(server.address()))
+            .await
+            .unwrap();
+    remote.reset_async(None, None).await.unwrap();
+    drop(remote);
     server.shutdown_async().await.unwrap();
 }
 

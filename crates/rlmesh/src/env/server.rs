@@ -470,6 +470,8 @@ impl EnvServer {
             )),
             options: Some(ServeOptions {
                 workflow_edition: edition,
+                // A session server has nothing to drain.
+                #[cfg(not(feature = "lockstep"))]
                 drain_timeout: Some(Duration::from_millis(100)),
                 ..Default::default()
             }),
@@ -582,6 +584,10 @@ impl EnvServer {
         let address = normalize_bind_address(&options)?;
         let serve = options.options.clone().unwrap_or_default();
         serve.validate()?;
+        let session = crate::address::is_v2(&address);
+        if session {
+            serve.check_session()?;
+        }
 
         // Step 6: the edition. An explicit options value is the call's own;
         // a served env is an authored participant, so a float warns.
@@ -596,6 +602,9 @@ impl EnvServer {
 
         // Step 8: the endpoint token, before binding.
         let ext = options.ext.clone().unwrap_or_default();
+        if session {
+            crate::serve_options::check_session_env_token(ext.token.is_some())?;
+        }
         let token = env_endpoint_token(ext.token.clone())?;
         let checked_token = token.clone().filter(|token| !token.is_empty());
         let mut peer_info_extra: BTreeMap<String, String> = ext.peer_info_extra.clone();

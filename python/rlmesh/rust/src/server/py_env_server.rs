@@ -157,6 +157,9 @@ fn construct_server(
     // Resolve the deployment token before binding, so an invalid
     // `RLMESH_ENV_ENDPOINT_TOKEN` fails construction without holding the port.
     let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
+    if address.is_some_and(rlmesh_session::address::is_v2_address) {
+        rlmesh::binding::check_session_env_serve(&options).map_err(to_py_err)?;
+    }
     let token = rlmesh::binding::env_endpoint_token().map_err(to_py_err)?;
     let shutdown = ShutdownTrigger::new();
     let id = NEXT_SERVER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

@@ -483,13 +483,18 @@ impl Keep for Held {
             lockstep,
             mut placed,
         } = *self;
-        if let Err(err) = participant.detach().await {
-            tracing::debug!(%err, "lockstep driver: detach");
+        let released = off_caller(async move {
+            if let Err(err) = participant.detach().await {
+                tracing::debug!(%err, "lockstep driver: detach");
+            }
+            if let Some(lockstep) = lockstep {
+                let _ = lockstep.close().await;
+            }
+            let _ = placed.close().await;
+        });
+        if let Err(err) = released.await {
+            tracing::debug!(%err, "lockstep driver: release");
         }
-        if let Some(lockstep) = lockstep {
-            let _ = lockstep.close().await;
-        }
-        let _ = placed.close().await;
     }
 }
 
@@ -674,13 +679,17 @@ fn is_gym_env(parts: &[PartSpec]) -> bool {
 /// as a [`LockstepClient`]; any other robot as a [`GymView`] keyed by part
 /// path.
 pub async fn connect_driver(address: &str, options: ConnectOptions) -> Result<Driven, GymError> {
-    let (attached, robot) = attach_robot(address, &options).await?;
-    if is_gym_env(&attached.parts) {
-        return gym_client(attached, robot, options).await.map(Driven::Gym);
-    }
-    view_of(attached, robot, None, options)
-        .await
-        .map(Driven::View)
+    let address = address.to_string();
+    off_caller(async move {
+        let (attached, robot) = attach_robot(&address, &options).await?;
+        if is_gym_env(&attached.parts) {
+            return gym_client(attached, robot, options).await.map(Driven::Gym);
+        }
+        view_of(attached, robot, None, options)
+            .await
+            .map(Driven::View)
+    })
+    .await?
 }
 
 /// Connects a driver to the lockstep Gym env at `address`: attaches as a
@@ -688,8 +697,26 @@ pub async fn connect_driver(address: &str, options: ConnectOptions) -> Result<Dr
 /// lease on its commandable parts and opens the link (direct when the env
 /// is in this process).
 pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepClient, GymError> {
-    let (attached, robot) = attach_robot(address, &options).await?;
-    gym_client(attached, robot, options).await
+    let address = address.to_string();
+    off_caller(async move {
+        let (attached, robot) = attach_robot(&address, &options).await?;
+        gym_client(attached, robot, options).await
+    })
+    .await?
+}
+
+/// Runs `work` on the library's multi-thread runtime: zenoh opens and
+/// closes a session with `block_in_place`, which a caller on a
+/// current-thread runtime (`#[tokio::test]`,
+/// `#[tokio::main(flavor = "current_thread")]`) cannot run.
+async fn off_caller<T: Send + 'static>(
+    work: impl Future<Output = T> + Send + 'static,
+) -> Result<T, GymError> {
+    match crate::run::drive::runtime().spawn(work).await {
+        Ok(result) => Ok(result),
+        Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+        Err(err) => Err(GymError::Closed(err.to_string())),
+    }
 }
 
 async fn gym_client(

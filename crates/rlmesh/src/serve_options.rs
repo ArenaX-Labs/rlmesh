@@ -57,6 +57,38 @@ impl ServeOptions {
         Ok(())
     }
 
+    /// Refuses what a session-served participant cannot honor: each is a 0.1
+    /// option of the v1 wire.
+    pub(crate) fn check_session(&self) -> Result<()> {
+        let refused = [
+            (
+                self.allow_remote_shutdown,
+                "allow_remote_shutdown: a session takes no remote shutdown; an owner \
+                 shutdown is server.shutdown() in the serving process",
+            ),
+            (
+                self.idle_timeout.is_some(),
+                "idle_timeout_seconds: a session server has no idle shutdown; stop it with \
+                 server.shutdown()",
+            ),
+            (
+                self.drain_timeout.is_some(),
+                "drain_timeout_seconds: a session server stops answering at once and has \
+                 nothing to drain",
+            ),
+            (
+                self.compress_responses,
+                "compress_responses: the session wire is not compressed",
+            ),
+        ];
+        match refused.into_iter().find(|(set, _)| *set) {
+            Some((_, why)) => Err(Error::invalid_argument(format!(
+                "ServeOptions.{why} (gone in rlmesh 0.2 for a session address)"
+            ))),
+            None => Ok(()),
+        }
+    }
+
     /// The transport's options for these, with the language-only extras the
     /// serve call carries beside them.
     #[allow(clippy::wrong_self_convention)] // The name R-25 gives it; consuming avoids a clone.
@@ -77,6 +109,19 @@ impl ServeOptions {
             peer_runtime: None,
         }
     }
+}
+
+/// Refuses an env endpoint token on a session (`configured`, or set in
+/// `RLMESH_ENV_ENDPOINT_TOKEN`): 0.2 sessions cannot check one yet.
+pub(crate) fn check_session_env_token(configured: bool) -> Result<()> {
+    if configured || std::env::var_os(ENV_ENDPOINT_TOKEN_ENV).is_some() {
+        return Err(Error::invalid_argument(format!(
+            "{ENV_ENDPOINT_TOKEN_ENV} is set, but rlmesh 0.2 sessions check no endpoint token \
+             yet (participant credentials arrive with safety step 6); isolate the session's \
+             network and unset it"
+        )));
+    }
+    Ok(())
 }
 
 /// What a serve call adds to its [`ServeOptions`] on the wire: the fenced

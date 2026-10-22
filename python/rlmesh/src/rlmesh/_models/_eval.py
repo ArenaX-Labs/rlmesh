@@ -856,6 +856,10 @@ class Session(Generic[ObsT, ActT]):
         ``__init__`` only rejects direct construction.
         """
         check_execution_horizon(execution_horizon, native_chunk)
+        if close_env:
+            from .._upgrade import refuse_remote_close_env
+
+            refuse_remote_close_env(env)
         self = object.__new__(cls)
         #: A local model's call gate (None for a served model): a session over
         #: a model that was closed refuses predict, step and run.

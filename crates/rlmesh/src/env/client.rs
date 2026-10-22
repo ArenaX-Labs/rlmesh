@@ -1349,7 +1349,11 @@ impl EnvClientCore {
         let reason = reason.into().unwrap_or("owner shutdown").to_string();
         let Some(inner) = self.inner.grpc() else {
             // A lockstep robot is its server's to stop; a driver cannot.
-            return Ok(false);
+            return Err(Error::Type(
+                "RemoteEnv.shutdown() is gone in rlmesh 0.2 for a session address: an owner \
+                 shutdown is server.shutdown() in the serving process"
+                    .into(),
+            ));
         };
         let response = bounded(timeout, async {
             inner.shutdown(reason).await.map_err(Error::from_grpc)

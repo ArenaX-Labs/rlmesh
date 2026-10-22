@@ -192,6 +192,12 @@ async fn connect_env(options: &LocalRun) -> Result<Connected> {
                 options.address
             )));
         }
+        if options.close_env {
+            return Err(Error::invalid_argument(
+                "close_env=True on a session address is gone in rlmesh 0.2: the env belongs \
+                 to its serving process; an owner shutdown is server.shutdown() there",
+            ));
+        }
         LockstepEnv::connect(&options.address, options.workflow_edition.as_deref()).await
     }
     #[cfg(not(feature = "lockstep"))]

@@ -47,9 +47,11 @@ pub fn resolve(
     // A v2 session authorizes the driver's lease; no key or certificate
     // travels on that path.
     if crate::address::is_v2(address) {
-        if api_key.is_some_and(|key| !key.is_empty()) || tls_ca_file.is_some() {
+        if api_key.is_some() || tls_ca_file.is_some() {
             return Err(Error::invalid_argument(
-                "a v2 session address takes no api_key or tls_ca_file",
+                "api_key and tls_ca_file are gone in rlmesh 0.2 for a session address: keys \
+                 and trusted CAs belong in the session's security config (safety steps 6 and \
+                 9), not the dial",
             ));
         }
         return Ok(ClientAuth::default());

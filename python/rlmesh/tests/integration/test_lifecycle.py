@@ -345,7 +345,8 @@ def test_remote_close_detaches_without_stopping_endpoint() -> None:
     server.start()
     try:
         remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-        assert remote.shutdown("default remote shutdown is disabled") is False
+        with pytest.raises(TypeError, match=r"server\.shutdown\(\)"):
+            remote.shutdown("an owner shutdown")
         remote.close()
 
         assert env.close_calls == 0
@@ -473,58 +474,6 @@ def test_env_server_wait_timeout_returns_false_while_running() -> None:
         server.shutdown()
 
     assert env.close_calls == 1
-
-
-class ImageEnv(TinyEnv):
-    """Env whose observation is a ~200 KB uint8 image (compressible gradient)."""
-
-    def __init__(self) -> None:
-        import numpy as np
-        from rlmesh import spaces
-
-        super().__init__()
-        self.frame = (np.arange(240 * 280 * 3) % 251).astype(np.uint8)
-        self.frame = self.frame.reshape(240, 280, 3)
-        self.observation_space = spaces.Box(0, 255, (240, 280, 3), dtype=np.uint8)
-
-    def reset(
-        self, *, seed: int | None = None, options: dict[str, object] | None = None
-    ):
-        return self.frame, {}
-
-    def step(self, action: object):
-        return self.frame, 1.0, False, False, {}
-
-
-def test_env_server_compressed_responses_round_trip() -> None:
-    import numpy as np
-    import rlmesh
-    from rlmesh._editions import serve_options_declaring
-
-    options = rlmesh.ServeOptions(compress_responses=True)
-    assert options.compress_responses is True
-    assert rlmesh.ServeOptions().compress_responses is False
-    # Restamping an edition declaration keeps the compression opt-in.
-    restamped = serve_options_declaring(
-        options, option=rlmesh.current_workflow_edition()
-    )
-    assert restamped is not None and restamped.compress_responses is True
-
-    env = ImageEnv()
-    server = env_server(env, options)
-    server.start()
-    try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-        try:
-            obs, _ = remote.reset(seed=0)
-            np.testing.assert_array_equal(np.asarray(obs), env.frame)
-            obs, reward, *_ = remote.step(0)
-            np.testing.assert_array_equal(np.asarray(obs), env.frame)
-            assert reward == 1.0
-        finally:
-            remote.close()
-    finally:
-        server.shutdown()
 
 
 @pytest.mark.parametrize(
@@ -881,7 +830,8 @@ def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
     server.start()
     try:
         remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address)
-        assert remote.shutdown("default remote shutdown is disabled") is False
+        with pytest.raises(TypeError, match=r"server\.shutdown\(\)"):
+            remote.shutdown("an owner shutdown")
         remote.close()
 
         assert env.close_calls == 0
@@ -1138,7 +1088,7 @@ def test_hand_driven_session_fires_episode_end_between_episodes() -> None:
         model = rlmesh.Model(
             lambda _observation: 0, on_episode_end=lambda: ends.append(1)
         )
-        with model.session(remote, close_env=True) as sess:
+        with model.session(remote) as sess:
             for _ in range(2):
                 obs, _info = sess.reset()
                 while not sess.done:

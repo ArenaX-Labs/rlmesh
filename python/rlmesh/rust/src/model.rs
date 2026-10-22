@@ -845,7 +845,13 @@ impl PyModel {
 
     /// Serves the model as the participant `name` in the session at
     /// `address` until a signal or [`stop_serving`](Self::stop_serving).
-    fn serve_on_session(&self, py: Python<'_>, address: &str, name: &str) -> PyResult<()> {
+    fn serve_on_session(
+        &self,
+        py: Python<'_>,
+        address: &str,
+        name: &str,
+        close: Duration,
+    ) -> PyResult<()> {
         let participant = if address.trim().is_empty() {
             name.to_string()
         } else {
@@ -883,8 +889,7 @@ impl PyModel {
                     })
                 };
                 tracing::info!(address = %binding.address(), "model serving");
-                let mut serve =
-                    std::pin::pin!(binding.serve(service, Duration::from_secs(30), cancel.clone()));
+                let mut serve = std::pin::pin!(binding.serve(service, close, cancel.clone()));
                 let mut poll = crate::client::signal_poll();
                 let result = loop {
                     tokio::select! {
@@ -1076,7 +1081,10 @@ impl PyModel {
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.serve.total");
         if let Some(name) = name {
-            self.serve_on_session(py, address, name)?;
+            let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
+            rlmesh::binding::check_session_serve(&options).map_err(to_py_err)?;
+            let close = options.close_timeout.unwrap_or(Duration::from_secs(30));
+            self.serve_on_session(py, address, name, close)?;
             let _ = total_guard.finish(0);
             return Ok(());
         }

@@ -47,10 +47,7 @@ fn served_env() -> (EnvServer, String) {
         Steps { step: 0 },
         EnvServerOptions {
             address: Some(crate::tests::ENV_ADDRESS.into()),
-            options: Some(crate::ServeOptions {
-                drain_timeout: Some(Duration::from_millis(100)),
-                ..Default::default()
-            }),
+            options: Some(crate::tests::env_serve_options()),
             ..Default::default()
         },
     )
@@ -452,10 +449,7 @@ fn served_gripper() -> (EnvServer, String) {
         EnvServerOptions {
             address: Some(crate::tests::ENV_ADDRESS.into()),
             tags: Some(crate::ext::env_tags_from_json(GRIPPER_TAGS).unwrap()),
-            options: Some(crate::ServeOptions {
-                drain_timeout: Some(Duration::from_millis(100)),
-                ..Default::default()
-            }),
+            options: Some(crate::tests::env_serve_options()),
             ..Default::default()
         },
     )

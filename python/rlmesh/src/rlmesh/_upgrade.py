@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -38,13 +37,20 @@ def refuse_v1_address(where: str, address: str) -> None:
     )
 
 
-def refuse_endpoint_token(variable: str) -> None:
-    """Refuse a set endpoint token: 0.2 sessions cannot check one yet."""
-    if variable in os.environ and not _V1_ENDPOINTS.get():
+def refuse_remote_close_env(target: object) -> None:
+    """Refuse ``close_env=True`` on an env served elsewhere on a session."""
+    from ._rlmesh import is_v2_address
+
+    address = target if isinstance(target, str) else getattr(target, "address", None)
+    if (
+        isinstance(address, str)
+        and is_v2_address(address)
+        and (isinstance(target, str) or hasattr(target, "env_contract"))
+    ):
         raise ValueError(
-            f"{variable} is set, but rlmesh 0.2 sessions check no endpoint token "
-            "yet (participant credentials arrive with safety step 6); isolate the "
-            f"session's network and unset {variable}"
+            "close_env=True on a session address is gone in rlmesh 0.2: the env "
+            "belongs to its serving process; an owner shutdown is "
+            "server.shutdown() there"
         )
 
 
@@ -65,7 +71,7 @@ def RemoteModel(*args: object, **kwargs: object) -> NoReturn:  # noqa: N802 -- t
 
 __all__ = [
     "RemoteModel",
-    "refuse_endpoint_token",
+    "refuse_remote_close_env",
     "refuse_v1_address",
     "removed",
     "v1_endpoints",
