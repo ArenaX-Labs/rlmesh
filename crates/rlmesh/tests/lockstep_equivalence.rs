@@ -2,9 +2,11 @@
 //! v1 and v2 trace equivalence (§12.4, the wave 5 release gate's
 //! "semantically equivalent" half).
 //!
-//! The same catalog-style env and the same model run once over v1 (the env
-//! behind the gRPC Join stream) and once over v2 (the env as a lockstep
-//! robot in a session, at its participant address), and every trace must match:
+//! The same catalog-style env and the same model run over v1 (the env behind
+//! the gRPC Join stream) and over v2 (the env as a lockstep robot in a
+//! session, at its participant address), and every trace must match the v1
+//! runtime's, kept as golden files in `tests/golden/lockstep`
+//! (`RLMESH_WRITE_GOLDEN=1` rewrites them from a v1 run):
 //!
 //! - what the env received and answered, per lane: reset seeds and options,
 //!   the exact action bytes, the observation leaf bytes, rewards (bit
@@ -255,59 +257,80 @@ fn run_once(shape: &Shape, v2: bool) -> Traces {
     }
 }
 
-fn assert_equivalent(shape: &Shape) {
-    let v1 = run_once(shape, false);
-    let v2 = run_once(shape, true);
-    assert!(!v1.steps.is_empty() && !v1.model.is_empty());
-    for (lane, lines) in &v1.env {
-        assert_eq!(Some(lines), v2.env.get(lane), "env trace of lane {lane}");
+/// Checks `traces` against the golden file `name`: the traces the v1
+/// runtime left (written, from a v1 run, when `RLMESH_WRITE_GOLDEN` is set).
+fn golden(name: &str, traces: &Traces) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden/lockstep")
+        .join(format!("{name}.txt"));
+    let text = format!("{traces:#?}\n");
+    if std::env::var_os("RLMESH_WRITE_GOLDEN").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        return;
     }
-    assert_eq!(v1.env.len(), v2.env.len());
-    assert_eq!(v1.model, v2.model, "model trace");
-    assert_eq!(v1.steps, v2.steps, "step events");
-    assert_eq!(v1.episodes, v2.episodes, "episode results");
+    let kept = std::fs::read_to_string(&path).unwrap();
+    assert!(kept == text, "traces differ from {}", path.display());
+}
+
+fn assert_equivalent(name: &str, shape: &Shape) {
+    let v1 = run_once(shape, false);
+    assert!(!v1.steps.is_empty() && !v1.model.is_empty());
+    golden(name, &v1);
+    if std::env::var_os("RLMESH_WRITE_GOLDEN").is_none() {
+        golden(name, &run_once(shape, true));
+    }
 }
 
 #[test]
 fn a_scalar_env_with_chunking_and_prefetch_runs_unchanged_on_lockstep() {
-    assert_equivalent(&Shape {
-        num_envs: 1,
-        autoreset: AutoresetMode::Disabled,
-        lanes: false,
-        episodes: 3,
-        seeds: Some(vec![11, -12, 13]),
-        horizon: 3,
-        prefetch: 1,
-        unordered: false,
-    });
+    assert_equivalent(
+        "scalar_chunked",
+        &Shape {
+            num_envs: 1,
+            autoreset: AutoresetMode::Disabled,
+            lanes: false,
+            episodes: 3,
+            seeds: Some(vec![11, -12, 13]),
+            horizon: 3,
+            prefetch: 1,
+            unordered: false,
+        },
+    );
 }
 
 #[test]
 fn a_next_step_vector_env_with_batched_predict_runs_unchanged_on_lockstep() {
-    assert_equivalent(&Shape {
-        num_envs: 4,
-        autoreset: AutoresetMode::NextStep,
-        lanes: false,
-        episodes: 10,
-        seeds: None,
-        horizon: 1,
-        prefetch: 0,
-        unordered: false,
-    });
+    assert_equivalent(
+        "vector_next_step",
+        &Shape {
+            num_envs: 4,
+            autoreset: AutoresetMode::NextStep,
+            lanes: false,
+            episodes: 10,
+            seeds: None,
+            horizon: 1,
+            prefetch: 0,
+            unordered: false,
+        },
+    );
 }
 
 #[test]
 fn a_lane_endpoint_with_partial_resets_and_per_lane_seeds_runs_unchanged_on_lockstep() {
-    assert_equivalent(&Shape {
-        num_envs: 3,
-        autoreset: AutoresetMode::Disabled,
-        lanes: true,
-        episodes: 7,
-        seeds: Some(vec![21, 22, 23, 24, 25, 26, 27]),
-        horizon: 2,
-        prefetch: 0,
-        unordered: true,
-    });
+    assert_equivalent(
+        "lane_endpoint",
+        &Shape {
+            num_envs: 3,
+            autoreset: AutoresetMode::Disabled,
+            lanes: true,
+            episodes: 7,
+            seeds: Some(vec![21, 22, 23, 24, 25, 26, 27]),
+            horizon: 2,
+            prefetch: 0,
+            unordered: true,
+        },
+    );
 }
 
 // --- the managed shape: a served model server, driven by the v1 runtime ----
@@ -528,9 +551,9 @@ fn run_managed(v2: bool) -> Traces {
 #[test]
 fn a_served_model_server_drives_a_lockstep_env_unchanged() {
     let v1 = run_managed(false);
-    let v2 = run_managed(true);
     assert!(!v1.model.is_empty() && v1.episodes.len() >= 9);
-    assert_eq!(v1.env, v2.env, "env trace");
-    assert_eq!(v1.model, v2.model, "model trace");
-    assert_eq!(v1.episodes, v2.episodes, "episode results");
+    golden("served_model", &v1);
+    if std::env::var_os("RLMESH_WRITE_GOLDEN").is_none() {
+        golden("served_model", &run_managed(true));
+    }
 }

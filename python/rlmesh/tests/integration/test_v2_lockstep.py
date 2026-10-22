@@ -1,9 +1,10 @@
 """The v2 lockstep path (§12) from Python.
 
 - Existing Gymnasium envs and v1 models run unchanged at participant
-  addresses: the same env and model over v1 (gRPC) and v2 (lockstep) leave
-  the same traces, bit for bit, across every space kind and v1 dtype, a
-  vector env with NEXT_STEP autoreset, seeds and chunking.
+  addresses: the same env and model over v2 (lockstep) leave the traces the
+  v1 runtime left (kept in ``golden/lockstep``), bit for bit, across every
+  space kind and v1 dtype, a vector env with NEXT_STEP autoreset, seeds and
+  chunking.
 - A served model (``Model(address)``) runs a lockstep env as it runs a gRPC one.
 - ``RemoteEnv`` drives a v2-native robot served in lockstep through its Gym
   view; a lockstep robot needs no rates or kinds.
@@ -12,8 +13,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 import time
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -169,6 +173,25 @@ class Hooks(rlmesh.RunHooks):
         )
 
 
+GOLDEN = Path(__file__).parent / "golden" / "lockstep"
+#: Rewriting the golden files from v1 runs.
+WRITING = bool(os.environ.get("RLMESH_WRITE_GOLDEN"))
+
+
+def _golden(name: str, traces: Any) -> None:
+    """Checks ``traces`` against the golden file ``name``: what the v1 runtime
+    left (written, from a v1 run, when ``RLMESH_WRITE_GOLDEN`` is set)."""
+    path = GOLDEN / f"{name}.json"
+    text = json.dumps(traces, indent=2) + "\n"
+    if WRITING:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return
+    assert json.loads(path.read_text()) == json.loads(text), (
+        f"traces differ from {path}"
+    )
+
+
 def _traces(make_env: Any, address: str, **run: Any) -> tuple[Any, ...]:
     log: list[str] = []
     server = rlmesh.EnvServer(make_env(log), address)
@@ -188,9 +211,10 @@ def _traces(make_env: Any, address: str, **run: Any) -> tuple[Any, ...]:
 def test_a_catalog_env_runs_unchanged_on_lockstep_with_seeds_and_chunking() -> None:
     run = {"seeds": [5, 6, 2**40, 8], "execution_horizon": 2}
     v1 = _traces(CatalogEnv, "127.0.0.1:0", **run)
-    lockstep = _traces(CatalogEnv, ":0/catalog", **run)
     assert v1[4] == 4 and v1[1] and v1[2]
-    assert lockstep == v1
+    _golden("catalog_chunked", v1)
+    if not WRITING:
+        _golden("catalog_chunked", _traces(CatalogEnv, ":0/catalog", **run))
 
 
 def test_a_next_step_vector_env_runs_unchanged_on_lockstep() -> None:
@@ -202,9 +226,10 @@ def test_a_next_step_vector_env_runs_unchanged_on_lockstep() -> None:
 
     run = {"episodes": 7}
     v1 = _traces(make, "127.0.0.1:0", **run)
-    lockstep = _traces(make, ":0/vector", **run)
     assert v1[4] == 7
-    assert lockstep == v1
+    _golden("vector_next_step", v1)
+    if not WRITING:
+        _golden("vector_next_step", _traces(make, ":0/vector", **run))
 
 
 def test_a_served_model_runs_a_lockstep_env_as_it_runs_a_grpc_one(
@@ -237,7 +262,9 @@ def test_a_served_model_runs_a_lockstep_env_as_it_runs_a_grpc_one(
     try:
         grpc = trace("127.0.0.1:0")
         assert len(grpc[2]) == 2
-        assert trace(":0/served") == grpc
+        _golden("served_model", grpc)
+        if not WRITING:
+            _golden("served_model", trace(":0/served"))
     finally:
         model.close()
         serving.join(10)

@@ -1,0 +1,60 @@
+[
+  [
+    "reset seed=5 options=None obs=bfc46efa511c0c5d",
+    "step action=b2ab9247a290aef5 reward=-0x1.861860db6db6ep-3 done=False obs=eba21d30da6f4c8e",
+    "step action=08b6efb9538f1f34 reward=0x1.26c4059249249p-1 done=False obs=08bb30f7160a535c",
+    "step action=69d581c0f4813bdc reward=0x1.31bcb50c30c30p-2 done=False obs=9985beb80adc8bc1",
+    "step action=dd3b57b9ef5470a0 reward=0x1.1c09c0cf3cf3dp-1 done=True obs=51df27ea99ba90af",
+    "reset seed=6 options=None obs=cfaa60bd3f032d2a",
+    "step action=bc339ed9b2a63211 reward=-0x1.d803e5db6db6ep-3 done=False obs=f95e93b8f55386c0",
+    "step action=ef24eb19ff1decee reward=0x1.ac2128de79e7ap-3 done=False obs=758f1d89cb5f68d9",
+    "step action=18b0783546630fe7 reward=-0x1.c09c0a4924925p-2 done=True obs=52017b4e993adbe7",
+    "reset seed=1099511627776 options=None obs=3a4dd02071a8a794",
+    "step action=3a3fc7901e76e33e reward=-0x1.4f7b5edb6db6ep-3 done=False obs=9c10554e8102bca4",
+    "step action=d5e74fbbe2575a49 reward=0x1.65e991acf3cf4p-1 done=False obs=79bafcf7520279cd",
+    "step action=0b144db9175b9914 reward=0x1.8a7bdb76db6dbp-2 done=False obs=4d037afd8e343084",
+    "step action=665de88c5deed8f4 reward=0x1.52a6c42492492p-1 done=False obs=3730adfb00ef6cf9",
+    "step action=4d8457bb1dc39ec2 reward=0x1.cefe89c30c30cp-1 done=True obs=043672e9559b646a",
+    "reset seed=8 options=None obs=37a3de7924972711",
+    "step action=e8c556346beb270c reward=-0x1.daf0e16db6db7p-2 done=False obs=d98e34c6bd415165",
+    "step action=ecb491e7396a54d4 reward=0x1.e991cc9e79e79p-3 done=False obs=4751b4c797b11180",
+    "step action=069759ea043d7a02 reward=0x1.3f63f68c30c30p-2 done=False obs=1835aefe4bb742b9",
+    "step action=7efec71ac2a01c6d reward=0x1.de991cd492492p-1 done=True obs=775e97c1064f2bc0"
+  ],
+  [
+    "2x bfc46efa511c0c5d",
+    "2x 08bb30f7160a535c",
+    "2x cfaa60bd3f032d2a",
+    "2x 758f1d89cb5f68d9",
+    "2x 3a4dd02071a8a794",
+    "2x 79bafcf7520279cd",
+    "2x 3730adfb00ef6cf9",
+    "2x 37a3de7924972711",
+    "2x 4751b4c797b11180"
+  ],
+  [
+    "0/0 action=b2ab9247a290aef5 reward=-0x1.861860db6db6ep-3 term=False trunc=False info=[('is_success', False), ('x', -0.3809523710182735)]",
+    "0/1 action=08b6efb9538f1f34 reward=0x1.26c4059249249p-1 term=False trunc=False info=[('is_success', False), ('x', 1.1514285547392709)]",
+    "0/2 action=69d581c0f4813bdc reward=0x1.31bcb50c30c30p-2 term=False trunc=False info=[('is_success', False), ('x', 0.5971428468113853)]",
+    "0/3 action=dd3b57b9ef5470a0 reward=0x1.1c09c0cf3cf3dp-1 term=True trunc=False info=[('is_success', True), ('x', 1.1095238214447385)]",
+    "1/0 action=bc339ed9b2a63211 reward=-0x1.d803e5db6db6ep-3 term=False trunc=False info=[('is_success', False), ('x', -0.46095236923013416)]",
+    "1/1 action=ef24eb19ff1decee reward=0x1.ac2128de79e7ap-3 term=False trunc=False info=[('is_success', False), ('x', 0.41809524400603204)]",
+    "1/2 action=18b0783546630fe7 reward=-0x1.c09c0a4924925p-2 term=False trunc=True info=[('is_success', False), ('x', -0.8761904920850482)]",
+    "2/0 action=3a3fc7901e76e33e reward=-0x1.4f7b5edb6db6ep-3 term=False trunc=False info=[('is_success', False), ('x', -0.327619058745248)]",
+    "2/1 action=d5e74fbbe2575a49 reward=0x1.65e991acf3cf4p-1 term=False trunc=False info=[('is_success', False), ('x', 1.3980952307936692)]",
+    "2/2 action=0b144db9175b9914 reward=0x1.8a7bdb76db6dbp-2 term=False trunc=False info=[('is_success', False), ('x', 0.7704762060727391)]",
+    "2/3 action=665de88c5deed8f4 reward=0x1.52a6c42492492p-1 term=False trunc=False info=[('is_success', False), ('x', 1.3228571500097002)]",
+    "2/4 action=4d8457bb1dc39ec2 reward=0x1.cefe89c30c30cp-1 term=False trunc=True info=[('is_success', False), ('x', 1.8085714436712719)]",
+    "3/0 action=e8c556346beb270c reward=-0x1.daf0e16db6db7p-2 term=False trunc=False info=[('is_success', False), ('x', -0.9276190229824611)]",
+    "3/1 action=ecb491e7396a54d4 reward=0x1.e991cc9e79e79p-3 term=False trunc=False info=[('is_success', False), ('x', 0.4780952426649275)]",
+    "3/2 action=069759ea043d7a02 reward=0x1.3f63f68c30c30p-2 term=False trunc=False info=[('is_success', False), ('x', 0.6238095327502204)]",
+    "3/3 action=7efec71ac2a01c6d reward=0x1.de991cd492492p-1 term=True trunc=False info=[('is_success', True), ('x', 1.8695238131497587)]"
+  ],
+  [
+    "seed=5 steps=4 reward=0x1.3d13045861862p+0 term=True trunc=False success=True",
+    "seed=6 steps=3 reward=-0x1.d68d68c79e79fp-2 term=False trunc=True success=False",
+    "seed=1099511627776 steps=5 reward=0x1.3e3b7d6649249p+1 term=False trunc=True success=False",
+    "seed=8 steps=4 reward=0x1.059b8d45b6db6p+0 term=True trunc=False success=True"
+  ],
+  4
+]
