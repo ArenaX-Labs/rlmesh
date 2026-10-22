@@ -1,5 +1,6 @@
 //! A multi-session host: one [`SessionHost`] per session of a tenant,
-//! started when its first participant appears.
+//! started when its first participant appears and stopped when its last
+//! one leaves.
 //!
 //! The server watches every participant's liveliness token in its tenant
 //! (`{tenant}/s/*/p/*`). A participant declares its token before it waits
@@ -9,7 +10,7 @@
 //! (`{tenant}/server`) tells a participant that a host here will serve its
 //! session, so one that finds only other sessions' hosts fails at once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -24,6 +25,9 @@ use crate::wire::SessionId;
 use crate::wire::keys::{session_of, session_server, tenant_participants};
 
 type Hosts = Arc<Mutex<HashMap<SessionId, SessionHost>>>;
+
+/// A participant's liveliness token appeared (`true`) or left.
+type Presence = (bool, SessionId, String);
 
 /// A running multi-session host. Dropping it stops its sessions; prefer
 /// [`SessionServer::shutdown`], which waits for them.
@@ -45,41 +49,60 @@ impl SessionServer {
         let control = transport.control().clone();
         let tenant_id = config.tenant.clone();
         let tenant = config.tenant.to_string();
-        let watch = control
-            .liveliness()
-            .declare_subscriber(tenant_participants(&tenant_id))
-            .history(true)
-            .callback({
-                let hosts = hosts.clone();
-                move |sample| {
-                    if sample.kind() != SampleKind::Put {
-                        return;
+        // Presence changes are applied in order, by one task.
+        let (presence, mut changes) = tokio::sync::mpsc::unbounded_channel::<Presence>();
+        tokio::spawn({
+            let hosts = hosts.clone();
+            async move {
+                let mut present: HashMap<SessionId, HashSet<String>> = HashMap::new();
+                while let Some((joined, session, key)) = changes.recv().await {
+                    let members = present.entry(session).or_default();
+                    if joined {
+                        members.insert(key);
+                    } else {
+                        members.remove(&key);
                     }
-                    let Some((key_tenant, session)) = session_of(sample.key_expr().as_str()) else {
-                        return;
-                    };
-                    if key_tenant != tenant {
-                        return;
+                    let empty = members.is_empty();
+                    if empty {
+                        present.remove(&session);
                     }
-                    let (hosts, transport) = (hosts.clone(), transport.clone());
-                    let config = HostConfig {
-                        session,
-                        ..config.clone()
-                    };
-                    tokio::spawn(async move {
-                        let mut hosts = hosts.lock().await;
-                        if hosts.contains_key(&session) {
-                            return;
-                        }
-                        match SessionHost::start(transport, config).await {
+                    let mut hosts = hosts.lock().await;
+                    if !empty && !hosts.contains_key(&session) {
+                        let config = HostConfig {
+                            session,
+                            ..config.clone()
+                        };
+                        match SessionHost::start(transport.clone(), config).await {
                             Ok(host) => {
                                 info!(%session, "session started for its first participant");
                                 hosts.insert(session, host);
                             }
                             Err(err) => warn!(%session, %err, "session did not start"),
                         }
-                    });
+                    } else if empty
+                        && !joined
+                        && let Some(host) = hosts.remove(&session)
+                    {
+                        info!(%session, "session stopped: its last participant left");
+                        host.shutdown().await;
+                    }
                 }
+            }
+        });
+        let watch = control
+            .liveliness()
+            .declare_subscriber(tenant_participants(&tenant_id))
+            .history(true)
+            .callback(move |sample| {
+                let key = sample.key_expr().as_str();
+                let Some((key_tenant, session)) = session_of(key) else {
+                    return;
+                };
+                if key_tenant != tenant {
+                    return;
+                }
+                let joined = sample.kind() == SampleKind::Put;
+                let _ = presence.send((joined, session, key.to_string()));
             })
             .await?;
         let server = control

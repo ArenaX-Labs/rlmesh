@@ -459,10 +459,15 @@ impl EnvServer {
         edition: Option<String>,
     ) -> Result<EnvServer> {
         let options = EnvServerOptions {
-            // In-process on the v2 lockstep path when the build has it: the
-            // run's driver then calls the env directly.
+            // In-process on the v2 lockstep path when the build has it, in a
+            // session of this process's shared host: the run's driver then
+            // calls the env directly.
             #[cfg(feature = "lockstep")]
-            address: Some(":0/env".into()),
+            address: Some(format!(
+                "{}/env",
+                crate::lockstep::local_run_session()
+                    .map_err(|err| Error::Internal(err.to_string()))?
+            )),
             options: Some(ServeOptions {
                 workflow_edition: edition,
                 drain_timeout: Some(Duration::from_millis(100)),

@@ -57,6 +57,6 @@ pub use rlmesh_session::address::is_v2_address;
 pub use served::{GymEnv, Reset, Served, Step};
 pub use session::{
     ConnectOptions, Declared, Driven, LockstepAddress, LockstepBinding, ServeOptions, bind, check,
-    connect, connect_driver, connect_view, lockstep_robot_map,
+    connect, connect_driver, connect_view, local_run_session, lockstep_robot_map,
 };
 pub use view::{Frame, GymView};

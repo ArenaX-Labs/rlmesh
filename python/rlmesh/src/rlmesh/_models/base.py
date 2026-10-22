@@ -1561,9 +1561,10 @@ class ModelBase(Generic[ObsT, ActT]):
                 try:
                     server = EnvServer(
                         cast("VectorServerEnvLike", env_obj),
-                        # In-process on the v2 lockstep path: the run's driver
-                        # calls the env directly.
-                        ":0/env",
+                        # In-process on the v2 lockstep path, in a session of
+                        # this process's shared host: the run's driver calls
+                        # the env directly.
+                        f"{load_native('local_run_session')()}/env",
                         framework=getattr(env_obj, "_bridge", None),
                         options=(
                             load_native("ServeOptions")(

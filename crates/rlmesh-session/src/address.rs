@@ -746,7 +746,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn one_host_serves_many_named_sessions_and_refuses_fast_where_it_cannot() {
+    async fn one_host_serves_many_named_sessions_stops_empty_ones_and_refuses_fast_where_it_cannot()
+    {
         let grace = Duration::from_millis(250);
         let mut host = place(&Address::session(":0").expect("parse"), grace)
             .await
@@ -771,7 +772,23 @@ mod tests {
         let lab = join(base, "robot-lab")
             .await
             .expect("and another beside it");
-        drop((bench, lab));
+        let server = &host.hosted.as_ref().expect("hosted here").0;
+        let running = server.sessions().await;
+        assert!(
+            running.contains(&session_id("bench-3")) && running.contains(&session_id("robot-lab"))
+        );
+        // A session stops when its last participant leaves.
+        bench.close().await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while server.sessions().await.contains(&session_id("bench-3")) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bench-3 never stopped"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(server.sessions().await.contains(&session_id("robot-lab")));
+        drop(lab);
         host.close().await.expect("close");
 
         // A plain single-session host cannot start sessions: refused at once.

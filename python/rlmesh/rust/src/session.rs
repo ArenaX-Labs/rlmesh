@@ -84,6 +84,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRecorder>()?;
     m.add_function(wrap_pyfunction!(parse_address, m)?)?;
     m.add_function(wrap_pyfunction!(is_v2_address, m)?)?;
+    m.add_function(wrap_pyfunction!(local_run_session, m)?)?;
     crate::lockstep::register(m)?;
     Ok(())
 }
@@ -134,6 +135,22 @@ def is_v2_address(text: str) -> bool: ...
 #[pyfunction]
 fn is_v2_address(text: &str) -> bool {
     rlmesh_session::address::is_v2_address(text)
+}
+
+/// A fresh session on this process's shared in-process host, for a run's
+/// local env.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def local_run_session() -> str: ...
+"#
+    )
+)]
+#[pyfunction]
+fn local_run_session() -> PyResult<String> {
+    rlmesh::lockstep::local_run_session().map_err(crate::lockstep::gym_err)
 }
 
 /// An address refused as the ValueError class, without the error's kind.

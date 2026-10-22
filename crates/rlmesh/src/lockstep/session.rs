@@ -137,6 +137,44 @@ fn local_handler(key: &str) -> Option<Arc<dyn LockstepHandler>> {
         .and_then(Weak::upgrade)
 }
 
+/// A fresh session on this process's shared in-process host, for a run's
+/// local env. The host starts once, on OS-assigned local ports, and lives
+/// for the process; each run's session stops when its participants leave,
+/// so many runs cost one host.
+pub fn local_run_session() -> Result<String, GymError> {
+    static HOST: OnceLock<std::result::Result<SocketAddr, String>> = OnceLock::new();
+    let base = HOST
+        .get_or_init(|| {
+            // Its own thread and runtime: a caller inside an async context
+            // cannot block on it, and the host outlives every run.
+            std::thread::spawn(|| {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .thread_name("rlmesh-local-host")
+                    .enable_all()
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let placed = runtime
+                    .block_on(rlmesh_session::address::host_at(
+                        SocketAddr::from(([127, 0, 0, 1], 0)),
+                        rlmesh_session::address::DEFAULT_SESSION,
+                        LEASE_GRACE,
+                    ))
+                    .map_err(|e| e.to_string())?;
+                let base = placed.address.base;
+                // Both live for the process.
+                std::mem::forget(placed);
+                std::mem::forget(runtime);
+                Ok(base)
+            })
+            .join()
+            .unwrap_or_else(|_| Err("the in-process host panicked".into()))
+        })
+        .clone()
+        .map_err(GymError::Config)?;
+    Ok(format!("{base}/run-{}", uuid_suffix()))
+}
+
 /// Joins `session` as `id`.
 async fn join(
     session: &SessionAddress,
@@ -168,7 +206,13 @@ pub async fn lockstep_session(
         listen: vec![format!("tcp/{}", SocketAddr::new(listen_ip(base), 0))],
         connect: vec![format!("tcp/{base}")],
     };
-    let config = zenoh_config(&endpoints, &TransportTuning::default())?;
+    let mut config = zenoh_config(&endpoints, &TransportTuning::default())?;
+    // Return once the host is connected rather than waiting out the scouting
+    // delay for gossiped peers: a driver probes the queryable it calls
+    // (`wait_ready`) before its first request anyway.
+    config
+        .insert_json5("open/return_conditions/connect_scouted", "false")
+        .map_err(|e| GymError::Config(e.to_string()))?;
     zenoh::open(config)
         .await
         .map_err(|e| GymError::Closed(e.to_string()))

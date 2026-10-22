@@ -91,6 +91,7 @@ __all__ = [
     "dict_space_spec",
     "discrete_space_spec",
     "is_v2_address",
+    "local_run_session",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
     "normalize_connect_address",
@@ -1168,6 +1169,8 @@ def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
 def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> SpaceSpec: ...
 
 def is_v2_address(text: str) -> bool: ...
+
+def local_run_session() -> str: ...
 
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
