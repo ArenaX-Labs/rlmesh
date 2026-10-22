@@ -1125,7 +1125,7 @@ fn protocol_error_to_env_error(error: impl ToString) -> EnvError {
 ///
 /// The runtime sends the reserved `trial_index` option as a list in lane order
 /// when a reset restarts several lanes (see
-/// [`rlmesh_runtime::reset_options_for`]), but each lane here is a scalar env
+/// [`crate::run::runtime::reset_options_for`]), but each lane here is a scalar env
 /// that gets its own `reset`: handing it the whole list leaves
 /// `trial_index(options, None)` unable to read an ordinal. Narrow the list to
 /// this lane's element; every other key rides through unchanged. A list that
@@ -1139,7 +1139,8 @@ fn lane_reset_options(
     let Some(options) = options else {
         return Ok(None);
     };
-    let Some(spaces::MetaValue::List(trials)) = options.get(rlmesh_runtime::TRIAL_INDEX_OPTION)
+    let Some(spaces::MetaValue::List(trials)) =
+        options.get(crate::run::runtime::TRIAL_INDEX_OPTION)
     else {
         return Ok(Some(options.clone()));
     };
@@ -1149,14 +1150,14 @@ fn lane_reset_options(
             format!(
                 "reset option `{}` is a list of {} entries but this reset covers {lanes} lanes; \
                  send one ordinal per lane, in lane order",
-                rlmesh_runtime::TRIAL_INDEX_OPTION,
+                crate::run::runtime::TRIAL_INDEX_OPTION,
                 trials.len(),
             ),
         ));
     };
     let mut sliced = options.clone();
     sliced.insert(
-        rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+        crate::run::runtime::TRIAL_INDEX_OPTION.to_string(),
         trial.clone(),
     );
     Ok(Some(sliced))
@@ -2044,7 +2045,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_env_close_timeout_detaches_the_session() {
-        use rlmesh_runtime::RuntimeEnv;
+        use crate::run::runtime::RuntimeEnv;
 
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -2408,7 +2409,7 @@ mod tests {
 
     fn trial_list(trials: &[i64]) -> spaces::MetaMap {
         [(
-            rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+            crate::run::runtime::TRIAL_INDEX_OPTION.to_string(),
             spaces::MetaValue::List(trials.iter().copied().map(spaces::MetaValue::Int).collect()),
         )]
         .into_iter()
@@ -2423,7 +2424,7 @@ mod tests {
         for (pos, expected) in [(0, 7), (1, 8), (2, 9)] {
             let sliced = lane_reset_options(Some(&options), pos, 3).unwrap().unwrap();
             assert_eq!(
-                sliced.get(rlmesh_runtime::TRIAL_INDEX_OPTION),
+                sliced.get(crate::run::runtime::TRIAL_INDEX_OPTION),
                 Some(&spaces::MetaValue::Int(expected)),
             );
             // Every other key rides through untouched.
@@ -2437,7 +2438,7 @@ mod tests {
         // A bare integer (the single-lane encoding) and a map without the key
         // are both passed on as they are.
         let scalar: spaces::MetaMap = [(
-            rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+            crate::run::runtime::TRIAL_INDEX_OPTION.to_string(),
             spaces::MetaValue::Int(4),
         )]
         .into_iter()
@@ -2511,9 +2512,11 @@ mod tests {
             .unwrap()
             .iter()
             .map(|options| {
-                options
-                    .as_ref()
-                    .and_then(|options| options.get(rlmesh_runtime::TRIAL_INDEX_OPTION).cloned())
+                options.as_ref().and_then(|options| {
+                    options
+                        .get(crate::run::runtime::TRIAL_INDEX_OPTION)
+                        .cloned()
+                })
             })
             .collect::<Vec<_>>();
         trials.sort_by_key(|trial| match trial {

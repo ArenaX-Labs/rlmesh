@@ -295,7 +295,7 @@ impl fmt::Display for StepEvent {
 }
 
 /// The facade result of a native run's report (0-based index, seconds).
-pub(crate) fn from_report(report: &rlmesh_runtime::RuntimeReport) -> RunResult {
+pub(crate) fn from_report(report: &crate::run::runtime::RuntimeReport) -> RunResult {
     RunResult {
         advisories: report
             .advisories
@@ -309,7 +309,7 @@ pub(crate) fn from_report(report: &rlmesh_runtime::RuntimeReport) -> RunResult {
 }
 
 pub(crate) fn episode_from_summary(
-    episode: &rlmesh_runtime::spec::EpisodeSummary,
+    episode: &crate::run::runtime::spec::EpisodeSummary,
 ) -> EpisodeResult {
     EpisodeResult {
         index: episode.episode_index - 1,
@@ -327,8 +327,10 @@ pub(crate) fn episode_from_summary(
 }
 
 /// One row per `(op, component, metric)` of a telemetry snapshot.
-pub(crate) fn telemetry_rows(snapshot: &rlmesh_runtime::telemetry::Snapshot) -> Vec<TelemetryRow> {
-    use rlmesh_runtime::telemetry::Kind;
+pub(crate) fn telemetry_rows(
+    snapshot: &crate::run::runtime::telemetry::Snapshot,
+) -> Vec<TelemetryRow> {
+    use crate::run::runtime::telemetry::Kind;
     snapshot
         .rows
         .iter()

@@ -6,18 +6,19 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use prost::bytes::Bytes;
-use rlmesh_proto::Edition;
-use rlmesh_proto::env::v1::{
-    EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
-};
-use rlmesh_proto::spaces::v1::{BoxSpec, DataType, DictSpec, SpaceSpec, box_spec, space_spec};
-use rlmesh_runtime::{
+use rlmesh::binding::runtime::{
     ActionReceivedEvent, Advisory, DType, EndpointPhases, HookError, Leg, ObservationEmittedEvent,
     PayloadFacts, PeerCeiling, RefusingRelayPolicy, RelayAdvisoryEvent, RelayDecision, RelayPolicy,
     RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError, RuntimeHooks,
     RuntimeSessionSpec,
 };
+use rlmesh_proto::Edition;
+use rlmesh_proto::env::v1::{
+    EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
+};
+use rlmesh_proto::spaces::v1::{BoxSpec, DataType, DictSpec, SpaceSpec, box_spec, space_spec};
 
+#[path = "runtime_common/mod.rs"]
 mod common;
 
 use common::*;

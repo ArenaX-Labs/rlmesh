@@ -336,13 +336,13 @@ fn a_lane_endpoint_with_partial_resets_and_per_lane_seeds_runs_unchanged_on_lock
 // --- the managed shape: a served model server, driven by the v1 runtime ----
 
 use async_trait::async_trait;
+use rlmesh::binding::runtime::{
+    NoopRuntimeHooks, RuntimeDriver, RuntimeEnv, RuntimeError, RuntimeModel,
+    RuntimeModelPrediction, RuntimeSessionSpec,
+};
 use rlmesh_proto::model::v1::{
     AdapterContext, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
     ResolveAdapterRequest,
-};
-use rlmesh_runtime::{
-    NoopRuntimeHooks, RuntimeDriver, RuntimeEnv, RuntimeError, RuntimeModel,
-    RuntimeModelPrediction, RuntimeSessionSpec,
 };
 
 /// A served model's gRPC client as a runtime model (the managed runner's
@@ -403,7 +403,7 @@ async fn drive_managed<E: RuntimeEnv + Clone + 'static>(
     mut model: rlmesh_grpc::ModelClient,
     selected: String,
     episodes: u64,
-) -> rlmesh_runtime::RuntimeReport {
+) -> rlmesh::binding::runtime::RuntimeReport {
     model
         .resolve_adapter(ResolveAdapterRequest {
             context: Some(AdapterContext {

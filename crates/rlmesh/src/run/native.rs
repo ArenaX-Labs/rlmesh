@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::run::runtime::{
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
+    ObservationEmittedEvent, RuntimeHooks, StepCompletedEvent,
+};
 use async_trait::async_trait;
 use rlmesh_grpc::wire::{
     decode_batched_partial_values, leaves_value, meta_map_from_proto, space_spec_from_proto,
-};
-use rlmesh_runtime::{
-    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    ObservationEmittedEvent, RuntimeHooks, StepCompletedEvent,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -340,7 +340,7 @@ async fn run_body(
             relay.attach(port.clone());
             Arc::clone(relay) as Arc<dyn RuntimeHooks>
         }
-        None => Arc::new(rlmesh_runtime::NoopRuntimeHooks),
+        None => Arc::new(crate::run::runtime::NoopRuntimeHooks),
     };
     let shared = Arc::clone(&plan.shared);
     let trust = plan.trust;

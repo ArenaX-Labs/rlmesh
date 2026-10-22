@@ -12,6 +12,7 @@ mod lent;
 mod native;
 mod options;
 mod results;
+pub mod runtime;
 mod session;
 mod targets;
 

@@ -228,5 +228,5 @@ pub struct RelayAdvisoryEvent {
 pub struct TelemetrySnapshotEvent {
     pub session_id: String,
     pub route: RuntimeEnvContext,
-    pub snapshot: crate::telemetry::Snapshot,
+    pub snapshot: crate::run::runtime::telemetry::Snapshot,
 }

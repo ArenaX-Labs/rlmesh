@@ -112,7 +112,7 @@ def _success_flag(value: object) -> bool | None:
     """One info value as a task outcome, or ``None`` when its kind carries none.
 
     Matches the native runtime (`success_from_final_info` in
-    crates/rlmesh-runtime `driver.rs`) over the value as it crosses the wire:
+    crates/rlmesh/src/run/runtime `driver.rs`) over the value as it crosses the wire:
     NumPy scalars and 0-d arrays unwrap to Python scalars first (as metadata
     encoding does), then a bool is taken as-is and an integer or float is
     true when non-zero. Any other kind -- a string, ``None``, a list -- is

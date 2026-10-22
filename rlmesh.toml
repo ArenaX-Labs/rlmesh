@@ -151,15 +151,6 @@ role = "core"
 publish = true
 
 [[artifact]]
-id = "cargo:rlmesh-runtime"
-ecosystem = "cargo"
-name = "rlmesh-runtime"
-manifest = "crates/rlmesh-runtime/Cargo.toml"
-version = "0.2.0-alpha.0"
-role = "core"
-publish = true
-
-[[artifact]]
 id = "cargo:rlmesh-session-core"
 ecosystem = "cargo"
 name = "rlmesh-session-core"

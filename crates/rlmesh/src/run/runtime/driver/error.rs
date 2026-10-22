@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::hooks::HookError;
+use crate::run::runtime::hooks::HookError;
 
 /// Type-erased structured error preserved as the `#[source]` of RPC failures.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -42,8 +42,8 @@ pub enum RuntimeError {
         /// construction by the adapter, which owns the structured error.
         recoverable: bool,
         /// The structured underlying error, preserved so callers can downcast
-        /// or inspect the chain. `rlmesh-runtime` does not depend on
-        /// `rlmesh-grpc`, so the concrete type is erased here.
+        /// or inspect the chain. The driver does not name
+        /// `rlmesh-grpc`'s types, so the concrete type is erased here.
         #[source]
         source: Option<BoxError>,
     },

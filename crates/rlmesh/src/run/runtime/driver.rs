@@ -10,7 +10,7 @@
 //! every result is applied as it lands while later groups go out behind it.
 //!
 //! Records per-op telemetry and fans every state change out to the session's
-//! [`RuntimeHooks`](crate::hooks::RuntimeHooks).
+//! [`RuntimeHooks`](crate::run::runtime::hooks::RuntimeHooks).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -36,15 +36,17 @@ use rlmesh_spaces::Advisory;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::hooks::{
+use crate::run::runtime::hooks::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, Leg, LogEvent, LogLevel,
     ObservationEmittedEvent, PayloadFacts, RefusingRelayPolicy, RelayAdvisoryEvent, RelayDecision,
     RelayPolicy, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent, SessionFailedEvent,
     SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
-use crate::spec::{ENV_RESET_OPTIONS_KEY, RuntimeReport, RuntimeSessionSpec, reset_options_for};
-use crate::state::{RequestPhase, RouteSnapshot, RouteState, StartedEpisode};
-use crate::telemetry::{Aggregator, Horizon, Sample, Source, metrics};
+use crate::run::runtime::spec::{
+    ENV_RESET_OPTIONS_KEY, RuntimeReport, RuntimeSessionSpec, reset_options_for,
+};
+use crate::run::runtime::state::{RequestPhase, RouteSnapshot, RouteState, StartedEpisode};
+use crate::run::runtime::telemetry::{Aggregator, Horizon, Sample, Source, metrics};
 
 mod error;
 
@@ -1906,7 +1908,7 @@ where
             .iter()
             .map(|metadata| metadata.env_index)
             .collect();
-        let now_ns = crate::state::now_unix_ns();
+        let now_ns = crate::run::runtime::state::now_unix_ns();
         state
             .slots_at(positions)
             .into_iter()
@@ -1965,7 +1967,7 @@ where
             let seed = state.seed_for_episode(&completed.episode_id);
             let trial_index = state.trial_for_episode(&completed.episode_id);
             if self.spec.max_episodes.is_some() {
-                state.record_episode_summary(crate::spec::EpisodeSummary {
+                state.record_episode_summary(crate::run::runtime::spec::EpisodeSummary {
                     episode_index: record.as_ref().map_or(0, |record| record.index),
                     env_index,
                     seed,
@@ -2174,7 +2176,7 @@ where
     }
 
     /// The target leg's ceiling, `None` when that peer runs in-process.
-    fn ceiling(&self, leg: Leg) -> Option<&crate::spec::PeerCeiling> {
+    fn ceiling(&self, leg: Leg) -> Option<&crate::run::runtime::spec::PeerCeiling> {
         match leg {
             Leg::EnvToModel => self.spec.model_ceiling.as_ref(),
             Leg::ModelToEnv => self.spec.env_ceiling.as_ref(),

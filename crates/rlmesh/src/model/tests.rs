@@ -1134,7 +1134,7 @@ async fn served_model_close_detaches_and_shutdown_runs_close_hook_once() {
 
 #[tokio::test]
 async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
-    use rlmesh_runtime::RuntimeEnv;
+    use crate::run::runtime::RuntimeEnv;
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let env_address = format!("tcp://{}", listener.local_addr().unwrap());
@@ -2952,10 +2952,10 @@ async fn remote_model_offers_history_only_to_a_model_that_advertises_it() {
 /// dtype, the capabilities it advertises, and the wire message cap.
 #[tokio::test]
 async fn served_legs_learn_this_builds_ceilings() {
+    use crate::run::runtime::PeerCeiling;
     use rlmesh_proto::capabilities::{
         ENV_SUBSET_STEP, MODEL_CONCURRENT_PREDICT_V1, MODEL_OBSERVATION_HISTORY_V1,
     };
-    use rlmesh_runtime::PeerCeiling;
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let env_address = format!("tcp://{}", listener.local_addr().unwrap());

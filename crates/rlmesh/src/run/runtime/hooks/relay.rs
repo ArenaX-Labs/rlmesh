@@ -12,7 +12,7 @@ use prost::bytes::Bytes;
 use rlmesh_proto::spaces::v1::{SpaceSpec, space_spec::Spec};
 use rlmesh_spaces::{Advisory, DType};
 
-use crate::spec::PeerCeiling;
+use crate::run::runtime::spec::PeerCeiling;
 
 /// Which way a relayed payload travels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +117,7 @@ pub enum RelayDecision {
 /// Consulted for the env contract at session start and for every observation
 /// and action after the transform hooks, only on a leg whose ceiling the spec
 /// carries (an in-process leg has none). Install one with
-/// [`RuntimeDriver::with_relay_policy`](crate::RuntimeDriver::with_relay_policy);
+/// [`RuntimeDriver::with_relay_policy`](crate::run::runtime::RuntimeDriver::with_relay_policy);
 /// the default is [`RefusingRelayPolicy`].
 ///
 /// The contract call is advisory-only: the driver records a

@@ -26,7 +26,7 @@ async-trait = { workspace = true }
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+thiserror = { workspace = true }
 zenoh = { workspace = true, optional = true }
 rlmesh-spaces = { workspace = true }
 rlmesh-adapters = { workspace = true }
@@ -34,7 +34,7 @@ rlmesh-grpc = { workspace = true }
 # The v2 lockstep transport (`lockstep://` env addresses, protocol v2 §12).
 rlmesh-session = { workspace = true, features = ["record"], optional = true }
 rlmesh-proto = { workspace = true }
-rlmesh-runtime = { workspace = true }
+prost = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tempfile = { workspace = true }
 zip = { version = "2", default-features = false }
@@ -52,7 +52,7 @@ scoped-tls-hkt = "0.1.5"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tonic = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
@@ -78,11 +78,9 @@ lockstep = [
   "dep:blake3",
   "dep:bytes",
   "dep:rlmesh-session",
-  "dep:thiserror",
   "dep:zenoh",
   "serde_json/float_roundtrip",
   "serde_json/raw_value",
-  "tokio/macros",
 ]
 
 [lints]

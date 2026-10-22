@@ -96,7 +96,7 @@ pub fn reset_options_for(
 
 /// What one served peer can decode, learned at its handshake. The driver checks
 /// every payload it relays against the target leg's ceiling through the
-/// session's [`RelayPolicy`](crate::RelayPolicy), not against the session
+/// session's [`RelayPolicy`](crate::run::runtime::RelayPolicy), not against the session
 /// edition alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerCeiling {
@@ -338,8 +338,8 @@ impl RuntimeSessionSpec {
         rlmesh_proto::defaults(self.workflow_edition)
     }
 
-    pub fn env_context(&self) -> crate::hooks::RuntimeEnvContext {
-        crate::hooks::RuntimeEnvContext {
+    pub fn env_context(&self) -> crate::run::runtime::hooks::RuntimeEnvContext {
+        crate::run::runtime::hooks::RuntimeEnvContext {
             env_id: self.env_id.clone(),
             env_component_id: self.env_component_id.clone(),
             model_component_id: self.model_component_id.clone(),
@@ -442,7 +442,7 @@ pub struct RuntimeReport {
     pub episodes: Vec<EpisodeSummary>,
     /// Session-total telemetry aggregate (per-op latency/percentiles/bytes) —
     /// the durable pull counterpart to the live `RuntimeHooks::on_telemetry` push.
-    pub telemetry: crate::telemetry::Snapshot,
+    pub telemetry: crate::run::runtime::telemetry::Snapshot,
     /// Each distinct advisory the relay policy raised, in first-raised order.
     pub advisories: Vec<Advisory>,
 }

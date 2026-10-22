@@ -351,7 +351,7 @@ One per `Model`, in the Rust facade, used by every binding.
 - An evict-all `ResetAdapter` (no ids) or a `ReleaseAdapter` for `env_id`
   drops that env's entries silently, serialized behind in-flight corner calls,
   and fires no `on_episode_end` (MDL-8). An abandoned or timed-out
-  `ResetAdapter` (`crates/rlmesh-runtime/src/driver.rs:2087-2106`) still leaks
+  `ResetAdapter` (`crates/rlmesh/src/run/runtime/driver.rs:2087-2106`) still leaks
   until release; the capacity refusal is the backstop.
 
 ### Lifetime and threading

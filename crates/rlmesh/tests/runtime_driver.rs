@@ -13,15 +13,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, StreamExt};
+use rlmesh::binding::runtime::{
+    EndpointPhases, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
+    RuntimeSessionSpec,
+};
 use rlmesh_proto::env::v1::{
     EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
 };
 use rlmesh_proto::spaces::v1::{MetaValue, meta_value};
-use rlmesh_runtime::{
-    EndpointPhases, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
-    RuntimeSessionSpec,
-};
 
+#[path = "runtime_common/mod.rs"]
 mod common;
 
 use common::*;
@@ -2415,9 +2416,9 @@ fn a_multi_lane_reset_sends_the_trial_ordinals_as_a_list_in_lane_order() {
     let mut spec = trial_spec(1, &["trial_index"]);
     declare_reset_options(&mut spec, &["trial_index"]);
 
-    let options = rlmesh_runtime::reset_options_for(
+    let options = rlmesh::binding::runtime::reset_options_for(
         &spec.env_contract,
-        rlmesh_runtime::TRIAL_INDEX_OPTION,
+        rlmesh::binding::runtime::TRIAL_INDEX_OPTION,
         &[41, 42],
     )
     .expect("a declaring env receives options");

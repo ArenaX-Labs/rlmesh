@@ -18,12 +18,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use rlmesh::binding::runtime::{RuntimeDriver, RuntimeError, RuntimeReport, RuntimeSessionSpec};
 use rlmesh_proto::core::v1::AutoresetMode;
 use rlmesh_proto::spaces::v1::{MetaMap, meta_value};
 use rlmesh_proto::{Edition, EditionDefaults};
-use rlmesh_runtime::{RuntimeDriver, RuntimeError, RuntimeReport, RuntimeSessionSpec};
 use serde_json::{Value, json};
 
+#[path = "runtime_common/mod.rs"]
 mod common;
 
 use common::*;
@@ -35,7 +36,7 @@ const REFUSAL_PREFIX_CHARS: usize = 100;
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/2026.06")
+        .join("tests/fixtures/runtime/2026.06")
         .join(format!("{name}.json"))
 }
 

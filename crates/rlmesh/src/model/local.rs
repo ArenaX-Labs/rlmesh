@@ -1,6 +1,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::run::runtime::{
+    PeerCeiling, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
+    RuntimeHooks, RuntimeModel, RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
+};
 use async_trait::async_trait;
 #[cfg(feature = "lockstep")]
 use rlmesh_grpc::wire::{decode_batched_partial_values, meta_map_from_proto, meta_map_to_proto};
@@ -9,10 +13,6 @@ use rlmesh_grpc::wire::{
 };
 use rlmesh_proto::model::v1::{PredictRequest, ResetAdapterRequest};
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
-use rlmesh_runtime::{
-    PeerCeiling, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
-    RuntimeHooks, RuntimeModel, RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
-};
 
 use super::handler::{ModelHandler, PredictFrames};
 use super::wire::{
@@ -237,7 +237,7 @@ impl RuntimeEnv for DrivenEnv {
     async fn reset(
         &mut self,
         request: rlmesh_proto::env::v1::ResetRequest,
-    ) -> std::result::Result<RuntimeEnvReset, rlmesh_runtime::RuntimeError> {
+    ) -> std::result::Result<RuntimeEnvReset, crate::run::runtime::RuntimeError> {
         match self {
             Self::Grpc(env) => env.reset(request).await,
             #[cfg(feature = "lockstep")]
@@ -248,7 +248,7 @@ impl RuntimeEnv for DrivenEnv {
     async fn step(
         &mut self,
         request: rlmesh_proto::env::v1::StepRequest,
-    ) -> std::result::Result<RuntimeEnvStep, rlmesh_runtime::RuntimeError> {
+    ) -> std::result::Result<RuntimeEnvStep, crate::run::runtime::RuntimeError> {
         match self {
             Self::Grpc(env) => env.step(request).await,
             #[cfg(feature = "lockstep")]
@@ -471,8 +471,8 @@ pub(crate) fn empty_report() -> RuntimeReport {
         total_steps: 0,
         total_episodes: 0,
         episodes: Vec::new(),
-        telemetry: rlmesh_runtime::telemetry::Snapshot {
-            horizon: rlmesh_runtime::telemetry::Horizon::Session,
+        telemetry: crate::run::runtime::telemetry::Snapshot {
+            horizon: crate::run::runtime::telemetry::Horizon::Session,
             rows: Vec::new(),
         },
         advisories: Vec::new(),
@@ -545,13 +545,13 @@ fn run_error(error: RuntimeError) -> Error {
 }
 
 /// Adapts a connected [`rlmesh_grpc::EnvClient`] to the [`RuntimeEnv`] trait
-/// expected by [`rlmesh_runtime::RuntimeDriver`].
+/// expected by [`crate::run::runtime::RuntimeDriver`].
 ///
 /// Use this to drive a remote environment from your own `RuntimeDriver`
 /// embedding without re-implementing the per-call telemetry choreography: the
 /// adapter takes the client's last-operation telemetry after each `reset`/`step`
 /// and attaches it to the runtime result for you, and it maps transport errors
-/// onto recoverable/non-recoverable [`rlmesh_runtime::RuntimeError`]s.
+/// onto recoverable/non-recoverable [`crate::run::runtime::RuntimeError`]s.
 #[derive(Clone)]
 pub struct EnvClientRuntimeEnv {
     inner: rlmesh_grpc::EnvClient,
@@ -574,10 +574,10 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
     async fn reset(
         &mut self,
         request: rlmesh_proto::env::v1::ResetRequest,
-    ) -> std::result::Result<RuntimeEnvReset, rlmesh_runtime::RuntimeError> {
+    ) -> std::result::Result<RuntimeEnvReset, crate::run::runtime::RuntimeError> {
         let response = self.inner.reset(request).await.map_err(|err| {
             let recoverable = err.is_recoverable();
-            rlmesh_runtime::RuntimeError::env_rpc_with_recoverability(
+            crate::run::runtime::RuntimeError::env_rpc_with_recoverability(
                 "env.reset",
                 0,
                 recoverable,
@@ -594,10 +594,10 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
     async fn step(
         &mut self,
         request: rlmesh_proto::env::v1::StepRequest,
-    ) -> std::result::Result<RuntimeEnvStep, rlmesh_runtime::RuntimeError> {
+    ) -> std::result::Result<RuntimeEnvStep, crate::run::runtime::RuntimeError> {
         let response = self.inner.step(request).await.map_err(|err| {
             let recoverable = err.is_recoverable();
-            rlmesh_runtime::RuntimeError::env_rpc_with_recoverability(
+            crate::run::runtime::RuntimeError::env_rpc_with_recoverability(
                 "env.step",
                 0,
                 recoverable,
@@ -623,7 +623,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
 }
 
 /// Adapts a [`ModelHandler`] to the [`RuntimeModel`] trait expected by
-/// [`rlmesh_runtime::RuntimeDriver`].
+/// [`crate::run::runtime::RuntimeDriver`].
 ///
 /// Use this to drive your handler from your own `RuntimeDriver` embedding. The
 /// adapter decodes the runtime's predict request into a
@@ -691,12 +691,12 @@ where
     async fn predict(
         &self,
         request: PredictRequest,
-    ) -> std::result::Result<RuntimeModelPrediction, rlmesh_runtime::RuntimeError> {
+    ) -> std::result::Result<RuntimeModelPrediction, crate::run::runtime::RuntimeError> {
         self.predict_group(vec![request])
             .await
             .pop()
             .unwrap_or_else(|| {
-                Err(rlmesh_runtime::RuntimeError::model_rpc(
+                Err(crate::run::runtime::RuntimeError::model_rpc(
                     "local-model",
                     Error::model("predict_grouped returned no result"),
                 ))
@@ -710,7 +710,7 @@ where
     async fn predict_group(
         &self,
         requests: Vec<PredictRequest>,
-    ) -> Vec<std::result::Result<RuntimeModelPrediction, rlmesh_runtime::RuntimeError>> {
+    ) -> Vec<std::result::Result<RuntimeModelPrediction, crate::run::runtime::RuntimeError>> {
         let started = Instant::now();
         let model_err = model_rpc;
         let Some(action_space) = self.env_contract.action_space.clone() else {
@@ -726,8 +726,9 @@ where
         // Prepare every group; one that fails to decode reports its own error
         // and is left out of the batch.
         let mut batch = Vec::with_capacity(requests.len());
-        let mut prepared: Vec<std::result::Result<PreparedGroup, rlmesh_runtime::RuntimeError>> =
-            Vec::with_capacity(requests.len());
+        let mut prepared: Vec<
+            std::result::Result<PreparedGroup, crate::run::runtime::RuntimeError>,
+        > = Vec::with_capacity(requests.len());
         for request in requests {
             match model_observation_from_endpoint_request(request) {
                 Ok(mut observation) => {

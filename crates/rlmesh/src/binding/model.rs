@@ -88,8 +88,8 @@ pub async fn run_model_local_async(
     model: &Model,
     options: RunLocalOptions,
     cancellation: tokio_util::sync::CancellationToken,
-    hooks: Arc<dyn rlmesh_runtime::RuntimeHooks>,
-) -> Result<rlmesh_runtime::RuntimeReport> {
+    hooks: Arc<dyn crate::run::runtime::RuntimeHooks>,
+) -> Result<crate::run::runtime::RuntimeReport> {
     crate::model::run_local(model, options, cancellation, hooks).await
 }
 
@@ -97,7 +97,7 @@ pub async fn run_model_local_async(
 pub fn run_model_local(
     model: &Model,
     options: RunLocalOptions,
-) -> Result<rlmesh_runtime::RuntimeReport> {
+) -> Result<crate::run::runtime::RuntimeReport> {
     if crate::env::server::in_async_context() {
         return Err(Error::Runtime(
             "run_model_local() blocks; call run_model_local_async() from async code".to_string(),
@@ -111,7 +111,7 @@ pub fn run_model_local(
         model,
         options,
         tokio_util::sync::CancellationToken::new(),
-        Arc::new(rlmesh_runtime::NoopRuntimeHooks),
+        Arc::new(crate::run::runtime::NoopRuntimeHooks),
     ))
 }
 

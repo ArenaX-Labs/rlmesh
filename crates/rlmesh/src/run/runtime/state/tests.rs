@@ -1,4 +1,4 @@
-use crate::spec::{RuntimeLimits, RuntimeSessionSpec};
+use crate::run::runtime::spec::{RuntimeLimits, RuntimeSessionSpec};
 
 use super::*;
 

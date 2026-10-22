@@ -16,9 +16,9 @@ use rlmesh_proto::spaces::v1::SpaceValue;
 
 use std::collections::{HashMap, HashSet};
 
-use crate::episodes::{EpisodeRecord, EpisodeRecordRegistry};
-use crate::hooks::RuntimeEnvContext;
-use crate::spec::{EpisodeSummary, RuntimeSessionSpec};
+use crate::run::runtime::episodes::{EpisodeRecord, EpisodeRecordRegistry};
+use crate::run::runtime::hooks::RuntimeEnvContext;
+use crate::run::runtime::spec::{EpisodeSummary, RuntimeSessionSpec};
 
 use super::{EpisodeState, RouteSnapshot, SlotState, StartedEpisode};
 

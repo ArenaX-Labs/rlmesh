@@ -51,7 +51,6 @@ CRATE_ORDER = [
     "rlmesh-session-core",
     "rlmesh-session",
     "rlmesh-cli",
-    "rlmesh-runtime",
     "rlmesh-grpc",
     "rlmesh",
 ]

@@ -7,7 +7,6 @@ default-members = [
   "crates/rlmesh-cockpit",
   "crates/rlmesh-grpc",
   "crates/rlmesh-proto",
-  "crates/rlmesh-runtime",
   "crates/rlmesh-session",
   "crates/rlmesh-session-core",
   "crates/rlmesh-spaces",
@@ -36,7 +35,6 @@ rlmesh-adapters = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-adapters" 
 rlmesh-cli = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-cli" }
 rlmesh-grpc = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-grpc" }
 rlmesh-proto = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-proto" }
-rlmesh-runtime = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-runtime" }
 rlmesh-session = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-session", default-features = false }
 rlmesh-session-core = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-session-core" }
 rlmesh-spaces = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-spaces" }

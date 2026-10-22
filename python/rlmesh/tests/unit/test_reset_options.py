@@ -53,7 +53,7 @@ class _TrialFactory(rlmesh.EnvFactory):
 
 
 def test_reset_options_key_matches_the_runtime_constant() -> None:
-    # Pinned against `ENV_RESET_OPTIONS_KEY` in crates/rlmesh-runtime/src/spec.rs
+    # Pinned against `ENV_RESET_OPTIONS_KEY` in crates/rlmesh/src/run/runtime/spec.rs
     # (this name is re-exported from it, so the literal is the contract).
     assert rlmesh.ENV_RESET_OPTIONS_KEY == "rlmesh.env.v1.reset_options"
 

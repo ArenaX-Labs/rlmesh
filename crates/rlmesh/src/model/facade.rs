@@ -1238,8 +1238,8 @@ pub(crate) async fn run_local(
     model: &Model,
     options: super::worker::RunLocalOptions,
     cancellation: tokio_util::sync::CancellationToken,
-    hooks: Arc<dyn rlmesh_runtime::RuntimeHooks>,
-) -> Result<rlmesh_runtime::RuntimeReport> {
+    hooks: Arc<dyn crate::run::runtime::RuntimeHooks>,
+) -> Result<crate::run::runtime::RuntimeReport> {
     let shared = model.shared();
     shared.check_not_reentrant("run")?;
     shared.admit()?;

@@ -1,6 +1,6 @@
-//! Shared fake env/model/hook harness for the `rlmesh-runtime` integration
-//! tests. `driver.rs` asserts the runtime's behavior against it; the sealed
-//! edition fingerprint in `edition_2026_06.rs` drives the same fakes, so both
+//! Shared fake env/model/hook harness for the runtime driver's integration
+//! tests. `runtime_driver.rs` asserts the runtime's behavior against it; the sealed
+//! edition fingerprint in `runtime_edition_2026_06.rs` drives the same fakes, so both
 //! test binaries observe one stimulus, not two drifting copies.
 #![allow(dead_code)]
 
@@ -13,6 +13,11 @@ use async_trait::async_trait;
 use futures::channel::{mpsc, oneshot};
 use futures::future::Shared;
 use prost::bytes::Bytes;
+use rlmesh::binding::runtime::{
+    ActionReceivedEvent, EndpointPhases, HookError, RuntimeDriver, RuntimeEnv, RuntimeEnvReset,
+    RuntimeEnvStep, RuntimeError, RuntimeHooks, RuntimeModel, RuntimeModelPrediction,
+    RuntimeSessionSpec,
+};
 use rlmesh_proto::core::v1::{EnvContract, EnvSpec};
 use rlmesh_proto::env::v1::{
     EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
@@ -21,11 +26,6 @@ use rlmesh_proto::model::v1::{
     PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
 };
 use rlmesh_proto::spaces::v1::{MetaMap, MetaValue, SpaceSpec, SpaceValue, meta_value};
-use rlmesh_runtime::{
-    ActionReceivedEvent, EndpointPhases, HookError, RuntimeDriver, RuntimeEnv, RuntimeEnvReset,
-    RuntimeEnvStep, RuntimeError, RuntimeHooks, RuntimeModel, RuntimeModelPrediction,
-    RuntimeSessionSpec,
-};
 
 #[derive(Debug, thiserror::Error)]
 #[error("simulated transport failure")]
@@ -408,7 +408,7 @@ impl RuntimeHooks for RecordingHooks {
 
     async fn transform_observation(
         &self,
-        event: rlmesh_runtime::ObservationEmittedEvent,
+        event: rlmesh::binding::runtime::ObservationEmittedEvent,
     ) -> Result<Option<Vec<Bytes>>, HookError> {
         let Some(marker) = self.observation_marker else {
             return Ok(event.observation);
@@ -428,7 +428,7 @@ impl RuntimeHooks for RecordingHooks {
 
     async fn observation_emitted(
         &self,
-        event: rlmesh_runtime::ObservationEmittedEvent,
+        event: rlmesh::binding::runtime::ObservationEmittedEvent,
     ) -> Result<(), HookError> {
         let first_leaf = |leaves: Option<Vec<Bytes>>| {
             leaves
@@ -451,7 +451,7 @@ impl RuntimeHooks for RecordingHooks {
 
     async fn step_completed(
         &self,
-        event: rlmesh_runtime::StepCompletedEvent,
+        event: rlmesh::binding::runtime::StepCompletedEvent,
     ) -> Result<(), HookError> {
         self.note_event("step", vec![event.episode_id]);
         self.step_infos
@@ -471,7 +471,7 @@ impl RuntimeHooks for RecordingHooks {
 
     async fn episode_started(
         &self,
-        event: rlmesh_runtime::EpisodeStartedEvent,
+        event: rlmesh::binding::runtime::EpisodeStartedEvent,
     ) -> Result<(), HookError> {
         self.note_event("started", vec![event.episode_id]);
         self.started_seeds
@@ -487,7 +487,7 @@ impl RuntimeHooks for RecordingHooks {
 
     async fn episode_completed(
         &self,
-        event: rlmesh_runtime::EpisodeCompletedEvent,
+        event: rlmesh::binding::runtime::EpisodeCompletedEvent,
     ) -> Result<(), HookError> {
         self.note_event("completed", vec![event.episode_id]);
         self.completed_seeds
@@ -503,7 +503,7 @@ impl RuntimeHooks for RecordingHooks {
 
     async fn session_ended(
         &self,
-        _event: rlmesh_runtime::SessionEndedEvent,
+        _event: rlmesh::binding::runtime::SessionEndedEvent,
     ) -> Result<(), HookError> {
         self.ended.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -511,12 +511,12 @@ impl RuntimeHooks for RecordingHooks {
 
     async fn on_telemetry(
         &self,
-        event: rlmesh_runtime::TelemetrySnapshotEvent,
+        event: rlmesh::binding::runtime::TelemetrySnapshotEvent,
     ) -> Result<(), HookError> {
         let rows = event.snapshot.rows.len();
-        if event.snapshot.horizon == rlmesh_runtime::telemetry::Horizon::Window {
+        if event.snapshot.horizon == rlmesh::binding::runtime::telemetry::Horizon::Window {
             self.telemetry_windows.fetch_add(1, Ordering::SeqCst);
-        } else if event.snapshot.horizon == rlmesh_runtime::telemetry::Horizon::Session {
+        } else if event.snapshot.horizon == rlmesh::binding::runtime::telemetry::Horizon::Session {
             self.telemetry_sessions.fetch_add(1, Ordering::SeqCst);
             self.telemetry_session_rows
                 .fetch_max(rows, Ordering::SeqCst);
@@ -526,7 +526,7 @@ impl RuntimeHooks for RecordingHooks {
 
     async fn session_failed(
         &self,
-        _event: rlmesh_runtime::SessionFailedEvent,
+        _event: rlmesh::binding::runtime::SessionFailedEvent,
     ) -> Result<(), HookError> {
         self.failed.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -874,7 +874,11 @@ pub fn declare_reset_options(spec: &mut RuntimeSessionSpec, declared: &[&str]) {
         })),
     };
     spec.env_contract.spec.as_mut().expect("env spec").metadata = Some(MetaMap {
-        entries: [(rlmesh_runtime::ENV_RESET_OPTIONS_KEY.to_string(), options)].into(),
+        entries: [(
+            rlmesh::binding::runtime::ENV_RESET_OPTIONS_KEY.to_string(),
+            options,
+        )]
+        .into(),
     });
 }
 

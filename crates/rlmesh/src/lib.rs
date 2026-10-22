@@ -170,6 +170,8 @@ pub const DESCRIBE_METADATA_KEY: &str = rlmesh_adapters::v1::DESCRIBE_METADATA_K
 
 /// The describe envelope's schema version.
 pub const DESCRIBE_SCHEMA_VERSION: i64 = rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION as i64;
+#[doc(no_inline)]
+pub use crate::run::runtime::ENV_RESET_OPTIONS_KEY;
 pub use env::{
     Env, EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, EnvServer, EnvServerOptions, MadeEnv,
     RemoteEnv, RemoteEnvOptions, RemoteVectorEnv, ServedEnv, TagParam, Transport, Variant,
@@ -187,8 +189,6 @@ pub use recorder::{
     EpisodeRecord, MediaRef, Recorder, RecorderAddOptions, RecorderCaptureOptions,
     RecorderExportOptions, RecorderOptions, RecorderToDictOptions, WorkloadRecord,
 };
-#[doc(no_inline)]
-pub use rlmesh_runtime::ENV_RESET_OPTIONS_KEY;
 pub use run::{
     EnvTarget, EpisodeResult, FrameSources, ModelTarget, RANDOM_SAMPLE, RandomSample, ReadFn,
     ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult, Session,
@@ -205,7 +205,7 @@ pub use warnings::{Warning, WarningCategory, WarningHandler, set_warning_handler
 /// Mint one fresh routing/episode id (UUIDv7 — time-ordered, sortable by creation,
 /// never repeats). The single id-format home for this crate's id authorities (the
 /// direct env client and the in-process / remote model paths). The runtime driver
-/// mints its own ids in `rlmesh-runtime` (it does not depend on this crate).
+/// (`run::runtime`) mints its own.
 pub(crate) fn mint_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }

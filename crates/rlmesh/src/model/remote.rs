@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::run::runtime::PeerCeiling;
 use rlmesh_grpc::wire::{
     decode_batched_partial_values, encode_batched_partial_values, env_spec_to_proto,
 };
@@ -8,7 +9,6 @@ use rlmesh_proto::model::v1::{
     AdapterContext, EpisodeInfo, ObservationHistoryFrame, PredictRequest, ReleaseAdapterRequest,
     ResetAdapterRequest, ResolveAdapterRequest,
 };
-use rlmesh_runtime::PeerCeiling;
 use uuid::Uuid;
 
 use std::time::Duration;
@@ -326,7 +326,7 @@ impl ModelClient {
     }
 
     /// What the served model can decode: the `model_ceiling` a
-    /// [`RuntimeSessionSpec`](rlmesh_runtime::RuntimeSessionSpec) relaying to
+    /// [`RuntimeSessionSpec`](crate::run::runtime::RuntimeSessionSpec) relaying to
     /// it carries.
     pub fn ceiling(&self) -> &PeerCeiling {
         &self.ceiling

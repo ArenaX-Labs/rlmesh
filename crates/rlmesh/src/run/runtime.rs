@@ -1,8 +1,10 @@
-//! RLMesh single-session runtime driver.
-//!
-//! Shared `reset -> predict -> step` semantics for one ready model/environment
-//! session. Scheduling, endpoint pools, route fan-out, and cluster lifecycle
-//! live elsewhere.
+//! The single-session runtime driver: shared `reset -> predict -> step`
+//! semantics for one ready model/environment session. Public to bindings
+//! through `binding::runtime`.
+
+// Moved from the `rlmesh-runtime` crate, which did not document every
+// public item.
+#![allow(missing_docs)]
 
 mod driver;
 pub mod hooks;
@@ -29,11 +31,3 @@ pub use spec::{
     ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeLimits, RuntimeReport, RuntimeSessionSpec,
     TRIAL_INDEX_OPTION, declares_reset_option, reset_options_for,
 };
-
-/// Protocol types used by the runtime public API.
-///
-/// Runtime traits and hooks name generated `rlmesh_proto::*::v1` types directly.
-/// Re-exporting the crate gives implementors the version-correct path. Protocol
-/// regeneration or a major `prost`/`tonic` bump is therefore a runtime breaking
-/// change.
-pub use rlmesh_proto;

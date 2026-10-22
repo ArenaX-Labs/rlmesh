@@ -1,7 +1,7 @@
 //! Plain state records shared across the route-state module: per-slot state, a
 //! point-in-time snapshot, and the started-episode handoff.
 
-use crate::episodes::EpisodeRecord;
+use crate::run::runtime::episodes::EpisodeRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EpisodeState {

@@ -5197,6 +5197,7 @@ dependencies = [
  "image",
  "indexmap 2.14.0",
  "libc",
+ "prost",
  "rand 0.10.1",
  "rav1e",
  "rayon",
@@ -5204,7 +5205,6 @@ dependencies = [
  "rlmesh-adapters",
  "rlmesh-grpc",
  "rlmesh-proto",
- "rlmesh-runtime",
  "rlmesh-session",
  "rlmesh-spaces",
  "scoped-tls-hkt",
@@ -5371,25 +5371,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "rlmesh-runtime"
-version = "0.2.0-alpha.0"
-dependencies = [
- "async-trait",
- "futures",
- "prost",
- "rlmesh-proto",
- "rlmesh-spaces",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "uuid",

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rlmesh_runtime::RuntimeReport;
+use crate::run::runtime::RuntimeReport;
 
 use super::handler::ModelHandler;
 use super::server::BoundModelServer;
@@ -338,7 +338,7 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
         self.run_local_hooked_async(
             options,
             cancellation,
-            Arc::new(rlmesh_runtime::NoopRuntimeHooks),
+            Arc::new(crate::run::runtime::NoopRuntimeHooks),
         )
         .await
     }
@@ -350,7 +350,7 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
         mut self,
         options: impl Into<RunLocalOptions>,
         cancellation: tokio_util::sync::CancellationToken,
-        hooks: Arc<dyn rlmesh_runtime::RuntimeHooks>,
+        hooks: Arc<dyn crate::run::runtime::RuntimeHooks>,
     ) -> Result<RuntimeReport> {
         let options = options.into();
         let close_model = options.close_model;
