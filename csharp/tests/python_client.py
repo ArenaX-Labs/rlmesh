@@ -1,20 +1,12 @@
 """Drive a C#-served env through the supported Python surface."""
 
-import importlib.util
+import builtins
 import sys
-from pathlib import Path
 
-import grpc
 import rlmesh
-import rlmesh._client._remote_base as remote_base
 import rlmesh.numpy
 
 address, scenario, *expected_text = sys.argv[1:]
-
-# TODO: dial a session address once the C API serves envs on sessions (the
-# parity step). Until then a C#-served env is a v1 endpoint, which Python 0.2
-# refuses; this test client alone lifts the refusal to keep checking the wire.
-remote_base.refuse_v1_address = lambda where, address: None
 
 
 def remote_env() -> rlmesh.numpy.RemoteEnv:
@@ -22,7 +14,7 @@ def remote_env() -> rlmesh.numpy.RemoteEnv:
 
 
 def random_episodes(count: int) -> None:
-    """The episodes ``rlmesh.run(rlmesh.RANDOM_SAMPLE, ...)`` ran on v1."""
+    """Random episodes, each to its end."""
     with remote_env() as env:
         for _ in range(count):
             env.reset()
@@ -33,31 +25,6 @@ def random_episodes(count: int) -> None:
 
 
 if scenario == "normal":
-    # Reuse the repository's raw protobuf probe codec; no generated stubs or
-    # dependency on Python's private env-client internals is needed.
-    spec = importlib.util.spec_from_file_location(
-        "crossver", Path(__file__).resolve().parents[2] / "tests/system/crossver.py"
-    )
-    assert spec is not None and spec.loader is not None
-    codec = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = codec
-    spec.loader.exec_module(codec)
-    info = rlmesh.build_info()
-    core = codec._text(1, info.protocol_generation)
-    for edition in info.supported_workflow_editions:
-        core += codec._text(4, edition)
-    with grpc.insecure_channel(address.removeprefix("tcp://")) as channel:
-        raw = channel.unary_unary("/rlmesh.env.v1.EnvService/Handshake")(
-            codec._delimited(1, core), timeout=10
-        )
-    base = codec._message(codec._decode(raw), 1)
-    peer = codec._message(base, 2)
-    assert bool(base.get(1, [0])[0])
-    # ABI 5's host_runtime_json changes the served describe envelope only.
-    # PeerInfo still belongs to the native process; E-3's assertion that this
-    # option changes handshake language is not supported by the real ABI.
-    assert codec._string(peer, 3), "missing native PeerInfo language"
-
     random_episodes(3)
 elif scenario == "dict":
     import numpy as np
@@ -88,6 +55,12 @@ else:
                 scenario == "recoverable"
             )
             expected = expected_text[0]
-            assert str(error) == f"[INTERNAL] step failed: {expected}", str(error)
+            builtin = getattr(builtins, scenario, None)
+            if builtin is not None:
+                # The env's builtin class arrives with its own message.
+                assert isinstance(error, builtin), type(error).__mro__
+                assert str(error) == expected and error.phase == "step", str(error)
+            else:
+                assert str(error) == f"[INTERNAL] step failed: {expected}", str(error)
         else:
             raise AssertionError("expected an environment failure")

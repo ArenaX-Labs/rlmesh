@@ -122,6 +122,25 @@ def gate_tests(env):
         print(f"NativeGate {name}: passed")
 
 
+def native_gate(env, project, assembly):
+    """The Gymnasium gate's rows over the project's env, driven from Python 0.2."""
+    run([*DOTNET_BUILD, str(project)], env=env)
+    program = project.parent / "bin/Debug/net10.0" / assembly
+    run(
+        [
+            "uv",
+            "run",
+            "--no-sync",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "python/rlmesh/tests/conformance/native_gate.py",
+        ],
+        env=dict(env, RLMESH_NATIVE_GATE=f"dotnet {program}"),
+    )
+
+
 def compile_tests(env):
     """Compile C# 9 fixtures and check the two intentionally refused conversions."""
     project = CSHARP / "tests/Compile/Compile.csproj"
@@ -223,6 +242,7 @@ def main():
             ],
             env=env,
         )
+    native_gate(env, CSHARP / "tests/Gate/Gate.csproj", "Gate.dll")
     run(["python", str(CSHARP / "tools/benchmark.py")], env=env)
     print(
         "C# foundation: both assembly suites, ABI/layout, gate and C# 9 fixtures passed"

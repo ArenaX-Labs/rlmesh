@@ -86,7 +86,9 @@ static class Program
 ```
 
 Construction binds the address and can throw `ConnectionError`. The default
-address is `tcp://127.0.0.1:0`; pass `EnvServerOptions.Address` to choose one.
+address is `:0/env`, the env `env` in a session of its own on an OS-assigned
+local port; pass `EnvServerOptions.Address` (`host:port/session/name`) to choose
+one. Python dials the printed address: `rlmesh.numpy.RemoteEnv(address)`.
 `Wait(TimeSpan.Zero)` polls; `Shutdown()` drains and closes the environment
 once if it implements `IClose` and `CloseEnvOnShutdown` is true (the default).
 `Dispose()` releases resources and never throws. After disposal, native

@@ -8,7 +8,7 @@ maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]
 dependencies = ["rlmesh"]
 
 [dependency-groups]
-csharp = ["rlmesh[numpy]", "grpcio==1.75.1", "pyyaml==6.0.3"]
+csharp = ["rlmesh[gymnasium,numpy]", "pytest==8.4.2", "pyyaml==6.0.3"]
 dev = [
   "basedpyright==1.36.1",
   "ruff==0.14.9",

@@ -445,20 +445,21 @@ public sealed unsafe class FoundationTests
         }
         finally { stop.Cancel(); Assert.True(collector.Join(Deadline)); }
         server.Shutdown(); Assert.True(server.Wait(TimeSpan.Zero));
+        // A builtin class names the scenario: Python raises it too.
         (Exception error, string text, string scenario)[] failures = {
             (new RLMeshException("library"), "library", "plain"),
             (new ProtocolException("protocol"), "protocol", "plain"),
             (new EnvironmentException("env"), "env", "plain"),
             (new RecoverableEnvironmentException("again"), "again", "recoverable"),
-            (new ValueError("value"), "value", "plain"),
-            (new TypeError("type"), "type", "plain"),
-            (new RuntimeError("runtime"), "runtime", "plain"),
-            (new OSError("os"), "os", "plain"),
-            (new ConnectionError("connect"), "connect", "plain"),
-            (new TimeoutError("time"), "time", "plain"),
+            (new ValueError("value"), "value", "ValueError"),
+            (new TypeError("type"), "type", "TypeError"),
+            (new RuntimeError("runtime"), "runtime", "RuntimeError"),
+            (new OSError("os"), "os", "OSError"),
+            (new ConnectionError("connect"), "connect", "ConnectionError"),
+            (new TimeoutError("time"), "time", "TimeoutError"),
             (new InvalidOperationException("managed"), "managed", "plain"),
-            (new ValueError("bad\0\uD800text"), "bad\uFFFD\uFFFDtext", "sanitized"),
-            (new ThrowingMessageException(), "ThrowingMessageException: message unavailable", "unavailable"),
+            (new ValueError("bad\0\uD800text"), "bad\uFFFD\uFFFDtext", "ValueError"),
+            (new ThrowingMessageException(), "ThrowingMessageException: message unavailable", "plain"),
         };
         foreach (var failure in failures)
         {
@@ -510,7 +511,8 @@ public sealed unsafe class FoundationTests
     [Fact]
     public void BindFailuresReleaseLibraryOwnerAndOptionsAreValidated()
     {
-        using var live = new EnvServer(new Counter());
+        // A v1 port in use fails the bind at construction.
+        using var live = new EnvServer(new Counter(), new() { Address = "tcp://127.0.0.1:0" });
         var authored = new Counter();
         Assert.Throws<ConnectionError>(() => new EnvServer(authored, new() { Address = live.Address }));
         using var recovered = Env.For(authored);
