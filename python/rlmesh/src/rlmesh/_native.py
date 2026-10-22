@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, TypeVar, final
 
-from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
+from ._client import RemoteEnvBase, RemoteVectorEnvBase
 from ._models.base import ModelBase
 from ._sandbox import SandboxEnvBase, SandboxVectorEnvBase
 from ._sandbox._model import SandboxModel
+from ._upgrade import RemoteModel
 from ._value_conversion import ValueBridge, identity_bridge
 from .types import Value
 
@@ -27,16 +28,6 @@ class RemoteEnv(RemoteEnvBase[Value, Value]):
 
     Observations and actions stay RLMesh-native values; see
     :class:`rlmesh.numpy.RemoteEnv` for NumPy leaves.
-    """
-
-    _bridge: ClassVar[ValueBridge] = identity_bridge
-
-
-@final
-class RemoteModel(RemoteModelBase[Value, Value]):
-    """Dependency-free client for a model already served on an endpoint.
-
-    Bind it to an environment with :func:`rlmesh.run` or :func:`rlmesh.session`.
     """
 
     _bridge: ClassVar[ValueBridge] = identity_bridge

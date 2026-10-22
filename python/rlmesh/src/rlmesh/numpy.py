@@ -7,7 +7,7 @@ from abc import ABC
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, TypeVar, cast, final
 
 from ._authoring import EnvFactory as _EnvFactory
-from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
+from ._client import RemoteEnvBase, RemoteVectorEnvBase
 from ._client._gym import GymEnv, GymVectorEnv
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
@@ -19,6 +19,7 @@ from ._sandbox import (
     SandboxVectorEnvBase,
 )
 from ._sandbox._model import SandboxModel
+from ._upgrade import RemoteModel
 from ._value_conversion import UNHANDLED, FrameworkBridge, ValueBridge
 from .spaces import Space
 from .spaces import space_from_spec as _space_from_spec
@@ -229,26 +230,6 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue], GymEnv):  # pyright: igno
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
     _gym: ClassVar[bool] = True
-
-
-@final
-class RemoteModel(RemoteModelBase[NumpyValue, NumpyValue]):
-    """NumPy-backed handle to a served model (policy).
-
-    Bind it to an env with ``rlmesh.session(model, env)`` to get a :class:`rlmesh.Session`
-    whose ``predict`` accepts and returns NumPy values, driven symmetrically with the env.
-
-    Examples:
-        >>> import rlmesh
-        >>> from rlmesh.numpy import RemoteEnv, RemoteModel
-        >>> env = RemoteEnv("127.0.0.1:5555")
-        >>> sess = rlmesh.session(RemoteModel("127.0.0.1:5556"), env)
-        >>> obs, _ = sess.reset(seed=0)
-        >>> action = sess.predict(obs)
-        >>> obs, reward, terminated, truncated, _ = sess.step(action)
-    """
-
-    _bridge: ClassVar[ValueBridge] = _numpy_bridge
 
 
 @final

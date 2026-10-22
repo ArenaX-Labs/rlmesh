@@ -27,11 +27,10 @@ while not sess.done:
     obs, reward, terminated, truncated, _ = sess.step(action)
 ```
 
-`rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)` runs your prebuilt tag directly — no recipe, no build — and opens a route configured from the env's contract. The identical loop drives the un-managed pair by swapping the model construction:
+`rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)` runs your prebuilt tag directly — no recipe, no build — and opens a route configured from the env's contract. A model served on a session is reached by its participant address and run against the env:
 
 ```python
-env = rlmesh.RemoteEnv(env_address)
-sess = rlmesh.session(rlmesh.RemoteModel(model_address), env)
+result = rlmesh.Model(model_address).run(rlmesh.RemoteEnv(env_address), episodes=1)
 ```
 
 ## The bare protocol contract

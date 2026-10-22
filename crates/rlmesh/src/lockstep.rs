@@ -52,7 +52,7 @@ pub use client::{Keep, LockstepClient};
 pub use error::GymError;
 pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
-pub use model::{ModelBinding, ModelConnection, ModelLink, ModelService};
+pub use model::{ModelBinding, ModelConnection, ModelLink, ModelService, ServedModel};
 pub use rlmesh_session::address::is_v2_address;
 pub use served::{GymEnv, Reset, Served, Step};
 pub use session::{

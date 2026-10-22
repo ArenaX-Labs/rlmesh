@@ -62,7 +62,7 @@ _NATIVE_CHUNK_WITHOUT_CORNER = (
 
 
 def _served_handle(model: object) -> bool:
-    """Whether ``model`` is a served handle (``RemoteModel`` / ``SandboxModel``).
+    """Whether ``model`` is a served handle (a ``SandboxModel``).
 
     A served handle binds itself via its own ``.session``; a local
     :class:`ModelBase` (or a subclass class) is normalized through
@@ -557,6 +557,32 @@ class ModelBase(Generic[ObsT, ActT]):
     #: down to the horizon.
     native_chunk: int | None = None
 
+    def _served(self, address: str) -> Callable[[object], object]:
+        """Take ``address`` as a served model's; the predict stand-in it returns refuses."""
+        from .._rlmesh import is_v2_address, parse_address
+
+        if not is_v2_address(address):
+            raise ValueError(
+                f"Model({address!r}): a served model is reached by its participant "
+                "address (e.g. 'lab:7447/openpi'); 0.2 no longer dials a v1 model "
+                "endpoint"
+            )
+        parsed = parse_address(address)
+        if not parsed.get("participant"):
+            raise ValueError(
+                f"Model({address!r}) names no model: end the address with the model's "
+                "name, e.g. 'lab:7447/openpi'"
+            )
+        self._served_address = address
+
+        def served_only(observation: object) -> object:
+            raise TypeError(
+                f"Model({address!r}) is served elsewhere and predicts per env: run it, "
+                "bind it to a target, or serve it"
+            )
+
+        return served_only
+
     @classmethod
     def describe(cls) -> dict[str, Any]:
         """Return this model's full metadata envelope (see :func:`rlmesh.describe`)."""
@@ -654,6 +680,11 @@ class ModelBase(Generic[ObsT, ActT]):
             return cast("Corner", getattr(self, method_name))
 
         corners = {name: _overridden(name) for name in _CORNERS}
+        #: A served model's participant address (``Model("lab:7447/openpi")``):
+        #: runs, bindings and serves then drive that model.
+        self._served_address: str | None = None
+        if isinstance(source, str):
+            source = self._served(source)
         #: Whether this subclass loads in ``__init__`` (after its declarations
         #: are checked); the served-construction path suppresses it and calls
         #: ``load(**binding)`` itself once the params are resolved.
@@ -1036,6 +1067,11 @@ class ModelBase(Generic[ObsT, ActT]):
         from .._load_native import load_native
         from ._eval import resolve_adapter
 
+        if self._served_address is not None:
+            served: PyModel = load_native("PyModel").served(self._served_address)
+            self._worker = served
+            return served
+
         spec = self.spec
         bridge = self._bridge
         raw_predict = self._raw_predict
@@ -1352,7 +1388,9 @@ class ModelBase(Generic[ObsT, ActT]):
             raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
         declared_edition = self._declared_workflow_edition(workflow_edition)
         self._require_device_support()
-        if execution_horizon > 1 and self._raw_predict_chunk is None:
+        # A served model's corners and adapter are its own, resolved there.
+        served = self._served_address is not None
+        if execution_horizon > 1 and self._raw_predict_chunk is None and not served:
             warnings.warn(
                 f"execution_horizon={execution_horizon} was requested but "
                 "the model defines no predict_chunk(); running un-chunked.",
@@ -1504,7 +1542,10 @@ class ModelBase(Generic[ObsT, ActT]):
             if address is None:
                 from .._server import EnvServer, VectorServerEnvLike
 
-                if not hasattr(env_obj, "single_observation_space"):
+                if (
+                    not hasattr(env_obj, "single_observation_space")
+                    and self._served_address is None
+                ):
                     from ._connect import local_contract
                     from ._resolve import resolve_adapter
 
@@ -1700,7 +1741,7 @@ class ModelBase(Generic[ObsT, ActT]):
         token = self._calls.register_serve(worker.stop_serving)
         _serving_models[id(self)] = self
         try:
-            if is_v2_address(address):
+            if name is not None:
                 worker.serve(address, declared, name)
             else:
                 worker.serve(address, declared)
@@ -1813,8 +1854,8 @@ def as_model(model: object) -> ModelBase[Any, Any]:
     A ``Model`` instance is used as-is; a ``Model`` subclass *class* is instantiated
     once. Anything else is refused: the library never picks a framework for a bare
     predict callable or policy object, so the caller wraps it in the ``Model`` whose
-    arrays it expects. (Served ``RemoteModel`` / ``SandboxModel`` handles bind via
-    their own ``.session`` and never reach here.)
+    arrays it expects. (A served ``SandboxModel`` handle binds via
+    its own ``.session`` and never reaches here.)
     """
     if isinstance(model, ModelBase):
         return cast("ModelBase[Any, Any]", model)
@@ -1878,7 +1919,7 @@ def session(
     """Bind a model to an env and return a :class:`Session` to drive by hand or via run().
 
     ``model`` is a local :class:`Model` (instance, subclass class, or a bare predict
-    callable) or a served handle (:class:`RemoteModel` / :class:`SandboxModel`); ``env``
+    callable) or a served handle (:class:`SandboxModel`); ``env``
     is a local env, an :class:`~rlmesh.EnvFactory`, a remote-env handle, or an address
     string. A spec'd model resolves its adapter from the env's tags -- a local env must
     carry them (via :func:`rlmesh.adapters.tag` or an :class:`~rlmesh.EnvFactory`).
@@ -1930,7 +1971,7 @@ def session(
             view=view,
             workflow_edition=resolve_workflow_edition(call=workflow_edition),
         )
-    # A handle that knows how to bind itself -- Model, RemoteModel, SandboxModel -- has
+    # A handle that knows how to bind itself -- Model, SandboxModel -- has
     # its own ``.session``; a subclass class is instantiated, anything else refused.
     binder = getattr(model, "session", None)
     if callable(binder) and not isinstance(model, type):
@@ -1995,7 +2036,7 @@ def run(
     (> 0) is the native loop's async inference: the next chunk is predicted
     while that many replay frames of the current one remain, from an observation
     up to ``prefetch_lead`` steps stale, so the result is not comparable to a
-    synchronous run. A served :class:`RemoteModel` / :class:`SandboxModel` (and
+    synchronous run. A served :class:`SandboxModel` (and
     the :data:`rlmesh.RANDOM_SAMPLE` baseline) runs through its own session
     loop, which supports every parameter except ``prefetch_lead``. ``hooks``
     and ``instruction`` work on both; the live viewer (``view``) is the session

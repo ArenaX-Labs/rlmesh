@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import socket
-import threading
-import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -93,72 +90,6 @@ def model() -> Any:
     return Model(lambda obs: np.zeros(2, np.float32))
 
 
-@pytest.fixture
-def served_model(declared_edition: str, monkeypatch: pytest.MonkeyPatch) -> str:
-    """A model endpoint declaring ``declared_edition``, on a background thread."""
-    monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        address = f"127.0.0.1:{probe.getsockname()[1]}"
-    thread = threading.Thread(
-        target=lambda: model().serve(
-            address, options=ServeOptions(workflow_edition=declared_edition)
-        ),
-        daemon=True,
-    )
-    thread.start()
-    return address
-
-
-def connect_model_with_retry(
-    address: str, env: Any, workflow_edition: str | None = None
-) -> Any:
-    import rlmesh
-
-    deadline = time.monotonic() + 5.0
-    last_error: BaseException | None = None
-    while time.monotonic() < deadline:
-        try:
-            return rlmesh.session(
-                rlmesh.RemoteModel(address), env, workflow_edition=workflow_edition
-            )
-        except ConnectionError as exc:  # the server may still be binding
-            last_error = exc
-            time.sleep(0.05)
-    raise AssertionError(f"model server at {address} never came up") from last_error
-
-
-def test_a_served_model_session_declares_on_the_model_leg(
-    served_env: str,
-    served_model: str,
-    declared_edition: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # The model leg is the other half of the runtime tier: a process-wide
-    # declaration has to reach it too, or one session's two legs could settle on
-    # different editions with no diagnostic.
-    monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, declared_edition)
-    from rlmesh.numpy import RemoteEnv
-
-    env = RemoteEnv(served_env, workflow_edition=declared_edition)
-    try:
-        assert env._session_offer()[1] == declared_edition
-        session = connect_model_with_retry(served_model, env, declared_edition)
-        try:
-            assert session.selected_workflow_edition == COHORT
-            assert (
-                session.selected_workflow_edition.partition("-")[0] == declared_edition
-            )
-            # The env leg is pinned to that same floor as its first Join message;
-            # a refused pin would fail this reset before any Reset went out.
-            session.reset()
-            assert env.selected_workflow_edition == session.selected_workflow_edition
-        finally:
-            session.close()
-    finally:
-        env.close()
-
-
 @pytest.mark.parametrize("random_baseline", [False, True])
 def test_public_wrappers_forward_the_call_pin(
     served_env: str,
@@ -177,23 +108,6 @@ def test_public_wrappers_forward_the_call_pin(
         policy, served_env, episodes=1, workflow_edition=declared_edition
     )
     assert len(result.episodes) == 1
-
-
-def test_a_served_model_session_refuses_an_edition_this_build_cannot_drive(
-    served_env: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Refused where the operator typed it, before the model leg is dialed at all
-    # (the address below is not listening, and never gets reached).
-    import rlmesh
-    from rlmesh.numpy import RemoteEnv
-
-    env = RemoteEnv(served_env)
-    monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)
-    try:
-        with pytest.raises(ValueError, match=UNKNOWN_EDITION):
-            _ = rlmesh.RemoteModel("127.0.0.1:1").session(env)
-    finally:
-        env.close()
 
 
 def test_both_pins_negotiate_the_declared_edition(

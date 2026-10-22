@@ -4,7 +4,7 @@
   addresses: the same env and model over v1 (gRPC) and v2 (lockstep) leave
   the same traces, bit for bit, across every space kind and v1 dtype, a
   vector env with NEXT_STEP autoreset, seeds and chunking.
-- A served model (``RemoteModel``) runs a lockstep env as it runs a gRPC one.
+- A served model (``Model(address)``) runs a lockstep env as it runs a gRPC one.
 - ``RemoteEnv`` drives a v2-native robot served in lockstep through its Gym
   view; a lockstep robot needs no rates or kinds.
 """
@@ -207,16 +207,17 @@ def test_a_next_step_vector_env_runs_unchanged_on_lockstep() -> None:
     assert lockstep == v1
 
 
-def test_a_served_model_runs_a_lockstep_env_as_it_runs_a_grpc_one() -> None:
-    import socket
+def test_a_served_model_runs_a_lockstep_env_as_it_runs_a_grpc_one(
+    session_port: int,
+) -> None:
     import threading
 
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    model_address = f"127.0.0.1:{sock.getsockname()[1]}"
-    sock.close()
+    session = f"127.0.0.1:{session_port}"
     model = rlmesh.numpy.Model(Recorder())
-    threading.Thread(target=lambda: model.serve(model_address), daemon=True).start()
+    serving = threading.Thread(
+        target=model.serve, args=(session,), kwargs={"name": "m"}
+    )
+    serving.start()
 
     def trace(address: str) -> tuple[Any, ...]:
         log: list[str] = []
@@ -224,27 +225,22 @@ def test_a_served_model_runs_a_lockstep_env_as_it_runs_a_grpc_one() -> None:
         server.start()
         hooks = Hooks()
         try:
-            for _ in range(100):
-                try:
-                    rlmesh.run(
-                        rlmesh.RemoteModel(model_address),
-                        server.address,
-                        seeds=[5, 6],
-                        hooks=hooks,
-                        workflow_edition="2026.06",
-                    )
-                    break
-                except ConnectionError:  # the model server is still starting
-                    time.sleep(0.05)
+            rlmesh.numpy.Model(f"{session}/m").run(
+                server.address, seeds=[5, 6], hooks=hooks, workflow_edition="2026.06"
+            )
         finally:
             server.shutdown()
         # Steps' info carries run-minted episode ids; the env's log and the
         # episodes say what ran.
         return log, len(hooks.steps), hooks.episodes
 
-    grpc = trace("127.0.0.1:0")
-    assert len(grpc[2]) == 2
-    assert trace(":0/served") == grpc
+    try:
+        grpc = trace("127.0.0.1:0")
+        assert len(grpc[2]) == 2
+        assert trace(":0/served") == grpc
+    finally:
+        model.close()
+        serving.join(10)
 
 
 ARM = {
@@ -313,7 +309,6 @@ def test_a_remote_env_view_step_is_not_delayed_by_the_signal_poll() -> None:
     # awaited before the call started, and it waited for the timer's next
     # millisecond, so every Gym step took over 1 ms in-process.
     import statistics
-    import time
 
     with v2.Host() as host:
         robot = v2.Robot("arm1", ARM, session=host, clock="lockstep")
@@ -533,17 +528,14 @@ server.shutdown()
 
 
 def test_two_processes_meet_by_name_the_first_hosting(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, session_port: int
 ) -> None:
-    import socket
     import subprocess
     import sys
 
     # A free well-known port of this test's own, so a running rlmeshd or a
     # concurrent run cannot meet it.
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
+    port = session_port
     monkeypatch.setenv("RLMESH_PORT", str(port))
     child = subprocess.Popen(
         [sys.executable, "-c", SERVE_BY_NAME],

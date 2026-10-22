@@ -28,7 +28,7 @@ The example uses `SandboxEnv` because it requests one environment. Use `SandboxV
 
 ## Model Drives Env
 
-`rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)` is the managed sibling of `rlmesh.session(rlmesh.RemoteModel(address), env)`: it starts the policy in its own container and returns a `Session` you drive with `reset`/`predict`/`step`, so the policy executes in its own container, not in your process. In v0.1 the model container is a prebuilt image you build yourself -- see [`byo_container/model`](../byo_container/model) for the Dockerfile and entrypoint:
+`rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)` is the managed sibling of `rlmesh.Model(address).run(env)`: it starts the policy in its own container and returns a `Session` you drive with `reset`/`predict`/`step`, so the policy executes in its own container, not in your process. In v0.1 the model container is a prebuilt image you build yourself -- see [`byo_container/model`](../byo_container/model) for the Dockerfile and entrypoint:
 
 ```python
 import rlmesh

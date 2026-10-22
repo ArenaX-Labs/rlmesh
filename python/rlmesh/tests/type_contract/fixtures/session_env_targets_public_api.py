@@ -17,7 +17,6 @@ from typing import Any, cast
 import rlmesh
 from rlmesh.specs import EnvContract
 from rlmesh.types import EnvTarget
-from typing_extensions import assert_type
 
 
 class ContractOnlyEnv:
@@ -31,13 +30,6 @@ def accepts_env_target(env: EnvTarget) -> None:
 
 
 accepts_env_target(ContractOnlyEnv())
-
-
-def _served_model_accepts_contract_only(
-    remote_model: rlmesh.RemoteModel, env: ContractOnlyEnv
-) -> None:
-    assert_type(remote_model.session(env), rlmesh.Session[Any, Any])
-    assert_type(rlmesh.session(remote_model, env), rlmesh.Session[Any, Any])
 
 
 def _local_model_rejects_contract_only(

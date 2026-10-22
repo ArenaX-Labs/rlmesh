@@ -2,8 +2,8 @@
 
 You write a Dockerfile (see the sibling ``Dockerfile``) and this entrypoint, and
 RLMesh runs the image. The container serves the policy on
-``RLMESH_ADDRESS`` (default ``0.0.0.0:50051``); a client drives it with
-``rlmesh.session(rlmesh.RemoteModel(address), env)`` un-managed, or
+``RLMESH_ADDRESS`` (default ``0.0.0.0:50051``); a client runs it with
+``rlmesh.Model(address).run(env)`` un-managed, or
 ``rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)`` managed -- and RLMesh
 Managed runs the same image. ``docker push`` the tag to a registry it can reach.
 

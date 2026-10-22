@@ -111,26 +111,21 @@ def test_an_explicitly_stopped_server_exits_cleanly(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(os.name != "posix", reason="unix sockets are POSIX-only")
 def test_a_model_still_serving_at_exit_is_closed_before_finalization(
-    tmp_path: Path, socket_dir: Path
+    tmp_path: Path, session_port: int
 ) -> None:
-    path = socket_dir / "model.sock"
     result = _run_child(
         tmp_path,
-        "import os, threading, time\n"
-        f"address = 'unix://{path}'\n"
+        "import threading\n"
+        f"session = '127.0.0.1:{session_port}'\n"
         "model = rlmesh.Model(\n"
         "    lambda observation: 0,\n"
         "    on_close=lambda: print('MODEL_CLOSED', flush=True),\n"
         ")\n"
-        "threading.Thread(target=model.serve, args=(address,), daemon=True).start()\n"
-        f"while not os.path.exists({str(path)!r}):\n"
-        "    time.sleep(0.01)\n"
-        "rlmesh.run(rlmesh.RemoteModel(address), TinyEnv(), episodes=2,"
-        " max_episode_steps=5)\n"
-        "session = rlmesh.RemoteModel(address).session(TinyEnv())\n"
-        "session.reset()\n",
+        "threading.Thread(\n"
+        "    target=model.serve, args=(session,), kwargs={'name': 'm'}, daemon=True\n"
+        ").start()\n"
+        "rlmesh.Model(f'{session}/m').run(TinyEnv(), episodes=2, max_episode_steps=5)\n",
     )
 
     # The serve's daemon thread polled and answered from native threads; the

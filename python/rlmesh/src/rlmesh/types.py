@@ -164,8 +164,7 @@ runtime's own checks. A contract-only handle (``env_contract`` without
 ``reset``/``step``) cannot be stepped locally, so it is deliberately absent."""
 
 EnvTarget: TypeAlias = Union["LocalEnvTarget", "HasEnvContract"]
-"""What a served-model ``session()`` (:class:`~rlmesh.RemoteModel` /
-:class:`~rlmesh.SandboxModel`) accepts as an env: everything in
+"""What a served-model ``session()`` (:class:`~rlmesh.SandboxModel`) accepts as an env: everything in
 :data:`LocalEnvTarget`, plus an env client exposing a published ``env_contract``
 (the contract is sent to the served model at bind)."""
 

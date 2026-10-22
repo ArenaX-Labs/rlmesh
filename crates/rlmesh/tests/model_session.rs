@@ -183,3 +183,58 @@ async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
     cancel.cancel();
     served.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_served_model_is_a_handler_a_driver_drives_like_a_local_one() {
+    use rlmesh::binding::model::{EpisodeInfo, ModelRouteContext, ResolveOptions};
+    use rlmesh::lockstep::ServedModel;
+
+    let binding = ModelBinding::bind(":0/echo").await.unwrap();
+    let address = binding.address();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let service = Arc::new(ModelService::new(Echo, String::new()));
+    let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
+
+    let mut model = ServedModel::new(address, Duration::from_secs(10));
+    let routes = model.route_setup().unwrap();
+    routes
+        .resolve_adapter(
+            "a",
+            &contract(),
+            ResolveOptions {
+                execution_horizon: 3,
+                delivers_history: false,
+            },
+        )
+        .await
+        .unwrap();
+    let group = group("a", &[1.0, 2.0]);
+    let observation = ModelObservation {
+        observation: Some(group.observation),
+        route: ModelRouteContext {
+            env_id: "a".into(),
+            episodes: vec![EpisodeInfo::default(), EpisodeInfo::default()],
+            ..ModelRouteContext::default()
+        },
+        num_envs: 2,
+        ..ModelObservation::default()
+    };
+    let frames = model.predict_chunked(observation).await.unwrap();
+    assert_eq!(frames.actions, vec![value(1.0), value(2.0)]);
+    assert_eq!(frames.replay.len(), 2);
+    let unknown = ModelObservation {
+        route: ModelRouteContext {
+            env_id: "b".into(),
+            episodes: vec![EpisodeInfo::default()],
+            ..ModelRouteContext::default()
+        },
+        num_envs: 1,
+        ..ModelObservation::default()
+    };
+    let err = model.predict(unknown).await.unwrap_err();
+    assert!(err.to_string().contains("\"b\" was not resolved"), "{err}");
+
+    model.on_close().await.unwrap();
+    cancel.cancel();
+    served.await.unwrap().unwrap();
+}

@@ -261,3 +261,43 @@ pub trait ModelHandler: Send {
         Ok(())
     }
 }
+
+/// A boxed handler is a handler: what a binding holds when its model is
+/// local or served.
+#[async_trait]
+impl ModelHandler for Box<dyn ModelHandler> {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        (**self).predict(observation).await
+    }
+
+    async fn predict_chunked(&mut self, observation: ModelObservation) -> Result<PredictFrames> {
+        (**self).predict_chunked(observation).await
+    }
+
+    async fn predict_grouped(
+        &mut self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<Result<PredictFrames>> {
+        (**self).predict_grouped(observations).await
+    }
+
+    fn held_state(&self) -> Option<HeldState> {
+        (**self).held_state()
+    }
+
+    fn take_adapter_ns(&mut self) -> u64 {
+        (**self).take_adapter_ns()
+    }
+
+    fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
+        (**self).route_setup()
+    }
+
+    async fn reset_adapter(&mut self, env_id: &str, episode_ids: Vec<String>) -> Result<()> {
+        (**self).reset_adapter(env_id, episode_ids).await
+    }
+
+    async fn on_close(&mut self) -> Result<()> {
+        (**self).on_close().await
+    }
+}

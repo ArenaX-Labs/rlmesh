@@ -70,8 +70,30 @@ fn fault_of(error: &Error) -> ModelFault {
             wire
         }
         Error::Model(model) => fault("INTERNAL", model.message.clone(), model.is_recoverable),
+        Error::InvalidArgument(invalid) if invalid.adapter_resolution.is_some() => {
+            fault("ADAPTER_RESOLUTION", invalid.message.clone(), false)
+        }
+        Error::InvalidArgument(invalid) => fault("INVALID_REQUEST", invalid.message.clone(), false),
         Error::Environment(env) => fault("INTERNAL", env.message.clone(), false),
         other => fault("INTERNAL", other.to_string(), false),
+    }
+}
+
+/// The inverse of [`fault_of`]: the error class a fault names.
+fn error_of(fault: ModelFault) -> Error {
+    match fault.code.as_str() {
+        "ADAPTER_RESOLUTION" => Error::adapter_resolution(fault.message),
+        "INVALID_REQUEST" => Error::invalid_argument(fault.message),
+        _ if fault.recoverable => Error::model_recoverable(fault.message),
+        _ => Error::model(fault.message),
+    }
+}
+
+/// A link failure as the caller's error.
+fn link_error(err: GymError) -> Error {
+    match err {
+        GymError::Timeout(t) => Error::Timeout(t),
+        other => Error::Connection(other.to_string()),
     }
 }
 
@@ -353,6 +375,7 @@ pub async fn serve_zenoh<H: ModelHandler + 'static>(
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// The driver side's way to a served model: queries on `m/{model}`.
+#[derive(Clone)]
 pub struct ModelLink {
     session: zenoh::Session,
     key: String,
@@ -541,5 +564,258 @@ impl ModelConnection {
         }
         let mut placed = self.placed;
         let _ = placed.close().await;
+    }
+}
+
+/// A served model as a [`ModelHandler`]: drives the model at a participant
+/// address through `m/{model}`, connecting on first use. What a run, a
+/// binding or a relay drives a `Model(address)` with.
+pub struct ServedModel {
+    remote: Arc<Remote>,
+}
+
+struct Remote {
+    address: String,
+    timeout: Duration,
+    connection: Mutex<Option<ModelConnection>>,
+    /// Each resolved route's action space, to decode its frames.
+    spaces: std::sync::Mutex<HashMap<String, SpaceSpec>>,
+}
+
+impl Remote {
+    async fn link(&self) -> Result<ModelLink, Error> {
+        let mut connection = self.connection.lock().await;
+        if connection.is_none() {
+            let id = format!("driver-{}", crate::lockstep::session::uuid_suffix());
+            *connection = Some(
+                ModelConnection::connect(&self.address, &id, self.timeout)
+                    .await
+                    .map_err(link_error)?,
+            );
+        }
+        Ok(connection
+            .as_ref()
+            .map(|c| c.link.clone())
+            .unwrap_or_else(|| unreachable!()))
+    }
+
+    async fn call(&self, request: ModelRequest) -> Result<ModelReply, Error> {
+        let reply = self
+            .link()
+            .await?
+            .call(&request, None)
+            .await
+            .map_err(link_error)?;
+        match reply {
+            ModelReply::Fault(fault) => Err(error_of(fault)),
+            reply => Ok(reply),
+        }
+    }
+
+    async fn close(&self) {
+        if let Some(connection) = self.connection.lock().await.take() {
+            connection.close().await;
+        }
+    }
+}
+
+impl ServedModel {
+    /// The model at the participant address `address`; connecting waits up
+    /// to `timeout` for it.
+    pub fn new(address: impl Into<String>, timeout: Duration) -> Self {
+        Self {
+            remote: Arc::new(Remote {
+                address: address.into(),
+                timeout,
+                connection: Mutex::default(),
+                spaces: std::sync::Mutex::default(),
+            }),
+        }
+    }
+
+    /// The model's describe envelope (JSON; empty when it has none).
+    pub async fn describe(&self) -> Result<String, Error> {
+        match self.remote.call(ModelRequest::Describe).await? {
+            ModelReply::Described(json) => Ok(json),
+            other => Err(unexpected(&other)),
+        }
+    }
+}
+
+fn unexpected(reply: &ModelReply) -> Error {
+    Error::Protocol(format!("unexpected model reply: {reply:?}"))
+}
+
+/// One observation as a predict group.
+fn group_of(observation: ModelObservation) -> ModelGroup {
+    let episodes = |rows: Vec<EpisodeInfo>| -> Vec<rlmesh_session::wire::ModelEpisode> {
+        rows.into_iter()
+            .map(|e| rlmesh_session::wire::ModelEpisode {
+                id: e.episode_id,
+                seed: e.seed,
+            })
+            .collect()
+    };
+    ModelGroup {
+        route: observation.route.env_id,
+        episodes: episodes(observation.route.episodes),
+        observation: observation.observation.unwrap_or_default(),
+        history: observation
+            .history
+            .into_iter()
+            .map(|frame| rlmesh_session::wire::ModelHistoryRow {
+                observation: frame.observation.unwrap_or_default(),
+                episodes: episodes(frame.episodes),
+                step: frame.step,
+            })
+            .collect(),
+        step: observation.step,
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelHandler for ServedModel {
+    async fn predict(
+        &mut self,
+        observation: ModelObservation,
+    ) -> crate::Result<Vec<rlmesh_spaces::SpaceValue>> {
+        Ok(self.predict_chunked(observation).await?.actions)
+    }
+
+    async fn predict_chunked(
+        &mut self,
+        observation: ModelObservation,
+    ) -> crate::Result<PredictFrames> {
+        self.predict_grouped(vec![observation])
+            .await
+            .pop()
+            .unwrap_or_else(|| Err(Error::model("no outcome for the predict")))
+    }
+
+    async fn predict_grouped(
+        &mut self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<crate::Result<PredictFrames>> {
+        let rows: Vec<(String, usize)> = observations
+            .iter()
+            .map(|o| (o.route.env_id.clone(), o.num_envs))
+            .collect();
+        let groups = observations.into_iter().map(group_of).collect();
+        let outcomes = match self.remote.call(ModelRequest::Predict(groups)).await {
+            Ok(ModelReply::Predicted(outcomes)) if outcomes.len() == rows.len() => outcomes,
+            Ok(other) => {
+                let error = unexpected(&other);
+                return rows
+                    .iter()
+                    .map(|_| Err(Error::Protocol(error.to_string())))
+                    .collect();
+            }
+            Err(error) => {
+                return rows
+                    .iter()
+                    .map(|_| Err(Error::Connection(error.to_string())))
+                    .collect();
+            }
+        };
+        let spaces = self
+            .remote
+            .spaces
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        outcomes
+            .into_iter()
+            .zip(rows)
+            .map(|(outcome, (route, rows))| {
+                let frames = outcome.map_err(error_of)?;
+                let space = spaces
+                    .get(&route)
+                    .ok_or_else(|| Error::model(format!("route {route:?} was not resolved")))?;
+                let mut frames = frames.into_iter().map(|leaves| {
+                    rlmesh_spaces::leaves::decode_leaf_slab(&leaves, space, rows)
+                        .map_err(|e| Error::model(e.to_string()))
+                });
+                let actions = frames
+                    .next()
+                    .ok_or_else(|| Error::model("the model returned no frames"))??;
+                Ok(PredictFrames {
+                    actions,
+                    replay: frames.collect::<crate::Result<_>>()?,
+                })
+            })
+            .collect()
+    }
+
+    fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
+        Some(Arc::new(ServedRoutes(self.remote.clone())))
+    }
+
+    async fn on_close(&mut self) -> crate::Result<()> {
+        self.remote.close().await;
+        Ok(())
+    }
+}
+
+/// A served model's routes: resolved, reset and released on the model.
+struct ServedRoutes(Arc<Remote>);
+
+#[async_trait::async_trait]
+impl ModelRouteSetup for ServedRoutes {
+    async fn resolve_adapter(
+        &self,
+        env_id: &str,
+        env_contract: &EnvContract,
+        options: ResolveOptions,
+    ) -> crate::Result<crate::model::handler::RouteNeeds> {
+        let reply = self
+            .0
+            .call(ModelRequest::Resolve(ModelResolve {
+                route: env_id.to_string(),
+                contract_json: crate::lockstep::map::contract_to_json(env_contract).to_string(),
+                execution_horizon: options.execution_horizon,
+                delivers_history: options.delivers_history,
+                workflow_edition: String::new(),
+            }))
+            .await?;
+        let ModelReply::Resolved(resolved) = reply else {
+            return Err(unexpected(&reply));
+        };
+        if let Some(space) = &env_contract.action_space {
+            self.0
+                .spaces
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(env_id.to_string(), space.clone());
+        }
+        Ok(crate::model::handler::RouteNeeds {
+            native_chunk: resolved.native_chunk,
+            history: resolved
+                .history
+                .map(|(keys, prunable)| crate::model::handler::HistoryNeeds { keys, prunable }),
+        })
+    }
+
+    async fn reset_adapter(&self, env_id: &str, episode_ids: &[String]) -> crate::Result<()> {
+        self.0
+            .call(ModelRequest::Reset {
+                route: env_id.to_string(),
+                episode_ids: episode_ids.to_vec(),
+            })
+            .await
+            .map(|_| ())
+    }
+
+    async fn release_adapter(&self, env_id: &str) -> crate::Result<()> {
+        self.0
+            .spaces
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(env_id);
+        self.0
+            .call(ModelRequest::Release {
+                route: env_id.to_string(),
+            })
+            .await
+            .map(|_| ())
     }
 }

@@ -172,7 +172,7 @@ class SandboxModel:
     ) -> Session[Any, Any]:
         """Serve this model and bind it to ``env``, returning a neutral :class:`rlmesh.Session`.
 
-        The managed sibling of :meth:`rlmesh.RemoteModel.session`: starts the model
+        Binds a sandboxed model to one env: starts the model
         container (idempotent), then opens a route configured from the env's contract so
         the *same* drive loop works for both pairs::
 

@@ -86,13 +86,11 @@ __all__ = [
     "adapters_spec_normalize",
     "box_space_spec",
     "build_info",
-    "check_remote_model_options",
     "current_workflow_edition",
     "describe_envelope_normalize",
     "dict_space_spec",
     "discrete_space_spec",
     "is_v2_address",
-    "local_env_contract",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
     "normalize_connect_address",
@@ -475,6 +473,8 @@ class PyEnvServer:
 @typing.final
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None) -> None: ...
+    @staticmethod
+    def served(address: str, timeout_s: float = 30) -> PyModel: ...
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, env_token: str | None = None) -> dict[str, typing.Any]: ...
@@ -1148,15 +1148,6 @@ def build_info() -> BuildInfo:
     the workflow edition it advertises with the cohort behind that spelling.
     """
 
-def check_remote_model_options(address: builtins.str, *, connect_timeout_seconds: typing.Optional[builtins.float] = None, request_timeout_seconds: typing.Optional[builtins.float] = None, api_key: typing.Optional[builtins.str] = None, tls_ca_file: typing.Optional[builtins.str] = None) -> None:
-    r"""
-    Check a `RemoteModel`'s address, timeouts, `api_key` and `tls_ca_file`
-    as the native constructor does (RMT-P6): an address that does not parse
-    (`invalid address: ...`), a negative or non-finite timeout, a key a
-    header cannot carry or an unreadable CA bundle is ValueError. An explicit
-    key for a plaintext non-loopback address warns. No network I/O.
-    """
-
 def current_workflow_edition() -> builtins.str:
     r"""
     The bare `YYYY.MM` workflow edition this build runs at — the value to paste
@@ -1177,14 +1168,6 @@ def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
 def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> SpaceSpec: ...
 
 def is_v2_address(text: str) -> bool: ...
-
-def local_env_contract(env: typing.Any) -> typing.Any:
-    r"""
-    The wire contract of a local env, derived as an `EnvServer` would publish
-    it, for a served-model session that steps the env on the caller's side.
-    A vector env (`num_envs` or `single_*` spaces) is TypeError: a served
-    model drives a single env. No I/O.
-    """
 
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 

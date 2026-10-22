@@ -6,8 +6,8 @@ use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass, gen_stub_
 use pyo3_stub_gen::inventory::submit;
 use rlmesh::Error as RLMeshError;
 use rlmesh::binding::model::{
-    AdaptedModelHandler, EpisodeInfo, ModelObservation, ModelWorker, PredictFn, PredictFrames,
-    RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
+    AdaptedModelHandler, EpisodeInfo, ModelHandler, ModelObservation, ModelWorker, PredictFn,
+    PredictFrames, RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
 };
 use rlmesh::binding::model::{ModelClient, ModelConnect};
 use rlmesh::ext::{BindAddress, ConnectAddress};
@@ -648,7 +648,7 @@ fn report_episodes_to_py(
 /// operations instead of blocking SIGINT until the final episode.
 fn run_local_blocking(
     py: Python<'_>,
-    handler: AdaptedModelHandler,
+    handler: Box<dyn ModelHandler>,
     options: RunLocalOptions,
     relay: Option<Py<PyAny>>,
     last_error: &LastPyError,
@@ -804,6 +804,9 @@ pub struct PyModel {
     /// The running serves' shutdown triggers, and whether `stop_serving`
     /// fired (sticky: the model is closing, so no serve starts again).
     serving: Arc<std::sync::Mutex<Serving>>,
+    /// A served model's participant address and connect timeout: the
+    /// worker then drives that model instead of the callbacks.
+    served: Option<(String, Duration)>,
 }
 
 #[derive(Default)]
@@ -816,7 +819,13 @@ impl PyModel {
     /// Build the served engine handler: the predict hole plus, for a spec'd
     /// model, the route resolver. The engine owns the per-route adapter state and
     /// frame buffers; this layer only supplies the host (Python) callbacks.
-    fn build_handler(&self) -> AdaptedModelHandler {
+    fn build_handler(&self) -> Box<dyn ModelHandler> {
+        if let Some((address, timeout)) = &self.served {
+            return Box::new(rlmesh::lockstep::ServedModel::new(
+                address.clone(),
+                *timeout,
+            ));
+        }
         let predict = Python::attach(|py| PyPredict {
             predict_fn: self.predict_fn.clone_ref(py),
             predict_chunk_fn: self.predict_chunk_fn.as_ref().map(|cb| cb.clone_ref(py)),
@@ -838,7 +847,7 @@ impl PyModel {
                 let configure_fn = Python::attach(|py| configure.clone_ref(py));
                 Arc::new(PyRouteResolver { configure_fn }) as Arc<dyn RouteResolver>
             });
-        AdaptedModelHandler::new(Arc::new(predict), resolver)
+        Box::new(AdaptedModelHandler::new(Arc::new(predict), resolver))
     }
 
     /// Serves the model as the participant `name` in the session at
@@ -937,6 +946,31 @@ impl PyModel {
             profiler,
             last_error: LastPyError::default(),
             serving: Arc::default(),
+            served: None,
+        })
+    }
+
+    /// A worker that drives the model served at the participant address
+    /// `address`, waiting up to `timeout_s` seconds to reach it.
+    #[staticmethod]
+    #[pyo3(signature = (address, timeout_s=30.0))]
+    fn served(py: Python<'_>, address: &str, timeout_s: f64) -> PyResult<Self> {
+        init_tracing("model_worker");
+        Ok(Self {
+            predict_fn: py.None(),
+            predict_chunk_fn: None,
+            predict_batch_fn: None,
+            predict_chunk_batch_fn: None,
+            allow_fusion: true,
+            native_chunk: None,
+            configure_fn: None,
+            on_episode_end: None,
+            on_close: None,
+            on_route_drop: None,
+            profiler: ProfileCollector::new("model_worker"),
+            last_error: LastPyError::default(),
+            serving: Arc::default(),
+            served: Some((address.to_string(), crate::session::timeout(timeout_s)?)),
         })
     }
 
@@ -1119,6 +1153,8 @@ import typing
 
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None) -> None: ...
+    @staticmethod
+    def served(address: str, timeout_s: float = 30.0) -> PyModel: ...
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, env_token: str | None = None) -> dict[str, typing.Any]: ...
@@ -1149,51 +1185,6 @@ impl Drop for PyModel {
     fn drop(&mut self) {
         self.profiler.log_summary_once();
     }
-}
-
-/// Check a `RemoteModel`'s address, timeouts, `api_key` and `tls_ca_file`
-/// as the native constructor does (RMT-P6): an address that does not parse
-/// (`invalid address: ...`), a negative or non-finite timeout, a key a
-/// header cannot carry or an unreadable CA bundle is ValueError. An explicit
-/// key for a plaintext non-loopback address warns. No network I/O.
-#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
-#[pyfunction]
-#[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, api_key=None, tls_ca_file=None))]
-pub fn check_remote_model_options(
-    address: &str,
-    connect_timeout_seconds: Option<f64>,
-    request_timeout_seconds: Option<f64>,
-    api_key: Option<String>,
-    tls_ca_file: Option<String>,
-) -> PyResult<()> {
-    let connect_timeout =
-        crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
-    let request_timeout =
-        crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
-    let mut options = rlmesh::RemoteModelOptions::default().address(address);
-    options.connect_timeout = connect_timeout;
-    options.request_timeout = request_timeout;
-    options.api_key = api_key;
-    options.tls_ca_file = tls_ca_file.map(Into::into);
-    rlmesh::RemoteModel::new(options).map_err(to_py_err)?;
-    Ok(())
-}
-
-/// The wire contract of a local env, derived as an `EnvServer` would publish
-/// it, for a served-model session that steps the env on the caller's side.
-/// A vector env (`num_envs` or `single_*` spaces) is TypeError: a served
-/// model drives a single env. No I/O.
-#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
-#[pyfunction]
-pub fn local_env_contract(py: Python<'_>, env: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let (contract, uses_vector_api) = crate::server::py_environment::derive_env_contract(env)?;
-    if uses_vector_api || contract.num_envs > 1 {
-        return Err(pyo3::exceptions::PyTypeError::new_err(
-            "a served model drives a single env (RemoteModel is single-lane); got a local \
-             vector env: pass a single env, or serve the vector env and run a local model",
-        ));
-    }
-    env_contract_to_py(py, &contract)
 }
 
 /// Client handle to a model (policy) server: the model-side mirror of
@@ -1236,7 +1227,7 @@ impl PyModelClient {
         let request_timeout =
             crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
         let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
-        // `RemoteModel` already checked these and warned (check_remote_model_options).
+        // A sandbox dials loopback; this checks what it passes.
         let auth = rlmesh::binding::client_auth(
             address,
             api_key.as_deref(),

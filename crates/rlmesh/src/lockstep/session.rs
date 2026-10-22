@@ -740,7 +740,7 @@ async fn view_of(
     )
 }
 
-fn uuid_suffix() -> String {
+pub(crate) fn uuid_suffix() -> String {
     let id = rlmesh_session::wire::SessionId::new().to_string();
     id.chars()
         .filter(char::is_ascii_alphanumeric)
