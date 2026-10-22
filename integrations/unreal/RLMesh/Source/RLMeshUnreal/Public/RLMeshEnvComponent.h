@@ -26,9 +26,9 @@ class RLMESHUNREAL_API URLMeshEnvComponent : public UActorComponent
 public:
 	URLMeshEnvComponent();
 
-	/** Address to serve on. Port 0 picks a free port; GetServedAddress returns it. */
+	/** Session participant address to serve at. Port 0 picks a free port; GetServedAddress returns it. */
 	UPROPERTY(EditAnywhere, Category = "RLMesh")
-	FString Address = TEXT("tcp://127.0.0.1:5555");
+	FString Address = TEXT("127.0.0.1:7447/env");
 
 	/** Env id reported to clients. */
 	UPROPERTY(EditAnywhere, Category = "RLMesh")

@@ -268,4 +268,11 @@ $CXX -std=c++17 "${warn[@]}" -pedantic-errors "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_gate.cpp "${link[@]}" -o "$tmp/cpp_gate"
 RLMESH_NATIVE_GATE="$tmp/cpp_gate" uv run --no-sync pytest -q -p no:cacheprovider \
   python/rlmesh/tests/conformance/native_gate.py
+echo "==> The Unreal plugin's game-thread env on sessions: the same rows ($CXX)"
+$CXX -std=c++17 "${warn[@]}" -pedantic-errors "${cxx_quiet[@]}" -Wshadow -Wconversion \
+  -Wsign-conversion -fno-rtti -I "$inc" -I integrations/unreal/RLMesh/Source/RLMeshUnreal/Public \
+  -I crates/rlmesh-capi/examples integrations/unreal/RLMesh/Tests/game_thread_gate.cpp \
+  "${link[@]}" -o "$tmp/unreal_gate"
+RLMESH_NATIVE_GATE="$tmp/unreal_gate" uv run --no-sync pytest -q -p no:cacheprovider \
+  python/rlmesh/tests/conformance/native_gate.py
 echo "==> test:cxx OK"

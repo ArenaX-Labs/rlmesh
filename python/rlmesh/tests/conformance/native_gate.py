@@ -55,6 +55,7 @@ from typing import Any
 import pytest
 import rlmesh
 import rlmesh.numpy
+from rlmesh._rlmesh import model_answers
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_gym_conformance import (
@@ -319,6 +320,9 @@ def test_a_native_client_runs_a_python_model(name: str) -> None:
         )
         serving.start()
         try:
+            # Joined before the program runs (or is skipped): closing a model
+            # while it joins is not what this row measures.
+            model_answers(f"{session}/policy", 30.0)
             out = call("remote-model", f"{session}/policy", server.address)
         finally:
             model.close()
