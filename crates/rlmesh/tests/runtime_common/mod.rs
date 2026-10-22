@@ -31,10 +31,7 @@ pub struct TestEnv {
     pub closed: Arc<AtomicBool>,
     pub step_count: Arc<AtomicUsize>,
     pub reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
-    pub reset_options: Arc<Mutex<Vec<Option<MetaMap>>>>,
-    // The runtime is the id authority: the env adopts the id pushed down on
-    // reset and echoes it back in completed_episodes (never mints its own).
-    pub current_episode: Arc<Mutex<String>>,
+    pub reset_options: Arc<Mutex<Vec<Option<rlmesh_spaces::MetaMap>>>>,
     pub terminal_after: usize,
     // What this env reports as the terminal episode's `final_info`. Gymnasium's
     // `is_success`/`success` live there, and the runtime derives the ledger's
@@ -52,7 +49,6 @@ impl Default for TestEnv {
             step_count: Arc::new(AtomicUsize::new(0)),
             reset_seeds: Arc::new(Mutex::new(Vec::new())),
             reset_options: Arc::new(Mutex::new(Vec::new())),
-            current_episode: Arc::new(Mutex::new(String::new())),
             terminal_after: 1,
             final_info: None,
             endpoint_total_ns: None,
@@ -72,12 +68,6 @@ impl RuntimeEnv for TestEnv {
             .lock()
             .expect("reset option recorder lock poisoned")
             .push(request.options);
-        // Adopt the runtime-pushed id (the env never mints).
-        *self
-            .current_episode
-            .lock()
-            .expect("current episode lock poisoned") =
-            request.episode_ids.first().cloned().unwrap_or_default();
         self.step_count.store(0, Ordering::SeqCst);
         Ok(RuntimeEnvReset {
             observation: vec![payload([1])],
@@ -586,13 +576,10 @@ pub fn payload<const N: usize>(data: [u8; N]) -> Bytes {
 #[derive(Clone)]
 pub struct VectorTestEnv {
     pub reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
-    pub reset_options: Arc<Mutex<Vec<Option<MetaMap>>>>,
+    pub reset_options: Arc<Mutex<Vec<Option<rlmesh_spaces::MetaMap>>>>,
     pub closed: Arc<AtomicBool>,
     pub terminal_after: Vec<usize>,
     pub lane_step: Vec<usize>,
-    // The runtime is the id authority: each lane adopts the id pushed down on
-    // reset / on the autoreset roll, and echoes it in completed_episodes.
-    pub current_ids: Vec<String>,
     pub pending_autoreset: Vec<bool>,
 }
 
@@ -605,7 +592,6 @@ impl VectorTestEnv {
             closed: Arc::new(AtomicBool::new(false)),
             terminal_after,
             lane_step: vec![0; n],
-            current_ids: vec![String::new(); n],
             pending_autoreset: vec![false; n],
         }
     }
@@ -625,9 +611,6 @@ impl RuntimeEnv for VectorTestEnv {
         let n = self.terminal_after.len();
         self.lane_step = vec![0; n];
         self.pending_autoreset = vec![false; n];
-        // Adopt the runtime-pushed ids (full-width on a whole-vector reset).
-        self.current_ids = request.episode_ids.clone();
-        self.current_ids.resize(n, String::new());
         Ok(RuntimeEnvReset {
             observation: vec![payload([0])],
             infos: None,
@@ -636,7 +619,7 @@ impl RuntimeEnv for VectorTestEnv {
         })
     }
 
-    async fn step(&mut self, request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+    async fn step(&mut self, _request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
         let n = self.terminal_after.len();
         let mut rewards = vec![1.0; n];
         let mut terminated = vec![false; n];
@@ -647,14 +630,10 @@ impl RuntimeEnv for VectorTestEnv {
             if self.pending_autoreset[lane] {
                 rolled = true;
                 // t+1: the env auto-resets this lane and delivers the fresh obs of
-                // a new episode (step 0, reward 0, terminated=false). It adopts the
-                // rolled id the runtime pushed for this lane.
+                // a new episode (step 0, reward 0, terminated=false).
                 self.pending_autoreset[lane] = false;
                 self.lane_step[lane] = 0;
                 rewards[lane] = 0.0;
-                if let Some(id) = request.episode_ids.get(lane) {
-                    self.current_ids[lane] = id.clone();
-                }
             } else {
                 self.lane_step[lane] += 1;
                 if self.lane_step[lane] >= self.terminal_after[lane] {
@@ -908,15 +887,9 @@ pub fn declare_reset_options(spec: &mut RuntimeSessionSpec, declared: &[&str]) {
 
 /// The `trial_index` carried by one recorded `ResetRequest.options`, as the
 /// integer a single-lane reset sends.
-pub fn recorded_trial(options: &Option<MetaMap>) -> Option<i64> {
-    match options
-        .as_ref()?
-        .entries
-        .get("trial_index")?
-        .kind
-        .as_ref()?
-    {
-        meta_value::Kind::Integer(value) => Some(*value),
+pub fn recorded_trial(options: &Option<rlmesh_spaces::MetaMap>) -> Option<i64> {
+    match options.as_ref()?.get("trial_index")? {
+        rlmesh_spaces::MetaValue::Int(value) => Some(*value),
         _ => None,
     }
 }
@@ -936,7 +909,6 @@ pub struct LaneTestState {
     /// `(lane, seed)` per reset, in the order the env saw them.
     pub resets: Vec<(u32, Option<i64>)>,
     pub step: Vec<usize>,
-    pub ids: Vec<String>,
 }
 
 impl LaneTestEnv {
@@ -946,7 +918,6 @@ impl LaneTestEnv {
             inner: Arc::new(Mutex::new(LaneTestState {
                 resets: Vec::new(),
                 step: vec![0; n],
-                ids: vec![String::new(); n],
             })),
             lanes,
             closed: Arc::new(AtomicUsize::new(0)),
@@ -968,7 +939,6 @@ impl RuntimeEnv for LaneTestEnv {
             .resets
             .push((lane as u32, request.seeds.first().copied()));
         state.step[lane] = 0;
-        state.ids[lane] = request.episode_ids.first().cloned().unwrap_or_default();
         Ok(RuntimeEnvReset {
             observation: vec![payload([0])],
             infos: None,

@@ -834,65 +834,6 @@ fn start_reset_episodes(
     env_indices.len()
 }
 
-/// The driver's mirror of an env's episode accounting: fed the requests the
-/// driver sent and the replies it got, it fills `completed_episodes` the way
-/// the env server does. A transport whose step reply carries no episode
-/// metadata (the v2 lockstep reply) rebuilds it with this, so the runtime
-/// sees the same completions (only the wall-clock stamps differ).
-pub struct EpisodeMirror {
-    tracker: EpisodeTracker,
-    num_envs: usize,
-    next_step: bool,
-}
-
-impl EpisodeMirror {
-    /// A mirror of an env with `num_envs` lanes under `autoreset`.
-    pub fn new(num_envs: usize, autoreset: AutoresetMode) -> Self {
-        Self {
-            tracker: EpisodeTracker::new(),
-            num_envs,
-            next_step: autoreset == AutoresetMode::NextStep,
-        }
-    }
-
-    /// A reset the env accepted.
-    pub fn on_reset(&mut self, req: &rlmesh_proto::env::v1::ResetRequest) {
-        start_reset_episodes(
-            &mut self.tracker,
-            &req.env_indices,
-            &req.seeds,
-            &req.episode_ids,
-            self.num_envs,
-        );
-    }
-
-    /// A step the env answered: advances the mirror and sets
-    /// `response.completed_episodes`.
-    pub fn on_step(
-        &mut self,
-        req: &rlmesh_proto::env::v1::StepRequest,
-        response: &mut rlmesh_proto::env::v1::StepResponse,
-    ) {
-        let lanes: Vec<u32> = if req.env_indices.is_empty() {
-            (0..self.num_envs).map(|lane| lane as u32).collect()
-        } else {
-            req.env_indices.clone()
-        };
-        apply_step_to_tracker(
-            response,
-            &lanes,
-            self.next_step,
-            &req.episode_ids,
-            &mut self.tracker,
-        );
-    }
-
-    /// Completes every open episode.
-    pub fn complete_all(&mut self, reason: &str) -> Vec<rlmesh_proto::env::v1::EpisodeMetadata> {
-        self.tracker.complete_all(reason)
-    }
-}
-
 /// Advance the tracker for every lane a validated step response covers.
 /// `lanes[pos]` is the lane behind response position `pos`, so per-lane fields
 /// (`rewards`, masks, batched `infos`) are read by position and the tracker is

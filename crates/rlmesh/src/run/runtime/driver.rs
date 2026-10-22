@@ -12,7 +12,7 @@
 //! Records per-op telemetry and fans every state change out to the session's
 //! [`RuntimeHooks`](crate::run::runtime::hooks::RuntimeHooks).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,22 +60,18 @@ macro_rules! fan_out_event {
 }
 
 /// A reset of the requested lanes (all of them when `env_indices` is
-/// empty): their seeds and options, positional to the lanes, and the ids of
-/// the episodes it starts.
+/// empty): their seeds and options, positional to the lanes.
 pub struct EnvResetRequest {
     pub env_indices: Vec<u32>,
     pub seeds: Vec<i64>,
-    pub options: Option<MetaMap>,
-    pub episode_ids: Vec<String>,
+    pub options: Option<rlmesh_spaces::MetaMap>,
 }
 
 /// One step of the requested lanes (all of them when `env_indices` is
-/// empty): one action per lane as leaf slabs, and the lanes' episode ids
-/// (the next episode's for a lane rolling under NEXT_STEP autoreset).
+/// empty): one action per lane as leaf slabs.
 pub struct EnvStepRequest {
     pub env_indices: Vec<u32>,
     pub action: Vec<Bytes>,
-    pub episode_ids: Vec<String>,
 }
 
 /// The env's answer to a reset: the lanes' observation as leaf slabs, and
@@ -323,10 +319,9 @@ struct Group<E> {
     /// requests and history rows so the model can hold them to consecutive
     /// steps. Consecutive observations of one episode carry consecutive values.
     steps: i64,
-    /// NEXT_STEP autoreset: lanes that completed this step, mapped to the
-    /// fresh id minted for their next episode. Set on completion (step t),
-    /// consumed on the autoreset roll (step t+1).
-    pending_roll: HashMap<u32, String>,
+    /// NEXT_STEP autoreset: lanes that completed this step. Set on
+    /// completion (step t), consumed on the autoreset roll (step t+1).
+    pending_roll: HashSet<u32>,
     /// NEXT_STEP autoreset: the `episode_completed` events of the lanes in
     /// `pending_roll`, held until the roll so a hook sees the ended id's last
     /// observation and step before its completion, as the model does.
@@ -441,7 +436,7 @@ where
     /// the sweep to reach the env. A single lane sends the bare integer; a
     /// multi-lane reset sends the list, in the same lane order as `seeds` and
     /// `episode_ids`.
-    fn trial_options(&self, trials: &[u64]) -> Option<MetaMap> {
+    fn trial_options(&self, trials: &[u64]) -> Option<rlmesh_spaces::MetaMap> {
         let option_key = self.spec.edition_defaults().trial_index_option_key;
         let options = reset_options_for(&self.spec.env_contract, option_key, trials);
         if options.is_none()
@@ -527,7 +522,7 @@ where
                 obs_msg: None,
                 history: Vec::new(),
                 steps: 0,
-                pending_roll: HashMap::new(),
+                pending_roll: HashSet::new(),
                 pending_completed: Vec::new(),
                 pending_start: None,
                 reset_generation: 0,
@@ -861,9 +856,7 @@ where
             groups[gid].reset_generation += 1;
         }
         let seeds = self.seeds_for(&groups[gid], &slots);
-        // The runtime is the sole id authority (R1): mint a fresh UUIDv7 per
-        // lane and push them DOWN so the env tags its episodes with our ids; we
-        // never read ids back from the env.
+        // The runtime is the sole id authority (R1): a fresh UUIDv7 per lane.
         let episode_ids = mint_episode_ids(width);
         for surplus in &episode_ids[slots.len()..] {
             state.mark_surplus(surplus);
@@ -886,7 +879,6 @@ where
             } else {
                 group.lanes.clone()
             },
-            episode_ids,
         };
         let request_bytes = (request.seeds.len() * 8) as u64;
         let timeout = self.spec.limits.env_reset_timeout;
@@ -978,15 +970,6 @@ where
             fan_out_event!(self, action_received, action_event);
 
             let group = &mut groups[gid];
-            // Down-push the authoritative per-lane ids. For a NEXT_STEP autoreset
-            // roll (a lane in `pending_roll`), substitute the freshly minted id so
-            // the env tags its rolled episode with our id; the slot itself rolls to
-            // the same id after the step.
-            let episode_ids = episode_ids_with_roll(
-                state.episode_ids_at(&group.positions),
-                &group.lanes,
-                &group.pending_roll,
-            );
             let request_bytes = leaf_bytes(&model_action);
             let request = EnvStepRequest {
                 action: model_action,
@@ -995,7 +978,6 @@ where
                 } else {
                     group.lanes.clone()
                 },
-                episode_ids,
             };
             let timeout = self.spec.limits.env_step_timeout;
             let timeout_error = RuntimeError::operation_timeout(
@@ -1378,7 +1360,7 @@ where
         let autoreset_roll: Vec<bool> = groups[gid]
             .lanes
             .iter()
-            .map(|lane| groups[gid].pending_roll.contains_key(lane))
+            .map(|lane| groups[gid].pending_roll.contains(lane))
             .collect();
         // On an autoreset roll this response carries the NEW episode's reset
         // observation + infos, which belong on its observation event, not on
@@ -1404,9 +1386,8 @@ where
             }
         );
 
-        // Apply any NEXT_STEP autoreset roll the env just performed with the ids
-        // we pushed down: roll our own slots to the same ids, each on a fresh
-        // route-global slot. The env never mints — the runtime is authoritative.
+        // Apply any NEXT_STEP autoreset roll the env just performed: roll our
+        // slots to freshly minted ids, each on a fresh route-global slot.
         if rolled {
             // The step event above was the ended ids' last hook event, so their
             // completions go out now, ahead of the new episodes' start.
@@ -1415,7 +1396,7 @@ where
             let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
             // The ended ids leave their slots now, so this is when the model
             // drops them (see `queue_evictions` for why not at completion).
-            self.queue_evictions(gid, &groups[gid], state, pending_roll.keys().copied());
+            self.queue_evictions(gid, &groups[gid], state, pending_roll.iter().copied());
             let roll_ids = episode_ids_with_roll(
                 state.episode_ids_at(&positions),
                 &groups[gid].lanes,
@@ -1426,7 +1407,7 @@ where
                 .iter()
                 .map(|lane| {
                     pending_roll
-                        .contains_key(lane)
+                        .contains(lane)
                         .then(|| state.claim_slots(1, true))
                         .flatten()
                         .and_then(|slots| slots.first().copied())
@@ -1434,7 +1415,7 @@ where
                 .collect();
             // A rolled lane the budget no longer covers runs surplus.
             for ((lane, id), slot) in groups[gid].lanes.iter().zip(&roll_ids).zip(&rolling) {
-                if pending_roll.contains_key(lane) && slot.is_none() {
+                if pending_roll.contains(lane) && slot.is_none() {
                     state.mark_surplus(id);
                 }
             }
@@ -1484,16 +1465,12 @@ where
                 PredictState::InFlight { .. } => PredictState::InFlight { stale: true },
                 _ => PredictState::None,
             };
-            // Under NEXT_STEP, a lane that completed this step (t) autoresets at
-            // t+1. Mint its next id now; the next step's down-push and slot roll
-            // both consume it. Mirrors the env's `expect_autoreset`.
+            // Under NEXT_STEP, a lane that completed this step (t) autoresets
+            // at t+1, which rolls its slot.
             if !self.driver_owns_resets() {
-                for completed in &completed_episodes {
-                    group
-                        .pending_roll
-                        .entry(completed.env_index)
-                        .or_insert_with(mint_episode_id);
-                }
+                group
+                    .pending_roll
+                    .extend(completed_episodes.iter().map(|c| c.env_index));
             }
         }
 
@@ -1518,7 +1495,7 @@ where
             let completions = std::mem::take(&mut groups[gid].pending_completed);
             self.fan_out_completions(completions).await;
             let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
-            self.queue_evictions(gid, &groups[gid], state, pending_roll.keys().copied());
+            self.queue_evictions(gid, &groups[gid], state, pending_roll.iter().copied());
             groups[gid].phase = EnvPhase::Idle;
             groups[gid].predict = PredictState::None;
             return Ok(());
@@ -1770,7 +1747,7 @@ where
             .filter_map(|(lane, (slot, env_index))| {
                 let terminated = response.terminated.get(lane).copied().unwrap_or(false);
                 let truncated = response.truncated.get(lane).copied().unwrap_or(false);
-                if !(terminated || truncated) || group.pending_roll.contains_key(env_index) {
+                if !(terminated || truncated) || group.pending_roll.contains(env_index) {
                     return None;
                 }
                 let episode = slot.episode.as_ref()?;
@@ -2217,27 +2194,19 @@ fn mint_episode_ids(count: usize) -> Vec<String> {
     (0..count).map(|_| mint_episode_id()).collect()
 }
 
-/// Current per-lane ids with the pending NEXT_STEP autoreset rolls substituted
-/// in. Lanes not rolling keep their current id; a rolling lane takes its freshly
-/// minted next id. Used for both the env down-push and our own slot roll so they
-/// stay byte-identical. `ids[i]` is lane `i`'s id (a whole-vector group).
-/// `ids` is aligned to `lanes` (the group's own lanes, in order), while
-/// `pending_roll` is keyed by the route-global `env_index`, so a roll is placed
-/// at the lane's POSITION in the group — a lane group's single id is at 0
-/// whatever its lane number, and a whole-vector group's positions already equal
-/// its lane numbers.
+/// Current per-lane ids with the NEXT_STEP autoreset rolls substituted in:
+/// lanes not rolling keep their current id, a rolling lane takes a freshly
+/// minted one. `ids` is aligned to `lanes` (the group's own lanes, in order),
+/// while `pending_roll` holds route-global `env_index`es, so a roll is placed
+/// at the lane's POSITION in the group.
 fn episode_ids_with_roll(
     mut ids: Vec<String>,
     lanes: &[u32],
-    pending_roll: &HashMap<u32, String>,
+    pending_roll: &HashSet<u32>,
 ) -> Vec<String> {
-    for (env_index, new_id) in pending_roll {
-        if let Some(slot) = lanes
-            .iter()
-            .position(|lane| lane == env_index)
-            .and_then(|position| ids.get_mut(position))
-        {
-            *slot = new_id.clone();
+    for (id, lane) in ids.iter_mut().zip(lanes) {
+        if pending_roll.contains(lane) {
+            *id = mint_episode_id();
         }
     }
     ids

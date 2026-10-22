@@ -358,10 +358,14 @@ impl RuntimeEnv for LockstepEnv {
         &mut self,
         request: EnvResetRequest,
     ) -> std::result::Result<RuntimeEnvReset, RuntimeError> {
-        let options = request.options.map(rlmesh_grpc::wire::meta_map_from_proto);
         let (observation, info) = self
             .client
-            .reset_leaves(&request.env_indices, &request.seeds, options.as_ref(), None)
+            .reset_leaves(
+                &request.env_indices,
+                &request.seeds,
+                request.options.as_ref(),
+                None,
+            )
             .await
             .map_err(|e| lockstep_runtime_error("env.reset", e))?;
         let (endpoint_total_ns, phases) = self.timing();
@@ -519,10 +523,13 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
             .inner
             .reset(rlmesh_proto::env::v1::ResetRequest {
                 seeds: request.seeds,
-                options: request.options,
+                options: request
+                    .options
+                    .as_ref()
+                    .map(rlmesh_grpc::wire::meta_map_to_proto),
                 timeout_ms: 0,
                 env_indices: request.env_indices,
-                episode_ids: request.episode_ids,
+                episode_ids: Vec::new(),
             })
             .await
             .map_err(|err| env_rpc("env.reset", err))?;
@@ -544,7 +551,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
                 action: Some(rlmesh_grpc::wire::leaves_value(request.action)),
                 timeout_ms: 0,
                 env_indices: request.env_indices,
-                episode_ids: request.episode_ids,
+                episode_ids: Vec::new(),
             })
             .await
             .map_err(|err| env_rpc("env.step", err))?;

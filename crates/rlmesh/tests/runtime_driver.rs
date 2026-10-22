@@ -2079,7 +2079,6 @@ struct NextStepLaneEnv {
 struct NextStepLaneState {
     resets: usize,
     step: Vec<usize>,
-    ids: Vec<String>,
     pending_autoreset: Vec<bool>,
 }
 
@@ -2089,7 +2088,6 @@ impl NextStepLaneEnv {
             inner: Arc::new(Mutex::new(NextStepLaneState {
                 resets: 0,
                 step: vec![0; num_envs],
-                ids: vec![String::new(); num_envs],
                 pending_autoreset: vec![false; num_envs],
             })),
             length,
@@ -2106,7 +2104,6 @@ impl RuntimeEnv for NextStepLaneEnv {
         state.resets += 1;
         state.step[lane] = 0;
         state.pending_autoreset[lane] = false;
-        state.ids[lane] = request.episode_ids.first().cloned().unwrap_or_default();
         Ok(RuntimeEnvReset {
             observation: vec![payload([0])],
             infos: None,
@@ -2121,10 +2118,9 @@ impl RuntimeEnv for NextStepLaneEnv {
         let mut state = self.inner.lock().expect("lane env lock poisoned");
         if state.pending_autoreset[lane] {
             // t+1: the env rolls this lane itself and returns the new episode's
-            // reset observation, adopting the id the runtime pushed down.
+            // reset observation.
             state.pending_autoreset[lane] = false;
             state.step[lane] = 0;
-            state.ids[lane] = request.episode_ids.first().cloned().unwrap_or_default();
             return Ok(RuntimeEnvStep {
                 observation: vec![payload([0])],
                 rewards: vec![0.0],
@@ -2272,15 +2268,17 @@ async fn the_driver_sends_the_shared_reset_options_encoding_on_the_wire() {
             options
                 .as_ref()
                 .expect("a declaring env receives options")
-                .entries
                 .get("trial_index")
-                .and_then(|value| value.kind.clone())
+                .cloned()
                 .expect("trial_index")
         })
         .collect::<Vec<_>>();
     assert_eq!(
         trials,
-        vec![meta_value::Kind::Integer(41), meta_value::Kind::Integer(42),],
+        vec![
+            rlmesh_spaces::MetaValue::Int(41),
+            rlmesh_spaces::MetaValue::Int(42)
+        ],
         "a single-lane reset sends the bare integer",
     );
 }
@@ -2297,19 +2295,10 @@ fn a_multi_lane_reset_sends_the_trial_ordinals_as_a_list_in_lane_order() {
     )
     .expect("a declaring env receives options");
 
+    use rlmesh_spaces::MetaValue::{Int, List};
     assert_eq!(
-        options
-            .entries
-            .get("trial_index")
-            .and_then(|v| v.kind.clone()),
-        Some(meta_value::Kind::List(rlmesh_proto::spaces::v1::MetaList {
-            items: [41, 42]
-                .into_iter()
-                .map(|trial| MetaValue {
-                    kind: Some(meta_value::Kind::Integer(trial)),
-                })
-                .collect(),
-        })),
+        options.get("trial_index"),
+        Some(&List(vec![Int(41), Int(42)]))
     );
 }
 

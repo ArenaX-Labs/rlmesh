@@ -211,6 +211,15 @@ fn meta_records(metas: &[Option<MetaMap>]) -> Value {
     Value::Array(metas.iter().map(meta_record).collect())
 }
 
+/// The reset options an env received, recorded in the fixtures' wire shape.
+fn option_records(options: &[Option<rlmesh_spaces::MetaMap>]) -> Value {
+    let wire: Vec<Option<MetaMap>> = options
+        .iter()
+        .map(|options| options.as_ref().map(rlmesh_grpc::wire::meta_map_to_proto))
+        .collect();
+    meta_records(&wire)
+}
+
 /// Every observation the runtime emitted, by the episodes it was attributed to.
 fn observations(hooks: &RecordingHooks, ids: &mut Ids) -> Value {
     let emitted = hooks
@@ -346,7 +355,7 @@ async fn scenario_01_disabled_single_env_episode() {
         "step_infos": meta_records(&hooks.step_infos.lock().expect("step info lock poisoned")),
         "env": {
             "reset_seeds": json!(*env.reset_seeds.lock().expect("reset seed lock poisoned")),
-            "reset_options": meta_records(&env.reset_options.lock().expect("reset option lock poisoned")),
+            "reset_options": option_records(&env.reset_options.lock().expect("reset option lock poisoned")),
             "closed": env.closed.load(Ordering::SeqCst),
         },
         "model_closed": model.closed.load(Ordering::SeqCst),
@@ -447,7 +456,7 @@ async fn scenario_03_next_step_mints_no_trial_ordinal() {
         runs.push(json!({
             "trial_index_base": base,
             "report": report_record(&report),
-            "reset_options": meta_records(&env.reset_options.lock().expect("reset option lock poisoned")),
+            "reset_options": option_records(&env.reset_options.lock().expect("reset option lock poisoned")),
             "started_trials": json!(*hooks.started_trials.lock().expect("started trial lock poisoned")),
             "completed_trials": json!(*hooks.completed_trials.lock().expect("completed trial lock poisoned")),
         }));
@@ -898,7 +907,7 @@ async fn scenario_09_episode_id_and_trial_authority() {
             "reported_ordinals": declared.episodes.iter().map(|episode| episode.trial_index).collect::<Vec<_>>(),
         },
         "undeclared_env": {
-            "reset_options": meta_records(&undeclared_env.reset_options.lock().expect("reset option lock poisoned")),
+            "reset_options": option_records(&undeclared_env.reset_options.lock().expect("reset option lock poisoned")),
             "reported_ordinals": undeclared.episodes.iter().map(|episode| episode.trial_index).collect::<Vec<_>>(),
         },
     });

@@ -1166,7 +1166,6 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
             seeds: vec![7],
             options: None,
             env_indices: vec![],
-            episode_ids: vec![],
         })
         .await
         .expect("adapter reset must succeed");

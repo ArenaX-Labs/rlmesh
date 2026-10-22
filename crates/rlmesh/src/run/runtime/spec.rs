@@ -4,8 +4,8 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use rlmesh_proto::core::v1::{AutoresetMode, EnvContract};
+use rlmesh_proto::spaces::v1::SpaceSpec;
 use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
-use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue, SpaceSpec};
 use rlmesh_proto::{Edition, EditionDefaults};
 use serde::{Deserialize, Serialize};
 
@@ -67,29 +67,16 @@ pub fn reset_options_for(
     contract: &EnvContract,
     option_key: &str,
     trials: &[u64],
-) -> Option<MetaMap> {
+) -> Option<rlmesh_spaces::MetaMap> {
+    use rlmesh_spaces::MetaValue;
     if trials.is_empty() || !declares_reset_option(contract, option_key) {
         return None;
     }
-    let value = if trials.len() == 1 {
-        MetaValue {
-            kind: Some(MetaKind::Integer(trials[0] as i64)),
-        }
-    } else {
-        MetaValue {
-            kind: Some(MetaKind::List(MetaList {
-                items: trials
-                    .iter()
-                    .map(|trial| MetaValue {
-                        kind: Some(MetaKind::Integer(*trial as i64)),
-                    })
-                    .collect(),
-            })),
-        }
+    let value = match trials {
+        [trial] => MetaValue::Int(*trial as i64),
+        _ => MetaValue::List(trials.iter().map(|t| MetaValue::Int(*t as i64)).collect()),
     };
-    Some(MetaMap {
-        entries: [(option_key.to_string(), value)].into_iter().collect(),
-    })
+    Some([(option_key.to_string(), value)].into())
 }
 
 /// Everything one route needs to run: its identity, the negotiated env
@@ -554,9 +541,11 @@ mod tests {
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use serde_json::json;
 
+    use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue};
+
     use super::{
-        ENV_RESET_OPTIONS_KEY, MetaKind, MetaList, MetaMap, MetaValue, RuntimeLimits,
-        RuntimeSessionSpec, TRIAL_INDEX_OPTION, declares_reset_option, reset_options_for,
+        ENV_RESET_OPTIONS_KEY, MetaKind, RuntimeLimits, RuntimeSessionSpec, TRIAL_INDEX_OPTION,
+        declares_reset_option, reset_options_for,
     };
 
     fn valid_spec() -> RuntimeSessionSpec {
@@ -790,10 +779,6 @@ mod tests {
         }
     }
 
-    fn trial_option(options: &MetaMap) -> Option<&MetaKind> {
-        options.entries.get(TRIAL_INDEX_OPTION)?.kind.as_ref()
-    }
-
     #[test]
     fn declares_reset_option_reads_a_list_or_a_bare_string() {
         assert!(declares_reset_option(
@@ -824,22 +809,16 @@ mod tests {
     fn reset_options_for_sends_an_integer_per_lane_and_a_list_for_many() {
         let contract = contract_declaring(list(vec![text(TRIAL_INDEX_OPTION)]));
 
+        use rlmesh_spaces::MetaValue::{Int, List};
         let single =
             reset_options_for(&contract, TRIAL_INDEX_OPTION, &[7]).expect("single-lane options");
-        assert_eq!(trial_option(&single), Some(&MetaKind::Integer(7)));
+        assert_eq!(single.get(TRIAL_INDEX_OPTION), Some(&Int(7)));
 
         let many = reset_options_for(&contract, TRIAL_INDEX_OPTION, &[7, 8, 9])
             .expect("multi-lane options");
         assert_eq!(
-            trial_option(&many),
-            Some(&MetaKind::List(MetaList {
-                items: [7, 8, 9]
-                    .into_iter()
-                    .map(|trial| MetaValue {
-                        kind: Some(MetaKind::Integer(trial)),
-                    })
-                    .collect(),
-            })),
+            many.get(TRIAL_INDEX_OPTION),
+            Some(&List(vec![Int(7), Int(8), Int(9)])),
         );
     }
 
