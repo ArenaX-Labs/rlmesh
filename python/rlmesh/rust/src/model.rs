@@ -1169,8 +1169,10 @@ impl PyModel {
     /// `step(env_index, rewards, terminated, truncated, autoreset_roll, info)`,
     /// and `episode_completed(episode_id, index, env_index, seed, trial, steps,
     /// reward, terminated, truncated, success, duration_s)`. An exception it
-    /// raises aborts the run and is re-raised as-is.
-    #[pyo3(signature = (env_address, episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None))]
+    /// raises aborts the run and is re-raised as-is. `invite_at` is the env's
+    /// session as a model served elsewhere reaches it, when that differs from
+    /// `env_address`'s.
+    #[pyo3(signature = (env_address, episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None, invite_at=None))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
@@ -1186,6 +1188,7 @@ impl PyModel {
         prefetch_lead: u32,
         workflow_edition: Option<String>,
         hooks: Option<Py<PyAny>>,
+        invite_at: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
@@ -1206,6 +1209,7 @@ impl PyModel {
             // The Python model outlives this run: its close() is the caller's.
             .close_model(false);
         options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
+        options.invite_at = invite_at;
         if let Some(cap) = max_episode_steps {
             options = options.max_episode_steps(cap);
         }
@@ -1268,7 +1272,7 @@ class PyModel:
     def bind(self, env_address: str, execution_horizon: int = 1, workflow_edition: str | None = None) -> PyBinding: ...
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, name: str, options: ServeOptions | None = None) -> None: ...
 "#
     }

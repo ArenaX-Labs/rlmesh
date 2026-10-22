@@ -30,6 +30,7 @@ pub(crate) struct LocalRun {
     pub(crate) execution_horizon: u32,
     pub(crate) prefetch_lead: u32,
     pub(crate) workflow_edition: Option<String>,
+    pub(crate) invite_at: Option<String>,
 }
 
 /// Connect to the env, resolve the handler's route, and drive the runtime
@@ -65,6 +66,7 @@ where
         execution_horizon: options.execution_horizon,
         prefetch_lead: options.prefetch_lead,
         workflow_edition: options.workflow_edition,
+        invite_at: options.invite_at,
     };
     drive_local(handler, run, cancellation, hooks, &|_| {}).await
 }
@@ -122,7 +124,7 @@ where
     }
 
     // A model served elsewhere answers in the env's session.
-    if let Some(session) = &session {
+    if let Some(session) = options.invite_at.as_ref().or(session.as_ref()) {
         handler.join(session).await?;
     }
     let workflow_edition = edition

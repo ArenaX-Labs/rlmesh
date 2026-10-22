@@ -92,7 +92,9 @@ class SandboxModel:
 
     :meth:`run` and :meth:`bind` drive the served model as
     ``rlmesh.Model(address)`` does, serving a local env in the session the
-    container hosts, which it reaches.
+    container hosts, which it reaches. :meth:`run` also takes a
+    :class:`~rlmesh.SandboxEnv`, whose session the container joins over their
+    shared Docker network.
     """
 
     def __init__(
@@ -161,7 +163,8 @@ class SandboxModel:
     def run(self, env: LocalEnvTarget, **options: Any) -> RunResult:
         """Run the served model against ``env``, as :meth:`rlmesh.Model.run` does.
 
-        Serves the container first; a local env is served in its session.
+        Serves the container first; a local env is served in its session, and
+        a :class:`~rlmesh.SandboxEnv`'s session is joined from the container.
         """
         return self._served().run(env, **options)
 

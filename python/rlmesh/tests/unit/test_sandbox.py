@@ -636,3 +636,24 @@ def test_an_image_built_with_rlmesh_0_1_is_refused_naming_it(
         sandbox.wait_serving(info, 30.0, never)
     thread.join(timeout=5)
     listener.close()
+
+
+def test_another_container_joins_a_sandbox_at_its_network_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = sandbox.SandboxInfo(**_start_result())
+    monkeypatch.setattr(
+        sandbox,
+        "run_docker",
+        lambda argv: SimpleNamespace(returncode=0, stdout="172.17.0.3 \n", stderr=""),
+    )
+    assert sandbox.peer_session(info) == "172.17.0.3:40000"
+    monkeypatch.setattr(
+        sandbox,
+        "run_docker",
+        lambda argv: SimpleNamespace(
+            returncode=1, stdout="", stderr="no such container"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="no such container"):
+        sandbox.peer_session(info)

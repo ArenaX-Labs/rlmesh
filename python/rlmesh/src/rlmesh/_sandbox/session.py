@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import socket
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
 from os import PathLike, fspath
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -234,6 +235,31 @@ def wait_serving(
             time.sleep(0.1)
 
 
+def peer_session(sandbox: SandboxInfo) -> str:
+    """The sandbox's session as another sandbox container reaches it.
+
+    Its ports publish on the host's loopback, which no other container
+    reaches, so a container joins at this one's address on their shared
+    Docker network, on the same port numbers (they match inside).
+    """
+    proc = run_docker(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}",
+            sandbox.container_id,
+        ]
+    )
+    ips = proc.stdout.split() if proc.returncode == 0 else []
+    if not ips:
+        raise RuntimeError(
+            f"sandbox container {sandbox.container_id[:12]} has no network "
+            f"address another container can reach: {proc.stderr.strip()}"
+        )
+    return f"{ips[0]}:{_base(sandbox.address)[1]}"
+
+
 def _container_running(container_id: str) -> bool | None:
     """Whether the sandbox container is still running, or None if unknowable.
 
@@ -274,6 +300,7 @@ class SandboxLifecycle:
 
     _source: str
     _closed: bool
+    _connect_timeout: float
     sandbox: SandboxInfo
 
     if TYPE_CHECKING:
@@ -298,6 +325,21 @@ class SandboxLifecycle:
         """Detach the remote client; supplied by the ``Remote*EnvBase`` mixed in."""
         raise NotImplementedError
 
+    @contextlib.contextmanager
+    def _lent(self) -> Iterator[str]:
+        """Lend the container to a run on its address, then attach again.
+
+        A run drives the env on a lease of its own, so this handle lets go of
+        its lease (and episode) for the run and takes it back after, unless
+        the run closed the sandbox.
+        """
+        self._detach()
+        try:
+            yield self.sandbox.address
+        finally:
+            if not self._closed:
+                self._attach(self._connect_timeout)
+
     def _attach(self, connect_timeout_seconds: float) -> None:
         """Attach the client to the started container once it serves.
 
@@ -307,6 +349,7 @@ class SandboxLifecycle:
         lifetime (mirroring :meth:`_stop`).
         """
         sandbox = self.sandbox
+        self._connect_timeout = connect_timeout_seconds
         try:
             wait_serving(
                 sandbox,

@@ -306,3 +306,67 @@ def test_reset_options_reach_each_episode_reset(
     assert [a["seed"] for a in asked] == [3, 4]
     assert [a["trial_index"] for a in asked] == [0, 1]
     assert all(a["episode_id"] for a in asked)
+
+
+@contextmanager
+def _sandbox_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """A SandboxEnv whose "container" is an env served in this process."""
+    import rlmesh
+    from rlmesh._sandbox import session as sandbox
+
+    server = rlmesh.EnvServer(ThreeStepEnv(), ":0/env")
+    server.start()
+    monkeypatch.setattr(
+        sandbox,
+        "_sandbox_start_env",
+        lambda *_a, **_kw: {
+            "requested_source": "CartPole-v1",
+            "resolved_source": "gym://CartPole-v1",
+            "address": server.address,
+            "container_id": "container-1",
+        },
+    )
+    monkeypatch.setattr(sandbox, "_sandbox_stop_env", lambda *, container_id: None)
+    try:
+        with rlmesh.SandboxEnv("CartPole-v1") as env:
+            yield env
+    finally:
+        server.shutdown()
+
+
+def test_a_run_borrows_a_sandbox_env_and_hands_it_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rlmesh
+
+    with _sandbox_env(monkeypatch) as env:
+        result = rlmesh.run(rlmesh.Model(lambda obs: 0), env, seeds=[0, 1])
+        assert (result.num_episodes, result.total_steps) == (2, 6)
+        env.reset(seed=0)
+        assert env.step(0)[1] == 1.0
+
+
+def test_a_sandboxed_model_joins_a_sandbox_env_where_its_container_reaches_it(
+    monkeypatch: pytest.MonkeyPatch, session_port: int
+) -> None:
+    import rlmesh
+    from rlmesh._sandbox import session as sandbox
+
+    with (
+        _served(rlmesh.Model(lambda obs: 0), session_port) as address,
+        _sandbox_env(monkeypatch) as env,
+    ):
+        model = rlmesh.Model(address)
+        # What SandboxModel sets: the model lives in a container.
+        model._env_session = address.rsplit("/", 1)[0]  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setattr(
+            sandbox, "peer_session", lambda info: info.address.rsplit("/", 1)[0]
+        )
+        assert model.run(env, seeds=[0, 1]).total_steps == 6
+        # The invitation is the peer session, not the one this driver dialed.
+        monkeypatch.setattr(
+            sandbox, "peer_session", lambda _info: "nowhere.invalid:7447"
+        )
+        with pytest.raises(ConnectionError, match=r"nowhere\.invalid:7447"):
+            model.run(env)
+        model.close()

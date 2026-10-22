@@ -98,6 +98,11 @@ pub struct RunLocalOptions {
     /// no peer can run is refused by the env-leg negotiation before any Join
     /// stream opens, naming every tier's WANT and CAN.
     pub workflow_edition: Option<String>,
+    /// The env's session as a model served elsewhere reaches it, when that
+    /// differs from the address this driver dials (a model container joins
+    /// an env container's session over their shared network). `None`
+    /// invites it at the dialed session.
+    pub invite_at: Option<String>,
 }
 
 impl RunLocalOptions {
@@ -117,6 +122,7 @@ impl RunLocalOptions {
             execution_horizon: 1,
             prefetch_lead: 0,
             workflow_edition: None,
+            invite_at: None,
         }
     }
 

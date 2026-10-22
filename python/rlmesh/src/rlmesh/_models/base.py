@@ -1359,7 +1359,9 @@ class ModelBase(Generic[ObsT, ActT]):
 
         ``env_or_address`` is a bare address string the loop dials, an object
         with an ``address`` (:class:`~rlmesh.EnvServer`; an open ``RemoteEnv``
-        is refused, as it holds its env's lease), or a local env object -- served
+        is refused, as it holds its env's lease, while a
+        :class:`~rlmesh.SandboxEnv` lends its container to the run and attaches
+        again after), or a local env object -- served
         in this process for
         the duration of the run (tag it via
         :func:`rlmesh.adapters.tag` for a spec'd model). Both the model and a
@@ -1681,14 +1683,56 @@ class ModelBase(Generic[ObsT, ActT]):
         are batched while tags describe one lane, so its check stays at the
         served resolve).
         """
+        with contextlib.ExitStack() as lent:
+            return self._run_native_on(
+                lent,
+                env_or_address,
+                episodes=episodes,
+                seeds=seeds,
+                max_episode_steps=max_episode_steps,
+                max_episode_seconds=max_episode_seconds,
+                close_env=close_env,
+                execution_horizon=execution_horizon,
+                prefetch_lead=prefetch_lead,
+                trial_index_base=trial_index_base,
+                workflow_edition=workflow_edition,
+                relay=relay,
+            )
+
+    def _run_native_on(
+        self,
+        lent: contextlib.ExitStack,
+        env_or_address: object,
+        *,
+        episodes: int,
+        seeds: Sequence[int] | None,
+        max_episode_steps: int | None,
+        max_episode_seconds: float | None,
+        close_env: bool,
+        execution_horizon: int,
+        prefetch_lead: int,
+        trial_index_base: int,
+        workflow_edition: str | None,
+        relay: object | None,
+    ) -> dict[str, Any]:
+        """:meth:`_run_native`'s body; a lent sandbox env returns to ``lent``."""
+        from .._sandbox.session import SandboxLifecycle, peer_session
         from ._connect import classify_env_target
 
         kind, payload = classify_env_target(env_or_address)
         env_obj: object = payload
         address: str | None = None
+        invite_at: str | None = None
         server = None
         if kind == "address":
             address = cast(str, payload)
+        elif kind == "handle" and isinstance(payload, SandboxLifecycle):
+            # A sandbox env lends its container to the run (closing the
+            # handle would stop it); a sandboxed model joins its session
+            # over their shared network.
+            address = lent.enter_context(payload._lent())  # pyright: ignore[reportPrivateUsage]
+            if self._env_session is not None:
+                invite_at = peer_session(payload.sandbox)
         elif kind == "handle":
             from .._client._remote_base import RemoteClientBase
             from .._rlmesh import is_v2_address
@@ -1732,6 +1776,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 trial_index_base=trial_index_base,
                 workflow_edition=workflow_edition,
                 hooks=relay,
+                invite_at=invite_at,
             )
         except (RuntimeError, ConnectionError) as error:
             if "held by another driver" in str(error):
@@ -1937,6 +1982,7 @@ class ModelBase(Generic[ObsT, ActT]):
         prefetch_lead: int = 0,
         workflow_edition: str | None = None,
         hooks: object | None = None,
+        invite_at: str | None = None,
     ) -> dict[str, Any]:
         """Native worker loop against a remote env for a fixed episode count.
 
@@ -1957,6 +2003,7 @@ class ModelBase(Generic[ObsT, ActT]):
             prefetch_lead,
             workflow_edition,
             hooks,
+            invite_at,
         )
 
     def _declared_workflow_edition(self, call: str | None) -> str | None:

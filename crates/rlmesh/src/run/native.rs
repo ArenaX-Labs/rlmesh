@@ -429,6 +429,7 @@ async fn run_body(
         execution_horizon: plan.execution_horizon,
         prefetch_lead: plan.prefetch_lead,
         workflow_edition: plan.edition,
+        invite_at: None,
     };
     let runtime_hooks: Arc<dyn RuntimeHooks> = match &relay {
         Some(relay) => {
