@@ -25,7 +25,7 @@ async-trait = { workspace = true }
 # The `lockstep` module (feature `lockstep`).
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
-bytes = { workspace = true, optional = true }
+bytes = { workspace = true }
 thiserror = { workspace = true }
 zenoh = { workspace = true, optional = true }
 rlmesh-spaces = { workspace = true }
@@ -76,7 +76,6 @@ viewer = ["dep:crossterm", "dep:tiny_http", "image/jpeg"]
 lockstep = [
   "dep:base64",
   "dep:blake3",
-  "dep:bytes",
   "dep:rlmesh-session",
   "dep:zenoh",
   "serde_json/float_roundtrip",

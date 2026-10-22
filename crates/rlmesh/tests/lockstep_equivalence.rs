@@ -333,89 +333,35 @@ fn a_lane_endpoint_with_partial_resets_and_per_lane_seeds_runs_unchanged_on_lock
     );
 }
 
-// --- the managed shape: a served model server, driven by the v1 runtime ----
+// --- the managed shape: a model served on a session, driven by the runtime -
 
-use async_trait::async_trait;
-use rlmesh::binding::runtime::{
-    NoopRuntimeHooks, RuntimeDriver, RuntimeEnv, RuntimeError, RuntimeModel,
-    RuntimeModelPrediction, RuntimeSessionSpec,
-};
-use rlmesh_proto::model::v1::{
-    AdapterContext, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
-    ResolveAdapterRequest,
-};
+use rlmesh::binding::model::{LockstepEnv, ResolveOptions};
+use rlmesh::binding::runtime::{NoopRuntimeHooks, RuntimeDriver, RuntimeSessionSpec};
+use rlmesh::lockstep::{ModelBinding, ModelService, ServedModel};
 
-/// A served model's gRPC client as a runtime model (the managed runner's
-/// unbatched route).
-struct ServedModel {
-    client: tokio::sync::Mutex<rlmesh_grpc::ModelClient>,
-}
-
-#[async_trait]
-impl RuntimeModel for ServedModel {
-    async fn predict(
-        &self,
-        request: PredictRequest,
-    ) -> std::result::Result<RuntimeModelPrediction, RuntimeError> {
-        let mut client = self.client.lock().await;
-        let response = client
-            .predict(request)
-            .await
-            .map_err(|source| RuntimeError::model_rpc("served-model", source))?;
-        Ok(RuntimeModelPrediction {
-            response,
-            endpoint_total_ns: client.take_last_endpoint_total_ns(),
-            phases: client.take_last_phases(),
-            group_size: None,
-        })
-    }
-
-    async fn reset_adapter(
-        &self,
-        request: ResetAdapterRequest,
-    ) -> std::result::Result<(), RuntimeError> {
-        self.client
-            .lock()
-            .await
-            .reset_adapter(request)
-            .await
-            .map_err(|source| RuntimeError::model_rpc("served-model", source))
-    }
-
-    async fn release_adapter(
-        &self,
-        request: ReleaseAdapterRequest,
-        _timeout: Duration,
-    ) -> std::result::Result<(), String> {
-        self.client
-            .lock()
-            .await
-            .release_adapter(request)
-            .await
-            .map(|_| ())
-            .map_err(|err| err.to_string())
-    }
-}
-
-async fn drive_managed<E: RuntimeEnv + Clone + 'static>(
-    env: E,
-    handshake: rlmesh_grpc::EnvHandshake,
-    mut model: rlmesh_grpc::ModelClient,
-    selected: String,
+/// The managed runner's route: the runtime drives the lockstep env at
+/// `env_address` with the model served at `model_address`, under the
+/// session id, env id and base seed the v1 runtime ran it with.
+async fn drive_managed(
+    env_address: &str,
+    model_address: &str,
     episodes: u64,
 ) -> rlmesh::binding::runtime::RuntimeReport {
-    model
-        .resolve_adapter(ResolveAdapterRequest {
-            context: Some(AdapterContext {
-                session_id: "managed".into(),
-                env_id: "catalog".into(),
-                request_id: "managed:resolve_adapter".into(),
-            }),
-            env_spec: handshake.env_contract.spec.clone(),
-            selected_workflow_edition: selected.clone(),
-            execution_horizon: 1,
-            delivers_history: true,
-        })
+    let client = rlmesh::lockstep::connect(env_address, Default::default())
+        .await
+        .unwrap();
+    let contract = client.info().contract.clone();
+    let model = ServedModel::new(model_address, Duration::from_secs(10));
+    let routes = rlmesh::binding::model::ModelHandler::route_setup(&model).unwrap();
+    routes
+        .resolve_adapter(
+            "catalog",
+            &contract,
+            ResolveOptions {
+                execution_horizon: 1,
+                delivers_history: true,
+            },
+        )
         .await
         .unwrap();
     let spec = RuntimeSessionSpec {
@@ -423,9 +369,9 @@ async fn drive_managed<E: RuntimeEnv + Clone + 'static>(
         env_id: "catalog".into(),
         env_component_id: "catalog-env".into(),
         model_component_id: "served-model".into(),
-        workflow_edition: rlmesh_proto::parse_retained_edition(&selected).unwrap(),
-        env_contract: handshake.env_contract.clone(),
-        num_envs: handshake.num_envs,
+        workflow_edition: rlmesh_proto::parse_retained_edition("2026.06").unwrap(),
+        env_contract: rlmesh_grpc::wire::env_contract_to_proto(&contract),
+        num_envs: contract.num_envs as usize,
         base_seed: Some(5),
         episode_seeds: Vec::new(),
         max_episodes: Some(episodes),
@@ -435,27 +381,25 @@ async fn drive_managed<E: RuntimeEnv + Clone + 'static>(
         close_env_on_end: false,
         limits: Default::default(),
         subset_step: false,
-        env_ceiling: None,
-        model_ceiling: None,
     };
     RuntimeDriver::new(
         spec,
-        env,
-        ServedModel {
-            client: tokio::sync::Mutex::new(model),
-        },
+        LockstepEnv::new(client),
+        model,
+        contract,
         Arc::new(NoopRuntimeHooks),
     )
+    .with_history(true)
     .run()
     .await
     .unwrap()
 }
 
-fn run_managed(v2: bool) -> Traces {
+fn run_managed() -> Traces {
     let rt = runtime();
     let env = CatalogEnv::new(4, AutoresetMode::NextStep, false);
     let trace = options(&env);
-    let env_address = serve(&rt, env, v2);
+    let env_address = serve(&rt, env, true);
     let log = Arc::new(Mutex::new(Vec::new()));
     let model = Model::new(
         CatalogPolicy { log: log.clone() },
@@ -465,62 +409,20 @@ fn run_managed(v2: bool) -> Traces {
         },
     )
     .unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let model_address = format!("tcp://127.0.0.1:{port}");
-    let cancel = rlmesh::ext::CancelToken::new();
-    let server = {
-        let (model, address, cancel) = (model.clone(), model_address.clone(), cancel.clone());
-        std::thread::spawn(move || {
-            let _ = model.serve(
-                &address,
-                rlmesh::ModelServeOptions {
-                    cancel: Some(cancel),
-                    ..Default::default()
-                },
-            );
-        })
-    };
+    let cancel = tokio_util::sync::CancellationToken::new();
     let report = rt.block_on(async {
-        let connect = rlmesh_grpc::connect::ConnectOptions::default();
-        let mut client = rlmesh_grpc::ModelClient::connect_with_retry(&model_address, "", &connect)
-            .await
-            .unwrap();
-        client.handshake().await.unwrap();
-        if v2 {
-            let (env, handshake) =
-                rlmesh::binding::model::LockstepRuntimeEnv::connect(&env_address, Some("2026.06"))
-                    .await
-                    .unwrap();
-            let floor = rlmesh_grpc::env_floor(
-                &handshake.session_offer(),
-                &client.model_session_offer(),
-                Some("2026.06"),
-            )
-            .unwrap();
-            drive_managed(env, handshake, client, floor.selected_workflow_edition, 9).await
-        } else {
-            let mut env = rlmesh_grpc::EnvClient::connect_with_retry(&env_address, "", &connect)
-                .await
-                .unwrap();
-            env.declare_workflow_edition(Some("2026.06".into()));
-            let handshake = env.handshake().await.unwrap();
-            let floor = rlmesh_grpc::env_floor(
-                &handshake.session_offer(),
-                &client.model_session_offer(),
-                Some("2026.06"),
-            )
-            .unwrap();
-            env.pin_workflow_edition(floor.selected_workflow_edition.clone());
-            let env = rlmesh::binding::model::EnvClientRuntimeEnv::new(env);
-            drive_managed(env, handshake, client, floor.selected_workflow_edition, 9).await
-        }
+        let binding = ModelBinding::bind(":0/model").await.unwrap();
+        let model_address = binding.address();
+        let service = Arc::new(ModelService::new(
+            rlmesh::binding::model::model_handler(&model),
+            String::new(),
+        ));
+        let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
+        let report = drive_managed(&env_address, &model_address, 9).await;
+        cancel.cancel();
+        served.await.unwrap().unwrap();
+        report
     });
-    cancel.cancel();
-    let _ = server.join();
     model.close().unwrap();
     drop(rt);
     let env = std::mem::take(&mut *trace.lock().unwrap());
@@ -549,11 +451,13 @@ fn run_managed(v2: bool) -> Traces {
 }
 
 #[test]
-fn a_served_model_server_drives_a_lockstep_env_unchanged() {
-    let v1 = run_managed(false);
-    assert!(!v1.model.is_empty() && v1.episodes.len() >= 9);
-    golden("served_model", &v1);
-    if std::env::var_os("RLMESH_WRITE_GOLDEN").is_none() {
-        golden("served_model", &run_managed(true));
+fn a_model_served_on_a_session_drives_a_lockstep_env_unchanged() {
+    // Its golden file is the v1 runtime's (a gRPC model server); no run here
+    // may rewrite it.
+    if std::env::var_os("RLMESH_WRITE_GOLDEN").is_some() {
+        return;
     }
+    let traces = run_managed();
+    assert!(!traces.model.is_empty() && traces.episodes.len() >= 9);
+    golden("served_model", &traces);
 }

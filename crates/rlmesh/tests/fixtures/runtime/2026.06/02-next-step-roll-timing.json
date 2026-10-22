@@ -604,12 +604,28 @@
     "step_infos": [
       [
         [
+          "_final_info",
+          "<non-scalar>"
+        ],
+        [
+          "final_info",
+          "<non-scalar>"
+        ],
+        [
           "phase",
           "step"
         ]
       ],
       null,
       [
+        [
+          "_final_info",
+          "<non-scalar>"
+        ],
+        [
+          "final_info",
+          "<non-scalar>"
+        ],
         [
           "phase",
           "step"

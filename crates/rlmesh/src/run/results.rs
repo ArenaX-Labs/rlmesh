@@ -297,12 +297,7 @@ impl fmt::Display for StepEvent {
 /// The facade result of a native run's report (0-based index, seconds).
 pub(crate) fn from_report(report: &crate::run::runtime::RuntimeReport) -> RunResult {
     RunResult {
-        advisories: report
-            .advisories
-            .iter()
-            .cloned()
-            .map(crate::adapters::Advisory::from_core)
-            .collect(),
+        advisories: Vec::new(),
         episodes: report.episodes.iter().map(episode_from_summary).collect(),
         telemetry: telemetry_rows(&report.telemetry),
     }

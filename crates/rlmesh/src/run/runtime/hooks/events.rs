@@ -20,19 +20,6 @@ pub struct RuntimeEnvContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnvConnectedEvent {
-    pub session_id: String,
-    pub route: RuntimeEnvContext,
-    pub env_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelConnectedEvent {
-    pub session_id: String,
-    pub route: RuntimeEnvContext,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStartedEvent {
     pub session_id: String,
     pub route: RuntimeEnvContext,
@@ -130,19 +117,10 @@ pub struct ActionReceivedEvent {
     pub step: i64,
     pub env_index: i32,
     /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
-    /// rather than deep-copying the action space spec on every step. Types
-    /// `action`: when the relay policy converted it into a new layout, this is
-    /// the converted space and `raw_action` keeps the contract's.
+    /// rather than deep-copying the action space spec on every step.
     pub action_space: Arc<SpaceSpec>,
-    /// Opaque per-leaf wire bytes; the relay is content-blind (§13).
-    ///
-    /// To persist as a single artifact, use `rlmesh-grpc`'s
-    /// `wire::leaves_to_blob` — plain concatenation loses the leaf
-    /// boundaries, which cannot be recovered for variable-length leaves.
+    /// The action's leaf slabs, typed by `action_space`.
     pub action: Option<Vec<Bytes>>,
-    /// The model's action before `transform_action` ran; equals `action` when no
-    /// transform changed it.
-    pub raw_action: Option<Vec<Bytes>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,32 +167,13 @@ pub struct ObservationEmittedEvent {
     pub is_reset: bool,
     pub num_envs: u32,
     /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
-    /// rather than deep-copying the observation space spec on every step. Types
-    /// `observation`: when the relay policy converted it into a new layout, this
-    /// is the converted space and `raw_observation` keeps the contract's.
+    /// rather than deep-copying the observation space spec on every step.
     pub observation_space: Arc<SpaceSpec>,
-    /// Opaque per-leaf wire bytes; the relay is content-blind (§13).
-    ///
-    /// To persist as a single artifact, use `rlmesh-grpc`'s
-    /// `wire::leaves_to_blob` — plain concatenation loses the leaf
-    /// boundaries, which cannot be recovered for variable-length leaves.
+    /// The observation's leaf slabs, typed by `observation_space`.
     pub observation: Option<Vec<Bytes>>,
-    /// The env's observation before `transform_observation` ran; equals
-    /// `observation` when no transform changed it.
-    pub raw_observation: Option<Vec<Bytes>>,
     /// The env's reset infos when `is_reset`; step infos ride on
     /// `StepCompletedEvent` instead.
     pub infos: Option<MetaMap>,
-}
-
-/// A relay policy converted a payload for a peer that could not decode it as
-/// sent. Delivered once per distinct advisory, which the report also carries.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RelayAdvisoryEvent {
-    pub session_id: String,
-    pub route: RuntimeEnvContext,
-    pub leg: super::Leg,
-    pub advisory: rlmesh_spaces::Advisory,
 }
 
 /// A live telemetry snapshot tagged with the route/session it belongs to.

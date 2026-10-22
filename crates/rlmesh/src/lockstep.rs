@@ -48,7 +48,7 @@ pub mod adapters {
     };
 }
 
-pub use client::{Keep, LockstepClient};
+pub use client::{Keep, LeafStep, LockstepClient};
 pub use error::GymError;
 pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};

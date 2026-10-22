@@ -51,6 +51,21 @@ fn flags(bytes: &[u8]) -> Vec<bool> {
     bytes.iter().map(|b| *b != 0).collect()
 }
 
+/// A step's answer with the observation as leaf slabs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LeafStep {
+    /// The lanes' next observation, as leaf slabs.
+    pub observation: Vec<Bytes>,
+    /// One reward per lane.
+    pub rewards: Vec<f64>,
+    /// Per-lane `terminated`.
+    pub terminated: Vec<bool>,
+    /// Per-lane `truncated`.
+    pub truncated: Vec<bool>,
+    /// The info.
+    pub info: Option<MetaMap>,
+}
+
 /// What a driver holds for its run: the session participant whose lease
 /// it steps under.
 #[async_trait]
@@ -179,16 +194,19 @@ impl LockstepClient {
             .ok_or_else(|| GymError::Map("the env has no space".into()))
     }
 
-    /// The observations of `lanes` lanes in `side`'s part slabs.
-    fn observations(
+    /// The observation leaf slabs of `lanes` lanes in `side`'s part slabs.
+    fn observation_leaves(
         &self,
         values: &[rlmesh_session::wire::PartValues],
         lanes: usize,
-    ) -> Result<Vec<SpaceValue>, GymError> {
+    ) -> Result<Vec<Bytes>, GymError> {
         let side: &Side = &self.inner.map.observation;
-        let leaves = map::unpack(side, &ordered(side, values)?, lanes)?;
+        map::unpack(side, &ordered(side, values)?, lanes)
+    }
+
+    fn decode(&self, leaves: &[Bytes], lanes: usize) -> Result<Vec<SpaceValue>, GymError> {
         let space = Self::space(&self.inner.map.info.contract.observation_space)?;
-        decode_leaf_slab(&leaves, space, lanes).map_err(|e| GymError::Malformed(e.to_string()))
+        decode_leaf_slab(leaves, space, lanes).map_err(|e| GymError::Malformed(e.to_string()))
     }
 
     /// Resets `lanes` (empty: every lane), `seeds` positional to them.
@@ -199,6 +217,22 @@ impl LockstepClient {
         options: Option<&MetaMap>,
         timeout: Option<Duration>,
     ) -> Result<Reset, GymError> {
+        let width = self.lanes(lanes);
+        let (leaves, info) = self.reset_leaves(lanes, seeds, options, timeout).await?;
+        Ok(Reset {
+            observations: self.decode(&leaves, width)?,
+            info,
+        })
+    }
+
+    /// [`Self::reset`], the observation as leaf slabs.
+    pub async fn reset_leaves(
+        &self,
+        lanes: &[u32],
+        seeds: &[i64],
+        options: Option<&MetaMap>,
+        timeout: Option<Duration>,
+    ) -> Result<(Vec<Bytes>, Option<MetaMap>), GymError> {
         let d = &self.inner;
         let width = self.lanes(lanes);
         let first = d.episodes.fetch_add(width as u64, Ordering::Relaxed) + 1;
@@ -212,10 +246,10 @@ impl LockstepClient {
         };
         let reply = d.link.call(Request::Reset(reset), timeout).await?;
         self.timed(reply.timing);
-        Ok(Reset {
-            observations: self.observations(&reply.observations, width)?,
-            info: meta_json::optional_from_json(&reply.info_json).map_err(GymError::Malformed)?,
-        })
+        Ok((
+            self.observation_leaves(&reply.observations, width)?,
+            meta_json::optional_from_json(&reply.info_json).map_err(GymError::Malformed)?,
+        ))
     }
 
     /// Steps `lanes` (empty: every lane) with one action each.
@@ -225,12 +259,30 @@ impl LockstepClient {
         actions: &[SpaceValue],
         timeout: Option<Duration>,
     ) -> Result<Step, GymError> {
-        let d = &self.inner;
-        let width = self.lanes(lanes);
-        let space = Self::space(&d.map.info.contract.action_space)?;
+        let space = Self::space(&self.inner.map.info.contract.action_space)?;
         let leaves =
             encode_leaf_slab(actions, space).map_err(|e| GymError::Value(e.to_string()))?;
-        let commands = tagged(&d.map.action, map::pack(&d.map.action, &leaves, width)?);
+        let step = self.step_leaves(lanes, &leaves, timeout).await?;
+        Ok(Step {
+            observations: self.decode(&step.observation, self.lanes(lanes))?,
+            rewards: step.rewards,
+            terminated: step.terminated,
+            truncated: step.truncated,
+            info: step.info,
+        })
+    }
+
+    /// [`Self::step`] on leaf slabs: one action per lane in, the next
+    /// observation out.
+    pub async fn step_leaves(
+        &self,
+        lanes: &[u32],
+        leaves: &[Bytes],
+        timeout: Option<Duration>,
+    ) -> Result<LeafStep, GymError> {
+        let d = &self.inner;
+        let width = self.lanes(lanes);
+        let commands = tagged(&d.map.action, map::pack(&d.map.action, leaves, width)?);
         let step = LockstepStep {
             epoch: Epoch(d.epoch.load(Ordering::Acquire)),
             step: d.step.fetch_add(1, Ordering::Relaxed) + 1,
@@ -240,8 +292,8 @@ impl LockstepClient {
         };
         let reply = d.link.call(Request::Step(step), timeout).await?;
         self.timed(reply.timing);
-        Ok(Step {
-            observations: self.observations(&reply.observations, width)?,
+        Ok(LeafStep {
+            observation: self.observation_leaves(&reply.observations, width)?,
             rewards: rewards_from(&reply.reward, width)?,
             terminated: flags(&reply.terminated),
             truncated: flags(&reply.truncated),

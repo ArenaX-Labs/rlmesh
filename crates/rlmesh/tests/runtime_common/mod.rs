@@ -13,19 +13,14 @@ use async_trait::async_trait;
 use futures::channel::{mpsc, oneshot};
 use futures::future::Shared;
 use prost::bytes::Bytes;
+use rlmesh::binding::model::{ModelHandler, ModelObservation, PredictFrames};
 use rlmesh::binding::runtime::{
-    ActionReceivedEvent, EndpointPhases, HookError, RuntimeDriver, RuntimeEnv, RuntimeEnvReset,
-    RuntimeEnvStep, RuntimeError, RuntimeHooks, RuntimeModel, RuntimeModelPrediction,
-    RuntimeSessionSpec,
+    ActionReceivedEvent, EndpointPhases, EnvResetRequest, EnvStepRequest, HookError, RuntimeDriver,
+    RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError, RuntimeHooks, RuntimeSessionSpec,
 };
 use rlmesh_proto::core::v1::{EnvContract, EnvSpec};
-use rlmesh_proto::env::v1::{
-    EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
-};
-use rlmesh_proto::model::v1::{
-    PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
-};
-use rlmesh_proto::spaces::v1::{MetaMap, MetaValue, SpaceSpec, SpaceValue, meta_value};
+use rlmesh_proto::spaces::v1::{MetaMap, MetaValue, SpaceSpec, meta_value};
+use rlmesh_spaces::{DType, SpaceValue, Tensor};
 
 #[derive(Debug, thiserror::Error)]
 #[error("simulated transport failure")]
@@ -68,7 +63,7 @@ impl Default for TestEnv {
 
 #[async_trait]
 impl RuntimeEnv for TestEnv {
-    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+    async fn reset(&mut self, request: EnvResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
         self.reset_seeds
             .lock()
             .expect("reset seed recorder lock poisoned")
@@ -85,43 +80,33 @@ impl RuntimeEnv for TestEnv {
             request.episode_ids.first().cloned().unwrap_or_default();
         self.step_count.store(0, Ordering::SeqCst);
         Ok(RuntimeEnvReset {
-            response: ResetResponse {
-                observation: Some(leaves_value(payload([1]))),
-                infos: Some(info_map("phase", "reset")),
-            },
+            observation: vec![payload([1])],
+            infos: Some(info_map("phase", "reset")),
             endpoint_total_ns: self.endpoint_total_ns,
             phases: self.phases,
         })
     }
 
-    async fn step(&mut self, _request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+    async fn step(&mut self, _request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
         let step = self.step_count.fetch_add(1, Ordering::SeqCst) + 1;
         let terminal = step >= self.terminal_after;
-        let episode_id = self
-            .current_episode
-            .lock()
-            .expect("current episode lock poisoned")
-            .clone();
+        // The terminal step's info carries the episode's `final_info`, as a
+        // Gymnasium env reports its outcome.
+        let mut infos = info_map("phase", "step");
+        if terminal && let Some(final_info) = &self.final_info {
+            infos.entries.insert(
+                "final_info".to_string(),
+                MetaValue {
+                    kind: Some(meta_value::Kind::Map(final_info.clone())),
+                },
+            );
+        }
         Ok(RuntimeEnvStep {
-            response: StepResponse {
-                observation: Some(leaves_value(payload([step as u8]))),
-                rewards: vec![1.0],
-                terminated_mask: vec![u8::from(terminal)],
-                truncated_mask: vec![0],
-                infos: Some(info_map("phase", "step")),
-                completed_episodes: terminal
-                    .then(|| EpisodeMetadata {
-                        episode_id,
-                        step_count: step as i64,
-                        cumulative_reward: step as f64,
-                        terminated: true,
-                        final_info: self.final_info.clone(),
-                        ..Default::default()
-                    })
-                    .into_iter()
-                    .collect(),
-                env_indices: vec![],
-            },
+            observation: vec![payload([step as u8])],
+            rewards: vec![1.0],
+            terminated: vec![terminal],
+            truncated: vec![false],
+            infos: Some(infos),
             endpoint_total_ns: self.endpoint_total_ns,
             phases: self.phases,
         })
@@ -143,39 +128,38 @@ pub type Ledger = Arc<Mutex<Vec<LedgerEntry>>>;
 
 #[derive(Clone, Default)]
 pub struct TestModel {
+    // Set when the driver released the route at route end.
     pub closed: Arc<AtomicBool>,
+    // Simulates a route release that blocks (an RPC on a hung connection)
+    // without honoring any timeout.
+    pub release_adapter_hangs: bool,
     pub predicts: Arc<AtomicUsize>,
     pub predict_delay: Option<Duration>,
     pub seen_observations: Arc<Mutex<Vec<Vec<u8>>>>,
-    // Episode ids the driver asked the model to evict via ResetAdapter (R2), in
-    // order — one ResetAdapterRequest's episode_ids per entry.
+    // Episode ids the driver asked the model to evict (R2), in order: one
+    // `reset_adapter` call's episode ids per entry.
     pub reset_adapters: Arc<Mutex<Vec<Vec<String>>>>,
-    // Every model call in arrival order: ("predict", the request's episode ids)
-    // or ("evict", the ResetAdapter's ids) — the model-side episode lifecycle.
+    // Every model call in arrival order: ("predict", the observation's episode
+    // ids) or ("evict", the ids it ended) — the model-side episode lifecycle.
     pub lifecycle: Lifecycle,
-    // Number of chunk replay frames to return per predict (frames 1.. of the
-    // ordered `actions` list; frame 0 is always present). 0 = not chunking (a
-    // single-frame `actions`, the unchanged path).
+    // Number of chunk replay frames to return per predict (frames after frame
+    // 0, which is always present). 0 = not chunking.
     pub replay_frames: usize,
     // The route negotiated observation history: the driver then carries every
     // replayed step as a row on the next predict.
     pub wants_history: bool,
-    // Per predict request: the history rows' `(step, first observation byte)`
-    // and the request's own, in arrival order.
+    // Per predict: the history rows' `(step, first observation byte)` and the
+    // observation's own, in arrival order.
     pub ledger: Ledger,
-    // Simulates a release_adapter impl that blocks (e.g. an RPC on a hung
-    // connection) without honoring the supplied timeout.
-    pub release_adapter_hangs: bool,
-    // Simulates a reset_adapter (evict) RPC the model never answers: the call
-    // is recorded, then pends forever.
+    // Simulates an evict the model never answers: the call is recorded, then
+    // pends forever.
     pub reset_adapter_hangs: bool,
-    // The 1-based predict call that fails with a fatal model RPC error (after
-    // its lifecycle entry is recorded), failing the route mid-episode.
+    // The 1-based predict call that fails with a fatal model error (after its
+    // lifecycle entry is recorded), failing the route mid-episode.
     pub fail_predict_at: Option<usize>,
-    // What this model claims to have spent on each predict, as a peer would
-    // stamp it.
-    pub endpoint_total_ns: Option<u64>,
-    pub phases: EndpointPhases,
+    // What this model reports holding, and the adapter share of each predict.
+    pub held: Option<(u64, u64)>,
+    pub adapter_ns: u64,
     // Holds the `gate_at`th predict to arrive (0-based) until the gate opens;
     // every other predict returns at once.
     pub gate: Option<Shared<oneshot::Receiver<()>>>,
@@ -183,17 +167,77 @@ pub struct TestModel {
     pub arrived: Arc<AtomicUsize>,
     // One `()` per predict as it arrives, ahead of any delay or gate.
     pub arrivals: Option<mpsc::UnboundedSender<()>>,
-    // A lock predict holds across its delay and evict must also take, the way
-    // the local model shares one handler between the two.
-    pub handler_lock: Option<Arc<tokio::sync::Mutex<()>>>,
+}
+
+impl TestModel {
+    fn predict_one(&self, observation: &ModelObservation) -> rlmesh::Result<PredictFrames> {
+        let call = self.predicts.fetch_add(1, Ordering::SeqCst) + 1;
+        self.lifecycle
+            .lock()
+            .expect("lifecycle lock poisoned")
+            .push(("predict", observation.episode_ids()));
+        if self.fail_predict_at == Some(call) {
+            return Err(rlmesh::Error::model(FakeTransportError.to_string()));
+        }
+        let first_byte = |leaves: Option<&Vec<Bytes>>| {
+            leaves
+                .and_then(|leaves| leaves.first())
+                .and_then(|leaf| leaf.first().copied())
+                .unwrap_or(0)
+        };
+        self.ledger.lock().expect("ledger poisoned").push((
+            observation
+                .history
+                .iter()
+                .map(|row| (row.step, first_byte(row.observation.as_ref())))
+                .collect(),
+            (
+                observation.step.unwrap_or(-1),
+                first_byte(observation.observation.as_ref()),
+            ),
+        ));
+        let observation_bytes = observation
+            .observation
+            .as_ref()
+            .and_then(|leaves| leaves.first())
+            .map(|leaf| leaf.to_vec())
+            .unwrap_or_default();
+        self.seen_observations
+            .lock()
+            .expect("model observation recorder lock poisoned")
+            .push(observation_bytes);
+        // Frame 0 is this step; the replay frames are buffered and replayed
+        // without re-calling the model.
+        let frame = |byte: u8| vec![action(byte); observation.num_envs];
+        Ok(PredictFrames {
+            actions: frame(0),
+            replay: (0..self.replay_frames)
+                .map(|i| frame(100 + i as u8))
+                .collect(),
+        })
+    }
 }
 
 #[async_trait]
-impl RuntimeModel for TestModel {
-    async fn predict(
-        &self,
-        request: PredictRequest,
-    ) -> Result<RuntimeModelPrediction, RuntimeError> {
+impl ModelHandler for TestModel {
+    async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        Ok(self.predict_chunked(observation).await?.actions)
+    }
+
+    async fn predict_chunked(
+        &mut self,
+        observation: ModelObservation,
+    ) -> rlmesh::Result<PredictFrames> {
+        self.predict_grouped(vec![observation])
+            .await
+            .pop()
+            .expect("one group, one result")
+    }
+
+    async fn predict_grouped(
+        &mut self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<rlmesh::Result<PredictFrames>> {
         if let Some(arrivals) = &self.arrivals {
             let _ = arrivals.unbounded_send(());
         }
@@ -202,107 +246,112 @@ impl RuntimeModel for TestModel {
         {
             let _ = gate.clone().await;
         }
-        let _handler = match &self.handler_lock {
-            Some(lock) => Some(lock.lock().await),
-            None => None,
-        };
         if let Some(delay) = self.predict_delay {
             tokio::time::sleep(delay).await;
         }
-        let call = self.predicts.fetch_add(1, Ordering::SeqCst) + 1;
+        observations.iter().map(|o| self.predict_one(o)).collect()
+    }
+
+    fn held_state(&self) -> Option<rlmesh::binding::model::HeldState> {
+        self.held
+            .map(|(episodes, bytes)| rlmesh::binding::model::HeldState { episodes, bytes })
+    }
+
+    fn take_adapter_ns(&mut self) -> u64 {
+        self.adapter_ns
+    }
+
+    fn route_setup(&self) -> Option<Arc<dyn rlmesh::binding::model::ModelRouteSetup>> {
+        Some(Arc::new(TestRoutes {
+            closed: Arc::clone(&self.closed),
+            hangs: self.release_adapter_hangs,
+        }))
+    }
+
+    async fn reset_adapter(
+        &mut self,
+        _env_id: &str,
+        episode_ids: Vec<String>,
+    ) -> rlmesh::Result<()> {
         self.lifecycle
             .lock()
             .expect("lifecycle lock poisoned")
-            .push((
-                "predict",
-                request
-                    .episode_info
-                    .iter()
-                    .map(|e| e.episode_id.clone())
-                    .collect(),
-            ));
-        if self.fail_predict_at == Some(call) {
-            return Err(RuntimeError::model_rpc("model-1", FakeTransportError));
-        }
-        let first_byte = |value: Option<&SpaceValue>| {
-            value
-                .and_then(|value| value.leaves.first())
-                .and_then(|leaf| leaf.first().copied())
-                .unwrap_or(0)
-        };
-        self.ledger.lock().expect("ledger poisoned").push((
-            request
-                .history
-                .iter()
-                .map(|row| (row.step, first_byte(row.observation.as_ref())))
-                .collect(),
-            (
-                request.step.unwrap_or(-1),
-                first_byte(request.observation.as_ref()),
-            ),
-        ));
-        let observation_bytes = request
-            .observation
-            .as_ref()
-            .and_then(|value| value.leaves.first())
-            .map(|leaf| leaf.to_vec())
-            .unwrap_or_default();
-        self.seen_observations
-            .lock()
-            .expect("model observation recorder lock poisoned")
-            .push(observation_bytes);
-        // Ordered chunk frames: `actions[0]` is this step, `actions[1..]` are the
-        // replay frames the driver buffers and replays without re-calling the model.
-        let mut actions = vec![leaves_value(payload([0]))];
-        actions.extend((0..self.replay_frames).map(|i| leaves_value(payload([100 + i as u8]))));
-        Ok(RuntimeModelPrediction {
-            response: PredictResponse {
-                context: request.context,
-                actions,
-            },
-            endpoint_total_ns: self.endpoint_total_ns,
-            phases: self.phases,
-            group_size: None,
-        })
-    }
-
-    fn wants_history(&self) -> bool {
-        self.wants_history
-    }
-
-    async fn reset_adapter(&self, request: ResetAdapterRequest) -> Result<(), RuntimeError> {
-        let _handler = match &self.handler_lock {
-            Some(lock) => Some(lock.lock().await),
-            None => None,
-        };
-        self.lifecycle
-            .lock()
-            .expect("lifecycle lock poisoned")
-            .push(("evict", request.episode_ids.clone()));
+            .push(("evict", episode_ids.clone()));
         self.reset_adapters
             .lock()
             .expect("reset_adapter recorder lock poisoned")
-            .push(request.episode_ids);
+            .push(episode_ids);
         if self.reset_adapter_hangs {
             // The call is on the record; now ignore any deadline entirely,
-            // like an evict RPC on a hung connection.
+            // like an evict on a hung connection.
             std::future::pending::<()>().await;
         }
         Ok(())
     }
+}
 
-    async fn release_adapter(
+/// The test model's route setup: records the release at route end.
+struct TestRoutes {
+    closed: Arc<AtomicBool>,
+    hangs: bool,
+}
+
+#[async_trait]
+impl rlmesh::binding::model::ModelRouteSetup for TestRoutes {
+    async fn resolve_adapter(
         &self,
-        _request: ReleaseAdapterRequest,
-        _timeout: Duration,
-    ) -> Result<(), String> {
-        if self.release_adapter_hangs {
-            // Ignore the supplied timeout entirely, like a misbehaving impl.
+        _env_id: &str,
+        _env_contract: &rlmesh_spaces::EnvContract,
+        _options: rlmesh::binding::model::ResolveOptions,
+    ) -> rlmesh::Result<rlmesh::binding::model::RouteNeeds> {
+        Ok(Default::default())
+    }
+
+    async fn release_adapter(&self, _env_id: &str) -> rlmesh::Result<()> {
+        if self.hangs {
+            // Ignore any deadline entirely, like a misbehaving release.
             std::future::pending::<()>().await;
         }
         self.closed.store(true, Ordering::SeqCst);
         Ok(())
     }
+}
+
+/// The fakes' action: one `uint8 [1]` box.
+pub fn action(byte: u8) -> SpaceValue {
+    SpaceValue::Box(Tensor::from_vec(vec![byte], vec![1], DType::Uint8).expect("a uint8 box"))
+}
+
+/// The native contract the fakes' spaces type: `uint8 [1]` boxes.
+pub fn contract(spec: &RuntimeSessionSpec) -> rlmesh_spaces::EnvContract {
+    let space = rlmesh_spaces::spaces::BoxSpaceBuilder::scalar(0.0, 255.0, vec![1])
+        .dtype(DType::Uint8)
+        .build()
+        .expect("a uint8 box space");
+    rlmesh_spaces::EnvContract {
+        id: spec.env_id.clone(),
+        action_space: Some(space.clone()),
+        observation_space: Some(space),
+        metadata: None,
+        render_mode: String::new(),
+        num_envs: spec.num_envs as u32,
+        autoreset_mode: Default::default(),
+    }
+}
+
+/// A driver of `model` against `env` under `spec`.
+pub fn new_driver<E>(
+    spec: RuntimeSessionSpec,
+    env: E,
+    model: TestModel,
+    hooks: Arc<dyn RuntimeHooks>,
+) -> RuntimeDriver<E, TestModel>
+where
+    E: RuntimeEnv + Clone + 'static,
+{
+    let contract = contract(&spec);
+    let history = model.wants_history;
+    RuntimeDriver::new(spec, env, model, contract, hooks).with_history(history)
 }
 
 /// A one-entry `MetaMap`, the shape both step infos and an episode's
@@ -321,7 +370,6 @@ pub fn info_map(key: &str, value: &str) -> MetaMap {
 pub struct EmittedObservation {
     pub episode_ids: Vec<String>,
     pub observation: Vec<u8>,
-    pub raw_observation: Vec<u8>,
     pub infos: Option<MetaMap>,
 }
 
@@ -333,10 +381,6 @@ pub struct RecordingHooks {
     pub actions: AtomicUsize,
     pub ended: AtomicUsize,
     pub failed: AtomicUsize,
-    pub fail_action_transform: bool,
-    // When set, transform_observation prepends this marker byte to every
-    // observation it forwards to the model.
-    pub observation_marker: Option<u8>,
     pub emitted_observations: Mutex<Vec<EmittedObservation>>,
     pub step_infos: Mutex<Vec<Option<MetaMap>>>,
     // Per step event: (terminated, truncated, autoreset_roll), each per lane.
@@ -396,36 +440,6 @@ impl RuntimeHooks for RecordingHooks {
         Ok(())
     }
 
-    async fn transform_action(
-        &self,
-        event: ActionReceivedEvent,
-    ) -> Result<Option<Vec<Bytes>>, HookError> {
-        if self.fail_action_transform {
-            return Err(HookError::Message("transform failed".to_string()));
-        }
-        Ok(event.action)
-    }
-
-    async fn transform_observation(
-        &self,
-        event: rlmesh::binding::runtime::ObservationEmittedEvent,
-    ) -> Result<Option<Vec<Bytes>>, HookError> {
-        let Some(marker) = self.observation_marker else {
-            return Ok(event.observation);
-        };
-        // `Bytes` is immutable, so prepend the marker to the first leaf by
-        // building a fresh buffer (the marker stays byte 0 of leaf 0).
-        Ok(event.observation.map(|mut leaves| {
-            if let Some(first) = leaves.first_mut() {
-                let mut prefixed = Vec::with_capacity(first.len() + 1);
-                prefixed.push(marker);
-                prefixed.extend_from_slice(first);
-                *first = Bytes::from(prefixed);
-            }
-            leaves
-        }))
-    }
-
     async fn observation_emitted(
         &self,
         event: rlmesh::binding::runtime::ObservationEmittedEvent,
@@ -443,7 +457,6 @@ impl RuntimeHooks for RecordingHooks {
             .push(EmittedObservation {
                 episode_ids: event.episode_ids,
                 observation: first_leaf(event.observation),
-                raw_observation: first_leaf(event.raw_observation),
                 infos: event.infos,
             });
         Ok(())
@@ -559,17 +572,11 @@ pub fn one_episode_spec() -> RuntimeSessionSpec {
         close_env_on_end: true,
         subset_step: false,
         limits: Default::default(),
-        env_ceiling: None,
-        model_ceiling: None,
     }
 }
 
 pub fn payload<const N: usize>(data: [u8; N]) -> Bytes {
     Bytes::copy_from_slice(&data)
-}
-
-pub fn leaves_value(data: Bytes) -> SpaceValue {
-    SpaceValue { leaves: vec![data] }
 }
 
 /// A NEXT_STEP vector env with a per-lane terminal schedule. It mimics the env
@@ -606,7 +613,7 @@ impl VectorTestEnv {
 
 #[async_trait]
 impl RuntimeEnv for VectorTestEnv {
-    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+    async fn reset(&mut self, request: EnvResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
         self.reset_seeds
             .lock()
             .expect("reset seed recorder lock poisoned")
@@ -622,20 +629,18 @@ impl RuntimeEnv for VectorTestEnv {
         self.current_ids = request.episode_ids.clone();
         self.current_ids.resize(n, String::new());
         Ok(RuntimeEnvReset {
-            response: ResetResponse {
-                observation: Some(leaves_value(payload([0]))),
-                infos: None,
-            },
+            observation: vec![payload([0])],
+            infos: None,
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })
     }
 
-    async fn step(&mut self, request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+    async fn step(&mut self, request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
         let n = self.terminal_after.len();
         let mut rewards = vec![1.0; n];
-        let mut terminated_mask = vec![0u8; n];
-        let mut completed_episodes = Vec::new();
+        let mut terminated = vec![false; n];
+        let mut final_info = false;
         let mut rolled = false;
 
         for lane in 0..n {
@@ -653,35 +658,23 @@ impl RuntimeEnv for VectorTestEnv {
             } else {
                 self.lane_step[lane] += 1;
                 if self.lane_step[lane] >= self.terminal_after[lane] {
-                    terminated_mask[lane] = 1;
-                    completed_episodes.push(EpisodeMetadata {
-                        episode_id: self.current_ids[lane].clone(),
-                        env_index: lane as u32,
-                        step_count: self.lane_step[lane] as i64,
-                        cumulative_reward: self.lane_step[lane] as f64,
-                        terminated: true,
-                        // Lane 0 reports the outcome as Gymnasium's numeric
-                        // `success: 0`, so the ledger pins a derived `false`
-                        // (and, from the other lanes, an unreported outcome).
-                        final_info: (lane == 0)
-                            .then(|| meta_map("success", meta_value::Kind::Integer(0))),
-                        ..Default::default()
-                    });
+                    terminated[lane] = true;
+                    // Lane 0 reports the outcome as Gymnasium's numeric
+                    // `success: 0`, so the ledger pins a derived `false`
+                    // (and, from the other lanes, an unreported outcome).
+                    final_info |= lane == 0;
                     self.pending_autoreset[lane] = true;
                 }
             }
         }
 
+        let infos = vector_infos(if rolled { "roll" } else { "step" }, n, final_info);
         Ok(RuntimeEnvStep {
-            response: StepResponse {
-                observation: Some(leaves_value(payload([0]))),
-                rewards,
-                terminated_mask,
-                truncated_mask: vec![0u8; n],
-                infos: Some(info_map("phase", if rolled { "roll" } else { "step" })),
-                completed_episodes,
-                env_indices: vec![],
-            },
+            observation: vec![payload([0])],
+            rewards,
+            terminated,
+            truncated: vec![false; n],
+            infos: Some(infos),
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })
@@ -691,6 +684,39 @@ impl RuntimeEnv for VectorTestEnv {
         self.closed.store(true, Ordering::SeqCst);
         Ok(())
     }
+}
+
+/// A [`VectorTestEnv`] step's infos: its `phase` and, when lane 0 ended,
+/// lane 0's final info (Gymnasium's numeric `success: 0`) in the vector
+/// layout, masked to lane 0.
+pub fn vector_infos(phase: &str, lanes: usize, lane0_ended: bool) -> MetaMap {
+    let mut infos = info_map("phase", phase);
+    if lane0_ended {
+        let per_lane = |item: &dyn Fn(usize) -> meta_value::Kind| MetaValue {
+            kind: Some(meta_value::Kind::List(rlmesh_proto::spaces::v1::MetaList {
+                items: (0..lanes)
+                    .map(|lane| MetaValue {
+                        kind: Some(item(lane)),
+                    })
+                    .collect(),
+            })),
+        };
+        infos.entries.insert(
+            "final_info".to_string(),
+            per_lane(&|lane| {
+                meta_value::Kind::Map(if lane == 0 {
+                    meta_map("success", meta_value::Kind::Integer(0))
+                } else {
+                    MetaMap::default()
+                })
+            }),
+        );
+        infos.entries.insert(
+            "_final_info".to_string(),
+            per_lane(&|lane| meta_value::Kind::Bool(lane == 0)),
+        );
+    }
+    infos
 }
 
 pub fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
@@ -720,8 +746,6 @@ pub fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
         close_env_on_end: true,
         subset_step: false,
         limits: Default::default(),
-        env_ceiling: None,
-        model_ceiling: None,
     }
 }
 
@@ -813,7 +837,7 @@ pub async fn chunked_run_logs(lanes: Vec<usize>) -> String {
     // installed may still carry the no-op dispatcher's interest.
     tracing::callsite::rebuild_interest_cache();
     let start = logs.lock().expect("log buffer poisoned").len();
-    RuntimeDriver::new(
+    new_driver(
         vector_spec(lanes.len(), 4),
         VectorTestEnv::new(lanes.clone()),
         TestModel {
@@ -932,7 +956,7 @@ impl LaneTestEnv {
 
 #[async_trait]
 impl RuntimeEnv for LaneTestEnv {
-    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+    async fn reset(&mut self, request: EnvResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
         assert_eq!(
             request.env_indices.len(),
             1,
@@ -946,16 +970,14 @@ impl RuntimeEnv for LaneTestEnv {
         state.step[lane] = 0;
         state.ids[lane] = request.episode_ids.first().cloned().unwrap_or_default();
         Ok(RuntimeEnvReset {
-            response: ResetResponse {
-                observation: Some(leaves_value(payload([0]))),
-                infos: None,
-            },
+            observation: vec![payload([0])],
+            infos: None,
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })
     }
 
-    async fn step(&mut self, request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+    async fn step(&mut self, request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
         assert_eq!(
             request.env_indices.len(),
             1,
@@ -967,27 +989,12 @@ impl RuntimeEnv for LaneTestEnv {
         let mut state = self.inner.lock().expect("lane env state lock poisoned");
         state.step[lane] += 1;
         let done = state.step[lane] >= length;
-        let completed_episodes = done
-            .then(|| EpisodeMetadata {
-                episode_id: state.ids[lane].clone(),
-                env_index: lane as u32,
-                step_count: state.step[lane] as i64,
-                cumulative_reward: state.step[lane] as f64,
-                terminated: true,
-                ..Default::default()
-            })
-            .into_iter()
-            .collect();
         Ok(RuntimeEnvStep {
-            response: StepResponse {
-                observation: Some(leaves_value(payload([0]))),
-                rewards: vec![1.0],
-                terminated_mask: vec![u8::from(done)],
-                truncated_mask: vec![0],
-                infos: None,
-                completed_episodes,
-                env_indices: vec![lane as u32],
-            },
+            observation: vec![payload([0])],
+            rewards: vec![1.0],
+            terminated: vec![done],
+            truncated: vec![false],
+            infos: None,
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })
@@ -1011,68 +1018,39 @@ pub fn lane_spec(num_envs: usize, max_episodes: u64, seeds: Vec<i64>) -> Runtime
     }
 }
 
-/// A single-lane env that never terminates on its own and mimics the env
-/// server's interrupted-episode buffer: a reset arriving while an episode is
-/// still active buffers that episode, and the NEXT `StepResponse` reports it in
-/// `completed_episodes`. Every runtime-side truncation resets mid-episode, so
-/// every truncated episode comes back as a stale echo one step later.
+/// A single-lane env that never terminates on its own: only the runtime's
+/// caps end its episodes.
 #[derive(Clone, Default)]
-pub struct EchoingEnv {
-    pub inner: Arc<Mutex<EchoingEnvState>>,
+pub struct EndlessEnv {
+    pub inner: Arc<Mutex<EndlessEnvState>>,
 }
 
 #[derive(Default)]
-pub struct EchoingEnvState {
+pub struct EndlessEnvState {
     pub resets: usize,
     pub steps: usize,
-    pub step_in_episode: i64,
-    pub current_id: String,
-    pub interrupted: Vec<EpisodeMetadata>,
 }
 
 #[async_trait]
-impl RuntimeEnv for EchoingEnv {
-    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
-        let mut state = self.inner.lock().expect("echoing env lock poisoned");
-        if state.step_in_episode > 0 {
-            let interrupted = EpisodeMetadata {
-                episode_id: state.current_id.clone(),
-                env_index: 0,
-                step_count: state.step_in_episode,
-                cumulative_reward: state.step_in_episode as f64,
-                truncated: true,
-                ..Default::default()
-            };
-            state.interrupted.push(interrupted);
-        }
-        state.resets += 1;
-        state.step_in_episode = 0;
-        state.current_id = request.episode_ids.first().cloned().unwrap_or_default();
+impl RuntimeEnv for EndlessEnv {
+    async fn reset(&mut self, _request: EnvResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+        self.inner.lock().expect("endless env lock poisoned").resets += 1;
         Ok(RuntimeEnvReset {
-            response: ResetResponse {
-                observation: Some(leaves_value(payload([0]))),
-                infos: None,
-            },
+            observation: vec![payload([0])],
+            infos: None,
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })
     }
 
-    async fn step(&mut self, _request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
-        let mut state = self.inner.lock().expect("echoing env lock poisoned");
-        state.steps += 1;
-        state.step_in_episode += 1;
-        let completed_episodes = std::mem::take(&mut state.interrupted);
+    async fn step(&mut self, _request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+        self.inner.lock().expect("endless env lock poisoned").steps += 1;
         Ok(RuntimeEnvStep {
-            response: StepResponse {
-                observation: Some(leaves_value(payload([0]))),
-                rewards: vec![1.0],
-                terminated_mask: vec![0],
-                truncated_mask: vec![0],
-                infos: None,
-                completed_episodes,
-                env_indices: vec![],
-            },
+            observation: vec![payload([0])],
+            rewards: vec![1.0],
+            terminated: vec![false],
+            truncated: vec![false],
+            infos: None,
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })

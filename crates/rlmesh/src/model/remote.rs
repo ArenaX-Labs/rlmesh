@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::run::runtime::PeerCeiling;
 use rlmesh_grpc::wire::{
     decode_batched_partial_values, encode_batched_partial_values, env_spec_to_proto,
 };
@@ -72,8 +71,6 @@ pub struct ModelClient {
     /// model, AND this runtime all support. Sent to the model in `ResolveAdapter`
     /// as AUTHORITATIVE over its own (pairwise) handshake result.
     selected_workflow_edition: String,
-    /// What the served model can decode, learned at its handshake.
-    ceiling: PeerCeiling,
     /// The served route asked for observation history at resolve: every replayed
     /// step's observation is then carried as a history row on the next real
     /// predict, so the model-side frame windows see every step.
@@ -278,13 +275,8 @@ impl ModelClient {
         let selected_workflow_edition = rlmesh_grpc::env_floor(&env_offer, &model_offer, declared)
             .map_err(Error::from_grpc)?
             .selected_workflow_edition;
-        let session_edition = rlmesh_proto::parse_retained_edition(&selected_workflow_edition)
+        rlmesh_proto::parse_retained_edition(&selected_workflow_edition)
             .map_err(Error::Protocol)?;
-        let ceiling = PeerCeiling::wire_v1(
-            PeerCeiling::highest_shared_edition(&model_offer.editions).unwrap_or(session_edition),
-            inner.server_capabilities().clone(),
-            rlmesh_grpc::MAX_MESSAGE_SIZE,
-        );
 
         Ok(Self {
             inner,
@@ -304,7 +296,6 @@ impl ModelClient {
             seed: None,
             pending_end: Vec::new(),
             selected_workflow_edition,
-            ceiling,
             request_timeout: None,
         })
     }
@@ -323,13 +314,6 @@ impl ModelClient {
     /// The workflow edition this session runs at (the floor across env, model, and runtime).
     pub fn selected_workflow_edition(&self) -> &str {
         &self.selected_workflow_edition
-    }
-
-    /// What the served model can decode: the `model_ceiling` a
-    /// [`RuntimeSessionSpec`](crate::run::runtime::RuntimeSessionSpec) relaying to
-    /// it carries.
-    pub fn ceiling(&self) -> &PeerCeiling {
-        &self.ceiling
     }
 
     /// The env (adapter) routing key this client uses with the model — a UUIDv7

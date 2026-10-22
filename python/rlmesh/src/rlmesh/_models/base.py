@@ -8,7 +8,6 @@ import contextvars
 import functools
 import inspect
 import math
-import os
 import threading
 import warnings
 import weakref
@@ -1264,11 +1263,11 @@ class ModelBase(Generic[ObsT, ActT]):
 
         ``env_or_address`` is a bare address string the loop dials, an object
         with an ``address`` (:class:`~rlmesh.EnvServer`, ``RemoteEnv`` /
-        ``RemoteVectorEnv``), or a local env object -- served on a loopback
-        port for the duration of the run (tag it via
+        ``RemoteVectorEnv``), or a local env object -- served in this process for
+        the duration of the run (tag it via
         :func:`rlmesh.adapters.tag` for a spec'd model). Both the model and a
         caller's env are borrowed: the run releases what it created (the
-        loopback server, a factory-built env, the runtime session) and leaves
+        in-process server, a factory-built env, the runtime session) and leaves
         them usable, on success, failure, or interrupt alike; ``close_env``
         opts a caller's env into shutdown, and :meth:`close` is the model's own
         release.
@@ -1423,7 +1422,6 @@ class ModelBase(Generic[ObsT, ActT]):
                 report: dict[str, Any] = {
                     "episodes": [],
                     "telemetry": [],
-                    "advisories": [],
                 }
             else:
                 report = self._run_native(
@@ -1479,7 +1477,6 @@ class ModelBase(Generic[ObsT, ActT]):
                 for episode in report["episodes"]
             ),
             telemetry=tuple(TelemetryRow(**row) for row in report["telemetry"]),
-            advisories=tuple(report["advisories"]),
         )
         if hooks is not None:
             with run_context.dispatch():
@@ -1506,8 +1503,8 @@ class ModelBase(Generic[ObsT, ActT]):
         Target handling follows :func:`~rlmesh._models._connect.classify_env_target`
         (the same precedence ``session()`` uses): a bare address is dialed; a
         remote handle is dialed by its own address (it cannot be re-served); a
-        local env or a built :class:`~rlmesh.EnvFactory` env is served on a
-        loopback port for the duration of the run. ``close_env`` maps per kind:
+        local env or a built :class:`~rlmesh.EnvFactory` env is served in this
+        process for the duration of the run. ``close_env`` maps per kind:
         the wire close op for a bare address, the handle's ``shutdown``/``close``
         for a handle, and the env object's ``close()`` for a locally served env.
         An env built from a factory is closed either way: it was made here.
@@ -1557,14 +1554,16 @@ class ModelBase(Generic[ObsT, ActT]):
                 from .._editions import resolved_by_caller
                 from .._load_native import load_native
 
-                # The loopback server is part of THIS call, so it takes the run's
+                # The in-process server is part of THIS call, so it takes the run's
                 # already-resolved declaration verbatim instead of re-resolving and
                 # possibly landing on a different edition than the runtime tier.
                 resolved = resolved_by_caller.set(True)
                 try:
                     server = EnvServer(
                         cast("VectorServerEnvLike", env_obj),
-                        "127.0.0.1:0",
+                        # In-process on the v2 lockstep path: the run's driver
+                        # calls the env directly.
+                        ":0/env",
                         framework=getattr(env_obj, "_bridge", None),
                         options=(
                             load_native("ServeOptions")(
@@ -1574,7 +1573,7 @@ class ModelBase(Generic[ObsT, ActT]):
                             else None
                         ),
                         # The env is borrowed (or built above): its close() is this
-                        # call's decision, not the loopback server's.
+                        # call's decision, not the in-process server's.
                         close_env_on_shutdown=False,
                     )
                 finally:
@@ -1595,14 +1594,6 @@ class ModelBase(Generic[ObsT, ActT]):
                 trial_index_base=trial_index_base,
                 workflow_edition=workflow_edition,
                 hooks=relay,
-                # The loopback server enforces the deployment env token when
-                # one is set, so this call's own client must present it. It is
-                # never sent to a caller-supplied address.
-                env_token=(
-                    os.environ.get("RLMESH_ENV_ENDPOINT_TOKEN")
-                    if server is not None
-                    else None
-                ),
             )
         except (RuntimeError, ConnectionError) as error:
             if "active Join session" in str(error):
@@ -1788,7 +1779,6 @@ class ModelBase(Generic[ObsT, ActT]):
         prefetch_lead: int = 0,
         workflow_edition: str | None = None,
         hooks: object | None = None,
-        env_token: str | None = None,
     ) -> dict[str, Any]:
         """Native worker loop against a remote env for a fixed episode count.
 
@@ -1809,7 +1799,6 @@ class ModelBase(Generic[ObsT, ActT]):
             prefetch_lead,
             workflow_edition,
             hooks,
-            env_token,
         )
 
     def _declared_workflow_edition(self, call: str | None) -> str | None:

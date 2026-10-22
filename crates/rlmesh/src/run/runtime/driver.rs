@@ -16,31 +16,25 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::stream::{FuturesUnordered, StreamExt};
-use prost::{Message, bytes::Bytes};
 use rlmesh_proto::EndpointPhases;
 use rlmesh_proto::core::v1::AutoresetMode;
-use rlmesh_proto::env::v1::{
-    EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
-};
-use rlmesh_proto::model::v1::{
-    AdapterContext, ObservationHistoryFrame, PredictRequest, PredictResponse,
-    ReleaseAdapterRequest, ResetAdapterRequest,
-};
-use rlmesh_proto::spaces::v1::{MetaMap, SpaceSpec, SpaceValue, TupleSpec, space_spec};
-use rlmesh_spaces::Advisory;
+use rlmesh_proto::env::v1::EpisodeMetadata;
+use rlmesh_proto::spaces::v1::MetaMap;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use crate::model::handler::{ModelHandler, PredictFrames};
+use crate::model::types::{HistoryFrame, ModelObservation};
 use crate::run::runtime::hooks::{
-    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, Leg, LogEvent, LogLevel,
-    ObservationEmittedEvent, PayloadFacts, RefusingRelayPolicy, RelayAdvisoryEvent, RelayDecision,
-    RelayPolicy, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent, SessionFailedEvent,
-    SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
+    ObservationEmittedEvent, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
+    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
 use crate::run::runtime::spec::{
     ENV_RESET_OPTIONS_KEY, RuntimeReport, RuntimeSessionSpec, reset_options_for,
@@ -65,37 +59,44 @@ macro_rules! fan_out_event {
     };
 }
 
-/// The env's reset reply plus the endpoint-local op duration the peer stamped.
+/// A reset of the requested lanes (all of them when `env_indices` is
+/// empty): their seeds and options, positional to the lanes, and the ids of
+/// the episodes it starts.
+pub struct EnvResetRequest {
+    pub env_indices: Vec<u32>,
+    pub seeds: Vec<i64>,
+    pub options: Option<MetaMap>,
+    pub episode_ids: Vec<String>,
+}
+
+/// One step of the requested lanes (all of them when `env_indices` is
+/// empty): one action per lane as leaf slabs, and the lanes' episode ids
+/// (the next episode's for a lane rolling under NEXT_STEP autoreset).
+pub struct EnvStepRequest {
+    pub env_indices: Vec<u32>,
+    pub action: Vec<Bytes>,
+    pub episode_ids: Vec<String>,
+}
+
+/// The env's answer to a reset: the lanes' observation as leaf slabs, and
+/// what the env measured answering.
 pub struct RuntimeEnvReset {
-    pub response: ResetResponse,
-    /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`
-    /// (replaces the old nested per-step telemetry message).
+    pub observation: Vec<Bytes>,
+    pub infos: Option<MetaMap>,
     pub endpoint_total_ns: Option<u64>,
-    /// The peer's split of that duration; all-zero from a peer that sends none.
     pub phases: EndpointPhases,
 }
 
-/// The env's step reply plus the endpoint-local op duration the peer stamped.
+/// The env's answer to a step: the lanes' next observation, one reward and
+/// done flags per lane, and what the env measured answering.
 pub struct RuntimeEnvStep {
-    pub response: StepResponse,
-    /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`.
+    pub observation: Vec<Bytes>,
+    pub rewards: Vec<f64>,
+    pub terminated: Vec<bool>,
+    pub truncated: Vec<bool>,
+    pub infos: Option<MetaMap>,
     pub endpoint_total_ns: Option<u64>,
-    /// The peer's split of that duration; all-zero from a peer that sends none.
     pub phases: EndpointPhases,
-}
-
-/// The model's predict reply plus the endpoint-local op duration the peer stamped.
-pub struct RuntimeModelPrediction {
-    pub response: PredictResponse,
-    /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`.
-    pub endpoint_total_ns: Option<u64>,
-    /// The peer's split of that duration, plus its queue wait and slot depth;
-    /// all-zero from a peer that sends none.
-    pub phases: EndpointPhases,
-    /// Lanes fused into the model forward this predict rode in (1 = a lone
-    /// predict). `None` when the transport does not group predicts; recorded
-    /// as the `group.size` telemetry metric when present.
-    pub group_size: Option<u64>,
 }
 
 /// What a peer reported about its own handling of one op, as recorded beside the
@@ -106,7 +107,7 @@ pub(crate) struct PeerReport {
     pub(crate) group_size: Option<u64>,
 }
 
-/// The environment side of a route: reset and step over the wire, plus close.
+/// The environment side of a route: reset and step, plus close.
 ///
 /// The driver holds one clone per group (a lane endpoint is driven with one
 /// request per lane in flight), so an implementation is a handle onto the
@@ -114,10 +115,10 @@ pub(crate) struct PeerReport {
 #[async_trait]
 pub trait RuntimeEnv: Send {
     /// Reset the requested lanes and return their initial observation.
-    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError>;
+    async fn reset(&mut self, request: EnvResetRequest) -> Result<RuntimeEnvReset, RuntimeError>;
 
     /// Advance the lanes one step under `request.action`.
-    async fn step(&mut self, request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError>;
+    async fn step(&mut self, request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError>;
 
     /// Release the env endpoint within `timeout`. Default no-op for an endpoint
     /// the run does not own.
@@ -126,67 +127,13 @@ pub trait RuntimeEnv: Send {
     }
 }
 
-/// The model side of a route: predict, plus the per-episode adapter-state
-/// lifecycle (evict on episode end, release at session end).
-#[async_trait]
-pub trait RuntimeModel: Send + Sync {
-    /// Predict the ordered action frames for the batched observation (frame 0 is
-    /// this step; any further frames replay open-loop before the next call).
-    async fn predict(
-        &self,
-        request: PredictRequest,
-    ) -> Result<RuntimeModelPrediction, RuntimeError>;
-
-    /// Predict for several groups at once, one result per request in order.
-    /// The default runs the predicts concurrently, which is enough for a
-    /// transport that coalesces concurrent predicts itself; an implementation
-    /// that can fuse them into one forward pass overrides this and says so
-    /// with [`fuses_predicts`](Self::fuses_predicts).
-    async fn predict_group(
-        &self,
-        requests: Vec<PredictRequest>,
-    ) -> Vec<Result<RuntimeModelPrediction, RuntimeError>> {
-        futures::future::join_all(requests.into_iter().map(|request| self.predict(request))).await
-    }
-
-    /// Whether `predict_group` fuses its requests into one forward pass. The
-    /// driver then keeps one grouped predict in flight and batches the groups
-    /// that become ready behind it into the next. Default `false`: the driver
-    /// puts one predict per group in flight, together, and applies each as it
-    /// lands, so a lane never waits behind the slowest predict of a batch.
-    fn fuses_predicts(&self) -> bool {
-        false
-    }
-
-    /// Whether the model's route negotiated observation history at resolve
-    /// (`RouteNeeds::history`). The driver then carries every env step it
-    /// executed from a replayed chunk, without predicting, as a
-    /// `PredictRequest.history` row on the next predict, and stamps requests
-    /// and rows with the group's step counter. An async prefetch lead keeps
-    /// working: the prefetched request carries the rows buffered so far, with
-    /// the observation it predicts from as its own rather than a row.
-    /// Default `false`: no rows are buffered.
-    fn wants_history(&self) -> bool {
-        false
-    }
-
-    /// Evict the model's per-episode adapter state (frame-stack buffers) for the
-    /// ended episodes. Best-effort GC, not a correctness gate: because episode
-    /// ids never repeat (UUIDv7), a dropped ResetAdapter only leaks memory and
-    /// can never alias a new episode. Default no-op for impls that hold no
-    /// per-episode state.
-    async fn reset_adapter(&self, _request: ResetAdapterRequest) -> Result<(), RuntimeError> {
-        Ok(())
-    }
-
-    /// Release the model endpoint within `timeout`. Default no-op.
-    async fn release_adapter(
-        &self,
-        _request: ReleaseAdapterRequest,
-        _timeout: Duration,
-    ) -> Result<(), String> {
-        Ok(())
-    }
+/// One group's prediction: its ordered action frames as leaf slabs (frame 0
+/// is this step; any further frames replay open-loop before the next call),
+/// and what the model measured.
+struct Prediction {
+    frames: Vec<Vec<Bytes>>,
+    endpoint_total_ns: Option<u64>,
+    phases: EndpointPhases,
 }
 
 /// Decides which groups waiting for a prediction go out next (as one grouped
@@ -254,14 +201,6 @@ const SRC_RESET: Source = Source {
     op: "env.reset",
     component: "env",
 };
-const SRC_TRANSFORM_OBS: Source = Source {
-    op: "runner.transform_observation",
-    component: "runner",
-};
-const SRC_TRANSFORM_ACTION: Source = Source {
-    op: "runner.transform_action",
-    component: "runner",
-};
 // Wall clock of one group's full predict -> step -> transform cycle: from one
 // step completing (or the reset) to the next step completing. Consumers
 // subtract the per-op rows to get the driver's own residual.
@@ -277,25 +216,26 @@ pub struct RuntimeDriver<E, M> {
     spec: RuntimeSessionSpec,
     /// The env session handle; cloned once per group.
     env: E,
-    /// The model handle, shared into every predict in flight.
-    // ponytail: never `None` any more (the handle is shared, not lent); the
-    // `Option` stays so the eviction and release paths read unchanged.
-    // Collapse to `Arc<M>` when they are next reworked.
-    model: Option<Arc<M>>,
+    /// The model, shared into every predict in flight: each grouped predict
+    /// is one `predict_grouped` call under its lock.
+    model: Arc<tokio::sync::Mutex<M>>,
+    /// The env contract the model's observations carry, and its action
+    /// space, which every predicted frame is encoded against.
+    contract: Arc<rlmesh_spaces::EnvContract>,
     /// Async-inference mode: with this many replay frames (or fewer) left, a
     /// group asks for its next chunk while the current one still executes.
     /// The chunk is conditioned on an observation up to `prefetch_lead` steps
     /// stale — deployment-realistic async semantics, not the benchmark loop.
     /// 0 = predict only when a group has no frame to play.
     prefetch_lead: u32,
-    /// The model negotiated observation history (see
-    /// [`RuntimeModel::wants_history`]); read once at run start.
+    /// The model's route negotiated observation history at resolve
+    /// (`RouteNeeds::history`): the driver then carries every env step it
+    /// executed from a replayed chunk, without predicting, as a history row
+    /// on the next predict, and stamps observations and rows with the group's
+    /// step counter.
     deliver_history: bool,
     scheduler: Box<dyn PredictScheduler>,
     hooks: Arc<dyn RuntimeHooks>,
-    relay_policy: Arc<dyn RelayPolicy>,
-    /// Each distinct advisory the relay policy raised, for the report.
-    advisories: Mutex<Vec<Advisory>>,
     cancellation_reason: String,
     /// Action/observation space specs shared into every per-step hook event.
     /// Populated once after [`validate`](RuntimeSessionSpec::validate) so the
@@ -345,7 +285,7 @@ enum PredictState {
     /// Nothing outstanding.
     None,
     /// Wants a prediction for this observation; the scheduler picks it up.
-    Wanted(PredictRequest),
+    Wanted(ModelObservation),
     /// Part of the grouped predict in flight. `stale` marks a prediction
     /// conditioned on an observation from before an episode boundary; its
     /// result is discarded (one wasted forward per boundary).
@@ -374,11 +314,11 @@ struct Group<E> {
     replay: VecDeque<Vec<Bytes>>,
     /// The latest observation request built for this group (the one a
     /// prefetch would predict from).
-    obs_msg: Option<PredictRequest>,
+    obs_msg: Option<ModelObservation>,
     /// History routes: the observations of the steps this group executed from
     /// its replay buffer since its last predict, oldest first, carried on the
     /// next predict so the model-side windows see every step exactly once.
-    history: Vec<ObservationHistoryFrame>,
+    history: Vec<HistoryFrame>,
     /// This group's env-step counter (one per `env.step`), stamped on predict
     /// requests and history rows so the model can hold them to consecutive
     /// steps. Consecutive observations of one episode carry consecutive values.
@@ -436,28 +376,34 @@ type PredictFuture<'m> = Pin<Box<dyn Future<Output = PredictOutcome> + Send + 'm
 
 /// A finished predict, one result per request it carried.
 struct PredictOutcome {
-    /// `(group, expected context, request bytes)` per request, in order.
-    requests: Vec<(usize, Option<AdapterContext>, u64)>,
+    /// `(group, request bytes)` per request, in order.
+    requests: Vec<(usize, u64)>,
     rpc: Duration,
-    result: Result<Vec<Result<RuntimeModelPrediction, RuntimeError>>, RuntimeError>,
+    result: Result<Vec<Result<Prediction, RuntimeError>>, RuntimeError>,
 }
 
 impl<E, M> RuntimeDriver<E, M>
 where
     E: RuntimeEnv + Clone + 'static,
-    M: RuntimeModel,
+    M: ModelHandler,
 {
-    pub fn new(spec: RuntimeSessionSpec, env: E, model: M, hooks: Arc<dyn RuntimeHooks>) -> Self {
+    /// A driver of `model` against `env`, whose contract is `contract`.
+    pub fn new(
+        spec: RuntimeSessionSpec,
+        env: E,
+        model: M,
+        contract: rlmesh_spaces::EnvContract,
+        hooks: Arc<dyn RuntimeHooks>,
+    ) -> Self {
         Self {
             spec,
             env,
-            model: Some(Arc::new(model)),
+            model: Arc::new(tokio::sync::Mutex::new(model)),
+            contract: Arc::new(contract),
             prefetch_lead: 0,
             deliver_history: false,
             scheduler: Box::new(EagerScheduler),
             hooks,
-            relay_policy: Arc::new(RefusingRelayPolicy),
-            advisories: Mutex::new(Vec::new()),
             cancellation_reason: DEFAULT_CANCELLATION_REASON.to_string(),
             // Filled from the validated spec at run time; default until then.
             action_space: Arc::default(),
@@ -531,9 +477,10 @@ where
         self
     }
 
-    /// Replace the relay policy (default: [`RefusingRelayPolicy`]).
-    pub fn with_relay_policy(mut self, relay_policy: Arc<dyn RelayPolicy>) -> Self {
-        self.relay_policy = relay_policy;
+    /// Deliver observation history (see `deliver_history`): the model's
+    /// route asked for it at resolve.
+    pub fn with_history(mut self, deliver: bool) -> Self {
+        self.deliver_history = deliver;
         self
     }
 
@@ -670,10 +617,6 @@ where
     ) -> Result<RuntimeReport, RuntimeError> {
         self.cancellation_reason = reason.into();
         self.spec.validate().map_err(RuntimeError::InvalidSpec)?;
-        self.deliver_history = self
-            .model
-            .as_ref()
-            .is_some_and(|model| model.wants_history());
         // validate() confirmed both spaces are present; cache them as shared
         // Arcs so per-step hook events clone a pointer, not the whole spec.
         self.action_space = Arc::new(self.spec.action_space_validated().clone());
@@ -764,9 +707,7 @@ where
         );
         match result {
             Ok(reason) => {
-                let release_request = state.release_adapter_request(reason);
-                self.shutdown_terminal_route(&state, reason, release_request)
-                    .await;
+                self.shutdown_terminal_route(&state, reason).await;
                 fan_out_event!(
                     self,
                     session_ended,
@@ -785,11 +726,6 @@ where
                     total_episodes: state.total_episodes(),
                     episodes: state.take_episode_summaries(),
                     telemetry: final_snapshot,
-                    advisories: std::mem::take(
-                        self.advisories
-                            .get_mut()
-                            .unwrap_or_else(PoisonError::into_inner),
-                    ),
                 })
             }
             Err(error) => {
@@ -834,7 +770,6 @@ where
                 env_id: self.spec.env_id.clone(),
             }
         );
-        self.relay_contract(state).await?;
 
         let mut groups = self.groups();
         let group_count = groups.len();
@@ -943,10 +878,9 @@ where
         // evicted, and the new episodes start from their reset observation.
         group.history.clear();
         group.pending_roll.clear();
-        let request = ResetRequest {
+        let request = EnvResetRequest {
             seeds,
             options: self.trial_options(&trials),
-            timeout_ms: self.spec.limits.env_reset_timeout_ms().max(0) as u64,
             env_indices: if group.whole {
                 Vec::new()
             } else {
@@ -954,7 +888,7 @@ where
             },
             episode_ids,
         };
-        let request_bytes = request.encoded_len() as u64;
+        let request_bytes = (request.seeds.len() * 8) as u64;
         let timeout = self.spec.limits.env_reset_timeout;
         let timeout_error = RuntimeError::operation_timeout(
             state.env_id(),
@@ -1029,7 +963,7 @@ where
             let snapshot = state.snapshot_at(&group.positions);
             let context = state.group_context(&group.positions, group.lane_group);
             let action_step = snapshot.step + 1;
-            let mut action_event = ActionReceivedEvent {
+            let action_event = ActionReceivedEvent {
                 session_id: state.session_id().to_string(),
                 route: context,
                 episode_id: snapshot.episode_id.clone(),
@@ -1040,16 +974,8 @@ where
                 env_index: snapshot.env_index,
                 action_space: Arc::clone(&self.action_space),
                 action: Some(model_action.clone()),
-                raw_action: Some(model_action),
             };
-            let (action, relayed_space) = self
-                .invoke_transform_action(telemetry, &action_event)
-                .await?;
-            action_event.action = action;
-            if let Some(space) = relayed_space {
-                action_event.action_space = space;
-            }
-            fan_out_event!(self, action_received, action_event.clone());
+            fan_out_event!(self, action_received, action_event);
 
             let group = &mut groups[gid];
             // Down-push the authoritative per-lane ids. For a NEXT_STEP autoreset
@@ -1061,9 +987,9 @@ where
                 &group.lanes,
                 &group.pending_roll,
             );
-            let request = StepRequest {
-                action: action_event.action.map(leaves_value),
-                timeout_ms: self.spec.limits.env_step_timeout_ms().max(0) as u64,
+            let request_bytes = leaf_bytes(&model_action);
+            let request = EnvStepRequest {
+                action: model_action,
                 env_indices: if group.whole {
                     Vec::new()
                 } else {
@@ -1071,7 +997,6 @@ where
                 },
                 episode_ids,
             };
-            let request_bytes = request.encoded_len() as u64;
             let timeout = self.spec.limits.env_step_timeout;
             let timeout_error = RuntimeError::operation_timeout(
                 state.env_id(),
@@ -1116,12 +1041,10 @@ where
     ) where
         M: 'm,
     {
-        let fuses = self
-            .model
-            .as_ref()
-            .expect("model handle set for the session")
-            .fuses_predicts();
-        if fuses && !predicts.is_empty() {
+        // A model fuses its waiting groups into one `predict_grouped`: one
+        // grouped predict is in flight at a time, and the groups that become
+        // ready behind it form the next.
+        if !predicts.is_empty() {
             return;
         }
         let waiting: Vec<usize> = groups
@@ -1142,13 +1065,7 @@ where
             }
             chosen = waiting;
         }
-        if fuses {
-            predicts.push(self.predict_for(groups, state, chosen));
-        } else {
-            for gid in chosen {
-                predicts.push(self.predict_for(groups, state, vec![gid]));
-            }
-        }
+        predicts.push(self.predict_for(groups, state, chosen));
     }
 
     /// One predict call carrying the `chosen` groups' requests, sharing the
@@ -1174,7 +1091,7 @@ where
             };
             step = step.max(state.snapshot_at(&groups[gid].positions).step);
             state.mark_predicted(&groups[gid].positions);
-            metas.push((gid, msg.context.clone(), msg.encoded_len() as u64));
+            metas.push((gid, observation_bytes(&msg)));
             requests.push(msg);
         }
         let timeout = self.spec.limits.model_predict_timeout;
@@ -1185,14 +1102,12 @@ where
             step,
             timeout,
         );
-        let model = Arc::clone(
-            self.model
-                .as_ref()
-                .expect("model handle set for the session"),
-        );
+        let model = Arc::clone(&self.model);
+        let contract = Arc::clone(&self.contract);
         Box::pin(async move {
             let started = Instant::now();
-            let result = match tokio::time::timeout(timeout, model.predict_group(requests)).await {
+            let predicted = predict_grouped(&model, &contract, requests);
+            let result = match tokio::time::timeout(timeout, predicted).await {
                 Ok(results) => Ok(results),
                 Err(_) => Err(timeout_error),
             };
@@ -1226,20 +1141,8 @@ where
         let group_count = outcome.requests.len() as u64;
         let rpc = outcome.rpc;
         let mut recorded = false;
-        for ((gid, expected_context, request_bytes), result) in
-            outcome.requests.into_iter().zip(results)
-        {
+        for ((gid, request_bytes), result) in outcome.requests.into_iter().zip(results) {
             let prediction = result?;
-            if prediction.response.context != expected_context {
-                let request_id = expected_context
-                    .as_ref()
-                    .map(|context| context.request_id.clone())
-                    .unwrap_or_default();
-                return Err(RuntimeError::ModelRouteMismatch {
-                    component_id: state.model_component_id().to_string(),
-                    request_id,
-                });
-            }
             // One grouped call is one predict op: record its RPC once, with the
             // peer's report from the first reply and the fused width.
             if !recorded {
@@ -1251,29 +1154,24 @@ where
                     PeerReport {
                         endpoint_total_ns: prediction.endpoint_total_ns,
                         phases: prediction.phases,
-                        group_size: if group_count > 1 {
-                            Some(group_count)
-                        } else {
-                            prediction.group_size
-                        },
+                        group_size: (group_count > 1).then_some(group_count),
                     },
                     request_bytes,
-                    prediction.response.encoded_len() as u64,
+                    prediction
+                        .frames
+                        .iter()
+                        .map(|frame| leaf_bytes(frame))
+                        .sum(),
                 );
             }
-            if prediction.response.actions.is_empty() {
+            if prediction.frames.is_empty() {
                 return Err(RuntimeError::Protocol(format!(
                     "model endpoint {} returned a predict response with no actions",
                     state.model_component_id()
                 )));
             }
             // Ordered frames: frame 0 = this step, frames 1.. = open-loop replay.
-            let mut frames = VecDeque::with_capacity(prediction.response.actions.len());
-            for frame in &prediction.response.actions {
-                if let Some(leaves) = value_leaves(Some(frame))? {
-                    frames.push_back(leaves);
-                }
-            }
+            let frames = VecDeque::from(prediction.frames);
             let group = &mut groups[gid];
             group.pending_predict += rpc;
             group.predict = match std::mem::replace(&mut group.predict, PredictState::None) {
@@ -1351,7 +1249,7 @@ where
                         group_size: None,
                     },
                     request_bytes,
-                    reset.response.encoded_len() as u64,
+                    leaf_bytes(&reset.observation),
                 );
                 let group = &mut groups[gid];
                 let (episode_ids, slots) = group
@@ -1380,14 +1278,13 @@ where
                     state.start_episodes_at(&groups[gid].positions, episode_ids, !initial, &slots);
                 self.invoke_started_episodes(state, &context, started).await;
                 groups[gid].round_started = Instant::now();
-                let observation = value_leaves(reset.response.observation.as_ref())?;
                 self.observe(
                     gid,
                     groups,
                     state,
                     telemetry,
-                    observation,
-                    reset.response.infos,
+                    Some(reset.observation),
+                    reset.infos,
                     RequestPhase::ResetObservation,
                     true,
                 )
@@ -1412,9 +1309,9 @@ where
                         group_size: None,
                     },
                     request_bytes,
-                    step.response.encoded_len() as u64,
+                    leaf_bytes(&step.observation),
                 );
-                self.on_step(gid, groups, state, env_ops, telemetry, step.response, rpc)
+                self.on_step(gid, groups, state, env_ops, telemetry, step, rpc)
                     .await
             }
         }
@@ -1430,7 +1327,7 @@ where
         state: &mut RouteState,
         env_ops: &mut JoinSet<EnvOutcome<E>>,
         telemetry: &Arc<Mutex<Aggregator>>,
-        response: StepResponse,
+        response: RuntimeEnvStep,
         rpc: Duration,
     ) -> Result<(), RuntimeError> {
         let positions = groups[gid].positions.clone();
@@ -1445,35 +1342,19 @@ where
         groups[gid].phase = EnvPhase::Ready;
         groups[gid].steps += 1;
 
-        let step_observation = value_leaves(response.observation.as_ref())?;
         let predict = std::mem::take(&mut groups[gid].pending_predict);
         state.record_step_at(&positions, &response.rewards, rpc, predict);
         let snapshot = state.snapshot_at(&positions);
-        // The runtime mints and owns episode ids (R1): a peer-reported completion
-        // naming an id this slot has already moved past is a stale echo (the env
-        // server's interrupted-episode buffer replaying an episode the runtime
-        // already truncated at its cap). Drop it before it is counted, evicted,
-        // or used to trigger a reset. Filtered here, ahead of the roll below,
-        // so the check reads the slot the env stepped.
-        let mut completed_episodes: Vec<EpisodeMetadata> = Vec::new();
-        for metadata in &response.completed_episodes {
-            if state.episode_id_at(metadata.env_index) == Some(metadata.episode_id.as_str()) {
-                completed_episodes.push(metadata.clone());
-            } else {
-                tracing::debug!(
-                    env_index = metadata.env_index,
-                    episode_id = %metadata.episode_id,
-                    "dropping a stale env-reported episode completion: the lane has moved past \
-                     this id"
-                );
-            }
-        }
+        // The lanes the env ended this step, from its own flags and this
+        // driver's accounting of each lane's episode. A lane rolling under
+        // NEXT_STEP autoreset answers its new episode's first observation,
+        // never a completion.
+        let mut completed_episodes = self.env_completions(state, &groups[gid], &response);
 
-        // Cap off the FILTERED list: `capped_completions` skips lanes already in
-        // the list it is given, so a stale echo there would suppress a genuine cap.
-        // Both run ahead of the step event so it can carry the terminal flags;
-        // a cap is never configured under NEXT_STEP, so nothing here precedes a
-        // roll it should follow.
+        // Then the lanes the step or time cap ends, skipping those the env
+        // just ended. Both run ahead of the step event so it can carry the
+        // terminal flags; a cap is never configured under NEXT_STEP, so
+        // nothing here precedes a roll it should follow.
         let capped = self.capped_completions(
             state,
             &positions,
@@ -1662,7 +1543,7 @@ where
             groups,
             state,
             telemetry,
-            step_observation,
+            Some(response.observation),
             if rolled { response.infos } else { None },
             RequestPhase::StepObservation,
             false,
@@ -1687,8 +1568,9 @@ where
     ) -> Result<(), RuntimeError> {
         let positions = groups[gid].positions.clone();
         let context = state.group_context(&positions, groups[gid].lane_group);
-        let mut msg = state.predict_request_at(&positions, observation.clone(), phase);
-        let mut event = self.observation_event(
+        let mut msg =
+            state.predict_request_at(&positions, observation.clone(), phase, &self.contract);
+        let event = self.observation_event(
             state,
             context,
             state.snapshot_at(&positions),
@@ -1697,16 +1579,8 @@ where
             infos,
             groups[gid].width(),
         );
-        let (transformed, relayed_space) =
-            self.invoke_transform_observation(telemetry, &event).await?;
-        event.observation = transformed.clone();
-        if let Some(space) = relayed_space {
-            event.observation_space = space;
-        }
-        msg.observation = transformed.map(leaves_value);
-        // Emit the transformed observation actually sent to the model, for
-        // both step and reset observations, so hooks always see the same
-        // payload model.predict receives.
+        // Hooks see the observation the model receives, for both step and
+        // reset observations.
         fan_out_event!(self, observation_emitted, event);
 
         let group = &mut groups[gid];
@@ -1737,9 +1611,9 @@ where
                         group.history.len()
                     )));
                 }
-                group.history.push(ObservationHistoryFrame {
+                group.history.push(HistoryFrame {
                     observation: msg.observation.clone(),
-                    episode_info: msg.episode_info.clone(),
+                    episodes: msg.route.episodes.clone(),
                     step: group.steps,
                 });
             }
@@ -1767,7 +1641,7 @@ where
         &self,
         group: &mut Group<E>,
         telemetry: &Arc<Mutex<Aggregator>>,
-    ) -> Option<PredictRequest> {
+    ) -> Option<ModelObservation> {
         let mut msg = group.obs_msg.clone()?;
         if self.deliver_history {
             if group.history.last().map(|row| row.step) != msg.step {
@@ -1782,8 +1656,7 @@ where
 
     async fn shutdown_after_failure(&mut self, state: &mut RouteState, error: &RuntimeError) {
         let reason = error.to_string();
-        let request = state.release_adapter_request(reason.clone());
-        self.shutdown_terminal_route(state, &reason, request).await;
+        self.shutdown_terminal_route(state, &reason).await;
 
         if let Err(err) = self
             .hooks
@@ -1798,50 +1671,46 @@ where
         }
     }
 
-    async fn shutdown_terminal_route(
-        &mut self,
-        state: &RouteState,
-        reason: &str,
-        request: ReleaseAdapterRequest,
-    ) {
+    /// Releases the model's route and, when the session owns it, closes the
+    /// env, each within the close timeout: the driver enforces it, so a
+    /// close that blocks (an RPC on a hung connection) cannot hang the run's
+    /// shutdown.
+    async fn shutdown_terminal_route(&mut self, state: &RouteState, reason: &str) {
         let timeout = self.spec.limits.service_close_timeout;
-        // The timeout is also forwarded to the impls, but the driver enforces
-        // it independently: a close impl that blocks (e.g. an RPC on a hung
-        // connection) without honoring the deadline must not be able to hang
-        // run()/run_with_cancellation() forever during shutdown.
-        let model_close = async {
-            match self.model.as_ref() {
-                Some(model) => {
-                    tokio::time::timeout(timeout, model.release_adapter(request, timeout)).await
-                }
-                None => Ok(Ok(())),
-            }
-        };
-        if self.spec.close_env_on_end {
-            let env_close = tokio::time::timeout(timeout, self.env.close(timeout));
-            let (env_result, model_result) = tokio::join!(env_close, model_close);
-            match env_result {
-                Ok(Err(err)) => {
-                    tracing::warn!(error = %err, "environment close failed during route shutdown");
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        timeout_ms = timeout.as_millis(),
-                        "environment close timed out during route shutdown; abandoning close"
-                    );
-                }
-                Ok(Ok(())) => {}
-            }
-            log_model_close_result(model_result, reason, timeout);
+        let released = release(&self.model, state.env_id().to_string());
+        match tokio::time::timeout(timeout, released).await {
+            Ok(Err(err)) => tracing::warn!(
+                error = %err,
+                reason,
+                "model route release failed during route shutdown"
+            ),
+            Err(_) => tracing::warn!(
+                timeout_ms = timeout.as_millis(),
+                reason,
+                "model route release timed out during route shutdown; abandoning it"
+            ),
+            Ok(Ok(())) => {}
+        }
+        if !self.spec.close_env_on_end {
+            tracing::debug!(
+                env_id = %state.env_id(),
+                reason,
+                "skipping environment close; the endpoint remains owned by the run"
+            );
             return;
         }
-
-        tracing::debug!(
-            env_id = %state.env_id(),
-            reason,
-            "skipping environment close for adapter; endpoint remains owned by the run"
-        );
-        log_model_close_result(model_close.await, reason, timeout);
+        match tokio::time::timeout(timeout, self.env.close(timeout)).await {
+            Ok(Err(err)) => {
+                tracing::warn!(error = %err, "environment close failed during route shutdown");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = timeout.as_millis(),
+                    "environment close timed out during route shutdown; abandoning close"
+                );
+            }
+            Ok(Ok(())) => {}
+        }
     }
 
     fn cancelled_error(&self, state: &RouteState, groups: &[Group<E>]) -> RuntimeError {
@@ -1880,6 +1749,45 @@ where
                 }
             );
         }
+    }
+
+    /// The completions of the lanes the env ended this step: each built
+    /// from the lane's episode as this driver accounted it (steps, reward,
+    /// start time) and the lane's share of this step's info.
+    fn env_completions(
+        &self,
+        state: &RouteState,
+        group: &Group<E>,
+        response: &RuntimeEnvStep,
+    ) -> Vec<EpisodeMetadata> {
+        let now_ns = crate::run::runtime::state::now_unix_ns();
+        let width = group.lanes.len();
+        state
+            .slots_at(&group.positions)
+            .into_iter()
+            .zip(&group.lanes)
+            .enumerate()
+            .filter_map(|(lane, (slot, env_index))| {
+                let terminated = response.terminated.get(lane).copied().unwrap_or(false);
+                let truncated = response.truncated.get(lane).copied().unwrap_or(false);
+                if !(terminated || truncated) || group.pending_roll.contains_key(env_index) {
+                    return None;
+                }
+                let episode = slot.episode.as_ref()?;
+                Some(EpisodeMetadata {
+                    episode_id: episode.episode_id.clone(),
+                    seed: None,
+                    env_index: *env_index,
+                    step_count: slot.step,
+                    cumulative_reward: slot.cumulative_reward,
+                    terminated,
+                    truncated,
+                    start_timestamp_ns: slot.started_at_ns,
+                    end_timestamp_ns: now_ns,
+                    final_info: rlmesh_proto::lane_final_info(response.infos.as_ref(), lane, width),
+                })
+            })
+            .collect()
     }
 
     /// Runtime-truncated completions for the group's lanes at the step/time cap
@@ -2068,12 +1976,9 @@ where
         if self.pending_evictions.is_empty() {
             return;
         }
-        let Some(model) = self.model.as_ref() else {
-            return;
-        };
         let episode_ids = std::mem::take(&mut self.pending_evictions);
         let episodes = episode_ids.len();
-        let request = state.reset_adapter_request(episode_ids);
+        let evicted = evict(&self.model, state.env_id().to_string(), episode_ids);
         let cancelled = async {
             match cancellation {
                 Some(cancellation) => cancellation.cancelled().await,
@@ -2091,7 +1996,7 @@ where
             () = cancelled => {
                 tracing::warn!(episodes, "model reset_adapter (evict) abandoned: route cancelled");
             }
-            result = tokio::time::timeout(deadline, model.reset_adapter(request)) => match result {
+            result = tokio::time::timeout(deadline, evicted) => match result {
                 Ok(result) => {
                     lock_agg(telemetry).record(Sample::dur(
                         SRC_RESET_ADAPTER,
@@ -2109,178 +2014,6 @@ where
                 ),
             }
         }
-    }
-
-    /// The action the env receives: `transform_action`'s result, then the
-    /// relay policy's.
-    async fn invoke_transform_action(
-        &self,
-        telemetry: &Mutex<Aggregator>,
-        event: &ActionReceivedEvent,
-    ) -> Result<Relayed, RuntimeError> {
-        let started = Instant::now();
-        let result = self.hooks.transform_action(event.clone()).await;
-        lock_agg(telemetry).record(Sample::dur(
-            SRC_TRANSFORM_ACTION,
-            metrics::RPC_TOTAL,
-            started.elapsed(),
-        ));
-        match result {
-            Ok(action) => {
-                self.relay(
-                    Leg::ModelToEnv,
-                    &event.session_id,
-                    &event.route,
-                    &self.action_space,
-                    action,
-                )
-                .await
-            }
-            Err(err) => {
-                tracing::warn!("runtime hook transform_action failed: {err}");
-                Err(RuntimeError::Hook(err))
-            }
-        }
-    }
-
-    /// The observation the model receives: `transform_observation`'s result,
-    /// then the relay policy's.
-    async fn invoke_transform_observation(
-        &self,
-        telemetry: &Mutex<Aggregator>,
-        event: &ObservationEmittedEvent,
-    ) -> Result<Relayed, RuntimeError> {
-        let started = Instant::now();
-        let result = self.hooks.transform_observation(event.clone()).await;
-        lock_agg(telemetry).record(Sample::dur(
-            SRC_TRANSFORM_OBS,
-            metrics::RPC_TOTAL,
-            started.elapsed(),
-        ));
-        match result {
-            Ok(observation) => {
-                self.relay(
-                    Leg::EnvToModel,
-                    &event.session_id,
-                    &event.route,
-                    &self.observation_space,
-                    observation,
-                )
-                .await
-            }
-            Err(err) => {
-                tracing::warn!("runtime hook transform_observation failed: {err}");
-                Err(RuntimeError::Hook(err))
-            }
-        }
-    }
-
-    /// The target leg's ceiling, `None` when that peer runs in-process.
-    fn ceiling(&self, leg: Leg) -> Option<&crate::run::runtime::spec::PeerCeiling> {
-        match leg {
-            Leg::EnvToModel => self.spec.model_ceiling.as_ref(),
-            Leg::ModelToEnv => self.spec.env_ceiling.as_ref(),
-        }
-    }
-
-    /// Checks the env contract against the model's ceiling before any leaf
-    /// flows; a converting policy's advisory is recorded, its leaves unused.
-    async fn relay_contract(&self, state: &RouteState) -> Result<(), RuntimeError> {
-        let Some(ceiling) = self.ceiling(Leg::EnvToModel) else {
-            return Ok(());
-        };
-        let contract_spaces = SpaceSpec {
-            spec: Some(space_spec::Spec::Tuple(TupleSpec {
-                spaces: vec![
-                    SpaceSpec::clone(&self.observation_space),
-                    SpaceSpec::clone(&self.action_space),
-                ],
-            })),
-            ..Default::default()
-        };
-        let payload = PayloadFacts {
-            byte_len: self.spec.env_contract.encoded_len(),
-            ..PayloadFacts::new(Arc::new(contract_spaces), Vec::new())
-        };
-        match self
-            .relay_policy
-            .reconcile(Leg::EnvToModel, ceiling, &payload)
-        {
-            RelayDecision::Forward => Ok(()),
-            RelayDecision::Convert { advisory, .. } => {
-                self.raise_advisory(
-                    state.session_id(),
-                    &state.env_context(),
-                    Leg::EnvToModel,
-                    advisory,
-                )
-                .await;
-                Ok(())
-            }
-            RelayDecision::Refuse(reason) => {
-                Err(relay_refused(Leg::EnvToModel, "contract", reason))
-            }
-        }
-    }
-
-    /// Hands a payload bound for a served peer to the relay policy.
-    async fn relay(
-        &self,
-        leg: Leg,
-        session_id: &str,
-        route: &RuntimeEnvContext,
-        space: &Arc<SpaceSpec>,
-        leaves: Option<Vec<Bytes>>,
-    ) -> Result<Relayed, RuntimeError> {
-        let Some(ceiling) = self.ceiling(leg) else {
-            return Ok((leaves, None));
-        };
-        let Some(leaves) = leaves else {
-            return Ok((None, None));
-        };
-        let payload = PayloadFacts::new(Arc::clone(space), leaves);
-        match self.relay_policy.reconcile(leg, ceiling, &payload) {
-            RelayDecision::Forward => Ok((Some(payload.leaves), None)),
-            RelayDecision::Convert {
-                leaves,
-                space,
-                advisory,
-            } => {
-                self.raise_advisory(session_id, route, leg, advisory).await;
-                Ok((Some(leaves), space))
-            }
-            RelayDecision::Refuse(reason) => Err(relay_refused(leg, "payload", reason)),
-        }
-    }
-
-    /// Records `advisory` once per session and streams it to the hooks.
-    async fn raise_advisory(
-        &self,
-        session_id: &str,
-        route: &RuntimeEnvContext,
-        leg: Leg,
-        advisory: Advisory,
-    ) {
-        {
-            let mut advisories = self
-                .advisories
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if advisories.contains(&advisory) {
-                return;
-            }
-            advisories.push(advisory.clone());
-        }
-        fan_out_event!(
-            self,
-            relay_advisory,
-            RelayAdvisoryEvent {
-                session_id: session_id.to_string(),
-                route: route.clone(),
-                leg,
-                advisory,
-            }
-        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2306,22 +2039,10 @@ where
             is_reset,
             num_envs: width as u32,
             observation_space: Arc::clone(&self.observation_space),
-            raw_observation: observation.clone(),
             observation,
             infos,
         }
     }
-}
-
-/// The leaves a peer receives, and the space typing them when a relay policy
-/// converted their layout.
-type Relayed = (Option<Vec<Bytes>>, Option<Arc<SpaceSpec>>);
-
-fn relay_refused(leg: Leg, what: &str, reason: String) -> RuntimeError {
-    RuntimeError::Protocol(format!(
-        "the runtime cannot relay this {what} to the {}: {reason}",
-        leg.target()
-    ))
 }
 
 /// The per-lane reset seed, derived purely from reproducible inputs: the user's
@@ -2357,32 +2078,131 @@ fn deterministic_reset_seed(
     (hash & i64::MAX as u64) as i64
 }
 
-fn log_model_close_result(
-    result: Result<Result<(), String>, tokio::time::error::Elapsed>,
-    reason: &str,
-    timeout: Duration,
-) {
-    match result {
-        Ok(Err(err)) => {
-            tracing::warn!(
-                error = %err,
-                reason,
-                "model route close failed during route shutdown; relying on owner shutdown"
-            );
-        }
-        Err(_) => {
-            tracing::warn!(
-                timeout_ms = timeout.as_millis(),
-                reason,
-                "model route close timed out during route shutdown; relying on owner shutdown"
-            );
-        }
-        Ok(Ok(())) => {}
+/// The bytes of a payload's leaf slabs.
+fn leaf_bytes(leaves: &[Bytes]) -> u64 {
+    leaves.iter().map(|leaf| leaf.len() as u64).sum()
+}
+
+/// The bytes an observation carries to the model, history rows included.
+fn observation_bytes(observation: &ModelObservation) -> u64 {
+    observation.observation.as_deref().map_or(0, leaf_bytes)
+        + observation
+            .history
+            .iter()
+            .map(|row| row.observation.as_deref().map_or(0, leaf_bytes))
+            .sum::<u64>()
+}
+
+/// A model error as the driver's, keeping its recoverable flag.
+fn model_error(error: crate::Error) -> RuntimeError {
+    RuntimeError::model_rpc_with_recoverability("model", error.is_transient(), error)
+}
+
+/// One grouped predict: every observation in one `predict_grouped` call, the
+/// model's fusion seam, then each group's frames encoded against the action
+/// space. One group's failure is its own.
+async fn predict_grouped<M: ModelHandler>(
+    model: &tokio::sync::Mutex<M>,
+    contract: &rlmesh_spaces::EnvContract,
+    observations: Vec<ModelObservation>,
+) -> Vec<Result<Prediction, RuntimeError>> {
+    let started = Instant::now();
+    let Some(action_space) = contract.action_space.as_ref() else {
+        return observations
+            .iter()
+            .map(|_| {
+                Err(model_error(crate::Error::model(
+                    "the env contract has no action space",
+                )))
+            })
+            .collect();
+    };
+    let rows: Vec<usize> = observations.iter().map(|o| o.num_envs).collect();
+    let mut handler = model.lock().await;
+    let call_started = Instant::now();
+    let results = handler.predict_grouped(observations).await;
+    let user_ns = rlmesh_proto::elapsed_ns(call_started);
+    // Drain the adapter share even for a failed forward, or its time leaks
+    // into the next predict's.
+    let adapter_ns = handler.take_adapter_ns();
+    let held = handler.held_state();
+    drop(handler);
+    let encode_started = Instant::now();
+    let mut results = results.into_iter();
+    rows.into_iter()
+        .map(|rows| {
+            let PredictFrames { actions, replay } = results
+                .next()
+                .ok_or_else(|| {
+                    model_error(crate::Error::model(
+                        "predict_grouped returned fewer results than groups",
+                    ))
+                })?
+                .map_err(model_error)?;
+            let frames = std::iter::once(actions)
+                .chain(replay)
+                .map(|frame| {
+                    if frame.len() != rows {
+                        return Err(model_error(crate::Error::model(format!(
+                            "predict returned {} actions for {rows} lanes",
+                            frame.len()
+                        ))));
+                    }
+                    crate::model::wire::check_actions_conform(action_space, &frame)
+                        .map_err(model_error)?;
+                    rlmesh_spaces::leaves::encode_leaf_slab(&frame, action_space)
+                        .map_err(|err| model_error(crate::Error::model(err.to_string())))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Prediction {
+                frames,
+                endpoint_total_ns: Some(rlmesh_proto::elapsed_ns(started)),
+                phases: EndpointPhases {
+                    user_ns,
+                    encode_ns: rlmesh_proto::elapsed_ns(encode_started),
+                    adapter_ns,
+                    held_episodes: held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32),
+                    held_state_bytes: held.map(|held| held.bytes),
+                    ..EndpointPhases::default()
+                },
+            })
+        })
+        .collect()
+}
+
+/// Drops the model's route state at route end.
+async fn release<M: ModelHandler>(
+    model: &tokio::sync::Mutex<M>,
+    env_id: String,
+) -> Result<(), RuntimeError> {
+    let route_setup = model.lock().await.route_setup();
+    match route_setup {
+        Some(route_setup) => route_setup
+            .release_adapter(&env_id)
+            .await
+            .map_err(model_error),
+        None => Ok(()),
     }
 }
 
-fn leaves_value(leaves: Vec<Bytes>) -> SpaceValue {
-    SpaceValue { leaves }
+/// Ends `episode_ids` on the model: the route's own state first, then the
+/// model's hook, as a served model does.
+async fn evict<M: ModelHandler>(
+    model: &tokio::sync::Mutex<M>,
+    env_id: String,
+    episode_ids: Vec<String>,
+) -> Result<(), RuntimeError> {
+    let mut handler = model.lock().await;
+    if let Some(route_setup) = handler.route_setup() {
+        route_setup
+            .reset_adapter(&env_id, &episode_ids)
+            .await
+            .map_err(model_error)?;
+    }
+    handler
+        .reset_adapter(&env_id, episode_ids)
+        .await
+        .map_err(model_error)
 }
 
 /// Mint one authoritative episode id. UUIDv7 is time-ordered (sortable by
@@ -2423,13 +2243,6 @@ fn episode_ids_with_roll(
     ids
 }
 
-/// The relay is content-blind: it carries the peer's leaf vector through
-/// unchanged (structure/dtype live in the route spec, never inline). Kept
-/// returning `Result` so the existing `?` call sites are untouched.
-fn value_leaves(payload: Option<&SpaceValue>) -> Result<Option<Vec<Bytes>>, RuntimeError> {
-    Ok(payload.map(|payload| payload.leaves.clone()))
-}
-
 /// Locks the telemetry aggregator, recovering from a poisoned mutex instead of
 /// panicking. Telemetry is best-effort and must never take down the route, so a
 /// panic under the guard degrades telemetry rather than killing the session.
@@ -2441,7 +2254,7 @@ fn lock_agg(telemetry: &Mutex<Aggregator>) -> MutexGuard<'_, Aggregator> {
 
 /// Account the observation-history rows riding a predict request as a
 /// `history.rows` sample, if it carries any.
-fn record_history_rows(telemetry: &Arc<Mutex<Aggregator>>, msg: &PredictRequest) {
+fn record_history_rows(telemetry: &Arc<Mutex<Aggregator>>, msg: &ModelObservation) {
     if !msg.history.is_empty() {
         lock_agg(telemetry).record(Sample::count(
             SRC_PREDICT,

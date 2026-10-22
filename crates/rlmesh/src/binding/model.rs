@@ -10,9 +10,9 @@ pub use crate::model::handler::{
     HeldState, HistoryNeeds, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions,
     RouteNeeds,
 };
+pub use crate::model::local::EnvClientRuntimeEnv;
 #[cfg(feature = "lockstep")]
-pub use crate::model::local::LockstepRuntimeEnv;
-pub use crate::model::local::{EnvClientRuntimeEnv, ModelHandlerRuntimeModel};
+pub use crate::model::local::LockstepEnv;
 pub use crate::model::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 pub use crate::model::remote::{ModelClient, ModelConnect};
 pub use crate::model::server::BoundModelServer;
@@ -21,6 +21,11 @@ pub use crate::model::worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
 pub use crate::model::{DynPolicy, PolicyDecl};
 
 use crate::{Corners, Error, Kwargs, Model, ModelOptions, Result};
+
+/// The engine handler that runs `model`: what a binding serves or drives.
+pub fn model_handler(model: &Model) -> AdaptedModelHandler {
+    crate::model::bridge::engine_handler(Arc::clone(model.shared()))
+}
 
 /// The [`Corners`] for C's `RLMESH_CORNER_*` bits; a bit outside the four
 /// corners is the TypeError class.

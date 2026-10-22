@@ -1,5 +1,5 @@
 //! [`RouteState`]: the per-route bookkeeping the driver advances each step, and
-//! the request messages it builds from that state.
+//! the model observations it builds from that state.
 //!
 //! Slots are per lane (`env_index`). The driver works on *groups* of lanes
 //! (one group per lane for a lane endpoint, one group for the whole vector
@@ -8,13 +8,12 @@
 //! route-global slot counter ([`claim_slots`](RouteState::claim_slots)), so
 //! they depend on start order alone, never on which group ran the episode.
 
-use prost::bytes::Bytes;
-use rlmesh_proto::model::v1::{
-    AdapterContext, EpisodeInfo, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
-};
-use rlmesh_proto::spaces::v1::SpaceValue;
-
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use bytes::Bytes;
+
+use crate::model::types::{EpisodeInfo, ModelObservation, ModelRouteContext};
 
 use crate::run::runtime::episodes::{EpisodeRecord, EpisodeRecordRegistry};
 use crate::run::runtime::hooks::RuntimeEnvContext;
@@ -35,10 +34,6 @@ impl RequestPhase {
             Self::StepObservation => "step_observation",
         }
     }
-}
-
-fn leaves_value(leaves: Vec<Bytes>) -> SpaceValue {
-    SpaceValue { leaves }
 }
 
 #[derive(Debug)]
@@ -141,21 +136,6 @@ impl RouteState {
         self.slots
             .iter()
             .position(|slot| slot.env_index == env_index)
-    }
-
-    /// The episode id the slot at `env_index` currently holds, if any. The
-    /// runtime mints and owns episode ids (R1), so this is the authority a
-    /// peer-reported completion is checked against.
-    pub(crate) fn episode_id_at(&self, env_index: u32) -> Option<&str> {
-        let position = self.slot_position(env_index)?;
-        Some(
-            self.slots
-                .get(position)?
-                .episode
-                .as_ref()?
-                .episode_id
-                .as_str(),
-        )
     }
 
     /// Claim the next `count` consecutive episode slots. `bounded` refuses the
@@ -476,58 +456,37 @@ impl RouteState {
         }
     }
 
+    /// The model's observation of the lanes at `positions`, carrying
+    /// `contract`, each row tagged with its episode.
     pub(crate) fn predict_request_at(
         &mut self,
         positions: &[usize],
         observation: Option<Vec<Bytes>>,
         phase: RequestPhase,
-    ) -> PredictRequest {
-        let episode_info = self
+        contract: &Arc<rlmesh_spaces::EnvContract>,
+    ) -> ModelObservation {
+        let env_id = self.env_id().to_string();
+        let episodes: Vec<EpisodeInfo> = self
             .episode_ids_at(positions)
             .into_iter()
-            .map(|episode_id| {
-                let seed = self.seed_for_episode(&episode_id);
-                EpisodeInfo { episode_id, seed }
+            .map(|episode_id| EpisodeInfo {
+                seed: self.seed_for_episode(&episode_id),
+                episode_id,
+                env_id: env_id.clone(),
             })
             .collect();
-        PredictRequest {
-            context: Some(AdapterContext {
+        ModelObservation {
+            observation,
+            num_envs: episodes.len().max(1),
+            route: ModelRouteContext {
                 session_id: self.session_id().to_string(),
-                env_id: self.env_id().to_string(),
+                env_id,
                 request_id: self.next_request_id(phase.as_str()),
-            }),
-            observation: observation.map(leaves_value),
-            episode_info,
+                episodes,
+            },
+            env_contract: Some(Arc::clone(contract)),
             history: Vec::new(),
             step: None,
-        }
-    }
-
-    pub(crate) fn reset_adapter_request(
-        &mut self,
-        episode_ids: Vec<String>,
-    ) -> ResetAdapterRequest {
-        ResetAdapterRequest {
-            context: Some(AdapterContext {
-                session_id: self.session_id().to_string(),
-                env_id: self.env_id().to_string(),
-                request_id: self.next_request_id("reset_adapter"),
-            }),
-            episode_ids,
-        }
-    }
-
-    pub(crate) fn release_adapter_request(
-        &mut self,
-        reason: impl Into<String>,
-    ) -> ReleaseAdapterRequest {
-        ReleaseAdapterRequest {
-            context: Some(AdapterContext {
-                session_id: self.session_id().to_string(),
-                env_id: self.env_id().to_string(),
-                request_id: self.next_request_id("release_adapter"),
-            }),
-            reason: reason.into(),
         }
     }
 

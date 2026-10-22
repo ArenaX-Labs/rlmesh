@@ -1,12 +1,11 @@
 //! The [`RuntimeHooks`] observer trait and its no-op default.
 
 use async_trait::async_trait;
-use prost::bytes::Bytes;
 
 use super::{
-    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent,
-    ModelConnectedEvent, ObservationEmittedEvent, RelayAdvisoryEvent, SessionEndedEvent,
-    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent,
+    ObservationEmittedEvent, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
+    StepCompletedEvent, TelemetrySnapshotEvent,
 };
 
 /// Error returned by a [`RuntimeHooks`] callback.
@@ -27,22 +26,11 @@ impl RuntimeHooks for NoopRuntimeHooks {}
 
 /// Callbacks the driver fans out around the `reset -> predict -> step` loop.
 ///
-/// Lifecycle, progress, and log hooks are best-effort: the driver logs a failure
-/// and keeps the route moving. The two transform hooks
-/// ([`Self::transform_action`], [`Self::transform_observation`]) are fatal — a
-/// failed transform leaves the next wire payload undefined, so the route fails
-/// and shuts down. One shared instance serves every concurrent route, so each
-/// event carries its route/session identity inline.
+/// Every hook is best-effort: the driver logs a failure and keeps the route
+/// moving. One shared instance serves every concurrent route, so each event
+/// carries its route/session identity inline.
 #[async_trait]
 pub trait RuntimeHooks: Send + Sync {
-    async fn env_connected(&self, _event: EnvConnectedEvent) -> Result<(), HookError> {
-        Ok(())
-    }
-
-    async fn model_connected(&self, _event: ModelConnectedEvent) -> Result<(), HookError> {
-        Ok(())
-    }
-
     async fn session_started(&self, _event: SessionStartedEvent) -> Result<(), HookError> {
         Ok(())
     }
@@ -62,29 +50,12 @@ pub trait RuntimeHooks: Send + Sync {
         Ok(())
     }
 
-    /// Fatal hook: a failed transform leaves the next action payload undefined,
-    /// so the route fails rather than send something undefined to the env.
-    async fn transform_action(
-        &self,
-        event: ActionReceivedEvent,
-    ) -> Result<Option<Vec<Bytes>>, HookError> {
-        Ok(event.action)
-    }
-
     async fn step_completed(&self, _event: StepCompletedEvent) -> Result<(), HookError> {
         Ok(())
     }
 
     async fn observation_emitted(&self, _event: ObservationEmittedEvent) -> Result<(), HookError> {
         Ok(())
-    }
-
-    /// Fatal hook; see [`Self::transform_action`].
-    async fn transform_observation(
-        &self,
-        event: ObservationEmittedEvent,
-    ) -> Result<Option<Vec<Bytes>>, HookError> {
-        Ok(event.observation)
     }
 
     async fn session_ended(&self, _event: SessionEndedEvent) -> Result<(), HookError> {
@@ -107,11 +78,6 @@ pub trait RuntimeHooks: Send + Sync {
     }
 
     async fn log(&self, _event: LogEvent) -> Result<(), HookError> {
-        Ok(())
-    }
-
-    /// Best-effort; see [`RelayAdvisoryEvent`].
-    async fn relay_advisory(&self, _event: RelayAdvisoryEvent) -> Result<(), HookError> {
         Ok(())
     }
 }

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use rlmesh::binding::runtime::{RuntimeDriver, RuntimeError, RuntimeReport, RuntimeSessionSpec};
+use rlmesh::binding::runtime::{RuntimeError, RuntimeReport, RuntimeSessionSpec};
 use rlmesh_proto::core::v1::AutoresetMode;
 use rlmesh_proto::spaces::v1::{MetaMap, meta_value};
 use rlmesh_proto::{Edition, EditionDefaults};
@@ -224,7 +224,9 @@ fn observations(hooks: &RecordingHooks, ids: &mut Ids) -> Value {
             json!({
                 "episodes": ids.labels(&observation.episode_ids),
                 "observation": observation.observation,
-                "raw_observation": observation.raw_observation,
+                // No transform runs between env and model: what the env
+                // answered is what the model receives.
+                "raw_observation": observation.observation,
                 "infos": meta_record(&observation.infos),
             })
         })
@@ -235,7 +237,7 @@ fn observations(hooks: &RecordingHooks, ids: &mut Ids) -> Value {
 /// The refusal a spec the runtime must not drive produces, truncated to its
 /// build-independent prefix.
 async fn refusal_prefix(spec: RuntimeSessionSpec) -> Value {
-    let error = RuntimeDriver::new(
+    let error = new_driver(
         spec,
         TestEnv::default(),
         TestModel::default(),
@@ -325,7 +327,7 @@ async fn scenario_01_disabled_single_env_episode() {
     };
     let model = TestModel::default();
     let hooks = Arc::new(RecordingHooks::default());
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         one_episode_spec(),
         env.clone(),
         model.clone(),
@@ -364,7 +366,7 @@ async fn scenario_02_next_step_roll_timing() {
     let wide_env = VectorTestEnv::new(vec![2, 3, 2, 4]);
     let wide_model = TestModel::default();
     let wide_hooks = Arc::new(RecordingHooks::default());
-    let wide = RuntimeDriver::new(
+    let wide = new_driver(
         vector_spec(4, 8),
         wide_env.clone(),
         wide_model.clone(),
@@ -378,7 +380,7 @@ async fn scenario_02_next_step_roll_timing() {
     // episodes' reset observation, and its infos belong to them.
     let roll_env = VectorTestEnv::new(vec![1, 1]);
     let roll_hooks = Arc::new(RecordingHooks::default());
-    RuntimeDriver::new(
+    new_driver(
         vector_spec(2, 4),
         roll_env,
         TestModel::default(),
@@ -392,7 +394,7 @@ async fn scenario_02_next_step_roll_timing() {
     // stepped once more (the autoreset step), then completed last.
     let budget_hooks = Arc::new(RecordingHooks::default());
     let budget_model = TestModel::default();
-    let budget = RuntimeDriver::new(
+    let budget = new_driver(
         vector_spec(2, 4),
         VectorTestEnv::new(vec![1, 3]),
         budget_model.clone(),
@@ -438,7 +440,7 @@ async fn scenario_03_next_step_mints_no_trial_ordinal() {
         let mut spec = vector_spec(2, 4);
         spec.trial_index_base = base;
         declare_reset_options(&mut spec, &["trial_index"]);
-        let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+        let report = new_driver(spec, env.clone(), TestModel::default(), hooks.clone())
             .run()
             .await
             .expect("the declared NEXT_STEP route completes");
@@ -454,25 +456,25 @@ async fn scenario_03_next_step_mints_no_trial_ordinal() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. A runtime truncation is not double counted when the env echoes it.
+// 4. A runtime truncation completes its episode once.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn scenario_04_runtime_truncation_ledger() {
-    let env = EchoingEnv::default();
+    let env = EndlessEnv::default();
     let hooks = Arc::new(RecordingHooks::default());
     let spec = RuntimeSessionSpec {
         max_episodes: Some(3),
         max_episode_steps: Some(4),
         ..one_episode_spec()
     };
-    let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+    let report = new_driver(spec, env.clone(), TestModel::default(), hooks.clone())
         .run()
         .await
         .expect("the truncating route completes");
 
     let (steps, resets) = {
-        let state = env.inner.lock().expect("echoing env lock poisoned");
+        let state = env.inner.lock().expect("endless env lock poisoned");
         (state.steps, state.resets)
     };
     let ids = &mut Ids::default();
@@ -493,8 +495,8 @@ async fn scenario_04_runtime_truncation_ledger() {
 async fn scenario_05_default_truncation_bound() {
     // An env that never terminates, no explicit cap, driver-owned resets: the
     // edition's built-in bound is the only thing that can end the episode.
-    let env = EchoingEnv::default();
-    let report = RuntimeDriver::new(
+    let env = EndlessEnv::default();
+    let report = new_driver(
         one_episode_spec(),
         env.clone(),
         TestModel {
@@ -509,7 +511,7 @@ async fn scenario_05_default_truncation_bound() {
     .await
     .expect("the unbounded env is truncated at the built-in bound");
 
-    let steps = env.inner.lock().expect("echoing env lock poisoned").steps;
+    let steps = env.inner.lock().expect("endless env lock poisoned").steps;
     let record = json!({
         "report": report_record(&report),
         "env_steps": steps,
@@ -533,7 +535,7 @@ async fn scenario_06_chunk_replay() {
         ..Default::default()
     };
     let replay_hooks = Arc::new(RecordingHooks::default());
-    let replay = RuntimeDriver::new(
+    let replay = new_driver(
         one_episode_spec(),
         replay_env.clone(),
         replay_model.clone(),
@@ -556,7 +558,7 @@ async fn scenario_06_chunk_replay() {
         max_episodes: Some(2),
         ..one_episode_spec()
     };
-    let stale = RuntimeDriver::new(
+    let stale = new_driver(
         stale_spec,
         TestEnv {
             terminal_after: 3,
@@ -610,7 +612,7 @@ async fn scenario_07_observation_history() {
             wants_history: true,
             ..Default::default()
         };
-        let report = RuntimeDriver::new(
+        let report = new_driver(
             one_episode_spec(),
             TestEnv {
                 terminal_after: 9,
@@ -648,7 +650,7 @@ async fn scenario_07_observation_history() {
         max_episodes: Some(2),
         ..one_episode_spec()
     };
-    let across = RuntimeDriver::new(
+    let across = new_driver(
         across_spec,
         TestEnv {
             terminal_after: 3,
@@ -673,7 +675,7 @@ async fn scenario_07_observation_history() {
         replay_frames: 3,
         ..Default::default()
     };
-    RuntimeDriver::new(
+    new_driver(
         one_episode_spec(),
         TestEnv {
             terminal_after: 9,
@@ -718,7 +720,7 @@ async fn scenario_08_lane_accounting() {
         (1, Duration::ZERO),
     ]);
     let model = TestModel::default();
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         lane_spec(3, 7, (100..110).collect()),
         env.clone(),
         model.clone(),
@@ -753,7 +755,7 @@ async fn scenario_08_lane_accounting() {
     // Four lanes, two slots: two lanes never reset at all.
     let idle_env = LaneTestEnv::new(vec![(1, Duration::ZERO); 4]);
     let idle_hooks = Arc::new(RecordingHooks::default());
-    let idle = RuntimeDriver::new(
+    let idle = new_driver(
         lane_spec(4, 2, Vec::new()),
         idle_env.clone(),
         TestModel::default(),
@@ -794,7 +796,7 @@ async fn scenario_08_lane_accounting() {
 #[tokio::test]
 async fn scenario_09_episode_id_and_trial_authority() {
     let model = TestModel::default();
-    RuntimeDriver::new(
+    new_driver(
         one_episode_spec(),
         TestEnv::default(),
         model.clone(),
@@ -832,7 +834,7 @@ async fn scenario_09_episode_id_and_trial_authority() {
     for _ in 0..2 {
         let env = TestEnv::default();
         let hooks = Arc::new(RecordingHooks::default());
-        RuntimeDriver::new(
+        new_driver(
             seeded.clone(),
             env.clone(),
             TestModel::default(),
@@ -858,7 +860,7 @@ async fn scenario_09_episode_id_and_trial_authority() {
     let declared_env = TestEnv::default();
     let mut declared_spec = trial_spec(3, &["trial_index"]);
     declared_spec.trial_index_base = Some(100);
-    let declared = RuntimeDriver::new(
+    let declared = new_driver(
         declared_spec,
         declared_env.clone(),
         TestModel::default(),
@@ -868,7 +870,7 @@ async fn scenario_09_episode_id_and_trial_authority() {
     .await
     .expect("the declaring route completes");
     let undeclared_env = TestEnv::default();
-    let undeclared = RuntimeDriver::new(
+    let undeclared = new_driver(
         trial_spec(2, &[]),
         undeclared_env.clone(),
         TestModel::default(),

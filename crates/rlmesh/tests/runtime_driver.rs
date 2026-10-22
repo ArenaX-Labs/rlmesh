@@ -11,14 +11,11 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::channel::{mpsc, oneshot};
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
+use futures::channel::oneshot;
 use rlmesh::binding::runtime::{
-    EndpointPhases, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
-    RuntimeSessionSpec,
-};
-use rlmesh_proto::env::v1::{
-    EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
+    EndpointPhases, EnvResetRequest, EnvStepRequest, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
+    RuntimeError, RuntimeSessionSpec,
 };
 use rlmesh_proto::spaces::v1::{MetaValue, meta_value};
 
@@ -33,7 +30,7 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
     let model = TestModel::default();
     let hooks = Arc::new(RecordingHooks::default());
 
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         one_episode_spec(),
         env.clone(),
         model.clone(),
@@ -120,7 +117,7 @@ async fn runtime_mints_uuidv7_episode_id_and_emits_reset_adapter_on_episode_end(
     // evicts that episode's state without any position-diffing.
     let env = TestEnv::default();
     let model = TestModel::default();
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         one_episode_spec(),
         env.clone(),
         model.clone(),
@@ -172,7 +169,7 @@ async fn runtime_replays_buffered_chunk_frames_and_skips_predict() {
     let hooks = Arc::new(RecordingHooks::default());
     let spec = one_episode_spec();
 
-    let report = RuntimeDriver::new(spec, env.clone(), model.clone(), hooks.clone())
+    let report = new_driver(spec, env.clone(), model.clone(), hooks.clone())
         .run()
         .await
         .unwrap();
@@ -212,7 +209,7 @@ async fn model_predict_timeout_fails_session() {
     let mut spec = one_episode_spec();
     spec.limits.model_predict_timeout = Duration::from_millis(5);
 
-    let error = RuntimeDriver::new(spec, env, model, hooks.clone())
+    let error = new_driver(spec, env, model, hooks.clone())
         .run()
         .await
         .unwrap_err();
@@ -252,7 +249,7 @@ async fn zero_telemetry_window_disables_streaming_but_still_delivers_final() {
     let mut spec = one_episode_spec();
     spec.limits.telemetry_window = Duration::ZERO;
 
-    let report = RuntimeDriver::new(spec, env, model, hooks.clone())
+    let report = new_driver(spec, env, model, hooks.clone())
         .run()
         .await
         .unwrap();
@@ -282,7 +279,7 @@ async fn driver_continues_after_non_terminal_step() {
     };
     let model = TestModel::default();
 
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         one_episode_spec(),
         env,
         model.clone(),
@@ -314,7 +311,7 @@ async fn telemetry_ticks_on_wall_clock_during_a_stalled_step() {
     let mut spec = one_episode_spec();
     spec.limits.telemetry_window = Duration::from_millis(10);
 
-    let report = RuntimeDriver::new(spec, env, model, hooks.clone())
+    let report = new_driver(spec, env, model, hooks.clone())
         .run()
         .await
         .unwrap();
@@ -345,25 +342,6 @@ async fn telemetry_ticks_on_wall_clock_during_a_stalled_step() {
 }
 
 #[tokio::test]
-async fn fatal_transform_hook_failure_closes_route() {
-    let env = TestEnv::default();
-    let model = TestModel::default();
-    let hooks = Arc::new(RecordingHooks {
-        fail_action_transform: true,
-        ..Default::default()
-    });
-
-    let error = RuntimeDriver::new(one_episode_spec(), env.clone(), model.clone(), hooks)
-        .run()
-        .await
-        .unwrap_err();
-
-    assert!(matches!(error, RuntimeError::Hook(_)));
-    assert!(env.closed.load(Ordering::SeqCst));
-    assert!(model.closed.load(Ordering::SeqCst));
-}
-
-#[tokio::test]
 async fn driver_threads_deterministic_reset_seeds() {
     let mut spec = one_episode_spec();
     spec.base_seed = Some(1234);
@@ -372,7 +350,7 @@ async fn driver_threads_deterministic_reset_seeds() {
     let first_env = TestEnv::default();
     let first_model = TestModel::default();
     let first_hooks = Arc::new(RecordingHooks::default());
-    RuntimeDriver::new(
+    new_driver(
         spec.clone(),
         first_env.clone(),
         first_model,
@@ -384,7 +362,7 @@ async fn driver_threads_deterministic_reset_seeds() {
 
     let second_env = TestEnv::default();
     let second_model = TestModel::default();
-    RuntimeDriver::new(
+    new_driver(
         spec,
         second_env.clone(),
         second_model,
@@ -460,7 +438,7 @@ async fn cancellation_reason_is_threaded_from_caller() {
     // Pre-cancel so the first cancellation check trips during the session.
     cancellation.cancel();
 
-    let error = RuntimeDriver::new(
+    let error = new_driver(
         one_episode_spec(),
         env,
         model,
@@ -483,7 +461,7 @@ async fn default_cancellation_reason_does_not_claim_sibling_failure() {
     let cancellation = CancellationToken::new();
     cancellation.cancel();
 
-    let error = RuntimeDriver::new(
+    let error = new_driver(
         one_episode_spec(),
         TestEnv::default(),
         TestModel::default(),
@@ -503,19 +481,15 @@ async fn default_cancellation_reason_does_not_claim_sibling_failure() {
 }
 
 #[tokio::test]
-async fn observation_emitted_always_carries_transformed_payload() {
+async fn observation_emitted_carries_what_the_model_receives() {
     let env = TestEnv {
         terminal_after: 2,
         ..Default::default()
     };
     let model = TestModel::default();
-    const MARKER: u8 = 0xAB;
-    let hooks = Arc::new(RecordingHooks {
-        observation_marker: Some(MARKER),
-        ..Default::default()
-    });
+    let hooks = Arc::new(RecordingHooks::default());
 
-    RuntimeDriver::new(one_episode_spec(), env, model.clone(), hooks.clone())
+    new_driver(one_episode_spec(), env, model.clone(), hooks.clone())
         .run()
         .await
         .unwrap();
@@ -529,23 +503,7 @@ async fn observation_emitted_always_carries_transformed_payload() {
     // Model saw: initial reset observation + the step observation for the
     // non-terminal step. (The terminal step's observation is never sent.)
     assert_eq!(emitted.len(), 2, "emitted: {emitted:?}");
-    // Every emitted observation must be the transformed payload the model
-    // actually received, i.e. carry the marker byte.
-    for emitted in &emitted {
-        let (bytes, raw) = (&emitted.observation, &emitted.raw_observation);
-        assert_eq!(
-            bytes.first().copied(),
-            Some(MARKER),
-            "observation_emitted exposed pre-transform bytes: {bytes:?}"
-        );
-        assert_ne!(bytes, raw);
-        assert_eq!(
-            &bytes[1..],
-            raw.as_slice(),
-            "raw_observation must be the pre-transform bytes"
-        );
-    }
-    // The model received exactly these transformed observations.
+    // The model received exactly these observations.
     let seen = model
         .seen_observations
         .lock()
@@ -575,7 +533,7 @@ async fn shutdown_enforces_service_close_timeout_on_hung_model() {
     // service_close_timeout and complete the session.
     let report = tokio::time::timeout(
         Duration::from_secs(5),
-        RuntimeDriver::new(
+        new_driver(
             spec,
             env,
             model.clone(),
@@ -625,7 +583,7 @@ async fn hung_eviction_yields_to_cancellation() {
     let (result, _) = tokio::join!(
         tokio::time::timeout(
             Duration::from_secs(5),
-            RuntimeDriver::new(
+            new_driver(
                 spec,
                 env,
                 model.clone(),
@@ -674,7 +632,7 @@ async fn failed_route_ends_its_live_episode_before_release() {
     let mut spec = one_episode_spec();
     spec.max_episodes = Some(2);
 
-    let error = RuntimeDriver::new(
+    let error = new_driver(
         spec,
         env,
         model.clone(),
@@ -722,22 +680,12 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
         ..TestEnv::default()
     };
     let model = TestModel {
-        endpoint_total_ns: Some(5_000_000),
-        phases: EndpointPhases {
-            decode_ns: 1_000_000,
-            user_ns: 3_000_000,
-            encode_ns: 1_000_000,
-            queue_ns: 4_000_000,
-            in_flight: 7,
-            adapter_ns: 2_000_000,
-            held_episodes: Some(5),
-            held_state_bytes: Some(6_000_000),
-            lane_skew_ns: None,
-        },
+        adapter_ns: 2_000_000,
+        held: Some((5, 6_000_000)),
         ..TestModel::default()
     };
 
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         one_episode_spec(),
         env,
         model,
@@ -761,16 +709,14 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
     assert_eq!(avg("env.step", "endpoint.decode"), 1.0);
     assert_eq!(avg("env.step", "endpoint.user"), 6.0);
     assert_eq!(avg("env.step", "endpoint.encode"), 2.0);
-    assert_eq!(avg("model.predict", "endpoint.total"), 5.0);
-    assert_eq!(avg("model.predict", "endpoint.user"), 3.0);
-    assert_eq!(avg("model.predict", "endpoint.queue"), 4.0);
+    // The model is timed around its own call; the adapter's share and the
+    // held state are what the model reports.
+    assert!(avg("model.predict", "endpoint.total") > 0.0);
     // The adapter's share of the handler's own work: forward = user - adapter.
     assert_eq!(avg("model.predict", "predict.adapter"), 2.0);
     // Held state gauges: an episode count and raw bytes, not durations.
     assert_eq!(avg("model.predict", "held.episodes"), 5.0);
     assert_eq!(avg("model.predict", "held.bytes"), 6_000_000.0);
-    // Slot depth is a count, not a duration.
-    assert_eq!(avg("model.predict", "predict.in_flight"), 7.0);
 }
 
 #[tokio::test]
@@ -786,7 +732,7 @@ async fn a_straggler_lane_records_its_skew_over_the_median_lane() {
         ..TestEnv::default()
     };
 
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         one_episode_spec(),
         env,
         TestModel::default(),
@@ -821,14 +767,10 @@ async fn a_measured_zero_gauge_is_a_sample_not_an_absence() {
         ..TestEnv::default()
     };
     let model = TestModel {
-        phases: EndpointPhases {
-            held_episodes: Some(0),
-            held_state_bytes: Some(0),
-            ..EndpointPhases::default()
-        },
+        held: Some((0, 0)),
         ..TestModel::default()
     };
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         one_episode_spec(),
         env,
         model,
@@ -854,13 +796,13 @@ async fn a_measured_zero_gauge_is_a_sample_not_an_absence() {
 
 #[tokio::test]
 async fn a_peer_that_reports_no_phases_records_only_the_total() {
-    // An older peer stamps `endpoint_total_ns` and nothing else: the phase fields
-    // arrive absent, decode to zero, and record no rows at all.
+    // An env that stamps `endpoint_total_ns` and nothing else: the phase fields
+    // arrive absent, decode to zero, and record no env rows at all.
     let env = TestEnv {
         endpoint_total_ns: Some(9_000_000),
         ..TestEnv::default()
     };
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         one_episode_spec(),
         env,
         TestModel::default(),
@@ -875,7 +817,7 @@ async fn a_peer_that_reports_no_phases_records_only_the_total() {
             .telemetry
             .rows
             .iter()
-            .any(|row| row.metric.name == metric)
+            .any(|row| row.source.op == "env.step" && row.metric.name == metric)
     };
     assert!(recorded("endpoint.total"));
     for metric in [
@@ -901,7 +843,7 @@ async fn next_step_vector_env_completes_lanes_independently_without_whole_vector
     // whole-vector reset that cut every other lane's episode short.
     let env = VectorTestEnv::new(vec![2, 3, 2, 4]);
     let model = TestModel::default();
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         vector_spec(4, 8),
         env.clone(),
         model.clone(),
@@ -941,7 +883,7 @@ async fn next_step_roll_attributes_reset_infos_to_the_new_episode() {
     // the step event still attributed to the old episodes.
     let env = VectorTestEnv::new(vec![1, 1]);
     let hooks = Arc::new(RecordingHooks::default());
-    RuntimeDriver::new(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
+    new_driver(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
         .run()
         .await
         .unwrap();
@@ -949,9 +891,9 @@ async fn next_step_roll_attributes_reset_infos_to_the_new_episode() {
     assert_eq!(
         *hooks.step_infos.lock().unwrap(),
         vec![
-            Some(info_map("phase", "step")),
+            Some(vector_infos("step", 2, true)),
             None,
-            Some(info_map("phase", "step")),
+            Some(vector_infos("step", 2, true)),
         ]
     );
     // The terminal flags ride the terminal step (1 and 3), not the deferred
@@ -984,7 +926,7 @@ async fn next_step_roll_is_marked_per_lane() {
     // A response that rolls lane 0 is still a real step of lane 1's episode.
     let env = VectorTestEnv::new(vec![1, 3]);
     let hooks = Arc::new(RecordingHooks::default());
-    RuntimeDriver::new(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
+    new_driver(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
         .run()
         .await
         .unwrap();
@@ -1012,7 +954,7 @@ async fn the_budget_bounds_episode_starts_on_a_lockstep_vector() {
     // never announced, scored, or counted -- exactly three episodes report.
     let env = VectorTestEnv::new(vec![2, 2]);
     let hooks = Arc::new(RecordingHooks::default());
-    let report = RuntimeDriver::new(vector_spec(2, 3), env, TestModel::default(), hooks.clone())
+    let report = new_driver(vector_spec(2, 3), env, TestModel::default(), hooks.clone())
         .run()
         .await
         .unwrap();
@@ -1038,7 +980,7 @@ async fn the_budget_bounds_episode_starts_on_a_lockstep_vector() {
 async fn the_budget_is_exact_on_driver_reset_lanes() {
     let env = VectorTestEnv::new(vec![1, 3]);
     let hooks = Arc::new(RecordingHooks::default());
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         lane_spec(2, 3, vec![]),
         env,
         TestModel::default(),
@@ -1062,7 +1004,7 @@ async fn step_timings_charge_a_chunk_predict_to_the_step_that_consumed_it() {
         ..Default::default()
     };
     let hooks = Arc::new(RecordingHooks::default());
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         vector_spec(1, 1),
         VectorTestEnv::new(vec![5]),
         model,
@@ -1101,7 +1043,7 @@ async fn chunking_does_not_break_autoreset_eviction() {
         replay_frames: 4, // chunk of 5; most steps replay without a predict
         ..Default::default()
     };
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         vector_spec(2, 4),
         env.clone(),
         model.clone(),
@@ -1162,7 +1104,7 @@ async fn next_step_autoreset_never_predicts_on_an_evicted_episode() {
     // the entry. Uneven lane lengths make the rolls land on different steps.
     let env = VectorTestEnv::new(vec![1, 3]);
     let model = TestModel::default();
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         vector_spec(2, 4),
         env.clone(),
         model.clone(),
@@ -1213,7 +1155,7 @@ async fn autoreset_roll_keeps_a_sibling_lane_evictable_at_teardown() {
     // not clear a sibling lane's model-side episode state.
     let env = VectorTestEnv::new(vec![2, 3, 7]);
     let model = TestModel::default();
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         vector_spec(3, 2),
         env.clone(),
         model.clone(),
@@ -1268,7 +1210,7 @@ async fn next_step_episode_completed_is_the_last_hook_event_under_its_id() {
     // roll behind it. Every episode is completed exactly once and summarized.
     let env = VectorTestEnv::new(vec![1, 3]);
     let hooks = Arc::new(RecordingHooks::default());
-    let report = RuntimeDriver::new(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
+    let report = new_driver(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
         .run()
         .await
         .unwrap();
@@ -1365,7 +1307,7 @@ async fn a_history_route_sees_every_env_step_exactly_once_in_order() {
             wants_history: true,
             ..Default::default()
         };
-        let report = RuntimeDriver::new(
+        let report = new_driver(
             one_episode_spec(),
             env.clone(),
             model.clone(),
@@ -1412,7 +1354,7 @@ async fn a_prefetch_across_a_reset_delivers_the_reset_observation_once() {
     };
     let mut spec = one_episode_spec();
     spec.max_episodes = Some(2);
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         spec,
         env.clone(),
         model.clone(),
@@ -1457,7 +1399,7 @@ async fn a_prefetch_across_a_next_step_roll_delivers_the_terminal_step_once() {
         predict_delay: Some(Duration::from_millis(20)),
         ..Default::default()
     };
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         vector_spec(1, 2),
         env.clone(),
         model.clone(),
@@ -1486,7 +1428,7 @@ async fn a_route_without_history_carries_no_rows_and_no_step() {
         replay_frames: 3,
         ..Default::default()
     };
-    RuntimeDriver::new(
+    new_driver(
         one_episode_spec(),
         TestEnv {
             terminal_after: 9,
@@ -1551,7 +1493,7 @@ async fn prefetch_overlaps_predict_with_replay_and_keeps_the_ledger() {
     let hooks = Arc::new(RecordingHooks::default());
     let spec = one_episode_spec();
 
-    let report = RuntimeDriver::new(spec, env.clone(), model.clone(), hooks.clone())
+    let report = new_driver(spec, env.clone(), model.clone(), hooks.clone())
         .with_prefetch(1)
         .run()
         .await
@@ -1602,7 +1544,7 @@ async fn prefetch_discards_the_stale_chunk_across_episode_boundaries() {
     let mut spec = one_episode_spec();
     spec.max_episodes = Some(2);
 
-    let report = RuntimeDriver::new(spec, env.clone(), model.clone(), hooks.clone())
+    let report = new_driver(spec, env.clone(), model.clone(), hooks.clone())
         .with_prefetch(1)
         .run()
         .await
@@ -1629,7 +1571,7 @@ async fn declared_env_receives_the_trial_ordinal_on_every_reset() {
     let mut spec = trial_spec(3, &["trial_index"]);
     spec.trial_index_base = Some(100);
 
-    let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+    let report = new_driver(spec, env.clone(), TestModel::default(), hooks.clone())
         .run()
         .await
         .unwrap();
@@ -1667,7 +1609,7 @@ async fn undeclared_env_is_not_sent_the_ordinal_but_the_report_still_carries_it(
     let mut spec = trial_spec(2, &["something_else"]);
     spec.trial_index_base = Some(7);
 
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         spec,
         env.clone(),
         TestModel::default(),
@@ -1705,7 +1647,7 @@ async fn no_trial_base_walks_the_ordinals_from_zero() {
     let spec = trial_spec(3, &["trial_index"]);
     assert_eq!(spec.trial_index_base, None);
 
-    let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+    let report = new_driver(spec, env.clone(), TestModel::default(), hooks.clone())
         .run()
         .await
         .unwrap();
@@ -1738,7 +1680,7 @@ async fn no_trial_base_still_withholds_the_ordinal_from_an_undeclared_env() {
     // Minted by default, delivered only on declaration: a plain env keeps its
     // options-less reset, while the report still records the sweep.
     let env = TestEnv::default();
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         trial_spec(2, &[]),
         env.clone(),
         TestModel::default(),
@@ -1778,7 +1720,7 @@ async fn next_step_autoreset_mints_no_ordinal() {
         spec.trial_index_base = base;
         declare_reset_options(&mut spec, &["trial_index"]);
 
-        let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+        let report = new_driver(spec, env.clone(), TestModel::default(), hooks.clone())
             .run()
             .await
             .unwrap();
@@ -1838,7 +1780,7 @@ async fn an_abandoned_predict_at_route_end_sends_no_evict() {
     let mut spec = one_episode_spec();
     spec.limits.service_close_timeout = Duration::from_millis(50);
     let cancellation = tokio_util::sync::CancellationToken::new();
-    let run = RuntimeDriver::new(spec, env, model.clone(), hooks.clone())
+    let run = new_driver(spec, env, model.clone(), hooks.clone())
         .with_prefetch(1)
         .run_with_cancellation(cancellation.clone());
     let cancel = async {
@@ -1872,44 +1814,6 @@ async fn an_abandoned_predict_at_route_end_sends_no_evict() {
 }
 
 #[tokio::test]
-async fn a_gated_lane_predict_never_holds_a_sibling_lane() {
-    // Two lanes on one endpoint, two-step episodes, a budget of four. The
-    // first predict to arrive is held at a gate; the sibling lane must keep
-    // stepping and predicting behind it rather than wait at a grouped
-    // barrier, and the run still scores every budgeted slot once the gate
-    // opens.
-    let (open, gate) = oneshot::channel();
-    let (arrivals, mut arrived) = mpsc::unbounded();
-    let model = TestModel {
-        gate: Some(gate.shared()),
-        arrivals: Some(arrivals),
-        ..TestModel::default()
-    };
-    let env = LaneTestEnv::new(vec![(2, Duration::ZERO), (2, Duration::ZERO)]);
-    let run = RuntimeDriver::new(
-        lane_spec(2, 4, (100..106).collect()),
-        env,
-        model,
-        Arc::new(RecordingHooks::default()),
-    )
-    .run();
-    let sibling = async {
-        // One predict is gated; the sibling lane lands two more (its next
-        // step's, then its next episode's) while it is held.
-        tokio::time::timeout(Duration::from_secs(5), async {
-            for _ in 0..3 {
-                arrived.next().await.expect("model dropped");
-            }
-        })
-        .await
-        .expect("the sibling lane's predicts stalled behind the gated one");
-        open.send(()).expect("gated predict dropped");
-    };
-    let (report, ()) = tokio::join!(run, sibling);
-    assert_eq!(report.unwrap().total_episodes, 4);
-}
-
-#[tokio::test]
 async fn lane_sessions_score_exactly_the_budgeted_slots_whatever_the_lane_timing() {
     // Three lanes: a 2-step lane, a slow 5-step lane, and a 1-step sprinter.
     // Budget 7 episodes with 10 explicit seeds. The sprinter takes most slots
@@ -1924,7 +1828,7 @@ async fn lane_sessions_score_exactly_the_budgeted_slots_whatever_the_lane_timing
         (1, Duration::ZERO),
     ]);
     let model = TestModel::default();
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         lane_spec(3, 7, (100..110).collect()),
         env.clone(),
         model.clone(),
@@ -1979,7 +1883,7 @@ async fn lane_sessions_idle_surplus_lanes_when_the_budget_is_smaller() {
     // two never reset (their first slot claim is already past the budget).
     let env = LaneTestEnv::new(vec![(1, Duration::ZERO); 4]);
     let hooks = Arc::new(RecordingHooks::default());
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         lane_spec(4, 2, Vec::new()),
         env.clone(),
         TestModel::default(),
@@ -2015,26 +1919,23 @@ async fn lane_sessions_idle_surplus_lanes_when_the_budget_is_smaller() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_runtime_truncated_episode_is_not_double_counted_when_the_env_echoes_it() {
-    // max_episode_steps=4 over 3 episodes on an env that never terminates. The
-    // driver truncates and resets mid-episode, so the env buffers each
-    // interrupted episode and reports it one step into the NEXT episode. Trusting
-    // that echo counted every episode twice, evicted the live episode's adapter
-    // state, and reset the fresh episode after a single step -- so the run
-    // degenerated into 1-step episodes.
-    let env = EchoingEnv::default();
+async fn a_runtime_truncated_episode_counts_once() {
+    // max_episode_steps=4 over 3 episodes on an env that never terminates: the
+    // driver truncates and resets mid-episode, and each truncation completes
+    // its episode exactly once, after exactly the cap.
+    let env = EndlessEnv::default();
     let hooks = Arc::new(RecordingHooks::default());
     let spec = RuntimeSessionSpec {
         max_episodes: Some(3),
         max_episode_steps: Some(4),
         ..one_episode_spec()
     };
-    let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+    let report = new_driver(spec, env.clone(), TestModel::default(), hooks.clone())
         .run()
         .await
         .unwrap();
 
-    let state = env.inner.lock().expect("echoing env lock poisoned");
+    let state = env.inner.lock().expect("endless env lock poisoned");
     assert_eq!(state.steps, 12, "3 episodes of exactly max_episode_steps=4");
     assert_eq!(
         state.resets, 3,
@@ -2106,18 +2007,16 @@ struct NeverSucceedsEnv;
 
 #[async_trait]
 impl RuntimeEnv for NeverSucceedsEnv {
-    async fn reset(&mut self, _request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+    async fn reset(&mut self, _request: EnvResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
         Ok(RuntimeEnvReset {
-            response: ResetResponse {
-                observation: Some(leaves_value(payload([0]))),
-                infos: None,
-            },
+            observation: vec![payload([0])],
+            infos: None,
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })
     }
 
-    async fn step(&mut self, _request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+    async fn step(&mut self, _request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
         let infos = rlmesh_proto::spaces::v1::MetaMap {
             entries: [(
                 "is_success".to_string(),
@@ -2128,15 +2027,11 @@ impl RuntimeEnv for NeverSucceedsEnv {
             .into(),
         };
         Ok(RuntimeEnvStep {
-            response: StepResponse {
-                observation: Some(leaves_value(payload([0]))),
-                rewards: vec![1.0],
-                terminated_mask: vec![0],
-                truncated_mask: vec![0],
-                infos: Some(infos),
-                completed_episodes: Vec::new(),
-                env_indices: vec![],
-            },
+            observation: vec![payload([0])],
+            rewards: vec![1.0],
+            terminated: vec![false],
+            truncated: vec![false],
+            infos: Some(infos),
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })
@@ -2155,7 +2050,7 @@ async fn a_runtime_capped_episode_keeps_the_last_step_success() {
         max_episode_steps: Some(1),
         ..one_episode_spec()
     };
-    let report = RuntimeDriver::new(
+    let report = new_driver(
         spec,
         NeverSucceedsEnv,
         TestModel::default(),
@@ -2204,7 +2099,7 @@ impl NextStepLaneEnv {
 
 #[async_trait]
 impl RuntimeEnv for NextStepLaneEnv {
-    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+    async fn reset(&mut self, request: EnvResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
         assert_eq!(request.env_indices.len(), 1, "lane resets name one lane");
         let lane = request.env_indices[0] as usize;
         let mut state = self.inner.lock().expect("lane env lock poisoned");
@@ -2213,16 +2108,14 @@ impl RuntimeEnv for NextStepLaneEnv {
         state.pending_autoreset[lane] = false;
         state.ids[lane] = request.episode_ids.first().cloned().unwrap_or_default();
         Ok(RuntimeEnvReset {
-            response: ResetResponse {
-                observation: Some(leaves_value(payload([0]))),
-                infos: None,
-            },
+            observation: vec![payload([0])],
+            infos: None,
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })
     }
 
-    async fn step(&mut self, request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+    async fn step(&mut self, request: EnvStepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
         assert_eq!(request.env_indices.len(), 1, "lane steps name one lane");
         let lane = request.env_indices[0] as usize;
         let mut state = self.inner.lock().expect("lane env lock poisoned");
@@ -2233,43 +2126,24 @@ impl RuntimeEnv for NextStepLaneEnv {
             state.step[lane] = 0;
             state.ids[lane] = request.episode_ids.first().cloned().unwrap_or_default();
             return Ok(RuntimeEnvStep {
-                response: StepResponse {
-                    observation: Some(leaves_value(payload([0]))),
-                    rewards: vec![0.0],
-                    terminated_mask: vec![0],
-                    truncated_mask: vec![0],
-                    infos: None,
-                    completed_episodes: Vec::new(),
-                    env_indices: vec![lane as u32],
-                },
+                observation: vec![payload([0])],
+                rewards: vec![0.0],
+                terminated: vec![false],
+                truncated: vec![false],
+                infos: None,
                 endpoint_total_ns: None,
                 phases: EndpointPhases::default(),
             });
         }
         state.step[lane] += 1;
         let done = state.step[lane] >= self.length;
-        let completed_episodes = done
-            .then(|| EpisodeMetadata {
-                episode_id: state.ids[lane].clone(),
-                env_index: lane as u32,
-                step_count: state.step[lane] as i64,
-                cumulative_reward: state.step[lane] as f64,
-                terminated: true,
-                ..Default::default()
-            })
-            .into_iter()
-            .collect();
         state.pending_autoreset[lane] = done;
         Ok(RuntimeEnvStep {
-            response: StepResponse {
-                observation: Some(leaves_value(payload([0]))),
-                rewards: vec![1.0],
-                terminated_mask: vec![u8::from(done)],
-                truncated_mask: vec![0],
-                infos: None,
-                completed_episodes,
-                env_indices: vec![lane as u32],
-            },
+            observation: vec![payload([0])],
+            rewards: vec![1.0],
+            terminated: vec![done],
+            truncated: vec![false],
+            infos: None,
             endpoint_total_ns: None,
             phases: EndpointPhases::default(),
         })
@@ -2295,7 +2169,7 @@ async fn a_next_step_lane_session_stops_at_the_episode_budget() {
     };
     let report = tokio::time::timeout(
         Duration::from_secs(10),
-        RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone()).run(),
+        new_driver(spec, env.clone(), TestModel::default(), hooks.clone()).run(),
     )
     .await
     .expect("a lane session under NEXT_STEP must stop at its episode budget")
@@ -2343,7 +2217,7 @@ async fn a_leftover_chunk_frame_never_crosses_an_episode_boundary() {
     let mut spec = one_episode_spec();
     spec.max_episodes = Some(3);
 
-    let report = RuntimeDriver::new(spec, env, model.clone(), hooks)
+    let report = new_driver(spec, env, model.clone(), hooks)
         .run()
         .await
         .unwrap();
@@ -2367,7 +2241,7 @@ async fn a_leftover_chunk_frame_never_crosses_a_next_step_autoreset() {
     };
     let hooks = Arc::new(RecordingHooks::default());
 
-    let report = RuntimeDriver::new(vector_spec(1, 3), env, model.clone(), hooks)
+    let report = new_driver(vector_spec(1, 3), env, model.clone(), hooks)
         .run()
         .await
         .unwrap();
@@ -2386,7 +2260,7 @@ async fn the_driver_sends_the_shared_reset_options_encoding_on_the_wire() {
     let mut spec = trial_spec(2, &["trial_index"]);
     spec.trial_index_base = Some(41);
 
-    RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks)
+    new_driver(spec, env.clone(), TestModel::default(), hooks)
         .run()
         .await
         .unwrap();
@@ -2441,8 +2315,8 @@ fn a_multi_lane_reset_sends_the_trial_ordinals_as_a_list_in_lane_order() {
 
 #[tokio::test]
 async fn an_evict_never_waits_behind_a_parked_lane_predict() {
-    // Lane episodes end while another lane's predict is in flight. A local
-    // model serializes evict behind predict on one handler lock, and a predict
+    // Lane episodes end while another lane's predict is in flight. A model
+    // serializes evict behind predict on its one lock, and a predict
     // parked in the driver's pending set is not polled while the driver awaits
     // the evict: flushing evictions then would wait out the predict timeout.
     let env = LaneTestEnv::new(vec![
@@ -2452,12 +2326,11 @@ async fn an_evict_never_waits_behind_a_parked_lane_predict() {
     ]);
     let model = TestModel {
         predict_delay: Some(Duration::from_millis(10)),
-        handler_lock: Some(Arc::new(tokio::sync::Mutex::new(()))),
         ..Default::default()
     };
     let report = tokio::time::timeout(
         Duration::from_secs(20),
-        RuntimeDriver::new(
+        new_driver(
             lane_spec(3, 9, (100..109).collect()),
             env,
             model,

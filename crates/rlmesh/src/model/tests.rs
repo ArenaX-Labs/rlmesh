@@ -1155,10 +1155,9 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
     // env without re-implementing the take_last_endpoint_total_ns choreography.
     let mut adapter = super::local::EnvClientRuntimeEnv::new(client);
     let reset = adapter
-        .reset(rlmesh_proto::env::v1::ResetRequest {
+        .reset(crate::run::runtime::EnvResetRequest {
             seeds: vec![7],
             options: None,
-            timeout_ms: 0,
             env_indices: vec![],
             episode_ids: vec![],
         })
@@ -2945,67 +2944,6 @@ async fn remote_model_offers_history_only_to_a_model_that_advertises_it() {
         vec![0, 1],
         "the replayed step rides the next predict as a history row"
     );
-}
-
-/// A served run learns both legs' ceilings at their handshakes, and against this
-/// build's own servers they are exactly this build's: its edition, every wire-v1
-/// dtype, the capabilities it advertises, and the wire message cap.
-#[tokio::test]
-async fn served_legs_learn_this_builds_ceilings() {
-    use crate::run::runtime::PeerCeiling;
-    use rlmesh_proto::capabilities::{
-        ENV_SUBSET_STEP, MODEL_CONCURRENT_PREDICT_V1, MODEL_OBSERVATION_HISTORY_V1,
-    };
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let env_address = format!("tcp://{}", listener.local_addr().unwrap());
-    let env_server = tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(rlmesh_grpc::env::env_service(
-                crate::binding::env::WireLaneAdapter::new(vec![SmokeEnv::new()]).unwrap(),
-            ))
-            .serve_with_incoming(TcpListenerStream::new(listener))
-            .await
-            .unwrap()
-    });
-    let mut env = rlmesh_grpc::EnvClient::connect(&env_address).await.unwrap();
-    let env_ceiling = super::local::env_ceiling(&env.handshake().await.unwrap());
-
-    let bound = ModelWorker::new(SmokeModel {
-        predicts: Arc::new(AtomicUsize::new(0)),
-        closes: Arc::new(AtomicUsize::new(0)),
-    })
-    .bind_async(ServeModelOptions::new(BindAddress::Tcp {
-        host: "127.0.0.1".to_string(),
-        port: 0,
-    }))
-    .await
-    .unwrap();
-    let (port, model_server) = spawn_bound_server(bound);
-    let model = crate::binding::model::ModelClient::connect(
-        &format!("tcp://127.0.0.1:{port}"),
-        SmokeEnv::new().env_contract,
-    )
-    .await
-    .unwrap();
-    let model_ceiling = model.ceiling().clone();
-    drop(model);
-    model_server.abort();
-    env_server.abort();
-
-    let this_build = |capabilities: &[&str]| {
-        PeerCeiling::wire_v1(
-            rlmesh_proto::Edition::current(),
-            rlmesh_proto::capability_map(capabilities),
-            rlmesh_grpc::MAX_MESSAGE_SIZE,
-        )
-    };
-    assert_eq!(env_ceiling, this_build(&[ENV_SUBSET_STEP]));
-    assert_eq!(
-        model_ceiling,
-        this_build(&[MODEL_CONCURRENT_PREDICT_V1, MODEL_OBSERVATION_HISTORY_V1])
-    );
-    assert_eq!(env_ceiling.dtypes.len(), spaces::DType::ALL.len());
 }
 
 struct DeadlineRoute {

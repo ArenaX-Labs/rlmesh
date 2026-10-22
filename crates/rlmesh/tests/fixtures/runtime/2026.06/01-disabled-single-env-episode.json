@@ -89,6 +89,10 @@
   "step_infos": [
     [
       [
+        "final_info",
+        "<non-scalar>"
+      ],
+      [
         "phase",
         "step"
       ]

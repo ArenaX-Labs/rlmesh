@@ -262,10 +262,11 @@ pub trait ModelHandler: Send {
     }
 }
 
-/// A boxed handler is a handler: what a binding holds when its model is
-/// local or served.
+/// Forwards every call to the handler behind the pointer.
+macro_rules! forward_handler {
+    ($($ty:ty),*) => {$(
 #[async_trait]
-impl ModelHandler for Box<dyn ModelHandler> {
+impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
         (**self).predict(observation).await
     }
@@ -301,3 +302,9 @@ impl ModelHandler for Box<dyn ModelHandler> {
         (**self).on_close().await
     }
 }
+    )*};
+}
+
+// A boxed handler is what a binding holds when its model is local or served;
+// a borrowed one is what a run drives.
+forward_handler!(Box<H>, &mut H);

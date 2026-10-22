@@ -165,9 +165,15 @@ impl Listener {
             {
                 crate::lockstep::check(contract.to_wire()?)
                     .map_err(|err| Error::invalid_argument(err.to_string()))?;
-                let binding = runtime
-                    .block_on(crate::lockstep::bind(address))
-                    .map_err(|err| Error::invalid_argument(err.to_string()))?;
+                // Off the caller's thread: a server built inside an async
+                // context (an in-process run's env) cannot block on it.
+                let binding = std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| runtime.block_on(crate::lockstep::bind(address)))
+                        .join()
+                })
+                .map_err(|_| Error::Internal("binding the lockstep env panicked".into()))?
+                .map_err(|err| Error::invalid_argument(err.to_string()))?;
                 let bound = binding.address();
                 return Ok((Self::Lockstep(Box::new(binding)), bound));
             }
@@ -453,6 +459,10 @@ impl EnvServer {
         edition: Option<String>,
     ) -> Result<EnvServer> {
         let options = EnvServerOptions {
+            // In-process on the v2 lockstep path when the build has it: the
+            // run's driver then calls the env directly.
+            #[cfg(feature = "lockstep")]
+            address: Some(":0/env".into()),
             options: Some(ServeOptions {
                 workflow_edition: edition,
                 drain_timeout: Some(Duration::from_millis(100)),

@@ -68,13 +68,18 @@ fn predict_request_includes_seed_metadata_aligned_to_episode_ids() {
     state.start_episodes_at(&[0, 1], episode_ids.clone(), false, &[0, 1]);
     state.note_episode_seeds(&episode_ids, &[7]);
 
-    let request = state.predict_request_at(&[0, 1], None, RequestPhase::ResetObservation);
+    let request = state.predict_request_at(
+        &[0, 1],
+        None,
+        RequestPhase::ResetObservation,
+        &Default::default(),
+    );
 
-    assert_eq!(request.episode_info.len(), 2);
-    assert_eq!(request.episode_info[0].episode_id, "env-ep-a");
-    assert_eq!(request.episode_info[0].seed, Some(7));
-    assert_eq!(request.episode_info[1].episode_id, "env-ep-b");
-    assert_eq!(request.episode_info[1].seed, None);
+    assert_eq!(request.route.episodes.len(), 2);
+    assert_eq!(request.route.episodes[0].episode_id, "env-ep-a");
+    assert_eq!(request.route.episodes[0].seed, Some(7));
+    assert_eq!(request.route.episodes[1].episode_id, "env-ep-b");
+    assert_eq!(request.route.episodes[1].seed, None);
 }
 
 #[test]
@@ -86,8 +91,13 @@ fn episode_seed_survives_completion_until_the_lane_rolls() {
     // Completion emit reads the seed non-destructively: the same iteration
     // still builds the terminal predict for this episode id.
     state.complete_episode("ep-a");
-    let request = state.predict_request_at(&[0], None, RequestPhase::StepObservation);
-    assert_eq!(request.episode_info[0].seed, Some(7));
+    let request = state.predict_request_at(
+        &[0],
+        None,
+        RequestPhase::StepObservation,
+        &Default::default(),
+    );
+    assert_eq!(request.route.episodes[0].seed, Some(7));
 
     // The lane rolling to a fresh id is what retires the seed.
     state.observe_episode_ids_at(&[0], vec!["ep-b".to_string()], &[Some(1)]);
@@ -143,7 +153,5 @@ fn test_session_spec() -> RuntimeSessionSpec {
         close_env_on_end: true,
         subset_step: false,
         limits: RuntimeLimits::default(),
-        env_ceiling: None,
-        model_ceiling: None,
     }
 }

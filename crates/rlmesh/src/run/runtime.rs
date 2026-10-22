@@ -15,19 +15,16 @@ mod episodes;
 mod state;
 
 pub use driver::{
-    EagerScheduler, PredictScheduler, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
-    RuntimeError, RuntimeModel, RuntimeModelPrediction,
+    EagerScheduler, EnvResetRequest, EnvStepRequest, PredictScheduler, RuntimeDriver, RuntimeEnv,
+    RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
 };
 pub use hooks::{
-    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    Leg, LogEvent, LogLevel, ModelConnectedEvent, NoopRuntimeHooks, ObservationEmittedEvent,
-    PayloadFacts, RefusingRelayPolicy, RelayAdvisoryEvent, RelayDecision, RelayPolicy,
-    RuntimeEnvContext, RuntimeHooks, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
-    StepCompletedEvent, TelemetrySnapshotEvent,
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError, LogEvent, LogLevel,
+    NoopRuntimeHooks, ObservationEmittedEvent, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
+    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
 pub use rlmesh_proto::EndpointPhases;
-pub use rlmesh_spaces::{Advisory, AdvisorySeverity, DType};
 pub use spec::{
-    ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeLimits, RuntimeReport, RuntimeSessionSpec,
-    TRIAL_INDEX_OPTION, declares_reset_option, reset_options_for,
+    ENV_RESET_OPTIONS_KEY, RuntimeLimits, RuntimeReport, RuntimeSessionSpec, TRIAL_INDEX_OPTION,
+    declares_reset_option, reset_options_for,
 };

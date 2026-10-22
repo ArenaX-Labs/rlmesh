@@ -1,6 +1,5 @@
 //! The runtime session spec, its limits, and the report a finished run returns.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -8,7 +7,6 @@ use rlmesh_proto::core::v1::{AutoresetMode, EnvContract};
 use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
 use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue, SpaceSpec};
 use rlmesh_proto::{Edition, EditionDefaults};
-use rlmesh_spaces::{Advisory, DType};
 use serde::{Deserialize, Serialize};
 
 /// Empty fallback returned by the internal `*_validated` accessors only on the
@@ -94,52 +92,6 @@ pub fn reset_options_for(
     })
 }
 
-/// What one served peer can decode, learned at its handshake. The driver checks
-/// every payload it relays against the target leg's ceiling through the
-/// session's [`RelayPolicy`](crate::run::runtime::RelayPolicy), not against the session
-/// edition alone.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerCeiling {
-    /// The highest edition this peer and this build both implement, which may
-    /// exceed the session edition
-    /// ([`workflow_edition`](RuntimeSessionSpec::workflow_edition)).
-    pub edition: Edition,
-    pub dtypes: HashSet<DType>,
-    /// What the peer advertised; query with [`rlmesh_proto::has_capability`].
-    pub capabilities: HashMap<String, String>,
-    /// The largest message the peer accepts, in bytes.
-    pub max_message_size: usize,
-}
-
-impl PeerCeiling {
-    /// The highest edition this build retains among a peer's advertised
-    /// `supported` names, or `None` when they share none.
-    pub fn highest_shared_edition(supported: &[String]) -> Option<Edition> {
-        supported
-            .iter()
-            .filter(|name| rlmesh_proto::parse_retained_edition(name).is_ok())
-            .max_by(|a, b| {
-                rlmesh_proto::edition_sort_key(a).cmp(&rlmesh_proto::edition_sort_key(b))
-            })
-            .and_then(|name| rlmesh_proto::parse_retained_edition(name).ok())
-    }
-
-    /// A wire-v1 peer's ceiling. Wire-v1 advertises no dtype set, so a peer
-    /// decodes every dtype the wire defines.
-    pub fn wire_v1(
-        edition: Edition,
-        capabilities: HashMap<String, String>,
-        max_message_size: usize,
-    ) -> Self {
-        Self {
-            edition,
-            dtypes: DType::ALL.into_iter().collect(),
-            capabilities,
-            max_message_size,
-        }
-    }
-}
-
 /// Everything one route needs to run: its identity, the negotiated env
 /// contract, and the per-op limits. [`validate`](Self::validate) gates a spec
 /// before the driver runs it.
@@ -201,10 +153,6 @@ pub struct RuntimeSessionSpec {
     /// in lockstep, and episode seeds/indices come from a route-global slot
     /// counter so the scored set is fixed by the budget alone.
     pub subset_step: bool,
-    /// The served env's ceiling; `None` when the env runs in-process.
-    pub env_ceiling: Option<PeerCeiling>,
-    /// The served model's ceiling; `None` when the model runs in-process.
-    pub model_ceiling: Option<PeerCeiling>,
 }
 
 impl RuntimeSessionSpec {
@@ -443,8 +391,6 @@ pub struct RuntimeReport {
     /// Session-total telemetry aggregate (per-op latency/percentiles/bytes) —
     /// the durable pull counterpart to the live `RuntimeHooks::on_telemetry` push.
     pub telemetry: crate::run::runtime::telemetry::Snapshot,
-    /// Each distinct advisory the relay policy raised, in first-raised order.
-    pub advisories: Vec<Advisory>,
 }
 
 /// Per-op timeouts and the telemetry window for one session. Serialized with
@@ -642,8 +588,6 @@ mod tests {
             close_env_on_end: true,
             subset_step: false,
             limits: RuntimeLimits::default(),
-            env_ceiling: None,
-            model_ceiling: None,
         }
     }
 
@@ -682,27 +626,6 @@ mod tests {
         // re-exported from this constant) by
         // `python/rlmesh/tests/unit/test_reset_options.py`.
         assert_eq!(super::ENV_RESET_OPTIONS_KEY, "rlmesh.env.v1.reset_options");
-    }
-
-    #[test]
-    fn a_ceiling_edition_is_the_highest_one_both_sides_implement() {
-        let names = |names: &[&str]| {
-            names
-                .iter()
-                .map(|name| name.to_string())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            super::PeerCeiling::highest_shared_edition(&names(&[
-                "2099.01",
-                rlmesh_proto::CURRENT_WORKFLOW_EDITION,
-            ])),
-            Some(rlmesh_proto::Edition::current())
-        );
-        assert_eq!(
-            super::PeerCeiling::highest_shared_edition(&names(&["2099.01"])),
-            None
-        );
     }
 
     /// The spec carries a typed edition, so a made-up name is refused one step
