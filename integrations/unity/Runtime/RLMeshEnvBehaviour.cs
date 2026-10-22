@@ -8,7 +8,7 @@ namespace RLMesh.Unity
 {
     public abstract class RLMeshEnvBehaviour : MonoBehaviour, IEnv
     {
-        public string Address = "tcp://127.0.0.1:5555";
+        public string Address = "127.0.0.1:7447/env";
         public string EnvId = "Unity-v0";
         private MainThreadDispatcher dispatcher;
         private EnvServer server;

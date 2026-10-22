@@ -15,7 +15,7 @@ namespace RLMesh.Unity.Verification
             try
             {
                 var env = host.AddComponent<RLMeshReachTargetBehaviour>();
-                env.Address = "tcp://127.0.0.1:0";
+                env.Address = ":0/env";
                 yield return null;
                 Assert.IsNotEmpty(env.GetServedAddress());
                 IEnv authored = env;

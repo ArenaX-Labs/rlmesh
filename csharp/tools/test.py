@@ -257,6 +257,11 @@ def main():
         ],
         env=env,
     )
+    native_gate(
+        env,
+        ROOT / "integrations/unity/Tests~/DotNet/Gate/Gate.csproj",
+        "RLMesh.Unity.Gate.dll",
+    )
     unity_scratch = pathlib.Path.home() / ".cache/rlmesh-unity"
     unity_scratch.mkdir(parents=True, exist_ok=True)
     run(

@@ -4,13 +4,7 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-import rlmesh._client._remote_base as remote_base
 import rlmesh.numpy
-
-# TODO: dial a session address once the C API serves envs on sessions (the
-# parity step). Until then the host is a v1 endpoint, which Python 0.2
-# refuses; this test client alone lifts the refusal to keep checking the wire.
-remote_base.refuse_v1_address = lambda where, address: None
 
 
 def drive(address: str, episodes: int, *, counter: bool = False) -> None:
