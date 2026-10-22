@@ -74,6 +74,15 @@ pub enum RuntimeError {
 }
 
 impl RuntimeError {
+    /// This error stamped with the runtime step it failed at: an env adapter
+    /// cannot know it, the driver does.
+    pub(crate) fn at_step(mut self, at: i64) -> Self {
+        if let Self::EnvRpc { step, .. } = &mut self {
+            *step = at;
+        }
+        self
+    }
+
     pub fn operation_timeout(
         route_id: impl Into<String>,
         component_id: impl Into<String>,

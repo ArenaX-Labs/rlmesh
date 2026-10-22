@@ -1018,7 +1018,7 @@ where
             env_ops.spawn(async move {
                 let started = Instant::now();
                 let result = match tokio::time::timeout(timeout, env.step(request)).await {
-                    Ok(result) => result,
+                    Ok(result) => result.map_err(|err| err.at_step(action_step)),
                     Err(_) => Err(timeout_error),
                 };
                 EnvOutcome::Step {

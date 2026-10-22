@@ -405,6 +405,17 @@ def test_run_max_episode_steps_truncates_via_the_runtime() -> None:
     assert len(env.seen_seeds) == 2
 
 
+def test_an_env_failure_names_the_step_it_happened_at() -> None:
+    class FailsOnFourthStep(CountEnv):
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            if self._t == 3:
+                raise ValueError("scripted step failure")
+            return super().step(action)
+
+    with pytest.raises(Exception, match=r"env\.step failed at runtime step 4:"):
+        _model().run(FailsOnFourthStep(episode_len=0), episodes=1)
+
+
 def test_run_on_an_open_handle_explains_the_lease_conflict() -> None:
     """An open RemoteEnv holds its env's lease: run() refuses the handle,
     naming the address form, and a run on the address points at the holder."""
