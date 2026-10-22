@@ -499,17 +499,6 @@ static void recorder_and_runs(const char* root) {
              RLMESH_ERR_INVALID_ARGUMENT &&
          !result);
   view.fps = 30;
-  RLMeshSessionOptions so = RLMESH_SESSION_OPTIONS_INIT;
-  so.view = &view;
-  RLMeshSession* session = NULL;
-  OK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &so, &session));
-  view.fps = 0; /* session copied its View */
-  RLMeshSessionRunOptions sro = RLMESH_SESSION_RUN_OPTIONS_INIT;
-  sro.has_episodes = true;
-  sro.episodes = 0;
-  OK(rlmesh_session_run(session, &sro, &result));
-  rlmesh_run_result_free(result);
-  rlmesh_session_free(session);
   ro.view = NULL;
   OK(rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &ro, &result));
   RLMeshRecorderOptions options = RLMESH_RECORDER_OPTIONS_INIT;

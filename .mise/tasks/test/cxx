@@ -116,7 +116,7 @@ for standard in 11 17; do
     crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$tmp/c_env_$standard"
   "$tmp/c_env_$standard" | python scripts/check-native-runtime.py c "$standard"
 done
-echo "==> C ABI 5 minima, unknown tails and out-struct boundaries"
+echo "==> C ABI minima, unknown tails and out-struct boundaries"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_abi5.c "${link[@]}" -o "$tmp/c_abi5"
 "$tmp/c_abi5"
@@ -128,11 +128,11 @@ echo "==> C DLPack import/export ownership, source lifetimes and sized options"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_dlpack.c "${link[@]}" -o "$tmp/c_dlpack"
 "$tmp/c_dlpack"
-echo "==> C ABI 5 env authoring, server lifecycle and sized inputs"
+echo "==> C ABI env authoring, server lifecycle and sized inputs"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_env_api.c "${link[@]}" -o "$tmp/c_env_api"
 "$tmp/c_env_api"
-echo "==> C ABI 5 factories, discriminants, variants and cancellation"
+echo "==> C ABI factories, discriminants, variants and cancellation"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_factory.c "${link[@]}" -o "$tmp/c_factory"
 "$tmp/c_factory"
@@ -143,19 +143,19 @@ $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
 # Reuse the caller's prepared client and protocol cohort. Syncing here can
 # replace an isolated non-editable client with the checkout's editable build.
 uv run --no-sync python crates/rlmesh-capi/examples/c_serving.py "$tmp/c_serving"
-echo "==> C ABI 5 typed adapters, transforms, ownership and model integration"
+echo "==> C ABI typed adapters, transforms, ownership and model integration"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_adapters.c "${link[@]}" -o "$target/c_adapters_smoke"
 "$target/c_adapters_smoke"
-echo "==> C ABI 5 Model load, declarations, cloning and lifecycle"
+echo "==> C ABI Model load, declarations, cloning and lifecycle"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_policy.c "${link[@]}" -o "$tmp/c_policy"
 "$tmp/c_policy"
-echo "==> C ABI 5 run targets, hooks, contexts, budgets and results"
+echo "==> C ABI run targets, bindings, hooks, contexts, budgets and results"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_run.c "${link[@]}" -o "$tmp/c_run"
 "$tmp/c_run"
-echo "==> C ABI 5 adapter readers, instructions, contexts and frame-source lifetimes"
+echo "==> C ABI adapter readers, instructions, contexts and frame-source lifetimes"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_reads.c "${link[@]}" -o "$tmp/c_reads"
 "$tmp/c_reads"
@@ -163,11 +163,11 @@ echo "==> C View/Recorder parsing, snapshots, capture ownership, AV1 and bundle 
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_recorder.c "${link[@]}" -o "$tmp/c_recorder"
 "$tmp/c_recorder" "$tmp"
-echo "==> C ABI 5 remote clients, session borrows and vector buffer checks"
+echo "==> C ABI remote clients, served models by address and vector buffer checks"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_remote.c "${link[@]}" -o "$tmp/c_remote"
 "$tmp/c_remote"
-echo "==> C ABI 5 Describe types, instances, branches and server snapshots"
+echo "==> C ABI Describe types, instances, branches and server snapshots"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_describe.c "${link[@]}" -o "$tmp/c_describe"
 "$tmp/c_describe"

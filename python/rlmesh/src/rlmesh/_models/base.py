@@ -1718,7 +1718,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 hooks=relay,
             )
         except (RuntimeError, ConnectionError) as error:
-            if "LeaseBusy" in str(error):
+            if "held by another driver" in str(error):
                 raise RuntimeError(
                     "the target env already has an active session: another "
                     "driver (an open RemoteEnv / RemoteVectorEnv, or another "

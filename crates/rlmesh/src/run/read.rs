@@ -264,9 +264,6 @@ pub(crate) fn dispatch<R>(
         None => DISPATCH.set(Dispatch { id, render: None }, call),
     }
 }
-pub(crate) fn in_dispatch(id: u64) -> bool {
-    DISPATCH.is_set() && DISPATCH.with(|s| s.id == id)
-}
 pub(crate) fn has_local_render(id: u64) -> bool {
     DISPATCH.is_set() && DISPATCH.with(|s| s.id == id && s.render.is_some())
 }

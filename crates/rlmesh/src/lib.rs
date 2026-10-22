@@ -17,8 +17,8 @@
 //!
 //! - **Run a model against an env.** [`Model::run`] (or [`run`]) drives
 //!   episodes on the native loop and returns a [`RunResult`]; [`RunHooks`]
-//!   observe it. [`Model::session`] (or [`session`]) returns a [`Session`]
-//!   to drive by hand.
+//!   observe it. `Model::bind` (with the `lockstep` feature) binds it to
+//!   one env to step by hand.
 //!
 //! Use [`RemoteEnv`] when you want to step an environment server directly.
 //!
@@ -190,11 +190,12 @@ pub use recorder::{
     RecorderExportOptions, RecorderOptions, RecorderToDictOptions, WorkloadRecord,
 };
 pub use run::{
-    EnvTarget, EpisodeResult, FrameSources, ModelTarget, RANDOM_SAMPLE, RandomSample, ReadFn,
-    ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult, Session,
-    SessionOptions, SessionRunOptions, StepEvent, TelemetryRow, run, run_async, session,
-    session_async,
+    BindOptions, EnvTarget, EpisodeResult, FrameSources, ModelTarget, RANDOM_SAMPLE, RandomSample,
+    ReadFn, ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult, StepEvent,
+    TelemetryRow, run, run_async,
 };
+#[cfg(feature = "lockstep")]
+pub use run::{Binding, bind};
 pub use serve_options::ServeOptions;
 pub use specs::EnvContract;
 pub use tensor::{Tensor, ToDlpackOptions};

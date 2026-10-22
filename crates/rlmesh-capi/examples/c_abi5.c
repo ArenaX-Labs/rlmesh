@@ -63,7 +63,7 @@ int main(void) {
   int64_t number;
   CHECK(rlmesh_value_as_int(scalar, &number) == RLMESH_OK && number == 42);
   rlmesh_value_free(scalar);
-  CHECK(rlmesh_abi_check() && RLMESH_ABI_VERSION == 5);
+  CHECK(rlmesh_abi_check() && RLMESH_ABI_VERSION == 6);
   RLMeshModelVtable zero = {0};
   RLMeshModel* model = NULL;
   CHECK(rlmesh_model_new(&zero, NULL, NULL, &model) == RLMESH_ERR_INVALID_ARGUMENT &&

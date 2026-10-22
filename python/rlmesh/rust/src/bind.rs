@@ -1,16 +1,12 @@
-//! `Model.bind(target)`: a model bound to one env, stepped by hand; and the
-//! random baseline (`RANDOM_SAMPLE`) as a model a run or a binding drives.
+//! `Model.bind(target)`: a model bound to one env, stepped by hand.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh::binding::model::{Binding, ModelHandler, ModelObservation};
-use rlmesh_spaces::SpaceValue;
+use rlmesh::binding::model::{Binding, ModelHandler};
 
 use crate::model::{LastPyError, model_runtime};
 use crate::spaces::{
@@ -18,54 +14,6 @@ use crate::spaces::{
     py_any_to_space_value_with_backend, space_value_to_py_neutral,
 };
 use crate::types::to_py_err;
-
-/// The random baseline: samples the env's action space, reproducibly per
-/// predict of a seeded episode.
-#[derive(Default)]
-pub(crate) struct RandomSample {
-    /// Each live episode's predicts so far.
-    predicts: HashMap<String, u64>,
-}
-
-#[async_trait]
-impl ModelHandler for RandomSample {
-    async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
-        let space = observation
-            .env_contract
-            .as_ref()
-            .and_then(|contract| contract.action_space.clone())
-            .ok_or_else(|| rlmesh::Error::Internal("the env has no action space".into()))?;
-        observation
-            .route
-            .episodes
-            .iter()
-            .map(|episode| {
-                let index = self.predicts.entry(episode.episode_id.clone()).or_default();
-                let seed = match episode.seed {
-                    Some(seed) => rlmesh::predict_seed(seed, *index) as u64,
-                    None => uuid::Uuid::new_v4().as_u64_pair().0,
-                };
-                *index += 1;
-                rlmesh_spaces::sample_seeded(&space, seed)
-                    .map_err(|err| rlmesh::Error::Internal(err.to_string()))
-            })
-            .collect()
-    }
-
-    async fn reset_adapter(
-        &mut self,
-        _env_id: &str,
-        episode_ids: Vec<String>,
-    ) -> rlmesh::Result<()> {
-        if episode_ids.is_empty() {
-            self.predicts.clear();
-        }
-        for id in episode_ids {
-            self.predicts.remove(&id);
-        }
-        Ok(())
-    }
-}
 
 /// A model bound to one env lane. Values cross as neutral trees; the
 /// Python `Binding` bridges them for the model's framework.

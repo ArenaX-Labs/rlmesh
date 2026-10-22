@@ -139,20 +139,11 @@ pub(crate) unsafe fn options(
 }
 pub(crate) unsafe fn model<'a>(t: RLMeshModelTarget) -> Result<rlmesh::ModelTarget<'a>, CapiError> {
     match t.kind {
-        1 => Ok((&unsafe {
+        1 => Ok(unsafe {
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(t.handle.cast())
         }?
-        .model)
-            .into()),
-        2 => Ok((&unsafe {
-            t.handle
-                .cast::<crate::remote_api::RLMeshRemoteModel>()
-                .as_ref()
-        }
-        .ok_or_else(|| CapiError::invalid_arg("null remote model"))?
-        .0)
-            .into()),
+        .target()),
         3 => Ok(rlmesh::RANDOM_SAMPLE.into()),
         _ => Err(CapiError::invalid_arg(
             "invalid or unsupported model target",

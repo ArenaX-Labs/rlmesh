@@ -13,10 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <time.h>
-#include <unistd.h>
 
 #define OK(call)                                                               \
   do {                                                                         \
@@ -56,7 +52,7 @@ static void quoted(const char *text) {
     }
   putchar('"');
 }
-/* The last error's text with every `value` (a port, a socket path) masked. */
+/* The last error's text with every `value` (a port, a size) masked. */
 static char *masked_message(const char *value, const char *mask) {
   const char *text = rlmesh_last_error_message();
   size_t len = strlen(text), vlen = value ? strlen(value) : 0;
@@ -273,113 +269,75 @@ typedef struct Serving {
   RLMeshModel *model;
   const char *address;
   RLMeshExtCancelToken *cancel;
-  const char *token;
 } Serving;
 static void *serve_model(void *arg) {
   Serving *serving = (Serving *)arg;
-  RLMeshExtModelServeOptions extra = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;
-  extra.token = serving->token;
   RLMeshModelServeOptions options = RLMESH_MODEL_SERVE_OPTIONS_INIT;
   options.cancel = serving->cancel;
-  options.ext = &extra;
   (void)rlmesh_model_serve(serving->model, serving->address, &options);
   return NULL;
 }
-static void wait_for_socket(const char *path) {
-  for (int i = 0; i < 1000; ++i) {
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    REQUIRE(fd >= 0);
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path);
-    int connected = connect(fd, (struct sockaddr *)&addr, sizeof addr);
-    close(fd);
-    if (connected == 0)
-      return;
-    struct timespec pause = {0, 10000000};
-    nanosleep(&pause, NULL);
-  }
-  abort();
-}
-/* A served model reached with an api_key, over TLS, or driving a local env. */
-static void remote_auth(const char *variant, RLMeshEnv *env, RLMeshModel *model,
-                        const RLMeshEnvVtable *ev, Script *s,
-                        const RLMeshEnvAttributes *attrs) {
+/* A run refuses an https:// env endpoint (v1) before any dial. */
+static void https_env(RLMeshModel *model, const RLMeshEnvVtable *ev, Script *s,
+                      const RLMeshEnvAttributes *attrs) {
   RLMeshRunResult *result = NULL;
-  if (!strcmp(variant, "invalid_header")) {
-    RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
-    mo.address = "https://localhost:1";
-    mo.api_key = "bad\nkey";
-    RLMeshRemoteModel *remote = NULL;
-    REQUIRE(rlmesh_remote_model_new(&mo, &remote) != RLMESH_OK);
-    error_fields();
-    return;
-  }
-  if (!strcmp(variant, "https_to_plaintext") ||
-      !strcmp(variant, "local_model_https_env")) {
-    Script other = *s;
-    RLMeshEnv *plain = NULL;
-    OK(rlmesh_env_new(ev, &other, attrs, &plain));
-    RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
-    so.address = "tcp://127.0.0.1:0";
-    RLMeshEnvServer *server = NULL;
-    OK(rlmesh_env_server_new(&plain, 1, &so, &server));
-    OK(rlmesh_env_server_start(server));
-    RLMeshBytes address = {NULL, 0, 0};
-    OK(rlmesh_env_server_address(server, &address));
-    char port[16] = {0}, url[64];
-    size_t colon = address.len;
-    while (colon > 0 && ((const char *)address.data)[colon - 1] != ':')
-      --colon;
-    REQUIRE(colon > 0 && address.len - colon < sizeof port);
-    memcpy(port, (const char *)address.data + colon, address.len - colon);
-    snprintf(url, sizeof url, "https://127.0.0.1:%s", port);
-    if (!strcmp(variant, "local_model_https_env")) {
-      REQUIRE(rlmesh_model_run(model, rlmesh_address_target(url), NULL,
-                               &result) != RLMESH_OK);
-      error_fields_masked(port, "PORT");
-    } else {
-      RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
-      mo.address = url;
-      RLMeshRemoteModel *remote = NULL;
-      OK(rlmesh_remote_model_new(&mo, &remote));
-      REQUIRE(rlmesh_run(rlmesh_remote_model_target(remote),
-                         rlmesh_env_target(env), NULL, &result) != RLMESH_OK);
-      error_fields_masked(port, "PORT");
-      rlmesh_remote_model_free(remote);
-    }
-    OK(rlmesh_env_server_shutdown(server));
-    rlmesh_env_server_free(server);
-    rlmesh_bytes_free(address);
-    rlmesh_env_free(plain);
-    return;
-  }
-  char dir[] = "/tmp/rlmesh-parity-XXXXXX";
-  REQUIRE(mkdtemp(dir) != NULL);
-  char path[128], address[160];
-  snprintf(path, sizeof path, "%s/model.sock", dir);
-  snprintf(address, sizeof address, "unix://%s", path);
-  Serving serving = {model, address, NULL, NULL};
+  Script other = *s;
+  RLMeshEnv *plain = NULL;
+  OK(rlmesh_env_new(ev, &other, attrs, &plain));
+  RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
+  so.address = "tcp://127.0.0.1:0";
+  RLMeshEnvServer *server = NULL;
+  OK(rlmesh_env_server_new(&plain, 1, &so, &server));
+  OK(rlmesh_env_server_start(server));
+  RLMeshBytes address = {NULL, 0, 0};
+  OK(rlmesh_env_server_address(server, &address));
+  char port[16] = {0}, url[64];
+  size_t colon = address.len;
+  while (colon > 0 && ((const char *)address.data)[colon - 1] != ':')
+    --colon;
+  REQUIRE(colon > 0 && address.len - colon < sizeof port);
+  memcpy(port, (const char *)address.data + colon, address.len - colon);
+  snprintf(url, sizeof url, "https://127.0.0.1:%s", port);
+  REQUIRE(rlmesh_model_run(model, rlmesh_address_target(url), NULL, &result) !=
+          RLMESH_OK);
+  error_fields_masked(port, "PORT");
+  OK(rlmesh_env_server_shutdown(server));
+  rlmesh_env_server_free(server);
+  rlmesh_bytes_free(address);
+  rlmesh_env_free(plain);
+}
+/* A model served as the participant "policy" of a session this process
+ * hosts, reached by its address and driving a local env. */
+static void served_model(RLMeshEnv *env, RLMeshModel *model,
+                         const RLMeshEnvVtable *ev, Script *s,
+                         const RLMeshEnvAttributes *attrs) {
+  Script other = *s;
+  RLMeshEnv *host_env = NULL;
+  OK(rlmesh_env_new(ev, &other, attrs, &host_env));
+  RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
+  so.address = ":0/host";
+  RLMeshEnvServer *host = NULL;
+  OK(rlmesh_env_server_new(&host_env, 1, &so, &host));
+  OK(rlmesh_env_server_start(host));
+  RLMeshBytes base = {NULL, 0, 0};
+  OK(rlmesh_env_server_address(host, &base));
+  size_t slash = base.len;
+  while (slash > 0 && ((const char *)base.data)[slash - 1] != '/')
+    --slash;
+  REQUIRE(slash > 0);
+  char address[160];
+  snprintf(address, sizeof address, "%.*s/policy", (int)(slash - 1),
+           (const char *)base.data);
+  Serving serving = {model, address, NULL};
   OK(rlmesh_ext_cancel_token_new(&serving.cancel));
-  bool keyed = !strcmp(variant, "api_key_rejected") ||
-               !strcmp(variant, "api_key_accepted");
-  if (keyed)
-    serving.token = "right-key";
   pthread_t thread;
   REQUIRE(pthread_create(&thread, NULL, serve_model, &serving) == 0);
-  wait_for_socket(path);
-  RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
-  mo.address = address;
-  if (!strcmp(variant, "api_key_rejected"))
-    mo.api_key = "wrong-key";
-  else if (!strcmp(variant, "api_key_accepted"))
-    mo.api_key = "right-key";
-  RLMeshRemoteModel *remote = NULL;
-  OK(rlmesh_remote_model_new(&mo, &remote));
-  if (rlmesh_run(rlmesh_remote_model_target(remote), rlmesh_env_target(env),
-                 NULL, &result) != RLMESH_OK)
-    error_fields_masked(path, "SOCKET");
+  RLMeshModel *served = NULL;
+  OK(rlmesh_model_from_address(address, &served));
+  RLMeshRunResult *result = NULL;
+  if (rlmesh_model_run(served, rlmesh_env_target(env), NULL, &result) !=
+      RLMESH_OK)
+    error_fields();
   else {
     printf("\"episodes\":%llu,\"steps\":%llu,\"env_closes\":%d",
            (unsigned long long)rlmesh_run_result_num_episodes(result),
@@ -387,12 +345,13 @@ static void remote_auth(const char *variant, RLMeshEnv *env, RLMeshModel *model,
            s->env_closes);
     rlmesh_run_result_free(result);
   }
-  rlmesh_remote_model_free(remote);
+  rlmesh_model_free(served);
   OK(rlmesh_ext_cancel_token_cancel(serving.cancel));
   REQUIRE(pthread_join(thread, NULL) == 0);
   rlmesh_ext_cancel_token_free(serving.cancel);
-  unlink(path);
-  rmdir(dir);
+  OK(rlmesh_env_server_shutdown(host));
+  rlmesh_env_server_free(host);
+  rlmesh_bytes_free(base);
 }
 
 int main(int argc, char **argv) {
@@ -505,11 +464,17 @@ int main(int argc, char **argv) {
     rlmesh_bytes_free(address);
     free(text);
   } else if (!strcmp(op, "reset_order")) {
-    RLMeshSession *session = NULL;
-    OK(rlmesh_model_session(model, rlmesh_env_target(env), NULL, &session));
-    int64_t seed = 37, trial = 11, value = -1;
-    RLMeshValue *obs = NULL, *info = NULL;
-    OK(rlmesh_session_reset(session, &seed, &trial, &obs, &info));
+    RLMeshBinding *binding = NULL;
+    OK(rlmesh_model_bind(model, rlmesh_env_target(env), NULL, &binding));
+    int64_t seed = 37, value = -1;
+    RLMeshValue *eleven = NULL, *options = NULL, *obs = NULL, *info = NULL;
+    OK(rlmesh_value_int(11, &eleven));
+    RLMeshStr trial_key = {"trial_index", 11};
+    const RLMeshValue *trial_values[] = {eleven};
+    OK(rlmesh_value_dict(&trial_key, trial_values, 1, &options));
+    OK(rlmesh_binding_reset(binding, &seed, options, &obs, &info));
+    rlmesh_value_free(eleven);
+    rlmesh_value_free(options);
     OK(rlmesh_value_as_int(obs, &value));
     size_t info_len = 0;
     if (info)
@@ -520,7 +485,7 @@ int main(int argc, char **argv) {
            info_len == 0 ? "true" : "false");
     rlmesh_value_free(obs);
     rlmesh_value_free(info);
-    rlmesh_session_free(session);
+    rlmesh_binding_free(binding);
   } else if (!strcmp(op, "config_error")) {
     RLMeshLoadKey key = {"checkpoint", true, {0}};
     mv.load_keys = &key;
@@ -595,43 +560,43 @@ int main(int argc, char **argv) {
       rlmesh_value_free(value);
       printf(",\"reusable\":true");
     }
-  } else if (!strcmp(op, "busy_session")) {
+  } else if (!strcmp(op, "busy_binding")) {
     RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
-    so.address = "tcp://127.0.0.1:0";
+    so.address = ":0/env";
     RLMeshEnvServer *server = NULL;
     OK(rlmesh_env_server_new(&env, 1, &so, &server));
     OK(rlmesh_env_server_start(server));
-    RLMeshSession *first = NULL, *second = NULL;
-    RLMeshValue *obs = NULL, *info = NULL, *action = NULL;
+    RLMeshBinding *first = NULL, *second = NULL;
+    RLMeshValue *obs = NULL, *info = NULL;
     double reward;
     bool term, trunc;
-    OK(rlmesh_model_session(model, rlmesh_env_server_target(server), NULL,
-                            &first));
-    OK(rlmesh_session_reset(first, NULL, NULL, &obs, &info));
+    OK(rlmesh_model_bind(model, rlmesh_env_server_target(server), NULL,
+                         &first));
+    OK(rlmesh_binding_reset(first, NULL, NULL, &obs, &info));
     rlmesh_value_free(obs);
     rlmesh_value_free(info);
     obs = info = NULL;
-    RLMeshStatus status = rlmesh_model_session(
+    RLMeshStatus status = rlmesh_model_bind(
         model, rlmesh_env_server_target(server), NULL, &second);
     if (!status)
-      status = rlmesh_session_reset(second, NULL, NULL, &obs, &info);
+      status = rlmesh_binding_reset(second, NULL, NULL, &obs, &info);
     REQUIRE(status);
     error_fields();
     rlmesh_value_free(obs);
     rlmesh_value_free(info);
     obs = info = NULL;
-    rlmesh_session_free(second);
-    OK(rlmesh_value_int(0, &action));
-    OK(rlmesh_session_step(first, action, &obs, &reward, &term, &trunc, &info));
+    rlmesh_binding_free(second);
+    OK(rlmesh_binding_step(first, NULL, &obs, &reward, &term, &trunc, &info));
     rlmesh_value_free(obs);
     rlmesh_value_free(info);
-    rlmesh_value_free(action);
-    rlmesh_session_free(first);
+    rlmesh_binding_free(first);
     printf(",\"reusable\":true");
     OK(rlmesh_env_server_shutdown(server));
     rlmesh_env_server_free(server);
-  } else if (!strcmp(op, "remote_auth")) {
-    remote_auth(variant, env, model, &ev, &s, &attrs);
+  } else if (!strcmp(op, "https_env")) {
+    https_env(model, &ev, &s, &attrs);
+  } else if (!strcmp(op, "served_model")) {
+    served_model(env, model, &ev, &s, &attrs);
   } else if (!strcmp(op, "busy_remote")) {
     RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
     so.address = ":0/env";
@@ -723,8 +688,7 @@ int main(int argc, char **argv) {
       OK(rlmesh_ext_cancel_token_new(&token));
       fo.cancel = token;
     }
-    OK(rlmesh_ext_env_factory_start(factory, "tcp://127.0.0.1:0", &fo,
-                                    &server));
+    OK(rlmesh_ext_env_factory_start(factory, ":0/env", &fo, &server));
     rlmesh_env_factory_free(factory);
     OK(rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_server_target(server), NULL,
                   &result));
@@ -779,14 +743,7 @@ int main(int argc, char **argv) {
              (unsigned long long)rlmesh_run_result_num_episodes(result));
     } else if (!strcmp(variant, "abi5_remote")) {
       /* An ABI-5 caller's struct_size stops before the appended api_key and
-       * tls_ca_file: they read as NULL. A size inside one is refused. */
-      RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
-      mo.address = "127.0.0.1:1";
-      mo.api_key = "never-read\n";
-      mo.struct_size = RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE;
-      RLMeshRemoteModel *remote = NULL;
-      OK(rlmesh_remote_model_new(&mo, &remote));
-      rlmesh_remote_model_free(remote);
+       * tls_ca_file; a size ending inside one is refused. */
       RLMeshRemoteEnvOptions eo = RLMESH_REMOTE_ENV_OPTIONS_INIT;
       eo.struct_size = RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE + 1;
       RLMeshRemoteEnv *renv = NULL;
@@ -857,100 +814,81 @@ int main(int argc, char **argv) {
     }
     rlmesh_run_result_free(result);
     result = NULL;
-  } else {
-    OK(rlmesh_ext_cancel_token_new(&s.cancel));
-    RLMeshSessionOptions so = RLMESH_SESSION_OPTIONS_INIT;
-    so.cancel = s.cancel;
-    RLMeshSession *session = NULL;
-    OK(rlmesh_model_session(model, rlmesh_env_target(env), &so, &session));
-    RLMeshValue *obs = NULL, *info = NULL, *action = NULL;
+  } else if (!strcmp(op, "borrow") || !strcmp(op, "error")) {
+    RLMeshBinding *binding = NULL;
+    OK(rlmesh_model_bind(model, rlmesh_env_target(env), NULL, &binding));
+    RLMeshValue *obs = NULL, *info = NULL;
     double reward;
     bool term, trunc;
-    OK(rlmesh_value_int(0, &action));
-    if (strcmp(op, "cancel_run") && strcmp(op, "hook_error")) {
-      OK(rlmesh_session_reset(session, NULL, NULL, &obs, &info));
-      rlmesh_value_free(info);
-      info = NULL;
-    }
+    OK(rlmesh_binding_reset(binding, NULL, NULL, &obs, &info));
+    rlmesh_value_free(obs);
+    rlmesh_value_free(info);
+    obs = info = NULL;
     if (!strcmp(op, "borrow")) {
-      rlmesh_session_free(session);
-      session = NULL;
+      OK(rlmesh_binding_close(binding));
+      rlmesh_binding_free(binding);
+      binding = NULL;
       printf("\"env_closes\":%d,\"model_closes\":%d,\"episode_ends\":%d",
              s.env_closes, s.model_closes, s.episode_ends);
       OK(rlmesh_model_run(model, rlmesh_env_target(env), NULL, &result));
       rlmesh_run_result_free(result);
       result = NULL;
       printf(",\"reusable\":true");
-    } else if (!strcmp(op, "error")) {
+    } else {
       s.failure = find_class(variant);
       s.model_recoverable = !strcmp(variant, "ModelRecoverable");
-      RLMeshValue *prediction = NULL;
-      REQUIRE(rlmesh_session_predict(session, obs, &prediction));
+      REQUIRE(rlmesh_binding_step(binding, NULL, &obs, &reward, &term, &trunc,
+                                  &info));
       error_fields();
-      REQUIRE(!prediction);
-    } else if (!strcmp(op, "cancel_idle")) {
-      int failures = 0;
-      int cancelled_call_starts = 0;
-      for (int i = 0; i < 2; ++i) {
-        int before = s.starts;
-        OK(rlmesh_ext_cancel_token_cancel(s.cancel));
-        OK(rlmesh_ext_cancel_token_cancel(s.cancel));
-        RLMeshValue *prediction = NULL;
-        REQUIRE(rlmesh_session_predict(session, obs, &prediction) ==
-                RLMESH_ERR_CANCELLED);
-        ++failures;
-        cancelled_call_starts += s.starts - before;
-        if (!i)
-          error_fields();
-        OK(rlmesh_session_predict(session, obs, &prediction));
-        rlmesh_value_free(prediction);
-      }
-      printf(",\"failures\":%d,\"cancelled_call_starts\":%d,\"reusable\":true",
-             failures, cancelled_call_starts);
-    } else if (!strcmp(op, "cancel_step") || !strcmp(op, "cancel_run") ||
-               !strcmp(op, "hook_error")) {
-      s.cancel_step = strcmp(op, "hook_error") != 0;
-      RLMeshStatus status;
-      RLMeshRunHooksVtable hv = RLMESH_RUN_HOOKS_VTABLE_INIT;
-      hv.on_run_end = run_end;
-      if (!strcmp(op, "hook_error"))
-        hv.on_step = fail_hook;
-      RLMeshRunHooks *hooks = NULL;
-      OK(rlmesh_run_hooks_new(&hv, &s, &hooks));
-      if (!strcmp(op, "cancel_step")) {
-        rlmesh_value_free(obs);
-        obs = NULL;
-        status = rlmesh_session_step(session, action, &obs, &reward, &term,
-                                     &trunc, &info);
-      } else {
-        RLMeshSessionRunOptions run = RLMESH_SESSION_RUN_OPTIONS_INIT;
-        run.hooks = hooks;
-        status = rlmesh_session_run(session, &run, &result);
-      }
-      REQUIRE(status);
-      error_fields();
-      printf(",\"episode_ends_before_reset\":%d", s.episode_ends);
-      if (!strcmp(op, "cancel_step")) {
-        OK(rlmesh_session_reset(session, NULL, NULL, &obs, &info));
-      }
-      printf(",\"episode_ends\":%d,\"run_ends\":%d,\"partial_episodes\":%d",
-             s.episode_ends, s.run_ends, s.partial);
-      rlmesh_value_free(obs);
-      rlmesh_value_free(info);
-      obs = info = NULL;
-      OK(rlmesh_session_step(session, action, &obs, &reward, &term, &trunc,
-                             &info));
-      printf(",\"reusable\":true");
-      rlmesh_run_hooks_free(hooks);
-    } else {
-      fprintf(stderr, "unknown operation %s\n", op);
-      abort();
+      REQUIRE(!obs);
     }
-    rlmesh_value_free(obs);
-    rlmesh_value_free(info);
-    rlmesh_value_free(action);
-    rlmesh_session_free(session);
+    rlmesh_binding_free(binding);
+  } else if (!strcmp(op, "cancel_idle")) {
+    OK(rlmesh_ext_cancel_token_new(&s.cancel));
+    opts.cancel = s.cancel;
+    int failures = 0;
+    int cancelled_call_starts = 0;
+    for (int i = 0; i < 2; ++i) {
+      int before = s.starts;
+      OK(rlmesh_ext_cancel_token_cancel(s.cancel));
+      OK(rlmesh_ext_cancel_token_cancel(s.cancel));
+      REQUIRE(rlmesh_model_run(model, rlmesh_env_target(env), &opts, &result) ==
+              RLMESH_ERR_CANCELLED);
+      ++failures;
+      cancelled_call_starts += s.starts - before;
+      if (!i)
+        error_fields();
+      OK(rlmesh_model_run(model, rlmesh_env_target(env), &opts, &result));
+      rlmesh_run_result_free(result);
+      result = NULL;
+    }
+    printf(",\"failures\":%d,\"cancelled_call_starts\":%d,\"reusable\":true",
+           failures, cancelled_call_starts);
     rlmesh_ext_cancel_token_free(s.cancel);
+  } else if (!strcmp(op, "cancel_run") || !strcmp(op, "hook_error")) {
+    OK(rlmesh_ext_cancel_token_new(&s.cancel));
+    s.cancel_step = !strcmp(op, "cancel_run");
+    RLMeshRunHooksVtable hv = RLMESH_RUN_HOOKS_VTABLE_INIT;
+    hv.on_run_end = run_end;
+    if (!strcmp(op, "hook_error"))
+      hv.on_step = fail_hook;
+    RLMeshRunHooks *hooks = NULL;
+    OK(rlmesh_run_hooks_new(&hv, &s, &hooks));
+    opts.hooks = hooks;
+    opts.cancel = s.cancel;
+    REQUIRE(rlmesh_model_run(model, rlmesh_env_target(env), &opts, &result));
+    error_fields();
+    printf(",\"episode_ends\":%d,\"run_ends\":%d,\"partial_episodes\":%d",
+           s.episode_ends, s.run_ends, s.partial);
+    OK(rlmesh_model_run(model, rlmesh_env_target(env), NULL, &result));
+    rlmesh_run_result_free(result);
+    result = NULL;
+    printf(",\"reusable\":true");
+    rlmesh_run_hooks_free(hooks);
+    rlmesh_ext_cancel_token_free(s.cancel);
+  } else {
+    fprintf(stderr, "unknown operation %s\n", op);
+    abort();
   }
   puts("}");
   rlmesh_model_free(model);

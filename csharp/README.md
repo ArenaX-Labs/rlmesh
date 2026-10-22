@@ -42,7 +42,7 @@ installs it on demand. Build the native library and make `rlmesh_capi`
 (`librlmesh_capi.so`, `rlmesh_capi.dll` or `librlmesh_capi.dylib`) available to the
 platform loader when consuming a source build.
 
-The first native call checks ABI generation 5 and the
+The first native call checks ABI generation 6 and the
 header's package version, currently `0.1.0`. Loader and version failures
 throw `RLMesh.RuntimeError` with the cause.
 

@@ -352,10 +352,25 @@ fn open_view(
         .ok_or_else(|| Error::Runtime("the env client is closed".into()))
 }
 
+/// How a session host's lease refusal reads: another driver holds the env.
+pub(crate) const ENV_HELD: &str = "the env is held by another driver (a binding, a run or a \
+     RemoteEnv): close that one first";
+
+/// Whether the host refused a lease another driver holds.
+#[cfg(feature = "lockstep")]
+pub(crate) fn env_held(error: &crate::lockstep::GymError) -> bool {
+    matches!(
+        error,
+        crate::lockstep::GymError::Session(rlmesh_session::SessionError::Rejected(refusal))
+            if refusal.status == rlmesh_session::wire::CtlStatus::LeaseBusy
+    )
+}
+
 #[cfg(feature = "lockstep")]
 pub(crate) fn lockstep_error(error: crate::lockstep::GymError) -> Error {
     use crate::lockstep::GymError;
     match error {
+        error if env_held(&error) => Error::Connection(ENV_HELD.into()),
         GymError::Timeout(timeout) => Error::Timeout(timeout),
         GymError::Closed(why) => Error::Connection(why),
         GymError::Session(error) => Error::Connection(error.to_string()),
@@ -1264,22 +1279,6 @@ impl EnvClientCore {
         Ok(result)
     }
 
-    /// A render-only view of this already-connected channel. Context lifetime
-    /// and operation admission are enforced by the owning session context.
-    pub(crate) fn render_callback(&self) -> Arc<dyn Fn() -> Result<Value> + Send + Sync> {
-        let inner = self.inner.clone();
-        let timeout = self.request_timeout;
-        Arc::new(move || {
-            crate::run::drive::refuse_in_async_context("RunContext render")?;
-            let mut inner = inner.clone();
-            crate::run::drive::run_sync(async move {
-                match bounded(timeout, inner.render(0, timeout)).await? {
-                    Some(png) => decode_render_png(&png),
-                    None => Ok(Value::None),
-                }
-            })
-        })
-    }
     /// Request a render frame of lane `env_index`: the PNG bytes, or `None`
     /// when the env has no frame.
     pub async fn render(&mut self, env_index: u64) -> Result<Option<Vec<u8>>> {
@@ -1467,7 +1466,7 @@ pub(crate) fn decode_render_frame(png: &[u8]) -> Result<(Vec<usize>, Vec<u8>)> {
     Ok((shape, raw))
 }
 
-fn decode_render_png(png: &[u8]) -> Result<Value> {
+pub(crate) fn decode_render_png(png: &[u8]) -> Result<Value> {
     use crate::ext::TensorExt;
     let (shape, raw) = decode_render_frame(png)?;
     Ok(Value::Tensor(crate::Tensor::from_vec(
@@ -1581,7 +1580,7 @@ impl Shared {
 pub(crate) trait Lendable {
     /// The handle's canonical connect string.
     fn remote_address(&self) -> &str;
-    /// Move the core out for a session's borrow.
+    /// Move the core out for a run's borrow.
     fn lend(&mut self) -> Result<Box<EnvClientCore>>;
     /// Return a lent core.
     fn give_back(&mut self, core: Box<EnvClientCore>);
@@ -1592,7 +1591,7 @@ macro_rules! client_common {
         impl $Client {
             fn core_mut(&mut self) -> Result<&mut EnvClientCore> {
                 self.core.as_deref_mut().ok_or_else(|| {
-                    Error::Runtime(concat!($name, " is in use by a session").to_string())
+                    Error::Runtime(concat!($name, " is in use by a run").to_string())
                 })
             }
 
@@ -1758,7 +1757,7 @@ macro_rules! client_common {
 
             fn lend(&mut self) -> Result<Box<EnvClientCore>> {
                 let core = self.core.take().ok_or_else(|| {
-                    Error::Runtime(concat!($name, " is in use by a session").to_string())
+                    Error::Runtime(concat!($name, " is in use by a run").to_string())
                 })?;
                 self.lent_edition = core.selected_workflow_edition().to_string();
                 Ok(core)

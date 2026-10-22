@@ -2,7 +2,7 @@
 
 RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. `rlmesh.h` is the C API: a C11 header over a prebuilt shared library, for simulators and policies written in C, or for any language that binds to C.
 
-RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Session`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
+RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Binding`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
 Writing C++? Use [`rlmesh.hpp`](README-cpp.md), the C++17 API over this header, with RAII handles and exceptions.
 
@@ -10,7 +10,7 @@ Writing C++? Use [`rlmesh.hpp`](README-cpp.md), the C++17 API over this header, 
 
 ### Prebuilt package
 
-Each [GitHub Release](https://github.com/ArenaX-Labs/rlmesh/releases) carries `rlmesh-<version>-x86_64-unknown-linux-gnu.tar.gz` (Linux x86_64, glibc 2.34 or newer) and its `.sha256`. It holds `rlmesh.h` and `rlmesh.hpp`, the shared library (`librlmesh_capi.so.5`) and a static archive, plus CMake and pkg-config metadata. No Rust toolchain is needed.
+Each [GitHub Release](https://github.com/ArenaX-Labs/rlmesh/releases) carries `rlmesh-<version>-x86_64-unknown-linux-gnu.tar.gz` (Linux x86_64, glibc 2.34 or newer) and its `.sha256`. It holds `rlmesh.h` and `rlmesh.hpp`, the shared library (`librlmesh_capi.so.6`) and a static archive, plus CMake and pkg-config metadata. No Rust toolchain is needed.
 
 With CMake, fetch it at configure time:
 
@@ -28,7 +28,7 @@ target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 Or unpack it anywhere and use `find_package`:
 
 ```cmake
-find_package(rlmesh 5 CONFIG REQUIRED)  # -Drlmesh_DIR=<unpacked>/lib/cmake/rlmesh
+find_package(rlmesh 6 CONFIG REQUIRED)  # -Drlmesh_DIR=<unpacked>/lib/cmake/rlmesh
 target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 ```
 
@@ -39,7 +39,7 @@ export PKG_CONFIG_PATH=<unpacked>/lib/pkgconfig
 cc -std=c11 serve.c $(pkg-config --cflags --libs rlmesh) -o serve
 ```
 
-`rlmesh::rlmesh` links the shared library; install your binary beside it, set an rpath, or add `<unpacked>/lib` to `LD_LIBRARY_PATH`. `rlmesh::rlmesh_static` is for fully static targets that link no other Rust library. The CMake package version is the ABI generation, so `find_package(rlmesh 5)` refuses a package built for another generation.
+`rlmesh::rlmesh` links the shared library; install your binary beside it, set an rpath, or add `<unpacked>/lib` to `LD_LIBRARY_PATH`. `rlmesh::rlmesh_static` is for fully static targets that link no other Rust library. The CMake package version is the ABI generation, so `find_package(rlmesh 6)` refuses a package built for another generation.
 
 ### Windows (MSVC)
 
@@ -303,52 +303,48 @@ vtable.context_corners = RLMESH_CORNER_PREDICT;
 
 `rlmesh_model_serve` serves a model as an endpoint other runs can use. Set `RLMeshExtModelServeOptions.no_signal_handlers` through the serve options' `ext` pointer when the host owns signal handling. The call still blocks and can be stopped with its cancellation token or `rlmesh_model_close`. The default false installs and restores SIGINT/SIGTERM handlers. See [`examples/c_policy.c`](examples/c_policy.c).
 
-### Running and sessions
+### Running and binding
 
-`rlmesh_model_run` drives whole episodes and returns an `RLMeshRunResult` (`rlmesh_run_result_num_episodes`, `_total_steps`, `_mean_reward`, `_success_rate`, `_episodes_get` for each `RLMeshEpisodeResult`, plus telemetry). The env argument is an `RLMeshEnvTarget`, made from an address (`rlmesh_address_target`), a running server (`rlmesh_env_server_target`), a remote client (`rlmesh_remote_env_target`), or a local env, vector env or factory (`rlmesh_env_target`, served on a private loopback for the run). `rlmesh_run` also takes an `RLMeshModelTarget`: a model (`rlmesh_model_target`), a remote model, or `RLMESH_RANDOM_SAMPLE`, a baseline that samples the action space. A run borrows its targets: it never closes the model and closes the env only when `close_env` is set.
+`rlmesh_model_run` drives whole episodes and returns an `RLMeshRunResult` (`rlmesh_run_result_num_episodes`, `_total_steps`, `_mean_reward`, `_success_rate`, `_episodes_get` for each `RLMeshEpisodeResult`, plus telemetry). The env argument is an `RLMeshEnvTarget`, made from an address (`rlmesh_address_target`), a running server (`rlmesh_env_server_target`), a remote client (`rlmesh_remote_env_target`), or a local env, vector env or factory (`rlmesh_env_target`, served on a private loopback for the run). `rlmesh_run` also takes an `RLMeshModelTarget`: a model (`rlmesh_model_target`) or `RLMESH_RANDOM_SAMPLE`, a baseline that samples the action space. A model served elsewhere is an `RLMeshModel` too: `rlmesh_model_from_address("lab:7447/openpi", &model)` reaches it by its participant address, as Python's `Model(address)` does, and runs and binds like a local one. A run borrows its targets: it never closes the model and closes the env only when `close_env` is set.
 
 `RLMeshRunOptions` covers `episodes`, `seeds`, `max_episode_steps`, `max_episode_seconds`, `hooks`, `instruction`, `close_env` and more. `RLMeshRunHooks` (built with `rlmesh_run_hooks_new` from an `RLMeshRunHooksVtable`) observe a run on the calling thread: run start and end, episode start and end, and every step.
 
-For step-by-step control, open a session. Nothing connects until first use, and closing a session never closes the model:
+For step-by-step control, bind the model to one env, as Python's `Model.bind` does. Binding connects (a local env or factory is served in this process, its callbacks running on the thread that calls the binding); `rlmesh_binding_step` with a NULL action steps under the model's, and closing the binding never closes the model:
 
 ```c
-RLMeshSession* session = NULL;
+RLMeshBinding* binding = NULL;
 RLMeshValue* observation = NULL;
 RLMeshValue* info = NULL;
 const int64_t seed = 0;
 bool done = false;
 
-if (rlmesh_model_session(model, rlmesh_address_target("127.0.0.1:7447/counter"), NULL, &session) ==
+if (rlmesh_model_bind(model, rlmesh_address_target("127.0.0.1:7447/counter"), NULL, &binding) ==
         RLMESH_OK &&
-    rlmesh_session_reset(session, &seed, NULL, &observation, &info) == RLMESH_OK) {
+    rlmesh_binding_reset(binding, &seed, NULL, &observation, &info) == RLMESH_OK) {
   while (!done) {
-    RLMeshValue* action = NULL;
-    RLMeshValue* next = NULL;
     RLMeshValue* step_info = NULL;
     double reward = 0.0;
     bool terminated = false, truncated = false;
-    if (rlmesh_session_predict(session, observation, &action) != RLMESH_OK) break;
-    RLMeshStatus status = rlmesh_session_step(session, action, &next, &reward, &terminated,
-                                              &truncated, &step_info);
-    rlmesh_value_free(action);
-    if (status != RLMESH_OK) break;
     rlmesh_value_free(observation);
+    observation = NULL;
+    if (rlmesh_binding_step(binding, NULL, &observation, &reward, &terminated, &truncated,
+                            &step_info) != RLMESH_OK)
+      break;
     rlmesh_value_free(step_info);
-    observation = next;
     done = terminated || truncated;
   }
 }
 rlmesh_value_free(observation);
 rlmesh_value_free(info);
-if (session != NULL) rlmesh_session_close(session);
-rlmesh_session_free(session);
+if (binding != NULL) rlmesh_binding_close(binding);
+rlmesh_binding_free(binding);
 ```
 
-`rlmesh_session_run` runs whole episodes inside an open session. See [`examples/c_run.c`](examples/c_run.c).
+`rlmesh_bind` takes an `RLMeshModelTarget`, so `RLMESH_RANDOM_SAMPLE` binds too. A binding also reads observations by role (`rlmesh_binding_read`) and reaches the env's frames (`rlmesh_binding_frame_sources`, `rlmesh_binding_render`). See [`examples/c_run.c`](examples/c_run.c).
 
 ### Remote clients
 
-`rlmesh_remote_env_new` connects to a served env so you can step it directly, Gymnasium style; `rlmesh_remote_vector_env_new` does the same for a vector env. `rlmesh_remote_model_new` points at a served model; it validates its options without connecting, and runs and sessions connect as they need to. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an env server with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately in the options) still serve and connect remote clients until v1 is removed; a run refuses them.
+`rlmesh_remote_env_new` connects to a served env so you can step it directly, Gymnasium style; `rlmesh_remote_vector_env_new` does the same for a vector env. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an env server with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately in the options) still serve and connect remote clients until v1 is removed; a run refuses them.
 
 ```c
 RLMeshRemoteEnvOptions options = RLMESH_REMOTE_ENV_OPTIONS_INIT;
@@ -384,7 +380,7 @@ When a model and an env describe their observations and actions differently (cam
 
 ### View, Recorder and describe
 
-`RLMeshView` (`RLMESH_VIEW_INIT`, or `rlmesh_view_parse` with `"term"` or `"http:8008"`) shows live frames when set on session options. `rlmesh_recorder_new` collects run results or captures live runs through the hooks from `rlmesh_recorder_capture`, and exports them with media as a folder or ZIP bundle ([`examples/c_recorder.c`](examples/c_recorder.c)). `rlmesh_model_describe` and `rlmesh_env_factory_describe` report declarations ([`examples/c_describe.c`](examples/c_describe.c)), and `rlmesh_build_info` the library's version, protocol generation and workflow editions.
+`RLMeshView` (`RLMESH_VIEW_INIT`, or `rlmesh_view_parse` with `"term"` or `"http:8008"`) configures the live viewer. `rlmesh_recorder_new` collects run results or captures live runs through the hooks from `rlmesh_recorder_capture`, and exports them with media as a folder or ZIP bundle ([`examples/c_recorder.c`](examples/c_recorder.c)). `rlmesh_model_describe` and `rlmesh_env_factory_describe` report declarations ([`examples/c_describe.c`](examples/c_describe.c)), and `rlmesh_build_info` the library's version, protocol generation and workflow editions.
 
 ## Errors
 
@@ -432,13 +428,13 @@ Every served env and model runs at a workflow edition, which pins what a session
 
 Additions that exist only for native callers carry the `rlmesh_ext_` prefix (types `RLMeshExt...`):
 
-- Cancellation: `rlmesh_ext_cancel_token_new`, `_clone`, `_cancel` and `_free`. Put a token in the `cancel` field of run, session or serve options and cancel it from any thread; the call in flight returns `RLMESH_ERR_CANCELLED`. Remote clients and sessions expose their token through `_cancel_handle`.
+- Cancellation: `rlmesh_ext_cancel_token_new`, `_clone`, `_cancel` and `_free`. Put a token in the `cancel` field of run or serve options and cancel it from any thread; the call in flight returns `RLMESH_ERR_CANCELLED`. Remote clients expose their token through `_cancel_handle`.
 - Bearer-token endpoints: `RLMeshExtEnvServerOptions` and `RLMeshExtModelServeOptions` (through the `ext` field of the serve options) set the token a server expects; clients send it as `api_key`.
 - `rlmesh_ext_env_server_describe_json` for a served env's describe envelope, `rlmesh_ext_register_entrypoint` for trusted custom adapter transforms, and helpers such as `rlmesh_ext_dtype_size`.
 
 ## Compatibility
 
-The C API is **Experimental**. Binary compatibility is tracked by the ABI generation, currently 5: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.5` SONAME and the CMake package version all carry it. An incompatible change (a struct layout, an enum value, a signature or a removed symbol) bumps the generation, which can happen in any minor release; a binary built for another generation will not load. Within a generation, structs grow only by appending optional fields whose zero bytes mean the default, so code compiled against an older header keeps working. Call `rlmesh_abi_check()` at startup if you load the library with `dlopen` or otherwise bypass the SONAME. `RLMESH_VERSION` is the header's package version and `rlmesh_build_info()` reports the linked library's. See the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/).
+The C API is **Experimental**. Binary compatibility is tracked by the ABI generation, currently 6: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.6` SONAME and the CMake package version all carry it. An incompatible change (a struct layout, an enum value, a signature or a removed symbol) bumps the generation, which can happen in any minor release; a binary built for another generation will not load. Within a generation, structs grow only by appending optional fields whose zero bytes mean the default, so code compiled against an older header keeps working. Call `rlmesh_abi_check()` at startup if you load the library with `dlopen` or otherwise bypass the SONAME. `RLMESH_VERSION` is the header's package version and `rlmesh_build_info()` reports the linked library's. See the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/).
 
 The header is C11 and also compiles warning-free as C++98, C++17 and C++20. It bundles the upstream DLPack 1.0 header (license in [`include/dlpack.LICENSE`](include/dlpack.LICENSE)). Creating a model or env handle ignores `SIGPIPE` on POSIX unless your program installed its own handler, so a peer that disconnects mid-write cannot kill the process.
 
@@ -470,8 +466,7 @@ The header is C11 and also compiles warning-free as C++98, C++17 and C++20. It b
 
 ## Per-call cancellation
 
-`rlmesh_ext_session_reset`, `rlmesh_ext_session_predict`,
-`rlmesh_ext_session_step`, `rlmesh_ext_remote_env_reset`,
+`rlmesh_ext_remote_env_reset`,
 `rlmesh_ext_remote_env_step`, `rlmesh_ext_remote_vector_env_reset` and
 `rlmesh_ext_remote_vector_env_step` take a borrowed
 `const RLMeshExtCancelToken* cancel` immediately before the first output.
@@ -481,8 +476,7 @@ Pass NULL for the ordinary call's behavior. The vector step retains its
 Fire the token from another thread to cancel the operation with
 `RLMESH_ERR_CANCELLED`; the handle stays usable. An idle firing fails the next
 admitted call using that token once. Busy, closed or overlapping calls consume
-no firing. Each admitted call watches both this token and its handle token,
-including lazy session factory creation. The caller can free the token after
+no firing. Each admitted call watches both this token and its handle token. The caller can free the token after
 the call returns. One token can cancel multiple calls and a started server.
 
 ## Entrypoint registration lifetime

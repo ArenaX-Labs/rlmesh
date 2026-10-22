@@ -1,8 +1,7 @@
 use super::*;
 use crate::spaces::{Discrete, Space};
 use crate::{
-    DType, Env, ErrorClass, FrameSources, InfoDict, Model, ModelOptions, RunOptions,
-    SessionOptions, SessionRunOptions, Tensor,
+    DType, Env, ErrorClass, FrameSources, InfoDict, Model, ModelOptions, RunOptions, Tensor,
 };
 use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -174,7 +173,7 @@ fn model() -> Model {
     Model::new(|_: Value| Ok(Value::Int(0)), ModelOptions::default()).unwrap()
 }
 #[test]
-fn capture_native_and_session_render_media_and_stable_episode_indices() {
+fn capture_render_media_with_stable_episode_indices_across_runs() {
     let mut rec = recorder();
     let mut capture = rec
         .capture("model/../name", "env", Default::default())
@@ -193,16 +192,15 @@ fn capture_native_and_session_render_media_and_stable_episode_indices() {
             },
         )
         .unwrap();
-    {
-        let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-        session
-            .run(SessionRunOptions {
+    model
+        .run(
+            &mut env,
+            RunOptions {
                 hooks: Some(&mut *capture),
                 ..Default::default()
-            })
-            .unwrap();
-        session.close().unwrap();
-    }
+            },
+        )
+        .unwrap();
     let workloads = rec.workloads();
     assert_eq!(
         workloads[0]

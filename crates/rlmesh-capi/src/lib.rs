@@ -4,6 +4,7 @@
 
 mod abi;
 mod adapters;
+mod binding_api;
 mod build;
 mod cancel;
 mod codec;
@@ -22,7 +23,6 @@ mod run_api;
 mod run_hooks;
 mod run_read;
 mod run_results;
-mod session_api;
 mod space_experimental;
 mod space_handle;
 mod spaces;

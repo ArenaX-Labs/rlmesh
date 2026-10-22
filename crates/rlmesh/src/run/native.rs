@@ -67,6 +67,7 @@ pub(crate) enum Driven<'m> {
     Local(&'m Model),
     #[cfg(feature = "lockstep")]
     Served(&'m crate::RemoteModel),
+    Random,
 }
 
 /// Makes the run's model handler, given the run's adapter context.
@@ -84,6 +85,7 @@ pub(crate) async fn run_model(
         Driven::Local(model) => Some(model.shared()),
         #[cfg(feature = "lockstep")]
         Driven::Served(_) => None,
+        Driven::Random => None,
     };
     if let Some(shared) = shared {
         shared.check_not_reentrant("run()")?;
@@ -107,7 +109,9 @@ pub(crate) async fn run_model(
     } = options;
     if let Some(view) = view {
         view.validate()?;
-        return Err(Error::Type("view is a session() option for a local model: use model.session(env, view=...).run(...) for it.".into()));
+        return Err(Error::Type(
+            "view= is not supported by the native run loop".into(),
+        ));
     }
     // RUN-5: what the options alone decide, before anything dials.
     let budget = episode_budget(episodes, seeds.as_deref())?;
@@ -138,6 +142,14 @@ pub(crate) async fn run_model(
                 model.connect_timeout().unwrap_or(SERVED_CONNECT),
             );
             Box::new(move |_| Box::new(served))
+        }
+        Driven::Random => {
+            if trust_entrypoints.is_some() || instruction.is_some() {
+                return Err(Error::invalid_argument(
+                    "trust_entrypoints and instruction= do not apply to RANDOM_SAMPLE",
+                ));
+            }
+            Box::new(|_| Box::<crate::model::random::RandomSampleHandler>::default())
         }
     };
     let _slot = shared.map(|shared| shared.claim_run()).transpose()?;
@@ -448,13 +460,14 @@ async fn run_body(
             // v1's Join stream and a v2 session's lease refuse a second
             // driver alike.
             Error::Runtime(message) | Error::Connection(message)
-                if message.contains("active Join session") || message.contains("LeaseBusy") =>
+                if message.contains("active Join session")
+                    || message.starts_with(crate::env::client::ENV_HELD) =>
             {
                 Error::Runtime(
                     "the target env already has an active session: a RemoteEnv / \
                      RemoteVectorEnv handle that was driven with reset()/step() holds the \
                      env's single session slot. close() the handle (or its open session) \
-                     before run(), or drive it interactively via session()."
+                     before run(), or drive it by hand with bind()."
                         .to_string(),
                 )
             }

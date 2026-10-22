@@ -90,71 +90,25 @@ impl fmt::Debug for RunOptions<'_> {
     }
 }
 
-/// Options for [`session`](crate::session) and [`Model::session`](crate::Model::session).
+/// Options for [`bind`](crate::bind) and [`Model::bind`](crate::Model::bind).
 #[derive(Clone, Debug)]
-pub struct SessionOptions {
-    /// Override each text input of a spec’d model for this call.
-    pub instruction: Option<String>,
-    /// Live viewer for the session's manual and automatic steps.
-    pub view: Option<crate::View>,
-    /// Shut the caller's env down when the session closes.
+pub struct BindOptions {
+    /// Close a local env (or shut a served one down) with the binding.
     pub close_env: bool,
-    /// Override the model's `trust_entrypoints` for this session.
-    pub trust_entrypoints: Option<bool>,
     /// Actions of each predicted chunk executed before re-planning
     /// (1..=1024; default 1).
     pub execution_horizon: u32,
-    /// The workflow edition this session declares.
+    /// The workflow edition this binding declares.
     pub workflow_edition: Option<String>,
-    /// The session's cancel token: every session call watches it, and
-    /// [`Session::cancel_handle`](crate::Session::cancel_handle) returns it.
-    pub cancel: Option<crate::ext::CancelToken>,
 }
 
-impl Default for SessionOptions {
+impl Default for BindOptions {
     fn default() -> Self {
-        SessionOptions {
+        BindOptions {
             close_env: false,
-            trust_entrypoints: None,
-            instruction: None,
-            view: None,
             execution_horizon: 1,
             workflow_edition: None,
-            cancel: None,
         }
-    }
-}
-
-/// The keywords of `Session.run`.
-#[derive(Default)]
-pub struct SessionRunOptions<'h> {
-    /// The exact number of episodes (see [`RunOptions::episodes`]).
-    pub episodes: Option<u64>,
-    /// One reset seed per episode.
-    pub seeds: Option<Vec<i64>>,
-    /// Truncate an episode after this many steps (at least 1).
-    pub max_episode_steps: Option<u64>,
-    /// Truncate an episode after this wall time (must be positive).
-    pub max_episode: Option<Duration>,
-    /// Observer callbacks, borrowed for the call.
-    pub hooks: Option<&'h mut dyn RunHooks>,
-    /// The first trial ordinal.
-    pub trial_index_base: u64,
-    /// Cancels this call, beside the session's own token.
-    pub cancel: Option<crate::ext::CancelToken>,
-}
-
-impl fmt::Debug for SessionRunOptions<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SessionRunOptions")
-            .field("episodes", &self.episodes)
-            .field("seeds", &self.seeds)
-            .field("max_episode_steps", &self.max_episode_steps)
-            .field("max_episode", &self.max_episode)
-            .field("hooks", &self.hooks.as_ref().map(|_| "<hooks>"))
-            .field("trial_index_base", &self.trial_index_base)
-            .field("cancel", &self.cancel)
-            .finish()
     }
 }
 
@@ -246,13 +200,6 @@ pub(crate) fn check_prefetch(prefetch_lead: u64) -> Result<u32> {
 }
 
 impl RunOptions<'_> {
-    /// Set the text override.
-    pub fn instruction(mut self, value: impl Into<String>) -> Self {
-        self.instruction = Some(value.into());
-        self
-    }
-}
-impl SessionOptions {
     /// Set the text override.
     pub fn instruction(mut self, value: impl Into<String>) -> Self {
         self.instruction = Some(value.into());

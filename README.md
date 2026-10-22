@@ -60,8 +60,8 @@ network private.
 
 Without `api_key`, clients read `RLMESH_API_KEY`, and send it only to
 `https://` addresses. `tls_ca_file=` trusts a private CA bundle instead of the
-system roots. The options are `RemoteModelOptions::api_key` in Rust,
-`RLMeshRemoteModelOptions.api_key` in C and `with_api_key` in C++.
+system roots. The options are `RemoteEnvOptions::api_key` in Rust,
+`RLMeshRemoteEnvOptions.api_key` in C and `with_api_key` in C++.
 
 Servers send HTTP/2 keepalive PINGs on idle connections. They detect a dead
 peer and keep NAT mappings and proxies that count PINGs as traffic alive, but
@@ -82,7 +82,7 @@ rlmesh::Model model([](const rlmesh::Value&) { return rlmesh::Value(0); });
 auto result = model.run("tcp://127.0.0.1:5555", {.episodes = 2, .seeds = {0, 1}});
 ```
 
-RLMesh aims to feel familiar in every language: the same nouns and constructs (`Env`, `Space`, `Model`, `run`, `Session`, `RemoteEnv`), each in that language's own conventions and with its own helpers.
+RLMesh aims to feel familiar in every language: the same nouns and constructs (`Env`, `Space`, `Model`, `run`, `Binding`, `RemoteEnv`), each in that language's own conventions and with its own helpers.
 
 ## Integrations
 

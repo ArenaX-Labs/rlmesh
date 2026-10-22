@@ -769,18 +769,6 @@ impl Shared {
             .map_err(|_| Error::Internal("the model call was dropped".to_string()))?
     }
 
-    /// Owned Drop cleanup is enqueued immediately; only the wait may detach.
-    pub(crate) fn queue_episode_end(&self, episode_id: String) -> Result<()> {
-        let _admission = self.life.lock();
-        if self.refuse.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        crate::warnings::with_work(None, || {
-            self.submit(move |core| core.episode_end(&episode_id))
-        })?;
-        Ok(())
-    }
-
     /// Claim the model's one run slot: a second run while one is in progress
     /// fails at once with the `RuntimeError` class.
     pub(crate) fn claim_run(self: &Arc<Self>) -> Result<RunSlot> {

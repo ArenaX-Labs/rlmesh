@@ -62,14 +62,11 @@ pub trait RunContext: Send + Sync {
 }
 
 /// The library's context: a native run's (valid for its whole life) or a
-/// session's (failing once the session has closed).
-type RemoteRender = Arc<dyn Fn() -> Result<Value> + Send + Sync>;
+/// binding's (failing once the binding has closed).
 pub(crate) struct LibraryContext {
     contract: Mutex<Option<EnvContract>>,
     closed: std::sync::atomic::AtomicBool,
     pub(crate) id: u64,
-    busy: std::sync::atomic::AtomicBool,
-    remote_render: Mutex<Option<RemoteRender>>,
     readers: Mutex<Vec<(ReadItem, super::Reader)>>,
     advisories: Mutex<Vec<crate::adapters::Advisory>>,
 }
@@ -79,8 +76,6 @@ impl LibraryContext {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Arc::new(LibraryContext {
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            busy: false.into(),
-            remote_render: Mutex::new(None),
             readers: Mutex::new(Vec::new()),
             advisories: Mutex::new(Vec::new()),
             contract: Mutex::new(None),
@@ -92,28 +87,11 @@ impl LibraryContext {
         *self.contract.lock().unwrap_or_else(|err| err.into_inner()) = Some(contract);
     }
 
+    #[cfg(feature = "lockstep")]
     pub(crate) fn close(&self) {
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
-    pub(crate) fn remote_render(&self, render: Arc<dyn Fn() -> Result<Value> + Send + Sync>) {
-        *self.remote_render.lock().unwrap_or_else(|e| e.into_inner()) = Some(render);
-    }
-    pub(crate) fn busy(self: &Arc<Self>) -> Result<ContextBusy> {
-        self.busy
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            )
-            .map_err(|_| {
-                Error::Runtime(
-                    "a session operation or context render is already in progress".into(),
-                )
-            })?;
-        Ok(ContextBusy(self.clone()))
-    }
     pub(crate) fn advisories(&self) -> Vec<crate::adapters::Advisory> {
         self.advisories
             .lock()
@@ -125,56 +103,13 @@ impl LibraryContext {
     }
     pub(crate) fn render(&self) -> Result<Value> {
         self.open()?;
-        if super::read::has_local_render(self.id) {
-            return super::read::local_render(self.id);
-        }
-        if self.busy.load(std::sync::atomic::Ordering::SeqCst) && !super::read::in_dispatch(self.id)
-        {
-            return Err(Error::Runtime(
-                "render is unavailable while a session operation is in progress".into(),
-            ));
-        }
-        let _busy = if super::read::in_dispatch(self.id) {
-            None
-        } else {
-            self.busy
-                .compare_exchange(
-                    false,
-                    true,
-                    std::sync::atomic::Ordering::SeqCst,
-                    std::sync::atomic::Ordering::SeqCst,
-                )
-                .map_err(|_| {
-                    Error::Runtime(
-                        "a session operation or context render is already in progress".into(),
-                    )
-                })?;
-            Some(RenderBusy(&self.busy))
-        };
-        let render = self
-            .remote_render
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .ok_or_else(|| {
-                Error::Runtime("render is not reachable outside a local hook dispatch".into())
-            })?;
-        render()
+        super::read::local_render(self.id)
     }
     fn open(&self) -> Result<()> {
         if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(Error::Runtime("session is closed".to_string()));
+            return Err(Error::Runtime("the binding is closed".to_string()));
         }
         Ok(())
-    }
-}
-
-pub(crate) struct ContextBusy(Arc<LibraryContext>);
-impl Drop for ContextBusy {
-    fn drop(&mut self) {
-        self.0
-            .busy
-            .store(false, std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -216,15 +151,7 @@ impl RunContext for LibraryContext {
     fn frame_sources(&self) -> Result<FrameSources<'_>> {
         let contract = self.contract()?;
         let roles = super::read::image_roles(contract.as_ref())?;
-        let reachable = super::read::has_local_render(self.id)
-            || (self
-                .remote_render
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_some()
-                && (!self.busy.load(std::sync::atomic::Ordering::SeqCst)
-                    || super::read::in_dispatch(self.id)));
-        let label = if reachable {
+        let label = if super::read::has_local_render(self.id) {
             contract
                 .as_ref()
                 .and_then(|c| super::read::render_label(c, &roles))
@@ -237,12 +164,5 @@ impl RunContext for LibraryContext {
             render_label: label,
             render,
         })
-    }
-}
-
-struct RenderBusy<'a>(&'a std::sync::atomic::AtomicBool);
-impl Drop for RenderBusy<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::SeqCst)
     }
 }

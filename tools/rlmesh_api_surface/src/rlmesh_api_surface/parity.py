@@ -534,22 +534,18 @@ def extension_scope(path: str, language: str, item: Item) -> bool:
     if language == "c":
         if path in {"RLMESH_ABI_VERSION", "rlmesh_abi_version", "rlmesh_abi_check"}:
             return True
-        if re.fullmatch(
-            r"rlmesh_(session|remote_env|remote_vector_env)_cancel_handle", path
-        ):
+        if re.fullmatch(r"rlmesh_(remote_env|remote_vector_env)_cancel_handle", path):
             return True
     owner, _, member = path.rpartition("::")
     owner = owner.rsplit("::", 1)[-1].removeprefix("RLMesh")
     if member in {"cancel", "with_cancel"}:
         return owner in {
             "RunOptions",
-            "SessionOptions",
-            "SessionRunOptions",
             "ModelServeOptions",
             "EnvFactoryServeOptions",
         }
     if member == "cancel_handle":
-        return owner in {"Session", "RemoteEnv", "RemoteVectorEnv"}
+        return owner in {"RemoteEnv", "RemoteVectorEnv"}
     return member == "ext" and (
         owner in {"EnvServerOptions", "ModelServeOptions"}
         or (language == "c" and owner == "EnvFactoryServeOptions")
@@ -623,7 +619,7 @@ def check_order(
         language == "c"
         and method in {"reset", "step"}
         and path.partition(":")[2].split(".")[0]
-        in {"Session", "RemoteEnv", "RemoteVectorEnv", "EnvLike", "VectorEnvLike"}
+        in {"Binding", "RemoteEnv", "RemoteVectorEnv", "EnvLike", "VectorEnvLike"}
     ):
         actual_outputs = [
             n.removeprefix("out_")
@@ -900,13 +896,6 @@ def check(
                 if language == "c":
                     wanted = snake(name)
                     matches = tail.endswith("_" + wanted) or tail == wanted
-                    # C's free session factory uses the constructor suffix,
-                    # rather than exporting the opaque handle's bare name.
-                    matches |= (
-                        name == "session"
-                        and tail == "rlmesh_session_new"
-                        and "D-6" in rules
-                    )
                 else:
                     matches = tail == native_name(name, language)
                 if not matches:

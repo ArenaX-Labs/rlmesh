@@ -732,19 +732,14 @@ impl RemoteModelOptions {
 
 struct RemoteModelInner {
     address: String,
-    /// Checked at `new`; resolved fresh at each session dial (RMT-22), so a
-    /// rotated `RLMESH_API_KEY` or CA bundle reaches the next session.
-    api_key: Option<String>,
-    tls_ca_file: Option<std::path::PathBuf>,
+    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     connect_timeout: Option<Duration>,
-    request_timeout: Option<Duration>,
 }
 
 /// A served model (policy) to bind envs to.
 ///
-/// Construction does no I/O: it checks the address and timeouts, and
-/// [`session`](RemoteModel::session) dials. Clones share the handle; it is
-/// `Send + Sync`, and concurrent sessions off one handle are allowed.
+/// Construction does no I/O: it checks the address and timeouts, and a run
+/// or a binding dials. Clones share the handle; it is `Send + Sync`.
 #[derive(Clone)]
 pub struct RemoteModel(Arc<RemoteModelInner>);
 
@@ -765,7 +760,6 @@ impl RemoteModel {
         )?;
         ConnectAddress::parse(&address)?;
         let connect_timeout = crate::env::client::normalize_timeout(options.connect_timeout);
-        let request_timeout = crate::env::client::normalize_timeout(options.request_timeout);
         crate::credentials::resolve(
             &address,
             options.api_key.as_deref(),
@@ -774,10 +768,7 @@ impl RemoteModel {
         )?;
         Ok(RemoteModel(Arc::new(RemoteModelInner {
             address,
-            api_key: options.api_key,
-            tls_ca_file: options.tls_ca_file,
             connect_timeout,
-            request_timeout,
         })))
     }
 
@@ -787,68 +778,9 @@ impl RemoteModel {
         &self.0.address
     }
 
-    /// The credentials a session dial sends, resolved now (RMT-22).
-    pub(crate) fn auth(&self) -> Result<crate::credentials::ClientAuth> {
-        crate::credentials::resolve(
-            &self.0.address,
-            self.0.api_key.as_deref(),
-            self.0.tls_ca_file.as_deref(),
-            false,
-        )
-    }
-
+    #[cfg(feature = "lockstep")]
     pub(crate) fn connect_timeout(&self) -> Option<Duration> {
         self.0.connect_timeout
-    }
-
-    pub(crate) fn request_timeout(&self) -> Option<Duration> {
-        self.0.request_timeout
-    }
-
-    /// Bind this served model to `env` and dial it. `env` is an address
-    /// (dialed now and owned by the session), an
-    /// [`EnvServer`](crate::EnvServer) (dialed at first env use), or a
-    /// borrowed [`RemoteEnv`](crate::RemoteEnv), or a local env (stepped
-    /// on the caller's side; a factory's env is built now and closed with the
-    /// session). A local vector env is the TypeError class and a multi-lane
-    /// target the ValueError class.
-    /// `trust_entrypoints` set is the ValueError class (the served model
-    /// owns its adapter).
-    pub fn session<'a>(
-        &'a self,
-        env: impl Into<crate::EnvTarget<'a>>,
-        options: crate::SessionOptions,
-    ) -> Result<crate::Session<'a>> {
-        crate::run::drive::refuse_in_async_context("RemoteModel::session")?;
-        #[cfg(feature = "lockstep")]
-        if crate::address::is_v2(self.address()) {
-            return crate::Session::create_served(self, env.into(), options);
-        }
-        crate::run::drive::block_on_library(crate::Session::create_remote(
-            self,
-            env.into(),
-            options,
-            crate::run::Mode::Sync,
-        ))
-    }
-
-    /// The async twin of [`session`](RemoteModel::session).
-    pub async fn session_async<'a>(
-        &'a self,
-        env: impl Into<crate::EnvTarget<'a>>,
-        options: crate::SessionOptions,
-    ) -> Result<crate::Session<'a>> {
-        #[cfg(feature = "lockstep")]
-        if crate::address::is_v2(self.address()) {
-            return crate::Session::create_served(self, env.into(), options);
-        }
-        crate::run::drive::in_library(crate::Session::create_remote(
-            self,
-            env.into(),
-            options,
-            crate::run::Mode::Async,
-        ))
-        .await
     }
 }
 

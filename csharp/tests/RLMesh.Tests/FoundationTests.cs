@@ -165,8 +165,10 @@ public sealed unsafe class FoundationTests
         var (o, r, term, trunc, inf) = new StepResult(2, 3, true, false, new());
         Assert.Equal(2, o.AsInt()); Assert.Equal(3, r); Assert.True(term); Assert.False(trunc); Assert.Empty(inf);
         using var env = Env.For(new DefaultResultEnv());
-        using var session = new LocalSession(env);
-        Assert.Throws<TypeError>(() => session.Reset());
+        using var binding = new LocalBinding(env);
+        // The env runs behind the binding's session: its refusal arrives as an env failure.
+        var refused = Assert.ThrowsAny<EnvironmentException>(() => binding.Reset());
+        Assert.Contains("default result", refused.Message);
     }
     private sealed class DefaultResultEnv : Counter { public override ResetResult Reset(long? seed, Metadata? options) => default; }
 
@@ -410,8 +412,10 @@ public sealed unsafe class FoundationTests
     }
 
     [Fact]
-    public void LocalTrampolinesRethrowEveryExceptionByIdentity()
+    public void LocalBindingReportsEveryEnvExceptionAsAnEnvFailure()
     {
+        // A bound local env runs behind the binding's session, as Python's does:
+        // what it throws arrives as the session reports an env failure.
         Exception[] errors = {
             new RLMeshException("library"), new ProtocolException("protocol"), new EnvironmentException("env"),
             new RecoverableEnvironmentException("again"), new ValueError("value"), new TypeError("type"),
@@ -420,10 +424,10 @@ public sealed unsafe class FoundationTests
         };
         foreach (Exception error in errors)
         {
-            var authored = new Counter { Error = error }; using var env = Env.For(authored); using var session = new LocalSession(env);
-            session.Reset();
-            Exception actual = Assert.ThrowsAny<Exception>(() => session.Step());
-            Assert.Same(error, actual); Assert.Contains(nameof(Counter.Step), actual.StackTrace);
+            var authored = new Counter { Error = error }; using var env = Env.For(authored); using var binding = new LocalBinding(env);
+            binding.Reset();
+            Exception actual = Assert.ThrowsAny<Exception>(() => binding.Step());
+            Assert.NotSame(error, actual); Assert.Contains("step failed", actual.Message);
         }
         Assert.Equal(0, CallbackContext.ActiveFrames);
     }
@@ -674,36 +678,37 @@ public sealed unsafe class FoundationTests
         Assert.Equal(12, Enum.GetValues<DType>().Length); Assert.Equal(10, Enum.GetValues<ValueKind>().Length);
     }
 
-    private sealed class LocalSession : IDisposable
+    // A RANDOM_SAMPLE binding: the env's callbacks run on the calling thread.
+    private sealed class LocalBinding : IDisposable
     {
         private readonly HandleLease borrow;
-        private readonly RLMeshSession* session;
-        internal LocalSession(Env env)
+        private readonly RLMeshBinding* binding;
+        internal LocalBinding(Env env)
         {
             borrow = env.Record.Acquire(env);
-            var options = new RLMeshSessionOptions { struct_size = (UIntPtr)sizeof(RLMeshSessionOptions), execution_horizon = 1 };
-            RLMeshSession* output = null;
+            var options = new RLMeshBindOptions { struct_size = (UIntPtr)sizeof(RLMeshBindOptions), execution_horizon = 1 };
+            RLMeshBinding* output = null;
             try
             {
-                Status.Check(Native.rlmesh_session_new(new RLMeshModelTarget { kind = RLMeshModelTargetKind.RLMESH_MODEL_TARGET_KIND_RANDOM_SAMPLE }, Native.rlmesh_env_target(borrow.Env), &options, &output));
-                session = output;
+                Status.Check(Native.rlmesh_bind(new RLMeshModelTarget { kind = RLMeshModelTargetKind.RLMESH_MODEL_TARGET_KIND_RANDOM_SAMPLE }, Native.rlmesh_env_target(borrow.Env), &options, &output));
+                binding = output;
             }
             catch { borrow.Dispose(); throw; }
         }
         internal void Reset()
         {
             RLMeshValue* obs = null; RLMeshValue* info = null;
-            try { Status.Check(Native.rlmesh_session_reset(session, null, null, &obs, &info)); }
+            try { Status.Check(Native.rlmesh_binding_reset(binding, null, null, &obs, &info)); }
             finally { Native.rlmesh_value_free(obs); Native.rlmesh_value_free(info); }
         }
         internal void Step()
         {
             Value action = 0; using var call = action.Handle.Acquire(action);
             RLMeshValue* obs = null; RLMeshValue* info = null; double reward = 0; bool terminated = false, truncated = false;
-            try { Status.Check(Native.rlmesh_session_step(session, call.Value, &obs, &reward, &terminated, &truncated, &info)); }
+            try { Status.Check(Native.rlmesh_binding_step(binding, call.Value, &obs, &reward, &terminated, &truncated, &info)); }
             finally { Native.rlmesh_value_free(obs); Native.rlmesh_value_free(info); }
         }
-        public void Dispose() { Native.rlmesh_session_free(session); borrow.Dispose(); }
+        public void Dispose() { Native.rlmesh_binding_free(binding); borrow.Dispose(); }
     }
     private static void Collect() { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); }
     internal readonly record struct ProcessResult(int Code, string Output);

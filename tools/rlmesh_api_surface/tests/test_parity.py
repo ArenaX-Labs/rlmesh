@@ -313,9 +313,9 @@ def test_new_public_trait_implementation_needs_inventory_entry():
 @pytest.mark.parametrize("rule", [None, ["R-4"]])
 def test_review_exempt_needs_own_decision(rule):
     expected, manifest, surfaces, _ = reset_fixture("cpp")
-    mapping = manifest["rlmesh:Session.reset"]["cpp"]
+    mapping = manifest["rlmesh:Binding.reset"]["cpp"]
     mapping.update(status="exempt")
-    manifest["rlmesh:Session.reset"]["rule"] = ["D-8"]
+    manifest["rlmesh:Binding.reset"]["rule"] = ["D-8"]
     mapping.pop("rule", None)
     if rule is not None:
         mapping["rule"] = rule
@@ -325,7 +325,7 @@ def test_review_exempt_needs_own_decision(rule):
 
 def test_review_bridge_cannot_hide_deleted_shared_method():
     expected, manifest, surfaces, _ = reset_fixture("cpp")
-    mapping = manifest["rlmesh:Session.reset"]["cpp"]
+    mapping = manifest["rlmesh:Binding.reset"]["cpp"]
     del surfaces["cpp"][mapping["path"]]
     mapping.update(status="bridge", rule=["R-24"])
     assert any("R-24 scope" in e for e in check(expected, manifest, surfaces))
@@ -350,7 +350,7 @@ def test_review_also_cannot_hide_arbitrary_options_field(language):
 
 def test_review_ext_cannot_hide_unfenced_method():
     expected, manifest, surfaces = fixture()
-    extra = "rlmesh::Session::frobnicate"
+    extra = "rlmesh::Binding::frobnicate"
     surfaces["rust"][extra] = Item("method")
     manifest["ext"] = {"rust": [{"path": extra, "rule": "R-25"}]}
     assert any("R-25 closed list" in e for e in check(expected, manifest, surfaces))
@@ -358,12 +358,12 @@ def test_review_ext_cannot_hide_unfenced_method():
 
 def reset_fixture(language):
     expected, manifest, surfaces = fixture()
-    path = "rlmesh:Session.reset"
-    native = "rlmesh_session_reset" if language == "c" else "rlmesh::Session::reset"
-    inputs = {"seed": "const int64_t *", "trial_index": "const int64_t *"}
+    path = "rlmesh:Binding.reset"
+    native = "rlmesh_binding_reset" if language == "c" else "rlmesh::Binding::reset"
+    inputs = {"seed": "const int64_t *", "options": "const RLMeshValue *"}
     if language == "c":
         inputs = {
-            "session": "RLMeshSession *",
+            "binding": "RLMeshBinding *",
             **inputs,
             "out_observation": "RLMeshValue **",
             "out_info": "RLMeshValue **",
@@ -371,17 +371,17 @@ def reset_fixture(language):
     surfaces[language][native] = Item("function", params=inputs)
     expected[path] = {
         "kind": "function",
-        "params": {"seed": "None", "trial_index": "None"},
+        "params": {"seed": "None", "options": "None"},
     }
     manifest[path] = {
-        "parameters": {n: {"default": "None"} for n in ("seed", "trial_index")}
+        "parameters": {n: {"default": "None"} for n in ("seed", "options")}
     }
     for lang in surfaces:
         manifest[path][lang] = (
             {
                 "status": "present",
                 "path": native,
-                "params": {n: native + "#" + n for n in ("seed", "trial_index")},
+                "params": {n: native + "#" + n for n in ("seed", "options")},
             }
             if lang == language
             else {"status": "missing", "gap": "G-1"}
@@ -402,7 +402,7 @@ def test_review_c_reset_output_order():
     params = surfaces["c"][native].params
     surfaces["c"][native].params = {
         n: params[n]
-        for n in ("session", "seed", "trial_index", "out_info", "out_observation")
+        for n in ("binding", "seed", "options", "out_info", "out_observation")
     }
     assert any(
         "R-15" in e and "order" in e for e in check(expected, manifest, surfaces)
@@ -463,17 +463,17 @@ def test_recorded_return_type_is_checked():
 
 def test_ext_closed_list_cannot_be_used_through_binding():
     expected, manifest, surfaces = fixture()
-    surfaces["rust"]["rlmesh::Session::frobnicate"] = Item("method")
+    surfaces["rust"]["rlmesh::Binding::frobnicate"] = Item("method")
     manifest["binding"] = {
-        "rust": [{"path": "rlmesh::Session::frobnicate", "rule": "R-25"}]
+        "rust": [{"path": "rlmesh::Binding::frobnicate", "rule": "R-25"}]
     }
     assert any("not R-12/R-25" in e for e in check(expected, manifest, surfaces))
 
 
-@pytest.mark.parametrize("parameter", ["seed", "trial_index"])
+@pytest.mark.parametrize("parameter", ["seed", "options"])
 def test_arbitrary_input_cannot_be_dropped_as_bridge(parameter):
     expected, manifest, surfaces, native = reset_fixture("rust")
-    mapping = manifest["rlmesh:Session.reset"]["rust"]
+    mapping = manifest["rlmesh:Binding.reset"]["rust"]
     mapping["params"].pop(parameter)
     mapping["bridges"] = [parameter]
     mapping["rule"] = ["R-24"]
@@ -482,10 +482,10 @@ def test_arbitrary_input_cannot_be_dropped_as_bridge(parameter):
 
 def test_review_rust_tuple_output_order():
     expected, manifest, surfaces, native = reset_fixture("rust")
-    manifest["rlmesh:Session.reset"]["rust"]["result_tuple"] = ["Value", "InfoDict"]
+    manifest["rlmesh:Binding.reset"]["rust"]["result_tuple"] = ["Value", "InfoDict"]
     surfaces["rust"][
         native
-    ].signature = "fn reset(seed: Option<i64>, trial_index: Option<i64>) -> Result<(InfoDict, Value)>"
+    ].signature = "fn reset(seed: Option<i64>, options: Option<&InfoDict>) -> Result<(InfoDict, Value)>"
     assert any(
         "result_tuple order" in e and "R-15" in e
         for e in check(expected, manifest, surfaces)
@@ -494,7 +494,7 @@ def test_review_rust_tuple_output_order():
 
 def test_review_cpp_tuple_alias_order():
     expected, manifest, surfaces, native = reset_fixture("cpp")
-    manifest["rlmesh:Session.reset"]["cpp"].update(
+    manifest["rlmesh:Binding.reset"]["cpp"].update(
         returns="ResetResult", result_tuple=["Value", "InfoDict"]
     )
     surfaces["cpp"][native].returns = "ResetResult"

@@ -30,9 +30,9 @@ pub(crate) fn ignore_sigpipe() {
     }
 }
 
-/// Binary ABI generation, independent of the package semver. ABI 5 is the
+/// Binary ABI generation, independent of the package semver. ABI 6 is the
 /// language-parity surface. Its options and callback records follow R-19.
-pub const RLMESH_ABI_VERSION: u32 = 5;
+pub const RLMESH_ABI_VERSION: u32 = 6;
 
 /// The linked library's ABI generation (see [`RLMESH_ABI_VERSION`]). A consumer
 /// compares this against the `RLMESH_ABI_VERSION` macro it compiled against.

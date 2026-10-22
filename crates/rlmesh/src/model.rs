@@ -12,6 +12,7 @@ pub(crate) mod handler;
 pub(crate) mod local;
 mod policy;
 pub(crate) mod predict_fn;
+pub(crate) mod random;
 pub(crate) mod remote;
 pub(crate) mod server;
 pub(crate) mod types;

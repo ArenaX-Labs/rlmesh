@@ -91,6 +91,18 @@ static RLMeshStatus enumerate(void* ud, RLMeshVariantSink* sink) {
   if (status != RLMESH_OK) rlmesh_variant_free(v);
   return status;
 }
+/* Steps one episode of a binding. */
+static void step_bound(RLMeshBinding* binding) {
+  RLMeshValue *obs = NULL, *info = NULL;
+  CHECK(rlmesh_binding_reset(binding, NULL, NULL, &obs, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  double reward = 0;
+  bool term = false, trunc = false;
+  CHECK(rlmesh_binding_step(binding, NULL, &obs, &reward, &term, &trunc, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+}
 typedef struct Serving {
   State* state;
   RLMeshExtCancelToken* cancel;
@@ -248,13 +260,12 @@ int main(void) {
   CHECK(rlmesh_run_result_num_episodes(run_result) == 1);
   rlmesh_run_result_free(run_result);
   CHECK(state.env_closes == state.makes && state.env_frees == state.makes);
-  RLMeshSession* session = NULL;
-  CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(state.factory), NULL,
-                           &session) == RLMESH_OK);
+  RLMeshBinding* binding = NULL;
+  CHECK(rlmesh_bind(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(state.factory), NULL,
+                    &binding) == RLMESH_OK);
   CHECK(rlmesh_env_factory_prepare(state.factory) == RLMESH_ERR_RUNTIME);
-  CHECK(rlmesh_session_run(session, NULL, &run_result) == RLMESH_OK);
-  rlmesh_run_result_free(run_result);
-  rlmesh_session_free(session);
+  step_bound(binding);
+  rlmesh_binding_free(binding);
   CHECK(state.env_closes == state.makes && state.env_frees == state.makes);
   CHECK(rlmesh_env_factory_close(state.factory) == RLMESH_OK && state.closes == 1);
   rlmesh_env_factory_free(state.factory);

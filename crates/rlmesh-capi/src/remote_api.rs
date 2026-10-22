@@ -8,11 +8,11 @@ use crate::cancel::RLMeshExtCancelToken;
 use crate::codec::RLMeshBytes;
 use crate::contract::RLMeshEnvContract;
 use crate::ffi;
-use crate::run_api::{RLMeshEnvTarget, RLMeshModelTarget};
+use crate::run_api::RLMeshEnvTarget;
 use crate::space_handle::RLMeshSpace;
 use crate::spaces::RLMeshSpaceSpec;
 use crate::value::handle::{RLMeshValue, into_handle, value_ref, write_out};
-use rlmesh::{RemoteEnv, RemoteEnvOptions, RemoteModel, RemoteModelOptions, RemoteVectorEnv};
+use rlmesh::{RemoteEnv, RemoteEnvOptions, RemoteVectorEnv};
 use std::ffi::c_char;
 use std::sync::{Arc, Mutex};
 #[repr(C)]
@@ -33,26 +33,6 @@ pub struct RLMeshRemoteEnvOptions {
     pub workflow_edition: *const c_char,
     /// Appended after ABI 5; starts at the ABI-5 sizeof on every target.
     pub _reserved: u64,
-    /// Appended after ABI 5: read only when `struct_size` covers it.
-    pub api_key: *const c_char,
-    /// Appended after ABI 5: read only when `struct_size` covers it.
-    pub tls_ca_file: *const c_char,
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct RLMeshRemoteModelOptions {
-    pub struct_size: usize,
-    pub address: *const c_char,
-    pub host: *const c_char,
-    pub has_port: bool,
-    pub port: u16,
-    pub path: *const c_char,
-    pub has_transport: bool,
-    pub transport: i32,
-    pub has_connect_timeout_seconds: bool,
-    pub connect_timeout_seconds: f64,
-    pub has_request_timeout_seconds: bool,
-    pub request_timeout_seconds: f64,
     /// Appended after ABI 5: read only when `struct_size` covers it.
     pub api_key: *const c_char,
     /// Appended after ABI 5: read only when `struct_size` covers it.
@@ -89,32 +69,6 @@ unsafe fn env_options(p: *const RLMeshRemoteEnvOptions) -> Result<RemoteEnvOptio
             "request_timeout_seconds",
         )?,
         workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
-        api_key: unsafe { ffi::text(o.api_key) }?,
-        tls_ca_file: unsafe { ffi::text(o.tls_ca_file) }?.map(Into::into),
-    })
-}
-unsafe fn model_options(
-    p: *const RLMeshRemoteModelOptions,
-) -> Result<RemoteModelOptions, CapiError> {
-    let Some(o) = unsafe { sizing::read(p, "RLMeshRemoteModelOptions") }? else {
-        return Ok(RemoteModelOptions::default());
-    };
-    Ok(RemoteModelOptions {
-        address: unsafe { ffi::text(o.address) }?,
-        host: unsafe { ffi::text(o.host) }?,
-        port: o.has_port.then_some(o.port),
-        path: unsafe { ffi::text(o.path) }?,
-        transport: transport(o.has_transport, o.transport)?,
-        connect_timeout: rlmesh::binding::env::client_timeout_from_secs(
-            o.has_connect_timeout_seconds
-                .then_some(o.connect_timeout_seconds),
-            "connect_timeout_seconds",
-        )?,
-        request_timeout: rlmesh::binding::env::client_timeout_from_secs(
-            o.has_request_timeout_seconds
-                .then_some(o.request_timeout_seconds),
-            "request_timeout_seconds",
-        )?,
         api_key: unsafe { ffi::text(o.api_key) }?,
         tls_ca_file: unsafe { ffi::text(o.tls_ca_file) }?.map(Into::into),
     })
@@ -169,9 +123,7 @@ pub struct RLMeshRemoteVectorEnv {
     common: Common,
     client: Arc<Mutex<Option<RemoteVectorEnv>>>,
 }
-#[derive(Clone)]
-pub struct RLMeshRemoteModel(pub(crate) RemoteModel);
-// A short operation and a long session use the same exclusive borrow. Immutable
+// A short operation and a run use the same exclusive borrow. Immutable
 // accessors live outside it; the edition is the facade's shared pin cell.
 pub(crate) struct Lease<T> {
     pub(crate) client: Option<Box<T>>,
@@ -199,8 +151,7 @@ impl<T> Drop for Lease<T> {
     }
 }
 fn busy() -> CapiError {
-    rlmesh::Error::Runtime("remote client I/O is already active or borrowed by a session".into())
-        .into()
+    rlmesh::Error::Runtime("remote client I/O is already active or borrowed by a run".into()).into()
 }
 pub(crate) unsafe fn borrow_env(p: *const RLMeshRemoteEnv) -> Result<Lease<RemoteEnv>, CapiError> {
     Lease::new(
@@ -294,80 +245,6 @@ fn vector_output(
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_remote_model_new(
-    o: *const RLMeshRemoteModelOptions,
-    out: *mut *mut RLMeshRemoteModel,
-) -> RLMeshStatus {
-    guard(|| {
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, std::ptr::null_mut())
-        }?;
-        let c = RemoteModel::new(unsafe { model_options(o) }?)?;
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, Box::into_raw(Box::new(RLMeshRemoteModel(c))))
-        }
-    })
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_remote_model_clone(
-    p: *const RLMeshRemoteModel,
-    out: *mut *mut RLMeshRemoteModel,
-) -> RLMeshStatus {
-    guard(|| {
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, std::ptr::null_mut())
-        }?;
-        let c = unsafe { p.as_ref() }
-            .ok_or_else(|| CapiError::invalid_arg("null remote model"))?
-            .clone();
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, Box::into_raw(Box::new(c)))
-        }
-    })
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_remote_model_address(
-    p: *const RLMeshRemoteModel,
-    out: *mut RLMeshBytes,
-) -> RLMeshStatus {
-    guard(|| {
-        ffi::bytes(
-            out,
-            unsafe { p.as_ref() }
-                .ok_or_else(|| CapiError::invalid_arg("null remote model"))?
-                .0
-                .address()
-                .into(),
-        )
-    })
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_remote_model_repr(
-    p: *const RLMeshRemoteModel,
-    out: *mut RLMeshBytes,
-) -> RLMeshStatus {
-    guard(|| {
-        ffi::bytes(
-            out,
-            unsafe { p.as_ref() }
-                .ok_or_else(|| CapiError::invalid_arg("null remote model"))?
-                .0
-                .to_string(),
-        )
-    })
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn rlmesh_remote_model_target(p: *const RLMeshRemoteModel) -> RLMeshModelTarget {
-    RLMeshModelTarget {
-        kind: 2,
-        handle: p.cast(),
-    }
-}
-#[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_remote_env_target(p: *mut RLMeshRemoteEnv) -> RLMeshEnvTarget {
     RLMeshEnvTarget {
         kind: 3,
@@ -385,15 +262,6 @@ pub extern "C" fn rlmesh_remote_vector_env_target(
         address: std::ptr::null(),
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_remote_model_session(
-    p: *const RLMeshRemoteModel,
-    e: RLMeshEnvTarget,
-    o: *const crate::session_api::RLMeshSessionOptions,
-    out: *mut *mut crate::session_api::RLMeshSession,
-) -> RLMeshStatus {
-    unsafe { crate::session_api::rlmesh_session_new(rlmesh_remote_model_target(p), e, o, out) }
-}
 macro_rules! free {
     ($fn:ident,$ty:ty) => {
         #[unsafe(no_mangle)]
@@ -408,7 +276,6 @@ macro_rules! free {
 }
 free!(rlmesh_remote_env_free, RLMeshRemoteEnv);
 free!(rlmesh_remote_vector_env_free, RLMeshRemoteVectorEnv);
-free!(rlmesh_remote_model_free, RLMeshRemoteModel);
 macro_rules! common_text {
     ($f:ident,$ty:ty,$field:ident) => {
         #[unsafe(no_mangle)]

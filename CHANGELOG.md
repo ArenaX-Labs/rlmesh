@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
-This release gives the Rust facade crate (`rlmesh`), the C API (`rlmesh.h`, now C ABI 5) and the C++ wrapper (`rlmesh.hpp`, now C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
+This release gives the Rust facade crate (`rlmesh`), the C API (`rlmesh.h`, now C ABI 6) and the C++ wrapper (`rlmesh.hpp`, now C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
 ### Breaking
 
@@ -53,7 +53,7 @@ The `rlmesh` facade crate now exposes spaces, values, envs, models, runs and ses
 
 - Envs implement the sync, Gymnasium-shaped `Env` / `VectorEnv` traits and are served with `EnvServer` (or `EnvFactoryExt::serve`). The async request/result traits, `VectorEnvServer`, `BoundEnvServer`, the request and result types, `EndpointPhases` and `TRIAL_INDEX_OPTION` moved to the hidden `rlmesh::binding`.
 - Models implement `Policy` (or are a closure) and are wrapped in `Model`. `ModelHandler`, `ModelWorker`, `PredictFn`, `RunLocalOptions`, `ServeModelOptions`, `BoundModelServer`, the route and observation types, `EnvRuntimeError` and the `async_trait` re-export moved to `rlmesh::binding`, and left the prelude.
-- Runs use `run` / `Model::run`, `Session` and `RunHooks`. The runtime driver's `RuntimeHooks`, its event types, `HookError`, `NoopRuntimeHooks`, `RuntimeReport`, `PeerCeiling`, `telemetry` and the `CancellationToken` re-export moved to `rlmesh::binding`; cancel with `ext::CancelToken`.
+- Runs use `run` / `Model::run` and `RunHooks`; `Model::bind` (or `rlmesh::bind`) binds a model to one env to step by hand, as Python's `Model.bind` does. The runtime driver's `RuntimeHooks`, its event types, `HookError`, `NoopRuntimeHooks`, `RuntimeReport`, `PeerCeiling`, `telemetry` and the `CancellationToken` re-export moved to `rlmesh::binding`; cancel with `ext::CancelToken`.
 - `rlmesh::spaces` exposes stateful spaces and their specifications. The wire types it re-exported (spec payloads and builders, `SpaceValue`, the core `Tensor` and `DType`, `MetaMap`, render and request types) moved to `rlmesh::binding::spaces`, and the crate-root `SpaceSpec`, `SpaceValue` and `RenderFrame` are gone; `rlmesh::binding::space_spec_wire` gives the wire spec of a `spaces::SpaceSpec`.
 - `CURRENT_WORKFLOW_EDITION`, `parse_declared_edition`, `PROTOCOL_GENERATION`, `supported_workflow_editions` and the `PeerInfo` override moved to `rlmesh::binding`; use `current_workflow_edition()` and `build_info()`.
 - `ServeOptions` holds shared serving configuration: its `token`, `predict_concurrency` and `peer_info_extra` moved to `ext::EnvServerOptions` and `ext::ModelServeOptions`.
@@ -62,7 +62,10 @@ The `rlmesh` facade crate now exposes spaces, values, envs, models, runs and ses
 
 #### C
 
-The experimental C API moves to **ABI generation 5** (`RLMESH_ABI_VERSION` 5, SONAME `librlmesh_capi.so.5`, CMake package version 5). ABI 4 binaries and sources do not build or load against it:
+The experimental C API moves to **ABI generation 6** (`RLMESH_ABI_VERSION` 6, SONAME `librlmesh_capi.so.6`, CMake package version 6). ABI 4 and 5 binaries and sources do not build or load against it:
+
+- A model is bound to one env as Python's `Model.bind` does: `rlmesh_model_bind` (`rlmesh_bind` for a model target, `RANDOM_SAMPLE` included) returns an `RLMeshBinding`, stepped with `rlmesh_binding_reset(seed, options)` and `rlmesh_binding_step(action)` (NULL: the model's action). ABI 5's `RLMeshSession` and its `rlmesh_session_*` / `rlmesh_ext_session_*` functions are removed, with no predict, run, hooks, view, cancel token or trial index on a binding: use `rlmesh_model_run` for whole episodes.
+- A model served elsewhere is an `RLMeshModel` built from its participant address, `rlmesh_model_from_address`, as Python's `Model(address)`; `RLMeshRemoteModel`, its options and `RLMESH_MODEL_TARGET_KIND_REMOTE_MODEL` are removed.
 
 - Type names spell the project `RLMesh` (`RLMeshStatus`, `RLMeshValue`, `RLMeshEpisode`, ...) instead of `Rlmesh`. Function names (`rlmesh_*`), macros (`RLMESH_*`) and the `rlmesh::` C++ namespace are unchanged.
 - `RLMeshValue` holds ten core kinds (None, Bool, Int, Float, Text, Bytes, Tensor, List, Tuple, Dict) instead of the space-specific projection: a Discrete action is an Int, and a Box observation or a MultiBinary or MultiDiscrete sample is a Tensor. `rlmesh_value_box`, `rlmesh_value_discrete`, `rlmesh_value_as_discrete`, `rlmesh_value_copy_multi_*` and the `RLMESH_VALUE_BOX`-style kinds are removed.
@@ -76,6 +79,7 @@ The experimental C API moves to **ABI generation 5** (`RLMESH_ABI_VERSION` 5, SO
 
 #### C++
 
+- `rlmesh::Binding` (`Model::bind`, `rlmesh::bind`) replaces `rlmesh::Session` and `rlmesh::session`, and `Model::from_address` replaces `rlmesh::RemoteModel`, as in C.
 - `rlmesh.hpp` keeps its C++17 minimum and now requires exceptions (`#error` otherwise); `-fno-exceptions` builds are no longer supported. `Result<T>`, `Error`, `RLMESH_TRY`, the aborting `value()` / `unwrap()` accessors, `ValueRef`, `SpaceRef`, the worker `Batch` / `Request`, `RunReport` and the ABI-4 wrapper types are removed. Fallible calls return their value and throw the corresponding exception class instead (see Added); write `try` / `catch` where you checked a `Result`. A `Model` is built from a policy or callable whose `predict` takes and returns `rlmesh::Value`, and options are aggregates with named fields and `std::chrono::duration<double>` durations that drop the `_seconds` suffix (`max_episode_seconds` becomes `max_episode`).
 
 ### Added

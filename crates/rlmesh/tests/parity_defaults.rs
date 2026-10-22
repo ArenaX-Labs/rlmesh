@@ -37,6 +37,16 @@ fn defaults_match_python_literals() {
     );
     assert!(value.on_close.is_none(), "rlmesh:Model.on_close");
     assert!(!value.trust_entrypoints, "rlmesh:Model.trust_entrypoints");
+    let value = rlmesh::BindOptions::default();
+    assert_eq!(
+        value.execution_horizon, 1,
+        "rlmesh:Model.bind.execution_horizon"
+    );
+    assert!(!value.close_env, "rlmesh:Model.bind.close_env");
+    assert!(
+        value.workflow_edition.is_none(),
+        "rlmesh:Model.bind.workflow_edition"
+    );
     let value = rlmesh::RunOptions::default();
     assert!(value.seeds.is_none(), "rlmesh:Model.run.seeds");
     assert!(value.episodes.is_none(), "rlmesh:Model.run.episodes");
@@ -71,25 +81,6 @@ fn defaults_match_python_literals() {
     assert!(value.view.is_none(), "rlmesh:run.view");
     let value = rlmesh::ModelServeOptions::default();
     assert!(value.options.is_none(), "rlmesh:Model.serve.options");
-    let value = rlmesh::SessionOptions::default();
-    assert!(
-        value.instruction.is_none(),
-        "rlmesh:Model.session.instruction"
-    );
-    assert!(!value.close_env, "rlmesh:Model.session.close_env");
-    assert!(
-        value.trust_entrypoints.is_none(),
-        "rlmesh:Model.session.trust_entrypoints"
-    );
-    assert_eq!(
-        value.execution_horizon, 1,
-        "rlmesh:Model.session.execution_horizon"
-    );
-    assert!(value.view.is_none(), "rlmesh:Model.session.view");
-    assert!(
-        value.workflow_edition.is_none(),
-        "rlmesh:Model.session.workflow_edition"
-    );
     let value = rlmesh::recorder::RecorderOptions::default();
     assert!(
         value.result_set_id.is_none(),
@@ -149,25 +140,6 @@ fn defaults_match_python_literals() {
     );
     assert!(value.api_key.is_none(), "rlmesh:RemoteEnv.api_key");
     assert!(value.tls_ca_file.is_none(), "rlmesh:RemoteEnv.tls_ca_file");
-    let value = rlmesh::RemoteModelOptions::default();
-    assert!(value.address.is_none(), "rlmesh:RemoteModel.address");
-    assert!(value.host.is_none(), "rlmesh:RemoteModel.host");
-    assert!(value.port.is_none(), "rlmesh:RemoteModel.port");
-    assert!(value.path.is_none(), "rlmesh:RemoteModel.path");
-    assert!(value.transport.is_none(), "rlmesh:RemoteModel.transport");
-    assert!(
-        value.connect_timeout.is_none(),
-        "rlmesh:RemoteModel.connect_timeout_seconds"
-    );
-    assert!(
-        value.request_timeout.is_none(),
-        "rlmesh:RemoteModel.request_timeout_seconds"
-    );
-    assert!(value.api_key.is_none(), "rlmesh:RemoteModel.api_key");
-    assert!(
-        value.tls_ca_file.is_none(),
-        "rlmesh:RemoteModel.tls_ca_file"
-    );
     let value = rlmesh::RunResult::default();
     assert!(value.episodes.is_empty(), "rlmesh:RunResult.episodes");
     assert!(value.telemetry.is_empty(), "rlmesh:RunResult.telemetry");
@@ -196,22 +168,6 @@ fn defaults_match_python_literals() {
     assert!(
         !value.compress_responses,
         "rlmesh:ServeOptions.compress_responses"
-    );
-    let value = rlmesh::SessionRunOptions::default();
-    assert!(value.seeds.is_none(), "rlmesh:Session.run.seeds");
-    assert!(value.episodes.is_none(), "rlmesh:Session.run.episodes");
-    assert!(
-        value.max_episode_steps.is_none(),
-        "rlmesh:Session.run.max_episode_steps"
-    );
-    assert!(
-        value.max_episode.is_none(),
-        "rlmesh:Session.run.max_episode_seconds"
-    );
-    assert!(value.hooks.is_none(), "rlmesh:Session.run.hooks");
-    assert_eq!(
-        value.trial_index_base, 0,
-        "rlmesh:Session.run.trial_index_base"
     );
     let value = rlmesh::View::default();
     assert_eq!(value.backend.to_string(), "terminal", "rlmesh:View.backend");

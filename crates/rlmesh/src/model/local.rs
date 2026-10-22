@@ -363,7 +363,10 @@ impl LockstepEnv {
     pub(crate) async fn connect(address: &str, declared: Option<&str>) -> Result<Connected> {
         let client = crate::lockstep::connect(address, Default::default())
             .await
-            .map_err(|err| Error::Connection(err.to_string()))?;
+            .map_err(|err| match crate::env::client::env_held(&err) {
+                true => Error::Connection(crate::env::client::ENV_HELD.into()),
+                false => Error::Connection(err.to_string()),
+            })?;
         let info = client.info();
         if info.contract.autoreset_mode == spaces::types::AutoresetMode::SameStep {
             return Err(Error::invalid_argument(

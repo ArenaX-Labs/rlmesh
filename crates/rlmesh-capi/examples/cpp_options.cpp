@@ -171,25 +171,6 @@ void options_setters() {
         .with_request_timeout(options.request_timeout)
         .with_workflow_edition(options.workflow_edition);
   }
-  static_assert(std::is_aggregate_v<rlmesh::RemoteModelOptions>);
-  {
-    rlmesh::RemoteModelOptions options;
-    options.with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
-        .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout);
-    std::move(options)
-        .with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
-        .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout);
-  }
   static_assert(std::is_aggregate_v<rlmesh::View>);
   {
     rlmesh::View options;
@@ -211,24 +192,16 @@ void options_setters() {
         .with_hold(options.hold)
         .with_step_hz(options.step_hz);
   }
-  static_assert(std::is_aggregate_v<rlmesh::RemoteModelOptions>);
+  static_assert(std::is_aggregate_v<rlmesh::BindOptions>);
   {
-    rlmesh::RemoteModelOptions options;
-    options.with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
-        .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout);
+    rlmesh::BindOptions options;
+    options.with_close_env(options.close_env)
+        .with_execution_horizon(options.execution_horizon)
+        .with_workflow_edition(options.workflow_edition);
     std::move(options)
-        .with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
-        .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout);
+        .with_close_env(options.close_env)
+        .with_execution_horizon(options.execution_horizon)
+        .with_workflow_edition(options.workflow_edition);
   }
   static_assert(std::is_aggregate_v<rlmesh::RunOptions>);
   {
@@ -260,44 +233,6 @@ void options_setters() {
         .with_prefetch_lead(options.prefetch_lead)
         .with_view(options.view)
         .with_workflow_edition(options.workflow_edition)
-        .with_trial_index_base(options.trial_index_base)
-        .with_cancel(options.cancel);
-  }
-  static_assert(std::is_aggregate_v<rlmesh::SessionOptions>);
-  {
-    rlmesh::SessionOptions options;
-    options.with_instruction(options.instruction)
-        .with_close_env(options.close_env)
-        .with_trust_entrypoints(options.trust_entrypoints)
-        .with_execution_horizon(options.execution_horizon)
-        .with_view(options.view)
-        .with_workflow_edition(options.workflow_edition)
-        .with_cancel(options.cancel);
-    std::move(options)
-        .with_instruction(options.instruction)
-        .with_close_env(options.close_env)
-        .with_trust_entrypoints(options.trust_entrypoints)
-        .with_execution_horizon(options.execution_horizon)
-        .with_view(options.view)
-        .with_workflow_edition(options.workflow_edition)
-        .with_cancel(options.cancel);
-  }
-  static_assert(std::is_aggregate_v<rlmesh::SessionRunOptions>);
-  {
-    rlmesh::SessionRunOptions options;
-    options.with_episodes(options.episodes)
-        .with_seeds(options.seeds)
-        .with_max_episode_steps(options.max_episode_steps)
-        .with_max_episode(options.max_episode)
-        .with_hooks(options.hooks)
-        .with_trial_index_base(options.trial_index_base)
-        .with_cancel(options.cancel);
-    std::move(options)
-        .with_episodes(options.episodes)
-        .with_seeds(options.seeds)
-        .with_max_episode_steps(options.max_episode_steps)
-        .with_max_episode(options.max_episode)
-        .with_hooks(options.hooks)
         .with_trial_index_base(options.trial_index_base)
         .with_cancel(options.cancel);
   }

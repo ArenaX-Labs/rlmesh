@@ -44,8 +44,8 @@ int drive(const std::string& verb, const std::string& address, const char* model
     return 0;
   }
   if (verb == "remote-model") {
-    RemoteModel remote(RemoteModelOptions{}.with_address(model));
-    std::printf("episodes=%zu\n", rlmesh::run(remote, address, two_episodes()).num_episodes());
+    std::printf("episodes=%zu\n",
+                Model::from_address(model).run(address, two_episodes()).num_episodes());
     return 0;
   }
   RemoteEnv env(RemoteEnvOptions{}.with_address(address));

@@ -881,7 +881,7 @@ impl PyModel {
     /// frame buffers; this layer only supplies the host (Python) callbacks.
     fn build_handler(&self) -> Box<dyn ModelHandler> {
         if self.random {
-            return Box::<crate::bind::RandomSample>::default();
+            return Box::<rlmesh::binding::model::RandomSampleHandler>::default();
         }
         if let Some((address, timeout)) = &self.served {
             return Box::new(rlmesh::lockstep::ServedModel::new(

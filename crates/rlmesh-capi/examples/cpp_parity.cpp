@@ -25,10 +25,9 @@ namespace {
 static_assert(std::is_same_v<std::iterator_traits<Dict::key_iterator>::iterator_category,
                              std::random_access_iterator_tag>);
 static_assert(!std::is_copy_constructible_v<Env>);
-static_assert(!std::is_copy_constructible_v<Session>);
+static_assert(!std::is_copy_constructible_v<Binding>);
 static_assert(!std::is_copy_constructible_v<RemoteEnv>);
 static_assert(std::is_copy_constructible_v<Model>);
-static_assert(std::is_copy_constructible_v<RemoteModel>);
 static_assert(std::is_copy_constructible_v<ext::CancelToken>);
 static_assert(std::is_nothrow_move_constructible_v<ext::CancelToken>);
 static_assert(std::is_constructible_v<ServedEnv, Env&>);
@@ -164,7 +163,7 @@ void values_spaces() {
   assert(MultiDiscrete({2, 3}).nvec() == (std::vector<int64_t>{2, 3}));
   assert(Tuple({Discrete(2), spaces::Text(4)}).spaces().size() == 2);
 }
-void runs_sessions() {
+void runs_and_bindings() {
   int closed = 0;
   {
     Model first([](const Value&) { return Value(0); },
@@ -201,29 +200,41 @@ void runs_sessions() {
   } catch (const ValueError&) {
   }
   {
-    auto s = rlmesh::session(model, env);
-    auto [obs, info] = s.reset(0);
-    assert(info.empty());
-    auto [obs2, reward, terminated, truncated, info2] = s.step(s.predict(obs));
+    auto b = model.bind(env);
+    assert(b.done());
+    auto [obs, info] = b.reset(0);
+    assert(obs == Value(0) && info.empty() && !b.done());
+    auto [obs2, reward, terminated, truncated, info2] = b.step();
     (void)obs2;
     (void)info2;
     assert(reward == 1 && !terminated && !truncated);
-    assert(s.contract().id() == "CppCounter-v0");
-    assert(s.num_envs() == 1);
+    assert(b.contract().id() == "CppCounter-v0");
+    assert(b.num_envs() == 1 && b.render_mode().empty());
+    assert(b.step(Value(3)) == StepResult(2, 1.0, true, false, {{"is_success", true}}));
+    assert(b.done());
+    try {
+      model.run(env);  // The binding holds the env.
+      assert(false);
+    } catch (const RuntimeError&) {
+    }
+  }
+  {
+    ext::CancelToken token;
     auto token_copy = [&] {
-      auto token = s.cancel_handle();
-      auto copy = token;
-      assert(copy.raw() != token.raw());
+      auto local = token;
+      auto copy = local;
+      assert(copy.raw() != local.raw());
       return copy;
     }();  // The copied C handle survives the original handle's destruction.
     token_copy.cancel();
     token_copy.cancel();  // Pending fires coalesce.
+    auto cancellable = rlmesh::RunOptions{}.with_cancel(token);
     try {
-      s.predict(obs);
+      model.run(env, cancellable);
       assert(false);
     } catch (const ext::CancelledError&) {
     }
-    assert(s.predict(obs) == Value(0));
+    assert(model.run(env, cancellable).num_episodes() == 1);
     ext::CancelToken assigned;
     assigned = token_copy;
     assert(assigned.raw() != token_copy.raw());
@@ -234,28 +245,16 @@ void runs_sessions() {
     assert(!moved.raw() && assigned.raw() == raw);
     assigned.cancel();  // The cloned token observes the re-armed shared state.
     try {
-      s.predict(obs);
+      model.run(env, cancellable);
       assert(false);
     } catch (const ext::CancelledError&) {
     }
-    assert(s.predict(obs) == Value(0));
+    assert(model.run(env, cancellable).num_episodes() == 1);
     try {
       moved.cancel();
       assert(false);
     } catch (const ValueError&) {
     }
-    struct RefuseFree : RunHooks {
-      Session& session;
-      bool called = false;
-      explicit RefuseFree(Session& s) : session(s) {}
-      void on_step(const StepEvent&) override {
-        rlmesh_session_free(session.raw());
-        assert(rlmesh_last_error_status() == RLMESH_ERR_RUNTIME);
-        called = true;
-      }
-    } refuse(s);
-    assert(s.run(rlmesh::SessionRunOptions{}.with_hooks(&refuse)).num_episodes() == 1);
-    assert(refuse.called && s.done());
   }
   assert(object->closes == 0);
   moved.close();
@@ -266,12 +265,21 @@ void runs_sessions() {
   }
   env.close();
   assert(object->closes == 1);
+  struct Recording : Counter {
+    std::shared_ptr<int64_t> seen = std::make_shared<int64_t>(-1);
+    StepResult step(std::optional<Value> action) {
+      *seen = action->as_int();
+      return Counter::step(std::move(action));
+    }
+  };
   auto loaded = Model::from_config<Loaded>({{"weight", 3}});
-  Env another(Counter{});
-  auto s = loaded.session(another);
-  auto [obs, info] = s.reset();
-  (void)info;
-  assert(s.predict(obs).as_int() == 3);
+  Recording recording;
+  auto seen = recording.seen;
+  Env another(std::move(recording));
+  auto b = loaded.bind(another);
+  b.reset();
+  b.step();
+  assert(*seen == 3);
 }
 void missing_dict_action_keys() {
   struct DictCounter : Counter {
@@ -300,7 +308,7 @@ void missing_dict_action_keys() {
   remote.close();
   server.shutdown();
 }
-void session_target_lifetimes() {
+void binding_target_lifetimes() {
   Env env(Counter{});
   int closed = 0;
   auto make_model = [&] {
@@ -313,30 +321,27 @@ void session_target_lifetimes() {
     return server;
   };
   {
-    auto s = make_model().session(env);
+    auto b = make_model().bind(env);
     assert(closed == 0);
-    auto [obs, info] = s.reset();
-    (void)info;
-    assert(s.predict(obs) == Value(0));
-    auto moved = std::move(s);
-    assert(moved.step(0) == StepResult(1, 1.0, false, false, {{"is_success", true}}));
+    b.reset();
+    auto moved = std::move(b);
+    assert(moved.step(Value(0)) == StepResult(1, 1.0, false, false, {{"is_success", true}}));
   }
   assert(closed == 1);
   {
-    auto s = rlmesh::session(make_model(), make_server());
-    auto [obs, info] = s.reset();
-    (void)info;
-    assert(s.predict(obs) == Value(0));
-    assert(std::get<1>(s.step(0)) == 1);
-    auto other = rlmesh::session(make_model(), make_server());
-    s = std::move(other);
+    auto b = make_model().bind(make_server());
+    b.reset();
+    assert(std::get<1>(b.step()) == 1);
+    auto other = make_model().bind(make_server());
+    b = std::move(other);
     assert(closed == 2);
-    assert(s.run().total_steps() == 2);
+    b.reset();
+    assert(std::get<1>(b.step()) == 1);
   }
   assert(closed == 3);
   Model served([](const Value&) { return 0; });
-  // The model joins the session of a host env; each session target below is
-  // another session, which the served model is invited into.
+  // The model joins the session of a host env; each target below is another
+  // session, which the served model is invited into.
   auto host = make_server();
   const auto address = host.address().substr(0, host.address().rfind('/')) + "/policy";
   ext::CancelToken stop;
@@ -358,12 +363,9 @@ void session_target_lifetimes() {
       throw RuntimeError("model server stopped before startup");
     }
     {
-      auto s = rlmesh::session(RemoteModel(rlmesh::RemoteModelOptions{}.with_address(address)),
-                               make_server());
-      auto [obs, info] = s.reset();
-      (void)info;
-      assert(s.predict(obs) == Value(0));
-      assert(std::get<1>(s.step(0)) == 1);
+      auto b = Model::from_address(address).bind(make_server());
+      b.reset();
+      assert(std::get<1>(b.step()) == 1);
 #if defined(__unix__) || defined(__APPLE__)
       assert(sigaction(SIGINT, nullptr, &during) == 0);
       assert(during.sa_handler == before_int.sa_handler);
@@ -371,11 +373,7 @@ void session_target_lifetimes() {
       assert(during.sa_handler == before_term.sa_handler);
 #endif
     }
-    {
-      auto s =
-          RemoteModel(rlmesh::RemoteModelOptions{}.with_address(address)).session(make_server());
-      assert(s.run().total_steps() == 2);
-    }
+    assert(Model::from_address(address).run(make_server()).total_steps() == 2);
   } catch (...) {
     stop.cancel();
     if (server.valid()) server.get();
@@ -388,11 +386,10 @@ void exceptions() {
   Model policy([](const Value&) -> Value { throw OwnError(17); });
   Env env(Counter{});
   {
-    auto s = policy.session(env);
-    auto [obs, info] = s.reset();
-    (void)info;
+    auto b = policy.bind(env);
+    b.reset();
     try {
-      s.predict(obs);
+      b.step();
       assert(false);
     } catch (const OwnError& e) {
       assert(e.tag == 17);
@@ -400,11 +397,10 @@ void exceptions() {
   }
   Model unknown([](const Value&) -> Value { throw 42; });
   {
-    auto s = unknown.session(env);
-    auto [obs, info] = s.reset();
-    (void)info;
+    auto b = unknown.bind(env);
+    b.reset();
     try {
-      s.predict(obs);
+      b.step();
       assert(false);
     } catch (int n) {
       assert(n == 42);
@@ -434,11 +430,10 @@ void exceptions() {
   });
   auto work = [&](int n) {
     Env local(Counter{});
-    auto s = threaded.session(local);
-    auto [o, i] = s.reset(n);
-    (void)i;
+    auto b = threaded.bind(local);
+    b.reset(n);
     try {
-      s.predict(o);
+      b.step();
       assert(false);
     } catch (const OwnError& e) {
       assert(e.tag == n);
@@ -574,11 +569,12 @@ void policy_context_precedence() {
   auto policy = std::make_shared<BothForms>();
   Model model(policy);
   Env env(Counter{});
-  auto session = model.session(env);
-  auto [obs, info] = session.reset();
-  (void)info;
-  assert(session.predict(obs) == Value(1));
-  assert(session.predict(obs) == Value(1));
+  {
+    auto b = model.bind(env);
+    b.reset();
+    b.step();
+    b.step();
+  }
   assert(policy->predicts == 2 && policy->calls == 0);
   struct CallableOnly {
     Value operator()(const Value&, const PredictContext&) { return 0; }
@@ -700,9 +696,11 @@ void factories_remote_describe() {
   assert(!server.wait(Duration(0)));
   server.shutdown();
   assert(server.wait(Duration(1)));
-  RemoteModel rm(rlmesh::RemoteModelOptions{}.with_address("tcp://127.0.0.1:1"));
-  auto rm_copy = rm;
-  assert(rm_copy.address() == rm.address());
+  try {
+    Model::from_address("tcp://127.0.0.1:1");
+    assert(false);
+  } catch (const ValueError&) {
+  }
 }
 struct Identity : adapters::AdapterBase {
   Value transform_obs(const Value& v) override { return v; }
@@ -1016,17 +1014,18 @@ void adapters_readers_recorder() {
       Env live(Tagged{});
       tag(live, tags);
       Model model([](const Value&) { return vector(0); },
-                  rlmesh::ModelOptions{}.with_spec(missing));
-      auto session = model.session(live, rlmesh::SessionOptions{}.with_trust_entrypoints(true));
-      auto observation = std::get<0>(session.reset());
-      session.predict(observation);  // Resolve before removing the registry's reference.
+                  rlmesh::ModelOptions{}.with_spec(missing).with_trust_entrypoints(true));
+      auto binding = model.bind(live);  // Resolves before removing the registry's reference.
+      binding.reset();
+      binding.step();
       {
         auto expected = *registered;
         CHECK(ext::unregister_entrypoint(name, &expected));
         CHECK(!ext::unregister_entrypoint(name, &expected));
       }
       registered.reset();
-      session.predict(observation);
+      binding.reset();
+      binding.step();
       CHECK(!weak.expired());
       try {
         resolve(tags, space.spec(), space.spec(), missing,
@@ -1057,19 +1056,18 @@ void adapters_readers_recorder() {
   Env env(Tagged{});
   tag(env, tags);
   Model model([](const Value&) { return vector(0); }, rlmesh::ModelOptions{}.with_spec(spec));
-  auto s = model.session(env);
-  auto [o, i] = s.reset(0);
-  (void)i;
-  auto reader = s.reader({JOINT_POS});
-  assert(reader(o).contains_key(JOINT_POS));
-  assert(s.read(o, JOINT_POS).as_tensor().size() == 1);
-  assert(s.observation_roles().states.size() == 1);
-  auto sources = s.frame_sources();
-  assert(sources.render && sources.render().as_int() == 1);
+  {
+    auto b = model.bind(env);
+    auto [o, i] = b.reset(0);
+    (void)i;
+    assert(b.read(o, JOINT_POS).as_tensor().size() == 1);
+    auto sources = b.frame_sources();
+    assert(sources.render && sources.render().as_int() == 1);
+    assert(b.render().as_int() == 1 && b.render_mode() == "rgb_array");
+  }
   Recorder recorder(rlmesh::RecorderOptions{}.with_result_set_id("cpp-parity"));
-  auto capture = recorder.capture("policy", "env",
-                                  rlmesh::RecorderCaptureOptions{}.with_session(s.run_context()));
-  auto result = s.run(rlmesh::SessionRunOptions{}.with_hooks(capture.get()));
+  auto capture = recorder.capture("policy", "env");
+  auto result = model.run(env, rlmesh::RunOptions{}.with_hooks(capture.get()));
   assert(result.num_episodes() == 1);
   assert(recorder.workloads().size() == 1);
   auto record = recorder.add(result, "policy", "env");
@@ -1099,8 +1097,8 @@ int main() try {
   vector_and_chunks();
   vector_lane_count_is_fixed();
   policy_context_precedence();
-  runs_sessions();
-  session_target_lifetimes();
+  runs_and_bindings();
+  binding_target_lifetimes();
   missing_dict_action_keys();
   exceptions();
   foreign_error_payloads();

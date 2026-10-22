@@ -36,9 +36,14 @@ follows it in the shared Rust core, so C, C++, C#, Unity and Unreal do too:
 - Still v1 in the native languages, until v1 is deleted: a `tcp://` or
   `unix://` bind or dial, and the options only that wire has (remote
   shutdown, idle and drain timeouts, endpoint tokens, TLS and API keys).
-- The C and C++ names are not yet Python 0.2's: `Session` (Python's
-  `Model.bind` and `Binding`) and `RemoteModel` (Python's `Model(address)`).
-  The code samples in the area files still show v1 endpoints.
+- C ABI 6 takes Python 0.2's names: a model bound to one env is a `Binding`
+  (`rlmesh_model_bind`, `rlmesh_bind` for `RANDOM_SAMPLE`, C++
+  `Model::bind`), stepped with `reset(seed, options)` and `step(action)` (no
+  action: the model's); a served model is a `Model` built from its
+  participant address (`rlmesh_model_from_address`, `Model::from_address`).
+  A binding has no predict, run, hooks, view or cancel token; Python's
+  `Model.bind` hooks and view have no native user yet. The area files still
+  describe 0.1's `Session` and `RemoteModel`, and their samples v1 endpoints.
 - `python/rlmesh/tests/conformance/native_gate.py` runs the Gymnasium gate's
   rows over each language's env, model and clients against Python 0.2:
   `test:cxx` for C++ and the Unreal plugin's game-thread env, `test:csharp`

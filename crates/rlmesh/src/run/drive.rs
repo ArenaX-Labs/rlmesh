@@ -365,10 +365,6 @@ impl CancelWatch {
         })
     }
 
-    pub(crate) fn subscriptions(&self) -> Arc<Vec<crate::ext::CancelSubscription>> {
-        Arc::clone(&self.tokens)
-    }
-
     /// Complete only after output processing. Checking and detaching each
     /// subscription is atomic with cancel(), so a last-moment firing cannot
     /// fall between the final check and unsubscribe.
@@ -378,15 +374,6 @@ impl CancelWatch {
             |fired, token| token.finish() || fired,
         );
         if fired { Err(Error::Cancelled) } else { result }
-    }
-
-    /// Whether a token fired during the call.
-    pub(crate) fn fired(&self) -> bool {
-        self.fired.load(std::sync::atomic::Ordering::SeqCst)
-            || self
-                .tokens
-                .iter()
-                .any(crate::ext::CancelSubscription::fired)
     }
 }
 

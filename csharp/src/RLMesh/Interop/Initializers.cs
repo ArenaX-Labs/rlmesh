@@ -5,7 +5,7 @@ namespace RLMesh.Interop;
 // Object-like macros and inline helpers are deliberately outside generated code.
 internal static unsafe partial class Initializers
 {
-    internal const uint AbiVersion = 5;
+    internal const uint AbiVersion = 6;
     internal static RLMeshBuildInfo BuildInfo() => new() { struct_size = (UIntPtr)sizeof(RLMeshBuildInfo) };
     internal static RLMeshBoxOptions BoxOptions() => new() { struct_size = (UIntPtr)sizeof(RLMeshBoxOptions), dtype = RLMeshDType.RLMESH_DTYPE_FLOAT32 };
     internal static RLMeshDiscreteOptions DiscreteOptions() => new() { struct_size = (UIntPtr)sizeof(RLMeshDiscreteOptions), dtype = RLMeshDType.RLMESH_DTYPE_INT64 };

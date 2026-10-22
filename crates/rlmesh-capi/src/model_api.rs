@@ -467,10 +467,34 @@ struct Info {
     spec: Option<RLMeshModelSpec>,
     _hook_owner: Option<Arc<Owner>>,
 }
+/// A model this process runs (a vtable's), or one served elsewhere and
+/// reached by its participant address, as Python's `Model(address)`.
 #[derive(Clone)]
 pub struct RLMeshModel {
-    pub(crate) model: Model,
-    info: Arc<Info>,
+    held: Held,
+}
+#[derive(Clone)]
+enum Held {
+    Local { model: Model, info: Arc<Info> },
+    Served(rlmesh::RemoteModel),
+}
+impl RLMeshModel {
+    /// The local model; a served one is the TypeError class for `what`.
+    pub(crate) fn local(&self, what: &str) -> Result<&Model, CapiError> {
+        match &self.held {
+            Held::Local { model, .. } => Ok(model),
+            Held::Served(served) => Err(CapiError::type_error(format!(
+                "Model('{}') is served elsewhere: {what} needs a model this process runs",
+                served.address()
+            ))),
+        }
+    }
+    pub(crate) fn target(&self) -> rlmesh::ModelTarget<'_> {
+        match &self.held {
+            Held::Local { model, .. } => model.into(),
+            Held::Served(served) => served.into(),
+        }
+    }
 }
 /// # Safety
 /// A non-NULL handle stays live for the returned reference's lifetime.
@@ -580,7 +604,9 @@ unsafe fn construct(
         spec,
         _hook_owner: hook_owner,
     });
-    let handle = RLMeshModel { model, info };
+    let handle = RLMeshModel {
+        held: Held::Local { model, info },
+    };
     unsafe {
         /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
         write_out(out, Box::into_raw(Box::new(handle)))
@@ -622,6 +648,30 @@ pub unsafe extern "C" fn rlmesh_model_from_config(
     })
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_from_address(
+    address: *const c_char,
+    out: *mut *mut RLMeshModel,
+) -> RLMeshStatus {
+    guard(|| {
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let address =
+            unsafe { ffi::text(address) }?.ok_or_else(|| CapiError::invalid_arg("null address"))?;
+        let served = rlmesh::binding::model::served_model(&address)?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshModel {
+                    held: Held::Served(served),
+                })),
+            )
+        }
+    })
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_model_clone(
     model: *const RLMeshModel,
     out: *mut *mut RLMeshModel,
@@ -639,12 +689,14 @@ pub extern "C" fn rlmesh_model_clone(
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_model_close(model: *mut RLMeshModel) -> RLMeshStatus {
     guard(|| {
-        unsafe {
+        if let Held::Local { model, .. } = &unsafe {
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }?
-        .model
-        .close()?;
+        .held
+        {
+            model.close()?;
+        }
         Ok(())
     })
 }
@@ -653,15 +705,17 @@ pub unsafe extern "C" fn rlmesh_model_free(model: *mut RLMeshModel) {
     guard_value((), || {
         if !model.is_null() {
             let model = unsafe { Box::from_raw(model) };
-            if Arc::strong_count(&model.info) == 1 {
+            if let Held::Local { model, info } = &model.held
+                && Arc::strong_count(info) == 1
+            {
                 // The worker can retain an inert policy briefly after close's
                 // reply. Release C state synchronously once the callback queue
                 // drained; its later Arc drop is then a no-op. In an async or
                 // reentrant context leave ownership to the facade's teardown.
-                let closed = model.model.close().is_ok() || model.model.close().is_ok();
+                let closed = model.close().is_ok() || model.close().is_ok();
                 if closed {
-                    model.info._policy_owner.release();
-                    if let Some(owner) = &model.info._hook_owner {
+                    info._policy_owner.release();
+                    if let Some(owner) = &info._hook_owner {
                         owner.release();
                     }
                 }
@@ -677,7 +731,7 @@ pub extern "C" fn rlmesh_model_allow_fusion(model: *const RLMeshModel) -> bool {
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }
-        .is_ok_and(|m| m.model.allow_fusion())
+        .is_ok_and(|m| m.local("allow_fusion").is_ok_and(Model::allow_fusion))
     })
 }
 #[unsafe(no_mangle)]
@@ -691,8 +745,8 @@ pub extern "C" fn rlmesh_model_native_chunk(
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }?
-        .model
-        .native_chunk();
+        .local("native_chunk")
+        .map_or(None, Model::native_chunk);
         if out.is_null() || out_has.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
@@ -720,8 +774,8 @@ pub extern "C" fn rlmesh_model_workflow_edition(
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }?
-        .model
-        .workflow_edition();
+        .local("workflow_edition")
+        .map_or(None, Model::workflow_edition);
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(out_has, edition.is_some())
@@ -742,7 +796,19 @@ pub extern "C" fn rlmesh_model_spec(
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             require(model)
         }?;
-        let spec = match m.model.spec() {
+        let (Ok(local), Held::Local { info, .. }) = (m.local("spec"), &m.held) else {
+            return unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                write_out(
+                    out,
+                    RLMeshSpecArg {
+                        kind: 1,
+                        spec: std::ptr::null(),
+                    },
+                )
+            };
+        };
+        let spec = match local.spec() {
             None => RLMeshSpecArg {
                 kind: 1,
                 spec: std::ptr::null(),
@@ -753,8 +819,7 @@ pub extern "C" fn rlmesh_model_spec(
             },
             Some(rlmesh::types::SpecArg::ModelSpec(_)) => RLMeshSpecArg {
                 kind: 2,
-                spec: m
-                    .info
+                spec: info
                     .spec
                     .as_ref()
                     .map_or(std::ptr::null(), std::ptr::from_ref),
@@ -773,11 +838,11 @@ pub unsafe extern "C" fn rlmesh_model_serve(
     options: *const RLMeshModelServeOptions,
 ) -> RLMeshStatus {
     guard(|| {
-        let model = &unsafe {
+        let model = unsafe {
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }?
-        .model;
+        .local("serve")?;
         let address =
             unsafe { ffi::text(address) }?.ok_or_else(|| CapiError::invalid_arg("null address"))?;
         let options = unsafe { sizing::read(options, "RLMeshModelServeOptions") }?;
@@ -1001,7 +1066,9 @@ mod tests {
             RLMeshStatus::Ok
         );
         let mut env = Tiny::new();
-        let model = &unsafe { &*m }.model;
+        let Ok(model) = unsafe { &*m }.local("run") else {
+            panic!("a local model")
+        };
         let result = model
             .run(
                 &mut env,
@@ -1040,7 +1107,9 @@ mod tests {
             RLMeshStatus::Ok
         );
         let mut env = Tiny::new();
-        let model = &unsafe { &*m }.model;
+        let Ok(model) = unsafe { &*m }.local("run") else {
+            panic!("a local model")
+        };
         model.run(&mut env, Default::default()).unwrap();
         assert!(p.seeds.lock().unwrap().is_empty());
         p.fail.store(true, Ordering::Relaxed);

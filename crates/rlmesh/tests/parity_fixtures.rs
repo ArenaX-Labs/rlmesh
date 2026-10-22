@@ -223,8 +223,9 @@ fn execute(case: &Json) -> Json {
             out
         }
         "reset_order" => {
-            let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-            let (observation, info) = session.reset(Some(37), Some(11)).unwrap();
+            let mut binding = model.bind(&mut env, BindOptions::default()).unwrap();
+            let options: InfoDict = [("trial_index", Value::Int(11))].into_iter().collect();
+            let (observation, info) = binding.reset(Some(37), Some(&options)).unwrap();
             let (seed, trial) = *counts.reset.lock().unwrap();
             json!({"seed": seed, "trial_index": trial, "observation": observation.as_int().unwrap(), "info_empty": info.is_empty()})
         }
@@ -302,31 +303,32 @@ fn execute(case: &Json) -> Json {
                 }
             }
         }
-        "busy_session" => {
+        "busy_binding" => {
             let server = EnvServer::new(
                 env,
                 EnvServerOptions {
-                    address: Some("tcp://127.0.0.1:0".into()),
+                    address: Some(":0/env".into()),
                     ..Default::default()
                 },
             )
             .unwrap();
             server.start().unwrap();
-            let mut first = model.session(&server, SessionOptions::default()).unwrap();
+            let mut first = model.bind(&server, BindOptions::default()).unwrap();
             first.reset(Some(0), None).unwrap();
-            let error = match model.session(&server, SessionOptions::default()) {
+            let error = match model.bind(&server, BindOptions::default()) {
                 Err(error) => error,
                 Ok(mut second) => second.reset(Some(0), None).unwrap_err(),
             };
             let mut out = error_record(error);
-            first.step(Value::Int(0)).unwrap();
+            first.step(None).unwrap();
             first.close().unwrap();
             out["reusable"] = json!(true);
             drop(first);
             server.shutdown().unwrap();
             out
         }
-        "remote_auth" => remote_auth(case["variant"].as_str().unwrap(), &mut env, &model),
+        "https_env" => https_env(&model),
+        "served_model" => served_model(&mut env, &model),
         "busy_remote" => {
             let server = EnvServer::new(
                 env,
@@ -349,74 +351,62 @@ fn execute(case: &Json) -> Json {
             out
         }
         "borrow" => {
-            let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-            session.reset(Some(0), None).unwrap();
-            drop(session);
+            let mut binding = model.bind(&mut env, BindOptions::default()).unwrap();
+            binding.reset(Some(0), None).unwrap();
+            binding.close().unwrap();
+            drop(binding);
             let mut out = json!({"env_closes": count(&counts.closes), "model_closes": count(&counts.model_closes), "episode_ends": count(&counts.ends)});
             model.run(&mut env, RunOptions::default()).unwrap();
             out["reusable"] = json!(true);
             out
         }
-        "cancel_idle" | "cancel_step" | "cancel_run" | "hook_error" => {
+        "cancel_idle" => {
             let token = ext::CancelToken::new();
-            if op == "cancel_step" || op == "cancel_run" {
-                env.cancel = Some(token.clone());
-            }
-            let mut session = model
-                .session(
-                    &mut env,
-                    SessionOptions {
-                        cancel: Some(token.clone()),
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-            let obs = if op == "cancel_run" || op == "hook_error" {
-                Value::Int(0)
-            } else {
-                session.reset(Some(0), None).unwrap().0
+            let options = || RunOptions {
+                cancel: Some(token.clone()),
+                ..Default::default()
             };
-            if op == "cancel_idle" {
-                let mut out = Json::Null;
-                let mut cancelled_call_starts = 0;
-                let mut failures = 0;
-                for _ in 0..2 {
-                    let before = count(&counts.model_starts);
-                    token.cancel();
-                    token.cancel();
-                    out = error_record(session.predict(obs.clone()).unwrap_err());
-                    failures += 1;
-                    cancelled_call_starts += count(&counts.model_starts) - before;
-                    session.predict(obs.clone()).unwrap();
-                }
-                out["cancelled_call_starts"] = json!(cancelled_call_starts);
-                out["failures"] = json!(failures);
-                out["reusable"] = json!(true);
-                return out;
+            let mut out = Json::Null;
+            let mut cancelled_call_starts = 0;
+            let mut failures = 0;
+            for _ in 0..2 {
+                let before = count(&counts.model_starts);
+                token.cancel();
+                token.cancel();
+                out = error_record(model.run(&mut env, options()).unwrap_err());
+                failures += 1;
+                cancelled_call_starts += count(&counts.model_starts) - before;
+                model.run(&mut env, options()).unwrap();
+            }
+            out["cancelled_call_starts"] = json!(cancelled_call_starts);
+            out["failures"] = json!(failures);
+            out["reusable"] = json!(true);
+            out
+        }
+        "cancel_run" | "hook_error" => {
+            let token = ext::CancelToken::new();
+            if op == "cancel_run" {
+                env.cancel = Some(token.clone());
             }
             let mut hooks = Hooks {
                 fail: op == "hook_error",
                 ..Default::default()
             };
-            let error = if op == "cancel_step" {
-                session.step(Value::Int(0)).unwrap_err()
-            } else {
-                session
-                    .run(SessionRunOptions {
+            let error = model
+                .run(
+                    &mut env,
+                    RunOptions {
+                        cancel: Some(token),
                         hooks: Some(&mut hooks),
                         ..Default::default()
-                    })
-                    .unwrap_err()
-            };
+                    },
+                )
+                .unwrap_err();
             let mut out = error_record(error);
-            out["episode_ends_before_reset"] = json!(count(&counts.ends));
-            if op == "cancel_step" {
-                session.reset(Some(0), None).unwrap();
-            }
             out["episode_ends"] = json!(count(&counts.ends));
             out["run_ends"] = json!(hooks.ends);
             out["partial_episodes"] = json!(hooks.partial);
-            session.step(Value::Int(0)).unwrap();
+            model.run(&mut env, RunOptions::default()).unwrap();
             out["reusable"] = json!(true);
             out
         }
@@ -427,9 +417,9 @@ fn execute(case: &Json) -> Json {
                 ModelOptions::default(),
             )
             .unwrap();
-            let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-            let (obs, _) = session.reset(Some(0), None).unwrap();
-            error_record(session.predict(obs).unwrap_err())
+            let mut binding = model.bind(&mut env, BindOptions::default()).unwrap();
+            binding.reset(Some(0), None).unwrap();
+            error_record(binding.step(None).unwrap_err())
         }
         "warning" => warning(case["variant"].as_str().unwrap()),
         "factory_cancel" => drop_serve(if case["variant"] == "serving" {
@@ -437,15 +427,13 @@ fn execute(case: &Json) -> Json {
         } else {
             "factory_idle"
         }),
-        "drop_queued_predict" => drop_queued_predict(),
-        "drop_owned_cleanup" => drop_owned_cleanup(),
         "model_callback" => {
             model_callback(case.get("variant").and_then(Json::as_str) == Some("timeout"))
         }
         "serve_drop_nonblocking" => serve_drop_nonblocking(),
         "drop_run" => drop_run(),
         "context" => context(case["variant"].as_str().unwrap()),
-        "drop_session" => drop_session(case["variant"].as_str().unwrap().to_owned()),
+        "drop_binding" => drop_binding(),
         "drop_serve" => drop_serve(case["variant"].as_str().unwrap()),
         other => panic!("unknown operation {other}"),
     }
@@ -545,66 +533,23 @@ fn context(variant: &str) -> Json {
         Err(error) => error_record(error),
     }
 }
-fn drop_session(variant: String) -> Json {
+fn drop_binding() -> Json {
     let counts = Arc::new(Counts::default());
-    let observed = counts.clone();
-    let inside = variant != "outside";
-    let blocking = variant == "spawn_blocking";
-    let work = move || {
-        let model = model(&counts);
-        let mut env = ScriptedEnv::new(&counts);
-        if variant == "outside" {
-            let mut session = model
-                .session(
-                    &mut env,
-                    SessionOptions {
-                        close_env: true,
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-            session.reset(Some(0), None).unwrap();
-            drop(session);
-        } else {
-            futures::executor::block_on(async {
-                let mut session = model
-                    .session_async(
-                        &mut env,
-                        SessionOptions {
-                            close_env: true,
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .unwrap();
-                session.reset_async(Some(0), None).await.unwrap();
-                drop(session);
-            });
-        }
-        // Explicit close is a FIFO fence for Session Drop's owned episode-end call.
-        futures::executor::block_on(model.close_async()).unwrap();
-    };
-    if !inside {
-        work();
-    } else {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                if blocking {
-                    tokio::task::spawn_blocking(work).await.unwrap();
-                } else {
-                    tokio::spawn(async move {
-                        work();
-                    })
-                    .await
-                    .unwrap();
-                }
-            });
-    }
-    json!({"env_closes": count(&observed.closes), "episode_ends": count(&observed.ends)})
+    let model = model(&counts);
+    let mut env = ScriptedEnv::new(&counts);
+    let mut binding = model
+        .bind(
+            &mut env,
+            BindOptions {
+                close_env: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    binding.reset(Some(0), None).unwrap();
+    drop(binding);
+    model.close().unwrap();
+    json!({"env_closes": count(&counts.closes), "episode_ends": count(&counts.ends)})
 }
 struct Factory {
     counts: Arc<Counts>,
@@ -733,35 +678,29 @@ fn drop_run() -> Json {
         },
     )
     .unwrap();
-    let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
     let mut hooks = Hooks::default();
     futures::executor::block_on(async {
-        let mut running = Box::pin(session.run_async(SessionRunOptions {
-            hooks: Some(&mut hooks),
-            ..Default::default()
-        }));
+        let mut running = Box::pin(model.run_async(
+            &mut env,
+            RunOptions {
+                hooks: Some(&mut hooks),
+                ..Default::default()
+            },
+        ));
         tokio::select! { result = &mut running => panic!("run completed before drop: {result:?}"), _ = start => {} }
         drop(running);
     });
     release.send(()).unwrap();
-    // A subsequent model call fences the in-flight callback without ending the episode.
-    session.predict(Value::Int(0)).unwrap();
+    // The next run waits behind the callback in flight.
+    let ends = count(&counts.ends);
     assert_eq!(
         count(&counts.env_starts),
         1,
         "a step must not start after drop"
     );
-    assert_eq!(
-        count(&counts.model_starts),
-        2,
-        "only the callback in flight and our explicit probe ran"
-    );
-    assert_eq!(count(&counts.ends), 0);
-    assert_eq!(hooks.ends, 0);
-    session.reset(Some(0), None).unwrap();
-    let ends = count(&counts.ends);
-    session.step(Value::Int(0)).unwrap();
-    json!({"run_ends": hooks.ends, "episode_ends_before_reset": 0, "episode_ends": ends, "no_calls_after_drop": true, "reusable": true})
+    let result = model.run(&mut env, RunOptions::default()).unwrap();
+    assert_eq!(result.num_episodes(), 1);
+    json!({"run_ends": hooks.ends, "episode_ends_before_reset": ends, "episode_ends": count(&counts.ends), "no_calls_after_drop": true, "reusable": true})
 }
 
 fn warning(variant: &str) -> Json {
@@ -859,47 +798,24 @@ fn warning(variant: &str) -> Json {
 }
 
 fn model_callback(timeout: bool) -> Json {
-    use binding::model::{ModelHandler, ModelObservation, ModelWorker, ServeModelOptions};
-    struct Constant {
-        timeout: bool,
-    }
-    #[async_trait::async_trait]
-    impl ModelHandler for Constant {
-        async fn predict(
-            &mut self,
-            observation: ModelObservation,
-        ) -> Result<Vec<binding::spaces::SpaceValue>> {
-            if self.timeout {
+    let served = Model::new(
+        move |_: Value| {
+            if timeout {
                 return Err(binding::AttachedError::with_message(
                     Error::Timeout(Duration::from_secs(5)),
                     "authored timeout: checkpoint shard violet".into(),
                 ));
             }
-            Ok((0..observation.num_envs)
-                .map(|_| binding::spaces::SpaceValue::Discrete(0))
-                .collect())
-        }
-    }
-    let runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap(),
-    );
-    let bound = runtime
-        .block_on(
-            ModelWorker::new(Constant { timeout })
-                .bind_async(ServeModelOptions::parse("tcp://127.0.0.1:0").unwrap()),
-        )
-        .unwrap();
-    let address = bound.local_addr().to_string();
-    let shutdown = bound.shutdown_trigger();
-    let serving = std::thread::spawn(move || runtime.block_on(bound.serve()));
+            Ok(Value::Int(0))
+        },
+        ModelOptions::default(),
+    )
+    .unwrap();
+    let serving = Serving::start(&served);
     let server = EnvServer::new(
         ScriptedEnv::new(&Arc::default()),
         EnvServerOptions {
-            address: Some("tcp://127.0.0.1:0".into()),
+            address: Some(":0/env".into()),
             ..Default::default()
         },
     )
@@ -907,15 +823,18 @@ fn model_callback(timeout: bool) -> Json {
     server.start().unwrap();
     let remote = RemoteModel::new(
         RemoteModelOptions::default()
-            .address(address)
-            .connect_timeout(Duration::from_secs(5)),
+            .address(&serving.address)
+            .connect_timeout(Duration::from_secs(10)),
     )
     .unwrap();
+    // A policy callback binds the served model to a served env and steps it.
     let callback = Model::new(
         move |_: Value| {
-            let mut session = session(&remote, &server, SessionOptions::default())?;
-            let (obs, _) = session.reset(Some(0), None)?;
-            session.predict(obs)
+            let mut binding = bind(&remote, &server, BindOptions::default())?;
+            binding.reset(Some(0), None)?;
+            let (observation, ..) = binding.step(None)?;
+            binding.close()?;
+            Ok(Value::Int(observation.as_int()? - 1))
         },
         ModelOptions::default(),
     )
@@ -925,13 +844,79 @@ fn model_callback(timeout: bool) -> Json {
         RunOptions::default(),
     );
     callback.close().unwrap();
-    shutdown.trigger("fixture finished");
-    serving.join().unwrap().unwrap();
+    serving.stop();
     if timeout {
         error_record(result.unwrap_err())
     } else {
         json!({"episodes": result.unwrap().num_episodes()})
     }
+}
+
+/// A model served as the participant `policy` of a session this process
+/// hosts, until stopped.
+struct Serving {
+    address: String,
+    cancel: ext::CancelToken,
+    thread: std::thread::JoinHandle<Result<()>>,
+    _host: EnvServer,
+}
+impl Serving {
+    fn start(model: &Model) -> Serving {
+        let host = EnvServer::new(
+            ScriptedEnv::new(&Arc::default()),
+            EnvServerOptions {
+                address: Some(":0/host".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        host.start().unwrap();
+        let address = format!("{}/policy", host.address().rsplit_once('/').unwrap().0);
+        let cancel = ext::CancelToken::new();
+        let thread = {
+            let (model, address, cancel) = (model.clone(), address.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                model.serve(
+                    &address,
+                    ModelServeOptions {
+                        cancel: Some(cancel),
+                        ..Default::default()
+                    },
+                )
+            })
+        };
+        Serving {
+            address,
+            cancel,
+            thread,
+            _host: host,
+        }
+    }
+    fn stop(self) {
+        self.cancel.cancel();
+        let _ = self.thread.join().unwrap();
+    }
+}
+
+/// A served model, reached by its participant address, driving a local env.
+fn served_model(env: &mut ScriptedEnv, model: &Model) -> Json {
+    let serving = Serving::start(model);
+    let served = RemoteModel::new(
+        RemoteModelOptions::default()
+            .address(&serving.address)
+            .connect_timeout(Duration::from_secs(10)),
+    )
+    .unwrap();
+    let out = match run(&served, &mut *env, RunOptions::default()) {
+        Ok(result) => json!({
+            "episodes": result.num_episodes(),
+            "steps": result.total_steps(),
+            "env_closes": count(&env.counts.closes),
+        }),
+        Err(error) => error_record(error),
+    };
+    serving.stop();
+    out
 }
 fn serve_drop_nonblocking() -> Json {
     struct Gated {
@@ -1001,72 +986,6 @@ fn serve_drop_nonblocking() -> Json {
     json!({"nonblocking": nonblocking, "env_closes": count(&counts.closes)})
 }
 
-fn drop_owned_cleanup() -> Json {
-    let counts = Arc::default();
-    let model = model(&counts);
-    let server = EnvServer::new(
-        ScriptedEnv::new(&counts),
-        EnvServerOptions {
-            address: Some("tcp://127.0.0.1:0".into()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    server.start().unwrap();
-    let address = server.address().to_owned();
-    let borrowed = model.clone();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        tokio::spawn(async move {
-            let mut session = borrowed
-                .session_async(address.as_str(), SessionOptions::default())
-                .await
-                .unwrap();
-            session.reset_async(Some(0), None).await.unwrap();
-            drop(session);
-        })
-        .await
-        .unwrap();
-    });
-    // The next policy call waits behind the owned episode-end cleanup.
-    let mut local = ScriptedEnv::new(&Arc::default());
-    let mut probe = model
-        .session(&mut local, SessionOptions::default())
-        .unwrap();
-    let (obs, _) = probe.reset(Some(0), None).unwrap();
-    probe.predict(obs).unwrap();
-    let episode_ends = count(&counts.ends);
-    drop(probe);
-    let mut remote = RemoteEnv::new(
-        RemoteEnvOptions::default()
-            .address(server.address())
-            .request_timeout(Duration::from_secs(2)),
-    )
-    .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        match remote.reset(Some(0), None) {
-            Ok(_) => break,
-            Err(error) => {
-                assert!(error.to_string().contains("active Join session"), "{error}");
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "owned connection was not closed"
-                );
-                std::thread::yield_now();
-            }
-        }
-    }
-    remote.step(Value::Int(0)).unwrap();
-    remote.close().unwrap();
-    let out = json!({"episode_ends": episode_ends, "env_closes": count(&counts.closes), "model_closes": count(&counts.model_closes), "reusable": true});
-    server.shutdown().unwrap();
-    out
-}
-
 /// Replace a run-specific address part (a port, a socket path) in the text.
 fn masked(mut record: Json, value: &str, mask: &str) -> Json {
     let text = record["text"].as_str().unwrap().replace(value, mask);
@@ -1074,175 +993,24 @@ fn masked(mut record: Json, value: &str, mask: &str) -> Json {
     record
 }
 
-/// A served model reached with an api_key, over TLS, or driving a local env.
-fn remote_auth(variant: &str, env: &mut ScriptedEnv, model: &Model) -> Json {
-    match variant {
-        "invalid_header" => {
-            return error_record(
-                RemoteModel::new(
-                    RemoteModelOptions::default()
-                        .address("https://localhost:1")
-                        .api_key("bad\nkey"),
-                )
-                .unwrap_err(),
-            );
-        }
-        "local_model_https_env" => {
-            let server = EnvServer::new(
-                ScriptedEnv::new(&Arc::default()),
-                EnvServerOptions {
-                    address: Some("tcp://127.0.0.1:0".into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            server.start().unwrap();
-            let port = server.address().rsplit(':').next().unwrap().to_string();
-            let error = model
-                .run(
-                    format!("https://127.0.0.1:{port}").as_str(),
-                    RunOptions::default(),
-                )
-                .unwrap_err();
-            server.shutdown().unwrap();
-            return masked(error_record(error), &port, "PORT");
-        }
-        "https_to_plaintext" => {
-            let server = EnvServer::new(
-                ScriptedEnv::new(&Arc::default()),
-                EnvServerOptions {
-                    address: Some("tcp://127.0.0.1:0".into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            server.start().unwrap();
-            let port = server.address().rsplit(':').next().unwrap().to_string();
-            let served = RemoteModel::new(
-                RemoteModelOptions::default().address(format!("https://127.0.0.1:{port}")),
-            )
-            .unwrap();
-            let error = run(&served, &mut *env, RunOptions::default()).unwrap_err();
-            server.shutdown().unwrap();
-            return masked(error_record(error), &port, "PORT");
-        }
-        _ => {}
-    }
-    let dir = std::env::temp_dir().join(format!("rlmesh-parity-{}", mint_parity_id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("model.sock").display().to_string();
-    let address = format!("unix://{path}");
-    let cancel = ext::CancelToken::new();
-    let token =
-        matches!(variant, "api_key_rejected" | "api_key_accepted").then(|| "right-key".to_string());
-    let serving = {
-        let (model, address, cancel) = (model.clone(), address.clone(), cancel.clone());
-        std::thread::spawn(move || {
-            model.serve(
-                &address,
-                ModelServeOptions {
-                    cancel: Some(cancel),
-                    ext: Some(ext::ModelServeOptions {
-                        token,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-            )
-        })
-    };
-    wait_for_socket(&path);
-    let mut options = RemoteModelOptions::default().address(&address);
-    options.api_key = match variant {
-        "api_key_rejected" => Some("wrong-key".into()),
-        "api_key_accepted" => Some("right-key".into()),
-        _ => None,
-    };
-    let served = RemoteModel::new(options).unwrap();
-    let out = match run(&served, &mut *env, RunOptions::default()) {
-        Ok(result) => json!({
-            "episodes": result.num_episodes(),
-            "steps": result.total_steps(),
-            "env_closes": count(&env.counts.closes),
-        }),
-        Err(error) => masked(error_record(error), &path, "SOCKET"),
-    };
-    cancel.cancel();
-    let _ = serving.join().unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-    out
-}
-
-/// Wait until a model serves on the Unix socket at `path`.
-#[cfg(unix)]
-fn wait_for_socket(path: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while std::os::unix::net::UnixStream::connect(path).is_err() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the model never served"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// `remote_auth` serves its model on a Unix socket (no port race), which
-/// this platform lacks.
-#[cfg(not(unix))]
-fn wait_for_socket(_path: &str) {
-    panic!("remote_auth serves the model on a Unix socket, which this platform lacks");
-}
-
-/// A process-unique suffix for scratch paths.
-fn mint_parity_id() -> String {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    format!(
-        "{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::SeqCst)
-    )
-}
-
-fn drop_queued_predict() -> Json {
-    let counts = Arc::new(Counts::default());
-    let seen = counts.clone();
-    let (started, start) = tokio::sync::oneshot::channel();
-    let (release, blocked) = std::sync::mpsc::sync_channel(1);
-    let mut signal = Some(started);
-    let model = Model::new(
-        move |_: Value| {
-            seen.model_starts.fetch_add(1, Ordering::SeqCst);
-            if let Some(signal) = signal.take() {
-                signal.send(()).unwrap();
-                blocked.recv_timeout(Duration::from_secs(10)).unwrap();
-            }
-            Ok(Value::Int(0))
+/// A run refuses an https:// env endpoint (v1) before any dial.
+fn https_env(model: &Model) -> Json {
+    let server = EnvServer::new(
+        ScriptedEnv::new(&Arc::default()),
+        EnvServerOptions {
+            address: Some("tcp://127.0.0.1:0".into()),
+            ..Default::default()
         },
-        ModelOptions::default(),
     )
     .unwrap();
-    let mut env1 = ScriptedEnv::new(&counts);
-    let mut env2 = ScriptedEnv::new(&counts);
-    let mut first_session = model.session(&mut env1, SessionOptions::default()).unwrap();
-    let mut second_session = model.session(&mut env2, SessionOptions::default()).unwrap();
-    first_session.reset(Some(0), None).unwrap();
-    second_session.reset(Some(0), None).unwrap();
-    futures::executor::block_on(async {
-        let mut first = Box::pin(first_session.predict_async(Value::Int(0)));
-        tokio::select! { result = &mut first => panic!("predict completed before release: {result:?}"), _ = start => {} }
-        let mut queued = Box::pin(second_session.predict_async(Value::Int(0)));
-        assert!(futures::poll!(queued.as_mut()).is_pending());
-        drop(queued);
-        release.send(()).unwrap();
-        assert_eq!(first.await.unwrap(), Value::Int(0));
-    });
-    first_session.predict(Value::Int(0)).unwrap();
-    assert_eq!(count(&counts.model_starts), 2);
-    assert_eq!(count(&counts.env_starts), 2);
-    second_session.predict(Value::Int(0)).unwrap();
-    drop(first_session);
-    drop(second_session);
-    model.close().unwrap();
-    assert_eq!(count(&counts.model_starts), 3);
-    json!({"no_calls_after_drop": true, "reusable": true})
+    server.start().unwrap();
+    let port = server.address().rsplit(':').next().unwrap().to_string();
+    let error = model
+        .run(
+            format!("https://127.0.0.1:{port}").as_str(),
+            RunOptions::default(),
+        )
+        .unwrap_err();
+    server.shutdown().unwrap();
+    masked(error_record(error), &port, "PORT")
 }

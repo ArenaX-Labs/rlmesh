@@ -230,6 +230,7 @@ struct Shared {
     address: String,
     contract: EnvContract,
     binding_description: Mutex<Option<String>>,
+    #[cfg(not(feature = "lockstep"))]
     token: Option<String>,
     shutdown: ShutdownTrigger,
     background_cancel: Mutex<std::sync::Weak<CancelProbe>>,
@@ -491,6 +492,7 @@ impl EnvServer {
     }
 
     /// The endpoint token this server checks, if any.
+    #[cfg(not(feature = "lockstep"))]
     pub(crate) fn token(&self) -> Option<&str> {
         self.shared.token.as_deref()
     }
@@ -614,6 +616,7 @@ impl EnvServer {
             )?;
         }
         let token = env_endpoint_token(ext.token.clone())?;
+        #[cfg(not(feature = "lockstep"))]
         let checked_token = token.clone().filter(|token| !token.is_empty());
         let mut peer_info_extra: BTreeMap<String, String> = ext.peer_info_extra.clone();
         match &factory {
@@ -675,6 +678,7 @@ impl EnvServer {
                 address,
                 contract,
                 binding_description: Mutex::new(binding_description),
+                #[cfg(not(feature = "lockstep"))]
                 token: checked_token,
                 shutdown: ShutdownTrigger::new(),
                 background_cancel: Mutex::new(std::sync::Weak::new()),

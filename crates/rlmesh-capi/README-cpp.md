@@ -2,7 +2,7 @@
 
 RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. `rlmesh.hpp` is the C++ API: a header-only library over the RLMesh C ABI that lets you write environments and policies as ordinary C++ classes or lambdas, serve them in RLMesh sessions, and run evaluations against anything else that speaks RLMesh.
 
-RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Session`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
+RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Binding`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
 The header requires C++17 and exceptions (it stops with `#error` otherwise), and is tested at C++17 and C++20. Every RLMesh entity has one token-identical definition in C++17 and C++20, so translation units built at either standard can share wrapper types (ODR). Standard or feature macros never select RLMesh definitions or members. Apart from the top-level version/exceptions guards, the sole exception is `std::ranges::enable_borrowed_range` and `std::ranges::enable_view` specializations for `rlmesh::Span<T>`, guarded by `#if defined(__cpp_lib_ranges)`; these add no RLMesh members. RTTI is not needed.
 
@@ -101,9 +101,9 @@ Neither side cares what language the other is written in: the same model can dri
 
 **Errors are exceptions.** Every failing call throws; there are no status codes to check. See [Errors](#errors).
 
-**Handles manage themselves.** Destructors release library objects without throwing. Values, tensors, spaces, `Model`, `RemoteModel` and adapters are cheap to copy: copies share the same underlying object (`Tensor::copy()` makes an independent copy of the data). Envs, remote envs, sessions, servers and recorders are move-only. Call `close()` explicitly when you want to observe cleanup errors; destruction swallows them.
+**Handles manage themselves.** Destructors release library objects without throwing. Values, tensors, spaces, `Model` and adapters are cheap to copy: copies share the same underlying object (`Tensor::copy()` makes an independent copy of the data). Envs, remote envs, bindings, servers and recorders are move-only. Call `close()` explicitly when you want to observe cleanup errors; destruction swallows them.
 
-**Options are plain structs.** Every operation that takes options has an options struct (`RunOptions`, `SessionOptions`, `EnvServerOptions`, `RemoteEnvOptions`, `ModelOptions`, ...) whose members default to the documented defaults. The portable spelling is `RunOptions{}.with_episodes(2).with_seeds({0, 1})`: each `with_<field>` setter returns the same object and works on both named options and temporaries. You can also assign members directly, or pass nothing for all defaults. With C++20 you can also write the struct inline with designated initializers, as in `model.run(env, {.episodes = 3})`.
+**Options are plain structs.** Every operation that takes options has an options struct (`RunOptions`, `BindOptions`, `EnvServerOptions`, `RemoteEnvOptions`, `ModelOptions`, ...) whose members default to the documented defaults. The portable spelling is `RunOptions{}.with_episodes(2).with_seeds({0, 1})`: each `with_<field>` setter returns the same object and works on both named options and temporaries. You can also assign members directly, or pass nothing for all defaults. With C++20 you can also write the struct inline with designated initializers, as in `model.run(env, {.episodes = 3})`.
 
 **Standard vocabulary types.** Optional values are `std::optional`; `rlmesh::OptionalList<T>` keeps "not set" distinct from an empty list (as in `RunOptions::seeds`). Durations are `std::chrono` durations (`rlmesh::Duration` is `std::chrono::duration<double>`), so a time limit is `options.max_episode = std::chrono::seconds(30)`. Text arguments take `std::string_view`, and tensor bytes come back as `rlmesh::Span<const std::byte>`.
 
@@ -177,13 +177,13 @@ model.serve("127.0.0.1:50051");  // a model endpoint any RLMesh run can use (blo
 
 Optional members cover `load(const rlmesh::Kwargs&)` (with `rlmesh::Model::from_config<Policy>(config)` to build from a config map), `on_episode_end`, `close`, and static declarations for an adapter `spec`, `load_keys`, `native_chunk` and `workflow_edition`. `rlmesh::ModelOptions` adds hooks and a spec for a lambda.
 
-`rlmesh::ext::start(factory, address, options)` prepares a factory and returns an already-started `EnvServer` with its describe envelope published. It installs no signal handlers. The server owns the made envs; the factory may be reused or destroyed when start returns. Use `wait`, `shutdown` and the server's destructor to control its lifetime. An overlapping session borrow or factory hook throws `RuntimeError`. A failed start closes and releases every made env and leaves the factory reusable. The server keeps watching its cancellation token until it stops; cancellation drains and closes the envs and whichever of `wait` or `shutdown` first observes the stop throws `ext::CancelledError`, once. A shutdown without a firing succeeds. Firings during cleanup after another stop has begun cannot change its result. Both foreground factory `serve` and `ext::start` report the calling C++ host's runtime in PeerInfo and its runtime and compiler in the describe envelope.
+`rlmesh::ext::start(factory, address, options)` prepares a factory and returns an already-started `EnvServer` with its describe envelope published. It installs no signal handlers. The server owns the made envs; the factory may be reused or destroyed when start returns. Use `wait`, `shutdown` and the server's destructor to control its lifetime. An overlapping binding borrow or factory hook throws `RuntimeError`. A failed start closes and releases every made env and leaves the factory reusable. The server keeps watching its cancellation token until it stops; cancellation drains and closes the envs and whichever of `wait` or `shutdown` first observes the stop throws `ext::CancelledError`, once. A shutdown without a firing succeeds. Firings during cleanup after another stop has begun cannot change its result. Both foreground factory `serve` and `ext::start` report the calling C++ host's runtime in PeerInfo and its runtime and compiler in the describe envelope.
 
 For a host that owns process signals, set `rlmesh::ext::ModelServeOptions{}.with_no_signal_handlers(true)` as `ModelServeOptions::ext` before calling `Model::serve`. It still blocks until cancellation or shutdown. The default false installs and restores the foreground SIGINT/SIGTERM handlers.
 
-### Running and sessions
+### Running and binding
 
-`model.run(env, options)` and the free function `rlmesh::run(model, env, options)` drive whole episodes and return an `rlmesh::RunResult`: `episodes` (each an `EpisodeResult`), `telemetry`, and `num_episodes()`, `total_steps()`, `mean_reward()` and `success_rate()`. The env argument is an `rlmesh::EnvTarget`, which converts from an address string, a running `EnvServer`, a `RemoteEnv` or `RemoteVectorEnv`, or a local `rlmesh::Env`, `rlmesh::VectorEnv` or factory (served on a private loopback for the run). `rlmesh::run` also takes a `RemoteModel` or `rlmesh::RANDOM_SAMPLE`, a baseline that samples the action space. A run borrows its model and env: it never closes the model, and closes the env only when `close_env` is set.
+`model.run(env, options)` and the free function `rlmesh::run(model, env, options)` drive whole episodes and return an `rlmesh::RunResult`: `episodes` (each an `EpisodeResult`), `telemetry`, and `num_episodes()`, `total_steps()`, `mean_reward()` and `success_rate()`. The env argument is an `rlmesh::EnvTarget`, which converts from an address string, a running `EnvServer`, a `RemoteEnv` or `RemoteVectorEnv`, or a local `rlmesh::Env`, `rlmesh::VectorEnv` or factory (served on a private loopback for the run). `rlmesh::run` also takes `rlmesh::RANDOM_SAMPLE`, a baseline that samples the action space. A run borrows its model and env: it never closes the model, and closes the env only when `close_env` is set.
 
 Derive from `rlmesh::RunHooks` to observe a run as it happens; every member has an empty default:
 
@@ -201,26 +201,25 @@ options.hooks = &hooks;
 model.run("127.0.0.1:7447/counter", options);
 ```
 
-For step-by-step control, open a `Session`. Nothing connects until first use, and closing a session never closes the model:
+For step-by-step control, bind the model to one env, as Python's `Model.bind` does. Binding connects (a local env or factory is served in this process, its callbacks running on the thread that calls the binding); `step()` with no action steps under the model's, and closing the binding never closes the model:
 
 ```cpp
-rlmesh::Session session = model.session("127.0.0.1:7447/counter");
-auto [observation, info] = session.reset(0);
+rlmesh::Binding binding = model.bind("127.0.0.1:7447/counter");
+auto [observation, info] = binding.reset(0);
 bool done = false;
 while (!done) {
-  auto [next, reward, terminated, truncated, step_info] =
-      session.step(session.predict(observation));
+  auto [next, reward, terminated, truncated, step_info] = binding.step();
   observation = next;
   done = terminated || truncated;
 }
-session.close();
+binding.close();
 ```
 
-`session.run(options)` runs whole episodes inside an open session. Keep the model and env alive while a session uses them.
+`rlmesh::bind(rlmesh::RANDOM_SAMPLE, env)` binds the random baseline. A binding keeps its model and env alive, reads observations by role (`read`) and reaches the env's frames (`frame_sources`, `render`). A model served elsewhere is a `Model` too: `rlmesh::Model::from_address("lab:7447/openpi")` reaches it by its participant address and runs and binds like a local one.
 
 ### Remote clients
 
-`rlmesh::RemoteEnv` and `RemoteVectorEnv` connect at construction and step a served env directly, Gymnasium style. `rlmesh::RemoteModel` points at a served model; it validates its options without connecting, and runs and sessions connect as they need to. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an `EnvServer` with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately) still serve and connect remote clients until v1 is removed; a run refuses them.
+`rlmesh::RemoteEnv` and `RemoteVectorEnv` connect at construction and step a served env directly, Gymnasium style. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an `EnvServer` with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately) still serve and connect remote clients until v1 is removed; a run refuses them.
 
 ```cpp
 rlmesh::RemoteEnvOptions connection;
@@ -241,7 +240,7 @@ When a model and an env describe their observations and actions differently (cam
 
 ### View, Recorder and describe
 
-`rlmesh::View` shows live frames in the terminal or a local web page when set on `SessionOptions::view`. `rlmesh::Recorder` collects run results or captures live runs through the hooks returned by `capture`, and exports them with media as a folder or ZIP bundle. `rlmesh::describe` and `describe_json` report a model's or factory's declarations, and `rlmesh::build_info()` the library's version, protocol generation and workflow editions.
+`rlmesh::View` shows live frames in the terminal or a local web page (`rlmesh::View::parse("term")`). `rlmesh::Recorder` collects run results or captures live runs through the hooks returned by `capture`, and exports them with media as a folder or ZIP bundle. `rlmesh::describe` and `describe_json` report a model's or factory's declarations, and `rlmesh::build_info()` the library's version, protocol generation and workflow editions.
 
 ## Errors
 
@@ -275,7 +274,7 @@ Every served env and model runs at a workflow edition, which pins what a session
 
 ## Compatibility
 
-The C++ API is **Experimental**. It is header-only and compiled into your program, and it changes together with the C ABI it wraps (generation 5, `RLMESH_ABI_VERSION`); a binary built against another generation will not load. See [Compatibility in the C guide](README.md#compatibility) and the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/). C++17 and C++20 translation units may share wrapper types in one binary. A served env reports its host language and compiler in its describe envelope; it omits the optional `language_version` because the binary may mix standards.
+The C++ API is **Experimental**. It is header-only and compiled into your program, and it changes together with the C ABI it wraps (generation 6, `RLMESH_ABI_VERSION`); a binary built against another generation will not load. See [Compatibility in the C guide](README.md#compatibility) and the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/). C++17 and C++20 translation units may share wrapper types in one binary. A served env reports its host language and compiler in its describe envelope; it omits the optional `language_version` because the binary may mix standards.
 
 ## Examples
 
@@ -283,7 +282,7 @@ The C++ API is **Experimental**. It is header-only and compiled into your progra
 
 - [`cpp_model.cpp`](examples/cpp_model.cpp): a context-reading model that samples the env's action space and runs seeded episodes.
 - [`cpp_env.cpp`](examples/cpp_env.cpp): a reaching env with a Dict observation, a camera tensor and adapter tags.
-- [`cpp_parity.cpp`](examples/cpp_parity.cpp): factories, policies with every corner, sessions, hooks and results.
+- [`cpp_parity.cpp`](examples/cpp_parity.cpp): factories, policies with every corner, bindings, hooks and results.
 - `cpp_spaces.cpp`, `cpp_errors.cpp`, `cpp_runtime.cpp`, `cpp_payload.cpp` and more cover one area each.
 
 ## Links
@@ -296,18 +295,17 @@ The C++ API is **Experimental**. It is header-only and compiled into your progra
 ## Per-call cancellation
 
 `rlmesh::ext::reset(handle, token, ...)` and
-`rlmesh::ext::step(handle, token, action)` accept `Session`, `RemoteEnv` and
+`rlmesh::ext::step(handle, token, action)` accept `RemoteEnv` and
 `RemoteVectorEnv` handles and a borrowed `const ext::CancelToken&`.
-`rlmesh::ext::predict(session, token, observation)` cancels a session prediction.
-Reset's seed, trial index and options have the same defaults as the handle's
+Reset's seed and options have the same defaults as the handle's
 ordinary methods. These overloads throw `ext::CancelledError` when either the
 per-call token or the handle token fires; subsequent calls remain allowed.
 
 ```cpp
 rlmesh::ext::CancelToken cancel;
-auto result = rlmesh::ext::reset(session, cancel);
+auto result = rlmesh::ext::reset(remote, cancel);
 // Another thread may call cancel.cancel() during this operation.
-auto step = rlmesh::ext::step(session, cancel, action);
+auto step = rlmesh::ext::step(remote, cancel, action);
 ```
 
 An idle firing fails the next admitted call using the same token once. A call

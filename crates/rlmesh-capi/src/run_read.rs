@@ -4,13 +4,11 @@ use crate::abi::{
     sizing,
     status::{CapiError, RLMeshStatus, guard, guard_value},
 };
-use crate::adapters::{
-    self as ad, RLMeshAdaptersText, RLMeshImage, RLMeshObservationRoles, RLMeshState,
-};
+use crate::adapters::{self as ad, RLMeshAdaptersText, RLMeshImage, RLMeshState};
+use crate::binding_api::{self, RLMeshBinding};
 use crate::codec::RLMeshBytes;
 use crate::ffi;
 use crate::run_hooks::{RLMeshRunContext, RLMeshStepEvent};
-use crate::session_api::{self, RLMeshSession};
 use crate::value::handle::{RLMeshValue, into_handle, value_ref, write_out};
 use rlmesh::{FrameSources, ReadItem, Reader, RenderFn, Value};
 use std::ffi::{c_char, c_void};
@@ -147,31 +145,8 @@ pub unsafe extern "C" fn rlmesh_reader_call(
     })
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_session_reader(
-    p: *mut RLMeshSession,
-    items: *const *const RLMeshReadItem,
-    n: usize,
-    out: *mut *mut RLMeshReader,
-) -> RLMeshStatus {
-    guard(|| {
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, std::ptr::null_mut())
-        }?;
-        let items = unsafe { crate::spaces::slice_arg(items, n, "read items") }?
-            .iter()
-            .map(|&p| unsafe { item(p) }.cloned())
-            .collect::<Result<Vec<_>, _>>()?;
-        let reader = session_api::with(p, |s| Ok(s.reader(&items)?))?;
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, Box::into_raw(Box::new(RLMeshReader(reader))))
-        }
-    })
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_session_read(
-    p: *mut RLMeshSession,
+pub unsafe extern "C" fn rlmesh_binding_read(
+    p: *mut RLMeshBinding,
     obs: *const RLMeshValue,
     read: *const RLMeshReadItem,
     out: *mut *mut RLMeshValue,
@@ -186,11 +161,7 @@ pub unsafe extern "C" fn rlmesh_session_read(
             value_ref(obs)
         }?;
         let item = unsafe { item(read) }?;
-        let value = if let Some(context) = session_api::own_hook(p) {
-            context.0.read(obs, item)?
-        } else {
-            session_api::with(p, |s| Ok(s.read(obs, item.clone())?))?
-        };
+        let value = binding_api::read(p, obs, item)?;
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(out, into_handle(value))
@@ -252,36 +223,6 @@ pub unsafe extern "C" fn rlmesh_step_event_read(
         }
     })
 }
-pub(crate) struct RolesView {
-    roles: RLMeshObservationRoles,
-    _arena: ad::Arena,
-}
-// SAFETY: fully built immutable lent records refer only to this view's owned arena.
-unsafe impl Send for RolesView {}
-unsafe impl Sync for RolesView {}
-impl RolesView {
-    pub(crate) fn new(roles: &rlmesh::adapters::ObservationRoles) -> Self {
-        let mut arena = ad::Arena::default();
-        let roles = ad::view_observation_roles(&mut arena, roles);
-        Self {
-            roles,
-            _arena: arena,
-        }
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_session_observation_roles(
-    p: *mut RLMeshSession,
-    out: *mut RLMeshObservationRoles,
-) -> RLMeshStatus {
-    guard(|| {
-        let roles = session_api::with(p, |s| Ok(s.observation_roles()?))?;
-        let h = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null session"))?;
-        let view = h.roles.get_or_init(|| RolesView::new(&roles));
-        unsafe { ad::out_struct(out, view.roles, "RLMeshObservationRoles") }
-    })
-}
-
 type Render = unsafe extern "C" fn(*mut c_void, *mut *mut RLMeshValue) -> i32;
 struct Owner {
     user: usize,
@@ -378,7 +319,7 @@ fn context_sources(context: Arc<dyn rlmesh::RunContext>) -> rlmesh::Result<RLMes
     let native = context.frame_sources()?;
     // SAFETY: frame_sources borrows the RunContext pointee of this Arc, whose
     // address is stable. The handle retains that exact Arc allocation and drops
-    // its native sources before the Arc. No session/env borrow is extended:
+    // its native sources before the Arc. No binding/env borrow is extended:
     // their availability remains checked by the facade's original render thunk.
     let native = unsafe { std::mem::transmute::<FrameSources<'_>, FrameSources<'static>>(native) };
     let mut handle = RLMeshFrameSources::library(native.roles, native.render_label, native.render);
@@ -405,8 +346,8 @@ pub unsafe extern "C" fn rlmesh_run_context_frame_sources(
     })
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_session_frame_sources(
-    p: *mut RLMeshSession,
+pub unsafe extern "C" fn rlmesh_binding_frame_sources(
+    p: *mut RLMeshBinding,
     out: *mut *mut RLMeshFrameSources,
 ) -> RLMeshStatus {
     guard(|| {
@@ -414,23 +355,9 @@ pub unsafe extern "C" fn rlmesh_session_frame_sources(
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(out, std::ptr::null_mut())
         }?;
-        if let Some(context) = session_api::own_hook(p) {
-            let value = context_sources(context.0)?;
-            return unsafe {
-                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-                write_out(out, Box::into_raw(Box::new(value)))
-            };
-        }
-        let (roles, label, has) = session_api::with(p, |s| {
-            let sources = s.frame_sources()?;
-            Ok((
-                sources.roles,
-                sources.render_label,
-                sources.render.is_some(),
-            ))
-        })?;
+        let (roles, label, has) = binding_api::frame_sources(p)?;
         let render = if has {
-            let owner = unsafe { session_api::SessionRender::new(p) }?;
+            let owner = binding_api::render_source(p)?;
             Some(RenderFn::new(move || owner.call()))
         } else {
             None

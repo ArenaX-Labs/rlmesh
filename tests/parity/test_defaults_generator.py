@@ -34,14 +34,7 @@ def test_manifest_options_defaults_match_python():
         module, path = symbol.split(":")
         function = importlib.import_module(module)
         for name in path.split("."):
-            # TODO: drop with the parity step that moves the native languages
-            # to sessions; until then a 0.1 shape Python removed keeps their
-            # entry.
-            if getattr(function, "__module__", None) == "rlmesh._upgrade":
-                break
             function = getattr(function, name)
-        if function.__module__ == "rlmesh._upgrade":
-            continue
         parameters = inspect.signature(function).parameters
         for keyword, parameter in keywords.items():
             assert parameters[keyword].default == ast.literal_eval(

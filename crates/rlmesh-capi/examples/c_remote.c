@@ -1,6 +1,5 @@
-/* ABI 5 remote clients: real gRPC, cache identity, borrows and vector buffers. */
+/* Remote clients (real gRPC, cache identity, vector buffers) and a served model by address. */
 #define _POSIX_C_SOURCE 200809L
-#include <arpa/inet.h>
 #include <math.h>
 #include <pthread.h>
 #include <rlmesh.h>
@@ -8,9 +7,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <time.h>
-#include <unistd.h>
 static atomic_int failures;
 #define CHECK(x)                                                                                \
   do {                                                                                          \
@@ -79,9 +75,12 @@ static char* text(RLMeshBytes bytes) {
 int main(void) {
   RLMeshRemoteEnv* remote = NULL;
   RLMeshRemoteVectorEnv* vector = NULL;
-  RLMeshRemoteModel* rm = NULL;
+  RLMeshModel* served = NULL;
   CHECK(rlmesh_remote_env_new(NULL, &remote) == RLMESH_ERR_INVALID_ARGUMENT && remote == NULL);
-  CHECK(rlmesh_remote_model_new(NULL, &rm) == RLMESH_ERR_INVALID_ARGUMENT && rm == NULL);
+  CHECK(rlmesh_model_from_address(NULL, &served) == RLMESH_ERR_INVALID_ARGUMENT && !served);
+  /* A served model is reached by its participant address, never a v1 one. */
+  CHECK(rlmesh_model_from_address("127.0.0.1:1", &served) == RLMESH_ERR_INVALID_ARGUMENT &&
+        !served && strstr(rlmesh_last_error_message(), "participant address") != NULL);
   RLMeshRemoteEnvOptions eo = RLMESH_REMOTE_ENV_OPTIONS_INIT;
   eo.address = "tcp://127.0.0.1:1";
   eo.has_connect_timeout_seconds = true;
@@ -96,15 +95,8 @@ int main(void) {
   CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_ERR_INVALID_ARGUMENT && remote == NULL);
   CHECK(strstr(rlmesh_last_error_message(), "hidden-endpoint-token") == NULL);
   eo.api_key = NULL;
-  RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
-  mo.address = "127.0.0.1:1";
-  CHECK(rlmesh_remote_model_new(&mo, &rm) == RLMESH_OK);
   RLMeshBytes bytes = {NULL, 0, 0};
-  CHECK(rlmesh_remote_model_address(rm, &bytes) == RLMESH_OK);
-  char* address = text(bytes);
-  CHECK(strcmp(address, mo.address) == 0);
-  free(address);
-  rlmesh_remote_model_free(rm);
+  char* address = NULL;
   RLMeshDiscrete* space = NULL;
   CHECK(rlmesh_discrete_new(3, NULL, &space) == RLMESH_OK);
   RLMeshEnvVtable ev = RLMESH_ENV_VTABLE_INIT;
@@ -176,16 +168,6 @@ int main(void) {
   rlmesh_ext_cancel_token_free(token);
   CHECK(rlmesh_remote_env_render(remote, UINT64_MAX, &obs) == RLMESH_ERR_INVALID_ARGUMENT &&
         obs == NULL);
-  RLMeshSession* session = NULL;
-  CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_remote_env_target(remote), NULL,
-                           &session) == RLMESH_OK);
-  CHECK(rlmesh_remote_env_reset(remote, NULL, NULL, &obs, &info) == RLMESH_ERR_RUNTIME);
-  CHECK(rlmesh_remote_env_observation_space(remote) == cached);
-  CHECK(rlmesh_session_reset(session, NULL, NULL, &obs, &info) == RLMESH_OK);
-  rlmesh_value_free(obs);
-  rlmesh_value_free(info);
-  CHECK(rlmesh_session_close(session) == RLMESH_OK);
-  rlmesh_session_free(session);
   CHECK(rlmesh_remote_env_reset(remote, NULL, NULL, &obs, &info) == RLMESH_OK);
   rlmesh_value_free(obs);
   rlmesh_value_free(info);
@@ -196,15 +178,8 @@ int main(void) {
   CHECK(cached == rlmesh_remote_env_observation_space(remote));
   state.remote = NULL;
   rlmesh_remote_env_free(remote);
-  /* A completed close/free must make the next session usable immediately. */
+  /* A completed close/free must make the next client usable immediately. */
   for (int i = 0; i < 100; ++i) {
-    CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_server_target(server), NULL,
-                             &session) == RLMESH_OK);
-    CHECK(rlmesh_session_reset(session, NULL, NULL, &obs, &info) == RLMESH_OK);
-    rlmesh_value_free(obs);
-    rlmesh_value_free(info);
-    if (i % 2 == 0) CHECK(rlmesh_session_close(session) == RLMESH_OK);
-    rlmesh_session_free(session);
     CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_OK);
     CHECK(rlmesh_remote_env_reset(remote, NULL, NULL, &obs, &info) == RLMESH_OK);
     rlmesh_value_free(obs);
@@ -212,68 +187,65 @@ int main(void) {
     if (i % 2 == 0) CHECK(rlmesh_remote_env_close(remote) == RLMESH_OK);
     rlmesh_remote_env_free(remote);
   }
-  /* RemoteModel keeps normalized input, clones, and sessions dial the facade. */
+  /* A model served as a participant of a session this process hosts, reached
+   * by its address: run and bound to a local env stepped on this thread. */
   RLMeshModelVtable mv = RLMESH_MODEL_VTABLE_INIT;
   mv.predict = predict;
   mv.context_corners = RLMESH_CORNER_PREDICT;
   mv.workflow_edition = rlmesh_current_workflow_edition();
   RLMeshModel* model = NULL;
   CHECK(rlmesh_model_new(&mv, NULL, NULL, &model) == RLMESH_OK);
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  CHECK(sock >= 0);
-  struct sockaddr_in sa = {0};
-  sa.sin_family = AF_INET;
-  sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  CHECK(bind(sock, (struct sockaddr*)&sa, sizeof(sa)) == 0);
-  socklen_t salen = sizeof(sa);
-  CHECK(getsockname(sock, (struct sockaddr*)&sa, &salen) == 0);
-  close(sock);
+  State hosting = {0, NULL};
+  RLMeshEnv* host_env = NULL;
+  CHECK(rlmesh_env_new(&ev, &hosting, &attrs, &host_env) == RLMESH_OK);
+  RLMeshEnvServerOptions ho = RLMESH_ENV_SERVER_OPTIONS_INIT;
+  ho.address = ":0/host";
+  RLMeshEnvServer* host = NULL;
+  CHECK(rlmesh_env_server_new(&host_env, 1, &ho, &host) == RLMESH_OK);
+  CHECK(rlmesh_env_server_start(host) == RLMESH_OK);
+  CHECK(rlmesh_env_server_address(host, &bytes) == RLMESH_OK);
+  char* host_address = text(bytes);
   Serving work = {model, NULL, {0}, RLMESH_OK};
   CHECK(rlmesh_ext_cancel_token_new(&work.cancel) == RLMESH_OK);
-  snprintf(work.address, sizeof(work.address), "tcp://127.0.0.1:%u", (unsigned)ntohs(sa.sin_port));
+  snprintf(work.address, sizeof(work.address), "%.*s/policy",
+           (int)(strrchr(host_address, '/') - host_address), host_address);
   pthread_t thread;
   CHECK(pthread_create(&thread, NULL, serve_model, &work) == 0);
-  mo.address = work.address;
-  mo.has_connect_timeout_seconds = true;
-  mo.connect_timeout_seconds = 0.1;
-  CHECK(rlmesh_remote_model_new(&mo, &rm) == RLMESH_OK);
-  RLMeshRemoteModel* clone = NULL;
-  CHECK(rlmesh_remote_model_clone(rm, &clone) == RLMESH_OK);
-  rlmesh_remote_model_free(rm);
-  rm = clone;
-  /* A plain local env, with no EnvServer: stepped on this thread. */
+  CHECK(rlmesh_model_from_address(work.address, &served) == RLMESH_OK);
+  RLMeshModel* clone = NULL;
+  CHECK(rlmesh_model_clone(served, &clone) == RLMESH_OK);
+  rlmesh_model_free(served);
+  served = clone;
+  CHECK(rlmesh_model_serve(served, ":0/again", NULL) == RLMESH_ERR_TYPE);
   RLMeshEnv* local = NULL;
   CHECK(rlmesh_env_new(&ev, &state, &attrs, &local) == RLMESH_OK);
-  struct timespec delay = {0, 1000000};
-  RLMeshStatus connected = RLMESH_ERR_CONNECTION;
-  for (int i = 0; i < 500 && connected == RLMESH_ERR_CONNECTION; ++i) {
-    connected = rlmesh_remote_model_session(rm, rlmesh_env_target(local), NULL, &session);
-    if (connected == RLMESH_ERR_CONNECTION) nanosleep(&delay, NULL);
-  }
-  CHECK(connected == RLMESH_OK && session);
   RLMeshRunResult* result = NULL;
-  CHECK(rlmesh_session_run(session, NULL, &result) == RLMESH_OK);
+  CHECK(rlmesh_model_run(served, rlmesh_env_target(local), NULL, &result) == RLMESH_OK);
   CHECK(rlmesh_run_result_num_episodes(result) == 1 && rlmesh_run_result_total_steps(result) == 1);
   rlmesh_run_result_free(result);
   result = NULL;
-  CHECK(rlmesh_session_close(session) == RLMESH_OK);
-  rlmesh_session_free(session);
-  session = NULL;
-  rlmesh_env_free(local);
-  CHECK(rlmesh_remote_model_session(rm, rlmesh_env_server_target(server), NULL, &session) ==
+  RLMeshBinding* binding = NULL;
+  CHECK(rlmesh_model_bind(served, rlmesh_env_target(local), NULL, &binding) == RLMESH_OK);
+  CHECK(rlmesh_binding_reset(binding, NULL, NULL, &obs, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  CHECK(rlmesh_binding_step(binding, NULL, &obs, &reward, &terminated, &truncated, &info) ==
             RLMESH_OK &&
-        session);
-  CHECK(rlmesh_session_run(session, NULL, &result) == RLMESH_OK);
-  CHECK(rlmesh_run_result_num_episodes(result) == 1 && rlmesh_run_result_total_steps(result) == 1);
-  rlmesh_run_result_free(result);
-  CHECK(rlmesh_session_close(session) == RLMESH_OK);
-  rlmesh_session_free(session);
-  rlmesh_remote_model_free(rm);
+        reward == 2 && terminated);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  CHECK(rlmesh_binding_close(binding) == RLMESH_OK);
+  rlmesh_binding_free(binding);
+  rlmesh_env_free(local);
+  rlmesh_model_free(served);
   CHECK(rlmesh_ext_cancel_token_cancel(work.cancel) == RLMESH_OK);
   CHECK(pthread_join(thread, NULL) == 0);
   CHECK(work.status == RLMESH_ERR_CANCELLED);
   rlmesh_ext_cancel_token_free(work.cancel);
   rlmesh_model_free(model);
+  CHECK(rlmesh_env_server_shutdown(host) == RLMESH_OK);
+  rlmesh_env_server_free(host);
+  free(host_address);
   free(address);
   CHECK(rlmesh_env_server_shutdown(server) == RLMESH_OK);
   rlmesh_env_server_free(server);
