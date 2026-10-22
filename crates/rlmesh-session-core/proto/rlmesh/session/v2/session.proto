@@ -725,3 +725,117 @@ message LockstepReply {
   // Only when record_info is on.
   string info_json = 8;
 }
+
+// Served models: one request/reply on m/{model}. A driver resolves a route
+// per env, then predicts on it; values are rlmesh-spaces leaf slabs.
+
+// Leaf slabs of N rows: one per leaf of the space, row-major.
+message Leaves {
+  repeated bytes leaves = 1;
+}
+
+message ModelEpisode {
+  string id = 1;
+  optional int64 seed = 2;
+}
+
+message ModelResolve {
+  string route = 1;
+  // The env contract as JSON (spaces, metadata and tags).
+  string contract_json = 2;
+  // Actions of each chunk the driver executes before re-planning.
+  uint32 execution_horizon = 3;
+  // Whether the driver sends the steps it replayed as history.
+  bool delivers_history = 4;
+  // The workflow edition the driver pinned; empty: unpinned.
+  string workflow_edition = 5;
+}
+
+message ModelHistoryNeeds {
+  repeated string keys = 1;
+  bool prunable = 2;
+}
+
+message ModelResolved {
+  optional uint32 native_chunk = 1;
+  // Present when the route keeps frame windows.
+  ModelHistoryNeeds history = 2;
+}
+
+message ModelHistoryRow {
+  Leaves observation = 1;
+  repeated ModelEpisode episodes = 2;
+  int64 step = 3;
+}
+
+// One route's rows.
+message ModelGroup {
+  string route = 1;
+  // One per row.
+  repeated ModelEpisode episodes = 2;
+  Leaves observation = 3;
+  repeated ModelHistoryRow history = 4;
+  optional int64 step = 5;
+}
+
+message ModelPredict {
+  repeated ModelGroup groups = 1;
+}
+
+message ModelFault {
+  string code = 1;
+  string message = 2;
+  bool recoverable = 3;
+}
+
+// Frame 0 (this step), then the chunk's replay frames.
+message ModelFrames {
+  repeated Leaves frames = 1;
+}
+
+message ModelOutcome {
+  oneof outcome {
+    ModelFrames frames = 1;
+    ModelFault fault = 2;
+  }
+}
+
+// Aligned with the request's groups.
+message ModelPredicted {
+  repeated ModelOutcome outcomes = 1;
+}
+
+// Ends episodes (empty: all of the route's).
+message ModelReset {
+  string route = 1;
+  repeated string episode_ids = 2;
+}
+
+message ModelRelease {
+  string route = 1;
+}
+
+message ModelDescribe {}
+
+message ModelRequest {
+  oneof kind {
+    ModelResolve resolve = 1;
+    ModelPredict predict = 2;
+    ModelReset reset = 3;
+    ModelRelease release = 4;
+    ModelDescribe describe = 5;
+  }
+}
+
+message ModelDone {}
+
+message ModelReply {
+  oneof kind {
+    ModelResolved resolved = 1;
+    ModelPredicted predicted = 2;
+    ModelDone done = 3;
+    // The model's describe envelope (JSON), empty when it has none.
+    string describe_json = 4;
+    ModelFault fault = 5;
+  }
+}

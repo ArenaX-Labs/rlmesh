@@ -72,18 +72,8 @@ impl GymEnvInfo {
     }
 
     fn to_json(&self) -> Value {
-        let c = &self.contract;
-        let space = |spec: &Option<SpaceSpec>| spec.as_ref().map(space_json).unwrap_or(Value::Null);
         json!({
-            "contract": {
-                "id": c.id,
-                "render_mode": c.render_mode,
-                "num_envs": c.num_envs,
-                "autoreset_mode": c.autoreset_mode as i32,
-                "observation_space": space(&c.observation_space),
-                "action_space": space(&c.action_space),
-                "metadata": c.metadata.as_ref().map(meta_json::map_value),
-            },
+            "contract": contract_to_json(&self.contract),
             "workflow_edition": self.workflow_edition,
             "supported_workflow_editions": self.supported_workflow_editions,
             "capabilities": self.capabilities,
@@ -108,42 +98,71 @@ impl GymEnvInfo {
         let strings = |v: Value| -> Result<Vec<String>, GymError> {
             serde_json::from_value(v).map_err(|e| bad(e.to_string()))
         };
-        // A peer's spaces are held to the builders' invariants, as a v1
-        // handshake holds them.
-        let space = |v: Value| -> Result<Option<SpaceSpec>, GymError> {
-            match v {
-                Value::Null => Ok(None),
-                v => {
-                    let spec = space_spec_from_json(&v).map_err(|e| bad(e.to_string()))?;
-                    rlmesh_spaces::validate_space(&spec).map_err(|e| bad(e.to_string()))?;
-                    Ok(Some(spec))
-                }
-            }
-        };
-        let c = field(&value, "contract")?;
-        let number = |name: &str| field(&c, name)?.as_i64().ok_or_else(|| bad(name.into()));
-        let contract = EnvContract {
-            id: text(&c, "id")?,
-            render_mode: text(&c, "render_mode")?,
-            num_envs: u32::try_from(number("num_envs")?).map_err(|e| bad(e.to_string()))?,
-            autoreset_mode: i32::try_from(number("autoreset_mode")?)
-                .ok()
-                .and_then(|mode| AutoresetMode::try_from(mode).ok())
-                .ok_or_else(|| bad("autoreset_mode".into()))?,
-            observation_space: space(field(&c, "observation_space")?)?,
-            action_space: space(field(&c, "action_space")?)?,
-            metadata: match field(&c, "metadata")? {
-                Value::Null => None,
-                v => Some(meta_json::map_from_value(v).map_err(bad)?),
-            },
-        };
         Ok(Self {
-            contract,
+            contract: contract_from_json(&field(&value, "contract")?)?,
             workflow_edition: text(&value, "workflow_edition")?,
             supported_workflow_editions: strings(field(&value, "supported_workflow_editions")?)?,
             capabilities: strings(field(&value, "capabilities")?)?,
         })
     }
+}
+
+/// An env contract as JSON: spaces, metadata and tags, `num_envs`,
+/// autoreset.
+pub fn contract_to_json(c: &EnvContract) -> Value {
+    let space = |spec: &Option<SpaceSpec>| spec.as_ref().map(space_json).unwrap_or(Value::Null);
+    json!({
+        "id": c.id,
+        "render_mode": c.render_mode,
+        "num_envs": c.num_envs,
+        "autoreset_mode": c.autoreset_mode as i32,
+        "observation_space": space(&c.observation_space),
+        "action_space": space(&c.action_space),
+        "metadata": c.metadata.as_ref().map(meta_json::map_value),
+    })
+}
+
+/// The inverse of [`contract_to_json`]. A peer's spaces are held to the
+/// builders' invariants, as a v1 handshake holds them.
+pub fn contract_from_json(c: &Value) -> Result<EnvContract, GymError> {
+    let bad = |why: String| GymError::Map(format!("env contract: {why}"));
+    let field = |name: &str| -> Result<Value, GymError> {
+        c.get(name)
+            .cloned()
+            .ok_or_else(|| bad(format!("no {name}")))
+    };
+    let space = |v: Value| -> Result<Option<SpaceSpec>, GymError> {
+        match v {
+            Value::Null => Ok(None),
+            v => {
+                let spec = space_spec_from_json(&v).map_err(|e| bad(e.to_string()))?;
+                rlmesh_spaces::validate_space(&spec).map_err(|e| bad(e.to_string()))?;
+                Ok(Some(spec))
+            }
+        }
+    };
+    let number = |name: &str| field(name)?.as_i64().ok_or_else(|| bad(name.into()));
+    Ok(EnvContract {
+        id: field("id")?
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| bad("id is not a string".into()))?,
+        render_mode: field("render_mode")?
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| bad("render_mode is not a string".into()))?,
+        num_envs: u32::try_from(number("num_envs")?).map_err(|e| bad(e.to_string()))?,
+        autoreset_mode: i32::try_from(number("autoreset_mode")?)
+            .ok()
+            .and_then(|mode| AutoresetMode::try_from(mode).ok())
+            .ok_or_else(|| bad("autoreset_mode".into()))?,
+        observation_space: space(field("observation_space")?)?,
+        action_space: space(field("action_space")?)?,
+        metadata: match field("metadata")? {
+            Value::Null => None,
+            v => Some(meta_json::map_from_value(v).map_err(bad)?),
+        },
+    })
 }
 
 /// A space as its JSON form, with each Dict's key order (`details.keys`),

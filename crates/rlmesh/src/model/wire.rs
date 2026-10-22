@@ -170,7 +170,7 @@ pub(super) fn encode_replay_frames(
 /// back at the spec dtype), and that value/spec mismatch never reaches the env's
 /// own validation. Range deviations (Box bounds) pass through — those are the
 /// env's validation policy to decide.
-pub(super) fn check_actions_conform(
+pub(crate) fn check_actions_conform(
     action_space: &spaces::SpaceSpec,
     actions: &[spaces::SpaceValue],
 ) -> Result<()> {

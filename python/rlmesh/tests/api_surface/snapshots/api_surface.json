@@ -348,7 +348,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, options: ServeOptions | None = None) -> None"
+            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
           },
           "session": {
             "kind": "function",
@@ -2641,7 +2641,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, options: ServeOptions | None = None) -> None"
+            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
           },
           "session": {
             "kind": "function",
@@ -3269,7 +3269,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, options: ServeOptions | None = None) -> None"
+            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
           },
           "session": {
             "kind": "function",
@@ -4805,7 +4805,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, options: ServeOptions | None = None) -> None"
+            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
           },
           "session": {
             "kind": "function",

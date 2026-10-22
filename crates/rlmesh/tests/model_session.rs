@@ -1,0 +1,185 @@
+#![cfg(feature = "lockstep")]
+//! A model served on a session: routes resolve once, a predict carries
+//! several routes' rows and gets one outcome each, chunks come back as
+//! frames.
+
+#![allow(clippy::unwrap_used)]
+
+mod common;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use common::boxed;
+use rlmesh::binding::model::{ModelHandler, ModelObservation, PredictFrames};
+use rlmesh::lockstep::map::contract_to_json;
+use rlmesh::lockstep::{ModelBinding, ModelConnection, ModelService};
+use rlmesh_session::wire::{ModelEpisode, ModelGroup, ModelReply, ModelRequest, ModelResolve};
+use rlmesh_spaces::leaves::{decode_leaf_slab, encode_leaf_slab};
+use rlmesh_spaces::{AutoresetMode, DType, EnvContract, SpaceValue, Tensor};
+
+/// Acts with its observation; chunks of three (the observation, then +1,
+/// +2) when asked for a chunk.
+struct Echo;
+
+fn plus(value: &SpaceValue, n: f32) -> SpaceValue {
+    let SpaceValue::Box(t) = value else {
+        panic!("a box")
+    };
+    let data: Vec<f32> = t
+        .to_contiguous_bytes()
+        .chunks(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()) + n)
+        .collect();
+    let bytes = data.iter().flat_map(|v| v.to_le_bytes()).collect();
+    SpaceValue::Box(Tensor::from_vec(bytes, vec![2], DType::Float32).unwrap())
+}
+
+#[rlmesh::binding::async_trait]
+impl ModelHandler for Echo {
+    async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        observation.decoded_lanes()
+    }
+
+    async fn predict_chunked(
+        &mut self,
+        observation: ModelObservation,
+    ) -> rlmesh::Result<PredictFrames> {
+        let lanes = observation.decoded_lanes()?;
+        Ok(PredictFrames {
+            replay: (1..3)
+                .map(|n| lanes.iter().map(|v| plus(v, n as f32)).collect())
+                .collect(),
+            actions: lanes,
+        })
+    }
+}
+
+fn contract() -> EnvContract {
+    EnvContract {
+        id: "Echo-v0".into(),
+        action_space: Some(boxed(DType::Float32, &[2])),
+        observation_space: Some(boxed(DType::Float32, &[2])),
+        metadata: None,
+        render_mode: String::new(),
+        num_envs: 1,
+        autoreset_mode: AutoresetMode::Disabled,
+    }
+}
+
+fn value(v: f32) -> SpaceValue {
+    let bytes = [v, -v].iter().flat_map(|x| x.to_le_bytes()).collect();
+    SpaceValue::Box(Tensor::from_vec(bytes, vec![2], DType::Float32).unwrap())
+}
+
+fn group(route: &str, values: &[f32]) -> ModelGroup {
+    let rows: Vec<SpaceValue> = values.iter().map(|v| value(*v)).collect();
+    ModelGroup {
+        route: route.into(),
+        episodes: (0..rows.len())
+            .map(|i| ModelEpisode {
+                id: format!("{route}-{i}"),
+                seed: Some(i as i64),
+            })
+            .collect(),
+        observation: encode_leaf_slab(&rows, contract().observation_space.as_ref().unwrap())
+            .unwrap(),
+        history: Vec::new(),
+        step: Some(0),
+    }
+}
+
+fn resolve(route: &str, horizon: u32) -> ModelRequest {
+    ModelRequest::Resolve(ModelResolve {
+        route: route.into(),
+        contract_json: contract_to_json(&contract()).to_string(),
+        execution_horizon: horizon,
+        delivers_history: false,
+        workflow_edition: String::new(),
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
+    let binding = ModelBinding::bind(":0/echo").await.unwrap();
+    let address = binding.address();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let service = Arc::new(ModelService::new(Echo, "{\"kind\":\"model\"}".into()));
+    let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
+    let model = ModelConnection::connect(&address, "driver", Duration::from_secs(10))
+        .await
+        .unwrap();
+    let call = |request: ModelRequest| {
+        let link = &model.link;
+        async move { link.call(&request, None).await.unwrap() }
+    };
+
+    assert_eq!(
+        call(ModelRequest::Describe).await,
+        ModelReply::Described("{\"kind\":\"model\"}".into())
+    );
+    assert!(matches!(
+        call(resolve("a", 3)).await,
+        ModelReply::Resolved(_)
+    ));
+    // Two lanes of route a, and route b, never resolved: b's fault stays
+    // b's.
+    let ModelReply::Predicted(outcomes) = call(ModelRequest::Predict(vec![
+        group("a", &[1.0, 2.0]),
+        group("b", &[3.0]),
+    ]))
+    .await
+    else {
+        panic!("a predict reply")
+    };
+    let space = contract().action_space.unwrap();
+    let frames = outcomes[0].as_ref().unwrap();
+    assert_eq!(frames.len(), 3, "frame 0 and two replay frames");
+    assert_eq!(
+        decode_leaf_slab(&frames[0], &space, 2).unwrap(),
+        vec![value(1.0), value(2.0)]
+    );
+    assert_eq!(
+        decode_leaf_slab(&frames[2], &space, 2).unwrap(),
+        vec![plus(&value(1.0), 2.0), plus(&value(2.0), 2.0)]
+    );
+    let fault = outcomes[1].as_ref().unwrap_err();
+    assert!(
+        fault.message.contains("\"b\" was not resolved"),
+        "{fault:?}"
+    );
+
+    // A released route is gone.
+    assert_eq!(
+        call(ModelRequest::Reset {
+            route: "a".into(),
+            episode_ids: vec!["a-0".into()],
+        })
+        .await,
+        ModelReply::Done
+    );
+    assert_eq!(
+        call(ModelRequest::Release { route: "a".into() }).await,
+        ModelReply::Done
+    );
+    let ModelReply::Predicted(outcomes) =
+        call(ModelRequest::Predict(vec![group("a", &[1.0])])).await
+    else {
+        panic!("a predict reply")
+    };
+    assert!(outcomes[0].is_err());
+
+    // An edition this build does not implement is refused at resolve.
+    let ModelRequest::Resolve(mut pinned) = resolve("c", 1) else {
+        unreachable!()
+    };
+    pinned.workflow_edition = "1999.01".into();
+    let ModelReply::Fault(fault) = call(ModelRequest::Resolve(pinned)).await else {
+        panic!("a fault")
+    };
+    assert!(fault.message.contains("1999.01"), "{fault:?}");
+
+    model.close().await;
+    cancel.cancel();
+    served.await.unwrap().unwrap();
+}

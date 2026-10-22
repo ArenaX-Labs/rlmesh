@@ -19,7 +19,8 @@
 //!   segments (Zenoh's `ZBytes`) sends it without a copy. The concatenation
 //!   is ordinary protobuf. The decoders take the received buffer as
 //!   [`Bytes`], and the payload slices it.
-//! - The lockstep messages encode to one buffer (one copy of the slabs).
+//! - The lockstep and served-model messages encode to one buffer (one copy
+//!   of the slabs).
 //!
 //! Payload contents are not validated here; the layout check against the
 //! declaration is [`StreamSpec::check_payload`] (samples) and the edge's
@@ -45,6 +46,10 @@ use crate::wire::error::WireError;
 use crate::wire::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
 use crate::wire::lockstep::{LockstepReply, LockstepReset, LockstepStep, PartValues};
+use crate::wire::model::{
+    ModelEpisode, ModelFault, ModelGroup, ModelHistoryRow, ModelReply, ModelRequest, ModelResolve,
+    ModelResolved,
+};
 use crate::wire::part::{
     ChannelPriority, CommandSpec, DType, Encoding, FieldLimit, FieldSpec, MAX_BATCH,
     MAX_CHUNK_ACTIONS, MAX_CHUNK_BYTES, MergePolicy, PartSpec,
@@ -705,6 +710,207 @@ pub fn decode_lockstep_reply(buf: Bytes) -> Result<LockstepReply, WireError> {
         truncated: r.truncated,
         episode_ids: r.episode_ids,
         info_json: r.info_json,
+    })
+}
+
+// --- served models -----------------------------------------------------------
+
+fn leaves_to_pb(leaves: &[Bytes]) -> pb::Leaves {
+    pb::Leaves {
+        leaves: leaves.to_vec(),
+    }
+}
+
+fn leaves_from_pb(leaves: Option<pb::Leaves>) -> Vec<Bytes> {
+    leaves.map(|l| l.leaves).unwrap_or_default()
+}
+
+fn episodes_to_pb(episodes: &[ModelEpisode]) -> Vec<pb::ModelEpisode> {
+    episodes
+        .iter()
+        .map(|e| pb::ModelEpisode {
+            id: e.id.clone(),
+            seed: e.seed,
+        })
+        .collect()
+}
+
+fn episodes_from_pb(episodes: Vec<pb::ModelEpisode>) -> Vec<ModelEpisode> {
+    episodes
+        .into_iter()
+        .map(|e| ModelEpisode {
+            id: e.id,
+            seed: e.seed,
+        })
+        .collect()
+}
+
+fn fault_to_pb(fault: &ModelFault) -> pb::ModelFault {
+    pb::ModelFault {
+        code: fault.code.clone(),
+        message: fault.message.clone(),
+        recoverable: fault.recoverable,
+    }
+}
+
+fn fault_from_pb(fault: pb::ModelFault) -> ModelFault {
+    ModelFault {
+        code: fault.code,
+        message: fault.message,
+        recoverable: fault.recoverable,
+    }
+}
+
+/// Encodes a request to a served model.
+pub fn encode_model_request(request: &ModelRequest) -> Vec<u8> {
+    use pb::model_request::Kind;
+    let kind = match request {
+        ModelRequest::Resolve(r) => Kind::Resolve(pb::ModelResolve {
+            route: r.route.clone(),
+            contract_json: r.contract_json.clone(),
+            execution_horizon: r.execution_horizon,
+            delivers_history: r.delivers_history,
+            workflow_edition: r.workflow_edition.clone(),
+        }),
+        ModelRequest::Predict(groups) => Kind::Predict(pb::ModelPredict {
+            groups: groups
+                .iter()
+                .map(|g| pb::ModelGroup {
+                    route: g.route.clone(),
+                    episodes: episodes_to_pb(&g.episodes),
+                    observation: Some(leaves_to_pb(&g.observation)),
+                    history: g
+                        .history
+                        .iter()
+                        .map(|h| pb::ModelHistoryRow {
+                            observation: Some(leaves_to_pb(&h.observation)),
+                            episodes: episodes_to_pb(&h.episodes),
+                            step: h.step,
+                        })
+                        .collect(),
+                    step: g.step,
+                })
+                .collect(),
+        }),
+        ModelRequest::Reset { route, episode_ids } => Kind::Reset(pb::ModelReset {
+            route: route.clone(),
+            episode_ids: episode_ids.clone(),
+        }),
+        ModelRequest::Release { route } => Kind::Release(pb::ModelRelease {
+            route: route.clone(),
+        }),
+        ModelRequest::Describe => Kind::Describe(pb::ModelDescribe {}),
+    };
+    pb::ModelRequest { kind: Some(kind) }.encode_to_vec()
+}
+
+/// Decodes a request to a served model. The slabs slice `buf` (no copy).
+pub fn decode_model_request(buf: Bytes) -> Result<ModelRequest, WireError> {
+    use pb::model_request::Kind;
+    let kind = pb::ModelRequest::decode(buf)?
+        .kind
+        .ok_or_else(|| WireError::malformed("model request", "no kind (a newer request?)"))?;
+    Ok(match kind {
+        Kind::Resolve(r) => ModelRequest::Resolve(ModelResolve {
+            route: r.route,
+            contract_json: r.contract_json,
+            execution_horizon: r.execution_horizon,
+            delivers_history: r.delivers_history,
+            workflow_edition: r.workflow_edition,
+        }),
+        Kind::Predict(p) => ModelRequest::Predict(
+            p.groups
+                .into_iter()
+                .map(|g| ModelGroup {
+                    route: g.route,
+                    episodes: episodes_from_pb(g.episodes),
+                    observation: leaves_from_pb(g.observation),
+                    history: g
+                        .history
+                        .into_iter()
+                        .map(|h| ModelHistoryRow {
+                            observation: leaves_from_pb(h.observation),
+                            episodes: episodes_from_pb(h.episodes),
+                            step: h.step,
+                        })
+                        .collect(),
+                    step: g.step,
+                })
+                .collect(),
+        ),
+        Kind::Reset(r) => ModelRequest::Reset {
+            route: r.route,
+            episode_ids: r.episode_ids,
+        },
+        Kind::Release(r) => ModelRequest::Release { route: r.route },
+        Kind::Describe(_) => ModelRequest::Describe,
+    })
+}
+
+/// Encodes a served model's reply.
+pub fn encode_model_reply(reply: &ModelReply) -> Vec<u8> {
+    use pb::model_reply::Kind;
+    let kind = match reply {
+        ModelReply::Resolved(r) => Kind::Resolved(pb::ModelResolved {
+            native_chunk: r.native_chunk,
+            history: r
+                .history
+                .as_ref()
+                .map(|(keys, prunable)| pb::ModelHistoryNeeds {
+                    keys: keys.clone(),
+                    prunable: *prunable,
+                }),
+        }),
+        ModelReply::Predicted(outcomes) => Kind::Predicted(pb::ModelPredicted {
+            outcomes: outcomes
+                .iter()
+                .map(|o| pb::ModelOutcome {
+                    outcome: Some(match o {
+                        Ok(frames) => pb::model_outcome::Outcome::Frames(pb::ModelFrames {
+                            frames: frames.iter().map(|f| leaves_to_pb(f)).collect(),
+                        }),
+                        Err(fault) => pb::model_outcome::Outcome::Fault(fault_to_pb(fault)),
+                    }),
+                })
+                .collect(),
+        }),
+        ModelReply::Done => Kind::Done(pb::ModelDone {}),
+        ModelReply::Described(json) => Kind::DescribeJson(json.clone()),
+        ModelReply::Fault(fault) => Kind::Fault(fault_to_pb(fault)),
+    };
+    pb::ModelReply { kind: Some(kind) }.encode_to_vec()
+}
+
+/// Decodes a served model's reply. The slabs slice `buf` (no copy).
+pub fn decode_model_reply(buf: Bytes) -> Result<ModelReply, WireError> {
+    use pb::model_reply::Kind;
+    let kind = pb::ModelReply::decode(buf)?
+        .kind
+        .ok_or_else(|| WireError::malformed("model reply", "no kind (a newer reply?)"))?;
+    Ok(match kind {
+        Kind::Resolved(r) => ModelReply::Resolved(ModelResolved {
+            native_chunk: r.native_chunk,
+            history: r.history.map(|h| (h.keys, h.prunable)),
+        }),
+        Kind::Predicted(p) => ModelReply::Predicted(
+            p.outcomes
+                .into_iter()
+                .map(|o| match o.outcome {
+                    Some(pb::model_outcome::Outcome::Frames(f)) => {
+                        Ok(f.frames.into_iter().map(|frame| frame.leaves).collect())
+                    }
+                    Some(pb::model_outcome::Outcome::Fault(fault)) => Err(fault_from_pb(fault)),
+                    None => Err(ModelFault {
+                        code: "INVALID_REQUEST".into(),
+                        message: "an outcome with neither frames nor a fault".into(),
+                        recoverable: false,
+                    }),
+                })
+                .collect(),
+        ),
+        Kind::Done(_) => ModelReply::Done,
+        Kind::DescribeJson(json) => ModelReply::Described(json),
+        Kind::Fault(fault) => ModelReply::Fault(fault_from_pb(fault)),
     })
 }
 
@@ -2065,6 +2271,65 @@ mod tests {
             decode_lockstep_reply(Bytes::from(encode_lockstep_reply(&reply))).expect("decode"),
             reply
         );
+    }
+
+    #[test]
+    fn model_messages_round_trip() {
+        let slab = |b: u8| vec![Bytes::from(vec![b; 8]), Bytes::from(vec![b; 3])];
+        let episode = |id: &str| ModelEpisode {
+            id: id.into(),
+            seed: Some(-4),
+        };
+        for request in [
+            ModelRequest::Resolve(ModelResolve {
+                route: "cartpole".into(),
+                contract_json: "{}".into(),
+                execution_horizon: 4,
+                delivers_history: true,
+                workflow_edition: "2026.06".into(),
+            }),
+            ModelRequest::Predict(vec![ModelGroup {
+                route: "cartpole".into(),
+                episodes: vec![episode("a"), episode("b")],
+                observation: slab(1),
+                history: vec![ModelHistoryRow {
+                    observation: slab(2),
+                    episodes: vec![episode("a")],
+                    step: 3,
+                }],
+                step: Some(4),
+            }]),
+            ModelRequest::Reset {
+                route: "cartpole".into(),
+                episode_ids: vec!["a".into()],
+            },
+            ModelRequest::Release {
+                route: "cartpole".into(),
+            },
+            ModelRequest::Describe,
+        ] {
+            let decoded = decode_model_request(Bytes::from(encode_model_request(&request)));
+            assert_eq!(decoded.expect("decode"), request);
+        }
+        let fault = ModelFault {
+            code: "INTERNAL".into(),
+            message: "no".into(),
+            recoverable: true,
+        };
+        for reply in [
+            ModelReply::Resolved(ModelResolved {
+                native_chunk: Some(8),
+                history: Some((vec!["image".into()], false)),
+            }),
+            ModelReply::Predicted(vec![Ok(vec![slab(5), slab(6)]), Err(fault.clone())]),
+            ModelReply::Done,
+            ModelReply::Described("{\"kind\":\"model\"}".into()),
+            ModelReply::Fault(fault),
+        ] {
+            let decoded = decode_model_reply(Bytes::from(encode_model_reply(&reply)));
+            assert_eq!(decoded.expect("decode"), reply);
+        }
+        assert!(decode_model_request(Bytes::new()).is_err());
     }
 
     #[test]

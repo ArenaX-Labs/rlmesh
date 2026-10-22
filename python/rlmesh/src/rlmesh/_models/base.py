@@ -1655,9 +1655,15 @@ class ModelBase(Generic[ObsT, ActT]):
         self,
         address: str,
         *,
+        name: str | None = None,
         options: ServeOptions | None = None,
     ) -> None:
         """Host this model as an endpoint (blocking).
+
+        With a session address (``"lab:7447"``, ``":0"``, ``"bench"``), the
+        model joins that session as the participant ``name`` and answers
+        whoever drives it, until closed or interrupted: ``Model("lab:7447/
+        openpi")`` reaches it.
 
         A spec'd model resolves its adapter per env from the env contract the
         ``resolve_adapter`` handshake delivers, then applies it around predict; a
@@ -1682,13 +1688,22 @@ class ModelBase(Generic[ObsT, ActT]):
             call=options.workflow_edition if options is not None else None,
             declared=self._class_workflow_edition(),
         )
+        from .._rlmesh import is_v2_address
+
+        if is_v2_address(address) and not name:
+            raise ValueError(
+                f"serve({address!r}) joins a session: pass name= to name the model in it"
+            )
         worker = self._install_worker()
         # close() stops this serve (drain); the serve then returns and its own
         # close below is that one.
         token = self._calls.register_serve(worker.stop_serving)
         _serving_models[id(self)] = self
         try:
-            worker.serve(address, declared)
+            if is_v2_address(address):
+                worker.serve(address, declared, name)
+            else:
+                worker.serve(address, declared)
         except BaseException:
             self._calls.deregister_serve(token)
             with contextlib.suppress(Exception):

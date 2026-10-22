@@ -15,6 +15,7 @@
 //! rlmesh/v2/{tenant}/s/{session}/c/{robot}/{path...}           action chunks
 //! rlmesh/v2/{tenant}/s/{session}/h/{robot}/{path...}           history store (queryable, host)
 //! rlmesh/v2/{tenant}/s/{session}/l/{robot}                     lockstep step (queryable, §12)
+//! rlmesh/v2/{tenant}/s/{session}/m/{model}                     served model requests (queryable)
 //! ```
 //!
 //! The `v2` chunk is the protocol generation
@@ -148,6 +149,11 @@ impl SessionKeys {
     /// A robot's lockstep step (queryable).
     pub fn lockstep(&self, robot: &ParticipantId) -> String {
         format!("{}/l/{robot}", self.prefix)
+    }
+
+    /// A served model's requests (queryable).
+    pub fn model(&self, model: &ParticipantId) -> String {
+        format!("{}/m/{model}", self.prefix)
     }
 
     /// The participant a `p/{participant}[/...]` key names.

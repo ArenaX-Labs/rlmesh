@@ -840,6 +840,67 @@ impl PyModel {
             });
         AdaptedModelHandler::new(Arc::new(predict), resolver)
     }
+
+    /// Serves the model as the participant `name` in the session at
+    /// `address` until a signal or [`stop_serving`](Self::stop_serving).
+    fn serve_on_session(&self, py: Python<'_>, address: &str, name: &str) -> PyResult<()> {
+        let participant = if address.trim().is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{name}", address.trim().trim_end_matches('/'))
+        };
+        // The describe envelope `rlmesh.serve` stamped for the handshake.
+        let describe = rlmesh::binding::peer_info_override()
+            .and_then(|info| info.extra.get(rlmesh::DESCRIBE_METADATA_KEY).cloned())
+            .unwrap_or_default();
+        let service = Arc::new(rlmesh::lockstep::ModelService::new(
+            self.build_handler(),
+            describe,
+        ));
+        let serving = Arc::clone(&self.serving);
+        py.detach(|| {
+            model_runtime().block_on(async move {
+                let binding = rlmesh::lockstep::ModelBinding::bind(&participant)
+                    .await
+                    .map_err(crate::lockstep::gym_err)?;
+                let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
+                {
+                    let mut serving = serving.lock().expect("serving lock poisoned");
+                    if serving.stopped {
+                        shutdown.trigger("model closed");
+                    }
+                    serving.triggers.push(shutdown.clone());
+                }
+                crate::server::py_env_server::spawn_signal_shutdown(shutdown.clone());
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let stop = {
+                    let (shutdown, cancel) = (shutdown.clone(), cancel.clone());
+                    tokio::spawn(async move {
+                        shutdown.cancelled_owned().await;
+                        cancel.cancel();
+                    })
+                };
+                tracing::info!(address = %binding.address(), "model serving");
+                let mut serve =
+                    std::pin::pin!(binding.serve(service, Duration::from_secs(30), cancel.clone()));
+                let mut poll = crate::client::signal_poll();
+                let result = loop {
+                    tokio::select! {
+                        result = &mut serve => break result.map_err(crate::lockstep::gym_err),
+                        _ = poll.tick() => {
+                            if let Err(err) = crate::client::check_signals() {
+                                cancel.cancel();
+                                let _ = (&mut serve).await;
+                                break Err(err);
+                            }
+                        }
+                    }
+                };
+                stop.abort();
+                result
+            })
+        })
+    }
 }
 
 #[pymethods]
@@ -978,16 +1039,22 @@ impl PyModel {
         report_to_py(py, &report)
     }
 
-    #[pyo3(signature = (address, options=None))]
+    #[pyo3(signature = (address, options=None, name=None))]
     fn serve(
         &self,
         py: Python<'_>,
         address: &str,
         options: Option<PyServeOptions>,
+        name: Option<&str>,
     ) -> PyResult<()> {
         let run_span = tracing::info_span!("rlmesh.model.serve", address = address);
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.serve.total");
+        if let Some(name) = name {
+            self.serve_on_session(py, address, name)?;
+            let _ = total_guard.finish(0);
+            return Ok(());
+        }
 
         let address = BindAddress::parse(address).map_err(to_py_err)?;
         let mut options = options.map(PyServeOptions::into_rust).unwrap_or_default();
@@ -1055,7 +1122,7 @@ class PyModel:
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, env_token: str | None = None) -> dict[str, typing.Any]: ...
-    def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
+    def serve(self, address: str, options: ServeOptions | None = None, name: str | None = None) -> None: ...
 "#
     }
 }

@@ -15,6 +15,8 @@
 //!   native values.
 //! - [`session`]: attach, declare, arm and one lease grant; addresses
 //!   (participant addresses).
+//! - [`model`]: a model served on a session (`m/{model}`) and the
+//!   driver's link to it.
 //! - [`view`]: the Gym view over a v2-native robot (§12.6).
 //! - [`virtual_mode`]: the virtual clock's run loop (§11.3).
 //! - [`record`]: the lockstep tee into the recorder (§13).
@@ -29,6 +31,7 @@ pub mod escape;
 pub mod exchange;
 pub mod map;
 pub mod meta_json;
+pub mod model;
 pub mod record;
 pub mod served;
 pub mod session;
@@ -49,6 +52,7 @@ pub use client::{Keep, LockstepClient};
 pub use error::GymError;
 pub use exchange::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
+pub use model::{ModelBinding, ModelConnection, ModelLink, ModelService};
 pub use rlmesh_session::address::is_v2_address;
 pub use served::{GymEnv, Reset, Served, Step};
 pub use session::{

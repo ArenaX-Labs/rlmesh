@@ -13,7 +13,7 @@ pub(crate) mod predict_fn;
 pub(crate) mod remote;
 pub(crate) mod server;
 pub(crate) mod types;
-mod wire;
+pub(crate) mod wire;
 pub(crate) mod worker;
 
 pub use context::{BatchPredictContext, EpisodeState, PredictContext};

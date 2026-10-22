@@ -26,7 +26,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-fn gym_err(err: GymError) -> PyErr {
+pub(crate) fn gym_err(err: GymError) -> PyErr {
     SessionException::new_err(err.to_string())
 }
 
