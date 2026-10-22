@@ -1,7 +1,8 @@
 //! Rotation encodings (§5.3) and the one codec between them.
 //!
-//! `quat_xyzw` is canonical (decided Q2). `quat_xyzw ↔ quat_wxyz` is
-//! automatic; every other re-encoding needs `allow: rotation`.
+//! `quat_xyzw` is canonical (decided Q2). `quat_xyzw ↔ quat_wxyz` is a
+//! component permutation that keeps the sign and is automatic; every other
+//! re-encoding needs `allow: rotation`.
 //! `gravity_xyz` is a target only: it discards yaw, so nothing converts
 //! from it. [`convert`] states the sign conventions.
 
@@ -138,16 +139,6 @@ fn as_xyzw(value: &[f64], from: Rotation) -> [f64; 4] {
     }
 }
 
-/// `q` at unit norm with `w ≥ 0`; a zero quaternion is the identity.
-fn canonical(q: [f64; 4]) -> [f64; 4] {
-    let n = q.iter().map(|c| c * c).sum::<f64>().sqrt();
-    if n <= EPS {
-        return [0.0, 0.0, 0.0, 1.0];
-    }
-    let s = if q[3] < 0.0 { -1.0 / n } else { 1.0 / n };
-    q.map(|c| c * s)
-}
-
 /// `q`'s own rotation vector, `2·atan2(|v|, w)·v/|v|`: the hemisphere `q`
 /// is in is kept, so the norm is in `[0, 2π)`.
 fn quat_to_axis_angle(q: [f64; 4]) -> [f64; 3] {
@@ -279,11 +270,11 @@ fn gram_schmidt(a1: [f64; 3], a2: [f64; 3]) -> Matrix {
     ]
 }
 
-/// `m` as a quaternion `(x, y, z, w)` by the largest-diagonal method, then
-/// [`canonical`].
+/// `m` as a quaternion `(x, y, z, w)` by the largest-diagonal method, with
+/// the sign that method gives (0.1's).
 fn matrix_to_quat(m: &Matrix) -> [f64; 4] {
     let trace = m[0][0] + m[1][1] + m[2][2];
-    let q = if trace > 0.0 {
+    if trace > 0.0 {
         let s = (trace + 1.0).sqrt() * 2.0;
         [
             (m[2][1] - m[1][2]) / s,
@@ -315,11 +306,10 @@ fn matrix_to_quat(m: &Matrix) -> [f64; 4] {
             0.25 * s,
             (m[1][0] - m[0][1]) / s,
         ]
-    };
-    canonical(q)
+    }
 }
 
-/// `q` (canonical) in the quaternion encoding `to`.
+/// `q` in the quaternion encoding `to`.
 fn put_quat(q: [f64; 4], to: Rotation, out: &mut Vec<f64>) {
     let [x, y, z, w] = q;
     if to == Rotation::QuatWxyz {
@@ -334,8 +324,12 @@ fn from_matrix(m: &Matrix, to: Rotation, out: &mut Vec<f64>) {
     match to {
         Rotation::QuatXyzw | Rotation::QuatWxyz => put_quat(matrix_to_quat(m), to, out),
         // Through the quaternion: the angle read off the trace loses
-        // precision near 0 and π. With w ≥ 0 the norm is at most π.
-        Rotation::AxisAngle => out.extend(quat_to_axis_angle(matrix_to_quat(m))),
+        // precision near 0 and π. Taken with w ≥ 0, the norm is at most π.
+        Rotation::AxisAngle => {
+            let q = matrix_to_quat(m);
+            let q = if q[3] < 0.0 { q.map(|c| -c) } else { q };
+            out.extend(quat_to_axis_angle(q));
+        }
         Rotation::Rot6d => out.extend([m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1]]),
         Rotation::Rot6dRowMajor => {
             out.extend([m[0][0], m[0][1], m[1][0], m[1][1], m[2][0], m[2][1]])
@@ -379,8 +373,9 @@ fn mat_mul(left: &Matrix, right: &Matrix) -> Matrix {
 ///
 /// The sign conventions, one rule each:
 ///
-/// - Every quaternion it produces is unit with `w ≥ 0`, the other quaternion
-///   order included.
+/// - The other quaternion order is a permutation: it keeps the sign (and the
+///   norm). A quaternion from any other encoding has the sign the
+///   largest-diagonal method gives, as in 0.1.
 /// - `axis_angle` from a quaternion is that quaternion's own rotation vector
 ///   (robosuite's `quat2axisangle`, which LIBERO checkpoints read): its
 ///   hemisphere is kept, so the norm may exceed π. From any other encoding
@@ -406,7 +401,7 @@ pub fn convert_with(
             Some(post) => from_matrix(&mat_mul(&to_matrix(value, from), post), to, out),
             None if from == to => out.extend_from_slice(value),
             None if from.is_quaternion() && to.is_quaternion() => {
-                put_quat(canonical(as_xyzw(value, from)), to, out);
+                put_quat(as_xyzw(value, from), to, out);
             }
             None if from.is_quaternion() && to == Rotation::AxisAngle => {
                 out.extend(quat_to_axis_angle(as_xyzw(value, from)));
@@ -441,19 +436,38 @@ mod tests {
     }
 
     #[test]
-    fn quaternion_order_is_automatic_and_canonical() {
-        use Rotation::{GravityXyz, Matrix, QuatWxyz, QuatXyzw};
-        assert_eq!(change(QuatWxyz, QuatXyzw), RotationChange::Auto);
-        assert_eq!(change(QuatWxyz, GravityXyz), RotationChange::Allowed);
-        assert_eq!(change(GravityXyz, Matrix), RotationChange::Incompatible);
+    fn quaternion_order_is_automatic_and_keeps_the_sign() {
         assert_eq!(
-            one(&[-1.0, 0.0, 0.0, 0.0], QuatWxyz, QuatXyzw),
-            [0.0, 0.0, 0.0, 1.0]
+            change(Rotation::QuatWxyz, Rotation::QuatXyzw),
+            RotationChange::Auto
         );
-        // Normalised, and flipped into w >= 0.
-        let q = one(&[0.0, 0.0, 0.2, -1.98], QuatXyzw, QuatWxyz);
-        let n = 0.2_f64.hypot(1.98);
-        assert!(close(&q, &[1.98 / n, 0.0, 0.0, -0.2 / n]), "{q:?}");
+        assert_eq!(
+            change(Rotation::QuatWxyz, Rotation::GravityXyz),
+            RotationChange::Allowed
+        );
+        assert_eq!(
+            change(Rotation::GravityXyz, Rotation::Matrix),
+            RotationChange::Incompatible
+        );
+        let mut out = Vec::new();
+        convert(
+            &[-1.0, 0.0, 0.0, 0.0],
+            Rotation::QuatWxyz,
+            Rotation::QuatXyzw,
+            &mut out,
+        );
+        assert_eq!(out, [0.0, 0.0, 0.0, -1.0], "sign kept");
+    }
+
+    #[test]
+    fn a_quaternion_from_another_encoding_has_the_largest_diagonal_sign() {
+        use Rotation::{EulerXyz, QuatXyzw};
+        // Rx(-170°): the x-diagonal branch, whose w carries sin(-170°) < 0.
+        let angle = -170_f64.to_radians();
+        let q = one(&[angle, 0.0, 0.0], EulerXyz, QuatXyzw);
+        let h = angle / 2.0;
+        assert!(close(&q, &[-h.sin(), 0.0, 0.0, -h.cos()]), "{q:?}");
+        assert!(q[3] < 0.0, "{q:?}");
     }
 
     #[test]
