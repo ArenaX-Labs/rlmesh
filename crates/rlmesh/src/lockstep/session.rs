@@ -195,12 +195,19 @@ fn listen_ip(base: SocketAddr) -> IpAddr {
     }
 }
 
-/// The lockstep class session of a participant (§10.2).
+/// Whether `transport` opened links of its own, which its participant
+/// closes: not a shared session, nor an in-process host's it rides.
+pub(crate) fn owns_links(transport: &Transport) -> bool {
+    !(transport.is_shared() || transport.is_in_process())
+}
+
+/// The lockstep class session of a participant (§10.2): the transport's
+/// own when it opens no links of its own (close it only when it does).
 pub async fn lockstep_session(
     transport: &Transport,
     base: SocketAddr,
 ) -> Result<zenoh::Session, GymError> {
-    if transport.is_shared() || transport.is_in_process() {
+    if !owns_links(transport) {
         return Ok(transport.control().clone());
     }
     let endpoints = Endpoints {
@@ -454,7 +461,7 @@ async fn serve_robot(
     // its binding stops a host it runs.
     watcher.abort();
     let _ = watcher.await;
-    if !(participant.transport().is_shared() || participant.transport().is_in_process()) {
+    if owns_links(participant.transport()) {
         let _ = lockstep.close().await;
     }
     // The tee writes off the critical path: what it holds goes in first.
@@ -647,7 +654,8 @@ impl Attached {
                 let keys: &SessionKeys = participant.keys();
                 let link = ZenohLink::new(session.clone(), keys.lockstep(&self.address.robot));
                 link.wait_ready(timeout).await?;
-                (Arc::new(link), Some(session))
+                let owned = owns_links(participant.transport()).then_some(session);
+                (Arc::new(link), owned)
             }
         };
         Ok((
