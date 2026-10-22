@@ -65,3 +65,13 @@ def test_session_clients_refuse_credentials_and_owner_shutdown() -> None:
                 remote.shutdown()
     finally:
         server.shutdown()
+
+
+def test_a_second_env_under_a_live_name_is_refused_at_construction() -> None:
+    server = rlmesh.EnvServer(Env(), ":0/env")
+    server.start()
+    try:
+        with pytest.raises(ConnectionError, match="participant env is already in"):
+            rlmesh.EnvServer(Env(), server.address)
+    finally:
+        server.shutdown()

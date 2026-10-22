@@ -230,10 +230,7 @@ impl PyLockstepRobot {
         let frame = self.frame.clone();
         let stop = self.stop.clone();
         let (declared_tx, declared_rx) = tokio::sync::oneshot::channel();
-        let options = rlmesh::lockstep::ServeOptions {
-            timeout: Some(timeout(timeout_s)?),
-            ..Default::default()
-        };
+        let options = rlmesh::lockstep::ServeOptions::default();
         let task = runtime().spawn(async move {
             binding
                 .serve_robot(&robot_json, options, stop, move |declared| {

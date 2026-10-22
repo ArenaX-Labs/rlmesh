@@ -511,8 +511,8 @@ public sealed unsafe class FoundationTests
     [Fact]
     public void BindFailuresReleaseLibraryOwnerAndOptionsAreValidated()
     {
-        // A v1 port in use fails the bind at construction.
-        using var live = new EnvServer(new Counter(), new() { Address = "tcp://127.0.0.1:0" });
+        // A name another live env holds in the session fails the bind at construction.
+        using var live = new EnvServer(new Counter());
         var authored = new Counter();
         Assert.Throws<ConnectionError>(() => new EnvServer(authored, new() { Address = live.Address }));
         using var recovered = Env.For(authored);

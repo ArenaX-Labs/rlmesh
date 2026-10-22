@@ -231,8 +231,6 @@ pub struct ServeOptions {
     pub workflow_edition: Option<String>,
     /// Record the session to this MCAP file (the lockstep tee, §13).
     pub record: Option<PathBuf>,
-    /// How long to wait for the host.
-    pub timeout: Option<Duration>,
 }
 
 /// Checks that an env with `contract` maps to a robot (§12.5) before
@@ -264,10 +262,13 @@ fn env_info(env: &dyn Served, declared: Option<&str>) -> GymEnvInfo {
     }
 }
 
-/// A lockstep address bound for serving: the session joined or hosted.
+/// A lockstep address bound for serving: the session joined or hosted,
+/// and the robot attached to it under its name, which no other live
+/// participant holds.
 pub struct LockstepBinding {
     address: LockstepAddress,
     placed: Placed,
+    participant: Participant,
 }
 
 impl std::fmt::Debug for LockstepBinding {
@@ -279,11 +280,30 @@ impl std::fmt::Debug for LockstepBinding {
     }
 }
 
-/// Binds a robot's participant address for serving, placing its session by
-/// the hosting rule.
+/// Binds a robot's participant address for serving: places its session by
+/// the hosting rule and attaches the robot, so a name another participant
+/// holds is refused here.
 pub async fn bind(address: &str) -> Result<LockstepBinding, GymError> {
-    let (address, placed) = LockstepAddress::place(address).await?;
-    Ok(LockstepBinding { address, placed })
+    let (address, mut placed) = LockstepAddress::place(address).await?;
+    let attached = join(
+        &address.session,
+        address.robot.clone(),
+        vec![Role::Embodiment],
+        PriorityClass::Scripted,
+        Duration::from_secs(10),
+    )
+    .await;
+    match attached {
+        Ok(participant) => Ok(LockstepBinding {
+            address,
+            placed,
+            participant,
+        }),
+        Err(err) => {
+            let _ = placed.close().await;
+            Err(err)
+        }
+    }
 }
 
 impl LockstepBinding {
@@ -328,132 +348,126 @@ impl LockstepBinding {
         shutdown: CancellationToken,
         build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
     ) -> Result<(), GymError> {
-        let result = self.serve_inner(robot_json, options, shutdown, build).await;
-        let mut placed = self.placed;
+        let LockstepBinding {
+            address,
+            mut placed,
+            participant,
+        } = self;
+        let result = serve_robot(&address, participant, robot_json, options, shutdown, build).await;
         let _ = placed.close().await;
         result
     }
+}
 
-    async fn serve_inner(
-        &self,
-        robot_json: &str,
-        options: ServeOptions,
-        shutdown: CancellationToken,
-        build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
-    ) -> Result<(), GymError> {
-        let address = &self.address;
-        let participant = Arc::new(
-            join(
-                &address.session,
-                address.robot.clone(),
-                vec![Role::Embodiment],
-                PriorityClass::Scripted,
-                options.timeout.unwrap_or(Duration::from_secs(10)),
-            )
-            .await?,
-        );
-        let snapshot = participant.declare_parts(robot_json).await?;
-        let parts = own_parts(&snapshot, &address.robot);
-        let commands: Vec<ChannelId> = parts
-            .iter()
-            .filter(|p| p.command.is_some())
-            .map(|p| p.channel)
-            .collect();
-        let snapshot = match participant.arm().await {
-            Ok(snapshot) => snapshot,
-            // Already armed (a session another participant armed).
-            Err(err) => {
-                warn!(%err, "lockstep robot: arm refused; serving the current mode");
-                participant.fetch_authority().await?
-            }
-        };
-        let gate = Gate::closed();
-        gate.observe(&snapshot, &address.robot, &commands);
-        let watcher = {
-            let (gate, participant, robot) =
-                (gate.clone(), participant.clone(), address.robot.clone());
-            let commands = commands.clone();
-            tokio::spawn(async move {
-                let mut watch = participant.watch();
-                let mut rearmed = None;
-                while watch.changed().await.is_ok() {
-                    let snapshot = watch.borrow_and_update().clone();
-                    let Some(snapshot) = snapshot else { continue };
-                    gate.observe(&snapshot, &robot, &commands);
-                    // A driver that left (its lease lapsed) puts the session
-                    // in SAFE. A lockstep robot then re-arms once, so the next
-                    // driver can attach, as a v1 env server serves one Join
-                    // session after another. An e-stop stays latched.
-                    let held = snapshot
-                        .leases
-                        .iter()
-                        .any(|l| commands.contains(&l.channel));
-                    if snapshot.mode == Mode::Safe
-                        && !snapshot.estop_latched
-                        && !held
-                        && rearmed != Some(snapshot.epoch)
-                    {
-                        rearmed = Some(snapshot.epoch);
-                        if let Err(err) = participant.arm().await {
-                            warn!(%err, "lockstep robot: re-arm after SAFE refused");
-                        }
+async fn serve_robot(
+    address: &LockstepAddress,
+    participant: Participant,
+    robot_json: &str,
+    options: ServeOptions,
+    shutdown: CancellationToken,
+    build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
+) -> Result<(), GymError> {
+    let participant = Arc::new(participant);
+    let snapshot = participant.declare_parts(robot_json).await?;
+    let parts = own_parts(&snapshot, &address.robot);
+    let commands: Vec<ChannelId> = parts
+        .iter()
+        .filter(|p| p.command.is_some())
+        .map(|p| p.channel)
+        .collect();
+    let snapshot = match participant.arm().await {
+        Ok(snapshot) => snapshot,
+        // Already armed (a session another participant armed).
+        Err(err) => {
+            warn!(%err, "lockstep robot: arm refused; serving the current mode");
+            participant.fetch_authority().await?
+        }
+    };
+    let gate = Gate::closed();
+    gate.observe(&snapshot, &address.robot, &commands);
+    let watcher = {
+        let (gate, participant, robot) = (gate.clone(), participant.clone(), address.robot.clone());
+        let commands = commands.clone();
+        tokio::spawn(async move {
+            let mut watch = participant.watch();
+            let mut rearmed = None;
+            while watch.changed().await.is_ok() {
+                let snapshot = watch.borrow_and_update().clone();
+                let Some(snapshot) = snapshot else { continue };
+                gate.observe(&snapshot, &robot, &commands);
+                // A driver that left (its lease lapsed) puts the session
+                // in SAFE. A lockstep robot then re-arms once, so the next
+                // driver can attach, as a v1 env server serves one Join
+                // session after another. An e-stop stays latched.
+                let held = snapshot
+                    .leases
+                    .iter()
+                    .any(|l| commands.contains(&l.channel));
+                if snapshot.mode == Mode::Safe
+                    && !snapshot.estop_latched
+                    && !held
+                    && rearmed != Some(snapshot.epoch)
+                {
+                    rearmed = Some(snapshot.epoch);
+                    if let Err(err) = participant.arm().await {
+                        warn!(%err, "lockstep robot: re-arm after SAFE refused");
                     }
                 }
-            })
-        };
+            }
+        })
+    };
 
-        let mut recorder = None;
-        let mut tee = None;
-        if let Some(path) = &options.record {
-            let observer = join(
-                &address.session,
-                ParticipantId::new(format!("{}.recorder", address.robot))
-                    .map_err(|e| GymError::Config(e.to_string()))?,
-                vec![Role::Observer],
-                PriorityClass::Scripted,
-                Duration::from_secs(10),
-            )
-            .await?;
-            let started = rlmesh_session::record::Recorder::start(Arc::new(observer), path)
-                .await
-                .map_err(|e| GymError::Config(e.to_string()))?;
-            tee = Some(started.tee());
-            recorder = Some(started);
-        }
-        let handler: Arc<dyn LockstepHandler> = Gated::new(gate, build(Declared { parts, tee })?);
-        let local_key = address.key();
-        local()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(local_key.clone(), Arc::downgrade(&handler));
-        let lockstep = lockstep_session(participant.transport(), address.session.base).await?;
-        let key = participant.keys().lockstep(&address.robot);
-        info!(robot = %address.robot, %key, "lockstep robot serving");
-        let served = serve_zenoh(lockstep.clone(), key, handler.clone(), shutdown).await;
-
-        local()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&local_key);
-        // Its clone of the participant goes first, so the robot leaves before
-        // its binding stops a host it runs.
-        watcher.abort();
-        let _ = watcher.await;
-        if !(participant.transport().is_shared() || participant.transport().is_in_process()) {
-            let _ = lockstep.close().await;
-        }
-        // The tee writes off the critical path: what it holds goes in first.
-        handler.flush().await;
-        if let Some(recorder) = recorder
-            && let Err(err) = recorder.finish().await
-        {
-            warn!(%err, "lockstep recording did not finish");
-        }
-        if let Ok(participant) = Arc::try_unwrap(participant) {
-            participant.close().await;
-        }
-        served
+    let mut recorder = None;
+    let mut tee = None;
+    if let Some(path) = &options.record {
+        let observer = join(
+            &address.session,
+            ParticipantId::new(format!("{}.recorder", address.robot))
+                .map_err(|e| GymError::Config(e.to_string()))?,
+            vec![Role::Observer],
+            PriorityClass::Scripted,
+            Duration::from_secs(10),
+        )
+        .await?;
+        let started = rlmesh_session::record::Recorder::start(Arc::new(observer), path)
+            .await
+            .map_err(|e| GymError::Config(e.to_string()))?;
+        tee = Some(started.tee());
+        recorder = Some(started);
     }
+    let handler: Arc<dyn LockstepHandler> = Gated::new(gate, build(Declared { parts, tee })?);
+    let local_key = address.key();
+    local()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(local_key.clone(), Arc::downgrade(&handler));
+    let lockstep = lockstep_session(participant.transport(), address.session.base).await?;
+    let key = participant.keys().lockstep(&address.robot);
+    info!(robot = %address.robot, %key, "lockstep robot serving");
+    let served = serve_zenoh(lockstep.clone(), key, handler.clone(), shutdown).await;
+
+    local()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&local_key);
+    // Its clone of the participant goes first, so the robot leaves before
+    // its binding stops a host it runs.
+    watcher.abort();
+    let _ = watcher.await;
+    if !(participant.transport().is_shared() || participant.transport().is_in_process()) {
+        let _ = lockstep.close().await;
+    }
+    // The tee writes off the critical path: what it holds goes in first.
+    handler.flush().await;
+    if let Some(recorder) = recorder
+        && let Err(err) = recorder.finish().await
+    {
+        warn!(%err, "lockstep recording did not finish");
+    }
+    if let Ok(participant) = Arc::try_unwrap(participant) {
+        participant.close().await;
+    }
+    served
 }
 
 /// What a robot's handler is built from: its parts as the host declared

@@ -711,6 +711,28 @@ async fn a_participant_requiring_a_feature_the_session_lacks_is_refused() {
     assert!(world.host.snapshot().roster.is_empty());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_participant_under_a_live_id_is_refused_until_the_first_leaves() {
+    let world = World::start().await;
+    let first = world
+        .join("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0)
+        .await;
+    let config = || world.config("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0);
+    let err = Participant::attach(world.transport().await, config())
+        .await
+        .err()
+        .expect("refused");
+    assert!(
+        err.to_string()
+            .contains("participant robot is already in this session"),
+        "{err}"
+    );
+    first.close().await;
+    Participant::attach(world.transport().await, config())
+        .await
+        .expect("the id is free again");
+}
+
 /// A policy windowing the force/torque stream and commanding the arm.
 const WINDOWED: &str = r#"{
     "hz": 50,

@@ -751,7 +751,6 @@ where
                     rlmesh::lockstep::ServeOptions {
                         workflow_edition,
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
-                        timeout: None,
                     },
                     cancel,
                 )

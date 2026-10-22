@@ -406,6 +406,46 @@ pub struct Participant {
     _echo: zenoh::pubsub::Subscriber<()>,
 }
 
+/// Whether `transport` reaches another Zenoh session within `timeout`: at
+/// once for one sharing a session, or riding a host of this process.
+async fn linked(transport: &Transport, timeout: Duration) -> bool {
+    let control = transport.control();
+    if transport.is_shared() || transport.is_in_process() {
+        return true;
+    }
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if control.info().peers_zid().await.next().is_some()
+            || control.info().routers_zid().await.next().is_some()
+        {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Whether a live participant holds the liveliness token `key`.
+async fn live(control: &zenoh::Session, key: String) -> bool {
+    match control
+        .liveliness()
+        .get(key)
+        .timeout(Duration::from_millis(500))
+        .await
+    {
+        Ok(replies) => {
+            let mut any = false;
+            while let Ok(reply) = replies.recv_async().await {
+                any |= reply.result().is_ok();
+            }
+            any
+        }
+        Err(_) => false,
+    }
+}
+
 /// Resolves when the host this transport reaches can never serve
 /// `session`: it hosts other sessions, and is no multi-session host of
 /// `tenant` (which would start `session` for this participant). Pending
@@ -527,10 +567,18 @@ impl Participant {
                 }
             })
             .await?;
-        let liveliness = control
-            .liveliness()
-            .declare_token(keys.participant(&config.id))
-            .await?;
+        // Once linked, this transport sees every live participant's token:
+        // another one under this id is refused, never shared.
+        let key = keys.participant(&config.id);
+        if linked(&transport, config.host_timeout).await && live(&control, key.clone()).await {
+            return Err(SessionError::Config(format!(
+                "participant {} is already in this session: serve under another name, or stop \
+                 the one there first",
+                config.id
+            )));
+        }
+        // A multi-session host starts the session when it sees this token.
+        let liveliness = control.liveliness().declare_token(key).await?;
         // The host declares its queryables before its liveliness token, and
         // Zenoh keeps declaration order per link, so once the token is seen
         // the first `ctl` query cannot miss the host.

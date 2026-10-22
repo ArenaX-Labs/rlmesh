@@ -175,7 +175,10 @@ impl Listener {
                         .join()
                 })
                 .map_err(|_| Error::Internal("binding the lockstep env panicked".into()))?
-                .map_err(|err| Error::invalid_argument(err.to_string()))?;
+                .map_err(|err| match err {
+                    crate::lockstep::GymError::Config(why) => Error::invalid_argument(why),
+                    other => Error::Connection(other.to_string()),
+                })?;
                 let bound = binding.address();
                 return Ok((Self::Lockstep(Box::new(binding)), bound));
             }
@@ -1598,7 +1601,6 @@ fn drive<E: Driven + Send + Sync + 'static>(
                     let options = crate::lockstep::ServeOptions {
                         workflow_edition: grpc.workflow_edition.clone(),
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
-                        timeout: None,
                     };
                     let served = binding
                         .serve(Arc::clone(&environment) as _, options, cancel)
