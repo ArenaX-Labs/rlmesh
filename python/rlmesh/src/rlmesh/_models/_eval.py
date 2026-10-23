@@ -279,11 +279,10 @@ class RunResult:
     #: per measured series: every series the run's peers stamp. A binding's
     #: result carries none.
     telemetry: tuple[TelemetryRow, ...] = ()
-    #: Each distinct :class:`~rlmesh.adapters.Advisory` the runtime raised while
-    #: relaying payloads between the env and the model; a ``"caution"`` marks
-    #: data it converted for a peer that could not decode it as sent. Empty
-    #: unless a relay policy converted something, which the open-source runtime
-    #: never does.
+    #: Each :class:`~rlmesh.adapters.Advisory` the model's adapter resolve
+    #: raised for the env: what it tolerated or applied, such as a zero-filled
+    #: camera or an allowed projection (``select_state``). A served model sends
+    #: them to a driver that reads them. Empty for a spec-less model.
     advisories: tuple[Advisory, ...] = ()
 
     @property

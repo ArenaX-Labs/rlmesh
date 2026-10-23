@@ -442,8 +442,9 @@ XVLA = adapt.ModelSpec(
             adapt.ACTION_GRIPPER, part=adapt.RIGHT_ARM, dim=1, range=(-1.0, 1.0)
         ),
     ),
-    # The second arm's outputs have no LIBERO actuator.
-    allow=("drop_action",),
+    # The second arm's outputs have no LIBERO actuator, and X-VLA reads one
+    # of LIBERO's two finger joints.
+    allow=("drop_action", "select_state"),
 )
 
 
@@ -1296,13 +1297,15 @@ def test_bilinear_resize_preserves_constant_images():
     )
 
 
-def test_single_env_image_fallback_match():
+def test_single_env_image_fallback_match_is_the_rebind_camera_projection():
     env = image_env(8, 8, role=adapt.IMAGE_SECONDARY)
     spec = adapt.ModelSpec(
         input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
         output=SMOLVLA.output,
     )
-    adapter = resolve(env, spec)
+    with pytest.raises(adapt.AdapterResolutionError, match="rebind_camera"):
+        resolve(env, spec)
+    adapter = resolve(env, dataclasses.replace(spec, allow=("rebind_camera",)))
     obs = {"rgb": np.zeros((8, 8, 3), dtype=np.uint8)}
     assert adapter.transform_obs(obs)["image"].shape == (8, 8, 3)
 
@@ -5389,3 +5392,39 @@ def test_an_output_the_env_has_no_actuator_for_needs_drop_action():
     assert "drop_action" in adapter.explain()
     action = adapter.transform_action(np.arange(7, dtype=np.float32) / 10)
     np.testing.assert_allclose(action, [0.0, 0.1, 0.2, 0.6])
+
+
+def test_a_reversed_gripper_or_another_delta_unit_is_refused_until_allowed():
+    """The conventions round-trip the wire and reach the resolver: an env
+    gripper that closes on +1 against a model whose +1 opens, or a 5 cm env
+    step against a model speaking metres, binds only under its projection."""
+    env_action = adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, unit=0.05),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(
+            adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0), polarity="close"
+        ),
+    )
+    env = LIBERO_ENV._replace(
+        tags=adapt.EnvTags(observation=LIBERO_ENV.tags.observation, action=env_action)
+    )
+    assert adapt.EnvTags.from_dict(env.tags.to_dict()) == env.tags
+    model_action = adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, unit=1.0),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0), polarity="open"),
+    )
+    spec = adapt.ModelSpec(
+        input={"instruction": adapt.Text(role=adapt.INSTRUCTION)}, output=model_action
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="convert_units"):
+        resolve(env, spec)
+    with pytest.raises(adapt.AdapterResolutionError, match="flip_gripper"):
+        resolve(env, dataclasses.replace(spec, allow=("convert_units",)))
+    adapter = resolve(
+        env, dataclasses.replace(spec, allow=("flip_gripper", "convert_units"))
+    )
+    action = adapter.transform_action(np.array([0.01, 0, 0, 0, 0, 0, 1.0], np.float32))
+    np.testing.assert_allclose(action[[0, 6]], [0.2, -1.0], atol=1e-6)
+    with pytest.raises(ValueError, match="polarity must be"):
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, polarity="shut")  # pyright: ignore[reportArgumentType]

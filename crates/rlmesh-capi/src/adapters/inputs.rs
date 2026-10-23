@@ -409,6 +409,7 @@ pub(crate) unsafe fn parse_state(p: *const RLMeshState) -> Result<a::State, Capi
         labels: unsafe { strings(v.labels, v.labels_len) }?,
         source: enum_state_source(v.source)?,
         clip: v.has_clip.then_some((v.clip[0], v.clip[1])),
+        polarity: None,
     };
     Ok(value)
 }
@@ -649,6 +650,8 @@ pub(crate) unsafe fn parse_actuator(p: *const RLMeshActuator) -> Result<a::Actua
             )
         }?,
         labels: unsafe { strings(v.labels, v.labels_len) }?,
+        polarity: None,
+        unit: None,
     };
     Ok(value)
 }
@@ -764,6 +767,7 @@ pub(crate) unsafe fn parse_state_tag(p: *const RLMeshStateTag) -> Result<a::Stat
         },
         part: unsafe { ffi::text(v.part) }?,
         labels: unsafe { strings(v.labels, v.labels_len) }?,
+        polarity: None,
     };
     Ok(value)
 }
@@ -848,6 +852,7 @@ pub(crate) unsafe fn parse_field(p: *const RLMeshField) -> Result<a::Field, Capi
         },
         part: unsafe { ffi::text(v.part) }?,
         labels: unsafe { strings(v.labels, v.labels_len) }?,
+        polarity: None,
     };
     Ok(value)
 }

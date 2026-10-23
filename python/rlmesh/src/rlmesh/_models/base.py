@@ -1604,6 +1604,7 @@ class ModelBase(Generic[ObsT, ActT]):
         result = RunResult(
             episodes=tuple(map(episode_result, report["episodes"])),
             telemetry=tuple(TelemetryRow(**row) for row in report["telemetry"]),
+            advisories=tuple(report.get("advisories", ())),
         )
         if hooks is not None:
             with run_context.dispatch():

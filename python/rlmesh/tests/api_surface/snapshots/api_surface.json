@@ -1630,6 +1630,10 @@
             "kind": "attribute",
             "signature": "part: str | None"
           },
+          "polarity": {
+            "kind": "attribute",
+            "signature": "polarity: Polarity | None"
+          },
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
@@ -1649,9 +1653,13 @@
           "threshold": {
             "kind": "attribute",
             "signature": "threshold: float | None"
+          },
+          "unit": {
+            "kind": "attribute",
+            "signature": "unit: float | None"
           }
         },
-        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | Sequence[float] | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None, part: str | None = None, offset: float | Sequence[float] | None = None, labels: Sequence[str] | None = None)",
+        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | Sequence[float] | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None, part: str | None = None, offset: float | Sequence[float] | None = None, labels: Sequence[str] | None = None, polarity: Polarity | None = None, unit: float | None = None)",
         "stability": "Stable"
       },
       "Adapter": {
@@ -1972,6 +1980,10 @@
             "kind": "attribute",
             "signature": "part: str | None"
           },
+          "polarity": {
+            "kind": "attribute",
+            "signature": "polarity: Polarity | None"
+          },
           "provenance": {
             "kind": "attribute",
             "signature": "provenance: Provenance | None"
@@ -1985,7 +1997,7 @@
             "signature": "role: str | None"
           }
         },
-        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, provenance: Provenance | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
+        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, provenance: Provenance | None = None, part: str | None = None, labels: Sequence[str] | None = None, polarity: Polarity | None = None)",
         "stability": "Stable"
       },
       "FitMode": {
@@ -2416,6 +2428,10 @@
             "kind": "attribute",
             "signature": "part: str | None"
           },
+          "polarity": {
+            "kind": "attribute",
+            "signature": "polarity: Polarity | None"
+          },
           "post_rotate": {
             "kind": "attribute",
             "signature": "post_rotate: Rotation | None"
@@ -2445,7 +2461,7 @@
             "signature": "source: Literal['observation', 'action']"
           }
         },
-        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, frame: Frame | None = None, provenance: Provenance | Sequence[Provenance] | None = None, part: str | None = None, labels: Sequence[str] | None = None, source: Literal['observation', 'action'] = 'observation', clip: tuple[float, float] | None = None)",
+        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, frame: Frame | None = None, provenance: Provenance | Sequence[Provenance] | None = None, part: str | None = None, labels: Sequence[str] | None = None, source: Literal['observation', 'action'] = 'observation', polarity: Polarity | None = None, clip: tuple[float, float] | None = None)",
         "stability": "Stable"
       },
       "StateTag": {
@@ -2467,6 +2483,10 @@
             "kind": "attribute",
             "signature": "part: str | None"
           },
+          "polarity": {
+            "kind": "attribute",
+            "signature": "polarity: Polarity | None"
+          },
           "provenance": {
             "kind": "attribute",
             "signature": "provenance: Provenance | None"
@@ -2480,7 +2500,7 @@
             "signature": "role: str"
           }
         },
-        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, provenance: Provenance | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
+        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, provenance: Provenance | None = None, part: str | None = None, labels: Sequence[str] | None = None, polarity: Polarity | None = None)",
         "stability": "Stable"
       },
       "TORSO": {

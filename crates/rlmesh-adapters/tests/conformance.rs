@@ -597,7 +597,8 @@ fn existing_pad_and_zero_fill_text_is_unchanged() {
          concat(eef_pos[:3], eef_quat (quat_xyzw->rot6d), gripper[:1], zeros(3)#right_arm), pad to 16\
          \naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- \
          model[3:9] (rot6d->axis_angle)\n  \"action/gripper\" <- model[9:10]\n  clip to \
-         (-1.0, 1.0)",
+         (-1.0, 1.0)\nprojections:\n  select_state: model input \"state\": state role \
+         \"proprio/gripper\" reads the first 1 of the 2 dims of env feature \"gripper\"",
     );
     let (tags, obs_space, action_space, model_spec) = parse_inputs(&case);
     let adapter = resolve(&tags, &obs_space, &action_space, &model_spec, false).expect("resolve");

@@ -234,6 +234,16 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             native_chunk: needs.native_chunk,
             history: needs.history.map(|h| (h.keys, h.prunable)),
             reset_options: self.reset_options.is_some(),
+            // Only to a driver that reads them.
+            advisories: if request.reads_advisories {
+                needs
+                    .advisories
+                    .into_iter()
+                    .map(|note| (note.severity.as_str().to_owned(), note.message))
+                    .collect()
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -1199,6 +1209,7 @@ impl ModelRouteSetup for ServedRoutes {
                     .workflow_edition
                     .map(|edition| edition.to_string())
                     .unwrap_or_default(),
+                reads_advisories: true,
             }))
             .await?;
         let ModelReply::Resolved(resolved) = reply else {
@@ -1221,6 +1232,18 @@ impl ModelRouteSetup for ServedRoutes {
             history: resolved
                 .history
                 .map(|(keys, prunable)| crate::model::handler::HistoryNeeds { keys, prunable }),
+            advisories: resolved
+                .advisories
+                .into_iter()
+                .map(|(severity, message)| rlmesh_adapters::v1::Advisory {
+                    severity: if severity == "info" {
+                        rlmesh_adapters::v1::AdvisorySeverity::Info
+                    } else {
+                        rlmesh_adapters::v1::AdvisorySeverity::Caution
+                    },
+                    message,
+                })
+                .collect(),
         })
     }
 

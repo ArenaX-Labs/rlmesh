@@ -410,6 +410,10 @@ pub struct RuntimeReport {
     /// Session-total telemetry aggregate (per-op latency/percentiles/bytes) —
     /// the durable pull counterpart to the live `RuntimeHooks::on_telemetry` push.
     pub telemetry: crate::run::runtime::telemetry::Snapshot,
+    /// What the model's adapter resolve tolerated or applied for this route
+    /// (a zero-filled camera, an allowed projection), as its driver learned
+    /// them; empty when the model reported none.
+    pub advisories: Vec<rlmesh_adapters::v1::Advisory>,
 }
 
 /// Per-op timeouts and the telemetry window for one session. Serialized with

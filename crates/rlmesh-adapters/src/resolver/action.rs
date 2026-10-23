@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::state::{check_axis_width, label_permutation, part_suffix};
-use super::{LeafKey, Result, bind, check_geometry, err, index_by_key};
+use super::{LeafKey, Projection, Projections, Result, bind, check_geometry, err, index_by_key};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{missing_role_hint, quoted, quoted_encoding, quoted_leaf_keys};
@@ -232,6 +232,7 @@ pub(super) fn plan_action(
     env: &Action,
     outputs: &ModelOutputs<'_>,
     advisories: &mut Vec<Advisory>,
+    projections: &mut Projections,
 ) -> Result<ActionPlan> {
     // `clip` is an env-side actuator clamp on the assembled action vector (read
     // as `env.clip` below); a clip declared on the *model* action layout is
@@ -283,6 +284,8 @@ pub(super) fn plan_action(
                 reference: None,
                 part: None,
                 fill: Some((env_component.dim, env_component.fill)),
+                flip: None,
+                unit_factor: None,
             });
             continue;
         };
@@ -352,6 +355,8 @@ pub(super) fn plan_action(
                     reference: None,
                     part: env_component.part.clone(),
                     fill: Some((env_component.dim, env_component.fill)),
+                    flip: None,
+                    unit_factor: None,
                 });
                 continue;
             }
@@ -452,6 +457,21 @@ pub(super) fn plan_action(
             advisories,
         )?;
         let same_range = model_component.range == env_component.range;
+        let flip = check_polarity(
+            role,
+            env_component,
+            model_component,
+            advisories,
+            projections,
+        )?;
+        let unit_factor = check_unit(
+            role,
+            env_component,
+            model_component,
+            same_range,
+            advisories,
+            projections,
+        )?;
         segments.push(ActionSegment {
             role: Some(role.clone()),
             start,
@@ -484,6 +504,8 @@ pub(super) fn plan_action(
             model_axis_offset: model_component.axis_offset.clone(),
             model_invert: model_component.invert,
             model_threshold: model_component.threshold,
+            unit_factor,
+            flip,
             scale: env_component.scale,
             offset: env_component.offset,
             axis_scale: env_component.axis_scale.clone(),
@@ -513,6 +535,110 @@ pub(super) fn plan_action(
     })
 }
 
+/// The gripper polarity check: the model's command, through both sides' own
+/// sign corrections, must reach the env in the env's declared polarity. A
+/// difference is the named projection `flip_gripper`, which reflects the
+/// value in the env's range; returned as that reflection's sum.
+fn check_polarity(
+    role: &str,
+    env: &Actuator,
+    model: &Actuator,
+    advisories: &mut Vec<Advisory>,
+    projections: &mut Projections,
+) -> Result<Option<f64>> {
+    let (model_polarity, env_polarity) = match (model.polarity, env.polarity) {
+        (Some(model_polarity), Some(env_polarity)) => (model_polarity, env_polarity),
+        (None, None) => return Ok(None),
+        (model_polarity, _) => {
+            advisories.push(Advisory::info(format!(
+                "action role {}: only the {} declares a gripper polarity, so it is not checked",
+                quoted(role),
+                if model_polarity.is_some() {
+                    "model"
+                } else {
+                    "env"
+                }
+            )));
+            return Ok(None);
+        }
+    };
+    let delivered = model_polarity
+        .through(model.invert, model.scale)
+        .through(env.invert, env.scale);
+    if delivered == env_polarity {
+        return Ok(None);
+    }
+    projections.apply(
+        Projection::FlipGripper,
+        format!(
+            "action role {}: the model's {} command is reversed into the env's {}",
+            quoted(role),
+            quoted(delivered.as_str()),
+            quoted(env_polarity.as_str())
+        ),
+        ErrorCode::ConventionMismatch,
+        format!(
+            "action role {}: the model's gripper command reaches the env as {} (polarity {} \
+             through both sides' invert/scale) but the env's gripper is {}",
+            quoted(role),
+            quoted(delivered.as_str()),
+            quoted(model_polarity.as_str()),
+            quoted(env_polarity.as_str())
+        ),
+    )?;
+    Ok(Some(env.range.map_or(0.0, |(low, high)| low + high)))
+}
+
+/// The delta unit check: one model unit, through the range map and both
+/// sides' scales, must be the same physical step as the env's. A difference
+/// is the named projection `convert_units`; returned as its factor.
+fn check_unit(
+    role: &str,
+    env: &Actuator,
+    model: &Actuator,
+    same_range: bool,
+    advisories: &mut Vec<Advisory>,
+    projections: &mut Projections,
+) -> Result<Option<f64>> {
+    let (model_unit, env_unit) = match (model.unit, env.unit) {
+        (Some(model_unit), Some(env_unit)) => (model_unit, env_unit),
+        (None, None) => return Ok(None),
+        (model_unit, _) => {
+            advisories.push(Advisory::info(format!(
+                "action role {}: only the {} declares a unit, so it is not checked",
+                quoted(role),
+                if model_unit.is_some() { "model" } else { "env" }
+            )));
+            return Ok(None);
+        }
+    };
+    let span = |(low, high): (f64, f64)| high - low;
+    let range_gain = match (model.range, env.range) {
+        (Some(src), Some(dst)) if !same_range && span(src) != 0.0 => span(dst) / span(src),
+        _ => 1.0,
+    };
+    let gain = range_gain * model.scale.unwrap_or(1.0).abs() * env.scale.unwrap_or(1.0).abs();
+    let delivered = env_unit * gain;
+    if ((model_unit - delivered) / model_unit).abs() <= 1e-9 {
+        return Ok(None);
+    }
+    let factor = model_unit / delivered;
+    projections.apply(
+        Projection::ConvertUnits,
+        format!(
+            "action role {}: model unit {model_unit} rescaled by {factor} to the env's {env_unit}",
+            quoted(role)
+        ),
+        ErrorCode::ConventionMismatch,
+        format!(
+            "action role {}: one model unit is {model_unit} but reaches the env as {delivered} \
+             (env unit {env_unit} through the range map and scales)",
+            quoted(role)
+        ),
+    )?;
+    Ok(Some(factor))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{index_outputs, plan_action};
@@ -526,7 +652,13 @@ mod tests {
         env: &Action,
         advisories: &mut Vec<Advisory>,
     ) -> super::Result<ActionPlan> {
-        plan_action(model, env, &index_outputs(model)?, advisories)
+        plan_action(
+            model,
+            env,
+            &index_outputs(model)?,
+            advisories,
+            &mut super::super::Projections::allowing(&[]),
+        )
     }
 
     fn component(role: &str) -> Actuator {
@@ -550,6 +682,8 @@ mod tests {
             part: None,
             labels: None,
             reference: None,
+            polarity: None,
+            unit: None,
         }
     }
 
@@ -574,6 +708,8 @@ mod tests {
             part: None,
             labels: None,
             reference: None,
+            polarity: None,
+            unit: None,
         }
     }
 

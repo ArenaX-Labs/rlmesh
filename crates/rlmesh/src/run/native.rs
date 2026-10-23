@@ -523,7 +523,12 @@ async fn run_body(
     let outcome = report.and_then(|report| {
         release.map(|()| {
             let mut result = results::from_report(&report);
-            result.advisories = context.advisories();
+            // An in-process spec'd model's resolve reports through the run's
+            // context; a served one's through the report.
+            let local = context.advisories();
+            if !local.is_empty() {
+                result.advisories = local;
+            }
             result
         })
     });

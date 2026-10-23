@@ -22,6 +22,12 @@ pub struct ActionSegment {
     pub model_axis_offset: Option<Vec<f64>>,
     pub model_invert: bool,
     pub model_threshold: Option<f64>,
+    /// The `convert_units` factor, applied after the model-side corrections:
+    /// the model's unit over the env's, net of the gain between them.
+    pub unit_factor: Option<f64>,
+    /// The `flip_gripper` reflection, applied after `unit_factor`: a value `v`
+    /// becomes `flip - v` (the env range's `low + high`, else 0).
+    pub flip: Option<f64>,
     /// Env-side scalar corrections, applied after the model-side ones in the order
     /// scale, offset, invert, threshold, `binarize`, then `clip`.
     pub scale: Option<f64>,

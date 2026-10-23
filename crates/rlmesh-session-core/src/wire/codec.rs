@@ -804,6 +804,7 @@ pub fn encode_model_request(request: &ModelRequest) -> Vec<u8> {
             execution_horizon: r.execution_horizon,
             delivers_history: r.delivers_history,
             workflow_edition: r.workflow_edition.clone(),
+            reads_advisories: r.reads_advisories,
         }),
         ModelRequest::Predict(groups) => Kind::Predict(pb::ModelPredict {
             groups: groups
@@ -865,6 +866,7 @@ pub fn decode_model_request(buf: Bytes) -> Result<ModelRequest, WireError> {
             execution_horizon: r.execution_horizon,
             delivers_history: r.delivers_history,
             workflow_edition: r.workflow_edition,
+            reads_advisories: r.reads_advisories,
         }),
         Kind::Predict(p) => ModelRequest::Predict(
             p.groups
@@ -918,6 +920,14 @@ pub fn encode_model_reply(reply: &ModelReply, timing: Option<&EndpointTiming>) -
                     prunable: *prunable,
                 }),
             reset_options: r.reset_options,
+            advisories: r
+                .advisories
+                .iter()
+                .map(|(severity, message)| pb::ModelAdvisory {
+                    severity: severity.clone(),
+                    message: message.clone(),
+                })
+                .collect(),
         }),
         ModelReply::Predicted(outcomes) => Kind::Predicted(pb::ModelPredicted {
             outcomes: outcomes
@@ -958,6 +968,11 @@ pub fn decode_model_reply(buf: Bytes) -> Result<(ModelReply, Option<EndpointTimi
             native_chunk: r.native_chunk,
             history: r.history.map(|h| (h.keys, h.prunable)),
             reset_options: r.reset_options,
+            advisories: r
+                .advisories
+                .into_iter()
+                .map(|a| (a.severity, a.message))
+                .collect(),
         }),
         Kind::Predicted(p) => ModelReply::Predicted(
             p.outcomes
@@ -2375,6 +2390,7 @@ mod tests {
                 execution_horizon: 4,
                 delivers_history: true,
                 workflow_edition: "2026.06".into(),
+                reads_advisories: true,
             }),
             ModelRequest::Predict(vec![ModelGroup {
                 route: "cartpole".into(),
@@ -2420,6 +2436,7 @@ mod tests {
                 native_chunk: Some(8),
                 history: Some((vec!["image".into()], false)),
                 reset_options: true,
+                advisories: vec![("caution".into(), "rebind_camera (allowed): ...".into())],
             }),
             ModelReply::Predicted(vec![Ok(vec![slab(5), slab(6)]), Err(fault.clone())]),
             ModelReply::Done,

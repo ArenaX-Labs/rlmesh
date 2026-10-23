@@ -206,6 +206,11 @@ pub(super) fn apply_state(
         {
             map_range(&mut value, src, dst)?;
         }
+        if let Some(sum) = piece.flip {
+            for entry in &mut value {
+                *entry = (sum - f64::from(*entry)) as f32;
+            }
+        }
         // The resolved widths are the state's layout: a host-side custom
         // encoding slices itself out of the assembled vector by them. A runtime
         // value of another width would shift every later piece, so say so here
@@ -304,6 +309,7 @@ mod tests {
                 frame: None,
                 provenance: None,
                 part: None,
+                flip: None,
             }],
             pad_to: None,
             clip: None,
@@ -366,6 +372,7 @@ mod tests {
                 frame: None,
                 provenance: None,
                 part: None,
+                flip: None,
             }],
             pad_to: None,
             clip: None,

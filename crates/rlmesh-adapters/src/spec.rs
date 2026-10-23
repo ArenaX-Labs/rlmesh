@@ -28,6 +28,7 @@
 
 mod accept_set;
 mod action;
+mod conventions;
 mod custom_encoding;
 mod env;
 mod env_tags;
@@ -43,6 +44,7 @@ pub(crate) mod strict;
 
 pub use accept_set::AcceptSet;
 pub use action::{Action, Actuator};
+pub use conventions::Polarity;
 pub use custom_encoding::{ActionEncoding, CustomEncoding, StateEncoding};
 pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText, UnknownFeature};
 pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, StateTag, TextTag};

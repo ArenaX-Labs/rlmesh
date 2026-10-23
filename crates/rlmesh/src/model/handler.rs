@@ -84,6 +84,9 @@ pub struct RouteNeeds {
     /// frame window: the runtime must then deliver every replayed step as a
     /// history row on the next predict, stamped with steps.
     pub history: Option<HistoryNeeds>,
+    /// What the route's adapter resolve tolerated or applied (a zero-filled
+    /// camera, an allowed projection): carried into the run's result.
+    pub advisories: Vec<rlmesh_adapters::v1::Advisory>,
 }
 
 /// The frame windows a route keeps, answered on `ResolveAdapterResponse.history`.

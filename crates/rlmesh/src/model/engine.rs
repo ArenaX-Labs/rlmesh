@@ -1399,7 +1399,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         let native_chunk = self.predict.native_chunk();
         let mut needs = RouteNeeds {
             native_chunk,
-            history: None,
+            ..RouteNeeds::default()
         };
         // The horizon doors, before any resolution work: a pin this side of the
         // bound, a declaration the model can actually honor, and a horizon the
@@ -1442,6 +1442,8 @@ impl ModelRouteSetup for AdaptedRouteSetup {
                 "adapter advisory: {note}"
             );
         }
+        // And hand them to the run's driver, which carries them into its result.
+        needs.advisories = config.adapter.advisories();
         // Stamp the runtime-chosen execution horizon onto the resolved config (1 = no
         // chunking). Warn once here when the runtime asks for chunking but the model
         // has no chunk corner: the route still runs, re-planning every step.

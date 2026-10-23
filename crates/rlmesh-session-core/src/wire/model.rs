@@ -42,6 +42,8 @@ pub struct ModelResolve {
     pub delivers_history: bool,
     /// The workflow edition the driver pinned (empty: unpinned).
     pub workflow_edition: String,
+    /// Whether the driver reads the route's resolve advisories.
+    pub reads_advisories: bool,
 }
 
 /// What a resolved route needs from its driver.
@@ -56,6 +58,9 @@ pub struct ModelResolved {
     /// Whether the model adds options to the resets that start its
     /// episodes (the driver then asks before each).
     pub reset_options: bool,
+    /// The route's resolve advisories as `(severity, message)`, answered
+    /// when the driver reads them.
+    pub advisories: Vec<(String, String)>,
 }
 
 /// A step the driver executed from a chunk without predicting.

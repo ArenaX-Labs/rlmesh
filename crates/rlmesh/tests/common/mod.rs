@@ -116,7 +116,8 @@ pub const CATALOG_MODEL_SPEC: &str = r#"{
   "output": {"components": [
     {"dim": 3, "role": "action/delta_eef_pos"},
     {"dim": 3, "encoding": "axis_angle", "role": "action/delta_eef_rot"},
-    {"binary": true, "dim": 1, "range": [0.0, 1.0], "role": "action/gripper"}]}
+    {"binary": true, "dim": 1, "range": [0.0, 1.0], "role": "action/gripper"}]},
+  "allow": ["select_state"]
 }"#;
 
 pub fn catalog_observation() -> SpaceSpec {

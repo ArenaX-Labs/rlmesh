@@ -43,6 +43,9 @@ pub struct StatePiece {
     pub src_range: Option<(f64, f64)>,
     /// Target value range (the model component's).
     pub dst_range: Option<(f64, f64)>,
+    /// The `flip_gripper` reflection, applied after the range map: a value `v`
+    /// becomes `flip - v` (the target range's `low + high`, else 0).
+    pub flip: Option<f64>,
     /// Model-side affine applied after the range map: `value * scale + offset`.
     pub scale: Option<f64>,
     pub offset: Option<f64>,

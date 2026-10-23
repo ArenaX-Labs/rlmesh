@@ -55,6 +55,9 @@ Resample: TypeAlias = Literal[
 # wrist-mounted force/torque sensor reads.
 Frame: TypeAlias = Literal["world", "robot_base", "tool"]
 Reference: TypeAlias = Literal["current", "target"]
+# Which way a gripper moves as its value rises (Polarity in v1/spec/conventions.rs):
+# a higher value is more open, or more closed. Typed here for static checking.
+Polarity: TypeAlias = Literal["open", "close"]
 # Where a state leaf's numbers come from (PROVENANCES in v1/spec/frames.rs): a
 # physical sensor or its simulated equivalent, a state estimator, or simulator
 # truth with no hardware counterpart. A disagreement is a resolve error.
@@ -86,6 +89,7 @@ __all__ = [
     "FitMode",
     "Frame",
     "ImageLayout",
+    "Polarity",
     "Provenance",
     "Reference",
     "Resample",

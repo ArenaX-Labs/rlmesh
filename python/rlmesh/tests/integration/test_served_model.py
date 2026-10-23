@@ -400,3 +400,50 @@ def test_a_served_models_resolve_failure_arrives_typed(session_port: int) -> Non
     with _served(model, session_port) as address:
         with pytest.raises(adapt.AdapterResolutionError, match="no adapter tags"):
             rlmesh.numpy.Model(address).run(UntaggedEnv(), episodes=1)
+
+
+def test_a_runs_resolve_advisories_reach_its_result_local_or_served(
+    session_port: int,
+) -> None:
+    import gymnasium as gym
+    import numpy as np
+    import rlmesh
+    from rlmesh import adapters as adapt
+
+    class OneCameraEnv:
+        observation_space = gym.spaces.Dict(
+            {"cam": gym.spaces.Box(0, 255, (4, 4, 3), np.uint8)}
+        )
+        action_space = gym.spaces.Box(-1.0, 1.0, (3,), np.float32)
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+            _ = seed, options
+            return {"cam": np.zeros((4, 4, 3), np.uint8)}, {}
+
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            return {"cam": np.zeros((4, 4, 3), np.uint8)}, 0.0, True, False, {}
+
+        def close(self) -> None:
+            return None
+
+    tags = adapt.EnvTags(
+        observation={"cam": adapt.ImageTag(adapt.IMAGE_PRIMARY)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+    )
+    spec = adapt.ModelSpec(
+        input={"wrist": adapt.Image(adapt.IMAGE_WRIST)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+        allow=("rebind_camera",),
+    )
+
+    def policy() -> Any:
+        return rlmesh.numpy.Model(lambda obs: np.zeros(3, np.float32), spec=spec)
+
+    local = policy().run(adapt.tag(OneCameraEnv(), tags), episodes=1)
+    with _served(policy(), session_port) as address:
+        served = rlmesh.numpy.Model(address).run(
+            adapt.tag(OneCameraEnv(), tags), episodes=1
+        )
+    notes = [str(note) for note in local.advisories]
+    assert any("rebind_camera (allowed)" in note for note in notes), notes
+    assert [str(note) for note in served.advisories] == notes

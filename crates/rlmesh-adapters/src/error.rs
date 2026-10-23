@@ -62,6 +62,10 @@ pub enum ErrorCode {
     /// what an actuator carries, and a model reads its own previous command
     /// with `source="action"`, never from an env observation.
     ActionRoleOnObservation,
+    /// The two sides declare a different gripper `polarity` or delta `unit`
+    /// and the model spec allows no conversion (`flip_gripper`,
+    /// `convert_units`): an "open" that closes, or a 5 cm step read as a metre.
+    ConventionMismatch,
 }
 
 /// A model input or action component has no usable counterpart in the env

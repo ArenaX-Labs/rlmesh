@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::state::part_suffix;
-use super::{LeafKey, Result, bind, err};
+use super::{LeafKey, Projections, Result, bind, err};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_leaf_keys};
@@ -19,6 +19,7 @@ pub(super) fn plan_image(
     images_by_role: &BTreeMap<LeafKey, &EnvImage>,
     unknown_roles: &BTreeMap<String, String>,
     advisories: &mut Vec<Advisory>,
+    projections: &mut Projections,
 ) -> Result<ImagePlan> {
     let at = quoted(&placement.to_string());
     // `fill` only colors the zero-filled frame an `optional` camera
@@ -55,10 +56,11 @@ pub(super) fn plan_image(
     }
     // The lone-camera fallback binds a role-mismatched input to the env's
     // single camera -- but only for a sanctioned (registered or `x/`) role, so
-    // a typo'd role name fails loudly instead of silently feeding the camera.
-    // An `optional` input has opted into zero-filling instead; that wins. A
-    // named part never rebinds: it would quietly feed one arm's view to an
-    // input asking for another's.
+    // a typo'd role name fails loudly instead of silently feeding the camera,
+    // and only under the named projection `rebind_camera`: a wrist input fed a
+    // third-person view is a different image. An `optional` input has opted
+    // into zero-filling instead; that wins. A named part never rebinds: it
+    // would quietly feed one arm's view to an input asking for another's.
     let mut role_rebound = None;
     if env_image.is_none()
         && !model_input.optional
@@ -67,6 +69,20 @@ pub(super) fn plan_image(
         && crate::roles::registry::is_sanctioned_role(&model_input.role)
     {
         let ((_, only_part, _), only) = images_by_role.iter().next().expect("one camera");
+        projections.apply(
+            super::Projection::RebindCamera,
+            format!(
+                "model input {at} (role {}) reads the env's only camera (role {})",
+                quoted(&model_input.role),
+                quoted(&only.role)
+            ),
+            ErrorCode::MissingRole,
+            format!(
+                "model input {at} needs camera role {} but the env's only camera has role {}",
+                quoted(&model_input.role),
+                quoted(&only.role)
+            ),
+        )?;
         env_image = Some(*only);
         part = only_part.clone();
         role_rebound = Some((model_input.role.clone(), only.role.clone()));
@@ -601,6 +617,7 @@ mod image_resolve_tests {
             images,
             &BTreeMap::new(),
             &mut Vec::new(),
+            &mut super::super::Projections::allowing(&[super::super::Projection::RebindCamera]),
         )
     }
 

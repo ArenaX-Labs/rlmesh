@@ -66,6 +66,10 @@ def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
         out["part"] = component.part
     if component.labels is not None:
         out["labels"] = list(component.labels)
+    if component.polarity is not None:
+        out["polarity"] = component.polarity
+    if component.unit is not None:
+        out["unit"] = component.unit
     return out
 
 
@@ -89,6 +93,8 @@ def action_from_dict(data: Mapping[str, Any]) -> Action:
             reference=item.get("reference"),
             labels=item.get("labels"),
             part=item.get("part"),
+            polarity=item.get("polarity"),
+            unit=item.get("unit"),
         )
         for item in data["components"]
     ]

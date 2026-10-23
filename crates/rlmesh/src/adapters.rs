@@ -94,6 +94,7 @@ pub const PARTS: &[&str] = &[LEFT_ARM, RIGHT_ARM, HEAD, TORSO, BASE, LEFT_LEG, R
 pub struct ModelSpec {
     input: InputNode,
     output: Action,
+    allow: Vec<String>,
 }
 impl ModelSpec {
     /// Construct and validate a model spec from its input and action
@@ -105,7 +106,23 @@ impl ModelSpec {
         validation::normalize_action(&mut output);
         validation::input(&input)?;
         validation::action(&output)?;
-        Ok(Self { input, output })
+        Ok(Self {
+            input,
+            output,
+            allow: Vec::new(),
+        })
+    }
+    /// The same spec, accepting the named projections (lossy fits) in
+    /// `allow`: `drop_action`, `select_state`, `rebind_camera`,
+    /// `flip_gripper`, `convert_units`. A pairing that needs one the spec does
+    /// not allow is refused.
+    pub fn with_allow<S: Into<String>>(mut self, allow: impl IntoIterator<Item = S>) -> Self {
+        self.allow = allow.into_iter().map(Into::into).collect();
+        self
+    }
+    /// The named projections this spec accepts.
+    pub fn allow(&self) -> &[String] {
+        &self.allow
     }
     /// The authored immutable model input tree.
     pub fn input(&self) -> &InputNode {
@@ -118,9 +135,11 @@ impl ModelSpec {
     pub(crate) fn wire(&self) -> Result<core::ModelSpec> {
         validation::finite_input(&self.input)?;
         validation::finite_action(&self.output)?;
-        serde_json::from_value(
-            json!({"input":self.input.wire_json()?,"output":codec::action_json(&self.output)?}),
-        )
+        serde_json::from_value(json!({
+            "input": self.input.wire_json()?,
+            "output": codec::action_json(&self.output)?,
+            "allow": self.allow,
+        }))
         .map_err(|e| Error::invalid_argument(e.to_string()))
     }
     pub(crate) fn wire_json(&self) -> Result<Json> {
@@ -168,6 +187,7 @@ impl ModelSpec {
                     .map_err(|e| Error::invalid_argument(e.to_string()))?,
             )?,
         )
+        .map(|spec| spec.with_allow(wire.allow))
     }
     /// Read the versioned metadata key; absent or None yields None.
     pub fn from_metadata(metadata: &Metadata) -> Result<Option<Self>> {

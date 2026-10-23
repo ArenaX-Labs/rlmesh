@@ -781,6 +781,9 @@ message ModelResolve {
   bool delivers_history = 4;
   // The workflow edition the driver pinned; empty: unpinned.
   string workflow_edition = 5;
+  // The driver reads the route's resolve advisories; a model answers them on
+  // ModelResolved only then.
+  bool reads_advisories = 6;
 }
 
 message ModelHistoryNeeds {
@@ -794,6 +797,15 @@ message ModelResolved {
   ModelHistoryNeeds history = 2;
   // The model adds options to the resets that start its episodes.
   bool reset_options = 3;
+  // What the route's resolve tolerated or applied, when the driver reads
+  // them (ModelResolve.reads_advisories).
+  repeated ModelAdvisory advisories = 4;
+}
+
+// One resolve advisory: "info" or "caution", and what it says.
+message ModelAdvisory {
+  string severity = 1;
+  string message = 2;
 }
 
 message ModelHistoryRow {

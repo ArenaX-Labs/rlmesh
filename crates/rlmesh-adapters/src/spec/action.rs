@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use super::conventions::Polarity;
 use serde::{Deserialize, Serialize};
 
 use super::custom_encoding::ActionEncoding;
@@ -119,6 +120,21 @@ pub struct Actuator {
     /// carry them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    /// Which way a gripper moves as this command rises (`action/gripper`):
+    /// see [`Polarity`]. Both sides declaring different ones is refused unless
+    /// the model allows `flip_gripper`. Omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polarity: Option<Polarity>,
+    /// The SI size (metres, or radians for a rotation) of one unit of this
+    /// delta command (`action/delta_eef_*`). Both sides declaring different
+    /// ones is refused unless the model allows `convert_units`. Omitted when
+    /// unset.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::spec::num::de_opt_number"
+    )]
+    pub unit: Option<f64>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -166,6 +182,7 @@ impl TryFrom<ActionWire> for Action {
                 return Err(format!("actuator {:?} fill must be finite", component.role));
             }
             let locus = format!("actuator {:?}", component.role);
+            crate::spec::conventions::check_unit(component.unit, &locus)?;
             // A sink encoding is observation-only: a controller takes a
             // rotation, and a direction does not determine one (the direction
             // law). Rigid on the action side, so this is a parse error.

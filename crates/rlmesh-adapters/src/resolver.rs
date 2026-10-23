@@ -473,20 +473,60 @@ fn allowed_projections(model_spec: &ModelSpec) -> Result<Vec<Projection>> {
         .collect()
 }
 
+/// The named projections a resolve may apply (the model spec's `allow`) and
+/// the ones it has applied so far, each with what it applied to.
+pub(super) struct Projections {
+    allowed: Vec<Projection>,
+    applied: Vec<AppliedProjection>,
+}
+
+impl Projections {
+    /// A ledger allowing `allowed`, for tests that plan one leaf.
+    #[cfg(test)]
+    pub(super) fn allowing(allowed: &[Projection]) -> Self {
+        Self {
+            allowed: allowed.to_vec(),
+            applied: Vec::new(),
+        }
+    }
+
+    /// Records `projection` applied to `target`; refused with `code` and
+    /// `refusal` (plus how to allow it) when the model spec does not allow it.
+    pub(super) fn apply(
+        &mut self,
+        projection: Projection,
+        target: String,
+        code: ErrorCode,
+        refusal: String,
+    ) -> Result<()> {
+        if !self.allowed.contains(&projection) {
+            return Err(err(
+                code,
+                format!(
+                    "{refusal}. Binding anyway is the named projection {}; add it to the \
+                     model spec's allow to bind",
+                    quoted(projection.name())
+                ),
+            ));
+        }
+        self.applied.push(AppliedProjection { projection, target });
+        Ok(())
+    }
+}
+
 /// Model outputs no env actuator reads: refused, unless the model spec allows
 /// `drop_action`, which then records each one it discards.
 fn project(
-    model_spec: &ModelSpec,
+    projections: &mut Projections,
     outputs: &action::ModelOutputs<'_>,
     plan: &ActionPlan,
     env: &Action,
-) -> Result<Vec<AppliedProjection>> {
-    let allowed = allowed_projections(model_spec)?;
+) -> Result<()> {
     let unconsumed = action::unconsumed(outputs, plan);
     let Some((role, part, _, dim)) = unconsumed.first().copied() else {
-        return Ok(Vec::new());
+        return Ok(());
     };
-    if !allowed.contains(&Projection::DropAction) {
+    if !projections.allowed.contains(&Projection::DropAction) {
         let takes: Vec<String> = env
             .components
             .iter()
@@ -509,18 +549,22 @@ fn project(
             ),
         ));
     }
-    Ok(unconsumed
-        .into_iter()
-        .map(|(role, part, start, dim)| AppliedProjection {
-            projection: Projection::DropAction,
-            target: format!(
-                "model output {}{} [{start}, {}) is discarded",
-                quoted(role),
-                state::part_suffix(part),
-                start + dim
-            ),
-        })
-        .collect())
+    projections
+        .applied
+        .extend(
+            unconsumed
+                .into_iter()
+                .map(|(role, part, start, dim)| AppliedProjection {
+                    projection: Projection::DropAction,
+                    target: format!(
+                        "model output {}{} [{start}, {}) is discarded",
+                        quoted(role),
+                        state::part_suffix(part),
+                        start + dim
+                    ),
+                }),
+        );
+    Ok(())
 }
 
 pub fn resolve(
@@ -540,6 +584,10 @@ pub fn resolve(
     crate::spec::reject_bare_fields_model(model_spec)
         .map_err(|message| err(ErrorCode::UnsupportedKind, message))?;
     check_model_roles(model_spec)?;
+    let mut projections = Projections {
+        allowed: allowed_projections(model_spec)?,
+        applied: Vec::new(),
+    };
     // The model's own outputs, keyed once: the action planner binds env
     // actuators to them, and a state part reading its previous action does too.
     let outputs = action::index_outputs(&model_spec.output)?;
@@ -616,6 +664,7 @@ pub fn resolve(
                 &images_by_role,
                 &unknown_roles,
                 &mut quiet,
+                &mut projections,
             )?),
             ModelLeaf::State(input) => ObsPlan::State(state::plan_state(
                 input,
@@ -624,6 +673,7 @@ pub fn resolve(
                 &outputs,
                 &unknown_roles,
                 &mut quiet,
+                &mut projections,
             )?),
             ModelLeaf::Text(input) => ObsPlan::Text(text::plan_text(
                 input,
@@ -666,9 +716,14 @@ pub fn resolve(
         })
         .collect();
 
-    let action_plan =
-        action::plan_action(&model_spec.output, &env_spec.action, &outputs, &mut quiet)?;
-    let projections = project(model_spec, &outputs, &action_plan, &env_spec.action)?;
+    let action_plan = action::plan_action(
+        &model_spec.output,
+        &env_spec.action,
+        &outputs,
+        &mut quiet,
+        &mut projections,
+    )?;
+    project(&mut projections, &outputs, &action_plan, &env_spec.action)?;
 
     // Model-side ad-hoc input roles the env does not answer. An ad-hoc role
     // matches only on the exact string, so a typo or a private name silently
@@ -730,17 +785,6 @@ pub fn resolve(
     // an env range, it does not clamp). Surface that so the author learns it will
     // not take effect. (State: env is the source; action: env is the destination.)
     for obs_plan in &obs_plans {
-        if let ObsPlan::Image(image) = obs_plan
-            && let Some((requested, bound)) = &image.role_rebound
-        {
-            advisories.push(Advisory::caution(format!(
-                "model input {}: no env camera has role {}; bound to the env's only camera ({}) \
-                 instead -- declare the matching role on one side to silence this",
-                quoted(&image.placement.to_string()),
-                quoted(requested),
-                quoted(bound),
-            )));
-        }
         if let ObsPlan::State(state) = obs_plan
             && state.pieces.iter().any(|piece| {
                 piece.fill.is_none() && piece.dst_range.is_some() && piece.src_range.is_none()
@@ -781,7 +825,7 @@ pub fn resolve(
     quiet.sort_by(|a, b| a.message.cmp(&b.message));
 
     let resolved = ResolvedAdapter::new(obs_plans, action_plan, advisories, quiet)
-        .with_projections(projections);
+        .with_projections(projections.applied);
     // The frame-stacking × action-chunk-replay guard used to live here, but the
     // execution horizon is no longer part of the spec — it is a runtime decision
     // (`execution_horizon` on ResolveAdapter). The guard moved to the engine's
@@ -1061,7 +1105,7 @@ mod unknown_kind_tests {
     }
 
     #[test]
-    fn a_parted_camera_role_never_rebinds_to_the_only_camera() {
+    fn a_camera_role_rebinds_to_the_only_camera_only_when_allowed_and_unparted() {
         let env_tags = format!(
             r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary"}}}},"action":{ACTION_TAGS}}}"#
         );
@@ -1072,10 +1116,17 @@ mod unknown_kind_tests {
         );
         let err = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect_err("no rebind");
         assert_eq!(err.code, ErrorCode::MissingRole);
-        // The unparted wrist still rebinds (with the caution): only a named
-        // part is barred, since a lone camera cannot be one arm of a pair.
+        // An unparted wrist rebinds only under the named projection: a lone
+        // third-person camera is not a wrist view. A named part never does,
+        // since a lone camera cannot be one arm of a pair.
         let model = format!(
             r#"{{"input":{{"pixels":{{"type":"image","role":"image/wrist"}}}},"output":{ACTION_OUT}}}"#
+        );
+        let err = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect_err("refused");
+        assert_eq!(err.code, ErrorCode::MissingRole);
+        assert!(err.message.contains("rebind_camera"), "{}", err.message);
+        let model = format!(
+            r#"{{"input":{{"pixels":{{"type":"image","role":"image/wrist"}}}},"output":{ACTION_OUT},"allow":["rebind_camera"]}}"#
         );
         let adapter = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("rebinds");
         assert!(
@@ -2349,5 +2400,188 @@ mod projection_tests {
         );
         let unknown = resolve_with(r#", "allow": ["drop_rot"]"#).expect_err("unknown");
         assert_eq!(unknown.code, ErrorCode::Unsupported);
+    }
+}
+
+/// The value conventions a gripper and a delta carry: a different `polarity`
+/// or `unit` on the two sides is refused unless the model allows the named
+/// projection that converts it, and converted exactly when it does.
+#[cfg(test)]
+mod convention_tests {
+    use super::resolve;
+    use crate::apply::value::{Value, tensor_from_f32, to_f32_vec};
+    use crate::error::ErrorCode;
+    use crate::space_view::SpaceView;
+    use crate::spec::{EnvTags, ModelSpec};
+
+    /// A one-gripper, one-position-delta env with a one-finger-pair reading,
+    /// and a model reading the reading and emitting both commands; `env` and
+    /// `model` splice extra attributes into the env's and the model's
+    /// actuators (`gripper` / `pos`) and the model's state part (`state`).
+    fn resolve_pair(
+        env_gripper: &str,
+        env_pos: &str,
+        env_state: &str,
+        model_gripper: &str,
+        model_pos: &str,
+        model_state: &str,
+        allow: &str,
+    ) -> super::Result<crate::plans::ResolvedAdapter> {
+        let tags: EnvTags = serde_json::from_str(&format!(
+            r#"{{"observation": {{"g": {{"type": "state", "role": "proprio/gripper_pos"{env_state}}}}},
+                "action": {{"components": [
+                    {{"role": "action/delta_eef_pos", "dim": 3{env_pos}}},
+                    {{"role": "action/gripper", "dim": 1, "range": [-1.0, 1.0]{env_gripper}}}]}}}}"#
+        ))
+        .expect("tags");
+        let spec: ModelSpec = serde_json::from_str(&format!(
+            r#"{{"input": {{"type": "state", "components": [{{"role": "proprio/gripper_pos"{model_state}}}]}},
+                "output": {{"components": [
+                    {{"role": "action/delta_eef_pos", "dim": 3{model_pos}}},
+                    {{"role": "action/gripper", "dim": 1, "range": [-1.0, 1.0]{model_gripper}}}]}}{allow}}}"#
+        ))
+        .expect("spec");
+        let obs: SpaceView = serde_json::from_str(
+            r#"{"kind": "dict", "dtype": "unspecified", "keys": ["g"],
+                "children": [{"kind": "box", "shape": [2], "dtype": "float32",
+                              "low": [0.0, 0.0], "high": [1.0, 1.0]}]}"#,
+        )
+        .expect("obs");
+        let action: SpaceView =
+            serde_json::from_str(r#"{"kind": "box", "shape": [4], "dtype": "float32"}"#)
+                .expect("action");
+        resolve(&tags, &obs, &action, &spec, false)
+    }
+
+    fn act(adapter: &crate::plans::ResolvedAdapter, values: &[f32]) -> Vec<f32> {
+        let raw = Value::Tensor(tensor_from_f32(vec![values.len() as i64], values));
+        to_f32_vec(&adapter.transform_action(&raw).expect("apply"))
+    }
+
+    #[test]
+    fn a_reversed_gripper_command_is_refused_unless_flip_gripper_reflects_it() {
+        let close = r#", "polarity": "close""#;
+        let open = r#", "polarity": "open""#;
+        let refused = resolve_pair(close, "", "", open, "", "", "").expect_err("refused");
+        assert_eq!(refused.code, ErrorCode::ConventionMismatch);
+        assert!(
+            refused.message.contains("\"flip_gripper\""),
+            "{}",
+            refused.message
+        );
+        // The model's own invert already reverses it: no conversion is needed.
+        let inverted = format!(r#"{open}, "invert": true"#);
+        let adapter = resolve_pair(close, "", "", &inverted, "", "", "").expect("agrees");
+        assert!(adapter.projections().is_empty());
+        let adapter = resolve_pair(
+            close,
+            "",
+            "",
+            open,
+            "",
+            "",
+            r#", "allow": ["flip_gripper"]"#,
+        )
+        .expect("allowed");
+        assert_eq!(
+            act(&adapter, &[0.0, 0.0, 0.0, 0.75]),
+            vec![0.0, 0.0, 0.0, -0.75]
+        );
+        // Declared by one side only, it binds unchecked.
+        assert!(resolve_pair(close, "", "", "", "", "", "").is_ok());
+    }
+
+    #[test]
+    fn a_delta_in_another_unit_is_refused_unless_convert_units_rescales_it() {
+        let refused = resolve_pair("", r#", "unit": 0.05"#, "", "", r#", "unit": 1.0"#, "", "")
+            .expect_err("refused");
+        assert_eq!(refused.code, ErrorCode::ConventionMismatch);
+        assert!(
+            refused.message.contains("\"convert_units\""),
+            "{}",
+            refused.message
+        );
+        // The model's scale bridges it exactly.
+        assert!(
+            resolve_pair(
+                "",
+                r#", "unit": 0.05"#,
+                "",
+                "",
+                r#", "unit": 1.0, "scale": 20.0"#,
+                "",
+                ""
+            )
+            .expect("agrees")
+            .projections()
+            .is_empty()
+        );
+        let adapter = resolve_pair(
+            "",
+            r#", "unit": 0.05"#,
+            "",
+            "",
+            r#", "unit": 1.0"#,
+            "",
+            r#", "allow": ["convert_units"]"#,
+        )
+        .expect("allowed");
+        let moved = act(&adapter, &[0.01, -0.02, 0.0, 0.0]);
+        assert!(
+            (moved[0] - 0.2).abs() < 1e-6 && (moved[1] + 0.4).abs() < 1e-6,
+            "{moved:?}"
+        );
+    }
+
+    #[test]
+    fn a_truncated_or_reversed_gripper_reading_is_refused_unless_allowed() {
+        let one = r#", "dim": 1"#;
+        let refused = resolve_pair("", "", "", "", "", one, "").expect_err("refused");
+        assert_eq!(refused.code, ErrorCode::DimMismatch);
+        assert!(
+            refused.message.contains("\"select_state\""),
+            "{}",
+            refused.message
+        );
+        assert!(resolve_pair("", "", "", "", "", one, r#", "allow": ["select_state"]"#).is_ok());
+
+        let refused = resolve_pair(
+            "",
+            "",
+            r#", "polarity": "close""#,
+            "",
+            "",
+            r#", "polarity": "open""#,
+            "",
+        )
+        .expect_err("refused");
+        assert_eq!(refused.code, ErrorCode::ConventionMismatch);
+        let adapter = resolve_pair(
+            "",
+            "",
+            r#", "polarity": "close""#,
+            "",
+            "",
+            r#", "polarity": "open""#,
+            r#", "allow": ["flip_gripper"]"#,
+        )
+        .expect("allowed");
+        let obs = std::collections::BTreeMap::from([(
+            "g".to_owned(),
+            Value::Tensor(tensor_from_f32(vec![2], &[0.25, 1.0])),
+        )]);
+        let Value::Tensor(state) = adapter
+            .transform_obs(&obs, &crate::apply::NoCustoms)
+            .expect("apply")
+        else {
+            panic!("a lone state input is its tensor");
+        };
+        // Closedness 0.25 / 1.0 read as openness 0.75 / 0.0.
+        assert_eq!(
+            to_f32_vec(&state),
+            vec![0.75, 0.0],
+            "{}",
+            adapter.describe()
+        );
     }
 }

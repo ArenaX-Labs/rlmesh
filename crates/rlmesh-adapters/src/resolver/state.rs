@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use super::action::ModelOutputs;
-use super::{LeafKey, Result, bind, check_geometry, check_provenance, err};
+use super::{
+    LeafKey, Projection, Projections, Result, bind, check_geometry, check_provenance, err,
+};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{missing_role_hint, quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys};
@@ -87,6 +89,7 @@ fn fill_piece(
         provenance: None,
         part,
         width: Some(width),
+        flip: None,
     }
 }
 
@@ -172,6 +175,7 @@ fn previous_action_piece(
         provenance: None,
         part: bound.part,
         width: Some(width),
+        flip: None,
     })
 }
 
@@ -377,6 +381,7 @@ pub(super) fn plan_state(
     outputs: &ModelOutputs<'_>,
     unknown_roles: &BTreeMap<String, String>,
     advisories: &mut Vec<Advisory>,
+    projections: &mut Projections,
 ) -> Result<StatePlan> {
     let at = quoted(&placement.to_string());
     if rlmesh_spaces::DType::from_name(&model_input.dtype).is_none() {
@@ -548,6 +553,7 @@ pub(super) fn plan_state(
             component.provenance.as_ref(),
             advisories,
         )?;
+        let flip = check_state_polarity(role, &at, env_state, component, advisories, projections)?;
         // When converting, the env feature's declared width must match the
         // native (source) encoding the raw value is in.
         if let (Some(src), Some(dst)) = (src_encoding, dst_encoding)
@@ -610,6 +616,27 @@ pub(super) fn plan_state(
                         quoted(&env_state.source.to_string())
                     ),
                 ));
+            } else if let Some(dim) = component.dim
+                && dim < width
+            {
+                // Keeping the leading elements is a guess about what the rest
+                // mean (one finger of a two-finger width): named, never silent.
+                projections.apply(
+                    Projection::SelectState,
+                    format!(
+                        "model input {at}: state role {} reads the first {dim} of the {width} \
+                         dims of env feature {}",
+                        quoted(role),
+                        quoted(&env_state.source.to_string())
+                    ),
+                    ErrorCode::DimMismatch,
+                    format!(
+                        "model input {at}: state role {} reads {dim} dims but the env feature \
+                         {} has {width}",
+                        quoted(role),
+                        quoted(&env_state.source.to_string())
+                    ),
+                )?;
             }
         }
         // The piece's resolved output width, when statically known: an index
@@ -664,6 +691,7 @@ pub(super) fn plan_state(
             provenance,
             part: bound.part,
             width,
+            flip,
         });
     }
     // Known only when every piece's width is (and no pathological spec overflows
@@ -681,6 +709,65 @@ pub(super) fn plan_state(
         reshape: model_input.reshape.clone(),
         container: model_input.container,
     })
+}
+
+/// The gripper reading's polarity check: the env's reading, through the
+/// model part's own scale, must reach the model in the polarity it declares.
+/// A difference is the named projection `flip_gripper`, which reflects the
+/// value in the model's range (else the env's); returned as that sum.
+fn check_state_polarity(
+    role: &str,
+    at: &str,
+    env_state: &EnvState,
+    component: &ConcatPart,
+    advisories: &mut Vec<Advisory>,
+    projections: &mut Projections,
+) -> Result<Option<f64>> {
+    let (env_polarity, model_polarity) = match (env_state.polarity, component.polarity) {
+        (Some(env_polarity), Some(model_polarity)) => (env_polarity, model_polarity),
+        (None, None) => return Ok(None),
+        (env_polarity, _) => {
+            advisories.push(Advisory::info(format!(
+                "model input {at}: state role {}: only the {} declares a gripper polarity, so \
+                 it is not checked",
+                quoted(role),
+                if env_polarity.is_some() {
+                    "env"
+                } else {
+                    "model"
+                }
+            )));
+            return Ok(None);
+        }
+    };
+    let delivered = env_polarity.through(false, component.scale);
+    if delivered == model_polarity {
+        return Ok(None);
+    }
+    projections.apply(
+        Projection::FlipGripper,
+        format!(
+            "model input {at}: state role {}: the env's {} reading is reversed into the \
+             model's {}",
+            quoted(role),
+            quoted(delivered.as_str()),
+            quoted(model_polarity.as_str())
+        ),
+        ErrorCode::ConventionMismatch,
+        format!(
+            "model input {at}: state role {} reaches the model as {} (the env reads {}) but \
+             the model reads {}",
+            quoted(role),
+            quoted(delivered.as_str()),
+            quoted(env_polarity.as_str()),
+            quoted(model_polarity.as_str())
+        ),
+    )?;
+    let sum = component
+        .range
+        .or(env_state.range)
+        .map_or(0.0, |(low, high)| low + high);
+    Ok(Some(sum))
 }
 
 #[cfg(test)]

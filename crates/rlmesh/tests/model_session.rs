@@ -96,6 +96,7 @@ fn resolve(route: &str, horizon: u32) -> ModelRequest {
         execution_horizon: horizon,
         delivers_history: false,
         workflow_edition: String::new(),
+        reads_advisories: false,
     })
 }
 

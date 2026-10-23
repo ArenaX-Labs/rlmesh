@@ -655,6 +655,13 @@ fn report_to_py(py: Python<'_>, report: &rlmesh::binding::RuntimeReport) -> PyRe
     let out = pyo3::types::PyDict::new(py);
     out.set_item("episodes", report_episodes_to_py(py, &report.episodes)?)?;
     out.set_item("telemetry", report_telemetry_to_py(py, report)?)?;
+    let advisories: Vec<crate::adapters::PyAdvisory> = report
+        .advisories
+        .iter()
+        .cloned()
+        .map(crate::adapters::PyAdvisory::from)
+        .collect();
+    out.set_item("advisories", advisories)?;
     Ok(out.into_any().unbind())
 }
 

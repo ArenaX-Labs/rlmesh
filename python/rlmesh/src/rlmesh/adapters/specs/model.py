@@ -31,10 +31,21 @@ class ModelSpec:
     Attributes:
         input: The model input tree.
         output: Layout of the action vector produced by the model.
-        allow: Named projections (lossy fits) the model accepts, e.g.
-            ``("drop_action",)`` to bind an env with no actuator for some
-            model output, which is then discarded and recorded in
-            ``describe()``. Without it such a pairing is refused.
+        allow: Named projections (lossy fits) the model accepts. Without one,
+            the pairing it fits is refused; with it, the fit is applied and
+            recorded in ``describe()`` and the run's advisories:
+
+            - ``"drop_action"``: discard a model output the env has no
+              actuator for.
+            - ``"select_state"``: read the leading ``dim`` elements of a
+              wider env state field (one finger of a two-finger width).
+            - ``"rebind_camera"``: feed a camera input from the env's only
+              camera under another role (a wrist input from a third-person
+              view).
+            - ``"flip_gripper"``: reverse a gripper command or reading whose
+              ``polarity`` the two sides declare differently.
+            - ``"convert_units"``: rescale a delta command whose ``unit`` the
+              two sides declare differently.
     """
 
     input: InputNode

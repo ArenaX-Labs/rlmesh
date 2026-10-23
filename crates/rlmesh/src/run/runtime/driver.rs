@@ -724,6 +724,7 @@ where
                     total_episodes: state.total_episodes(),
                     episodes: state.take_episode_summaries(),
                     telemetry: final_snapshot,
+                    advisories: Vec::new(),
                 })
             }
             Err(error) => {

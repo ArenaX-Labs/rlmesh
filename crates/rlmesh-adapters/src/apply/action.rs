@@ -51,6 +51,16 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
             segment.model_invert,
             segment.model_threshold,
         );
+        if let Some(factor) = segment.unit_factor {
+            for entry in &mut piece {
+                *entry = (f64::from(*entry) * factor) as f32;
+            }
+        }
+        if let Some(sum) = segment.flip {
+            for entry in &mut piece {
+                *entry = (sum - f64::from(*entry)) as f32;
+            }
+        }
         if let Some(scatter) = &segment.scatter {
             piece = scatter
                 .iter()
@@ -142,6 +152,8 @@ mod tests {
                 frame: None,
                 reference: None,
                 part: None,
+                flip: None,
+                unit_factor: None,
             }],
             clip: None,
             in_dim: 1,
@@ -183,6 +195,8 @@ mod tests {
                     frame: None,
                     reference: None,
                     part: None,
+                    flip: None,
+                    unit_factor: None,
                 },
                 ActionSegment {
                     role: Some("action/b".to_owned()),
@@ -213,6 +227,8 @@ mod tests {
                     frame: None,
                     reference: None,
                     part: None,
+                    flip: None,
+                    unit_factor: None,
                 },
             ],
             clip: None,
@@ -263,6 +279,8 @@ mod tests {
                     frame: None,
                     reference: None,
                     part: None,
+                    flip: None,
+                    unit_factor: None,
                 },
                 ActionSegment {
                     role: None,
@@ -293,6 +311,8 @@ mod tests {
                     frame: None,
                     reference: None,
                     part: None,
+                    flip: None,
+                    unit_factor: None,
                 },
             ],
             clip: None,
@@ -337,6 +357,8 @@ mod tests {
                 frame: None,
                 reference: None,
                 part: None,
+                flip: None,
+                unit_factor: None,
             }],
             clip: None,
             in_dim: 1,

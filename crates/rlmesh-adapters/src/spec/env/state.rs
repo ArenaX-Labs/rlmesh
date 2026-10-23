@@ -41,4 +41,7 @@ pub struct EnvState {
     /// lifted from the `StateTag`/`Field` that tagged it (width-checked at
     /// `join`).
     pub labels: Option<Vec<String>>,
+    /// Openness or closedness of a gripper reading, lifted from the
+    /// `StateTag`/`Field` that tagged it.
+    pub polarity: Option<crate::spec::Polarity>,
 }

@@ -135,6 +135,7 @@ where
     // adapter's window advances on every step at any horizon; the route answers
     // whether it needs that, and the driver only buffers rows when it does.
     let mut wants_history = false;
+    let mut advisories = Vec::new();
     if let Some(route_setup) = handler.route_setup() {
         let needs = route_setup
             .resolve_adapter(
@@ -148,6 +149,7 @@ where
             )
             .await?;
         wants_history = needs.history.is_some();
+        advisories = needs.advisories;
     }
 
     let spec = RuntimeSessionSpec {
@@ -176,6 +178,10 @@ where
         .with_prefetch(options.prefetch_lead)
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await
+        .map(|report| RuntimeReport {
+            advisories,
+            ..report
+        })
         .map_err(run_error)
 }
 
@@ -494,6 +500,7 @@ pub(crate) fn empty_report() -> RuntimeReport {
             horizon: crate::run::runtime::telemetry::Horizon::Session,
             rows: Vec::new(),
         },
+        advisories: Vec::new(),
     }
 }
 
