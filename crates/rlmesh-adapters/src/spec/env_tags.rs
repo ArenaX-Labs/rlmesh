@@ -80,7 +80,7 @@ pub struct StateTag {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     /// Openness (`open`) or closedness (`close`) for a gripper reading
-    /// (`proprio/gripper_pos`); see [`Polarity`]. Omitted when unset.
+    /// (`proprio/gripper_pos`); see `Polarity`. Omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polarity: Option<Polarity>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).

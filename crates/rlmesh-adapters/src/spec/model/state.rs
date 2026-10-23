@@ -127,7 +127,7 @@ pub struct ConcatPart {
     pub labels: Option<Vec<String>>,
     /// The gripper polarity the checkpoint reads (`proprio/gripper_pos`):
     /// openness (`open`) or closedness (`close`); see
-    /// [`Polarity`](crate::spec::Polarity). Omitted when unset.
+    /// `Polarity`. Omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polarity: Option<crate::spec::Polarity>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the

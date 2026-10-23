@@ -121,7 +121,7 @@ pub struct Actuator {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     /// Which way a gripper moves as this command rises (`action/gripper`):
-    /// see [`Polarity`]. Both sides declaring different ones is refused unless
+    /// see `Polarity`. Both sides declaring different ones is refused unless
     /// the model allows `flip_gripper`. Omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polarity: Option<Polarity>,
