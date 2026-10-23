@@ -109,6 +109,14 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ),
     ("ENV_RESET_OPTIONS_KEY", rlmesh::ENV_RESET_OPTIONS_KEY),
     (
+        "ENV_RENDER_PARAMS_KEY",
+        rlmesh::binding::runtime::ENV_RENDER_PARAMS_KEY,
+    ),
+    (
+        "ENV_REQUIRES_EPISODE_CAP_KEY",
+        rlmesh::binding::runtime::ENV_REQUIRES_EPISODE_CAP_KEY,
+    ),
+    (
         "DESCRIBE_METADATA_KEY",
         rlmesh_adapters::v1::DESCRIBE_METADATA_KEY,
     ),
@@ -152,6 +160,8 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_BRANCH_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "MODEL_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_RESET_OPTIONS_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_RENDER_PARAMS_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_REQUIRES_EPISODE_CAP_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_SCHEMA_VERSION", u32);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_PRIMARY", String);
@@ -1046,4 +1056,38 @@ pub fn describe_envelope_normalize(
 ) -> PyResult<String> {
     build_describe_envelope(kind, pieces_json, generated_at)
         .map_err(|err| PyValueError::new_err(format!("invalid describe envelope: {err}")))
+}
+
+/// The one camera resolution a model spec asserts, as `(height, width)`, or
+/// `None` when no image input declares a `render`.
+///
+/// Every image input reads the same env camera dial, so two inputs asserting
+/// different sizes have no binding: that is a `ValueError` naming both.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def adapters_render_size(spec_json: str) -> tuple[int, int] | None: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn adapters_render_size(spec_json: &str) -> PyResult<Option<(u32, u32)>> {
+    let spec: ModelSpec = de_spec("model spec", spec_json)?;
+    let requests = rlmesh_adapters::v1::render_requests(&spec);
+    let Some((_, size)) = requests.first() else {
+        return Ok(None);
+    };
+    if requests.iter().any(|(_, other)| other != size) {
+        let detail = requests
+            .iter()
+            .map(|(role, (h, w))| format!("{role} -> {h}x{w}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(PyValueError::new_err(format!(
+            "the model's image inputs assert different render sizes for one camera dial: {detail}"
+        )));
+    }
+    Ok(Some(*size))
 }

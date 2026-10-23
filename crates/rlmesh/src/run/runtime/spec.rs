@@ -21,6 +21,30 @@ static EMPTY_SPACE_SPEC: LazyLock<SpaceSpec> = LazyLock::new(SpaceSpec::default)
 /// one it cannot interpret. Mirrored in Python as `rlmesh.ENV_RESET_OPTIONS_KEY`.
 pub const ENV_RESET_OPTIONS_KEY: &str = "rlmesh.env.v1.reset_options";
 
+/// Key under which an env declares, in its contract metadata, that it has no
+/// episode horizon of its own (`true`): it never truncates, so a run against it
+/// must cap every episode with `max_episode_steps`.
+/// [`RuntimeSessionSpec::validate`] refuses an uncapped session against such an
+/// env before its first reset.
+pub const ENV_REQUIRES_EPISODE_CAP_KEY: &str = "rlmesh.env.v1.requires_episode_cap";
+
+/// Key under which an env names, in its contract metadata, the two `make`
+/// params that set its camera resolution, as `[height, width]`: its render
+/// dial. A driver that knows the model's `Image(render=...)` assertion binds it
+/// there before the env is made. The runtime never reads it.
+pub const ENV_RENDER_PARAMS_KEY: &str = "rlmesh.env.v1.render_params";
+
+/// Whether `contract` declared [`ENV_REQUIRES_EPISODE_CAP_KEY`] as `true`.
+pub fn requires_episode_cap(contract: &EnvContract) -> bool {
+    contract
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.metadata.as_ref())
+        .and_then(|metadata| metadata.entries.get(ENV_REQUIRES_EPISODE_CAP_KEY))
+        .and_then(|declared| declared.kind.as_ref())
+        .is_some_and(|declared| matches!(declared, MetaKind::Bool(true)))
+}
+
 /// The reserved reset option carrying the ordinal of the episode a reset
 /// starts. Declared by an env under [`ENV_RESET_OPTIONS_KEY`]; read in Python
 /// as `rlmesh.trial_index(options)`.
@@ -180,6 +204,14 @@ impl RuntimeSessionSpec {
         if self.max_episode_seconds.is_some_and(|cap| cap <= 0.0) {
             return Err(
                 "runtime max_episode_seconds must be greater than zero when set".to_string(),
+            );
+        }
+        if self.max_episode_steps.is_none() && requires_episode_cap(&self.env_contract) {
+            return Err(
+                "this env declares requires_episode_cap: it has no episode horizon of its \
+                 own and never truncates, so the run must cap every episode; pass \
+                 max_episode_steps"
+                    .to_string(),
             );
         }
         let driver_owns_resets = AutoresetMode::try_from(self.env_contract.autoreset_mode)
@@ -544,8 +576,8 @@ mod tests {
     use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue};
 
     use super::{
-        ENV_RESET_OPTIONS_KEY, MetaKind, RuntimeLimits, RuntimeSessionSpec, TRIAL_INDEX_OPTION,
-        declares_reset_option, reset_options_for,
+        ENV_REQUIRES_EPISODE_CAP_KEY, ENV_RESET_OPTIONS_KEY, MetaKind, RuntimeLimits,
+        RuntimeSessionSpec, TRIAL_INDEX_OPTION, declares_reset_option, reset_options_for,
     };
 
     fn valid_spec() -> RuntimeSessionSpec {
@@ -593,6 +625,29 @@ mod tests {
             error.contains("trial_index_base requires an env with autoreset disabled"),
             "expected the driver-owned-reset rule, got: {error}"
         );
+    }
+
+    #[test]
+    fn validate_refuses_an_uncapped_run_against_an_env_that_requires_a_cap() {
+        let mut spec = valid_spec();
+        let declared = |flag: bool| MetaMap {
+            entries: [(
+                ENV_REQUIRES_EPISODE_CAP_KEY.to_string(),
+                MetaValue {
+                    kind: Some(MetaKind::Bool(flag)),
+                },
+            )]
+            .into(),
+        };
+        spec.env_contract.spec.as_mut().unwrap().metadata = Some(declared(false));
+        assert!(spec.validate().is_ok());
+
+        spec.env_contract.spec.as_mut().unwrap().metadata = Some(declared(true));
+        let error = spec.validate().unwrap_err();
+        assert!(error.contains("requires_episode_cap"), "got: {error}");
+
+        spec.max_episode_steps = Some(520);
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub use hooks::{
 };
 pub use rlmesh_proto::EndpointPhases;
 pub use spec::{
-    ENV_RESET_OPTIONS_KEY, RuntimeLimits, RuntimeReport, RuntimeSessionSpec, TRIAL_INDEX_OPTION,
-    declares_reset_option, reset_options_for,
+    ENV_RENDER_PARAMS_KEY, ENV_REQUIRES_EPISODE_CAP_KEY, ENV_RESET_OPTIONS_KEY, RuntimeLimits,
+    RuntimeReport, RuntimeSessionSpec, TRIAL_INDEX_OPTION, declares_reset_option,
+    requires_episode_cap, reset_options_for,
 };

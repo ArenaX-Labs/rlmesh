@@ -9,6 +9,7 @@ starts a long-lived container serving the policy in the session it hosts;
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from .._upgrade import removed
@@ -119,6 +120,7 @@ class SandboxModel:
         self._container_id: str | None = None
         self._model: ModelBase[Any, Any] | None = None
         self._closed = False
+        self._serving = threading.Lock()
 
     def serve(self) -> SandboxModel:
         """Start a long-lived container serving the policy, once it answers.
@@ -129,9 +131,14 @@ class SandboxModel:
         ``RLMESH_MAKE_KWARGS``. A container that does not answer is stopped
         before the error is raised, so nothing leaks.
 
-        Idempotent: a second call returns the already-running handle. The model
-        is reachable at :attr:`address` until :meth:`shutdown`.
+        Idempotent: a second call returns the already-running handle, and one
+        made while the first is starting waits for it. The model is reachable at
+        :attr:`address` until :meth:`shutdown`.
         """
+        with self._serving:
+            return self._serve()
+
+    def _serve(self) -> SandboxModel:
         if self._address is not None:
             return self
         from .._rlmesh import model_answers, sandbox_stop_env

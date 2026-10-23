@@ -597,6 +597,12 @@
       "members": {
         "params": {
           "stability": "Experimental"
+        },
+        "render_params": {
+          "stability": "Experimental"
+        },
+        "requires_episode_cap": {
+          "stability": "Experimental"
         }
       }
     },
@@ -610,6 +616,12 @@
     "rlmesh.numpy.EnvFactory": {
       "members": {
         "params": {
+          "stability": "Experimental"
+        },
+        "render_params": {
+          "stability": "Experimental"
+        },
+        "requires_episode_cap": {
           "stability": "Experimental"
         }
       }

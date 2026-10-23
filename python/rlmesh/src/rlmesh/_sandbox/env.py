@@ -16,6 +16,7 @@ from .session import (
     SandboxInfo,
     SandboxLifecycle,
     SandboxRuntime,
+    model_render_size,
     reject_sandbox_option_params,
     reject_single_env_vector_option,
     start_sandbox_container,
@@ -56,6 +57,12 @@ class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
             before giving up (default 30s). The server only binds its port after the
             env factory's ``make()`` runs, so an env that loads large sims/assets
             (e.g. a LIBERO task suite) needs headroom; raise it for slower startups.
+        model: The model this env will run against, when its spec should shape
+            the env: a :class:`~rlmesh.adapters.ModelSpec`, a model, or a
+            :class:`~rlmesh.SandboxModel` (served first, to read its spec). The
+            size its ``Image(render=...)`` inputs assert is bound on the env's
+            :attr:`~rlmesh.EnvFactory.render_params` camera dial before
+            ``make`` runs, under ``**params``. Prebuilt images only.
         **params: Environment construction params -- the binding forwarded to the
             factory's ``make`` (validated against its declared ``params`` in the
             container, before construction). ``source`` is positional-only so a
@@ -70,6 +77,7 @@ class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
         build: SandboxBuild | None = None,
         runtime: SandboxRuntime | None = None,
         connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
+        model: object | None = None,
         **params: object,
     ) -> None:
         reject_single_env_vector_option(params)
@@ -83,6 +91,7 @@ class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
             num_envs=1,
             vectorization_mode=None,
             binding=params,
+            render_size=model_render_size(model, connect_timeout_seconds),
         )
         # Attach this client to the started container, waiting for it to become
         # ready; stops the container on any failure so it is never leaked.
@@ -115,6 +124,8 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
             building from a ``gym://``/``hf://`` source.
         connect_timeout_seconds: Seconds to wait for the container to start serving
             before giving up (default 30s); raise it for envs with slow ``make()``.
+        model: The model this env will run against; its ``Image(render=...)``
+            size is bound on the env's camera dial, as on :class:`SandboxEnv`.
         **params: Environment construction params -- the binding forwarded to the
             factory's ``make`` (validated in the container before construction).
     """
@@ -129,6 +140,7 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
         build: SandboxBuild | None = None,
         runtime: SandboxRuntime | None = None,
         connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
+        model: object | None = None,
         **params: object,
     ) -> None:
         if num_envs < 2:
@@ -148,6 +160,7 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
             binding=params,
+            render_size=model_render_size(model, connect_timeout_seconds),
         )
         self._attach(connect_timeout_seconds)
 

@@ -8,6 +8,7 @@ and option handling -- is exercised without Docker.
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -277,6 +278,7 @@ def test_sandbox_model_shutdown_is_idempotent(
     model._container_id = "container-x"
     model._model = None
     model._closed = False
+    model._serving = threading.Lock()
 
     with model:
         model.shutdown()  # explicit early stop

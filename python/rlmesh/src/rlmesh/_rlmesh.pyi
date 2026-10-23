@@ -38,6 +38,8 @@ __all__ = [
     "EEF_WRENCH",
     "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
+    "ENV_RENDER_PARAMS_KEY",
+    "ENV_REQUIRES_EPISODE_CAP_KEY",
     "ENV_RESET_OPTIONS_KEY",
     "EnvContract",
     "GRIPPER_POS",
@@ -82,6 +84,7 @@ __all__ = [
     "V2Robot",
     "Value",
     "adapters_join_check",
+    "adapters_render_size",
     "adapters_resolve",
     "adapters_spec_normalize",
     "box_space_spec",
@@ -93,6 +96,7 @@ __all__ = [
     "is_v2_address",
     "local_run_session",
     "model_answers",
+    "model_describe",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
     "nested_predict",
@@ -133,6 +137,8 @@ EEF_ROT: builtins.str
 EEF_WRENCH: builtins.str
 ENV_BRANCH_METADATA_KEY: builtins.str
 ENV_METADATA_KEY: builtins.str
+ENV_RENDER_PARAMS_KEY: builtins.str
+ENV_REQUIRES_EPISODE_CAP_KEY: builtins.str
 ENV_RESET_OPTIONS_KEY: builtins.str
 GRIPPER_POS: builtins.str
 HEAD: builtins.str
@@ -1149,6 +1155,8 @@ def _set_python_peer_info(*, language: str | None = None, language_version: str 
 
 def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> list[Advisory]: ...
 
+def adapters_render_size(spec_json: str) -> tuple[int, int] | None: ...
+
 def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
 
 def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = 'passthrough', require_frames: bool = False) -> str: ...
@@ -1185,6 +1193,8 @@ def is_v2_address(text: str) -> bool: ...
 def local_run_session() -> str: ...
 
 def model_answers(address: str, timeout_s: float) -> None: ...
+
+def model_describe(address: str, timeout_s: float) -> str: ...
 
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 

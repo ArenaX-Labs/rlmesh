@@ -184,6 +184,16 @@
             "kind": "function",
             "signature": "prepare() -> None"
           },
+          "render_params": {
+            "kind": "attribute",
+            "signature": "render_params: tuple[str, ...]",
+            "stability": "Experimental"
+          },
+          "requires_episode_cap": {
+            "kind": "attribute",
+            "signature": "requires_episode_cap: bool",
+            "stability": "Experimental"
+          },
           "reset_options": {
             "kind": "attribute",
             "signature": "reset_options: tuple[str, ...]"
@@ -926,7 +936,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, /, *, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
+        "signature": "SandboxEnv(source: str, /, *, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, model: object | None = None, **params: object) -> None",
         "stability": "Experimental"
       },
       "SandboxModel": {
@@ -1079,7 +1089,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str | None = None, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str | None = None, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, model: object | None = None, **params: object) -> None",
         "stability": "Experimental"
       },
       "ServeOptions": {
@@ -2556,6 +2566,14 @@
             "kind": "function",
             "signature": "prepare() -> None"
           },
+          "render_params": {
+            "kind": "attribute",
+            "signature": "render_params: tuple[str, ...]"
+          },
+          "requires_episode_cap": {
+            "kind": "attribute",
+            "signature": "requires_episode_cap: bool"
+          },
           "reset_options": {
             "kind": "attribute",
             "signature": "reset_options: tuple[str, ...]"
@@ -2949,7 +2967,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, /, *, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
+        "signature": "SandboxEnv(source: str, /, *, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, model: object | None = None, **params: object) -> None",
         "stability": "Experimental"
       },
       "SandboxInfo": {
@@ -3125,7 +3143,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str | None = None, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str | None = None, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, model: object | None = None, **params: object) -> None",
         "stability": "Experimental"
       },
       "asarray": {
@@ -3193,6 +3211,16 @@
           "prepare": {
             "kind": "function",
             "signature": "prepare() -> None"
+          },
+          "render_params": {
+            "kind": "attribute",
+            "signature": "render_params: tuple[str, ...]",
+            "stability": "Experimental"
+          },
+          "requires_episode_cap": {
+            "kind": "attribute",
+            "signature": "requires_episode_cap: bool",
+            "stability": "Experimental"
           },
           "reset_options": {
             "kind": "attribute",
@@ -3588,7 +3616,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, /, *, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
+        "signature": "SandboxEnv(source: str, /, *, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, model: object | None = None, **params: object) -> None",
         "stability": "Experimental"
       },
       "SandboxInfo": {
@@ -3764,7 +3792,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str | None = None, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str | None = None, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, model: object | None = None, **params: object) -> None",
         "stability": "Experimental"
       },
       "asarray": {
@@ -4737,6 +4765,14 @@
             "kind": "function",
             "signature": "prepare() -> None"
           },
+          "render_params": {
+            "kind": "attribute",
+            "signature": "render_params: tuple[str, ...]"
+          },
+          "requires_episode_cap": {
+            "kind": "attribute",
+            "signature": "requires_episode_cap: bool"
+          },
           "reset_options": {
             "kind": "attribute",
             "signature": "reset_options: tuple[str, ...]"
@@ -5125,7 +5161,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, /, *, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
+        "signature": "SandboxEnv(source: str, /, *, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, model: object | None = None, **params: object) -> None",
         "stability": "Experimental"
       },
       "SandboxInfo": {
@@ -5301,7 +5337,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str | None = None, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str | None = None, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, model: object | None = None, **params: object) -> None",
         "stability": "Experimental"
       },
       "TorchValue": {

@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from ._authoring import render_binding
 from ._entrypoint import resolve_entrypoint
 
 # Startup phase marks. Every mark is wall-clock milliseconds since the process
@@ -319,6 +320,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             env = resolve_entrypoint(args.env, label="env entrypoint")
             _mark("imports")
+            # The model's Image(render=...) size, which a sandbox driver that
+            # knows the model passes in: bound on the env's own camera dial,
+            # under the explicit binding.
+            binding = render_binding(env, _render_size(parser)) | binding
             serve_env(
                 env,
                 f"{(args.address or _ADDRESS).rstrip('/')}/{args.name or 'env'}",
@@ -346,6 +351,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         # traceback. Not 0: an interrupt during startup served nothing.
         return 130
     return 0
+
+
+def _render_size(parser: argparse.ArgumentParser) -> tuple[int, int] | None:
+    """``RLMESH_RENDER_SIZE`` (``"<height>x<width>"``) as a pair, or ``None``."""
+    raw = os.environ.get("RLMESH_RENDER_SIZE")
+    if not raw:
+        return None
+    height, sep, width = raw.partition("x")
+    if not (sep and height.isdigit() and width.isdigit()):
+        parser.error(f"RLMESH_RENDER_SIZE must be <height>x<width>, got {raw!r}")
+    return int(height), int(width)
 
 
 def _json_object(value: str) -> dict[str, Any]:

@@ -531,6 +531,31 @@ pub fn model_answers(py: Python<'_>, address: &str, timeout_s: f64) -> PyResult<
     })
 }
 
+/// The describe envelope (JSON; empty when it has none) of the model at the
+/// participant address `address`, connecting for up to `timeout_s` seconds.
+/// How a sandbox env learns a served model's spec before the env is made.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def model_describe(address: str, timeout_s: float) -> str: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn model_describe(py: Python<'_>, address: &str, timeout_s: f64) -> PyResult<String> {
+    let timeout = crate::session::timeout(timeout_s)?;
+    py.detach(|| {
+        model_runtime().block_on(async {
+            let mut served = rlmesh::lockstep::ServedModel::new(address, timeout);
+            let described = served.describe().await;
+            let _ = served.on_close().await;
+            described.map_err(|err| pyo3::exceptions::PyConnectionError::new_err(err.to_string()))
+        })
+    })
+}
+
 /// The leading-axis length of a neutral chunk value: a tensor-like exposes
 /// `shape` (native `Tensor`, numpy array), a Dict chunk carries the axis
 /// inside each leaf (probe the first value), a plain sequence its `len`.

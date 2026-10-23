@@ -417,6 +417,7 @@ def start_sandbox_container(
     num_envs: int,
     vectorization_mode: str | None,
     binding: Mapping[str, object],
+    render_size: tuple[int, int] | None = None,
 ) -> SandboxInfo:
     """Resolve the source, then build-from-source or run a prebuilt image.
 
@@ -429,7 +430,8 @@ def start_sandbox_container(
     :class:`SandboxBuild` configures the from-source build; :class:`SandboxRuntime`
     (``gpus`` / ``devices`` / ``volumes``) configures ``docker run`` and applies to
     the prebuilt path only -- the native build-from-source path has no ``docker run``
-    step and rejects a set runtime flag.
+    step and rejects a set runtime flag. ``render_size`` is the model's camera
+    size, which a prebuilt image binds on its env's declared camera dial.
     """
     build = build or SandboxBuild()
     run = runtime or SandboxRuntime()
@@ -447,6 +449,7 @@ def start_sandbox_container(
             binding=binding,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
+            render_size=render_size,
             gpus=gpus,
             devices=devices,
             volumes=volumes,
@@ -468,6 +471,36 @@ def start_sandbox_container(
     )
 
 
+def model_render_size(model: object, timeout_seconds: float) -> tuple[int, int] | None:
+    """The camera size ``model``'s ``Image(render=...)`` inputs assert, or ``None``.
+
+    ``model`` is a :class:`~rlmesh.adapters.ModelSpec`, a model carrying one as
+    its ``spec``, a served model (``Model("host:port/name")``) or a
+    :class:`~rlmesh.SandboxModel` -- served first, so its own spec is read off
+    its describe envelope. A model with no spec asserts nothing.
+    """
+    from .._rlmesh import adapters_render_size, model_describe
+    from ..adapters import ModelSpec
+    from ._model import SandboxModel
+
+    spec_json: str | None = None
+    address: str | None = None
+    if isinstance(model, ModelSpec):
+        spec_json = model.to_json()
+    elif isinstance(model, SandboxModel):
+        address = model.serve().address
+    elif isinstance(served := getattr(model, "_served_address", None), str):
+        address = served
+    elif isinstance(spec := getattr(model, "spec", None), ModelSpec):
+        spec_json = spec.to_json()
+    if address is not None:
+        envelope = model_describe(address, timeout_seconds)
+        described = json.loads(envelope).get("model_spec") if envelope else None
+        if isinstance(described, dict) and "input" in described:
+            spec_json = json.dumps(described)
+    return None if spec_json is None else adapters_render_size(spec_json)
+
+
 def start_prebuilt_container(
     image: str,
     *,
@@ -476,6 +509,7 @@ def start_prebuilt_container(
     binding: Mapping[str, object],
     num_envs: int | None = None,
     vectorization_mode: str | None = None,
+    render_size: tuple[int, int] | None = None,
     gpus: str | None = None,
     devices: Sequence[str] | None = None,
     volumes: Sequence[str] | None = None,
@@ -525,6 +559,8 @@ def start_prebuilt_container(
         env_vars["RLMESH_NUM_ENVS"] = str(num_envs)
     if vectorization_mode:
         env_vars["RLMESH_VECTORIZATION_MODE"] = vectorization_mode
+    if render_size is not None:
+        env_vars["RLMESH_RENDER_SIZE"] = f"{render_size[0]}x{render_size[1]}"
 
     cmd = prebuilt_run_cmd(
         image,
