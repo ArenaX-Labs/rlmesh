@@ -1505,6 +1505,7 @@ class ModelBase(Generic[ObsT, ActT]):
             )
         from ._eval import (
             EpisodeResult,
+            Interrupted,
             NativeHookRelay,
             NativeRunContext,
             RunHooks,
@@ -1515,6 +1516,24 @@ class ModelBase(Generic[ObsT, ActT]):
         from ._view import ViewerDriver, resolve_view
 
         episodes = resolve_episode_budget(episodes, seeds)
+
+        def episode_result(episode: dict[str, Any]) -> EpisodeResult:
+            return EpisodeResult(
+                # The runtime reports 1-based slot ordinals; EpisodeResult.index
+                # is 0-based, matching a Binding, the hooks, and
+                # trial == trial_index_base + index.
+                index=episode["index"] - 1,
+                seed=episode["seed"],
+                trial=episode["trial"],
+                steps=episode["steps"],
+                reward=episode["reward"],
+                terminated=episode["terminated"],
+                truncated=episode["truncated"],
+                success=episode["success"],
+                duration_s=episode["duration_s"],
+                predict_ms=episode["predict_ms"],
+                step_ms=episode["step_ms"],
+            )
 
         previous_trust = self._trust_entrypoints
         if trust_entrypoints is not None:
@@ -1558,13 +1577,22 @@ class ModelBase(Generic[ObsT, ActT]):
                     relay=relay,
                 )
             failed = False
-        except BaseException:
+        except BaseException as exc:
             # The run's own exception wins over anything on_run_end raises.
             if hooks is not None:
                 with contextlib.suppress(BaseException), run_context.dispatch():
                     hooks.on_run_end(
                         RunResult(episodes=tuple(relay.results if relay else ()))
                     )
+            # Ctrl-C keeps the episodes that finished before it (the native
+            # run hands them over on the interrupt).
+            if isinstance(exc, KeyboardInterrupt) and not isinstance(exc, Interrupted):
+                partial = cast(
+                    "list[dict[str, Any]]", getattr(exc, "partial_episodes", [])
+                )
+                raise Interrupted(
+                    RunResult(episodes=tuple(map(episode_result, partial)))
+                ) from exc
             raise
         finally:
             self._trust_entrypoints = previous_trust
@@ -1574,25 +1602,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 viewer.close(hold=not failed)
 
         result = RunResult(
-            episodes=tuple(
-                EpisodeResult(
-                    # The runtime reports 1-based slot ordinals; EpisodeResult.index
-                    # is 0-based, matching a Binding, the hooks, and
-                    # trial == trial_index_base + index.
-                    index=episode["index"] - 1,
-                    seed=episode["seed"],
-                    trial=episode["trial"],
-                    steps=episode["steps"],
-                    reward=episode["reward"],
-                    terminated=episode["terminated"],
-                    truncated=episode["truncated"],
-                    success=episode["success"],
-                    duration_s=episode["duration_s"],
-                    predict_ms=episode["predict_ms"],
-                    step_ms=episode["step_ms"],
-                )
-                for episode in report["episodes"]
-            ),
+            episodes=tuple(map(episode_result, report["episodes"])),
             telemetry=tuple(TelemetryRow(**row) for row in report["telemetry"]),
         )
         if hooks is not None:

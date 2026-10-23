@@ -653,7 +653,7 @@ fn call_batched(
 /// summaries) and `telemetry` (the session metric aggregate).
 fn report_to_py(py: Python<'_>, report: &rlmesh::binding::RuntimeReport) -> PyResult<Py<PyAny>> {
     let out = pyo3::types::PyDict::new(py);
-    out.set_item("episodes", report_episodes_to_py(py, report)?)?;
+    out.set_item("episodes", report_episodes_to_py(py, &report.episodes)?)?;
     out.set_item("telemetry", report_telemetry_to_py(py, report)?)?;
     Ok(out.into_any().unbind())
 }
@@ -695,10 +695,10 @@ fn report_telemetry_to_py(
 /// episode summaries, each episode's own latency means included.
 fn report_episodes_to_py(
     py: Python<'_>,
-    report: &rlmesh::binding::RuntimeReport,
+    summaries: &[rlmesh::binding::runtime::spec::EpisodeSummary],
 ) -> PyResult<Py<PyAny>> {
     let episodes = pyo3::types::PyList::empty(py);
-    for episode in &report.episodes {
+    for episode in summaries {
         let entry = pyo3::types::PyDict::new(py);
         entry.set_item("index", episode.episode_index)?;
         entry.set_item("env_index", episode.env_index)?;
@@ -723,7 +723,8 @@ fn report_episodes_to_py(
 /// hook's sync rlmesh calls work and SIGINT is checked on the thread that
 /// called `Model.run`. A pending signal (Ctrl-C) cancels the runtime session
 /// and re-raises the signal's exception, so a long eval aborts between
-/// operations instead of blocking SIGINT until the final episode.
+/// operations instead of blocking SIGINT until the final episode; the
+/// exception carries the episodes that finished as `partial_episodes`.
 fn run_local_blocking(
     py: Python<'_>,
     handler: Box<dyn ModelHandler>,
@@ -742,10 +743,12 @@ fn run_local_blocking(
     // the exception so it, not the cancellation, is what the caller sees.
     let hooks =
         relay.map(|relay| Arc::new(PyRunHooks::new(relay, cancellation.clone(), jobs.clone())));
-    let runtime_hooks: Arc<dyn rlmesh::binding::RuntimeHooks> = match &hooks {
+    let inner: Arc<dyn rlmesh::binding::RuntimeHooks> = match &hooks {
         Some(hooks) => Arc::clone(hooks) as Arc<dyn rlmesh::binding::RuntimeHooks>,
         None => Arc::new(rlmesh::binding::NoopRuntimeHooks),
     };
+    let finished = Arc::new(crate::hooks::FinishedEpisodes::new(inner));
+    let runtime_hooks: Arc<dyn rlmesh::binding::RuntimeHooks> = finished.clone();
     let outcome = py.detach(|| {
         let run = async move {
             let run =
@@ -770,17 +773,27 @@ fn run_local_blocking(
         };
         rlmesh::binding::model::block_on_caller(run, &mut queue)
     });
-    if let Some(err) = hooks.as_ref().and_then(|hooks| hooks.take_error()) {
-        return Err(err);
-    }
-    match outcome {
-        RunOutcome::Done(Ok(report)) => Ok(report),
-        RunOutcome::Done(Err(err)) => {
-            let raised = last_error.lock().expect("last_error lock poisoned").take();
-            Err(raised.unwrap_or_else(|| to_py_err(err)))
+    let result = if let Some(err) = hooks.as_ref().and_then(|hooks| hooks.take_error()) {
+        Err(err)
+    } else {
+        match outcome {
+            RunOutcome::Done(Ok(report)) => Ok(report),
+            RunOutcome::Done(Err(err)) => {
+                let raised = last_error.lock().expect("last_error lock poisoned").take();
+                Err(raised.unwrap_or_else(|| to_py_err(err)))
+            }
+            RunOutcome::Signal(err) => Err(err),
         }
-        RunOutcome::Signal(err) => Err(err),
+    };
+    // Ctrl-C, whether it cut the loop or landed inside a predict or a hook,
+    // carries the episodes that finished before it.
+    if let Err(err) = &result
+        && err.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+    {
+        let episodes = report_episodes_to_py(py, &finished.take())?;
+        err.value(py).setattr("partial_episodes", episodes)?;
     }
+    result
 }
 
 /// The per-route resolver the served model exposes via `route_setup`. Runs the

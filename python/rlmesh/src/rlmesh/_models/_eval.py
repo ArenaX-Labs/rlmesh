@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 __all__ = [
     "RANDOM_SAMPLE",
     "EpisodeResult",
+    "Interrupted",
     "RunHooks",
     "RunResult",
     "StepEvent",
@@ -426,6 +427,22 @@ class RunResult:
             f"RunResult(episodes={self.num_episodes}, mean_reward={self.mean_reward:.3f}, "
             f"total_steps={self.total_steps})"
         )
+
+
+class Interrupted(KeyboardInterrupt):
+    """Ctrl-C during :meth:`Model.run <rlmesh.Model.run>`, with what it finished.
+
+    A ``KeyboardInterrupt``, so code that stops on Ctrl-C still stops; catch it
+    to keep :attr:`result`, the :class:`RunResult` of the episodes that
+    completed before the interrupt (the one in progress is not in it).
+    """
+
+    def __init__(self, result: RunResult) -> None:
+        super().__init__(
+            f"run interrupted after {result.num_episodes} completed episode(s)"
+        )
+        #: The episodes that completed before the interrupt.
+        self.result = result
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,7 @@ def test_root_namespace_is_small() -> None:
         "EnvironmentException",
         "EpisodeResult",
         "FrameSources",
+        "Interrupted",
         "Model",
         "ModelException",
         "Param",

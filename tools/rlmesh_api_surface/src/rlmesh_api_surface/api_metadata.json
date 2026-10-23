@@ -191,6 +191,10 @@
       "stability": "Experimental",
       "description": "Declared vector-valued construction parameter shape."
     },
+    "rlmesh.Interrupted": {
+      "stability": "Experimental",
+      "description": "KeyboardInterrupt raised by Model.run on Ctrl-C, carrying the RunResult of the episodes that completed."
+    },
     "rlmesh.SandboxBuild": {
       "stability": "Experimental"
     },

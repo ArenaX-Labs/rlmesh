@@ -6,6 +6,10 @@ use async_trait::async_trait;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rlmesh::binding::model::CallerJobs;
+use rlmesh::binding::runtime::spec::EpisodeSummary;
+use rlmesh::binding::runtime::{
+    LogEvent, SessionEndedEvent, SessionFailedEvent, TelemetrySnapshotEvent,
+};
 use rlmesh::binding::{
     ActionReceivedEvent, CancellationToken, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
     ObservationEmittedEvent, RunDirective, RuntimeHooks, SessionStartedEvent, StepCompletedEvent,
@@ -213,5 +217,91 @@ impl RuntimeHooks for PyRunHooks {
         }))
         .await;
         Ok(())
+    }
+}
+
+/// Delegates every event to `inner`, keeping each completed episode's
+/// summary, so a run cut short by Ctrl-C still reports the episodes it
+/// finished.
+pub(crate) struct FinishedEpisodes {
+    inner: Arc<dyn RuntimeHooks>,
+    episodes: Mutex<Vec<EpisodeSummary>>,
+}
+
+impl FinishedEpisodes {
+    pub(crate) fn new(inner: Arc<dyn RuntimeHooks>) -> Self {
+        Self {
+            inner,
+            episodes: Mutex::default(),
+        }
+    }
+
+    /// The summaries kept so far, in completion order.
+    pub(crate) fn take(&self) -> Vec<EpisodeSummary> {
+        std::mem::take(&mut self.episodes.lock().expect("episodes lock poisoned"))
+    }
+}
+
+#[async_trait]
+impl RuntimeHooks for FinishedEpisodes {
+    async fn session_started(&self, event: SessionStartedEvent) -> Result<(), HookError> {
+        self.inner.session_started(event).await
+    }
+
+    async fn episode_started(&self, event: EpisodeStartedEvent) -> Result<(), HookError> {
+        self.inner.episode_started(event).await
+    }
+
+    async fn episode_completed(&self, event: EpisodeCompletedEvent) -> Result<(), HookError> {
+        self.episodes
+            .lock()
+            .expect("episodes lock poisoned")
+            .push(EpisodeSummary {
+                episode_index: event.episode_index,
+                env_index: event.env_index,
+                seed: event.seed,
+                trial_index: event.trial_index,
+                step_count: event.step_count,
+                cumulative_reward: event.cumulative_reward,
+                terminated: event.terminated,
+                truncated: event.truncated,
+                duration_ms: event.duration_ms,
+                success: event.success,
+                predict_ms: event.predict_ms,
+                step_ms: event.step_ms,
+            });
+        self.inner.episode_completed(event).await
+    }
+
+    async fn action_received(&self, event: ActionReceivedEvent) -> Result<(), HookError> {
+        self.inner.action_received(event).await
+    }
+
+    async fn step_completed(&self, event: StepCompletedEvent) -> Result<(), HookError> {
+        self.inner.step_completed(event).await
+    }
+
+    async fn observation_emitted(&self, event: ObservationEmittedEvent) -> Result<(), HookError> {
+        self.inner.observation_emitted(event).await
+    }
+
+    async fn session_ended(&self, event: SessionEndedEvent) -> Result<(), HookError> {
+        self.inner.session_ended(event).await
+    }
+
+    async fn on_telemetry(&self, event: TelemetrySnapshotEvent) -> Result<(), HookError> {
+        self.inner.on_telemetry(event).await
+    }
+
+    async fn session_failed(&self, event: SessionFailedEvent) -> Result<(), HookError> {
+        self.inner.session_failed(event).await
+    }
+
+    async fn log(&self, event: LogEvent) -> Result<(), HookError> {
+        self.inner.log(event).await
+    }
+
+    fn directive(&self) -> RunDirective {
+        self.inner.directive()
     }
 }
