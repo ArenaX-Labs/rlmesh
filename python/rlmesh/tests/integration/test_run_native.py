@@ -740,6 +740,33 @@ def test_hooks_read_roles_off_an_env_at_an_address() -> None:
     assert np.allclose(hooks.value, [0.25, -0.5, 0.75])
 
 
+@pytest.mark.parametrize("path", PATHS)
+def test_a_list_of_hooks_each_sees_every_event_in_order(path: str) -> None:
+    first, second = _Recorder(), _Recorder()
+    model = _model()
+    if path == "native":
+        model.run(CountEnv(episode_len=1), seeds=[7], hooks=[first, second])
+    else:
+        with model.bind(CountEnv(episode_len=1), hooks=[first, second]) as binding:
+            _by_hand(binding, [7])
+    expected = [
+        ("run_start",),
+        ("start", 0, 7),
+        ("step", 0, 0),
+        ("end", 0),
+        ("run_end", 1),
+    ]
+    assert first.calls == expected
+    assert second.calls == expected
+
+
+def test_every_listed_hook_sees_the_run_end_when_one_raises() -> None:
+    raising, after = _raising("on_run_end", _BoomError("end")), _Recorder()
+    with pytest.raises(_BoomError):
+        _model().run(CountEnv(episode_len=1), episodes=1, hooks=[raising, after])
+    assert after.calls[-1] == ("run_end", 1)
+
+
 @pytest.mark.parametrize(
     "hook", ["on_run_start", "on_episode_start", "on_step", "on_episode_end"]
 )

@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
     from .._server import EnvServer
     from ._binding import Binding
-    from ._eval import NativeRunContext, RunHooks, RunResult
+    from ._eval import HooksArg, NativeRunContext, RunHooks, RunResult
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -1331,7 +1331,7 @@ class ModelBase(Generic[ObsT, ActT]):
         episodes: int | None = None,
         max_episode_steps: int | None = None,
         max_episode_seconds: float | None = None,
-        hooks: RunHooks | None = None,
+        hooks: HooksArg = None,
         instruction: str | None = None,
         close_env: bool = False,
         trust_entrypoints: bool | None = None,
@@ -1412,7 +1412,8 @@ class ModelBase(Generic[ObsT, ActT]):
         neither side can run is refused before any episode starts, naming what
         each tier wants and can do.
 
-        ``hooks`` observes the loop: a :class:`~rlmesh.RunHooks` receives the
+        ``hooks`` observes the loop: a :class:`~rlmesh.RunHooks` (or a list of
+        them, each called in order) receives the
         runtime's own events -- episode starts, every step as a
         :class:`~rlmesh.StepEvent` with the terminal flags the runtime knows at
         that step, and episode ends -- in the same per-episode order as a
@@ -1430,7 +1431,10 @@ class ModelBase(Generic[ObsT, ActT]):
         truncates the episodes in flight and the run goes on, and quitting
         truncates them and returns the partial result.
         """
+        from ._eval import as_hooks
+
         self._calls.check_open("run()")
+        run_hooks = as_hooks(hooks)
         # One run at a time (RUN-9): a second run while one is in progress
         # would share this model's per-run state, so it fails at once.
         if not self._run_slot.acquire(blocking=False):
@@ -1445,7 +1449,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 episodes=episodes,
                 max_episode_steps=max_episode_steps,
                 max_episode_seconds=max_episode_seconds,
-                hooks=hooks,
+                hooks=run_hooks,
                 instruction=instruction,
                 close_env=close_env,
                 trust_entrypoints=trust_entrypoints,
@@ -1814,7 +1818,7 @@ class ModelBase(Generic[ObsT, ActT]):
         self,
         target: LocalEnvTarget,
         *,
-        hooks: RunHooks | None = None,
+        hooks: HooksArg = None,
         view: ViewArg = None,
         execution_horizon: int = 1,
         close_env: bool = False,
@@ -1835,7 +1839,9 @@ class ModelBase(Generic[ObsT, ActT]):
         """
         from ._binding import Binding
         from ._connect import classify_env_target
-        from ._eval import check_execution_horizon
+        from ._eval import as_hooks, check_execution_horizon
+
+        hooks = as_hooks(hooks)
 
         self._calls.check_open("bind()")
         declared = self._declared_workflow_edition(workflow_edition)
@@ -2075,7 +2081,7 @@ def run(
     episodes: int | None = None,
     max_episode_steps: int | None = None,
     max_episode_seconds: float | None = None,
-    hooks: RunHooks | None = None,
+    hooks: HooksArg = None,
     instruction: str | None = None,
     close_env: bool = False,
     trust_entrypoints: bool | None = None,

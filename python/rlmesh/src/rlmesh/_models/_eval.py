@@ -433,8 +433,9 @@ class RunContext(Protocol):
 class RunHooks:
     """Observer callbacks for a run; every default is a no-op.
 
-    Subclass and override any subset, then pass an instance as ``hooks=`` to
-    :func:`rlmesh.run`, :meth:`Model.run <rlmesh.Model.run>`, or
+    Subclass and override any subset, then pass an instance (or a list of them,
+    each called in order) as ``hooks=`` to :func:`rlmesh.run`,
+    :meth:`Model.run <rlmesh.Model.run>`, or
     :meth:`Model.bind <rlmesh.Model.bind>`. A run and a binding fire the same
     callbacks in the same per-episode order. Hook exceptions propagate and abort the run with their own
     type; :meth:`on_run_end` still fires exactly once with the completed
@@ -469,6 +470,56 @@ class RunHooks:
         Fires even on an exception or interrupt, with the possibly-partial
         :class:`RunResult` of the episodes that completed.
         """
+
+
+HooksArg = RunHooks | Sequence[RunHooks] | None
+
+
+class _HookList(RunHooks):
+    """Several hooks as one: every callback reaches each hook, in order.
+
+    ``on_run_end`` reaches every hook even when one raises; the first exception
+    is raised after the last hook ran, so each still sees the run end once.
+    """
+
+    def __init__(self, hooks: Sequence[RunHooks]) -> None:
+        self._hooks = tuple(hooks)
+
+    def on_run_start(self, context: RunContext) -> None:
+        for hook in self._hooks:
+            hook.on_run_start(context)
+
+    def on_episode_start(self, *, episode: int, seed: int | None) -> None:
+        for hook in self._hooks:
+            hook.on_episode_start(episode=episode, seed=seed)
+
+    def on_step(self, event: StepEvent) -> None:
+        for hook in self._hooks:
+            hook.on_step(event)
+
+    def on_episode_end(self, result: EpisodeResult) -> None:
+        for hook in self._hooks:
+            hook.on_episode_end(result)
+
+    def on_run_end(self, result: RunResult) -> None:
+        error: BaseException | None = None
+        for hook in self._hooks:
+            try:
+                hook.on_run_end(result)
+            except BaseException as exc:  # re-raised after the last hook
+                error = error or exc
+        if error is not None:
+            raise error
+
+
+def as_hooks(hooks: HooksArg) -> RunHooks | None:
+    """``hooks=`` as one :class:`RunHooks`: a list fans out, in order."""
+    if hooks is None or isinstance(hooks, RunHooks):
+        return hooks
+    listed = tuple(hooks)
+    if not listed:
+        return None
+    return listed[0] if len(listed) == 1 else _HookList(listed)
 
 
 class NativeRunContext:
