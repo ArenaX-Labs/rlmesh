@@ -3,23 +3,23 @@
 //! compatibility path: existing Gym envs and v1 model servers run unchanged
 //! on v2, at v1 throughput.
 //!
-//! - [`exchange`]: the exchange (one `LockstepStep`, one `LockstepReply`),
-//!   the env-side [`Gate`] (epoch, lease token and e-stop
+//! - `exchange`: the exchange (one `LockstepStep`, one `LockstepReply`),
+//!   the env-side `Gate` (epoch, lease token and e-stop
 //!   checked locally per step) and the links: a direct call in one process,
 //!   a Zenoh query on `l/{robot}` otherwise.
-//! - [`map`]: a Gym env as a robot (§12.5): spaces and v1 tags to a robot
+//! - `map`: a Gym env as a robot (§12.5): spaces and v1 tags to a robot
 //!   map, leaf slabs to part slabs and back, bit-exact.
-//! - [`served`]: a served env behind the lockstep exchange ([`GymEnv`] over
-//!   a [`Served`] env, on native values).
-//! - [`client`]: the driver of a lockstep Gym env ([`LockstepClient`]), on
+//! - `served`: a served env behind the lockstep exchange (`GymEnv` over
+//!   a `Served` env, on native values).
+//! - `client`: the driver of a lockstep Gym env (`LockstepClient`), on
 //!   native values.
-//! - [`session`]: attach, declare, arm and one lease grant; addresses
+//! - `session`: attach, declare, arm and one lease grant; addresses
 //!   (participant addresses).
-//! - [`model`]: a model served on a session (`m/{model}`) and the
+//! - `model`: a model served on a session (`m/{model}`) and the
 //!   driver's link to it.
-//! - [`view`]: the Gym view over a v2-native robot (§12.6).
-//! - [`virtual_mode`]: the virtual clock's run loop (§11.3).
-//! - [`record`]: the lockstep tee into the recorder (§13).
+//! - `view`: the Gym view over a v2-native robot (§12.6).
+//! - `virtual_mode`: the virtual clock's run loop (§11.3).
+//! - `record`: the lockstep tee into the recorder (§13).
 //! - [`adapters`]: the v1 adapter engine (resolver and `join` lowering),
 //!   which a v1 `ModelSpec` resolves through on this path, unchanged.
 

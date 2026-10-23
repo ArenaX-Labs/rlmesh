@@ -4,6 +4,9 @@ mod export;
 mod records;
 #[cfg(test)]
 mod tests;
+/// The in-process AV1 writer behind capture (R-25 binding plumbing: the
+/// recorder and the Python binding drive it).
+#[doc(hidden)]
 pub mod video;
 use crate::{Error, Metadata, Result, RunContext, RunHooks, RunResult, Value};
 pub use records::{EpisodeRecord, MediaRef, WorkloadRecord};
@@ -62,7 +65,7 @@ pub struct RecorderCaptureOptions {
     /// Sources to record; absent discovers all, empty records metrics only.
     pub cameras: Option<Vec<String>>,
     /// Explicit context for hand-driven hooks; otherwise adopted from the run.
-    pub session: Option<Arc<dyn RunContext>>,
+    pub binding: Option<Arc<dyn RunContext>>,
     /// Step-info keys containing an env-produced video path.
     pub video_info_keys: Vec<String>,
     /// Include the episodes in reward and success aggregates.
@@ -74,7 +77,7 @@ impl Default for RecorderCaptureOptions {
             task: None,
             config: None,
             cameras: None,
-            session: None,
+            binding: None,
             video_info_keys: vec!["video_artifact_path".into(), "video_url".into()],
             included_in_metrics: true,
         }
@@ -86,7 +89,7 @@ impl std::fmt::Debug for RecorderCaptureOptions {
             .field("task", &self.task)
             .field("config", &self.config)
             .field("cameras", &self.cameras)
-            .field("session", &self.session.as_ref().map(|_| "<context>"))
+            .field("binding", &self.binding.as_ref().map(|_| "<context>"))
             .field("video_info_keys", &self.video_info_keys)
             .field("included_in_metrics", &self.included_in_metrics)
             .finish()

@@ -1429,8 +1429,13 @@ spans (Spaces SPC-31); an engine-specific bridge belongs to its integration
   address types, endpoint-token constants, `remove_stale_socket`; each area
   lists its own).
   `rlmesh::binding` is `#[doc(hidden)]` and semver-exempt, for the in-repo
-  bindings (Python, C ABI). Nothing language-only stays at the crate root, in
-  `rlmesh::prelude` or in a shared module.
+  bindings (Python, C ABI). So is `rlmesh::lockstep`, the v2 session protocol
+  engine behind the `lockstep` feature that the bindings drive; users reach
+  it through the shared `Model`, `Binding` and `EnvServer`. The live viewer
+  engine (`rlmesh::viewer`, behind `View`) and the recorder's AV1 writer
+  (`rlmesh::recorder::video`, behind `Recorder.capture`) are hidden plumbing
+  too: a run and the Python binding drive them. Nothing language-only stays
+  at the crate root, in `rlmesh::prelude` or in a shared module.
 - C: `rlmesh_ext_` functions and `RLMeshExt` types (D-6), such as
   `RLMeshExtCancelToken` and its `rlmesh_ext_cancel_token_*` calls. Two
   exceptions sit on shared types, in every native language, because the
@@ -2932,7 +2937,9 @@ params = { seed = "rlmesh::Session::reset#seed", trial_index = "rlmesh::Session:
   symbolic default or a stub ellipsis; the resolved literal is source-reviewed.
 - `also` inventories individual translation types, helpers and members, never
   a wildcard over a type's future members. `bridges` names R-24 parameters;
-  `translations` cites decisions for deliberate parameter translations.
+  `translations` cites decisions for deliberate parameter translations;
+  `refused` cites the decision (D-4) for a 0.1 keyword Python keeps only to
+  refuse with its 0.2 form, which has no native counterpart.
   `protocol` records C++ detected authoring methods (R-12), `injected` the
   MDL-3/MDL-4 authoring inputs, `collection` the native collection access form,
   and `factory_switch` the R-21 boolean translated into two Rust constructors.

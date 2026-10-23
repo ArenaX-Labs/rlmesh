@@ -1,7 +1,7 @@
 //! In-process AV1 recording: encode HWC frames to an `.mp4` with no ffmpeg.
 //!
-//! [`VideoWriter`] is the recording sink dual of the display sinks: it takes the
-//! same RGB frames the viewer already normalizes (via [`rgb_from_hwc`]),
+//! `VideoWriter` is the recording sink dual of the display sinks: it takes the
+//! same RGB frames the viewer already normalizes (via `rgb_from_hwc`),
 //! encodes them to AV1 with `rav1e` (pure Rust, royalty-free), and muxes the
 //! bitstream into a plain MP4 (`av01` sample entry) as each packet comes out --
 //! streaming, so peak memory is one frame plus the encoder state, never the whole
@@ -228,7 +228,7 @@ struct FrameMsg {
     channels: u32,
 }
 
-/// A [`VideoWriter`] running on its own encoder thread.
+/// A `VideoWriter` running on its own encoder thread.
 ///
 /// `push` hands the frame to a bounded queue and returns immediately, so the
 /// caller (the eval loop) overlaps env stepping and model inference with AV1

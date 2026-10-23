@@ -268,14 +268,14 @@ void options_setters() {
     options.with_task(options.task)
         .with_config(options.config)
         .with_cameras(options.cameras)
-        .with_session(options.session)
+        .with_binding(options.binding)
         .with_video_info_keys(options.video_info_keys)
         .with_included_in_metrics(options.included_in_metrics);
     std::move(options)
         .with_task(options.task)
         .with_config(options.config)
         .with_cameras(options.cameras)
-        .with_session(options.session)
+        .with_binding(options.binding)
         .with_video_info_keys(options.video_info_keys)
         .with_included_in_metrics(options.included_in_metrics);
   }

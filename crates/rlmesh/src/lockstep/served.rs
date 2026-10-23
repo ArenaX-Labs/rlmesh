@@ -1,8 +1,8 @@
 //! The env side of the Gym path (§12.4): a served env behind the lockstep
 //! exchange, on native values.
 //!
-//! [`Served`] is what the env server's adapters answer (their checks,
-//! conformance and env calls, without the v1 messages); [`GymEnv`] puts one
+//! `Served` is what the env server's adapters answer (their checks,
+//! conformance and env calls, without the v1 messages); `GymEnv` puts one
 //! behind the exchange: part slabs become leaf slabs and values and back
 //! (bit-exact), with the lane checks a request needs before it reaches the
 //! env.

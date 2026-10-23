@@ -24,7 +24,7 @@ mod tests;
 pub use bind::Binding;
 pub use hooks::{RunContext, RunHooks};
 pub use options::{BindOptions, RunOptions};
-pub use results::{EpisodeResult, RunResult, StepEvent, TelemetryRow};
+pub use results::{EpisodeResult, RunResult, RunResultSaveOptions, StepEvent, TelemetryRow};
 pub use targets::{EnvTarget, ModelTarget, RANDOM_SAMPLE, RandomSample};
 
 pub(crate) use native::Mode;
@@ -81,7 +81,7 @@ impl Model {
     pub fn bind<'a>(
         &'a self,
         target: impl Into<EnvTarget<'a>>,
-        options: BindOptions,
+        options: BindOptions<'a>,
     ) -> Result<Binding<'a>> {
         Binding::create(self.into(), target.into(), options)
     }
@@ -132,7 +132,7 @@ fn driven(model: ModelTarget<'_>) -> Result<native::Driven<'_>> {
 pub fn bind<'a>(
     model: impl Into<ModelTarget<'a>>,
     env: impl Into<EnvTarget<'a>>,
-    options: BindOptions,
+    options: BindOptions<'a>,
 ) -> Result<Binding<'a>> {
     Binding::create(model.into(), env.into(), options)
 }

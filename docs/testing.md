@@ -200,7 +200,11 @@ Repeat a repaired gate under load with
 lock; do not wrap it again. `run.py` honours `CARGO_TARGET_DIR` and supports
 `--no-build` when reusing native consumers.
 
-For local libclang/header-driver mismatches, run header checks with
-`CC="mise exec zig@0.13.0 -- zig cc" CXX="mise exec zig@0.13.0 -- zig c++"`.
-`RLMESH_PARITY_HEADER_CC` / `RLMESH_PARITY_HEADER_CXX` apply those drivers only
-to parity header extraction when invoking the combined check task.
+The header checks parse `rlmesh.h` and `rlmesh.hpp` with the pinned libclang
+(LLVM 18) against the host compiler's system headers. When those headers are
+newer than libclang can read (GCC 16's libstdc++, a newer libc++), and every
+error is inside them rather than in the RLMesh headers, the check parses again
+against zig 0.13's (also LLVM 18) and prints a `note:` saying so; an error in the
+RLMesh headers fails either way. To choose the driver yourself,
+`RLMESH_PARITY_HEADER_CC` / `RLMESH_PARITY_HEADER_CXX` (for example
+`"mise exec zig@0.13.0 -- zig c++"`) apply only to parity header extraction.

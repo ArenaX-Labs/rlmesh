@@ -91,8 +91,9 @@ impl fmt::Debug for RunOptions<'_> {
 }
 
 /// Options for [`bind`](crate::bind) and [`Model::bind`](crate::Model::bind).
-#[derive(Clone, Debug)]
-pub struct BindOptions {
+///
+/// Build with `..Default::default()`.
+pub struct BindOptions<'h> {
     /// Close a local env (or shut a served one down) with the binding.
     pub close_env: bool,
     /// Actions of each predicted chunk executed before re-planning
@@ -100,15 +101,31 @@ pub struct BindOptions {
     pub execution_horizon: u32,
     /// The workflow edition this binding declares.
     pub workflow_edition: Option<String>,
+    /// Observer callbacks, borrowed for the binding's life: the binding is
+    /// their [`RunContext`](super::RunContext), an episode reset over
+    /// before it ended counts as truncated, and `on_run_end` fires at close.
+    pub hooks: Option<&'h mut dyn RunHooks>,
 }
 
-impl Default for BindOptions {
+impl Default for BindOptions<'_> {
     fn default() -> Self {
         BindOptions {
             close_env: false,
             execution_horizon: 1,
             workflow_edition: None,
+            hooks: None,
         }
+    }
+}
+
+impl fmt::Debug for BindOptions<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BindOptions")
+            .field("close_env", &self.close_env)
+            .field("execution_horizon", &self.execution_horizon)
+            .field("workflow_edition", &self.workflow_edition)
+            .field("hooks", &self.hooks.as_ref().map(|_| "<hooks>"))
+            .finish()
     }
 }
 

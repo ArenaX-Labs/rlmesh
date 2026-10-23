@@ -16,7 +16,7 @@ use super::context::{BatchPredictContext, EpisodeStore, OwnedContext, PredictCon
 use super::policy::{Corners, LoadKey, Policy, SpecArg};
 use super::types::EpisodeInfo;
 use crate::editions::EditionSources;
-use crate::{BindAddress, Error, Kwargs, Result, ServeOptions, Value};
+use crate::{BindAddress, Error, Kwargs, Metadata, Result, ServeOptions, Value};
 
 /// The cap on a `None` drain or close timeout, which a model serve takes
 /// too.
@@ -50,6 +50,10 @@ impl fmt::Debug for ModelOptions {
 /// Options for [`Model::serve`], including cancellation and native extras.
 #[derive(Clone, Debug, Default)]
 pub struct ModelServeOptions {
+    /// The participant the model joins the session at `address` as:
+    /// `serve("lab:7447", name: "policy")` is reached at `lab:7447/policy`.
+    /// `None` reads it off `address` (`"lab:7447/policy"`).
+    pub name: Option<String>,
     /// The transport lifecycle policy; `None` drain and close timeouts take
     /// a 5 s cap.
     pub options: Option<ServeOptions>,
@@ -275,6 +279,16 @@ pub trait DynPolicy: Send {
     ) -> Result<Vec<Value>>;
     /// [`Policy::on_episode_end`].
     fn on_episode_end(&mut self, episode_id: &str) -> Result<()>;
+    /// Whether [`reset_options`](DynPolicy::reset_options) is written
+    /// ([`Policy::RESET_OPTIONS`]); read once, after `load`.
+    fn has_reset_options(&self) -> bool {
+        false
+    }
+    /// [`Policy::reset_options`].
+    fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
+        let _ = episode;
+        Ok(None)
+    }
     /// [`Policy::close`].
     fn close(&mut self) -> Result<()>;
 }
@@ -354,6 +368,14 @@ impl<P: Policy> DynPolicy for Erased<P> {
         self.0.on_episode_end(episode_id)
     }
 
+    fn has_reset_options(&self) -> bool {
+        P::RESET_OPTIONS
+    }
+
+    fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
+        self.0.reset_options(episode)
+    }
+
     fn close(&mut self) -> Result<()> {
         self.0.close()
     }
@@ -391,6 +413,8 @@ pub(crate) struct Resolved {
     pub(crate) type_name: String,
     pub(crate) load_keys: Option<Vec<(String, bool)>>,
     pub(crate) trust_entrypoints: bool,
+    /// Whether the policy adds reset options (read after `load`).
+    pub(crate) reset_options: bool,
 }
 
 impl Resolved {
@@ -439,6 +463,11 @@ impl Core {
         for context in contexts {
             self.store.finish(context);
         }
+    }
+
+    /// The policy's reset options for one episode.
+    pub(crate) fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
+        self.policy.reset_options(episode)
     }
 
     /// `predict` for one row: the policy's own, or a batch of one of
@@ -914,6 +943,7 @@ pub(crate) fn construct(
     let native_chunk = policy.native_chunk();
     check_native_chunk(native_chunk, decl.corners)?;
     let allow_fusion = policy.allow_fusion();
+    let reset_options = policy.has_reset_options();
     let ModelOptions {
         spec,
         on_episode_end,
@@ -932,6 +962,7 @@ pub(crate) fn construct(
         type_name: decl.type_name,
         load_keys: decl.load_keys,
         trust_entrypoints,
+        reset_options,
     };
     let shared = Shared::start(policy, resolved, on_episode_end, on_close)?;
     Ok(Model {
@@ -1163,6 +1194,7 @@ fn serve_blocking(
     dropped: Option<crate::ext::CancelToken>,
 ) -> Result<()> {
     let ModelServeOptions {
+        name,
         options,
         cancel,
         ext,
@@ -1170,6 +1202,12 @@ fn serve_blocking(
     if cancel.as_ref().is_some_and(crate::ext::CancelToken::take) {
         return Err(Error::Cancelled);
     }
+    let participant = match name.as_deref() {
+        Some("") => return Err(Error::invalid_argument("name must not be empty")),
+        Some(name) => format!("{}/{name}", address.trim_end_matches('/')),
+        None => address.to_string(),
+    };
+    let address = participant.as_str();
     shared.admit()?;
     let mut serve = options.unwrap_or_default();
     serve.validate()?;

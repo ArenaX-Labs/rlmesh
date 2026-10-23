@@ -589,7 +589,7 @@ static void recorder_and_runs(const char* root) {
   OK(rlmesh_run_context_new(&cv, &state, &context));
   OK(rlmesh_recorder_new(NULL, &recorder));
   RLMeshRecorderCaptureOptions co = RLMESH_RECORDER_CAPTURE_OPTIONS_INIT;
-  co.session = context;
+  co.binding = context;
   OK(rlmesh_recorder_capture(recorder, "manual", "env", &co, &capture));
   state.lanes = 2;
   assert(rlmesh_run_hooks_on_episode_start(capture, 0, NULL) == RLMESH_ERR_INVALID_ARGUMENT);
@@ -628,7 +628,7 @@ static void recorder_and_runs(const char* root) {
   /* Missing-frame warnings must not abort even when the handler raises. */
   OK(rlmesh_recorder_new(NULL, &recorder));
   const char* missing = "absent";
-  co.session = NULL;
+  co.binding = NULL;
   co.cameras = &missing;
   co.cameras_len = 1;
   OK(rlmesh_recorder_capture(recorder, "warning", "env", &co, &capture));

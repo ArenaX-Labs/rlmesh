@@ -2393,6 +2393,7 @@ struct State {
   OptionalList<std::string> labels{};
   StateSource source = StateSource::Observation;
   std::optional<std::pair<double, double>> clip{};
+  std::optional<std::string> polarity{};
   RLMeshState raw(detail_adapter::Arena& a) const {
     (void)a;
     RLMeshState c = RLMESH_STATE_INIT;
@@ -2498,6 +2499,7 @@ struct State {
       c.clip[0] = clip->first;
       c.clip[1] = clip->second;
     }
+    c.polarity = detail::ptr(polarity);
     return c;
   }
   static State from_raw(const RLMeshState& c) {
@@ -2546,6 +2548,7 @@ struct State {
     }
     v.source = static_cast<StateSource>(c.source);
     if (c.has_clip) v.clip = std::pair<double, double>{c.clip[0], c.clip[1]};
+    if (c.polarity) v.polarity = std::string(c.polarity);
     return v;
   }
 
@@ -2555,7 +2558,7 @@ struct State {
                             decltype(reshape), decltype(container), decltype(fill),
                             decltype(post_rotate), decltype(scale), decltype(offset),
                             decltype(frame), decltype(provenance), decltype(part), decltype(labels),
-                            decltype(source), decltype(clip)>) {
+                            decltype(source), decltype(clip), decltype(polarity)>) {
     return self.role == other.role && self.encoding == other.encoding && self.dim == other.dim &&
            self.index == other.index && self.optional == other.optional &&
            self.range == other.range && self.pad_to == other.pad_to && self.dtype == other.dtype &&
@@ -2563,7 +2566,8 @@ struct State {
            self.fill == other.fill && self.post_rotate == other.post_rotate &&
            self.scale == other.scale && self.offset == other.offset && self.frame == other.frame &&
            self.provenance == other.provenance && self.part == other.part &&
-           self.labels == other.labels && self.source == other.source && self.clip == other.clip;
+           self.labels == other.labels && self.source == other.source && self.clip == other.clip &&
+           self.polarity == other.polarity;
   }
   friend bool operator!=(const State& self, const State& other) noexcept(noexcept(self == other)) {
     return !(self == other);
@@ -2673,6 +2677,8 @@ struct Actuator {
   std::optional<std::string> part{};
   std::optional<AxisValue> offset{};
   OptionalList<std::string> labels{};
+  std::optional<std::string> polarity{};
+  std::optional<double> unit{};
   RLMeshActuator raw(detail_adapter::Arena& a) const {
     (void)a;
     RLMeshActuator c = RLMESH_ACTUATOR_INIT;
@@ -2739,6 +2745,11 @@ struct Actuator {
       c.labels_len = labels->size();
       if (!c.labels) c.labels = a.keep(static_cast<const char*>(nullptr));
     }
+    c.polarity = detail::ptr(polarity);
+    if (unit) {
+      c.has_unit = true;
+      c.unit = *unit;
+    }
     return c;
   }
   static Actuator from_raw(const RLMeshActuator& c) {
@@ -2773,6 +2784,8 @@ struct Actuator {
       for (size_t i = 0; i < c.labels_len; ++i) vals.emplace_back(c.labels[i]);
       v.labels = std::move(vals);
     }
+    if (c.polarity) v.polarity = std::string(c.polarity);
+    if (c.has_unit) v.unit = c.unit;
     return v;
   }
 
@@ -2781,13 +2794,14 @@ struct Actuator {
                             decltype(binary), decltype(scale), decltype(invert),
                             decltype(threshold), decltype(clip), decltype(fill), decltype(optional),
                             decltype(frame), decltype(reference), decltype(part), decltype(offset),
-                            decltype(labels)>) {
+                            decltype(labels), decltype(polarity), decltype(unit)>) {
     return self.role == other.role && self.dim == other.dim && self.encoding == other.encoding &&
            self.range == other.range && self.binary == other.binary && self.scale == other.scale &&
            self.invert == other.invert && self.threshold == other.threshold &&
            self.clip == other.clip && self.fill == other.fill && self.optional == other.optional &&
            self.frame == other.frame && self.reference == other.reference &&
-           self.part == other.part && self.offset == other.offset && self.labels == other.labels;
+           self.part == other.part && self.offset == other.offset && self.labels == other.labels &&
+           self.polarity == other.polarity && self.unit == other.unit;
   }
   friend bool operator!=(const Actuator& self,
                          const Actuator& other) noexcept(noexcept(self == other)) {
@@ -2838,6 +2852,7 @@ struct StateTag {
   std::optional<Tolerant<Provenance>> provenance{};
   std::optional<std::string> part{};
   OptionalList<std::string> labels{};
+  std::optional<std::string> polarity{};
   RLMeshStateTag raw(detail_adapter::Arena& a) const {
     (void)a;
     RLMeshStateTag c = RLMESH_STATE_TAG_INIT;
@@ -2878,6 +2893,7 @@ struct StateTag {
       c.labels_len = labels->size();
       if (!c.labels) c.labels = a.keep(static_cast<const char*>(nullptr));
     }
+    c.polarity = detail::ptr(polarity);
     return c;
   }
   static StateTag from_raw(const RLMeshStateTag& c) {
@@ -2900,16 +2916,18 @@ struct StateTag {
       for (size_t i = 0; i < c.labels_len; ++i) vals.emplace_back(c.labels[i]);
       v.labels = std::move(vals);
     }
+    if (c.polarity) v.polarity = std::string(c.polarity);
     return v;
   }
 
   friend bool operator==(const StateTag& self, const StateTag& other) noexcept(
       detail::nothrow_equal<decltype(role), decltype(encoding), decltype(range), decltype(frame),
-                            decltype(provenance), decltype(part), decltype(labels)>) {
+                            decltype(provenance), decltype(part), decltype(labels),
+                            decltype(polarity)>) {
     return self.role == other.role && self.encoding == other.encoding &&
            self.range == other.range && self.frame == other.frame &&
            self.provenance == other.provenance && self.part == other.part &&
-           self.labels == other.labels;
+           self.labels == other.labels && self.polarity == other.polarity;
   }
   friend bool operator!=(const StateTag& self,
                          const StateTag& other) noexcept(noexcept(self == other)) {
@@ -2948,6 +2966,7 @@ struct Field {
   std::optional<Tolerant<Provenance>> provenance{};
   std::optional<std::string> part{};
   OptionalList<std::string> labels{};
+  std::optional<std::string> polarity{};
   RLMeshField raw(detail_adapter::Arena& a) const {
     (void)a;
     RLMeshField c = RLMESH_FIELD_INIT;
@@ -2989,6 +3008,7 @@ struct Field {
       c.labels_len = labels->size();
       if (!c.labels) c.labels = a.keep(static_cast<const char*>(nullptr));
     }
+    c.polarity = detail::ptr(polarity);
     return c;
   }
   static Field from_raw(const RLMeshField& c) {
@@ -3012,17 +3032,18 @@ struct Field {
       for (size_t i = 0; i < c.labels_len; ++i) vals.emplace_back(c.labels[i]);
       v.labels = std::move(vals);
     }
+    if (c.polarity) v.polarity = std::string(c.polarity);
     return v;
   }
 
   friend bool operator==(const Field& self, const Field& other) noexcept(
       detail::nothrow_equal<decltype(role), decltype(dim), decltype(encoding), decltype(range),
-                            decltype(frame), decltype(provenance), decltype(part),
-                            decltype(labels)>) {
+                            decltype(frame), decltype(provenance), decltype(part), decltype(labels),
+                            decltype(polarity)>) {
     return self.role == other.role && self.dim == other.dim && self.encoding == other.encoding &&
            self.range == other.range && self.frame == other.frame &&
            self.provenance == other.provenance && self.part == other.part &&
-           self.labels == other.labels;
+           self.labels == other.labels && self.polarity == other.polarity;
   }
   friend bool operator!=(const Field& self, const Field& other) noexcept(noexcept(self == other)) {
     return !(self == other);
@@ -3426,17 +3447,34 @@ class ModelSpec {
       : handle_(p, rlmesh_model_spec_free),
         input_(InputNode::from_raw(*rlmesh_model_spec_input(p))),
         output_(Action::from_raw(*rlmesh_model_spec_output(p))) {}
-  ModelSpec(InputNode input, Action output) : input_(std::move(input)), output_(std::move(output)) {
+  // allow names the projections (lossy fits) the spec accepts: drop_action,
+  // select_state, rebind_camera, flip_gripper, convert_units.
+  ModelSpec(InputNode input, Action output, std::vector<std::string> allow = {})
+      : input_(std::move(input)), output_(std::move(output)) {
     detail_adapter::Arena a;
     auto raw_input = input_.raw(a);
     auto raw_output = output_.raw(a);
     RLMeshModelSpec* p = nullptr;
     detail::check_status(rlmesh_model_spec_new(&raw_input, &raw_output, &p));
     handle_ = {p, rlmesh_model_spec_free};
+    if (!allow.empty()) {
+      std::vector<const char*> names;
+      for (const auto& name : allow) names.push_back(name.c_str());
+      RLMeshModelSpec* q = nullptr;
+      detail::check_status(
+          rlmesh_model_spec_with_allow(handle_.get(), names.data(), names.size(), &q));
+      handle_ = {q, rlmesh_model_spec_free};
+    }
   }
   const RLMeshModelSpec* raw() const { return handle_.get(); }
   const InputNode& input() const { return input_; }
   const Action& output() const { return output_; }
+  // The named projections this spec accepts.
+  std::vector<std::string> allow() const {
+    size_t n = 0;
+    const char* const* items = rlmesh_model_spec_allow(raw(), &n);
+    return std::vector<std::string>(items, items + n);
+  }
   Metadata to_dict() const {
     RLMeshValue* p = nullptr;
     detail::check_status(rlmesh_model_spec_to_dict(raw(), &p));
@@ -3860,6 +3898,9 @@ using on_episode_end_lvalue_expression =
     decltype((void)std::declval<T&>().on_episode_end(std::declval<std::string_view&>()));
 template <class T>
 using loaded_native_chunk_expression = decltype((void)std::declval<T&>().loaded_native_chunk());
+template <class T>
+using policy_reset_options_expression =
+    decltype((void)std::declval<T&>().reset_options(std::declval<const InfoDict&>()));
 template <class From, class To, class = void>
 struct ConvertibleTo : std::false_type {};
 template <class From, class To>
@@ -4870,6 +4911,17 @@ struct ModelServeOptions {
   std::optional<ServeOptions> options{};
   std::optional<ext::CancelToken> cancel{};
   std::optional<ext::ModelServeOptions> ext{};
+  // The participant the model joins the session at address as; nullopt reads
+  // it off address.
+  std::optional<std::string> name{};
+  ModelServeOptions& with_name(std::optional<std::string> value) & {
+    name = std::move(value);
+    return *this;
+  }
+  ModelServeOptions with_name(std::optional<std::string> value) && {
+    name = std::move(value);
+    return std::move(*this);
+  }
   ModelServeOptions& with_options(std::optional<ServeOptions> value) & {
     options = std::move(value);
     return *this;
@@ -5274,6 +5326,16 @@ struct PolicyTable {
             },
             RLMESH_ERR_MODEL);
       };
+    if constexpr (detail::is_detected<detail::policy_reset_options_expression, P>)
+      table.reset_options = [](void* u, const RLMeshValue* episode, RLMeshValue** out) noexcept {
+        return detail::callback(
+            [&] {
+              std::optional<InfoDict> options =
+                  (**static_cast<std::shared_ptr<P>*>(u)).reset_options(info(episode));
+              if (options) *out = Value(std::move(*options)).clone_raw();
+            },
+            RLMESH_ERR_MODEL);
+      };
     if constexpr (detail::is_detected<detail::on_episode_end_id_expression, P> ||
                   detail::is_detected<detail::on_episode_end_expression, P>)
       table.on_episode_end = [](void* u, const char* id) noexcept {
@@ -5419,6 +5481,7 @@ class Model {
       c.options = &*so;
     }
     if (options.cancel) c.cancel = options.cancel->raw();
+    c.name = detail::ptr(options.name);
     RLMeshExtModelServeOptions extra = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;
     if (options.ext) {
       extra.token = detail::ptr(options.ext->token);
@@ -5884,6 +5947,36 @@ inline std::string to_string(const TelemetryRow& v) {
   auto p = detail::own<RLMeshTelemetryRow, rlmesh_telemetry_row_free>(v.raw());
   return detail::text(rlmesh_telemetry_row_repr, p.get());
 }
+// The labels of the one workload RunResult::save writes.
+struct RunResultSaveOptions {
+  std::string model = "model";
+  std::string env = "env";
+  std::optional<Metadata> config{};
+  RunResultSaveOptions& with_model(std::string value) & {
+    model = std::move(value);
+    return *this;
+  }
+  RunResultSaveOptions with_model(std::string value) && {
+    model = std::move(value);
+    return std::move(*this);
+  }
+  RunResultSaveOptions& with_env(std::string value) & {
+    env = std::move(value);
+    return *this;
+  }
+  RunResultSaveOptions with_env(std::string value) && {
+    env = std::move(value);
+    return std::move(*this);
+  }
+  RunResultSaveOptions& with_config(std::optional<Metadata> value) & {
+    config = std::move(value);
+    return *this;
+  }
+  RunResultSaveOptions with_config(std::optional<Metadata> value) && {
+    config = std::move(value);
+    return std::move(*this);
+  }
+};
 struct RunResult {
   std::vector<EpisodeResult> episodes{};
   std::vector<TelemetryRow> telemetry{};
@@ -5964,6 +6057,24 @@ struct RunResult {
   std::string format_telemetry() const {
     auto p = detail::own<RLMeshRunResult, rlmesh_run_result_free>(raw());
     return detail::text(rlmesh_run_result_format_telemetry, p.get());
+  }
+  // Writes this result as an rlmesh.result.v1 bundle (a folder, or a zip when
+  // path ends .zip) and returns its path.
+  std::filesystem::path save(const std::filesystem::path& path,
+                             const RunResultSaveOptions& options = {}) const {
+    auto p = detail::own<RLMeshRunResult, rlmesh_run_result_free>(raw());
+    Value cfg(options.config.value_or(Metadata{}));
+    RLMeshRunResultSaveOptions c = RLMESH_RUN_RESULT_SAVE_OPTIONS_INIT;
+    c.model = options.model.c_str();
+    c.env = options.env.c_str();
+    c.config = options.config ? cfg.raw() : nullptr;
+    return detail::text(rlmesh_run_result_save, p.get(), path.string().c_str(), &c);
+  }
+  // The result a one-workload rlmesh.result.v1 bundle (folder or zip) holds.
+  static RunResult load(const std::filesystem::path& path) {
+    RLMeshRunResult* p = nullptr;
+    detail::check_status(rlmesh_run_result_load(path.string().c_str(), &p));
+    return take(p);
   }
 
   friend bool operator==(const RunResult& self, const RunResult& other) noexcept(
@@ -6517,6 +6628,10 @@ struct BindOptions {
   bool close_env = false;
   uint32_t execution_horizon = 1;
   std::optional<std::string> workflow_edition{};
+  // Borrowed for the binding's life: the binding is their run context, an
+  // episode reset over before it ended counts as truncated, and on_run_end
+  // fires at close.
+  RunHooks* hooks = nullptr;
 
   BindOptions& with_close_env(bool value) & {
     close_env = value;
@@ -6540,6 +6655,14 @@ struct BindOptions {
   }
   BindOptions with_workflow_edition(std::optional<std::string> value) && {
     workflow_edition = std::move(value);
+    return std::move(*this);
+  }
+  BindOptions& with_hooks(RunHooks* value) & {
+    hooks = value;
+    return *this;
+  }
+  BindOptions with_hooks(RunHooks* value) && {
+    hooks = value;
     return std::move(*this);
   }
 };
@@ -6572,8 +6695,8 @@ void run_options(C& c, const O& o) {
 }  // namespace detail
 /// A model bound to one env and stepped by hand, as Python's Model.bind.
 class Binding {
-  // Release the C binding before the targets whose pointers it borrows.
-  std::shared_ptr<void> model_keepalive_{}, env_keepalive_{};
+  // Release the C binding before the targets and hooks whose pointers it borrows.
+  std::shared_ptr<void> model_keepalive_{}, env_keepalive_{}, hooks_keepalive_{};
   detail::Owned<RLMeshBinding, rlmesh_binding_free> handle_;
 
  public:
@@ -6582,12 +6705,19 @@ class Binding {
       : model_keepalive_(model.keepalive_),
         env_keepalive_(env.keepalive_),
         handle_(p, rlmesh_binding_free) {}
+  Binding(RLMeshBinding* p, const ModelTarget& model, const EnvTarget& env,
+          std::shared_ptr<void> hooks) noexcept
+      : model_keepalive_(model.keepalive_),
+        env_keepalive_(env.keepalive_),
+        hooks_keepalive_(std::move(hooks)),
+        handle_(p, rlmesh_binding_free) {}
   Binding(Binding&&) noexcept = default;
   Binding& operator=(Binding&& other) noexcept {
     if (this != &other) {
       Binding incoming(std::move(other));
       model_keepalive_.swap(incoming.model_keepalive_);
       env_keepalive_.swap(incoming.env_keepalive_);
+      hooks_keepalive_.swap(incoming.hooks_keepalive_);
       handle_.swap(incoming.handle_);
     }
     return *this;
@@ -6674,9 +6804,12 @@ inline Binding bind(ModelTarget model, EnvTarget target, const BindOptions& opti
   c.close_env = options.close_env;
   c.execution_horizon = options.execution_horizon;
   c.workflow_edition = detail::ptr(options.workflow_edition);
+  std::shared_ptr<RLMeshRunHooks> hooks(detail::hooks(options.hooks).release(),
+                                        rlmesh_run_hooks_free);
+  c.hooks = hooks.get();
   RLMeshBinding* p = nullptr;
   detail::check_status(rlmesh_bind(model.raw(), target.raw(), &c, &p));
-  return Binding(p, model, target);
+  return Binding(p, model, target, std::move(hooks));
 }
 inline Binding Model::bind(EnvTarget target, const BindOptions& options) {
   return rlmesh::bind(*this, std::move(target), options);
@@ -6947,7 +7080,7 @@ struct RecorderCaptureOptions {
   std::optional<std::string> task{};
   std::optional<Metadata> config{};
   OptionalList<std::string> cameras{};
-  std::shared_ptr<RunContext> session{};
+  std::shared_ptr<RunContext> binding{};
   std::vector<std::string> video_info_keys = {"video_artifact_path", "video_url"};
   bool included_in_metrics = true;
   RecorderCaptureOptions& with_task(std::optional<std::string> value) & {
@@ -6974,12 +7107,12 @@ struct RecorderCaptureOptions {
     cameras = std::move(value);
     return std::move(*this);
   }
-  RecorderCaptureOptions& with_session(std::shared_ptr<RunContext> value) & {
-    session = std::move(value);
+  RecorderCaptureOptions& with_binding(std::shared_ptr<RunContext> value) & {
+    binding = std::move(value);
     return *this;
   }
-  RecorderCaptureOptions with_session(std::shared_ptr<RunContext> value) && {
-    session = std::move(value);
+  RecorderCaptureOptions with_binding(std::shared_ptr<RunContext> value) && {
+    binding = std::move(value);
     return std::move(*this);
   }
   RecorderCaptureOptions& with_video_info_keys(std::vector<std::string> value) & {
@@ -7162,9 +7295,9 @@ class Recorder {
     c.video_info_keys = keys.empty() ? &empty : keys.data();
     c.video_info_keys_len = keys.size();
     auto ctx = detail::own<RLMeshRunContext, rlmesh_run_context_free>(nullptr);
-    if (options.session) {
-      ctx = detail::context(options.session);
-      c.session = ctx.get();
+    if (options.binding) {
+      ctx = detail::context(options.binding);
+      c.binding = ctx.get();
     }
     RLMeshRunHooks* p = nullptr;
     detail::check_status(rlmesh_recorder_capture(handle_.get(), std::string(model).c_str(),

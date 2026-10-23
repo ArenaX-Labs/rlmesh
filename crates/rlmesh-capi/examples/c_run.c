@@ -13,7 +13,7 @@ static int failures;
     }                                                                                           \
   } while (0)
 typedef struct State {
-  int resets, steps, closes, starts, ends, episode_ends, hook_steps, frees;
+  int resets, steps, closes, starts, ends, episode_ends, hook_steps, frees, levels;
   bool abort_step;
   RLMeshRunHooks* hooks;
   RLMeshRunContext* context;
@@ -28,6 +28,14 @@ static RLMeshStatus reset(void* ud, const int64_t* seed, const RLMeshValue* opti
   bool has = false;
   int64_t trial = 0;
   CHECK(rlmesh_trial_index(options, NULL, &has, &trial) == RLMESH_OK && has);
+  CHECK(rlmesh_value_dict_contains_key(options, rlmesh_str("level"), &has) == RLMESH_OK);
+  if (has) {
+    const RLMeshValue* level = NULL;
+    int64_t value = 0;
+    CHECK(rlmesh_value_dict_get(options, rlmesh_str("level"), &level) == RLMESH_OK);
+    CHECK(rlmesh_value_as_int(level, &value) == RLMESH_OK && value == 9);
+    ++s->levels;
+  }
   return rlmesh_value_int(0, obs);
 }
 static RLMeshStatus step(void* ud, const RLMeshValue* action, RLMeshValue** obs, double* reward,
@@ -44,6 +52,20 @@ static RLMeshStatus step(void* ud, const RLMeshValue* action, RLMeshValue** obs,
   CHECK(rlmesh_value_dict(&key, vals, 1, info) == RLMESH_OK);
   rlmesh_value_free(success);
   return rlmesh_value_int(1, obs);
+}
+/* The model's reset options: every episode's reset carries level 9. */
+static RLMeshStatus add_level(void* ud, const RLMeshValue* episode, RLMeshValue** out) {
+  (void)ud;
+  bool has = false;
+  CHECK(rlmesh_value_dict_contains_key(episode, rlmesh_str("episode_id"), &has) == RLMESH_OK &&
+        has);
+  RLMeshValue* nine = NULL;
+  CHECK(rlmesh_value_int(9, &nine) == RLMESH_OK);
+  RLMeshStr key = rlmesh_str("level");
+  const RLMeshValue* vals[] = {nine};
+  CHECK(rlmesh_value_dict(&key, vals, 1, out) == RLMESH_OK);
+  rlmesh_value_free(nine);
+  return RLMESH_OK;
 }
 static RLMeshStatus close_env(void* ud) {
   ++((State*)ud)->closes;
@@ -160,6 +182,7 @@ int main(void) {
   RLMeshModelVtable mv = RLMESH_MODEL_VTABLE_INIT;
   mv.predict = predict;
   mv.context_corners = RLMESH_CORNER_PREDICT;
+  mv.reset_options = add_level;
   RLMeshModel* model = NULL;
   CHECK(rlmesh_model_new(&mv, NULL, NULL, &model) == RLMESH_OK);
   RLMeshRunHooksVtable hv = RLMESH_RUN_HOOKS_VTABLE_INIT;
@@ -178,6 +201,7 @@ int main(void) {
   RLMeshRunResult* result = NULL;
   CHECK(rlmesh_model_run(model, rlmesh_env_target(env), &o, &result) == RLMESH_OK);
   CHECK(s.starts == 1 && s.ends == 1 && s.episode_ends == 2 && s.hook_steps == 2 && s.closes == 0);
+  CHECK(s.levels == 2);
   CHECK(rlmesh_run_result_num_episodes(result) == 2 && rlmesh_run_result_total_steps(result) == 2 &&
         rlmesh_run_result_mean_reward(result) == 3.0);
   double rate = 0.0;
@@ -235,11 +259,15 @@ int main(void) {
         result == NULL);
   CHECK(strcmp(rlmesh_last_error_message(), "hook abort") == 0 && s.ends == 2);
   s.abort_step = false;
-  /* A binding: the model's action, then the env's; it holds the env. */
+  /* A binding: the model's action, then the env's; it holds the env and
+   * feeds its hooks, run_start at bind and run_end at close. */
   RLMeshBindOptions bo = RLMESH_BIND_OPTIONS_INIT;
   bo.workflow_edition = rlmesh_current_workflow_edition();
+  bo.hooks = s.hooks;
+  int starts = s.starts, ends = s.ends, episode_ends = s.episode_ends, hook_steps = s.hook_steps;
   RLMeshBinding* binding = NULL;
   CHECK(rlmesh_model_bind(model, rlmesh_env_target(env), &bo, &binding) == RLMESH_OK);
+  CHECK(s.starts == starts + 1 && s.ends == ends);
   CHECK(rlmesh_model_run(model, rlmesh_env_target(env), &o, &result) == RLMESH_ERR_RUNTIME);
   int64_t seed = 2;
   RLMeshValue *obs = NULL, *info = NULL, *seven = NULL, *options = NULL;
@@ -265,6 +293,8 @@ int main(void) {
   CHECK(rlmesh_binding_num_envs(binding, &lanes) == RLMESH_OK && lanes == 1);
   CHECK(rlmesh_binding_close(binding) == RLMESH_OK && s.closes == 0);
   CHECK(rlmesh_binding_close(binding) == RLMESH_OK);
+  CHECK(s.hook_steps == hook_steps + 1 && s.episode_ends == episode_ends + 1 &&
+        s.ends == ends + 1 && rlmesh_run_result_num_episodes(s.retained) == 1);
   CHECK(rlmesh_binding_reset(binding, NULL, options, &obs, &info) == RLMESH_ERR_RUNTIME);
   rlmesh_binding_free(binding);
   rlmesh_value_free(options);

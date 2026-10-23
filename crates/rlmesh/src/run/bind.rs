@@ -7,6 +7,7 @@
 //! drives the binding, so the env only ever runs on its caller's thread.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use super::drive::{
     CallerPort, CallerQueue, CallerSide, LocalEnv, block_on_caller, caller_channel,
@@ -17,7 +18,7 @@ use super::lent::{LentEnv, LentVectorEnv};
 use super::native::OwnedMadeEnv;
 use super::options::{BindOptions, check_horizon};
 use super::targets::{EnvKind, EnvTarget, ModelKind, ModelTarget};
-use super::{LoopbackEnv, RunContext};
+use super::{EpisodeResult, LoopbackEnv, RunContext, RunHooks, RunResult, StepEvent};
 use crate::model::handler::ModelHandler;
 use crate::value::{meta_codec, space_codec};
 use crate::{EnvContract, EnvServer, Error, InfoDict, MadeEnv, Metadata, Result, Value};
@@ -27,6 +28,25 @@ enum Local<'a> {
     Borrowed(LocalEnv<'a>),
     /// Built from a factory at bind and closed with the binding.
     Made(OwnedMadeEnv),
+}
+
+/// The hooks a binding feeds, with the episodes it has seen.
+struct Track<'a> {
+    hooks: &'a mut dyn RunHooks,
+    /// The info keys the binding's edition reads an episode's success from.
+    success_keys: &'static [&'static str],
+    episodes: Vec<EpisodeResult>,
+    index: i64,
+    seed: Option<i64>,
+    steps: i64,
+    reward: f64,
+    started: Instant,
+    predict_ms: Vec<f64>,
+    step_ms: Vec<f64>,
+    /// The latest reset's or step's info.
+    info: InfoDict,
+    /// The observation the next action is predicted from.
+    last: Value,
 }
 
 /// A model bound to one env lane; see [`Model::bind`](crate::Model::bind).
@@ -42,6 +62,7 @@ pub struct Binding<'a> {
     shutdown: Option<&'a EnvServer>,
     close_env: bool,
     done: bool,
+    track: Option<Track<'a>>,
 }
 
 impl std::fmt::Debug for Binding<'_> {
@@ -64,13 +85,14 @@ impl<'a> Binding<'a> {
     pub(crate) fn create(
         model: ModelTarget<'a>,
         env: EnvTarget<'a>,
-        options: BindOptions,
+        options: BindOptions<'a>,
     ) -> Result<Binding<'a>> {
         refuse_in_async_context("bind")?;
         let BindOptions {
             close_env,
             execution_horizon,
             workflow_edition,
+            hooks,
         } = options;
         let context = LibraryContext::new();
         let (handler, edition): (Box<dyn ModelHandler>, _) = match model.0 {
@@ -141,6 +163,7 @@ impl<'a> Binding<'a> {
             shutdown: None,
             close_env,
             done: true,
+            track: None,
         };
         let address = match env.0 {
             EnvKind::Address(address) => address,
@@ -178,6 +201,28 @@ impl<'a> Binding<'a> {
         binding.context.connect(contract.clone());
         binding.contract = Some(contract);
         binding.inner = Some(inner);
+        if let Some(hooks) = hooks {
+            let edition = edition
+                .as_deref()
+                .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
+            let edition =
+                rlmesh_proto::parse_retained_edition(edition).map_err(Error::invalid_argument)?;
+            let track = binding.track.insert(Track {
+                hooks,
+                success_keys: rlmesh_proto::defaults(edition).success_info_keys,
+                episodes: Vec::new(),
+                index: -1,
+                seed: None,
+                steps: 0,
+                reward: 0.0,
+                started: Instant::now(),
+                predict_ms: Vec::new(),
+                step_ms: Vec::new(),
+                info: InfoDict::new(),
+                last: Value::None,
+            });
+            track.hooks.on_run_start(binding.context.clone())?;
+        }
         Ok(binding)
     }
 
@@ -243,15 +288,31 @@ impl<'a> Binding<'a> {
         options: Option<&InfoDict>,
     ) -> Result<(Value, InfoDict)> {
         let options = options.map(meta_codec::metadata_to_wire).transpose()?;
+        if self.inner.is_none() {
+            return Err(closed_error());
+        }
+        self.end_episode(false, true)?;
         let mut inner = self.engine()?;
         let out = self.drive(inner.reset(seed, options));
         self.inner = Some(inner);
         let (observation, info) = out?;
         self.done = false;
-        Ok((
-            space_codec::value_from_space(self.contract().observation_space().wire(), observation)?,
-            info.map_or_else(Metadata::new, meta_codec::metadata_from_wire),
-        ))
+        let observation =
+            space_codec::value_from_space(self.contract().observation_space().wire(), observation)?;
+        let info = info.map_or_else(Metadata::new, meta_codec::metadata_from_wire);
+        if let Some(track) = &mut self.track {
+            track.index += 1;
+            track.seed = seed;
+            track.steps = 0;
+            track.reward = 0.0;
+            track.started = Instant::now();
+            track.predict_ms.clear();
+            track.step_ms.clear();
+            track.info = info.clone();
+            track.last = observation.clone();
+            track.hooks.on_episode_start(track.index, seed)?;
+        }
+        Ok((observation, info))
     }
 
     /// One env step under `action`, or the model's when `None`:
@@ -266,18 +327,84 @@ impl<'a> Binding<'a> {
         let out = self.drive(inner.step(action));
         self.inner = Some(inner);
         let step = out?;
-        self.done = step.terminated || step.truncated;
+        let observation = space_codec::value_from_space(
+            self.contract().observation_space().wire(),
+            step.observation,
+        )?;
+        let info = step
+            .info
+            .map_or_else(Metadata::new, meta_codec::metadata_from_wire);
+        if let Some(track) = &mut self.track {
+            let action = space_codec::value_from_space(
+                self.contract
+                    .as_ref()
+                    .expect("a binding connects at creation")
+                    .action_space()
+                    .wire(),
+                step.action,
+            )?;
+            let before = std::mem::replace(&mut track.last, observation.clone());
+            let predict_ms = step.predict.as_secs_f64() * 1000.0;
+            let step_ms = step.env.as_secs_f64() * 1000.0;
+            track.steps += 1;
+            track.reward += step.reward;
+            track.predict_ms.push(predict_ms);
+            track.step_ms.push(step_ms);
+            track.info = info.clone();
+            let context: Arc<dyn RunContext> = self.context.clone();
+            track.hooks.on_step(&StepEvent {
+                read: super::read::read_fn(context, before.clone()),
+                episode: track.index,
+                seed: track.seed,
+                step: track.steps - 1,
+                observation: before,
+                action,
+                reward: step.reward,
+                terminated: step.terminated,
+                truncated: step.truncated,
+                info: info.clone(),
+                predict_ms,
+                step_ms,
+            })?;
+        }
+        if step.terminated || step.truncated {
+            self.end_episode(step.terminated, step.truncated)?;
+        }
         Ok((
-            space_codec::value_from_space(
-                self.contract().observation_space().wire(),
-                step.observation,
-            )?,
+            observation,
             step.reward,
             step.terminated,
             step.truncated,
-            step.info
-                .map_or_else(Metadata::new, meta_codec::metadata_from_wire),
+            info,
         ))
+    }
+
+    /// Record the episode in flight as ended, once, for the hooks.
+    fn end_episode(&mut self, terminated: bool, truncated: bool) -> Result<()> {
+        if std::mem::replace(&mut self.done, true) {
+            return Ok(());
+        }
+        let Some(track) = &mut self.track else {
+            return Ok(());
+        };
+        let mean = |values: &[f64]| {
+            (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+        };
+        let result = EpisodeResult {
+            index: track.index,
+            seed: track.seed,
+            steps: track.steps,
+            reward: track.reward,
+            terminated,
+            truncated,
+            success: info_success(track.success_keys, &track.info),
+            duration_s: track.started.elapsed().as_secs_f64(),
+            predict_ms: mean(&track.predict_ms),
+            step_ms: mean(&track.step_ms),
+            trial: None,
+        };
+        track.episodes.push(result.clone());
+        track.hooks.on_episode_end(&result)
     }
 
     /// Whether the episode ended (or none started yet).
@@ -290,6 +417,11 @@ impl<'a> Binding<'a> {
         self.contract
             .as_ref()
             .expect("a binding connects at creation")
+    }
+
+    /// The env's render mode (`""` when it declares none).
+    pub fn render_mode(&self) -> &str {
+        self.contract().render_mode().unwrap_or_default()
     }
 
     /// Lanes a binding drives: one.
@@ -340,9 +472,11 @@ impl<'a> Binding<'a> {
             return Ok(());
         };
         refuse_in_async_context("Binding::close")?;
-        self.done = true;
+        self.inner = Some(inner);
+        let ended = self.end_episode(false, true);
+        let inner = self.inner.take().ok_or_else(closed_error)?;
         self.context.close();
-        let mut result = self.drive(inner.close());
+        let mut result = ended.and(self.drive(inner.close()));
         // A lane still waiting on a relayed call fails at once.
         self.queue = caller_channel().1;
         if let Some(server) = self.loopback.take() {
@@ -364,7 +498,15 @@ impl<'a> Binding<'a> {
             Some(Local::Borrowed(LocalEnv::Vector(env))) if self.close_env => env.close(),
             _ => Ok(()),
         };
-        result.and(closed)
+        let mut result = result.and(closed);
+        if let Some(track) = self.track.take() {
+            let episodes = track.episodes;
+            result = result.and(track.hooks.on_run_end(&RunResult {
+                episodes,
+                ..RunResult::default()
+            }));
+        }
+        result
     }
 }
 
@@ -384,6 +526,18 @@ impl Drop for Binding<'_> {
         }
         let _ = self.close();
     }
+}
+
+/// The task outcome in an episode's last info, read as the native loop reads
+/// it: the first of `keys` holding a bool, integer or number decides
+/// (numbers by non-zero); `None` when none does.
+fn info_success(keys: &[&str], info: &InfoDict) -> Option<bool> {
+    keys.iter().find_map(|key| match info.get(key)? {
+        Value::Bool(flag) => Some(*flag),
+        Value::Int(value) => Some(*value != 0),
+        Value::Float(value) => Some(*value != 0.0),
+        _ => None,
+    })
 }
 
 /// The edition a model with no declaration of its own (served, or the random

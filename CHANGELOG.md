@@ -60,6 +60,7 @@ The `rlmesh` facade crate now exposes spaces, values, envs, models, runs and ses
 - `ServeOptions` holds shared serving configuration: its `token`, `predict_concurrency` and `peer_info_extra` moved to `ext::EnvServerOptions` and `ext::ModelServeOptions`.
 - `RemoteEnv` and `RemoteVectorEnv` are built from `RemoteEnvOptions` and connect at `new`; an endpoint token is sent as `RemoteEnvOptions::api_key`.
 - `Error` has one variant per error class and is `#[non_exhaustive]`: `Address` became `InvalidArgument`, `Server` became `Internal`, and `Protocol`, `Type`, `Runtime`, `Os` and `Cancelled` are new. `Error::class()` returns the exact `ErrorClass` (with `is_subclass_of` testing the class hierarchy). Error classes and rendered text (`Display`, last-error messages, `what()` and exception strings) are the same in every RLMesh language. `ErrorCode` gains `Unsupported`.
+- `BindOptions` borrows its new `hooks` for the binding's life, so it carries a lifetime (`BindOptions<'h>`) and is no longer `Clone`. `recorder::RecorderCaptureOptions::session` is `binding`.
 
 #### C
 
@@ -77,11 +78,13 @@ The experimental C API moves to **ABI generation 6** (`RLMESH_ABI_VERSION` 6, SO
 - `rlmesh_abi_version_major/minor/patch` and the `RLMESH_ABI_VERSION_MAJOR/MINOR/PATCH` macros are removed; read the package version from `RLMESH_VERSION` or `rlmesh_build_info`.
 - Every options, vtable and attributes struct carries `struct_size` with `_INIT` and `_MIN_SIZE` macros: start from the `_INIT` macro (or pass NULL for defaults). A zero-initialized struct, a size below the minimum and nonzero unknown trailing bytes are refused, and input bool fields must hold 0 or 1. Enums reserve `INVALID = 0`.
 - Errors distinguish classes: a wrong-kind value or space read returns `RLMESH_ERR_TYPE` instead of `RLMESH_ERR_INVALID_VALUE`, which is deprecated and no longer returned; a malformed tensor or non-UTF-8 text is `RLMESH_ERR_INVALID_ARGUMENT`; a server-side failure (a failed bind) is `RLMESH_ERR_INTERNAL` instead of `RLMESH_ERR_TRANSPORT`, which is renamed `RLMESH_ERR_CONNECTION` and kept as a deprecated alias; a protocol failure is `RLMESH_ERR_PROTOCOL` instead of `RLMESH_ERR_INTERNAL`. `rlmesh_last_error_message` reports the error text: the `connection error:`, `environment error:`, `model error:` and `internal error:` prefixes are gone, environment and model errors read `[CODE] message`, and a timeout reads `operation timed out after 5s`. `rlmesh_last_error_is_recoverable` is nonzero only for a recoverable environment or model error, no longer for a timeout or connection failure.
+- `RLMeshRecorderCaptureOptions::session` is `binding`: the field a live capture reads its binding's run context from.
 
 #### C++
 
 - `rlmesh::Binding` (`Model::bind`, `rlmesh::bind`) replaces `rlmesh::Session` and `rlmesh::session`, and `Model::from_address` replaces `rlmesh::RemoteModel`, as in C.
 - `rlmesh.hpp` keeps its C++17 minimum and now requires exceptions (`#error` otherwise); `-fno-exceptions` builds are no longer supported. `Result<T>`, `Error`, `RLMESH_TRY`, the aborting `value()` / `unwrap()` accessors, `ValueRef`, `SpaceRef`, the worker `Batch` / `Request`, `RunReport` and the ABI-4 wrapper types are removed. Fallible calls return their value and throw the corresponding exception class instead (see Added); write `try` / `catch` where you checked a `Result`. A `Model` is built from a policy or callable whose `predict` takes and returns `rlmesh::Value`, and options are aggregates with named fields and `std::chrono::duration<double>` durations that drop the `_seconds` suffix (`max_episode_seconds` becomes `max_episode`).
+- `RecorderCaptureOptions::session` (`with_session`) is `binding` (`with_binding`), as in C and Rust.
 
 ### Added
 
@@ -137,6 +140,7 @@ The experimental C API moves to **ABI generation 6** (`RLMESH_ABI_VERSION` 6, SO
 - `rlmesh::build_info()` returns `rlmesh::BuildInfo` (`version`, `protocol_generation`, `workflow_edition`, `workflow_edition_base`, `supported_workflow_editions`, `build_cohort`, `build_source` as the `BuildSource` enum, and `git` as an `Option`), with a structured `Display` representation; `rlmesh::VERSION`, `DESCRIBE_METADATA_KEY` and `DESCRIBE_SCHEMA_VERSION` (an `i64`) join `ENV_RESET_OPTIONS_KEY` at the root.
 - Remote env calls check closed state before subscribing to cancellation, returning `RuntimeError` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` return busy `RuntimeError`.
 - Remote and session calls, including run completion hooks, synchronously check cancellation when completing their result processing. A firing before completion returns `Cancelled`, even when the polling watcher has not run; a retained run hook error still wins. A firing after completion remains pending when the token is idle.
+- `RunResult::save` (with `RunResultSaveOptions`) and `RunResult::load`, `BindOptions::hooks`, `Binding::render_mode`, `ModelServeOptions::name`, and `Policy::reset_options` with its `RESET_OPTIONS` declaration, as in Python. A binding's hooks see it as their `RunContext`; an episode reset over before it ended is recorded truncated, and `on_run_end` fires at close.
 
 #### C
 
@@ -161,6 +165,7 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 - View and Recorder: `RLMeshView` with default display settings, `rlmesh_view_parse`, `_validate`, `_equals` and `_repr` (a hold accepts any finite nonnegative number of seconds), copied into run and session options; `RLMeshRecorder` with completed-run recording, live capture hooks (`rlmesh_recorder_capture`) that also work with manual hook dispatch, folder and ZIP export, and immutable `RLMeshWorkloadRecord`, `RLMeshEpisodeRecord` and `RLMeshMediaRef` snapshots.
 - Remote env calls check closed state before subscribing to cancellation, returning `RLMESH_ERR_RUNTIME` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` return `RLMESH_ERR_RUNTIME`.
 - Session and remote calls synchronously check cancellation through result processing, including the original calls using handle tokens and the explicit per-call variants. A firing before completion returns `RLMESH_ERR_CANCELLED`, subject to run hook error precedence; an idle firing after completion remains pending.
+- `rlmesh_run_result_save` (with `RLMeshRunResultSaveOptions`) and `rlmesh_run_result_load`; `RLMeshBindOptions::hooks`, borrowed until the binding is freed and fed as a run feeds them; `RLMeshModelServeOptions::name`; `RLMeshModelVtable::reset_options`; `rlmesh_model_spec_with_allow` and `rlmesh_model_spec_allow`; `polarity` on `RLMeshState`, `RLMeshStateTag`, `RLMeshField` and `RLMeshActuator`, and `has_unit`/`unit` on `RLMeshActuator`. Each appended field sits past its struct's ABI 5 `MIN_SIZE`, so an older caller's shorter struct reads it as unset.
 
 #### C++
 
@@ -175,6 +180,7 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 - `spaces::Dict::spaces()` returns the child spaces in order, sharing their sampler handles.
 - Remote env calls check closed state before subscribing to cancellation, throwing `RuntimeError` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` throw `RuntimeError`.
 - Session and remote calls synchronously check cancellation through result processing, including the original calls using handle tokens and the `rlmesh::ext` per-call overloads. A firing before completion throws `ext::CancelledError`, subject to run hook error precedence; an idle firing after completion remains pending.
+- `RunResult::save(path, RunResultSaveOptions)` and `RunResult::load(path)`, `BindOptions::hooks` (with `with_hooks`) feeding `RunHooks` from a binding, `ModelServeOptions::name` for the participant name a model serves under, `ModelSpec(input, output, allow)` with `allow()`, `polarity` on `State`, `StateTag`, `Field` and `Actuator` and `unit` on `Actuator`, and a policy's `reset_options(episode)` (detected, as `on_episode_end` is), as in Python.
 
 #### C#
 

@@ -350,6 +350,12 @@ pub(crate) unsafe fn parse_state(p: *const RLMeshState) -> Result<a::State, Capi
             "RLMeshState reserved bytes must be zero",
         ));
     }
+    #[cfg(target_pointer_width = "32")]
+    if v._reserved9.iter().any(|&b| b != 0) {
+        return Err(CapiError::type_error(
+            "RLMeshState reserved bytes must be zero",
+        ));
+    }
     let value = a::State {
         role: unsafe { required(v.role, "role") }?,
         encoding: unsafe {
@@ -409,7 +415,7 @@ pub(crate) unsafe fn parse_state(p: *const RLMeshState) -> Result<a::State, Capi
         labels: unsafe { strings(v.labels, v.labels_len) }?,
         source: enum_state_source(v.source)?,
         clip: v.has_clip.then_some((v.clip[0], v.clip[1])),
-        polarity: None,
+        polarity: unsafe { ffi::text(v.polarity) }?,
     };
     Ok(value)
 }
@@ -609,6 +615,18 @@ pub(crate) unsafe fn parse_actuator(p: *const RLMeshActuator) -> Result<a::Actua
             "RLMeshActuator reserved bytes must be zero",
         ));
     }
+    #[cfg(target_pointer_width = "64")]
+    if v._reserved9.iter().any(|&b| b != 0) {
+        return Err(CapiError::type_error(
+            "RLMeshActuator reserved bytes must be zero",
+        ));
+    }
+    #[cfg(target_pointer_width = "32")]
+    if v._reserved8.iter().any(|&b| b != 0) {
+        return Err(CapiError::type_error(
+            "RLMeshActuator reserved bytes must be zero",
+        ));
+    }
     let value = a::Actuator {
         role: unsafe { ffi::text(v.role) }?,
         dim: v.dim,
@@ -650,8 +668,8 @@ pub(crate) unsafe fn parse_actuator(p: *const RLMeshActuator) -> Result<a::Actua
             )
         }?,
         labels: unsafe { strings(v.labels, v.labels_len) }?,
-        polarity: None,
-        unit: None,
+        polarity: unsafe { ffi::text(v.polarity) }?,
+        unit: v.has_unit.then_some(v.unit),
     };
     Ok(value)
 }
@@ -744,6 +762,12 @@ pub(crate) unsafe fn parse_state_tag(p: *const RLMeshStateTag) -> Result<a::Stat
             "RLMeshStateTag reserved bytes must be zero",
         ));
     }
+    #[cfg(target_pointer_width = "32")]
+    if v._reserved4.iter().any(|&b| b != 0) {
+        return Err(CapiError::type_error(
+            "RLMeshStateTag reserved bytes must be zero",
+        ));
+    }
     let value = a::StateTag {
         role: unsafe { required(v.role, "role") }?,
         encoding: unsafe {
@@ -767,7 +791,7 @@ pub(crate) unsafe fn parse_state_tag(p: *const RLMeshStateTag) -> Result<a::Stat
         },
         part: unsafe { ffi::text(v.part) }?,
         labels: unsafe { strings(v.labels, v.labels_len) }?,
-        polarity: None,
+        polarity: unsafe { ffi::text(v.polarity) }?,
     };
     Ok(value)
 }
@@ -828,6 +852,12 @@ pub(crate) unsafe fn parse_field(p: *const RLMeshField) -> Result<a::Field, Capi
             "RLMeshField reserved bytes must be zero",
         ));
     }
+    #[cfg(target_pointer_width = "32")]
+    if v._reserved4.iter().any(|&b| b != 0) {
+        return Err(CapiError::type_error(
+            "RLMeshField reserved bytes must be zero",
+        ));
+    }
     let value = a::Field {
         role: unsafe { ffi::text(v.role) }?,
         dim: v.dim,
@@ -852,7 +882,7 @@ pub(crate) unsafe fn parse_field(p: *const RLMeshField) -> Result<a::Field, Capi
         },
         part: unsafe { ffi::text(v.part) }?,
         labels: unsafe { strings(v.labels, v.labels_len) }?,
-        polarity: None,
+        polarity: unsafe { ffi::text(v.polarity) }?,
     };
     Ok(value)
 }

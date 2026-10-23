@@ -543,3 +543,67 @@ def test_factory_host_extension_is_c_only(language):
     assert extension_scope(
         prefix + "EnvFactoryServeOptions::ext", language, Item("field")
     ) == (language == "c")
+
+
+def test_a_keyword_kept_only_to_refuse_needs_a_decision_not_a_mapping():
+    expected, manifest, surfaces = fixture()
+    expected["rlmesh:run"]["params"]["session"] = "None"
+    manifest["rlmesh:run"]["parameters"]["session"] = {"default": "None"}
+    assert any(
+        "parameter session has no mapping" in e
+        for e in check(expected, manifest, surfaces)
+    )
+    for lang in ("rust", "c", "cpp"):
+        manifest["rlmesh:run"][lang]["refused"] = {"session": ["D-4"]}
+    assert check(expected, manifest, surfaces) == []
+    for lang in ("rust", "c", "cpp"):
+        manifest["rlmesh:run"][lang]["refused"] = {"session": ["D-999"]}
+    assert any(
+        "parameter session has no mapping" in e
+        for e in check(expected, manifest, surfaces)
+    )
+
+
+def test_gymnasium_only_env_members_are_bridges():
+    from rlmesh_api_surface.parity import bridge_scope
+
+    assert bridge_scope("rlmesh:RemoteVectorEnv.closed")
+    assert bridge_scope("rlmesh:RemoteEnv.spec")
+    assert not bridge_scope("rlmesh:RemoteEnv.reset")
+
+
+def test_a_header_libclang_cannot_read_through_host_headers_parses_through_zig(
+    monkeypatch, capsys
+):
+    from pathlib import Path
+
+    from rlmesh_api_surface import header_surface as hs
+
+    calls = []
+
+    def parse_with(path, config, compiler):
+        calls.append(compiler)
+        if compiler != hs.FALLBACK_DRIVERS["c++"]:
+            raise hs._ParseError("system header error", in_system_headers=True)
+        return "parsed"
+
+    monkeypatch.setattr(hs, "_parse_with", parse_with)
+    config = hs.HeaderSurfaceConfig(
+        header="include/rlmesh.hpp",
+        language="c++",
+        standard="c++17",
+        stability="experimental",
+        namespace="rlmesh",
+        source_repo="",
+        source_commit=None,
+    )
+    assert hs._parse(Path("include/rlmesh.hpp"), config) == "parsed"
+    assert calls[-1] == hs.FALLBACK_DRIVERS["c++"]
+    assert "parsed it against mise exec zig@0.13.0" in capsys.readouterr().err
+
+    def own_error(path, config, compiler):
+        raise hs._ParseError("error in rlmesh.hpp", in_system_headers=False)
+
+    monkeypatch.setattr(hs, "_parse_with", own_error)
+    with pytest.raises(hs._ParseError, match=r"rlmesh\.hpp"):
+        hs._parse(Path("include/rlmesh.hpp"), config)

@@ -1046,6 +1046,9 @@ namespace RLMesh.Interop
 
         [NativeTypeName("double[2]")]
         public fixed double clip[2];
+
+        [NativeTypeName("const char *")]
+        public sbyte* polarity;
     }
 
     internal unsafe partial struct RLMeshConcat
@@ -1256,6 +1259,17 @@ namespace RLMesh.Interop
 
         [NativeTypeName("size_t")]
         public UIntPtr labels_len;
+
+        [NativeTypeName("const char *")]
+        public sbyte* polarity;
+
+        [NativeTypeName("_Bool")]
+        public byte has_unit;
+
+        [NativeTypeName("uint8_t[7]")]
+        public fixed byte _reserved9[7];
+
+        public double unit;
     }
 
     internal unsafe partial struct RLMeshAction
@@ -1355,6 +1369,9 @@ namespace RLMesh.Interop
 
         [NativeTypeName("size_t")]
         public UIntPtr labels_len;
+
+        [NativeTypeName("const char *")]
+        public sbyte* polarity;
     }
 
     internal unsafe partial struct RLMeshTextTag
@@ -1428,6 +1445,9 @@ namespace RLMesh.Interop
 
         [NativeTypeName("size_t")]
         public UIntPtr labels_len;
+
+        [NativeTypeName("const char *")]
+        public sbyte* polarity;
     }
 
     internal unsafe partial struct RLMeshSplit
@@ -2011,6 +2031,9 @@ namespace RLMesh.Interop
 
         [NativeTypeName("size_t")]
         public UIntPtr load_keys_len;
+
+        [NativeTypeName("RLMeshStatus (*)(void *, const RLMeshValue *, RLMeshValue **)")]
+        public IntPtr reset_options;
     }
 
     internal unsafe partial struct RLMeshModelOptions
@@ -2074,6 +2097,9 @@ namespace RLMesh.Interop
 
         [NativeTypeName("const RLMeshExtModelServeOptions *")]
         public RLMeshExtModelServeOptions* ext;
+
+        [NativeTypeName("const char *")]
+        public sbyte* name;
     }
 
     [NativeTypeName("unsigned int")]
@@ -2258,6 +2284,21 @@ namespace RLMesh.Interop
 
         [NativeTypeName("size_t")]
         public UIntPtr advisories_len;
+    }
+
+    internal unsafe partial struct RLMeshRunResultSaveOptions
+    {
+        [NativeTypeName("size_t")]
+        public UIntPtr struct_size;
+
+        [NativeTypeName("const char *")]
+        public sbyte* model;
+
+        [NativeTypeName("const char *")]
+        public sbyte* env;
+
+        [NativeTypeName("const RLMeshValue *")]
+        public RLMeshValue* config;
     }
 
     internal partial struct RLMeshReadItem
@@ -2500,6 +2541,8 @@ namespace RLMesh.Interop
 
         [NativeTypeName("uint8_t[3]")]
         public fixed byte _reserved[3];
+
+        public RLMeshRunHooks* hooks;
     }
 
     internal partial struct RLMeshRemoteEnv
@@ -2631,7 +2674,7 @@ namespace RLMesh.Interop
         public UIntPtr cameras_len;
 
         [NativeTypeName("const RLMeshRunContext *")]
-        public RLMeshRunContext* session;
+        public RLMeshRunContext* binding;
 
         [NativeTypeName("const char *const *")]
         public sbyte** video_info_keys;
@@ -3322,6 +3365,13 @@ namespace RLMesh.Interop
         public static extern RLMeshAction* rlmesh_model_spec_output([NativeTypeName("const RLMeshModelSpec *")] RLMeshModelSpec* spec);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern RLMeshStatus rlmesh_model_spec_with_allow([NativeTypeName("const RLMeshModelSpec *")] RLMeshModelSpec* spec, [NativeTypeName("const char *const *")] sbyte** allow, [NativeTypeName("size_t")] UIntPtr allow_len, RLMeshModelSpec** @out);
+
+        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [return: NativeTypeName("const char *const *")]
+        public static extern sbyte** rlmesh_model_spec_allow([NativeTypeName("const RLMeshModelSpec *")] RLMeshModelSpec* spec, [NativeTypeName("size_t *")] UIntPtr* out_len);
+
+        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern RLMeshStatus rlmesh_env_tags_new([NativeTypeName("const RLMeshObsNode *")] RLMeshObsNode* observation, [NativeTypeName("const RLMeshAction *")] RLMeshAction* action, RLMeshEnvTags** @out);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -3798,6 +3848,12 @@ namespace RLMesh.Interop
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         [return: NativeTypeName("_Bool")]
         public static extern byte rlmesh_run_result_equals([NativeTypeName("const RLMeshRunResult *")] RLMeshRunResult* a, [NativeTypeName("const RLMeshRunResult *")] RLMeshRunResult* b);
+
+        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern RLMeshStatus rlmesh_run_result_save([NativeTypeName("const RLMeshRunResult *")] RLMeshRunResult* run_result, [NativeTypeName("const char *")] sbyte* path, [NativeTypeName("const RLMeshRunResultSaveOptions *")] RLMeshRunResultSaveOptions* options, RLMeshBytes* @out);
+
+        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern RLMeshStatus rlmesh_run_result_load([NativeTypeName("const char *")] sbyte* path, RLMeshRunResult** @out);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern RLMeshStatus rlmesh_telemetry_row_new([NativeTypeName("const char *")] sbyte* op, [NativeTypeName("const char *")] sbyte* component, [NativeTypeName("const char *")] sbyte* metric, [NativeTypeName("const char *")] sbyte* unit, [NativeTypeName("int64_t")] long count, double avg, double p50, double p95, double p99, RLMeshTelemetryRow** @out);

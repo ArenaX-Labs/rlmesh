@@ -365,6 +365,46 @@ pub unsafe extern "C" fn rlmesh_model_spec_new(
         }
     })
 }
+/// The same spec accepting the named projections in `allow` (Rust's
+/// `ModelSpec::with_allow`); a fresh handle in `*out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_with_allow(
+    spec: *const RLMeshModelSpec,
+    allow: *const *const c_char,
+    allow_len: usize,
+    out: *mut *mut RLMeshModelSpec,
+) -> RLMeshStatus {
+    guard(|| {
+        unsafe {
+            /* SAFETY: the FFI caller supplies valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let spec = unsafe { spec.as_ref() }
+            .ok_or_else(|| CapiError::invalid_arg("null RLMeshModelSpec"))?;
+        let allow = unsafe { strings(allow, allow_len) }?.unwrap_or_default();
+        let value = spec.0.clone().with_allow(allow);
+        unsafe {
+            /* SAFETY: the FFI caller supplies valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshModelSpec::new(value))))
+        }
+    })
+}
+/// The named projections the spec accepts, borrowed for the spec's lifetime;
+/// `*out_len` receives their count. NULL spec yields NULL and 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_allow(
+    p: *const RLMeshModelSpec,
+    out_len: *mut usize,
+) -> *const *const c_char {
+    guard_value(std::ptr::null(), || {
+        let (items, len) =
+            unsafe { p.as_ref() }.map_or((std::ptr::null(), 0), |p| (p.1.allow, p.1.allow_len));
+        if let Some(out_len) = unsafe { out_len.as_mut() } {
+            *out_len = len;
+        }
+        items
+    })
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_env_tags_new(
     input: *const RLMeshObsNode,

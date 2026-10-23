@@ -27,6 +27,7 @@ pub struct RLMeshBindOptions {
     pub execution_horizon: u32,
     pub close_env: bool,
     pub _reserved: [u8; 3],
+    pub hooks: *mut crate::run_hooks::RLMeshRunHooks,
 }
 // Stable allocations hold the local envs a Binding<'static> borrows. Only
 // the binding touches them; it drops first, then the gates stop and drain
@@ -127,9 +128,20 @@ impl Drop for Backing {
         }
     }
 }
+/// The hooks a binding borrows, freed after the binding drops.
+struct HooksBox(*mut crate::run_hooks::BoundHooks);
+// SAFETY: BoundHooks is Send; only the binding (under its lock) touches it.
+unsafe impl Send for HooksBox {}
+impl Drop for HooksBox {
+    fn drop(&mut self) {
+        drop(unsafe { Box::from_raw(self.0) });
+    }
+}
 struct State {
     binding: Option<rlmesh::Binding<'static>>,
     backing: Backing,
+    /// Dropped after `binding` (whose close fires `on_run_end`).
+    _hooks: Option<HooksBox>,
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -233,6 +245,7 @@ pub unsafe extern "C" fn rlmesh_bind(
             write_out(out, std::ptr::null_mut())
         }?;
         let mut options = rlmesh::BindOptions::default();
+        let mut hooks = None;
         if let Some(o) = unsafe { sizing::read(o, "RLMeshBindOptions") }? {
             if o._reserved != [0; 3] {
                 return Err(CapiError::type_error("reserved bind bytes must be zero"));
@@ -240,6 +253,14 @@ pub unsafe extern "C" fn rlmesh_bind(
             options.close_env = o.close_env;
             options.execution_horizon = o.execution_horizon;
             options.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
+            if !o.hooks.is_null() {
+                let bound = HooksBox(Box::into_raw(Box::new(unsafe {
+                    crate::run_hooks::BoundHooks::new(o.hooks)
+                })));
+                // SAFETY: the box outlives the binding (State drops it after).
+                options.hooks = Some(unsafe { &mut *bound.0 });
+                hooks = Some(bound);
+            }
         }
         let model = unsafe { crate::run_api::model(m) }?;
         let backing = unsafe { Backing::new(e) }?;
@@ -254,6 +275,7 @@ pub unsafe extern "C" fn rlmesh_bind(
                     state: Arc::new(Mutex::new(State {
                         binding: Some(binding),
                         backing,
+                        _hooks: hooks,
                     })),
                 })),
             )
@@ -401,9 +423,7 @@ pub extern "C" fn rlmesh_binding_render_mode(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let mode = with(p, |b| {
-            Ok(b.contract().render_mode().unwrap_or_default().to_string())
-        })?;
+        let mode = with(p, |b| Ok(b.render_mode().to_string()))?;
         ffi::bytes(out, mode)
     })
 }

@@ -47,7 +47,7 @@ pub struct RLMeshRecorderCaptureOptions {
     pub config: *const RLMeshValue,
     pub cameras: *const *const c_char,
     pub cameras_len: usize,
-    pub session: *const RLMeshRunContext,
+    pub binding: *const RLMeshRunContext,
     pub video_info_keys: *const *const c_char,
     pub video_info_keys_len: usize,
     pub included_in_metrics: bool,
@@ -189,7 +189,7 @@ pub unsafe extern "C" fn rlmesh_recorder_capture(
             opts.task = unsafe { ffi::text(o.task) }?;
             opts.config = ffi::dict(o.config)?;
             opts.cameras = unsafe { strings(o.cameras, o.cameras_len, "cameras") }?;
-            opts.session = unsafe { o.session.as_ref() }.map(|c| Arc::clone(&c.0));
+            opts.binding = unsafe { o.binding.as_ref() }.map(|c| Arc::clone(&c.0));
             if let Some(keys) =
                 unsafe { strings(o.video_info_keys, o.video_info_keys_len, "video_info_keys") }?
             {

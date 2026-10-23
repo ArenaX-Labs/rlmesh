@@ -5,6 +5,7 @@
 #include <cstring>
 #include <future>
 #include <iostream>
+#include <random>
 #include <rlmesh.hpp>
 #include <thread>
 #include <type_traits>
@@ -219,6 +220,36 @@ void runs_and_bindings() {
     }
   }
   {
+    // A binding feeds hooks as a run does; a reset over a live episode truncates it.
+    struct Seen : RunHooks {
+      std::vector<std::string> calls;
+      void on_run_start(std::shared_ptr<RunContext> c) override {
+        calls.push_back("start " + std::to_string(c->num_envs()));
+      }
+      void on_episode_start(int64_t episode, std::optional<int64_t>) override {
+        calls.push_back("episode " + std::to_string(episode));
+      }
+      void on_step(const StepEvent& e) override {
+        calls.push_back("step " + std::to_string(e.step));
+      }
+      void on_episode_end(const EpisodeResult& r) override {
+        calls.push_back("end " + std::to_string(r.steps) + (r.truncated ? " truncated" : ""));
+      }
+      void on_run_end(const RunResult& r) override {
+        calls.push_back("run_end " + std::to_string(r.num_episodes()));
+      }
+    } seen;
+    {
+      auto b = model.bind(env, rlmesh::BindOptions{}.with_hooks(&seen));
+      b.reset(0);
+      b.step();
+      b.reset(1);
+    }
+    assert(
+        (seen.calls == std::vector<std::string>{"start 1", "episode 0", "step 0", "end 1 truncated",
+                                                "episode 1", "end 0 truncated", "run_end 2"}));
+  }
+  {
     ext::CancelToken token;
     auto token_copy = [&] {
       auto local = token;
@@ -280,6 +311,26 @@ void runs_and_bindings() {
   b.reset();
   b.step();
   assert(*seen == 3);
+  // A policy's reset_options reach the env's reset.
+  struct Levelled {
+    Value predict(const Value&) { return Value(0); }
+    std::optional<InfoDict> reset_options(const InfoDict& episode) {
+      assert(episode.contains_key("episode_id"));
+      return InfoDict{{"level", 4}};
+    }
+  };
+  struct Levels : Counter {
+    std::shared_ptr<int64_t> level = std::make_shared<int64_t>(-1);
+    ResetResult reset(std::optional<int64_t> seed, const std::optional<InfoDict>& options) {
+      *level = options->at("level").as_int();
+      return Counter::reset(seed, options);
+    }
+  };
+  Levels levels;
+  auto level = levels.level;
+  Env levelled_env(std::move(levels));
+  Model(Levelled{}).run(levelled_env);
+  assert(*level == 4);
 }
 void missing_dict_action_keys() {
   struct DictCounter : Counter {
@@ -1077,6 +1128,35 @@ void adapters_readers_recorder() {
   assert(recorder.to_dict(rlmesh::RecorderToDictOptions{}.with_recorded_at("2026-01-01T00:00:00Z"))
              .contains_key("workloads"));
   recorder.close();
+  {
+    auto dir = std::filesystem::temp_directory_path() /
+               ("rlmesh-cpp-parity-" + std::to_string(std::random_device{}()));
+    auto saved =
+        result.save(dir / "result.zip", rlmesh::RunResultSaveOptions{}.with_model("policy"));
+    auto loaded = rlmesh::RunResult::load(saved);
+    assert(loaded.num_episodes() == 1 && loaded.episodes[0].steps == result.episodes[0].steps &&
+           loaded.episodes[0].reward == result.episodes[0].reward);
+    std::filesystem::remove_all(dir);
+  }
+  {
+    rlmesh::adapters::Actuator gripper{};
+    gripper.role = ACTION_GRIPPER;
+    gripper.dim = 1;
+    gripper.polarity = "close";
+    gripper.unit = 0.01;
+    State reading{};
+    reading.role = JOINT_POS;
+    reading.dim = 1;
+    reading.polarity = "open";
+    Action output{};
+    output.components = {gripper};
+    ModelSpec flipping(reading, output, {"flip_gripper"});
+    assert(flipping.allow() == std::vector<std::string>{"flip_gripper"});
+    assert(flipping.output().components[0].polarity == std::optional<std::string>("close"));
+    assert(flipping.output().components[0].unit == std::optional<double>(0.01));
+    assert(ModelSpec::from_json(flipping.to_json()) == flipping);
+    assert(!(ModelSpec(reading, output) == flipping));
+  }
   View view = View::parse("terminal");
   view.validate();
   assert(view.backend == ViewBackend::Terminal);

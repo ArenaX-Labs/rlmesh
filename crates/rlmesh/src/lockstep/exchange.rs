@@ -5,7 +5,7 @@
 //! driver ◀──LockstepReply{step, observations, reward, terminated, truncated, episode_ids}── env
 //! ```
 //!
-//! The env side is a [`LockstepHandler`] behind a [`Gate`]: before every
+//! The env side is a [`LockstepHandler`] behind a `Gate`: before every
 //! step it checks the step's epoch and lease token against its own
 //! authority view (two atomic loads) and the e-stop latch, with no host
 //! round trip. The driver side reaches it through a [`LockstepLink`]:

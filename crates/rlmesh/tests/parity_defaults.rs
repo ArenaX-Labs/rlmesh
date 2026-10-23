@@ -38,6 +38,7 @@ fn defaults_match_python_literals() {
     assert!(value.on_close.is_none(), "rlmesh:Model.on_close");
     assert!(!value.trust_entrypoints, "rlmesh:Model.trust_entrypoints");
     let value = rlmesh::BindOptions::default();
+    assert!(value.hooks.is_none(), "rlmesh:Model.bind.hooks");
     assert_eq!(
         value.execution_horizon, 1,
         "rlmesh:Model.bind.execution_horizon"
@@ -81,6 +82,7 @@ fn defaults_match_python_literals() {
     assert!(value.view.is_none(), "rlmesh:run.view");
     let value = rlmesh::ModelServeOptions::default();
     assert!(value.options.is_none(), "rlmesh:Model.serve.options");
+    assert!(value.name.is_none(), "rlmesh:Model.serve.name");
     let value = rlmesh::recorder::RecorderOptions::default();
     assert!(
         value.result_set_id.is_none(),
@@ -99,7 +101,6 @@ fn defaults_match_python_literals() {
     assert!(value.task.is_none(), "rlmesh:Recorder.capture.task");
     assert!(value.config.is_none(), "rlmesh:Recorder.capture.config");
     assert!(value.cameras.is_none(), "rlmesh:Recorder.capture.cameras");
-    assert!(value.session.is_none(), "rlmesh:Recorder.capture.session");
     assert_eq!(
         value.video_info_keys,
         vec!["video_artifact_path", "video_url"],
@@ -109,6 +110,7 @@ fn defaults_match_python_literals() {
         value.included_in_metrics,
         "rlmesh:Recorder.capture.included_in_metrics"
     );
+    assert!(value.binding.is_none(), "rlmesh:Recorder.capture.binding");
     let value = rlmesh::recorder::RecorderExportOptions::default();
     assert!(value.archive.is_none(), "rlmesh:Recorder.export.archive");
     assert!(
@@ -144,6 +146,14 @@ fn defaults_match_python_literals() {
     assert!(value.episodes.is_empty(), "rlmesh:RunResult.episodes");
     assert!(value.telemetry.is_empty(), "rlmesh:RunResult.telemetry");
     assert!(value.advisories.is_empty(), "rlmesh:RunResult.advisories");
+    let value = rlmesh::RunResultSaveOptions::default();
+    assert_eq!(
+        value.model.to_string(),
+        "model",
+        "rlmesh:RunResult.save.model"
+    );
+    assert_eq!(value.env.to_string(), "env", "rlmesh:RunResult.save.env");
+    assert!(value.config.is_none(), "rlmesh:RunResult.save.config");
     let value = rlmesh::serve_options::ServeOptions::default();
     assert!(
         !value.allow_remote_shutdown,
@@ -231,6 +241,11 @@ fn defaults_match_python_literals() {
     assert!(value.part.is_none(), "rlmesh.adapters:Actuator.part");
     assert!(value.offset.is_none(), "rlmesh.adapters:Actuator.offset");
     assert!(value.labels.is_none(), "rlmesh.adapters:Actuator.labels");
+    assert!(
+        value.polarity.is_none(),
+        "rlmesh.adapters:Actuator.polarity"
+    );
+    assert!(value.unit.is_none(), "rlmesh.adapters:Actuator.unit");
     let value = rlmesh::adapters::Concat::new(Vec::<rlmesh::adapters::ConcatPart>::new());
     assert!(value.pad_to.is_none(), "rlmesh.adapters:Concat.pad_to");
     assert_eq!(
@@ -287,6 +302,7 @@ fn defaults_match_python_literals() {
     );
     assert!(value.part.is_none(), "rlmesh.adapters:Field.part");
     assert!(value.labels.is_none(), "rlmesh.adapters:Field.labels");
+    assert!(value.polarity.is_none(), "rlmesh.adapters:Field.polarity");
     let value = rlmesh::adapters::Image::new("image/primary");
     assert!(value.height.is_none(), "rlmesh.adapters:Image.height");
     assert!(value.width.is_none(), "rlmesh.adapters:Image.width");
@@ -408,6 +424,7 @@ fn defaults_match_python_literals() {
         "rlmesh.adapters:State.source"
     );
     assert!(value.clip.is_none(), "rlmesh.adapters:State.clip");
+    assert!(value.polarity.is_none(), "rlmesh.adapters:State.polarity");
     let value = rlmesh::adapters::StateTag::new("proprio/joint_pos");
     assert!(
         value.encoding.is_none(),
@@ -425,6 +442,10 @@ fn defaults_match_python_literals() {
     );
     assert!(value.part.is_none(), "rlmesh.adapters:StateTag.part");
     assert!(value.labels.is_none(), "rlmesh.adapters:StateTag.labels");
+    assert!(
+        value.polarity.is_none(),
+        "rlmesh.adapters:StateTag.polarity"
+    );
     let value = rlmesh::adapters::Text::new("text/instruction");
     assert_eq!(
         value.container.to_string(),

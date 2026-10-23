@@ -1,4 +1,4 @@
-//! The driver side of the Gym path (§12.4): [`LockstepClient`] resets,
+//! The driver side of the Gym path (§12.4): `LockstepClient` resets,
 //! steps and renders a lockstep Gym env on native values, rebuilding its
 //! exact spaces from the robot's `gym_env`.
 //!

@@ -576,6 +576,31 @@ impl PredictFn for ModelPredict {
     fn on_route_release(&self, env_id: &str) -> Result<()> {
         self.on_route_reset(env_id)
     }
+
+    fn has_reset_options(&self) -> bool {
+        self.shared.decl.reset_options
+    }
+
+    fn reset_options(
+        &self,
+        episode: &EpisodeInfo,
+        trial_index: Option<u64>,
+    ) -> Result<Option<rlmesh_spaces::MetaMap>> {
+        if !self.shared.decl.reset_options {
+            return Ok(None);
+        }
+        let mut start = Metadata::new();
+        start.insert("episode_id", Value::Text(episode.episode_id.clone()));
+        start.insert("seed", episode.seed.map_or(Value::None, Value::Int));
+        start.insert(
+            "trial_index",
+            trial_index.map_or(Value::None, |trial| Value::Int(trial as i64)),
+        );
+        let options = self.shared.call(move |core| core.reset_options(&start))?;
+        options
+            .map(|options| crate::value::meta_codec::metadata_to_wire(&options))
+            .transpose()
+    }
 }
 
 /// Resolves the model's spec per route: none for `NO_ADAPTER` or a spec-less

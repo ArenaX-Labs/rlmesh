@@ -229,6 +229,8 @@ pub struct RLMeshModelVtable {
     pub workflow_edition: *const c_char,
     pub load_keys: *const RLMeshLoadKey,
     pub load_keys_len: usize,
+    pub reset_options:
+        Option<unsafe extern "C" fn(*mut c_void, *const RLMeshValue, *mut *mut RLMeshValue) -> i32>,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -260,6 +262,7 @@ pub struct RLMeshModelServeOptions {
     pub options: *const RLMeshServeOptions,
     pub cancel: *const RLMeshExtCancelToken,
     pub ext: *const RLMeshExtModelServeOptions,
+    pub name: *const c_char,
 }
 struct Owner {
     ptr: *mut c_void,
@@ -451,6 +454,29 @@ impl DynPolicy for CPolicy {
             status(unsafe { f(self.owner.ptr, id.as_ptr()) })?;
         }
         Ok(())
+    }
+    fn has_reset_options(&self) -> bool {
+        self.vt.reset_options.is_some()
+    }
+    fn reset_options(&mut self, episode: &Metadata) -> rlmesh::Result<Option<Metadata>> {
+        let Some(f) = self.vt.reset_options else {
+            return Ok(None);
+        };
+        let episode = RLMeshValue::new(Value::Dict(episode.clone()));
+        let mut out = std::ptr::null_mut();
+        let s = {
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
+            unsafe { f(self.owner.ptr, &episode, &mut out) }
+        };
+        let options = unsafe { ffi::take(out) };
+        status(s)?;
+        match options {
+            None | Some(Value::None) => Ok(None),
+            Some(Value::Dict(options)) => Ok(Some(options)),
+            Some(_) => Err(Error::Type(
+                "reset_options must leave a dict (or NULL for none)".into(),
+            )),
+        }
     }
     fn close(&mut self) -> rlmesh::Result<()> {
         if self.owner.owned.load(Ordering::Acquire)
@@ -861,6 +887,7 @@ pub unsafe extern "C" fn rlmesh_model_serve(
                 })
                 .transpose()?;
             rlmesh::ModelServeOptions {
+                name: unsafe { ffi::text(o.name) }?,
                 options: unsafe { crate::env_server::serve_options(o.options) }?,
                 cancel: unsafe { o.cancel.as_ref() }.map(|t| t.0.clone()),
                 ext,
@@ -1013,6 +1040,7 @@ mod tests {
             workflow_edition: null(),
             load_keys: null(),
             load_keys_len: 0,
+            reset_options: None,
         }
     }
     struct Tiny {

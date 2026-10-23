@@ -671,7 +671,7 @@ impl Attached {
     }
 }
 
-/// What a driver drives: a Gym env's [`LockstepClient`], or a v2-native
+/// What a driver drives: a Gym env's `LockstepClient`, or a v2-native
 /// robot's [`GymView`].
 pub enum Driven {
     /// A Gym env (its robot declares `gym_env`).
@@ -708,7 +708,7 @@ fn is_gym_env(parts: &[PartSpec]) -> bool {
 
 /// Connects a driver to the robot at the participant address `address`: a
 /// Gym env, rebuilt from its declaration,
-/// as a [`LockstepClient`]; any other robot as a [`GymView`] keyed by part
+/// as a `LockstepClient`; any other robot as a [`GymView`] keyed by part
 /// path.
 pub async fn connect_driver(address: &str, options: ConnectOptions) -> Result<Driven, GymError> {
     let address = address.to_string();

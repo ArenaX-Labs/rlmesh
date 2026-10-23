@@ -30,18 +30,10 @@ macro_rules! input {
 }
 input!(crate::adapters::RLMeshAction, has_clip);
 input!(
-    crate::adapters::RLMeshActuator,
-    has_encoding,
-    has_range,
-    binary,
-    has_scale,
-    invert,
-    has_threshold,
-    clip,
-    optional,
-    has_frame,
-    has_reference,
-    has_offset
+    crate::adapters::RLMeshActuator;
+    first_appended = polarity;
+    appended = [polarity, unit];
+    bools = [has_encoding, has_range, binary, has_scale, invert, has_threshold, clip, optional, has_frame, has_reference, has_offset, has_unit]
 );
 input!(crate::adapters::RLMeshAdaptersText, has_fill);
 input!(crate::adapters::RLMeshAdvisory);
@@ -50,10 +42,10 @@ input!(crate::adapters::RLMeshConstant);
 input!(crate::adapters::RLMeshCustom);
 input!(crate::adapters::RLMeshCustomEncoding);
 input!(
-    crate::adapters::RLMeshField,
-    has_range,
-    has_frame,
-    has_provenance
+    crate::adapters::RLMeshField;
+    first_appended = polarity;
+    appended = [polarity];
+    bools = [has_range, has_frame, has_provenance]
 );
 input!(
     crate::adapters::RLMeshImage,
@@ -81,22 +73,16 @@ input!(
 input!(crate::adapters::RLMeshRotation);
 input!(crate::adapters::RLMeshSplit);
 input!(
-    crate::adapters::RLMeshState,
-    has_dim,
-    has_index,
-    optional,
-    has_range,
-    has_pad_to,
-    has_scale,
-    has_offset,
-    has_frame,
-    has_clip
+    crate::adapters::RLMeshState;
+    first_appended = polarity;
+    appended = [polarity];
+    bools = [has_dim, has_index, optional, has_range, has_pad_to, has_scale, has_offset, has_frame, has_clip]
 );
 input!(
-    crate::adapters::RLMeshStateTag,
-    has_range,
-    has_frame,
-    has_provenance
+    crate::adapters::RLMeshStateTag;
+    first_appended = polarity;
+    appended = [polarity];
+    bools = [has_range, has_frame, has_provenance]
 );
 input!(crate::adapters::RLMeshTagOptions, validate);
 input!(crate::adapters::RLMeshTextTag);
@@ -140,11 +126,17 @@ input!(
     bools = [has_predict_concurrency, no_signal_handlers]
 );
 input!(crate::model_api::RLMeshModelOptions, trust_entrypoints);
-input!(crate::model_api::RLMeshModelServeOptions);
+input!(crate::run_results::RLMeshRunResultSaveOptions);
 input!(
-    crate::model_api::RLMeshModelVtable,
-    allow_fusion,
-    has_native_chunk
+    crate::model_api::RLMeshModelServeOptions;
+    first_appended = name;
+    appended = [name]
+);
+input!(
+    crate::model_api::RLMeshModelVtable;
+    first_appended = reset_options;
+    appended = [reset_options];
+    bools = [allow_fusion, has_native_chunk]
 );
 input!(
     crate::recorder::RLMeshRecorderAddOptions,
@@ -210,7 +202,12 @@ input!(
     has_trial
 );
 input!(crate::run_results::RLMeshRunResultOptions);
-input!(crate::binding_api::RLMeshBindOptions, close_env);
+input!(
+    crate::binding_api::RLMeshBindOptions;
+    first_appended = hooks;
+    appended = [hooks];
+    bools = [close_env]
+);
 input!(crate::space_handle::RLMeshBoxOptions);
 input!(crate::space_handle::RLMeshDiscreteOptions);
 input!(

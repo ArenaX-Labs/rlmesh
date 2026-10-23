@@ -219,7 +219,8 @@ def collect(root: Path, json_dir: Path | None = None) -> dict[str, dict[str, Ite
     policy["rust"] = {
         **policy["rust"],
         "document_hidden": True,
-        "skipped_modules": ["binding"],
+        # R-25: binding plumbing, `#[doc(hidden)]` and semver-exempt.
+        "skipped_modules": ["binding", "lockstep", "viewer", "video"],
     }
     surfaces: dict[str, dict[str, Item]] = {}
     for language in LANGUAGES:
@@ -494,6 +495,10 @@ def bridge_scope(path: str, parameter: str | None = None) -> bool:
             )
         )
     if path in {"rlmesh:types", "rlmesh:Model.device"}:
+        return True
+    # Gymnasium's own env shape: the served env's `EnvSpec` and a vector env's
+    # `closed` flag exist for gymnasium's machinery and have no native use.
+    if symbol in {"RemoteEnv.spec", "RemoteVectorEnv.spec", "RemoteVectorEnv.closed"}:
         return True
     if module in {"rlmesh.numpy", "rlmesh.torch", "rlmesh.jax"}:
         return True
@@ -782,6 +787,10 @@ def check(
                 target = mapped_params.get(name)
                 if target is None:
                     if name in mapping.get("bridges", []) and "R-24" in rules:
+                        continue
+                    # A 0.1 keyword Python keeps only to refuse with its 0.2
+                    # form has no native counterpart (D-4).
+                    if decisions.intersection(mapping.get("refused", {}).get(name, [])):
                         continue
                     fail(1, f"{path}.{language}: parameter {name} has no mapping")
                     continue

@@ -68,6 +68,9 @@ manifest_kind = "rlmesh.rust-api-surface-manifest"
 package_artifact = "cargo:rlmesh"
 package_name = "rlmesh"
 crate = "rlmesh"
+# `lockstep` is the session path every 0.2 run takes (Binding, bind, served
+# models); documenting without it would leave the shipped surface out.
+features = ["lockstep"]
 skipped_modules = ["prelude"]
 access = "early-access"
 stability = "Preview"

@@ -139,7 +139,10 @@ mod editions;
 pub mod env;
 mod error;
 pub mod ext;
+/// The v2 session protocol engine the bindings drive (R-25 binding
+/// plumbing, like [`binding`]): hidden and semver-exempt.
 #[cfg(feature = "lockstep")]
+#[doc(hidden)]
 pub mod lockstep;
 mod model;
 pub mod prelude;
@@ -152,7 +155,10 @@ mod tensor;
 pub mod types;
 mod value;
 mod view;
+/// The live viewer engine behind [`View`] (R-25 binding plumbing: runs and
+/// the Python binding drive it; users reach it through `View`).
 #[cfg(feature = "viewer")]
+#[doc(hidden)]
 pub mod viewer;
 mod warnings;
 
@@ -191,8 +197,8 @@ pub use recorder::{
 };
 pub use run::{
     BindOptions, EnvTarget, EpisodeResult, FrameSources, ModelTarget, RANDOM_SAMPLE, RandomSample,
-    ReadFn, ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult, StepEvent,
-    TelemetryRow, run, run_async,
+    ReadFn, ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult,
+    RunResultSaveOptions, StepEvent, TelemetryRow, run, run_async,
 };
 #[cfg(feature = "lockstep")]
 pub use run::{Binding, bind};

@@ -303,7 +303,7 @@ fn vector_capture_refusal_and_missing_frames_warning_never_aborts() {
             "m",
             "e",
             RecorderCaptureOptions {
-                session: Some(Arc::new(Context { n: 2, fails: true })),
+                binding: Some(Arc::new(Context { n: 2, fails: true })),
                 ..Default::default()
             },
         )
@@ -319,7 +319,7 @@ fn vector_capture_refusal_and_missing_frames_warning_never_aborts() {
             "m",
             "e",
             RecorderCaptureOptions {
-                session: Some(Arc::new(Context { n: 1, fails: true })),
+                binding: Some(Arc::new(Context { n: 1, fails: true })),
                 cameras: Some(vec!["render".into()]),
                 ..Default::default()
             },
@@ -416,4 +416,27 @@ fn export_preserves_python_json_kinds_and_refuses_binary_config_before_writing()
     let json = std::fs::read_to_string(path.join("result.json")).unwrap();
     assert!(json.contains("\"reward\": Infinity"));
     assert!(json.contains("\"meanReward\": Infinity"));
+}
+
+#[test]
+fn a_saved_result_loads_back_with_the_outcomes_the_bundle_keeps() {
+    let dir = tempfile::tempdir().unwrap();
+    let saved = result();
+    for name in ["bundle", "bundle.zip"] {
+        let path = saved
+            .save(
+                dir.path().join(name),
+                crate::RunResultSaveOptions::default(),
+            )
+            .unwrap();
+        let loaded = RunResult::load(&path).unwrap();
+        let (a, b) = (&saved.episodes[0], &loaded.episodes[0]);
+        assert_eq!(
+            (b.seed, b.steps, b.reward, b.terminated, b.success),
+            (a.seed, a.steps, a.reward, a.terminated, a.success)
+        );
+        assert_eq!((b.trial, b.predict_ms), (None, None), "not kept");
+    }
+    let error = RunResult::load(dir.path().join("missing")).unwrap_err();
+    assert_eq!(error.class(), ErrorClass::OSError);
 }
