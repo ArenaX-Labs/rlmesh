@@ -550,6 +550,8 @@ impl ModelClient {
                 // replayed step's observation as a history row; offered only to
                 // a served model that advertised it ingests them.
                 delivers_history: self.inner.server_ingests_history(),
+                // Typed resolve failures, from a served model that sends them.
+                reads_adapter_resolution_code: self.inner.server_types_resolution_errors(),
             })
             .await
             .map_err(Error::from_grpc)?;

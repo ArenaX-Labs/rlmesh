@@ -366,6 +366,14 @@ pub mod capabilities {
     /// history sees no wire difference.
     pub const MODEL_OBSERVATION_HISTORY_V1: &str = "rlmesh.model.observation_history.v1";
 
+    /// A served model endpoint answers a resolve that cannot pair its spec
+    /// with the env with `MODEL_ERROR_CODE_ADAPTER_RESOLUTION` when the runtime
+    /// sets `ResolveAdapterRequest.reads_adapter_resolution_code`, so the
+    /// runtime raises the typed adapter-resolution error. The runtime checks
+    /// this before setting the flag; an older model never sees it and answers
+    /// `INTERNAL` as before.
+    pub const MODEL_ADAPTER_RESOLUTION_CODE_V1: &str = "rlmesh.model.adapter_resolution_code.v1";
+
     /// A served env endpoint steps and resets lanes individually: a `Reset` or
     /// `Step` naming `env_indices` is honored (and answered partial-width)
     /// instead of rejected with `UNSUPPORTED`, and lane-scoped requests on one

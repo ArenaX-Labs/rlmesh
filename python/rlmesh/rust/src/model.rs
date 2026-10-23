@@ -865,7 +865,7 @@ impl RouteResolver for PyRouteResolver {
         })
         .await
         .map_err(|err| RLMeshError::Internal(format!("configure task panicked: {err}")))?
-        .map_err(|err| RLMeshError::Internal(err.to_string()))
+        .map_err(|err| crate::types::resolve_callback_error(&err))
     }
 }
 

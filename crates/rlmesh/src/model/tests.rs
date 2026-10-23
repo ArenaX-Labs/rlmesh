@@ -3050,3 +3050,96 @@ async fn request_timeout_includes_adapter_resolution() {
 async fn request_timeout_includes_pending_episode_end() {
     prediction_deadline_regression(false).await;
 }
+
+struct UnpairableRoute;
+
+#[async_trait]
+impl ModelRouteSetup for UnpairableRoute {
+    async fn resolve_adapter(
+        &self,
+        _: &str,
+        _: &spaces::EnvContract,
+        _: ResolveOptions,
+    ) -> Result<RouteNeeds> {
+        Err(crate::Error::adapter_resolution(
+            "no camera for image/primary",
+        ))
+    }
+    async fn reset_adapter(&self, _: &str, _: &[String]) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct UnpairableModel;
+
+#[async_trait]
+impl ModelHandler for UnpairableModel {
+    async fn predict(&mut self, _: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        unreachable!("the route never resolves")
+    }
+    fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
+        Some(Arc::new(UnpairableRoute))
+    }
+}
+
+/// A served model's resolve that cannot pair its spec reaches a runtime that
+/// reads the typed code as the adapter-resolution error, and one that does not
+/// set `reads_adapter_resolution_code` as the INTERNAL model error it always was.
+#[tokio::test]
+async fn an_unpairable_resolve_is_typed_only_for_a_runtime_that_reads_the_code() {
+    use rlmesh_proto::model::v1::ResolveAdapterRequest;
+
+    let bound = ModelWorker::new(UnpairableModel)
+        .bind_async(ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".into(),
+            port: 0,
+        }))
+        .await
+        .unwrap();
+    let trigger = bound.shutdown_trigger();
+    let address = bound.local_addr().to_string();
+    let server = tokio::spawn(bound.serve());
+
+    let mut typed = super::remote::ModelClient::connect(&address, SmokeEnv::new().env_contract)
+        .await
+        .unwrap();
+    typed.reset(None);
+    let observation = spaces::SpaceValue::Box(
+        spaces::Tensor::from_vec(vec![0], vec![1], spaces::DType::Uint8).unwrap(),
+    );
+    let error = typed.predict(observation).await.unwrap_err();
+    assert_eq!(error.class(), crate::ErrorClass::AdapterResolutionError);
+    assert!(
+        error.to_string().contains("no camera for image/primary"),
+        "{error}"
+    );
+
+    let mut old = rlmesh_grpc::ModelClient::connect(&address, "")
+        .await
+        .unwrap();
+    old.handshake().await.unwrap();
+    assert!(old.server_types_resolution_errors());
+    let error = old
+        .resolve_adapter(ResolveAdapterRequest {
+            context: Some(rlmesh_proto::model::v1::AdapterContext {
+                session_id: "s".into(),
+                env_id: "e".into(),
+                request_id: "e:resolve".into(),
+            }),
+            env_spec: Some(rlmesh_grpc::wire::env_spec_to_proto(
+                &SmokeEnv::new().env_contract,
+            )),
+            selected_workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    trigger.trigger("test complete");
+    server.abort();
+    match error {
+        rlmesh_grpc::error::Error::Model(model) => {
+            assert_eq!(model.code, rlmesh_grpc::error::ModelErrorCode::Internal);
+        }
+        other => panic!("expected a model error, got {other:?}"),
+    }
+}

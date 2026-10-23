@@ -61,6 +61,18 @@ pub(super) fn model_error_value(error: &Error) -> ModelError {
     }
 }
 
+/// A resolve failure for a runtime that reads the typed code: an
+/// adapter-resolution error as `ADAPTER_RESOLUTION`, anything else as
+/// [`model_error_from_error`] answers it.
+pub(super) fn resolve_error(error: &Error) -> join_response::Kind {
+    let mut wire = model_error_value(error);
+    if error.class() == crate::ErrorClass::AdapterResolutionError {
+        wire.code = ModelErrorCode::AdapterResolution as i32;
+        wire.is_recoverable = false;
+    }
+    join_response::Kind::Error(wire)
+}
+
 /// Map a facade [`Error`] returned by a handler onto the wire model-error,
 /// preserving the handler-fault vs internal-fault distinction and the
 /// recoverable flag so the caller can react appropriately.

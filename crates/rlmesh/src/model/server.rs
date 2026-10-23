@@ -250,6 +250,8 @@ where
                     capabilities::MODEL_CONCURRENT_PREDICT_V1,
                     // It negotiates and ingests observation history on Predict.
                     capabilities::MODEL_OBSERVATION_HISTORY_V1,
+                    // It answers an unpairable resolve with the typed code.
+                    capabilities::MODEL_ADAPTER_RESOLUTION_CODE_V1,
                 ]),
                 supported_workflow_editions: supported_workflow_editions(),
                 preferred_workflow_edition: declared_workflow_edition(
@@ -717,6 +719,9 @@ async fn handle_resolve_adapter(
             .await
         {
             Ok(resolved) => needs = resolved,
+            Err(error) if request.reads_adapter_resolution_code => {
+                return Some(super::wire::resolve_error(&error));
+            }
             Err(error) => return Some(model_error_from_error(&error)),
         }
     }

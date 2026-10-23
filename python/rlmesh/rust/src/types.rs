@@ -254,6 +254,25 @@ fn invalid_argument_to_py(err: InvalidArgumentError) -> PyErr {
     PyValueError::new_err(err.message)
 }
 
+/// The facade error a Python exception raised while resolving a route
+/// becomes: an `AdapterResolutionError` stays one, so the driver (local, or
+/// across the wire) raises the typed class; anything else is an internal
+/// failure with the exception's `Type: text`.
+pub(crate) fn resolve_callback_error(err: &PyErr) -> Error {
+    Python::attach(|py| {
+        let value = err.value(py);
+        let adapter = py
+            .import("rlmesh.adapters")
+            .and_then(|module| module.getattr("AdapterResolutionError"))
+            .is_ok_and(|class| value.is_instance(&class).unwrap_or(false));
+        if adapter {
+            Error::adapter_resolution(raw_exception_text(value))
+        } else {
+            Error::Internal(err.to_string())
+        }
+    })
+}
+
 /// The facade error a Python exception raised by a model callback becomes:
 /// a `ModelException` keeps its recoverable flag as a model failure with code
 /// `INTERNAL`; anything else is an internal failure with the exception's text.

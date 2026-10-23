@@ -370,3 +370,33 @@ def test_a_sandboxed_model_joins_a_sandbox_env_where_its_container_reaches_it(
         with pytest.raises(ConnectionError, match=r"nowhere\.invalid:7447"):
             model.run(env)
         model.close()
+
+
+def test_a_served_models_resolve_failure_arrives_typed(session_port: int) -> None:
+    import gymnasium as gym
+    import numpy as np
+    import rlmesh
+    from rlmesh import adapters as adapt
+
+    class UntaggedEnv:
+        observation_space = gym.spaces.Box(-1.0, 1.0, (3,), np.float32)
+        action_space = gym.spaces.Box(-1.0, 1.0, (3,), np.float32)
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+            _ = seed, options
+            return np.zeros(3, np.float32), {}
+
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            return np.zeros(3, np.float32), 0.0, True, False, {}
+
+        def close(self) -> None:
+            return None
+
+    spec = adapt.ModelSpec(
+        input={"image": adapt.Image(adapt.IMAGE_PRIMARY)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+    )
+    model = rlmesh.numpy.Model(lambda obs: np.zeros(3, np.float32), spec=spec)
+    with _served(model, session_port) as address:
+        with pytest.raises(adapt.AdapterResolutionError, match="no adapter tags"):
+            rlmesh.numpy.Model(address).run(UntaggedEnv(), episodes=1)

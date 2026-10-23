@@ -298,6 +298,8 @@ pub enum ModelErrorCode {
     Busy,
     /// Well-formed request for a feature this peer does not support yet
     Unsupported,
+    /// The model's spec could not be paired with the env's contract
+    AdapterResolution,
     /// Internal error
     Internal,
     /// Operation was cancelled
@@ -315,6 +317,7 @@ impl From<rlmesh_proto::model::v1::ModelErrorCode> for ModelErrorCode {
             ProtoCode::NotConfigured => ModelErrorCode::NotConfigured,
             ProtoCode::Busy => ModelErrorCode::Busy,
             ProtoCode::Unsupported => ModelErrorCode::Unsupported,
+            ProtoCode::AdapterResolution => ModelErrorCode::AdapterResolution,
             ProtoCode::Internal => ModelErrorCode::Internal,
             ProtoCode::Cancelled => ModelErrorCode::Cancelled,
             ProtoCode::Closed => ModelErrorCode::Closed,
