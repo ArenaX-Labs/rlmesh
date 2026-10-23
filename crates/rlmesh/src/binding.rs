@@ -165,8 +165,8 @@ pub use crate::run::runtime::TRIAL_INDEX_OPTION;
 /// [`crate::ext::CancelToken`].
 pub use crate::run::runtime::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError, NoopRuntimeHooks,
-    ObservationEmittedEvent, RunDirective, RuntimeHooks, RuntimeReport, StepCompletedEvent,
-    telemetry,
+    ObservationEmittedEvent, RunDirective, RuntimeHooks, RuntimeReport, SessionStartedEvent,
+    StepCompletedEvent, telemetry,
 };
 pub use tokio_util::sync::CancellationToken;
 

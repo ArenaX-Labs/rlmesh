@@ -474,10 +474,10 @@ class RunHooks:
 class NativeRunContext:
     """The :class:`RunContext` of a native :meth:`Model.run`.
 
-    ``contract`` is filled by the worker's route resolve at connect; ``client``
-    is the locally served env object (so ``render()`` is reachable while a hook
-    runs, the env being idle between runtime events) or ``None`` for an
-    address / handle target.
+    ``contract`` is filled when the runtime connects to the env (a local model's
+    route resolve may refine it); ``client`` is the locally served env object
+    (so ``render()`` is reachable while a hook runs, the env being idle between
+    runtime events) or ``None`` for an address / handle target.
     """
 
     def __init__(self, *, trust: bool) -> None:
@@ -502,8 +502,13 @@ class NativeRunContext:
     def client(self) -> object | None:
         return self._client
 
-    def bind_client(self, client: object | None) -> None:
-        self._client = client
+    def bind_client(self, client: object | None, *, local: bool = True) -> None:
+        """Decode values in ``client``'s framework.
+
+        ``local`` also reaches its ``render()``; a remote handle lent to the run
+        is not reachable.
+        """
+        self._client = client if local else None
         self._bridge = adapter_env_bridge(client)
 
     @property
@@ -586,6 +591,10 @@ class NativeHookRelay:
         self._episodes: dict[str, _NativeEpisode] = {}
         self._groups: dict[int, _NativeGroup] = {}
         self.results: list[EpisodeResult] = []
+
+    def session_started(self, contract: Any) -> None:
+        if self._context.contract is None:
+            self._context.contract = contract
 
     def episode_started(
         self,

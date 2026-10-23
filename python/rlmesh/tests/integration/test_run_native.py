@@ -60,6 +60,33 @@ class CountEnv:
         return None
 
 
+class _PosEnv(CountEnv):
+    """``CountEnv`` whose observation is a ``pos`` Dict leaf."""
+
+    def __init__(self) -> None:
+        import gymnasium as gym
+
+        super().__init__(episode_len=1)
+        self.observation_space = gym.spaces.Dict(
+            {"pos": gym.spaces.Box(-1.0, 1.0, (3,), np.float32)}
+        )
+        self.action_space = gym.spaces.Box(-1.0, 1.0, (3,), np.float32)
+
+    def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+        super().reset(seed=seed, options=options)
+        return {"pos": np.array([0.25, -0.5, 0.75], np.float32)}, {}
+
+    def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+        _, reward, done, truncated, info = super().step(action)
+        return (
+            {"pos": np.array([0.25, -0.5, 0.75], np.float32)},
+            reward,
+            done,
+            truncated,
+            info,
+        )
+
+
 def _model() -> Any:
     from rlmesh.numpy import Model
 
@@ -682,6 +709,35 @@ def test_hooks_read_a_role_off_the_observation(path: str) -> None:
     )
     assert recorder.values[0].shape == (3,)
     assert recorder.seen == (1, ())
+
+
+def test_hooks_read_roles_off_an_env_at_an_address() -> None:
+    """A served or random model resolves no route here, so the run context
+    takes the contract from the runtime's connection to the env itself."""
+    tags = adapt.EnvTags(
+        observation={"pos": adapt.StateTag(role=adapt.EEF_POS)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+    )
+    server = rlmesh.EnvServer(adapt.tag(_PosEnv(), tags), ":0/env")
+    server.start()
+
+    class _Reading(rlmesh.RunHooks):
+        def on_episode_start(self, *, episode: int, seed: int | None) -> None:
+            self.contract = self.context.contract
+
+        def on_run_start(self, context: Any) -> None:
+            self.context = context
+
+        def on_step(self, event: rlmesh.StepEvent) -> None:
+            self.value = event.read(adapt.EEF_POS)
+
+    try:
+        hooks = _Reading()
+        rlmesh.Model(rlmesh.RANDOM_SAMPLE).run(server.address, episodes=1, hooks=hooks)
+    finally:
+        server.shutdown()
+    assert hooks.contract is not None
+    assert np.allclose(hooks.value, [0.25, -0.5, 0.75])
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use prost::bytes::Bytes;
+use rlmesh_proto::core::v1::EnvContract;
 use rlmesh_proto::spaces::v1::MetaMap;
 use rlmesh_proto::spaces::v1::SpaceSpec;
 
@@ -19,11 +20,14 @@ pub struct RuntimeEnvContext {
     pub lane: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionStartedEvent {
     pub session_id: String,
     pub route: RuntimeEnvContext,
     pub env_id: String,
+    /// The connected env's contract, so an observer can read roles off the
+    /// observations it is handed whatever the target was (address, handle).
+    pub env_contract: Arc<EnvContract>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

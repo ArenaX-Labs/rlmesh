@@ -1730,6 +1730,8 @@ class ModelBase(Generic[ObsT, ActT]):
             # A sandbox env lends its container to the run (closing the
             # handle would stop it); a sandboxed model joins its session
             # over their shared network.
+            if self._native_run is not None:
+                self._native_run.bind_client(payload, local=False)
             address = lent.enter_context(payload._lent())  # pyright: ignore[reportPrivateUsage]
             if self._env_session is not None:
                 invite_at = peer_session(payload.sandbox)
@@ -1750,6 +1752,8 @@ class ModelBase(Generic[ObsT, ActT]):
                     "an open RemoteEnv holds its env's lease, so close it and "
                     "pass the address: run(address)",
                 )
+            if self._native_run is not None:
+                self._native_run.bind_client(cast(object, payload), local=False)
             address = handle_address
         elif kind == "factory":
             from ._connect import factory_env

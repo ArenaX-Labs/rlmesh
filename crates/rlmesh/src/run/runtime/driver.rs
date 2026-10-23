@@ -766,6 +766,7 @@ where
                 session_id: state.session_id().to_string(),
                 route: state.env_context(),
                 env_id: self.spec.env_id.clone(),
+                env_contract: Arc::new(self.spec.env_contract.clone()),
             }
         );
 

@@ -8,14 +8,15 @@ use pyo3::prelude::*;
 use rlmesh::binding::model::CallerJobs;
 use rlmesh::binding::{
     ActionReceivedEvent, CancellationToken, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    ObservationEmittedEvent, RunDirective, RuntimeHooks, StepCompletedEvent,
+    ObservationEmittedEvent, RunDirective, RuntimeHooks, SessionStartedEvent, StepCompletedEvent,
 };
 use rlmesh_grpc::wire::{
-    Bytes, decode_batched_partial_values, leaves_value, meta_map_from_proto, space_spec_from_proto,
+    Bytes, decode_batched_partial_values, env_contract_from_proto, leaves_value,
+    meta_map_from_proto, space_spec_from_proto,
 };
 use rlmesh_proto::spaces::v1::SpaceSpec;
 
-use crate::spaces::{meta_map_to_pydict, space_value_to_py_neutral};
+use crate::spaces::{env_contract_to_py, meta_map_to_pydict, space_value_to_py_neutral};
 
 type RelayCall = Box<dyn for<'py> FnOnce(Python<'py>, &Bound<'py, PyAny>) -> PyResult<()> + Send>;
 
@@ -88,6 +89,17 @@ fn decode_lanes<'py>(
 
 #[async_trait]
 impl RuntimeHooks for PyRunHooks {
+    async fn session_started(&self, event: SessionStartedEvent) -> Result<(), HookError> {
+        self.deliver(Box::new(move |py, relay| {
+            let contract = env_contract_from_proto(event.env_contract.as_ref().clone())
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let contract = env_contract_to_py(py, &contract)?;
+            relay.call_method1("session_started", (contract,)).map(drop)
+        }))
+        .await;
+        Ok(())
+    }
+
     async fn episode_started(&self, event: EpisodeStartedEvent) -> Result<(), HookError> {
         self.deliver(Box::new(move |_py, relay| {
             relay
