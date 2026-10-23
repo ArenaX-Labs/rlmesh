@@ -40,8 +40,8 @@ def run_trace(args: argparse.Namespace) -> int:
     if (args.model is None) == (args.model_address is None):
         raise SystemExit("pass exactly one of --model and --model-address")
     remote = remote_env(args.client, args.address)
-    # A served model drives the same loop through its session, so the
-    # cross-version matrix's model leg records the one trace shape too.
+    # A served model drives the same loop through its session, so a model
+    # leg records the one trace shape too.
     session = model_session(args.model_address, remote) if args.model_address else None
     loop = remote if session is None else session
     model = resolve_model(args.model) if session is None else session.predict

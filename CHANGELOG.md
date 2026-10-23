@@ -204,6 +204,7 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 
 #### Python
 
+- The 0.1 cross-version matrix (`mise run test:crossver`, `tests/system/crossver.py`) and its CI step are removed: 0.2 refuses the 0.1 wire by address, so the two never meet. The system runner's `external` scenario kind, used only by the matrix, goes with it.
 - Rotation conversions compute in f64 (0.1 rounded through f32), and a quaternion reorder (`quat_wxyz` to `quat_xyzw` and back) is a plain permutation that keeps the input's sign. 0.1 sent a reorder through a rotation matrix, which could flip the sign, unlike upstream eval clients (Isaac-GR00T's SimplerEnv client uses `np.roll`). Both can shift trajectories bit-for-bit against 0.1; success rates were unchanged across a 13-pair catalog parity table. A model that needs a canonical quaternion sign declares it in its spec.
 - Internal and server-side failures raise `RLMeshException`, and protocol failures (a failed handshake, a malformed message, an invalid contract from the peer) raise `ProtocolException`, instead of a bare `RuntimeError`; a render frame that does not decode raises `ProtocolException` too. Both subclass `RuntimeError`, so existing catches keep matching.
 - An env code `UNSUPPORTED` reaches Python as `"UNSUPPORTED"` instead of `"INTERNAL"`.

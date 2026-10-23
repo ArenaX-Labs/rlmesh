@@ -99,9 +99,9 @@ The same shape fixes what a future `rlmesh-wire-v2` would look like: a runtime-o
 - **Sealed editions are never dropped.** `rlmesh.toml` lists the retained editions, the `rlmesh-proto` crate ships a copy of that list, and every build generates its offer from it at build time. `mise run policy:check` fails if the generated list and the manifest disagree, if a sealed edition leaves the list, or if the list lost an edition the last release tag's manifest had sealed.
 - **The wire grows additively.** Field tags are never removed or renumbered within `rlmesh-wire-v1` (`mise run protocol:breaking`). A new dtype, `AutoresetMode`, or `SpaceSpec` arm is a new type an old peer refuses rather than decodes wrongly (the two exceptions, error codes and `MetaValue` kinds, are listed under "Not yet guaranteed"), and an emitter may only send it toward a leg that can decode it; the emitter-side rules are in [workflow editions](editions/index.md).
 
-### The machine proof
+### Across 0.1 and 0.2
 
-`mise run test:crossver` builds a release-cohort wheel from this tree and runs it against the published wheel pinned in `tests/system/crossver.lock`: old and new env servers against old and new runtimes, old and new served models against the other side's runtime, both same-version controls, and two forged refusals (a pin of an edition no build implements, and a `rlmesh-wire-v2` handshake). Each real cell must reproduce the committed trace and report the server's handshake result and the session edition. It runs as its own CI job; `docs/testing.md` describes the cells.
+0.2 speaks only session addresses and refuses the 0.1 gRPC wire by address, naming the 0.2 form, so a 0.1 peer and a 0.2 peer never meet and there is no cross-version matrix. An image built with 0.1 is refused by `SandboxEnv` and `SandboxModel` with a message to rebuild it with 0.2.
 
 ### Not yet guaranteed
 

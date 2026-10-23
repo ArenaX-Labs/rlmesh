@@ -14,9 +14,75 @@ import tomllib
 import grpc
 
 ROOT = Path(__file__).resolve().parents[3]
-# Reuse the system harness's minimal protobuf reader, with no generated stubs.
-sys.path.insert(0, str(ROOT / "tests/system"))
-from crossver import _decode, _delimited, _message, _string, _text  # noqa: E402
+
+
+# A minimal protobuf reader and writer, so the probe needs no generated stubs.
+def _varint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _delimited(field: int, payload: bytes) -> bytes:
+    return _varint((field << 3) | 2) + _varint(len(payload)) + payload
+
+
+def _text(field: int, value: str) -> bytes:
+    return _delimited(field, value.encode())
+
+
+def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
+    value = shift = 0
+    while True:
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, pos
+        shift += 7
+
+
+def _decode(data: bytes) -> dict[int, list[bytes | int]]:
+    fields: dict[int, list[bytes | int]] = {}
+    pos = 0
+    while pos < len(data):
+        key, pos = _read_varint(data, pos)
+        field, wire = key >> 3, key & 7
+        value: bytes | int
+        if wire == 0:
+            value, pos = _read_varint(data, pos)
+        elif wire == 2:
+            length, pos = _read_varint(data, pos)
+            value, pos = data[pos : pos + length], pos + length
+        elif wire in (1, 5):
+            width = 8 if wire == 1 else 4
+            value, pos = data[pos : pos + width], pos + width
+        else:
+            raise ValueError(f"unsupported protobuf wire type {wire}")
+        fields.setdefault(field, []).append(value)
+    return fields
+
+
+def _message(
+    fields: dict[int, list[bytes | int]], field: int
+) -> dict[int, list[bytes | int]]:
+    values = fields.get(field)
+    return _decode(bytes(values[0])) if values else {}
+
+
+def _strings(fields: dict[int, list[bytes | int]], field: int) -> list[str]:
+    return [bytes(value).decode() for value in fields.get(field, [])]
+
+
+def _string(fields: dict[int, list[bytes | int]], field: int) -> str:
+    values = _strings(fields, field)
+    return values[0] if values else ""
 
 
 def read_checked(process: subprocess.Popen[str]) -> None:

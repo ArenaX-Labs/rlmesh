@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import shlex
 import shutil
 import sys
 import time
@@ -61,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument(
         "--kind",
         action="append",
-        choices=["trace", "artifact", "external"],
+        choices=["trace", "artifact"],
         default=[],
         help="restrict selected environments to one or more scenario kinds",
     )
@@ -384,7 +382,6 @@ def run_environment(
         "dependencies": list(environment.dependencies),
         "scenarios": [scenario.name for scenario in scenarios],
         "traces": [],
-        "external": [],
         "measurements": [],
     }
 
@@ -420,18 +417,6 @@ def run_environment(
             renderer=renderer,
         )
         report["measurements"] = artifact_report["measurements"]
-
-    for scenario in scenarios:
-        if scenario.kind == "external":
-            run_external_scenario(
-                environment,
-                scenario,
-                installed.env,
-                installed.logs,
-                verbose=verbose,
-                renderer=renderer,
-            )
-            report["external"].append(scenario.name)
 
     report_path = report_dir / f"{environment.name}-{run_id}.json"
     report["report_path"] = str(report_path)
@@ -563,40 +548,6 @@ def run_artifact_scenarios(
         timeout_seconds=environment.timeout_seconds,
     )
     return json.loads(report_path.read_text())
-
-
-def run_external_scenario(
-    environment: EnvironmentSpec,
-    scenario: ScenarioSpec,
-    env: dict[str, str],
-    logs: Path,
-    *,
-    verbose: bool,
-    renderer: Renderer,
-) -> None:
-    assert scenario.command_env is not None
-    command_text = env.get(scenario.command_env) or os.environ.get(scenario.command_env)
-    if not command_text:
-        raise CommandError(
-            [scenario.command_env],
-            2,
-            logs / f"{environment.name}-{scenario.name}.log",
-            (
-                f"external scenario {scenario.name!r} requires "
-                f"{scenario.command_env} to contain the command to run\n"
-            ),
-        )
-
-    run_command(
-        shlex.split(command_text),
-        cwd=ROOT,
-        env=env,
-        log_path=logs / f"{environment.name}-{scenario.name}.log",
-        label=f"run external scenario {scenario.name}",
-        verbose=verbose,
-        renderer=renderer,
-        timeout_seconds=scenario.timeout_seconds or environment.timeout_seconds,
-    )
 
 
 def env_server_command(python: Path, scenario: ScenarioSpec) -> list[str]:

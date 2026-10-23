@@ -20,7 +20,7 @@ jobs:
     runs-on: depot-ubuntu-24.04-8
     env:
       UV_CACHE_DIR: /tmp/.uv-cache
-      # One release-cohort wheel build serves basic and compatibility profiles.
+      # One release-cohort wheel build serves the installed-artifact profiles.
       RLMESH_RELEASE_BUILD: "1"
 
     steps:
@@ -78,9 +78,6 @@ jobs:
         if: steps.csharp_changes.outputs.csharp == 'true'
         timeout-minutes: 5
         run: mise run --skip-tools test:csharp:package
-
-      - name: Cross-version matrix against the already-built wheels
-        run: mise run --skip-tools test:crossver:installed
 
       # Verify the distributable source, not just the workspace checkout.
       # Keep this in the required job so package failures cannot pass the gate.
