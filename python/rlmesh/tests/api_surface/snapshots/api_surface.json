@@ -783,6 +783,10 @@
             "kind": "function",
             "signature": "format_telemetry()"
           },
+          "load": {
+            "kind": "function",
+            "signature": "load(path: str | os.PathLike[str])"
+          },
           "mean_reward": {
             "kind": "property",
             "signature": "property mean_reward: float"
@@ -790,6 +794,10 @@
           "num_episodes": {
             "kind": "property",
             "signature": "property num_episodes: int"
+          },
+          "save": {
+            "kind": "function",
+            "signature": "save(path: str | os.PathLike[str], *, model: str = 'model', env: str = 'env', config: Mapping[str, Any] | None = None)"
           },
           "success_rate": {
             "kind": "property",

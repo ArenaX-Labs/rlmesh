@@ -1014,3 +1014,48 @@ def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None
 def test_capture_refuses_the_0_1_session_keyword() -> None:
     with pytest.raises(TypeError, match=r"capture\(\.\.\., binding=\.\.\.\)"):
         Recorder().capture(model="m", env="e", session=object())
+
+
+@pytest.mark.parametrize("name", ["bundle", "bundle.zip"])
+def test_a_saved_result_loads_back_with_its_outcomes(tmp_path: Path, name: str) -> None:
+    episodes = (
+        EpisodeResult(0, 7, 3, 1.5, True, False, True, 0.25, 2.0, 1.0, 4),
+        EpisodeResult(1, 8, 5, 0.0, False, True, False, 0.5, 2.0, 1.0, 5),
+    )
+    path = RunResult(episodes=episodes).save(tmp_path / name, model="m", env="e")
+    (workload,) = json.loads(_result_json(path))["workloads"]
+    assert (workload["model"], workload["env"]) == ("m", "e")
+
+    loaded = RunResult.load(path)
+    # The bundle keeps outcomes, not the trial ordinal or the latencies.
+    assert loaded.episodes == tuple(
+        EpisodeResult(
+            e.index,
+            e.seed,
+            e.steps,
+            e.reward,
+            e.terminated,
+            e.truncated,
+            e.success,
+            e.duration_s,
+        )
+        for e in episodes
+    )
+    assert loaded.success_rate == 0.5
+
+
+def test_loading_a_bundle_of_several_workloads_is_refused(tmp_path: Path) -> None:
+    result = RunResult(episodes=(EpisodeResult(0, 0, 1, 1.0, True, False),))
+    recorder = Recorder()
+    recorder.add(result, model="a", env="e")
+    recorder.add(result, model="b", env="e")
+    path = recorder.export(tmp_path / "two")
+    with pytest.raises(ValueError, match="2 workloads"):
+        RunResult.load(path)
+
+
+def _result_json(path: Path) -> str:
+    if path.is_dir():
+        return (path / "result.json").read_text(encoding="utf-8")
+    with zipfile.ZipFile(path) as archive:
+        return archive.read("result.json").decode()

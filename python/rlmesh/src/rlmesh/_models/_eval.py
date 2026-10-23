@@ -10,10 +10,12 @@ from __future__ import annotations
 import contextlib
 import math
 import numbers
+import os
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from ._coerce import RANDOM_SAMPLE
@@ -350,6 +352,74 @@ class RunResult:
             )
 
         return "\n".join([line(header), *(line(row) for row in rows)])
+
+    def save(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        model: str = "model",
+        env: str = "env",
+        config: Mapping[str, Any] | None = None,
+    ) -> Path:
+        """Write this result as an ``rlmesh.result.v1`` bundle and return its path.
+
+        One workload of ``model`` on ``env``, with ``config`` recorded beside
+        it: a folder, or a zip when ``path`` ends ``.zip`` (as
+        :meth:`Recorder.export <rlmesh.Recorder.export>` writes). The bundle
+        keeps each episode's outcome, not its trial ordinal, latency or the
+        run's telemetry. For media, record the run with
+        :meth:`Recorder.capture <rlmesh.Recorder.capture>` instead.
+        """
+        from ..recorder import Recorder
+
+        with Recorder() as recorder:
+            recorder.add(
+                self, model=model, env=env, config=dict(config) if config else None
+            )
+            return recorder.export(Path(path))
+
+    @classmethod
+    def load(cls, path: str | os.PathLike[str]) -> RunResult:
+        """The result an ``rlmesh.result.v1`` bundle (folder or zip) holds.
+
+        The bundle must hold exactly one workload, as :meth:`save` writes; its
+        episodes come back with the fields the bundle keeps.
+        """
+        import json
+        import zipfile
+
+        from ..recorder.constants import RESULT_FILENAME
+
+        bundle = Path(path)
+        if bundle.is_dir():
+            text = (bundle / RESULT_FILENAME).read_text(encoding="utf-8")
+        else:
+            with zipfile.ZipFile(bundle) as archive:
+                text = archive.read(RESULT_FILENAME).decode("utf-8")
+        document = cast("dict[str, Any]", json.loads(text))
+        workloads = cast("list[dict[str, Any]]", document.get("workloads") or [])
+        if len(workloads) != 1:
+            raise ValueError(
+                f"{bundle} holds {len(workloads)} workloads; RunResult.load reads a "
+                "bundle of one (a Recorder bundle of several is read per workload)"
+            )
+        return cls(
+            episodes=tuple(
+                EpisodeResult(
+                    index=e["index"],
+                    seed=e.get("seed"),
+                    steps=e["steps"],
+                    reward=e["reward"],
+                    terminated=e["terminated"],
+                    truncated=e["truncated"],
+                    success=e.get("success"),
+                    duration_s=e.get("durationS", 0.0),
+                )
+                for e in cast(
+                    "list[dict[str, Any]]", workloads[0].get("episodes") or []
+                )
+            )
+        )
 
     def __repr__(self) -> str:
         return (
