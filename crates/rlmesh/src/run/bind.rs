@@ -93,13 +93,20 @@ impl<'a> Binding<'a> {
             execution_horizon,
             workflow_edition,
             hooks,
+            view,
         } = options;
+        if view.is_some() {
+            return Err(Error::Type(
+                "view= is not supported by the native binding loop".into(),
+            ));
+        }
         let context = LibraryContext::new();
-        let (handler, edition): (Box<dyn ModelHandler>, _) = match model.0 {
+        let (handler, edition, execution_horizon): (Box<dyn ModelHandler>, _, _) = match model.0 {
             ModelKind::Model(model) => {
                 let shared = model.shared();
                 shared.check_not_reentrant("bind()")?;
                 shared.admit()?;
+                let execution_horizon = shared.decl.resolve_horizon(execution_horizon)?;
                 check_horizon(execution_horizon, shared.decl.native_chunk)?;
                 let edition = crate::editions::resolve_native(
                     crate::editions::EditionSources {
@@ -124,7 +131,7 @@ impl<'a> Binding<'a> {
                     None,
                     Some(context.clone()),
                 );
-                (Box::new(handler), edition)
+                (Box::new(handler), edition, execution_horizon)
             }
             ModelKind::Remote(model) => {
                 if !crate::address::is_v2(model.address()) {
@@ -135,20 +142,37 @@ impl<'a> Binding<'a> {
                         model.address()
                     )));
                 }
+                let timeout = model
+                    .connect_timeout()
+                    .unwrap_or(super::native::SERVED_CONNECT);
+                if let Some(horizon) = execution_horizon {
+                    check_horizon(horizon, None)?;
+                }
+                let execution_horizon = match execution_horizon {
+                    Some(horizon) => horizon,
+                    None => super::drive::block_on_library(
+                        crate::lockstep::ServedModel::default_execution_horizon(
+                            model.address(),
+                            timeout,
+                        ),
+                    )?
+                    .unwrap_or(1),
+                };
                 check_horizon(execution_horizon, None)?;
-                let handler = crate::lockstep::ServedModel::new(
-                    model.address(),
-                    model
-                        .connect_timeout()
-                        .unwrap_or(super::native::SERVED_CONNECT),
-                );
-                (Box::new(handler), unauthored(workflow_edition.as_deref())?)
+                let handler = crate::lockstep::ServedModel::new(model.address(), timeout);
+                (
+                    Box::new(handler),
+                    unauthored(workflow_edition.as_deref())?,
+                    execution_horizon,
+                )
             }
             ModelKind::Random => {
+                let execution_horizon = execution_horizon.unwrap_or(1);
                 check_horizon(execution_horizon, None)?;
                 (
                     Box::<crate::model::random::RandomSampleHandler>::default(),
                     unauthored(workflow_edition.as_deref())?,
+                    execution_horizon,
                 )
             }
         };

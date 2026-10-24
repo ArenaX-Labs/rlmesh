@@ -702,7 +702,7 @@ def test_library_defines_preserve_valueless_configuration(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(header_surface.subprocess, "run", run)
-    assert header_surface._library_defines("c++") == [
+    assert header_surface._library_defines("c++", header_surface._driver("c++")) == [
         "-D_LIBCPP_ABI_VERSION=1",
         "-D_LIBCPP_HAS_NO_THREADS",
         "-D_LIBCPP_EMPTY",

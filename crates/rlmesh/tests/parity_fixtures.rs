@@ -253,7 +253,11 @@ fn execute(case: &Json) -> Json {
                     .run(
                         &mut env,
                         RunOptions {
-                            execution_horizon: if variant == "horizon_zero" { 0 } else { 1025 },
+                            execution_horizon: Some(if variant == "horizon_zero" {
+                                0
+                            } else {
+                                1025
+                            }),
                             ..Default::default()
                         },
                     )
@@ -753,7 +757,7 @@ fn warning(variant: &str) -> Json {
         Model::new(Chunk, ModelOptions::default()).unwrap().run(
             &mut env,
             RunOptions {
-                execution_horizon: 2,
+                execution_horizon: Some(2),
                 ..Default::default()
             },
         )
@@ -780,7 +784,7 @@ fn warning(variant: &str) -> Json {
         model(&counts).run(
             &mut env,
             RunOptions {
-                execution_horizon: 2,
+                execution_horizon: Some(2),
                 ..Default::default()
             },
         )

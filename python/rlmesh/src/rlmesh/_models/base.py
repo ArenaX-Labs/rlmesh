@@ -25,6 +25,7 @@ from typing import (
 )
 
 from .._editions import _caller_stacklevel  # pyright: ignore[reportPrivateUsage]
+from .._load_native import load_native
 from .._upgrade import model_session, removed
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
@@ -578,6 +579,9 @@ class ModelBase(Generic[ObsT, ActT]):
     #: down to the horizon.
     native_chunk: int | None = None
 
+    #: A checkpoint may set this in load(); Rust selects and validates it.
+    execution_horizon: int | None = None
+
     def _served(self, address: str) -> Callable[[object], object]:
         """Take ``address`` as a served model's; the predict stand-in it returns refuses."""
         from .._rlmesh import is_v2_address, parse_address
@@ -866,6 +870,7 @@ class ModelBase(Generic[ObsT, ActT]):
         self._instruction: str | None = None
         self._native_run: NativeRunContext | None = None
         self._loaded_native_chunk: int | None = None
+        self._loaded_execution_horizon: int | None = None
         self._loaded_allow_fusion = True
         if autoload:
             self.load()
@@ -898,12 +903,34 @@ class ModelBase(Generic[ObsT, ActT]):
                 )
             native_chunk = int(native_chunk)
         self._loaded_native_chunk = native_chunk
+        loaded = (
+            getattr(policy, "execution_horizon", None) if policy is not None else None
+        )
+        # Validate a checkpoint declaration even when a later run overrides it.
+        if loaded is not None:
+            load_native("resolve_execution_horizon")(loaded, None, None, native_chunk)
+        self._loaded_execution_horizon = loaded
         self._loaded_allow_fusion = allow_fusion
         if policy is not self and policy is not None:
             # A wrapping Model reports its policy's declarations.
             self.native_chunk = native_chunk
+            self.execution_horizon = loaded
             self.allow_fusion = allow_fusion
             setattr(self, "workflow_edition", self._class_workflow_edition())  # noqa: B010
+
+    def _execution_horizon(self, explicit: int | None) -> int:
+        """Marshal declarations to Rust, which selects and validates the horizon."""
+        from ..adapters import ModelSpec
+
+        loaded = self._loaded_execution_horizon
+        if explicit is None and self._served_address is not None:
+            loaded = self._install_worker().default_execution_horizon()
+        timing = (
+            self.spec.timing.execution if isinstance(self.spec, ModelSpec) else None
+        )
+        return load_native("resolve_execution_horizon")(
+            explicit, loaded, timing, self._native_chunk()
+        )
 
     def _native_chunk(self) -> int | None:
         """The native chunk K, read once after ``load()`` (see :meth:`_finish_load`)."""
@@ -1335,7 +1362,7 @@ class ModelBase(Generic[ObsT, ActT]):
         instruction: str | None = None,
         close_env: bool = False,
         trust_entrypoints: bool | None = None,
-        execution_horizon: int = 1,
+        execution_horizon: int | None = None,
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
         workflow_edition: str | None = None,
@@ -1474,7 +1501,7 @@ class ModelBase(Generic[ObsT, ActT]):
         instruction: str | None = None,
         close_env: bool = False,
         trust_entrypoints: bool | None = None,
-        execution_horizon: int = 1,
+        execution_horizon: int | None = None,
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
         workflow_edition: str | None = None,
@@ -1483,12 +1510,11 @@ class ModelBase(Generic[ObsT, ActT]):
         """:meth:`run`'s body, holding the model's run slot."""
         from ._eval import (
             check_episode_caps,
-            check_execution_horizon,
             check_prefetch_lead,
         )
 
         # Everything the options alone decide fails before anything dials.
-        check_execution_horizon(execution_horizon, self._native_chunk())
+        execution_horizon = self._execution_horizon(execution_horizon)
         check_episode_caps(max_episode_steps, max_episode_seconds)
         check_prefetch_lead(prefetch_lead)
         if trial_index_base < 0:
@@ -1831,7 +1857,7 @@ class ModelBase(Generic[ObsT, ActT]):
         *,
         hooks: HooksArg = None,
         view: ViewArg = None,
-        execution_horizon: int = 1,
+        execution_horizon: int | None = None,
         close_env: bool = False,
         workflow_edition: str | None = None,
     ) -> Binding[ObsT, ActT]:
@@ -1850,14 +1876,14 @@ class ModelBase(Generic[ObsT, ActT]):
         """
         from ._binding import Binding
         from ._connect import classify_env_target
-        from ._eval import as_hooks, check_execution_horizon
+        from ._eval import as_hooks
 
         hooks = as_hooks(hooks)
 
         self._calls.check_open("bind()")
         declared = self._declared_workflow_edition(workflow_edition)
         self._require_device_support()
-        check_execution_horizon(execution_horizon, self._native_chunk())
+        execution_horizon = self._execution_horizon(execution_horizon)
         if (
             execution_horizon > 1
             and self._raw_predict_chunk is None
@@ -1959,7 +1985,17 @@ class ModelBase(Generic[ObsT, ActT]):
         token = self._calls.register_serve(worker.stop_serving)
         _serving_models[id(self)] = self
         try:
-            worker.serve(address, name, declared)
+            from ..serve import (
+                _handshake_describe,  # pyright: ignore[reportPrivateUsage]
+            )
+
+            envelope = _handshake_describe(
+                self,
+                "model",
+                None,
+                (declared.workflow_edition if declared is not None else None) or "",
+            )
+            worker.serve(address, name, declared, envelope)
         except BaseException:
             self._calls.deregister_serve(token)
             with contextlib.suppress(Exception):
@@ -1969,7 +2005,11 @@ class ModelBase(Generic[ObsT, ActT]):
         self.close()
 
     def _run_local(
-        self, env_address: str, *, execution_horizon: int = 1, prefetch_lead: int = 0
+        self,
+        env_address: str,
+        *,
+        execution_horizon: int | None = None,
+        prefetch_lead: int = 0,
     ) -> dict[str, Any]:
         """Native worker loop against a remote env, for one episode.
 
@@ -1986,7 +2026,7 @@ class ModelBase(Generic[ObsT, ActT]):
         frames of the current one remain (see :meth:`run`).
         """
         return self._install_worker().run_local(
-            env_address, execution_horizon, prefetch_lead
+            env_address, self._execution_horizon(execution_horizon), prefetch_lead
         )
 
     def _run_local_for_episodes(
@@ -1994,7 +2034,7 @@ class ModelBase(Generic[ObsT, ActT]):
         env_address: str,
         *,
         episodes: int,
-        execution_horizon: int = 1,
+        execution_horizon: int | None = None,
         seeds: list[int] | None = None,
         max_episode_steps: int | None = None,
         max_episode_seconds: float | None = None,
@@ -2015,7 +2055,7 @@ class ModelBase(Generic[ObsT, ActT]):
         return self._install_worker().run_local_for_episodes(
             env_address,
             episodes,
-            execution_horizon,
+            self._execution_horizon(execution_horizon),
             seeds,
             max_episode_steps,
             max_episode_seconds,
@@ -2096,7 +2136,7 @@ def run(
     instruction: str | None = None,
     close_env: bool = False,
     trust_entrypoints: bool | None = None,
-    execution_horizon: int = 1,
+    execution_horizon: int | None = None,
     prefetch_lead: int = 0,
     view: ViewArg = None,
     workflow_edition: str | None = None,

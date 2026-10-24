@@ -231,6 +231,8 @@ pub struct RLMeshModelVtable {
     pub load_keys_len: usize,
     pub reset_options:
         Option<unsafe extern "C" fn(*mut c_void, *const RLMeshValue, *mut *mut RLMeshValue) -> i32>,
+    pub loaded_execution_horizon:
+        Option<unsafe extern "C" fn(*mut c_void, *mut bool, *mut u32) -> i32>,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -291,6 +293,7 @@ struct CPolicy {
     vt: RLMeshModelVtable,
     owner: Arc<Owner>,
     native_chunk: Option<u32>,
+    execution_horizon: Option<u32>,
 }
 // SAFETY: vtable pointer fields are never read after construction; strings,
 // specs and load keys have been deep-copied into the facade's PolicyDecl.
@@ -413,6 +416,12 @@ impl DynPolicy for CPolicy {
             status(unsafe { f(self.owner.ptr, &mut has, &mut value) })?;
             self.native_chunk = has.then_some(value);
         }
+        if let Some(f) = self.vt.loaded_execution_horizon {
+            let (mut has, mut value) = (false, 0);
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
+            status(unsafe { f(self.owner.ptr, &mut has, &mut value) })?;
+            self.execution_horizon = has.then_some(value);
+        }
         Ok(())
     }
     fn allow_fusion(&self) -> bool {
@@ -420,6 +429,9 @@ impl DynPolicy for CPolicy {
     }
     fn native_chunk(&self) -> Option<u32> {
         self.native_chunk
+    }
+    fn execution_horizon(&self) -> Option<u32> {
+        self.execution_horizon
     }
     fn predict(&mut self, o: Value, c: Option<&mut PredictContext<'_>>) -> rlmesh::Result<Value> {
         self.one(o, c, None)
@@ -614,6 +626,7 @@ unsafe fn construct(
         vt,
         owner: Arc::clone(&owner),
         native_chunk: decl.native_chunk,
+        execution_horizon: None,
     };
     let model = new_model(Box::new(policy), decl, opts, config)?;
     let spec = match model.spec() {
@@ -773,6 +786,32 @@ pub extern "C" fn rlmesh_model_native_chunk(
         }?
         .local("native_chunk")
         .map_or(None, Model::native_chunk);
+        if out.is_null() || out_has.is_null() {
+            return Err(CapiError::invalid_arg("null out"));
+        }
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_has, k.is_some())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, k.unwrap_or_default())
+        }
+    });
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_model_execution_horizon(
+    model: *const RLMeshModel,
+    out_has: *mut bool,
+    out: *mut u32,
+) {
+    let _ = guard(|| {
+        let k = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(model)
+        }?
+        .local("execution_horizon")
+        .map_or(None, Model::execution_horizon);
         if out.is_null() || out_has.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
@@ -1041,6 +1080,7 @@ mod tests {
             load_keys: null(),
             load_keys_len: 0,
             reset_options: None,
+            loaded_execution_horizon: None,
         }
     }
     struct Tiny {

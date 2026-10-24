@@ -519,3 +519,22 @@ def test_a_wrapped_callable_object_keeps_its_reset_and_close_hooks() -> None:
     coerced = coerce_model(policy, spec=None)
     assert coerced.on_episode_end == policy.reset
     assert coerced.on_close == policy.close
+
+
+@pytest.mark.parametrize("invalid", [-1, 0, 1025, 2**64])
+def test_loaded_execution_horizon_is_validated_by_rust(invalid):
+    from rlmesh import Model
+    from rlmesh._rlmesh import resolve_execution_horizon
+
+    class Invalid(Model):
+        def load(self):
+            self.execution_horizon = invalid
+
+        def predict(self, observation):
+            return 0
+
+    with pytest.raises(ValueError, match="execution_horizon must be"):
+        Invalid()
+    with pytest.raises(ValueError, match="exceeds the model's declared native_chunk"):
+        resolve_execution_horizon(None, 4, 2, 3)
+    assert resolve_execution_horizon(1, 4, 2, 3) == 1

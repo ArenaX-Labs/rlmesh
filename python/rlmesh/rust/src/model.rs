@@ -988,6 +988,7 @@ impl PyModel {
         name: &str,
         workflow_edition: Option<&str>,
         close: Duration,
+        envelope: Option<&str>,
     ) -> PyResult<()> {
         let participant = if address.trim().is_empty() {
             name.to_string()
@@ -995,9 +996,11 @@ impl PyModel {
             format!("{}/{name}", address.trim().trim_end_matches('/'))
         };
         // The describe envelope `rlmesh.serve` stamped for the handshake.
-        let describe = rlmesh::binding::peer_info_override()
-            .and_then(|info| info.extra.get(rlmesh::DESCRIBE_METADATA_KEY).cloned())
-            .unwrap_or_default();
+        let describe = envelope.map(str::to_owned).unwrap_or_else(|| {
+            rlmesh::binding::peer_info_override()
+                .and_then(|info| info.extra.get(rlmesh::DESCRIBE_METADATA_KEY).cloned())
+                .unwrap_or_default()
+        });
         let service = Arc::new(
             rlmesh::lockstep::ModelService::new(self.build_handler(), describe)
                 .declaring(workflow_edition),
@@ -1048,6 +1051,19 @@ impl PyModel {
             })
         })
     }
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction(module = "rlmesh._rlmesh"))]
+#[pyfunction]
+#[pyo3(signature = (explicit=None, loaded=None, timing=None, native_chunk=None))]
+pub fn resolve_execution_horizon(
+    explicit: Option<i128>,
+    loaded: Option<i128>,
+    timing: Option<i128>,
+    native_chunk: Option<u32>,
+) -> PyResult<u32> {
+    rlmesh::binding::resolve_execution_horizon(explicit, loaded, timing, native_chunk)
+        .map_err(to_py_err)
 }
 
 #[pymethods]
@@ -1167,6 +1183,19 @@ impl PyModel {
     /// The workers of the models this model calls from its predict, by the
     /// Python `id` of each: a run, bind or serve of this model drives them
     /// on its episodes.
+    /// Read this served model's default through its describe envelope.
+    fn default_execution_horizon(&self, py: Python<'_>) -> PyResult<Option<u32>> {
+        let Some((address, timeout)) = &self.served else {
+            return Ok(None);
+        };
+        py.detach(|| {
+            model_runtime().block_on(rlmesh::lockstep::ServedModel::default_execution_horizon(
+                address, *timeout,
+            ))
+        })
+        .map_err(to_py_err)
+    }
+
     fn set_inner_models(&self, inners: Vec<(u64, Py<PyModel>)>) {
         *self.inners.lock().expect("inner models lock poisoned") = inners;
     }
@@ -1274,13 +1303,14 @@ impl PyModel {
 
     /// Serves the model as the participant `name` in the session at
     /// `address`, until a signal or [`stop_serving`](Self::stop_serving).
-    #[pyo3(signature = (address, name, options=None))]
+    #[pyo3(signature = (address, name, options=None, envelope=None))]
     fn serve(
         &self,
         py: Python<'_>,
         address: &str,
         name: &str,
         options: Option<PyServeOptions>,
+        envelope: Option<&str>,
     ) -> PyResult<()> {
         let run_span = tracing::info_span!("rlmesh.model.serve", address = address);
         let _run_enter = run_span.enter();
@@ -1294,6 +1324,7 @@ impl PyModel {
             name,
             options.workflow_edition.as_deref(),
             close,
+            envelope,
         )?;
         let _ = total_guard.finish(0);
         Ok(())
@@ -1311,6 +1342,7 @@ class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None, reset_options_fn: collections.abc.Callable[[dict[str, typing.Any]], typing.Any] | None = None) -> None: ...
     @staticmethod
     def served(address: str, timeout_s: float = 30.0) -> PyModel: ...
+    def default_execution_horizon(self) -> int | None: ...
     def set_inner_models(self, inners: list[tuple[int, PyModel]]) -> None: ...
     @staticmethod
     def random_sample() -> PyModel: ...
@@ -1318,7 +1350,7 @@ class PyModel:
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
-    def serve(self, address: str, name: str, options: ServeOptions | None = None) -> None: ...
+    def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None) -> None: ...
 "#
     }
 }

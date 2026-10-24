@@ -84,7 +84,8 @@ pub struct RLMeshRunOptions {
     pub close_env: bool,
     pub has_trust_entrypoints: bool,
     pub trust_entrypoints: bool,
-    pub _reserved: [u8; 6],
+    pub has_execution_horizon: bool,
+    pub _reserved: [u8; 5],
     pub instruction: *const c_char,
     pub view: *const crate::view::RLMeshView,
 }
@@ -105,7 +106,7 @@ pub(crate) unsafe fn options(
 ) -> Result<rlmesh::RunOptions<'static>, CapiError> {
     let mut r = rlmesh::RunOptions::default();
     if let Some(o) = unsafe { sizing::read(p, "RLMeshRunOptions") }? {
-        if o._reserved != [0; 6] {
+        if o._reserved != [0; 5] {
             return Err(CapiError::type_error(
                 "reserved run option bytes must be zero",
             ));
@@ -127,7 +128,8 @@ pub(crate) unsafe fn options(
         };
         r.close_env = o.close_env;
         r.trust_entrypoints = o.has_trust_entrypoints.then_some(o.trust_entrypoints);
-        r.execution_horizon = o.execution_horizon;
+        r.execution_horizon =
+            (o.has_execution_horizon || o.execution_horizon != 0).then_some(o.execution_horizon);
         r.prefetch_lead = o.prefetch_lead;
         r.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
         r.instruction = unsafe { ffi::text(o.instruction) }?;

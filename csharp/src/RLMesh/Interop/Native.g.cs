@@ -1556,6 +1556,21 @@ namespace RLMesh.Interop
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal unsafe delegate RLMeshStatus RLMeshPredictFn(void* user_data, [NativeTypeName("const RLMeshValue *")] RLMeshValue* value, RLMeshValue** @out);
 
+    internal unsafe partial struct RLMeshTiming
+    {
+        [NativeTypeName("size_t")]
+        public UIntPtr struct_size;
+
+        [NativeTypeName("_Bool")]
+        public byte has_execution;
+
+        [NativeTypeName("uint8_t[3]")]
+        public fixed byte _reserved[3];
+
+        [NativeTypeName("uint32_t")]
+        public uint execution;
+    }
+
     internal partial struct RLMeshAdapterVtable
     {
         [NativeTypeName("size_t")]
@@ -2034,6 +2049,9 @@ namespace RLMesh.Interop
 
         [NativeTypeName("RLMeshStatus (*)(void *, const RLMeshValue *, RLMeshValue **)")]
         public IntPtr reset_options;
+
+        [NativeTypeName("RLMeshStatus (*)(void *, _Bool *, uint32_t *)")]
+        public IntPtr loaded_execution_horizon;
     }
 
     internal unsafe partial struct RLMeshModelOptions
@@ -2511,8 +2529,11 @@ namespace RLMesh.Interop
         [NativeTypeName("_Bool")]
         public byte trust_entrypoints;
 
-        [NativeTypeName("uint8_t[6]")]
-        public fixed byte _reserved[6];
+        [NativeTypeName("_Bool")]
+        public byte has_execution_horizon;
+
+        [NativeTypeName("uint8_t[5]")]
+        public fixed byte _reserved[5];
 
         [NativeTypeName("const char *")]
         public sbyte* instruction;
@@ -2539,10 +2560,16 @@ namespace RLMesh.Interop
         [NativeTypeName("_Bool")]
         public byte close_env;
 
-        [NativeTypeName("uint8_t[3]")]
-        public fixed byte _reserved[3];
+        [NativeTypeName("_Bool")]
+        public byte has_execution_horizon;
+
+        [NativeTypeName("uint8_t[2]")]
+        public fixed byte _reserved[2];
 
         public RLMeshRunHooks* hooks;
+
+        [NativeTypeName("const RLMeshView *")]
+        public RLMeshView* view;
     }
 
     internal partial struct RLMeshRemoteEnv
@@ -3368,6 +3395,12 @@ namespace RLMesh.Interop
         public static extern RLMeshStatus rlmesh_model_spec_with_allow([NativeTypeName("const RLMeshModelSpec *")] RLMeshModelSpec* spec, [NativeTypeName("const char *const *")] sbyte** allow, [NativeTypeName("size_t")] UIntPtr allow_len, RLMeshModelSpec** @out);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern RLMeshStatus rlmesh_model_spec_with_timing([NativeTypeName("const RLMeshModelSpec *")] RLMeshModelSpec* spec, [NativeTypeName("const RLMeshTiming *")] RLMeshTiming* timing, RLMeshModelSpec** @out);
+
+        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern RLMeshStatus rlmesh_model_spec_timing([NativeTypeName("const RLMeshModelSpec *")] RLMeshModelSpec* spec, RLMeshTiming* @out);
+
+        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         [return: NativeTypeName("const char *const *")]
         public static extern sbyte** rlmesh_model_spec_allow([NativeTypeName("const RLMeshModelSpec *")] RLMeshModelSpec* spec, [NativeTypeName("size_t *")] UIntPtr* out_len);
 
@@ -3748,6 +3781,9 @@ namespace RLMesh.Interop
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern void rlmesh_model_native_chunk([NativeTypeName("const RLMeshModel *")] RLMeshModel* model, [NativeTypeName("_Bool *")] bool* out_has, [NativeTypeName("uint32_t *")] uint* @out);
+
+        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void rlmesh_model_execution_horizon([NativeTypeName("const RLMeshModel *")] RLMeshModel* model, [NativeTypeName("_Bool *")] bool* out_has, [NativeTypeName("uint32_t *")] uint* @out);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern RLMeshStatus rlmesh_model_workflow_edition([NativeTypeName("const RLMeshModel *")] RLMeshModel* model, [NativeTypeName("_Bool *")] bool* out_has, RLMeshBytes* @out);

@@ -365,6 +365,69 @@ pub unsafe extern "C" fn rlmesh_model_spec_new(
         }
     })
 }
+/// How a model paces its actions, as Rust's `adapters::Timing`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RLMeshTiming {
+    pub struct_size: usize,
+    pub has_execution: bool,
+    pub _reserved: [u8; 3],
+    pub execution: u32,
+}
+/// The same spec pacing its actions by `timing` (Rust's
+/// `ModelSpec::with_timing`); a fresh handle in `*out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_with_timing(
+    spec: *const RLMeshModelSpec,
+    timing: *const RLMeshTiming,
+    out: *mut *mut RLMeshModelSpec,
+) -> RLMeshStatus {
+    guard(|| {
+        unsafe {
+            /* SAFETY: the FFI caller supplies valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let spec = unsafe { spec.as_ref() }
+            .ok_or_else(|| CapiError::invalid_arg("null RLMeshModelSpec"))?;
+        let t = unsafe { sized(timing, "RLMeshTiming") }?;
+        if t._reserved != [0; 3] {
+            return Err(CapiError::type_error(
+                "RLMeshTiming reserved bytes must be zero",
+            ));
+        }
+        let value = spec.0.clone().with_timing(a::Timing {
+            execution: t.has_execution.then_some(t.execution),
+        })?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshModelSpec::new(value))))
+        }
+    })
+}
+/// How the spec paces its actions, written into `*out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_timing(
+    spec: *const RLMeshModelSpec,
+    out: *mut RLMeshTiming,
+) -> RLMeshStatus {
+    guard(|| {
+        let spec = unsafe { spec.as_ref() }
+            .ok_or_else(|| CapiError::invalid_arg("null RLMeshModelSpec"))?;
+        let execution = spec.0.timing().execution;
+        unsafe {
+            out_struct(
+                out,
+                RLMeshTiming {
+                    struct_size: std::mem::size_of::<RLMeshTiming>(),
+                    has_execution: execution.is_some(),
+                    _reserved: [0; 3],
+                    execution: execution.unwrap_or(0),
+                },
+                "RLMeshTiming",
+            )
+        }
+    })
+}
 /// The same spec accepting the named projections in `allow` (Rust's
 /// `ModelSpec::with_allow`); a fresh handle in `*out`.
 #[unsafe(no_mangle)]

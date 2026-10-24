@@ -43,6 +43,7 @@ pub fn reject_unknowns_env(tags: &EnvTags) -> Result<(), String> {
 
 /// Reject any bare unknown field **or** unknown leaf kind in a model spec.
 pub fn reject_unknowns_model(spec: &ModelSpec) -> Result<(), String> {
+    spec.timing.check()?;
     walk_input(&spec.input, &NodePath::root(), true)?;
     reject_action(&spec.output)?;
     reject_unsanctioned_roles_model(spec, RolePolicy::Passthrough)

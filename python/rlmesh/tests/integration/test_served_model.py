@@ -447,3 +447,92 @@ def test_a_runs_resolve_advisories_reach_its_result_local_or_served(
     notes = [str(note) for note in local.advisories]
     assert any("rebind_camera (allowed)" in note for note in notes), notes
     assert [str(note) for note in served.advisories] == notes
+
+
+@pytest.mark.parametrize(
+    "loaded,timing,override,expected",
+    [
+        (3, 2, None, 3),
+        (None, 2, None, 2),
+        (None, None, None, 1),
+        (3, 2, 1, 1),
+    ],
+)
+@pytest.mark.parametrize("remote", [False, True])
+def test_horizon_defaults_use_rust_selection_and_preserve_action_bytes(
+    session_port: int,
+    loaded: int | None,
+    timing: int | None,
+    override: int | None,
+    expected: int,
+    remote: bool,
+) -> None:
+    import contextlib
+
+    import numpy as np
+    import rlmesh
+    import rlmesh.adapters as adapt
+    from rlmesh.numpy import Model
+
+    action = adapt.Action(adapt.Actuator(adapt.ACTION_JOINT_POS, dim=1))
+    tags = adapt.EnvTags(adapt.StateTag(adapt.JOINT_POS), action)
+
+    class World:
+        observation_space = rlmesh.spaces.Box(-10.0, 10.0, [1], "float32")
+        action_space = rlmesh.spaces.Box(-10.0, 10.0, [1], "float32")
+
+        def __init__(self):
+            self.actions = []
+
+        def reset(self, *, seed=None, options=None):
+            self.actions.clear()
+            return np.zeros(1, np.float32), {}
+
+        def step(self, value):
+            self.actions.append(np.asarray(value, dtype=np.float32).tobytes())
+            return np.zeros(1, np.float32), 0.0, len(self.actions) == 6, False, {}
+
+        def close(self):
+            pass
+
+    seen = []
+
+    class Walk(Model):
+        native_chunk = 3
+        spec = adapt.ModelSpec(
+            adapt.State(adapt.JOINT_POS, dim=1),
+            action,
+            timing=adapt.Timing(execution=timing),
+        )
+
+        def load(self):
+            self.execution_horizon = loaded
+
+        def predict_chunk(self, observation, execution_horizon):
+            seen.append(execution_horizon)
+            return np.arange(3, dtype=np.float32).reshape(3, 1)
+
+    model = Walk()
+    # Post-load mutations do not change a checkpoint declaration.
+    model.execution_horizon = 1
+    if loaded is not None:
+        assert rlmesh.describe(model)["execution_horizon"] == loaded
+    scope = _served(model, session_port) if remote else contextlib.nullcontext(None)
+    with scope as address:
+        policy = Model(address) if remote else model
+        world = World()
+        policy.run(adapt.tag(world, tags), episodes=1, execution_horizon=override)
+        first = list(world.actions)
+        assert seen == [expected] * (6 // expected)
+        seen.clear()
+        # Holding the chosen horizon fixed keeps the exact action bytes.
+        policy.run(adapt.tag(world, tags), episodes=1, execution_horizon=expected)
+        assert world.actions == first
+        assert seen == [expected] * (6 // expected)
+        seen.clear()
+        with policy.bind(adapt.tag(world, tags), execution_horizon=override) as binding:
+            binding.reset()
+            while not binding.done:
+                binding.step()
+        assert world.actions == first
+        assert seen == [expected] * (6 // expected)

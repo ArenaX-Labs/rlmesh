@@ -999,6 +999,48 @@ impl ServedModel {
             other => Err(unexpected(&other)),
         }
     }
+
+    /// The execution horizon the model at `address` runs at when a run names
+    /// none, read once from its describe envelope over a connection of its
+    /// own: the horizon its `load()` chose, else its spec's
+    /// `timing.execution`; `None` when it declares neither.
+    pub async fn default_execution_horizon(
+        address: &str,
+        timeout: Duration,
+    ) -> Result<Option<u32>, Error> {
+        let probe = Self::new(address, timeout);
+        let described = probe.describe().await;
+        probe.remote.close().await;
+        envelope_execution_horizon(&described?)
+    }
+}
+
+/// The horizon a describe envelope declares: its `execution_horizon`, else
+/// its model spec's `timing.execution` (an empty envelope declares none).
+pub(crate) fn envelope_execution_horizon(envelope: &str) -> Result<Option<u32>, Error> {
+    if envelope.trim().is_empty() {
+        return Ok(None);
+    }
+    let envelope: serde_json::Value = serde_json::from_str(envelope)
+        .map_err(|why| Error::Protocol(format!("model describe envelope: {why}")))?;
+    let value = envelope
+        .get("execution_horizon")
+        .filter(|v| !v.is_null())
+        .or_else(|| {
+            envelope
+                .pointer("/model_spec/timing/execution")
+                .filter(|v| !v.is_null())
+        });
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let horizon = value
+        .as_u64()
+        .and_then(|h| u32::try_from(h).ok())
+        .ok_or_else(|| {
+            Error::invalid_argument(format!("invalid model execution_horizon: {value}"))
+        })?;
+    super::super::run::resolve_execution_horizon(Some(horizon.into()), None, None, None).map(Some)
 }
 
 fn unexpected(reply: &ModelReply) -> Error {
@@ -1269,5 +1311,32 @@ impl ModelRouteSetup for ServedRoutes {
             })
             .await
             .map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod horizon_envelope_tests {
+    use super::envelope_execution_horizon as read;
+
+    #[test]
+    fn served_timing_is_validated_and_loaded_timing_wins() {
+        assert_eq!(read("").unwrap(), None);
+        assert_eq!(read("{}").unwrap(), None);
+        assert_eq!(
+            read(r#"{"model_spec":{"timing":{"execution":2}}}"#).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            read(r#"{"execution_horizon":3,"model_spec":{"timing":{"execution":2}}}"#).unwrap(),
+            Some(3)
+        );
+        assert_eq!(
+            read(r#"{"execution_horizon":null,"model_spec":{"timing":{"execution":2}}}"#).unwrap(),
+            Some(2)
+        );
+        for bad in ["-1", "0", "1025", "4294967296", "1.5", r#""3""#] {
+            assert!(read(&format!(r#"{{"execution_horizon":{bad}}}"#)).is_err());
+        }
+        assert!(read("broken").is_err());
     }
 }

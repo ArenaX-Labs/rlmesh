@@ -194,7 +194,7 @@ fn run_once(shape: &Shape) -> Traces {
             RunOptions {
                 episodes: Some(shape.episodes),
                 seeds: shape.seeds.clone(),
-                execution_horizon: shape.horizon,
+                execution_horizon: Some(shape.horizon),
                 prefetch_lead: shape.prefetch,
                 hooks: Some(&mut hooks),
                 workflow_edition: Some("2026.06".into()),

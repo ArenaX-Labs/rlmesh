@@ -429,7 +429,12 @@ def _substitute_encodings(
 
     shadow_input = _map_leaves(model_spec.input, shadow_leaf)
     shadow_action = _shadow_action(model_spec.output, act_shims)
-    shadow = ModelSpec(input=shadow_input, output=shadow_action, allow=model_spec.allow)
+    shadow = ModelSpec(
+        input=shadow_input,
+        output=shadow_action,
+        allow=model_spec.allow,
+        timing=model_spec.timing,
+    )
     return shadow, obs_shims, shim_parts, tuple(act_shims)
 
 
@@ -490,6 +495,8 @@ def _model_wire(
     }
     if model_spec.allow:
         wire["allow"] = list(model_spec.allow)
+    if model_spec.timing.execution is not None:
+        wire["timing"] = {"execution": model_spec.timing.execution}
     return wire, customs
 
 

@@ -39,8 +39,9 @@ fn defaults_match_python_literals() {
     assert!(!value.trust_entrypoints, "rlmesh:Model.trust_entrypoints");
     let value = rlmesh::BindOptions::default();
     assert!(value.hooks.is_none(), "rlmesh:Model.bind.hooks");
-    assert_eq!(
-        value.execution_horizon, 1,
+    assert!(value.view.is_none(), "rlmesh:Model.bind.view");
+    assert!(
+        value.execution_horizon.is_none(),
         "rlmesh:Model.bind.execution_horizon"
     );
     assert!(!value.close_env, "rlmesh:Model.bind.close_env");
@@ -66,8 +67,8 @@ fn defaults_match_python_literals() {
         value.trust_entrypoints.is_none(),
         "rlmesh:Model.run.trust_entrypoints"
     );
-    assert_eq!(
-        value.execution_horizon, 1,
+    assert!(
+        value.execution_horizon.is_none(),
         "rlmesh:Model.run.execution_horizon"
     );
     assert_eq!(value.prefetch_lead, 0, "rlmesh:Model.run.prefetch_lead");
@@ -79,7 +80,7 @@ fn defaults_match_python_literals() {
         value.workflow_edition.is_none(),
         "rlmesh:Model.run.workflow_edition"
     );
-    assert!(value.view.is_none(), "rlmesh:run.view");
+    assert!(value.view.is_none(), "rlmesh:Model.run.view");
     let value = rlmesh::ModelServeOptions::default();
     assert!(value.options.is_none(), "rlmesh:Model.serve.options");
     assert!(value.name.is_none(), "rlmesh:Model.serve.name");
@@ -507,5 +508,10 @@ fn defaults_match_python_literals() {
         value.dtype.to_string(),
         "int64",
         "rlmesh.spaces:Discrete.dtype"
+    );
+    let value = rlmesh::adapters::Timing::default();
+    assert!(
+        value.execution.is_none(),
+        "rlmesh.adapters:Timing.execution"
     );
 }

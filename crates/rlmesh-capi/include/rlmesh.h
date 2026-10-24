@@ -2434,6 +2434,24 @@ RLMESH_API const RLMeshAction* rlmesh_model_spec_output(const RLMeshModelSpec* s
 RLMESH_API RLMeshStatus rlmesh_model_spec_with_allow(const RLMeshModelSpec* spec,
                                                      const char* const* allow, size_t allow_len,
                                                      RLMeshModelSpec** out);
+/* How a model paces its actions: execution (with has_execution) is the
+ * execution horizon a run uses when neither the run nor the model's load()
+ * names one, in 1..=1024. */
+typedef struct RLMeshTiming {
+  size_t struct_size;
+  bool has_execution;
+  uint8_t _reserved[3];
+  uint32_t execution;
+} RLMeshTiming;
+#define RLMESH_TIMING_MIN_SIZE sizeof(RLMeshTiming)
+#define RLMESH_TIMING_INIT {sizeof(RLMeshTiming), false, {0, 0, 0}, 0}
+/* The same spec pacing its actions by timing (an execution outside 1..=1024
+ * is RLMESH_ERR_INVALID_ARGUMENT). */
+RLMESH_API RLMeshStatus rlmesh_model_spec_with_timing(const RLMeshModelSpec* spec,
+                                                      const RLMeshTiming* timing,
+                                                      RLMeshModelSpec** out);
+/* How the spec paces its actions; out->struct_size must be set. */
+RLMESH_API RLMeshStatus rlmesh_model_spec_timing(const RLMeshModelSpec* spec, RLMeshTiming* out);
 /* The projections the spec accepts, borrowed for the spec's lifetime. */
 RLMESH_API const char* const* rlmesh_model_spec_allow(const RLMeshModelSpec* spec, size_t* out_len);
 RLMESH_API RLMeshStatus rlmesh_env_tags_new(const RLMeshObsNode* observation,
@@ -3093,10 +3111,14 @@ typedef struct RLMeshModelVtable {
    * NULL to add none. NULL slot = adds none. */
   RLMeshStatus (*reset_options)(void* user_data, const RLMeshValue* episode,
                                 RLMeshValue** out_options);
+  /* The execution horizon load() chose for its checkpoint, read once after
+   * load (as loaded_native_chunk): a run naming none executes at it, above the
+   * spec's timing. NULL slot or *out_has false = none. */
+  RLMeshStatus (*loaded_execution_horizon)(void* user_data, bool* out_has, uint32_t* out);
 } RLMeshModelVtable;
 #define RLMESH_MODEL_VTABLE_INIT                                                               \
   {sizeof(RLMeshModelVtable),     NULL, NULL,  NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, \
-   {RLMESH_SPEC_KIND_NONE, NULL}, true, false, {0},  0,    NULL, NULL, 0,    NULL}
+   {RLMESH_SPEC_KIND_NONE, NULL}, true, false, {0},  0,    NULL, NULL, 0,    NULL, NULL}
 
 typedef struct RLMeshModelOptions {
   size_t struct_size;
@@ -3160,6 +3182,9 @@ RLMESH_API void rlmesh_model_free(RLMeshModel* model);
 RLMESH_API RLMeshStatus rlmesh_model_spec(const RLMeshModel* model, RLMeshSpecArg* out);
 RLMESH_API bool rlmesh_model_allow_fusion(const RLMeshModel* model);
 RLMESH_API void rlmesh_model_native_chunk(const RLMeshModel* model, bool* out_has, uint32_t* out);
+/* The checkpoint's execution horizon, read once after load(). */
+RLMESH_API void rlmesh_model_execution_horizon(const RLMeshModel* model, bool* out_has,
+                                               uint32_t* out);
 RLMESH_API RLMeshStatus rlmesh_model_workflow_edition(const RLMeshModel* model, bool* out_has,
                                                       RLMeshBytes* out);
 RLMESH_API int64_t rlmesh_predict_seed(int64_t episode_seed, uint64_t predict_index);
@@ -3529,14 +3554,15 @@ typedef struct RLMeshRunOptions {
   double max_episode_seconds;
   uint64_t prefetch_lead;
   uint64_t trial_index_base;
-  uint32_t execution_horizon;
+  uint32_t execution_horizon; /* with has_execution_horizon; unset: the model's own, else 1 */
   bool has_episodes;
   bool has_max_episode_steps;
   bool has_max_episode_seconds;
   bool close_env;
   bool has_trust_entrypoints;
   bool trust_entrypoints;
-  uint8_t _reserved[6];
+  bool has_execution_horizon;
+  uint8_t _reserved[5];
   const char* instruction; /* NULL = None; copied. */
   const RLMeshView* view;  /* NULL = None; copied and validated by the facade. */
 } RLMeshRunOptions;
@@ -3553,7 +3579,8 @@ typedef struct RLMeshRunOptions {
    0.0,                         \
    0,                           \
    0,                           \
-   1,                           \
+   0,                           \
+   false,                       \
    false,                       \
    false,                       \
    false,                       \
@@ -3583,16 +3610,19 @@ typedef struct RLMeshBinding RLMeshBinding;
 typedef struct RLMeshBindOptions {
   size_t struct_size;
   const char* workflow_edition; /* NULL = None; copied. */
-  uint32_t execution_horizon;
+  uint32_t execution_horizon;   /* with has_execution_horizon; unset: the model's own, else 1 */
   bool close_env;
-  uint8_t _reserved[3];
+  bool has_execution_horizon;
+  uint8_t _reserved[2];
   /* Borrowed until the binding is freed (NULL = none): the binding is their
    * run context, an episode reset over before it ended counts as truncated,
    * and on_run_end fires at close. */
   RLMeshRunHooks* hooks;
+  const RLMeshView* view; /* NULL = None; native loop refuses a set view (RUN-4). */
 } RLMeshBindOptions;
 #define RLMESH_BIND_OPTIONS_MIN_SIZE offsetof(RLMeshBindOptions, hooks)
-#define RLMESH_BIND_OPTIONS_INIT {sizeof(RLMeshBindOptions), NULL, 1, false, {0, 0, 0}, NULL}
+#define RLMESH_BIND_OPTIONS_INIT \
+  {sizeof(RLMeshBindOptions), NULL, 0, false, false, {0, 0}, NULL, NULL}
 RLMESH_API RLMeshStatus rlmesh_bind(RLMeshModelTarget model, RLMeshEnvTarget target,
                                     const RLMeshBindOptions* options /* NULL = INIT */,
                                     RLMeshBinding** out);

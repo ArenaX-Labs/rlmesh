@@ -23,7 +23,8 @@ mod tests;
 #[cfg(feature = "lockstep")]
 pub use bind::Binding;
 pub use hooks::{RunContext, RunHooks};
-pub use options::{BindOptions, RunOptions};
+pub(crate) use options::check_horizon;
+pub use options::{BindOptions, RunOptions, resolve_execution_horizon};
 pub use results::{EpisodeResult, RunResult, RunResultSaveOptions, StepEvent, TelemetryRow};
 pub use targets::{EnvTarget, ModelTarget, RANDOM_SAMPLE, RandomSample};
 

@@ -559,6 +559,7 @@ struct BatchCounter {
   }
 };
 struct ChunkPolicy {
+  std::optional<uint32_t> loaded_execution_horizon() { return 2; }
   Value predict(const Value&) { return 0; }
   static constexpr std::optional<uint32_t> native_chunk = 2;
   int* calls;
@@ -637,6 +638,9 @@ void vector_and_chunks() {
   int calls = 0;
   Env env(Counter{});
   Model chunk(ChunkPolicy{&calls});
+  assert(chunk.run(env).total_steps() == 2);
+  assert(calls == 1);
+  calls = 0;
   assert(chunk.run(env, rlmesh::RunOptions{}.with_execution_horizon(2)).total_steps() == 2);
   assert(calls == 1);
   auto batch_policy = [](const Value&) { return BatchCounter{}.observations(); };
@@ -1017,6 +1021,16 @@ void adapters_readers_recorder() {
   assert(std::hash<Advisory>{}({AdvisorySeverity::Info, "hello"}) ==
          std::hash<Advisory>{}({AdvisorySeverity::Info, "hello"}));
   assert(ModelSpec::from_dict(spec.to_dict()) == spec);
+  ModelSpec timed(spec.input(), spec.output(), {}, Timing{}.with_execution(8));
+  assert(timed.timing().execution == 8);
+  assert(ModelSpec::from_json(timed.to_json()) == timed);
+  bool refused_timing = false;
+  try {
+    ModelSpec invalid(spec.input(), spec.output(), {}, Timing{}.with_execution(0));
+  } catch (const std::invalid_argument&) {
+    refused_timing = true;
+  }
+  assert(refused_timing);
   assert(ModelSpec::from_metadata(spec.to_metadata()) == spec);
   assert(EnvTags::from_json(tags.to_json()) == tags);
   assert(tags.observation_roles().states.size() == 1);

@@ -16,6 +16,17 @@ from .model_serialization import model_input_from_dict, model_input_to_dict
 
 
 @dataclass(frozen=True)
+class Timing:
+    """Action pacing used unless load() or a run overrides it.
+
+    Attributes:
+        execution: Actions executed before re-planning (1..=1024), or None.
+    """
+
+    execution: int | None = None
+
+
+@dataclass(frozen=True)
 class ModelSpec:
     """Declarative description of a model's input payload tree and action output.
 
@@ -31,6 +42,7 @@ class ModelSpec:
     Attributes:
         input: The model input tree.
         output: Layout of the action vector produced by the model.
+        timing: Action pacing used when the run and load() name no horizon.
         allow: Named projections (lossy fits) the model accepts. Without one,
             the pairing it fits is refused; with it, the fit is applied and
             recorded in ``describe()`` and the run's advisories:
@@ -51,6 +63,7 @@ class ModelSpec:
     input: InputNode
     output: Action
     allow: tuple[str, ...] = ()
+    timing: Timing = Timing()
 
     def __hash__(self) -> int:
         """Hash consistently with the generated order-insensitive ``__eq__``.
@@ -62,7 +75,7 @@ class ModelSpec:
         key-order-canonical rendering (see :func:`hashable_node`); it applies no
         serialization, so a Custom-input spec stays hashable.
         """
-        return hash((hashable_node(self.input), self.output, self.allow))
+        return hash((hashable_node(self.input), self.output, self.allow, self.timing))
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of this spec.
@@ -83,6 +96,8 @@ class ModelSpec:
         }
         if self.allow:
             raw["allow"] = list(self.allow)
+        if self.timing.execution is not None:
+            raw["timing"] = {"execution": self.timing.execution}
         return normalize_spec("model", raw, allow_custom=False)
 
     def to_json(self) -> str:
@@ -134,6 +149,7 @@ class ModelSpec:
             input=model_input_from_dict(canonical["input"]),
             output=action_from_dict(canonical["output"]),
             allow=tuple(canonical.get("allow", ())),
+            timing=Timing(execution=canonical.get("timing", {}).get("execution")),
         )
 
     @classmethod

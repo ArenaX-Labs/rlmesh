@@ -70,10 +70,11 @@ pub mod v1 {
         Field, FrameLaw, FramePolicy, FrameRef, Image, ImageLayout, ImageTag, InputNode, ModelLeaf,
         ModelSpec, Normalize, ObsLeaf, ObsNode, PROVENANCES, PartSource, Provenance, REFERENCES,
         ReferenceLaw, RolePolicy, RotationEncoding, RotationLiteral, SplitLayout, StackPad, State,
-        StateContainer, StateEncoding, StateTag, Text, TextContainer, TextTag, UnknownFeature,
-        reject_bare_fields_env, reject_bare_fields_model, reject_unframed_roles_env,
-        reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
-        reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, render_requests,
+        StateContainer, StateEncoding, StateTag, Text, TextContainer, TextTag, Timing,
+        UnknownFeature, reject_bare_fields_env, reject_bare_fields_model,
+        reject_unframed_roles_env, reject_unframed_roles_model, reject_unknowns_env,
+        reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
+        render_requests,
     };
     pub use crate::stateful::{
         EncodingTransform, FrameBuffers, MAX_EXECUTION_HORIZON, NoEncodings, apply_actions,

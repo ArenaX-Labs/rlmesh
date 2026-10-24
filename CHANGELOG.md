@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+- Models declare action pacing with `ModelSpec(timing=Timing(execution=K))` or set `execution_horizon` in `load()`, read once after loading. Rust selects and validates `run`/`bind` overrides, then the checkpoint's value, then spec timing, then 1. Served models publish the loaded value in their describe envelope. Python, Rust, C and C++ use the same selection policy; C# receives the regenerated C interop.
+
 This release gives the Rust facade crate (`rlmesh`), the C API (`rlmesh.h`, now C ABI 6) and the C++ wrapper (`rlmesh.hpp`, now C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
 ### Breaking

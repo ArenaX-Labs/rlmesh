@@ -89,12 +89,31 @@ pub const RIGHT_LEG: &str = "right_leg";
 /// The canonical spelling or ordered vocabulary.
 pub const PARTS: &[&str] = &[LEFT_ARM, RIGHT_ARM, HEAD, TORSO, BASE, LEFT_LEG, RIGHT_LEG];
 
+/// How a model paces its actions, as Python's `Timing`: `execution` is the
+/// execution horizon (actions of each predicted chunk executed before
+/// re-planning) a run uses when neither the run nor the model's `load()`
+/// names one, in `1..=1024`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Timing {
+    /// The spec's default execution horizon; `None` leaves it to the run (1).
+    pub execution: Option<u32>,
+}
+impl fmt::Display for Timing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.execution {
+            Some(execution) => write!(f, "Timing(execution={execution})"),
+            None => f.write_str("Timing(execution=None)"),
+        }
+    }
+}
+
 /// A validated immutable model input tree and action layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelSpec {
     input: InputNode,
     output: Action,
     allow: Vec<String>,
+    timing: Timing,
 }
 impl ModelSpec {
     /// Construct and validate a model spec from its input and action
@@ -110,7 +129,23 @@ impl ModelSpec {
             input,
             output,
             allow: Vec::new(),
+            timing: Timing::default(),
         })
+    }
+    /// The same spec, pacing its actions by `timing`. An `execution` outside
+    /// `1..=1024` is the ValueError class.
+    pub fn with_timing(mut self, timing: Timing) -> Result<Self> {
+        core::Timing {
+            execution: timing.execution,
+        }
+        .check()
+        .map_err(Error::invalid_argument)?;
+        self.timing = timing;
+        Ok(self)
+    }
+    /// How this spec paces its actions.
+    pub fn timing(&self) -> Timing {
+        self.timing
     }
     /// The same spec, accepting the named projections (lossy fits) in
     /// `allow`: `drop_action`, `select_state`, `rebind_camera`,
@@ -135,12 +170,15 @@ impl ModelSpec {
     pub(crate) fn wire(&self) -> Result<core::ModelSpec> {
         validation::finite_input(&self.input)?;
         validation::finite_action(&self.output)?;
-        serde_json::from_value(json!({
+        let mut wire = json!({
             "input": self.input.wire_json()?,
             "output": codec::action_json(&self.output)?,
             "allow": self.allow,
-        }))
-        .map_err(|e| Error::invalid_argument(e.to_string()))
+        });
+        if let Some(execution) = self.timing.execution {
+            wire["timing"] = json!({ "execution": execution });
+        }
+        serde_json::from_value(wire).map_err(|e| Error::invalid_argument(e.to_string()))
     }
     pub(crate) fn wire_json(&self) -> Result<Json> {
         serde_json::to_value(self.wire()?).map_err(|e| Error::invalid_argument(e.to_string()))
@@ -187,7 +225,11 @@ impl ModelSpec {
                     .map_err(|e| Error::invalid_argument(e.to_string()))?,
             )?,
         )
-        .map(|spec| spec.with_allow(wire.allow))
+        .and_then(|spec| {
+            spec.with_allow(wire.allow).with_timing(Timing {
+                execution: wire.timing.execution,
+            })
+        })
     }
     /// Read the versioned metadata key; absent or None yields None.
     pub fn from_metadata(metadata: &Metadata) -> Result<Option<Self>> {

@@ -251,6 +251,10 @@ pub trait DynPolicy: Send {
     fn allow_fusion(&self) -> bool;
     /// [`Policy::native_chunk`].
     fn native_chunk(&self) -> Option<u32>;
+    /// [`Policy::execution_horizon`].
+    fn execution_horizon(&self) -> Option<u32> {
+        None
+    }
     /// `predict`, with a context when the corner reads one.
     fn predict(
         &mut self,
@@ -308,6 +312,10 @@ impl<P: Policy> DynPolicy for Erased<P> {
 
     fn native_chunk(&self) -> Option<u32> {
         self.0.native_chunk()
+    }
+
+    fn execution_horizon(&self) -> Option<u32> {
+        self.0.execution_horizon()
     }
 
     fn predict(
@@ -415,9 +423,25 @@ pub(crate) struct Resolved {
     pub(crate) trust_entrypoints: bool,
     /// Whether the policy adds reset options (read after `load`).
     pub(crate) reset_options: bool,
+    /// The execution horizon `load` chose for its checkpoint.
+    pub(crate) execution_horizon: Option<u32>,
 }
 
 impl Resolved {
+    /// The horizon a run naming none executes at: the one `load` chose, else
+    /// the spec's `timing.execution`, else 1.
+    pub(crate) fn resolve_horizon(&self, explicit: Option<u32>) -> Result<u32> {
+        crate::run::resolve_execution_horizon(
+            explicit.map(i128::from),
+            self.execution_horizon.map(i128::from),
+            match &self.spec {
+                Some(SpecArg::ModelSpec(spec)) => spec.timing().execution.map(i128::from),
+                _ => None,
+            },
+            self.native_chunk,
+        )
+    }
+
     /// Whether a chunk corner exists, written or derived (`predict_chunk`
     /// from `predict_chunk_batch`).
     pub(crate) fn has_chunk(&self) -> bool {
@@ -944,6 +968,10 @@ pub(crate) fn construct(
     check_native_chunk(native_chunk, decl.corners)?;
     let allow_fusion = policy.allow_fusion();
     let reset_options = policy.has_reset_options();
+    let execution_horizon = policy.execution_horizon();
+    if let Some(horizon) = execution_horizon {
+        crate::run::check_horizon(horizon, native_chunk)?;
+    }
     let ModelOptions {
         spec,
         on_episode_end,
@@ -963,6 +991,7 @@ pub(crate) fn construct(
         load_keys: decl.load_keys,
         trust_entrypoints,
         reset_options,
+        execution_horizon,
     };
     let shared = Shared::start(policy, resolved, on_episode_end, on_close)?;
     Ok(Model {
@@ -1010,6 +1039,11 @@ impl Model {
     /// The native chunk length, read after `load`.
     pub fn native_chunk(&self) -> Option<u32> {
         self.shared().decl.native_chunk
+    }
+
+    /// The checkpoint's execution horizon, read once after `load`.
+    pub fn execution_horizon(&self) -> Option<u32> {
+        self.shared().decl.execution_horizon
     }
 
     /// The policy's workflow edition declaration.
@@ -1289,8 +1323,16 @@ fn serve_session(
     tokens: Vec<crate::ext::CancelToken>,
 ) -> Result<()> {
     let handler = super::bridge::engine_handler(Arc::clone(shared));
+    // The envelope a driver reads the model's own horizon (and spec) from.
+    let describe = crate::describe::describe_json(
+        crate::describe::Describable::built(shared),
+        crate::describe::DescribeJsonOptions {
+            workflow_edition: Some(edition.clone().unwrap_or_default()),
+            ..Default::default()
+        },
+    )?;
     let service = Arc::new(
-        crate::lockstep::ModelService::new(handler, String::new()).declaring(edition.as_deref()),
+        crate::lockstep::ModelService::new(handler, describe).declaring(edition.as_deref()),
     );
     let binding = crate::run::drive::block_on_library(crate::lockstep::ModelBinding::bind(address))
         .map_err(crate::env::client::lockstep_error)?;

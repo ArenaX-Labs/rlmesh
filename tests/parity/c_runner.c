@@ -509,6 +509,7 @@ int main(int argc, char **argv) {
   } else if (!strcmp(op, "validation")) {
     RLMeshStatus status;
     if (!strncmp(variant, "horizon", 7)) {
+      opts.has_execution_horizon = true;
       opts.execution_horizon = !strcmp(variant, "horizon_zero") ? 0 : 1025;
       status = rlmesh_model_run(model, rlmesh_env_target(env), &opts, &result);
     } else {

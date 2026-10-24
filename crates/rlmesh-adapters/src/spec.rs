@@ -55,7 +55,8 @@ pub use layouts::{FitMode, ImageLayout};
 pub(crate) use model::MAX_STACK_SPAN;
 pub use model::{
     CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec,
-    Normalize, PartSource, StackPad, State, StateContainer, Text, TextContainer, render_requests,
+    Normalize, PartSource, StackPad, State, StateContainer, Text, TextContainer, Timing,
+    render_requests,
 };
 pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;

@@ -326,14 +326,14 @@ fn options_are_checked_before_anything_dials() {
     );
     assert_eq!(
         refused(RunOptions {
-            execution_horizon: 0,
+            execution_horizon: Some(0),
             ..Default::default()
         }),
         "execution_horizon must be >= 1, got 0"
     );
     assert_eq!(
         refused(RunOptions {
-            execution_horizon: 1025,
+            execution_horizon: Some(1025),
             ..Default::default()
         }),
         "execution_horizon must be <= 1024, got 1025"
@@ -1053,6 +1053,106 @@ fn text_model() -> Model {
     )
     .unwrap()
 }
+/// A chunked spec'd policy recording the horizon each chunk is asked at.
+struct Paced {
+    seen: Arc<Mutex<Vec<u32>>>,
+    loaded: Option<u32>,
+}
+impl crate::Policy for Paced {
+    const CORNERS: crate::Corners = crate::Corners::PREDICT.union(crate::Corners::PREDICT_CHUNK);
+    fn execution_horizon(&self) -> Option<u32> {
+        self.loaded
+    }
+    fn predict(&mut self, _observation: Value) -> Result<Value> {
+        // The runtime takes the single-action corner at horizon 1.
+        self.seen.lock().unwrap().push(1);
+        Ok(Value::List(vec![Value::Float(0.)]))
+    }
+    fn predict_chunk(&mut self, _observation: Value, execution_horizon: u32) -> Result<Value> {
+        self.seen.lock().unwrap().push(execution_horizon);
+        Ok(Value::List(vec![
+            Value::List(vec![Value::Float(0.)]);
+            execution_horizon as usize
+        ]))
+    }
+}
+fn paced(loaded: Option<u32>, timing: Option<u32>) -> (Model, Arc<Mutex<Vec<u32>>>) {
+    use crate::adapters::*;
+    let seen = Arc::default();
+    let spec = ModelSpec::new(State::new(GRIPPER_POS), adapter_action())
+        .unwrap()
+        .with_timing(Timing { execution: timing })
+        .unwrap();
+    let model = Model::new(
+        Paced {
+            seen: Arc::clone(&seen),
+            loaded,
+        },
+        ModelOptions {
+            spec: Some(spec.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (model, seen)
+}
+
+#[test]
+fn a_run_naming_no_horizon_executes_at_the_loaded_one_then_the_spec_timing_then_one() {
+    for (loaded, timing, explicit, expected) in [
+        (Some(3), Some(2), None, 3),
+        (None, Some(2), None, 2),
+        (None, None, None, 1),
+        (Some(3), Some(2), Some(1), 1),
+    ] {
+        let (model, seen) = paced(loaded, timing);
+        let mut env = adapter_steps();
+        model
+            .run(
+                &mut env,
+                RunOptions {
+                    execution_horizon: explicit,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![expected],
+            "{loaded:?} {timing:?} {explicit:?}"
+        );
+    }
+    let (model, seen) = paced(Some(3), None);
+    let mut env = adapter_steps();
+    let mut binding = model.bind(&mut env, BindOptions::default()).unwrap();
+    binding.reset(None, None).unwrap();
+    binding.step(None).unwrap();
+    drop(binding);
+    assert_eq!(*seen.lock().unwrap(), vec![3]);
+    let envelope = crate::describe_json(&model, Default::default()).unwrap();
+    assert!(envelope.contains(r#""execution_horizon":3"#), "{envelope}");
+}
+
+#[test]
+fn a_spec_timing_outside_one_to_1024_is_refused() {
+    use crate::adapters::*;
+    let spec = ModelSpec::new(State::new(GRIPPER_POS), adapter_action()).unwrap();
+    for bad in [0, 1025] {
+        let error = spec
+            .clone()
+            .with_timing(Timing {
+                execution: Some(bad),
+            })
+            .unwrap_err();
+        assert_eq!(error.class(), ErrorClass::ValueError);
+    }
+    let timed = spec.with_timing(Timing { execution: Some(8) }).unwrap();
+    let back = ModelSpec::from_json(&timed.to_json().unwrap()).unwrap();
+    assert_eq!(back.timing(), timed.timing());
+    // State and its one-part Concat have the same canonical wire form.
+    assert_eq!(back.to_json().unwrap(), timed.to_json().unwrap());
+}
+
 #[derive(Default)]
 struct ReadHooks {
     context: Option<Arc<dyn RunContext>>,

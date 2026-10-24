@@ -26,8 +26,10 @@ pub struct RLMeshBindOptions {
     pub workflow_edition: *const c_char,
     pub execution_horizon: u32,
     pub close_env: bool,
-    pub _reserved: [u8; 3],
+    pub has_execution_horizon: bool,
+    pub _reserved: [u8; 2],
     pub hooks: *mut crate::run_hooks::RLMeshRunHooks,
+    pub view: *const crate::view::RLMeshView,
 }
 // Stable allocations hold the local envs a Binding<'static> borrows. Only
 // the binding touches them; it drops first, then the gates stop and drain
@@ -247,11 +249,13 @@ pub unsafe extern "C" fn rlmesh_bind(
         let mut options = rlmesh::BindOptions::default();
         let mut hooks = None;
         if let Some(o) = unsafe { sizing::read(o, "RLMeshBindOptions") }? {
-            if o._reserved != [0; 3] {
+            if o._reserved != [0; 2] {
                 return Err(CapiError::type_error("reserved bind bytes must be zero"));
             }
+            options.view = unsafe { crate::view::read(o.view) }?;
             options.close_env = o.close_env;
-            options.execution_horizon = o.execution_horizon;
+            options.execution_horizon = (o.has_execution_horizon || o.execution_horizon != 0)
+                .then_some(o.execution_horizon);
             options.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
             if !o.hooks.is_null() {
                 let bound = HooksBox(Box::into_raw(Box::new(unsafe {

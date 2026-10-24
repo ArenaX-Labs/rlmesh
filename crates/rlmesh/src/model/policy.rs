@@ -188,6 +188,12 @@ pub trait Policy: Send + 'static {
         Self::NATIVE_CHUNK
     }
 
+    /// The execution horizon this checkpoint runs at when a run names none
+    /// (above the spec's `timing.execution`); read once, after `load`.
+    fn execution_horizon(&self) -> Option<u32> {
+        None
+    }
+
     /// One observation to one action.
     fn predict(&mut self, observation: Value) -> Result<Value> {
         let _ = observation;

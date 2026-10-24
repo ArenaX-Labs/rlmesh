@@ -13,6 +13,7 @@ pub(crate) const MAX_EXECUTION_HORIZON: u32 = 1024;
 ///
 /// Build with `..Default::default()`. Adding an options field is a minor
 /// change by project policy.
+#[derive(Default)]
 pub struct RunOptions<'h> {
     /// The exact number of episodes: one by default, `seeds.len()` when only
     /// seeds are given; the two must agree when both are. `Some(0)` runs
@@ -35,8 +36,9 @@ pub struct RunOptions<'h> {
     /// Override the model's `trust_entrypoints` for this run.
     pub trust_entrypoints: Option<bool>,
     /// Actions of each predicted chunk executed before re-planning
-    /// (1..=1024; default 1).
-    pub execution_horizon: u32,
+    /// (1..=1024). `None`: the model's own, the one its `load()` chose, else
+    /// its spec's `timing.execution`, else 1.
+    pub execution_horizon: Option<u32>,
     /// Native-loop async inference: predict the next chunk while this many
     /// replay frames remain (0 = off; at most `u32::MAX`).
     pub prefetch_lead: u64,
@@ -47,27 +49,6 @@ pub struct RunOptions<'h> {
     pub trial_index_base: u64,
     /// Cancels the run.
     pub cancel: Option<crate::ext::CancelToken>,
-}
-
-impl Default for RunOptions<'_> {
-    fn default() -> Self {
-        RunOptions {
-            episodes: None,
-            seeds: None,
-            max_episode_steps: None,
-            max_episode: None,
-            hooks: None,
-            close_env: false,
-            trust_entrypoints: None,
-            instruction: None,
-            view: None,
-            execution_horizon: 1,
-            prefetch_lead: 0,
-            workflow_edition: None,
-            trial_index_base: 0,
-            cancel: None,
-        }
-    }
 }
 
 impl fmt::Debug for RunOptions<'_> {
@@ -93,29 +74,22 @@ impl fmt::Debug for RunOptions<'_> {
 /// Options for [`bind`](crate::bind) and [`Model::bind`](crate::Model::bind).
 ///
 /// Build with `..Default::default()`.
+#[derive(Default)]
 pub struct BindOptions<'h> {
     /// Close a local env (or shut a served one down) with the binding.
     pub close_env: bool,
     /// Actions of each predicted chunk executed before re-planning
-    /// (1..=1024; default 1).
-    pub execution_horizon: u32,
+    /// (1..=1024). `None`: the model's own, as for
+    /// [`RunOptions::execution_horizon`].
+    pub execution_horizon: Option<u32>,
     /// The workflow edition this binding declares.
     pub workflow_edition: Option<String>,
     /// Observer callbacks, borrowed for the binding's life: the binding is
     /// their [`RunContext`](super::RunContext), an episode reset over
     /// before it ended counts as truncated, and `on_run_end` fires at close.
     pub hooks: Option<&'h mut dyn RunHooks>,
-}
-
-impl Default for BindOptions<'_> {
-    fn default() -> Self {
-        BindOptions {
-            close_env: false,
-            execution_horizon: 1,
-            workflow_edition: None,
-            hooks: None,
-        }
-    }
+    /// Live viewer; the native loop refuses a set view (RUN-4).
+    pub view: Option<crate::View>,
 }
 
 impl fmt::Debug for BindOptions<'_> {
@@ -145,18 +119,28 @@ pub(crate) fn episode_budget(episodes: Option<u64>, seeds: Option<&[i64]>) -> Re
     }
 }
 
-/// `execution_horizon` in 1..=1024 and at most a declared native chunk.
-pub(crate) fn check_horizon(horizon: u32, native_chunk: Option<u32>) -> Result<()> {
+/// Select the action execution horizon and validate it against the model's
+/// native chunk. An explicit run value wins over the checkpoint's loaded value,
+/// then the spec's timing, then 1. Bindings use this same Rust policy.
+#[doc(hidden)]
+pub fn resolve_execution_horizon(
+    explicit: Option<i128>,
+    loaded: Option<i128>,
+    timing: Option<i128>,
+    native_chunk: Option<u32>,
+) -> Result<u32> {
+    let horizon = explicit.or(loaded).or(timing).unwrap_or(1);
     if horizon < 1 {
         return Err(Error::invalid_argument(format!(
             "execution_horizon must be >= 1, got {horizon}"
         )));
     }
-    if horizon > MAX_EXECUTION_HORIZON {
+    if horizon > i128::from(MAX_EXECUTION_HORIZON) {
         return Err(Error::invalid_argument(format!(
             "execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got {horizon}"
         )));
     }
+    let horizon = horizon as u32;
     if let Some(chunk) = native_chunk
         && horizon > chunk
     {
@@ -165,7 +149,12 @@ pub(crate) fn check_horizon(horizon: u32, native_chunk: Option<u32>) -> Result<(
              cannot produce that many actions per predict. Lower the horizon to at most {chunk}."
         )));
     }
-    Ok(())
+    Ok(horizon)
+}
+
+/// `execution_horizon` in 1..=1024 and at most a declared native chunk.
+pub(crate) fn check_horizon(horizon: u32, native_chunk: Option<u32>) -> Result<()> {
+    resolve_execution_horizon(Some(horizon.into()), None, None, native_chunk).map(|_| ())
 }
 
 /// The per-episode caps, as the runtime takes them.

@@ -41,11 +41,6 @@ __all__ = [
     "resolve_adapter",
 ]
 
-# The execution-horizon ceiling, the twin of the native `MAX_EXECUTION_HORIZON`
-# (`rlmesh-adapters` `stateful.rs`) the served engine enforces at resolve. Above
-# this a horizon is always a mis-set knob, not a real open-loop plan.
-MAX_EXECUTION_HORIZON = 1024
-
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
 
@@ -112,19 +107,9 @@ _MAX_PREFETCH_LEAD = 2**32 - 1
 
 def check_execution_horizon(execution_horizon: int, native_chunk: int | None) -> None:
     """Refuse an ``execution_horizon`` outside ``1..=1024`` or past ``native_chunk``."""
-    if execution_horizon < 1:
-        raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
-    if execution_horizon > MAX_EXECUTION_HORIZON:
-        raise ValueError(
-            f"execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got "
-            f"{execution_horizon}"
-        )
-    if native_chunk is not None and execution_horizon > native_chunk:
-        raise ValueError(
-            f"execution_horizon={execution_horizon} exceeds the model's declared "
-            f"native_chunk={native_chunk}: it cannot produce that many actions per "
-            f"predict. Lower the horizon to at most {native_chunk}."
-        )
+    from .._rlmesh import resolve_execution_horizon
+
+    resolve_execution_horizon(execution_horizon, None, None, native_chunk)
 
 
 def check_episode_caps(

@@ -3437,6 +3437,23 @@ struct Advisory {
 };
 inline std::string to_string(const Advisory& a) { return a.message; }
 inline std::ostream& operator<<(std::ostream& s, const Advisory& a) { return s << a.message; }
+// How a model paces its actions: execution is the execution horizon a run
+// uses when neither the run nor the model's load() names one (1..=1024).
+struct Timing {
+  std::optional<uint32_t> execution{};
+  Timing& with_execution(std::optional<uint32_t> value) & {
+    execution = value;
+    return *this;
+  }
+  Timing with_execution(std::optional<uint32_t> value) && {
+    execution = value;
+    return std::move(*this);
+  }
+  friend bool operator==(const Timing& a, const Timing& b) noexcept {
+    return a.execution == b.execution;
+  }
+  friend bool operator!=(const Timing& a, const Timing& b) noexcept { return !(a == b); }
+};
 class ModelSpec {
   std::shared_ptr<RLMeshModelSpec> handle_{};
   InputNode input_;
@@ -3449,7 +3466,7 @@ class ModelSpec {
         output_(Action::from_raw(*rlmesh_model_spec_output(p))) {}
   // allow names the projections (lossy fits) the spec accepts: drop_action,
   // select_state, rebind_camera, flip_gripper, convert_units.
-  ModelSpec(InputNode input, Action output, std::vector<std::string> allow = {})
+  ModelSpec(InputNode input, Action output, std::vector<std::string> allow = {}, Timing timing = {})
       : input_(std::move(input)), output_(std::move(output)) {
     detail_adapter::Arena a;
     auto raw_input = input_.raw(a);
@@ -3465,10 +3482,26 @@ class ModelSpec {
           rlmesh_model_spec_with_allow(handle_.get(), names.data(), names.size(), &q));
       handle_ = {q, rlmesh_model_spec_free};
     }
+    if (timing.execution) {
+      RLMeshTiming c = RLMESH_TIMING_INIT;
+      c.has_execution = true;
+      c.execution = *timing.execution;
+      RLMeshModelSpec* q = nullptr;
+      detail::check_status(rlmesh_model_spec_with_timing(handle_.get(), &c, &q));
+      handle_ = {q, rlmesh_model_spec_free};
+    }
   }
   const RLMeshModelSpec* raw() const { return handle_.get(); }
   const InputNode& input() const { return input_; }
   const Action& output() const { return output_; }
+  // How this spec paces its actions.
+  Timing timing() const {
+    RLMeshTiming c = RLMESH_TIMING_INIT;
+    detail::check_status(rlmesh_model_spec_timing(raw(), &c));
+    Timing t;
+    if (c.has_execution) t.execution = c.execution;
+    return t;
+  }
   // The named projections this spec accepts.
   std::vector<std::string> allow() const {
     size_t n = 0;
@@ -3898,6 +3931,9 @@ using on_episode_end_lvalue_expression =
     decltype((void)std::declval<T&>().on_episode_end(std::declval<std::string_view&>()));
 template <class T>
 using loaded_native_chunk_expression = decltype((void)std::declval<T&>().loaded_native_chunk());
+template <class T>
+using loaded_execution_horizon_expression =
+    decltype((void)std::declval<T&>().loaded_execution_horizon());
 template <class T>
 using policy_reset_options_expression =
     decltype((void)std::declval<T&>().reset_options(std::declval<const InfoDict&>()));
@@ -5326,6 +5362,17 @@ struct PolicyTable {
             },
             RLMESH_ERR_MODEL);
       };
+    if constexpr (detail::is_detected<detail::loaded_execution_horizon_expression, P>)
+      table.loaded_execution_horizon = [](void* u, bool* has, uint32_t* value) noexcept {
+        return detail::callback(
+            [&] {
+              std::optional<uint32_t> v =
+                  (**static_cast<std::shared_ptr<P>*>(u)).loaded_execution_horizon();
+              *has = v.has_value();
+              if (v) *value = *v;
+            },
+            RLMESH_ERR_MODEL);
+      };
     if constexpr (detail::is_detected<detail::policy_reset_options_expression, P>)
       table.reset_options = [](void* u, const RLMeshValue* episode, RLMeshValue** out) noexcept {
         return detail::callback(
@@ -5464,6 +5511,12 @@ class Model {
     bool has = false;
     uint32_t n = 0;
     rlmesh_model_native_chunk(raw(), &has, &n);
+    return has ? std::optional(n) : std::nullopt;
+  }
+  std::optional<uint32_t> execution_horizon() const {
+    bool has = false;
+    uint32_t n = 0;
+    rlmesh_model_execution_horizon(raw(), &has, &n);
     return has ? std::optional(n) : std::nullopt;
   }
   std::optional<std::string> workflow_edition() const {
@@ -6505,7 +6558,8 @@ struct RunOptions {
   std::optional<std::string> instruction{};
   bool close_env = false;
   std::optional<bool> trust_entrypoints{};
-  uint32_t execution_horizon = 1;
+  // Unset: the model's own (its load()'s, else its spec's timing), else 1.
+  std::optional<uint32_t> execution_horizon{};
   uint64_t prefetch_lead = 0;
   std::optional<View> view{};
   std::optional<std::string> workflow_edition{};
@@ -6575,11 +6629,11 @@ struct RunOptions {
     trust_entrypoints = std::move(value);
     return std::move(*this);
   }
-  RunOptions& with_execution_horizon(uint32_t value) & {
+  RunOptions& with_execution_horizon(std::optional<uint32_t> value) & {
     execution_horizon = std::move(value);
     return *this;
   }
-  RunOptions with_execution_horizon(uint32_t value) && {
+  RunOptions with_execution_horizon(std::optional<uint32_t> value) && {
     execution_horizon = std::move(value);
     return std::move(*this);
   }
@@ -6625,8 +6679,18 @@ struct RunOptions {
   }
 };
 struct BindOptions {
+  std::optional<View> view{};
+  BindOptions& with_view(std::optional<View> value) & {
+    view = std::move(value);
+    return *this;
+  }
+  BindOptions with_view(std::optional<View> value) && {
+    view = std::move(value);
+    return std::move(*this);
+  }
   bool close_env = false;
-  uint32_t execution_horizon = 1;
+  // Unset: the model's own (its load()'s, else its spec's timing), else 1.
+  std::optional<uint32_t> execution_horizon{};
   std::optional<std::string> workflow_edition{};
   // Borrowed for the binding's life: the binding is their run context, an
   // episode reset over before it ended counts as truncated, and on_run_end
@@ -6641,11 +6705,11 @@ struct BindOptions {
     close_env = value;
     return std::move(*this);
   }
-  BindOptions& with_execution_horizon(uint32_t value) & {
+  BindOptions& with_execution_horizon(std::optional<uint32_t> value) & {
     execution_horizon = value;
     return *this;
   }
-  BindOptions with_execution_horizon(uint32_t value) && {
+  BindOptions with_execution_horizon(std::optional<uint32_t> value) && {
     execution_horizon = value;
     return std::move(*this);
   }
@@ -6688,7 +6752,8 @@ void run_options(C& c, const O& o) {
   c.close_env = o.close_env;
   c.has_trust_entrypoints = o.trust_entrypoints.has_value();
   if (o.trust_entrypoints) c.trust_entrypoints = *o.trust_entrypoints;
-  c.execution_horizon = o.execution_horizon;
+  c.has_execution_horizon = o.execution_horizon.has_value();
+  c.execution_horizon = o.execution_horizon.value_or(0);
   c.workflow_edition = ptr(o.workflow_edition);
   if (o.cancel) c.cancel = o.cancel->raw();
 }
@@ -6801,8 +6866,14 @@ inline RunResult Model::run(EnvTarget env_or_address) { return run(std::move(env
 /// Bind model (a Model or RANDOM_SAMPLE) to target; see Model::bind.
 inline Binding bind(ModelTarget model, EnvTarget target, const BindOptions& options = {}) {
   RLMeshBindOptions c = RLMESH_BIND_OPTIONS_INIT;
+  std::optional<RLMeshView> view{};
+  if (options.view) {
+    view = options.view->raw();
+    c.view = &*view;
+  }
   c.close_env = options.close_env;
-  c.execution_horizon = options.execution_horizon;
+  c.has_execution_horizon = options.execution_horizon.has_value();
+  c.execution_horizon = options.execution_horizon.value_or(0);
   c.workflow_edition = detail::ptr(options.workflow_edition);
   std::shared_ptr<RLMeshRunHooks> hooks(detail::hooks(options.hooks).release(),
                                         rlmesh_run_hooks_free);

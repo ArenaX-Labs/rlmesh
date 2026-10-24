@@ -86,6 +86,7 @@ input!(
 );
 input!(crate::adapters::RLMeshTagOptions, validate);
 input!(crate::adapters::RLMeshTextTag);
+input!(crate::adapters::RLMeshTiming, has_execution);
 input!(crate::adapters::runtime::RLMeshAdapterVtable);
 input!(crate::describe_api::RLMeshDescribeJsonOptions, has_kind);
 input!(crate::describe_api::RLMeshDescribeOptions, has_kind);
@@ -135,7 +136,7 @@ input!(
 input!(
     crate::model_api::RLMeshModelVtable;
     first_appended = reset_options;
-    appended = [reset_options];
+    appended = [reset_options, loaded_execution_horizon];
     bools = [allow_fusion, has_native_chunk]
 );
 input!(
@@ -180,7 +181,8 @@ input!(
     has_max_episode_seconds,
     close_env,
     has_trust_entrypoints,
-    trust_entrypoints
+    trust_entrypoints,
+    has_execution_horizon
 );
 input!(crate::run_hooks::RLMeshRunContextVtable);
 input!(crate::run_hooks::RLMeshRunHooksVtable);
@@ -205,8 +207,8 @@ input!(crate::run_results::RLMeshRunResultOptions);
 input!(
     crate::binding_api::RLMeshBindOptions;
     first_appended = hooks;
-    appended = [hooks];
-    bools = [close_env]
+    appended = [hooks, view];
+    bools = [close_env, has_execution_horizon]
 );
 input!(crate::space_handle::RLMeshBoxOptions);
 input!(crate::space_handle::RLMeshDiscreteOptions);

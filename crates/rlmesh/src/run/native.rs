@@ -115,12 +115,34 @@ pub(crate) async fn run_model(
     }
     // RUN-5: what the options alone decide, before anything dials.
     let budget = episode_budget(episodes, seeds.as_deref())?;
-    check_horizon(
-        execution_horizon,
-        shared.and_then(|shared| shared.decl.native_chunk),
-    )?;
+    let native_chunk = shared.and_then(|shared| shared.decl.native_chunk);
+    if let Some(horizon) = execution_horizon {
+        check_horizon(horizon, native_chunk)?;
+    }
     let caps = check_caps(max_episode_steps, max_episode)?;
     let prefetch_lead = check_prefetch(prefetch_lead)?;
+    // A run naming no horizon executes at the model's own (a served model's
+    // from its describe envelope), else 1.
+    let execution_horizon = match (execution_horizon, model) {
+        (Some(horizon), _) => horizon,
+        (None, Driven::Local(model)) => model.shared().decl.resolve_horizon(None)?,
+        #[cfg(feature = "lockstep")]
+        (None, Driven::Served(model)) => {
+            let probe = crate::lockstep::ServedModel::default_execution_horizon(
+                model.address(),
+                model.connect_timeout().unwrap_or(SERVED_CONNECT),
+            );
+            // The sync outer future is deliberately polled outside Tokio.
+            // Enter the library runtime only while this I/O probe is driven.
+            match mode {
+                Mode::Sync => drive::block_on_library(probe),
+                Mode::Async => probe.await,
+            }?
+            .unwrap_or(1)
+        }
+        (None, Driven::Random) => 1,
+    };
+    check_horizon(execution_horizon, native_chunk)?;
     let make_handler: MakeHandler = match model {
         Driven::Local(model) => {
             let shared = Arc::clone(model.shared());

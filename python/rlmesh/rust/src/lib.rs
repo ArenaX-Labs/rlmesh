@@ -180,6 +180,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(model::predict_seed, m)?)?;
     m.add_function(wrap_pyfunction!(model::model_answers, m)?)?;
     m.add_function(wrap_pyfunction!(model::model_describe, m)?)?;
+    m.add_function(wrap_pyfunction!(model::resolve_execution_horizon, m)?)?;
     m.add_function(wrap_pyfunction!(nested::nested_predict, m)?)?;
     m.add_function(wrap_pyfunction!(peer_info::set_python_peer_info, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;

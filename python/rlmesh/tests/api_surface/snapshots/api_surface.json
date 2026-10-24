@@ -365,7 +365,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int = 1, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
           },
           "close": {
             "kind": "function",
@@ -378,6 +378,10 @@
           "device": {
             "kind": "attribute",
             "signature": "device: object | None"
+          },
+          "execution_horizon": {
+            "kind": "attribute",
+            "signature": "execution_horizon: int | None"
           },
           "from_config": {
             "kind": "function",
@@ -422,7 +426,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -1419,7 +1423,7 @@
       },
       "run": {
         "kind": "function",
-        "signature": "run(model: object, env: EnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, view: ViewArg = None, workflow_edition: str | None = None, trial_index_base: int = 0)",
+        "signature": "run(model: object, env: EnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, view: ViewArg = None, workflow_edition: str | None = None, trial_index_base: int = 0)",
         "stability": "Stable"
       },
       "sanitize_metadata": {
@@ -1524,6 +1528,7 @@
       "StateTag",
       "Text",
       "TextTag",
+      "Timing",
       "resolve",
       "resolve_from_contract",
       "tag"
@@ -2233,6 +2238,10 @@
             "kind": "attribute",
             "signature": "output: Action"
           },
+          "timing": {
+            "kind": "attribute",
+            "signature": "timing: Timing"
+          },
           "to_dict": {
             "kind": "function",
             "signature": "to_dict()"
@@ -2246,7 +2255,7 @@
             "signature": "to_metadata()"
           }
         },
-        "signature": "ModelSpec(input: InputNode, output: Action, allow: tuple[str, ...] = ())",
+        "signature": "ModelSpec(input: InputNode, output: Action, allow: tuple[str, ...] = (), timing: Timing = Timing())",
         "stability": "Stable"
       },
       "ObsLeaf": {
@@ -2538,6 +2547,17 @@
         "signature": "TextTag(role: str)",
         "stability": "Stable"
       },
+      "Timing": {
+        "kind": "class",
+        "members": {
+          "execution": {
+            "kind": "attribute",
+            "signature": "execution: int | None"
+          }
+        },
+        "signature": "Timing(execution: int | None = None)",
+        "stability": "Stable"
+      },
       "resolve": {
         "kind": "function",
         "signature": "resolve(env_tags: EnvTags, observation_space: object, action_space: object, model_spec: ModelSpec, *, trust_entrypoints: bool = False, check_inverse: bool = True) -> Adapter",
@@ -2647,7 +2667,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int = 1, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
           },
           "close": {
             "kind": "function",
@@ -2660,6 +2680,10 @@
           "device": {
             "kind": "attribute",
             "signature": "device: object | None"
+          },
+          "execution_horizon": {
+            "kind": "attribute",
+            "signature": "execution_horizon: int | None"
           },
           "from_config": {
             "kind": "function",
@@ -2703,7 +2727,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -3290,7 +3314,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int = 1, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
           },
           "close": {
             "kind": "function",
@@ -3303,6 +3327,10 @@
           "device": {
             "kind": "attribute",
             "signature": "device: object | None"
+          },
+          "execution_horizon": {
+            "kind": "attribute",
+            "signature": "execution_horizon: int | None"
           },
           "from_config": {
             "kind": "function",
@@ -3347,7 +3375,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -4841,7 +4869,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int = 1, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
           },
           "close": {
             "kind": "function",
@@ -4854,6 +4882,10 @@
           "device": {
             "kind": "attribute",
             "signature": "device: object | None"
+          },
+          "execution_horizon": {
+            "kind": "attribute",
+            "signature": "execution_horizon: int | None"
           },
           "from_config": {
             "kind": "function",
@@ -4897,7 +4929,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
           },
           "serve": {
             "kind": "function",

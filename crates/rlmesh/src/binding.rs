@@ -12,6 +12,9 @@ pub mod env;
 pub mod model;
 pub mod spaces;
 
+/// Shared action pacing selection and validation for language bindings.
+pub use crate::run::resolve_execution_horizon;
+
 /// The async-trait macro the binding seams (`ModelHandler`, the legacy env
 /// traits) are written with.
 pub use async_trait::async_trait;
