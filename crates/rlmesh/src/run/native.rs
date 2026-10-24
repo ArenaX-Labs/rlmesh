@@ -62,12 +62,12 @@ impl Mode {
 /// What a run drives: a local [`Model`]'s engine, or a model served on a
 /// session (a [`RemoteModel`](crate::RemoteModel) at a session address),
 /// which the run invites into its env's session.
-#[derive(Clone, Copy)]
 pub(crate) enum Driven<'m> {
     Local(&'m Model),
     #[cfg(feature = "lockstep")]
     Served(&'m crate::RemoteModel),
     Random,
+    Prepared(crate::binding::model::PreparedModel),
 }
 
 /// Makes the run's model handler, given the run's adapter context.
@@ -76,16 +76,27 @@ type MakeHandler =
 
 /// `Model::run` / `run_async`, and `run` of a served model.
 pub(crate) async fn run_model(
-    model: Driven<'_>,
+    mut model: Driven<'_>,
     env: EnvTarget<'_>,
     options: RunOptions<'_>,
     mode: Mode,
 ) -> Result<RunResult> {
-    let shared = match model {
+    let presentation = match &mut model {
+        Driven::Prepared(model) => model.presentation.take(),
+        _ => None,
+    };
+    let _prepared_slot = match &model {
+        Driven::Prepared(model) => Some(match &model.run_lease {
+            Some(lease) => lease.clone(),
+            None => crate::binding::model::claim_run(model.run_gate.clone())?,
+        }),
+        _ => None,
+    };
+    let shared = match &model {
         Driven::Local(model) => Some(model.shared()),
         #[cfg(feature = "lockstep")]
         Driven::Served(_) => None,
-        Driven::Random => None,
+        Driven::Random | Driven::Prepared(_) => None,
     };
     if let Some(shared) = shared {
         shared.check_not_reentrant("run()")?;
@@ -115,7 +126,22 @@ pub(crate) async fn run_model(
     }
     // RUN-5: what the options alone decide, before anything dials.
     let budget = episode_budget(episodes, seeds.as_deref())?;
-    let native_chunk = shared.and_then(|shared| shared.decl.native_chunk);
+    let native_chunk = match &model {
+        Driven::Prepared(model) => model.native_chunk,
+        _ => shared.and_then(|shared| shared.decl.native_chunk),
+    };
+    let (declared_edition, authored, has_chunk) = match &model {
+        Driven::Prepared(model) => (
+            model.workflow_edition.clone(),
+            model.authored,
+            model.has_chunk,
+        ),
+        _ => (
+            shared.and_then(|s| s.decl.workflow_edition.clone()),
+            shared.is_some_and(|s| s.decl.authored),
+            shared.map(|s| s.decl.has_chunk()),
+        ),
+    };
     if let Some(horizon) = execution_horizon {
         check_horizon(horizon, native_chunk)?;
     }
@@ -123,7 +149,7 @@ pub(crate) async fn run_model(
     let prefetch_lead = check_prefetch(prefetch_lead)?;
     // A run naming no horizon executes at the model's own (a served model's
     // from its describe envelope), else 1.
-    let execution_horizon = match (execution_horizon, model) {
+    let execution_horizon = match (execution_horizon, &model) {
         (Some(horizon), _) => horizon,
         (None, Driven::Local(model)) => model.shared().decl.resolve_horizon(None)?,
         #[cfg(feature = "lockstep")]
@@ -141,9 +167,16 @@ pub(crate) async fn run_model(
             .unwrap_or(1)
         }
         (None, Driven::Random) => 1,
+        (None, Driven::Prepared(model)) => super::options::resolve_execution_horizon(
+            None,
+            model.execution_horizon.map(i128::from),
+            None,
+            model.native_chunk,
+        )?,
     };
     check_horizon(execution_horizon, native_chunk)?;
     let make_handler: MakeHandler = match model {
+        Driven::Prepared(model) => Box::new(move |_| model.handler),
         Driven::Local(model) => {
             let shared = Arc::clone(model.shared());
             let trust = trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints);
@@ -178,6 +211,7 @@ pub(crate) async fn run_model(
     let driver = CancellationToken::new();
     let watch = CancelWatch::start(cancel.into_iter().collect(), driver.clone())?;
     let context = LibraryContext::new();
+    context.set_presentation(presentation);
     let relay = hooks
         .is_some()
         .then(|| Arc::new(HookRelay::new(driver.clone(), context.clone())));
@@ -187,11 +221,11 @@ pub(crate) async fn run_model(
             EditionSources {
                 call: workflow_edition.as_deref(),
                 option: None,
-                declared: shared.and_then(|shared| shared.decl.workflow_edition.as_deref()),
+                declared: declared_edition.as_deref(),
             },
-            shared.is_some_and(|shared| shared.decl.authored),
+            authored,
         )?;
-        if execution_horizon > 1 && shared.is_some_and(|shared| !shared.decl.has_chunk()) {
+        if execution_horizon > 1 && has_chunk == Some(false) {
             crate::warnings::warn(
                 crate::WarningCategory::UserWarning,
                 format!(
@@ -252,6 +286,7 @@ pub(crate) async fn run_model(
     // Detach atomically before selecting the error. A late firing must not
     // replace the first hook error retained by the relay.
     let fired = watch.finish(Ok(())).is_err();
+    context.set_presentation(None);
     if let Some(error) = relay.as_ref().and_then(|relay| relay.take_error()) {
         Err(error)
     } else if fired {
@@ -352,7 +387,25 @@ async fn run_body(
     }
     let (port, mut queue) = caller_channel();
     let mut env = env.0;
-    let over_wire = matches!(env, EnvKind::Address(_));
+    let mut adapted = None;
+    let mut invite_at = None;
+    let mut over_wire = matches!(env, EnvKind::Address(_));
+    if let EnvKind::Adapted(adapter) = env {
+        let mut owned = crate::binding::model::OwnedTarget::new(adapter, plan.close_env);
+        let target = mode.call(|| {
+            owned.open(
+                plan.edition.as_deref(),
+                crate::binding::model::caller_port(port.clone()),
+            )
+        })?;
+        invite_at = target.invite_at;
+        over_wire = target.close_over_wire;
+        env = EnvKind::Address(target.address);
+        adapted = Some(owned);
+    }
+    if let EnvKind::Address(address) = &env {
+        super::options::check_address_close(address, plan.close_env && over_wire)?;
+    }
     let remote = match &env {
         EnvKind::Address(address) => Some(Dial {
             address: address.clone(),
@@ -451,7 +504,7 @@ async fn run_body(
         execution_horizon: plan.execution_horizon,
         prefetch_lead: plan.prefetch_lead,
         workflow_edition: plan.edition,
-        invite_at: None,
+        invite_at,
     };
     let runtime_hooks: Arc<dyn RuntimeHooks> = match &relay {
         Some(relay) => {
@@ -487,10 +540,9 @@ async fn run_body(
                     || message.starts_with(crate::env::client::ENV_HELD) =>
             {
                 Error::Runtime(
-                    "the target env already has an active session: a RemoteEnv / \
-                     RemoteVectorEnv handle that was driven with reset()/step() holds the \
-                     env's single session slot. close() the handle (or its open session) \
-                     before run(), or drive it by hand with bind()."
+                    "the target env already has an active session: another driver (an open \
+                     RemoteEnv / RemoteVectorEnv, or another run) holds the env's lease. \
+                     close() it before run()."
                         .to_string(),
                 )
             }
@@ -542,6 +594,9 @@ async fn run_body(
         };
         release = release.and(shut);
     }
+    if let Some(target) = &mut adapted {
+        release = release.and(mode.call(|| target.release()));
+    }
     let outcome = report.and_then(|report| {
         release.map(|()| {
             let mut result = results::from_report(&report);
@@ -586,6 +641,10 @@ struct Episode {
     index: i64,
     seed: Option<i64>,
     steps: i64,
+    reward: f64,
+    started: std::time::Instant,
+    predict_ms: f64,
+    step_ms: f64,
 }
 
 /// One lane group's in-flight step: what it observed, then what it did.
@@ -611,6 +670,7 @@ pub(crate) struct HookRelay {
     error: Mutex<Option<Error>>,
     state: Mutex<RelayState>,
     context: Arc<LibraryContext>,
+    directive: Arc<Mutex<super::runtime::RunDirective>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -641,6 +701,7 @@ impl HookRelay {
             error: Mutex::new(None),
             state: Mutex::new(RelayState::default()),
             context,
+            directive: Arc::default(),
         }
     }
 
@@ -679,6 +740,14 @@ impl HookRelay {
 
 #[async_trait]
 impl RuntimeHooks for HookRelay {
+    fn directive(&self) -> super::runtime::RunDirective {
+        let mut directive = lock(&self.directive);
+        match *directive {
+            super::runtime::RunDirective::EndEpisode => std::mem::take(&mut *directive),
+            held => held,
+        }
+    }
+
     async fn episode_started(
         &self,
         event: EpisodeStartedEvent,
@@ -690,6 +759,10 @@ impl RuntimeHooks for HookRelay {
                 index,
                 seed: event.seed,
                 steps: 0,
+                reward: 0.0,
+                started: std::time::Instant::now(),
+                predict_ms: 0.0,
+                step_ms: 0.0,
             },
         );
         let seed = event.seed;
@@ -707,6 +780,53 @@ impl RuntimeHooks for HookRelay {
         };
         match decode_lanes(leaves, &event.observation_space, event.episode_ids.len()) {
             Ok(observations) => {
+                let frame = {
+                    let state = lock(&self.state);
+                    event
+                        .episode_ids
+                        .first()
+                        .and_then(|id| state.episodes.get(id))
+                        .zip(observations.first())
+                        .map(|(episode, observation)| {
+                            (
+                                observation.clone(),
+                                episode.index,
+                                episode.seed,
+                                episode.steps,
+                                episode.reward,
+                                episode.predict_ms,
+                                episode.step_ms,
+                                episode.started.elapsed().as_secs_f64(),
+                            )
+                        })
+                };
+                if let Some((
+                    observation,
+                    episode,
+                    seed,
+                    steps,
+                    reward,
+                    predict_ms,
+                    step_ms,
+                    elapsed_s,
+                )) = frame
+                {
+                    let context = self.context.clone();
+                    self.dispatch(move |_hooks| {
+                        context.frame(&super::RunFrame {
+                            observation: &observation,
+                            episode,
+                            seed,
+                            steps,
+                            reward,
+                            outcome: None,
+                            predict_ms,
+                            step_ms,
+                            elapsed_s,
+                        })
+                    })
+                    .await;
+                }
                 lock(&self.state).groups.insert(
                     event.env_index,
                     Group {
@@ -792,10 +912,24 @@ impl RuntimeHooks for HookRelay {
                     step_ms: event.step_ms,
                 });
                 episode.steps += 1;
+                episode.reward += event.rewards.get(lane).copied().unwrap_or_default();
+                episode.predict_ms = event.predict_ms;
+                episode.step_ms = event.step_ms;
             }
         }
         for step in events {
-            self.dispatch(move |hooks| hooks.on_step(&step)).await;
+            let directive = self.directive.clone();
+            let context = self.context.clone();
+            self.dispatch(move |hooks| {
+                hooks.on_step(&step)?;
+                let asked = context.directive()?;
+                let mut current = lock(&directive);
+                if *current != super::runtime::RunDirective::Stop {
+                    *current = asked;
+                }
+                Ok(())
+            })
+            .await;
         }
         Ok(())
     }

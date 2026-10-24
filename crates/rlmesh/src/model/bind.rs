@@ -269,6 +269,18 @@ impl Binding {
         })
     }
 
+    pub(crate) fn renderer(&self) -> Arc<dyn Fn() -> Result<crate::Value> + Send + Sync> {
+        let client = self.client.clone();
+        Arc::new(move || {
+            let frame = crate::run::drive::block_on_library(client.render(0, None))
+                .map_err(lockstep_error)?;
+            frame
+                .map(|png| crate::env::client::decode_render_png(&png))
+                .transpose()
+                .map(|frame| frame.unwrap_or(crate::Value::None))
+        })
+    }
+
     /// The env's rendered frame (PNG), when it renders.
     pub async fn render(&self) -> Result<Option<Bytes>> {
         self.client.render(0, None).await.map_err(lockstep_error)
@@ -287,7 +299,7 @@ impl Binding {
     }
 
     /// Evicts the live episode's state on the model, once.
-    async fn end(&mut self) -> Result<()> {
+    pub(crate) async fn end(&mut self) -> Result<()> {
         let Some(episode) = &mut self.episode else {
             return Ok(());
         };

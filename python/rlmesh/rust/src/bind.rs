@@ -1,37 +1,29 @@
-//! `Model.bind(target)`: a model bound to one env, stepped by hand.
-
-use std::sync::Arc;
-
-use pyo3::exceptions::PyRuntimeError;
+//! Python values over the shared facade's manual binding.
+use crate::facade::{PyFacadeHooks, value_to_py};
+use crate::model::LastPyError;
+use crate::spaces::{
+    ValueBackend, env_contract_to_py, py_any_to_meta_map, py_any_to_space_value_with_backend,
+};
+use crate::types::to_py_err;
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh::binding::model::{Binding, ModelHandler};
+use std::sync::{Arc, Mutex};
 
-use crate::model::{LastPyError, model_runtime};
-use crate::spaces::{
-    ValueBackend, env_contract_to_py, meta_map_to_pydict, py_any_to_meta_map,
-    py_any_to_space_value_with_backend, space_value_to_py_neutral,
-};
-use crate::types::to_py_err;
-
-/// A model bound to one env lane. Values cross as neutral trees; the
-/// Python `Binding` bridges them for the model's framework.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyBinding {
-    inner: Arc<tokio::sync::Mutex<Option<Binding>>>,
+    inner: Mutex<Option<rlmesh::Binding<'static>>>,
     contract: Py<PyAny>,
-    spaces: (rlmesh_spaces::SpaceSpec, rlmesh_spaces::SpaceSpec),
-    /// The exception the model's predict last raised, re-raised as itself.
+    action_space: rlmesh_spaces::SpaceSpec,
     last_error: LastPyError,
+    done: Arc<std::sync::atomic::AtomicBool>,
+    render: Arc<dyn Fn() -> rlmesh::Result<rlmesh::Value> + Send + Sync>,
 }
-
 impl PyBinding {
-    /// Binds `handler` to the env at `address`.
     pub(crate) fn connect(
         py: Python<'_>,
-        handler: Box<dyn ModelHandler>,
+        model: rlmesh::binding::model::PreparedModel,
         last_error: LastPyError,
         address: &str,
         execution_horizon: u32,
@@ -39,75 +31,69 @@ impl PyBinding {
     ) -> PyResult<Self> {
         let binding = py
             .detach(|| {
-                model_runtime().block_on(Binding::connect(
-                    handler,
-                    address,
-                    execution_horizon,
-                    workflow_edition.as_deref(),
-                ))
+                rlmesh::binding::model::bind_prepared(
+                    model,
+                    address.to_owned().into(),
+                    rlmesh::BindOptions {
+                        execution_horizon: Some(execution_horizon),
+                        workflow_edition,
+                        ..Default::default()
+                    },
+                )
             })
             .map_err(to_py_err)?;
-        let contract = binding.contract();
-        let space = |space: Option<&rlmesh_spaces::SpaceSpec>| {
-            space
-                .cloned()
-                .ok_or_else(|| PyRuntimeError::new_err("the env publishes no spaces"))
-        };
-        let spaces = (
-            space(contract.observation_space.as_ref())?,
-            space(contract.action_space.as_ref())?,
-        );
+        Self::from_binding(py, binding, last_error)
+    }
+    pub(crate) fn from_binding(
+        py: Python<'_>,
+        binding: rlmesh::Binding<'static>,
+        last_error: LastPyError,
+    ) -> PyResult<Self> {
+        let contract =
+            rlmesh::binding::env_contract_to_wire(binding.contract()).map_err(to_py_err)?;
+        let action_space = contract.action_space.clone().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("the env publishes no action space")
+        })?;
+        let done = rlmesh::binding::model::binding_done_flag(&binding);
+        let render = rlmesh::binding::model::binding_renderer(&binding).map_err(to_py_err)?;
         Ok(Self {
-            contract: env_contract_to_py(py, contract)?,
-            inner: Arc::new(tokio::sync::Mutex::new(Some(binding))),
-            spaces,
+            done,
+            render,
+            contract: env_contract_to_py(py, &contract)?,
+            action_space,
+            inner: Mutex::new(Some(binding)),
             last_error,
         })
     }
-
-    /// Runs `f` on the open binding, off the GIL. A pending signal
-    /// (Ctrl-C) abandons the call and raises; an exception the model's
-    /// predict raised is re-raised as itself.
     fn with<R: Send>(
         &self,
         py: Python<'_>,
-        f: impl AsyncFnOnce(&mut Binding) -> rlmesh::Result<R> + Send,
+        call: impl FnOnce(&mut rlmesh::Binding<'static>) -> rlmesh::Result<R> + Send,
     ) -> PyResult<R> {
-        let inner = Arc::clone(&self.inner);
         self.last_error
             .lock()
-            .expect("last_error lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .take();
         let outcome = py.detach(|| {
-            model_runtime().block_on(async move {
-                let call = async {
-                    let mut binding = inner.lock().await;
-                    let binding = binding
-                        .as_mut()
-                        .ok_or_else(|| rlmesh::Error::Runtime("the binding is closed".into()))?;
-                    f(binding).await
-                };
-                let mut call = std::pin::pin!(call);
-                let mut poll = crate::client::signal_poll();
-                loop {
-                    tokio::select! {
-                        result = &mut call => return Ok::<rlmesh::Result<R>, PyErr>(result),
-                        _ = poll.tick() => crate::client::check_signals()?,
-                    }
-                }
-            })
-        })?;
+            let mut guard = self.inner.try_lock().map_err(|_| {
+                rlmesh::Error::Runtime("a binding operation is already in progress".into())
+            })?;
+            let binding = guard
+                .as_mut()
+                .ok_or_else(|| rlmesh::Error::Runtime("the binding is closed".into()))?;
+            let cancel = rlmesh::binding::model::binding_cancellation(binding);
+            let poll = crate::facade::signal_poll(self.last_error.clone(), move || cancel.cancel());
+            rlmesh::binding::model::with_caller_poll(poll, || call(binding))
+        });
         outcome.map_err(|err| {
-            let raised = self
-                .last_error
+            self.last_error
                 .lock()
-                .expect("last_error lock poisoned")
-                .take();
-            raised.unwrap_or_else(|| to_py_err(err))
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .unwrap_or_else(|| to_py_err(err))
         })
     }
 }
-
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
@@ -116,95 +102,94 @@ impl PyBinding {
     fn env_contract(&self, py: Python<'_>) -> Py<PyAny> {
         self.contract.clone_ref(py)
     }
-
-    /// Starts the next episode: `(observation, info)`.
+    #[getter]
+    fn done(&self) -> bool {
+        self.done.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn observe(&self, py: Python<'_>, relay: Py<PyAny>) -> PyResult<()> {
+        let hooks = PyFacadeHooks::new(relay, self.last_error.clone());
+        self.with(py, |b| {
+            rlmesh::binding::model::observe_binding(b, Box::new(hooks.clone()), Box::new(hooks))
+        })
+    }
     #[pyo3(signature = (seed=None, options=None))]
-    #[gen_stub(override_return_type(
-        type_repr = "tuple[typing.Any, builtins.dict[builtins.str, typing.Any]]",
-        imports = ("builtins", "typing")
-    ))]
+    #[gen_stub(override_return_type(type_repr = "tuple[typing.Any, builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
     fn reset<'py>(
         &self,
         py: Python<'py>,
         seed: Option<i64>,
         options: Option<Bound<'py, PyAny>>,
     ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, pyo3::types::PyDict>)> {
-        let options = options.map(|o| py_any_to_meta_map(&o)).transpose()?;
-        let (observation, info) = self.with(py, async move |b: &mut Binding| {
-            b.reset(seed, options).await
-        })?;
+        let options = options
+            .map(|v| py_any_to_meta_map(&v).map(rlmesh::binding::metadata_from_wire))
+            .transpose()?;
+        let (obs, info) = self.with(py, |b| b.reset(seed, options.as_ref()))?;
         Ok((
-            space_value_to_py_neutral(py, &observation, &self.spaces.0)?,
-            match info {
-                Some(info) => meta_map_to_pydict(py, &info)?,
-                None => pyo3::types::PyDict::new(py),
-            },
+            value_to_py(py, &obs)?,
+            value_to_py(py, &rlmesh::Value::Dict(info))?.cast_into()?,
         ))
     }
-
-    /// One step under `action` (the model's when `None`): `(observation,
-    /// action, reward, terminated, truncated, info, predict_ms, step_ms)`.
     #[pyo3(signature = (action=None))]
-    #[gen_stub(override_return_type(
-        type_repr = "tuple[typing.Any, typing.Any, builtins.float, builtins.bool, builtins.bool, builtins.dict[builtins.str, typing.Any], builtins.float, builtins.float]",
-        imports = ("builtins", "typing")
-    ))]
-    #[allow(clippy::type_complexity)] // the step tuple Python unpacks
+    #[gen_stub(override_return_type(type_repr = "tuple[typing.Any, builtins.float, builtins.bool, builtins.bool, builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    #[allow(clippy::type_complexity)]
     fn step<'py>(
         &self,
         py: Python<'py>,
         action: Option<Bound<'py, PyAny>>,
     ) -> PyResult<(
         Bound<'py, PyAny>,
-        Bound<'py, PyAny>,
         f64,
         bool,
         bool,
         Bound<'py, pyo3::types::PyDict>,
-        f64,
-        f64,
     )> {
         let action = action
             .map(|a| {
-                py_any_to_space_value_with_backend(py, &a, &self.spaces.1, ValueBackend::Native)
+                py_any_to_space_value_with_backend(py, &a, &self.action_space, ValueBackend::Native)
+                    .and_then(|a| {
+                        rlmesh::binding::value_from_space(&self.action_space, a).map_err(to_py_err)
+                    })
             })
             .transpose()?;
-        let step = self.with(py, async move |b: &mut Binding| b.step(action).await)?;
+        let (obs, reward, terminated, truncated, info) = self.with(py, |b| b.step(action))?;
         Ok((
-            space_value_to_py_neutral(py, &step.observation, &self.spaces.0)?,
-            space_value_to_py_neutral(py, &step.action, &self.spaces.1)?,
-            step.reward,
-            step.terminated,
-            step.truncated,
-            match step.info {
-                Some(info) => meta_map_to_pydict(py, &info)?,
-                None => pyo3::types::PyDict::new(py),
-            },
-            step.predict.as_secs_f64() * 1000.0,
-            step.env.as_secs_f64() * 1000.0,
+            value_to_py(py, &obs)?,
+            reward,
+            terminated,
+            truncated,
+            value_to_py(py, &rlmesh::Value::Dict(info))?.cast_into()?,
         ))
     }
-
-    /// The env's rendered frame (a uint8 HWC tensor), or `None`.
     fn render<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let frame = self.with(py, async |b: &mut Binding| b.render().await)?;
-        frame
-            .filter(|png| !png.is_empty())
-            .map(|png| crate::client::decode_render_frame(py, &png))
-            .transpose()
+        let frame = py.detach(|| (self.render)()).map_err(to_py_err)?;
+        if matches!(frame, rlmesh::Value::None) {
+            Ok(None)
+        } else {
+            value_to_py(py, &frame).map(Some)
+        }
     }
-
-    /// Ends the episode and releases the env (idempotent).
     fn close(&self, py: Python<'_>) -> PyResult<()> {
-        let inner = Arc::clone(&self.inner);
-        py.detach(|| {
-            model_runtime().block_on(async move {
-                match inner.lock().await.take() {
-                    Some(binding) => binding.close().await,
-                    None => Ok(()),
-                }
-            })
-        })
-        .map_err(to_py_err)
+        // The core's close is idempotent. Preserve user hook exceptions even
+        // when their text happens to match the closed-binding error.
+        self.with(py, |b| b.close())
+    }
+}
+
+impl Drop for PyBinding {
+    fn drop(&mut self) {
+        let mut binding = self
+            .inner
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if binding.is_none() {
+            return;
+        }
+        // The facade drains Python model/env callbacks when it closes. A
+        // pyclass finalizer must release the GIL while those callbacks run.
+        if Python::try_attach(|py| py.detach(|| drop(binding.take()))).is_none() {
+            // Interpreter shutdown cannot legally execute Python callbacks.
+            std::mem::forget(binding);
+        }
     }
 }

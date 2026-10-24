@@ -1,7 +1,7 @@
 mod adapters;
 mod bind;
 mod client;
-mod hooks;
+mod facade;
 mod lifecycle;
 mod lockstep;
 mod model;

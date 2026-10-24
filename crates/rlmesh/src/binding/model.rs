@@ -154,3 +154,154 @@ pub fn serve_model(
 ) -> Result<()> {
     model.serve_host(address, options, foreground)
 }
+
+/// An already-loaded language handler entering the shared facade orchestration.
+/// Bindings retain their language-specific predict/route conversion, while run
+/// and bind own validation, hooks, episode tracking and resource lifetimes.
+pub struct PreparedModel {
+    pub handler: Box<dyn ModelHandler>,
+    pub presentation: Option<Box<dyn Presentation>>,
+    pub run_gate: Arc<std::sync::atomic::AtomicBool>,
+    pub run_lease: Option<Arc<RunLease>>,
+    pub native_chunk: Option<u32>,
+    pub execution_horizon: Option<u32>,
+    pub workflow_edition: Option<String>,
+    pub authored: bool,
+    pub has_chunk: Option<bool>,
+}
+
+/// Drive an already-loaded binding handler through the same facade as Model.
+pub fn run_prepared(
+    model: PreparedModel,
+    env: crate::EnvTarget<'_>,
+    options: crate::RunOptions<'_>,
+) -> Result<crate::RunResult> {
+    crate::run::run_prepared(model, env, options)
+}
+
+/// Bind an already-loaded language handler through the shared facade.
+#[cfg(feature = "lockstep")]
+pub fn bind_prepared<'a>(
+    model: PreparedModel,
+    env: crate::EnvTarget<'a>,
+    options: crate::BindOptions<'a>,
+) -> Result<crate::Binding<'a>> {
+    crate::run::bind_prepared(model, env, options)
+}
+
+/// Language resource conversion for targets the facade cannot construct itself
+/// (for example a Python env server or a lent Docker session).
+pub trait EnvAdapter: Send {
+    fn open(&mut self, edition: Option<&str>, caller: CallerJobs) -> Result<AdaptedEnv>;
+    fn release(&mut self, close_env: bool) -> Result<()>;
+    fn owns_env(&self) -> bool;
+}
+
+pub struct AdaptedEnv {
+    pub address: String,
+    pub invite_at: Option<String>,
+    pub close_over_wire: bool,
+}
+
+/// An owned target conversion; the core, rather than the host, decides when
+/// it is opened and released, including zero budgets and connection failures.
+pub fn adapted_env(adapter: Box<dyn EnvAdapter>) -> crate::EnvTarget<'static> {
+    crate::run::adapted_env(adapter)
+}
+
+pub(crate) struct OwnedTarget {
+    adapter: Box<dyn EnvAdapter>,
+    close: bool,
+    released: bool,
+}
+impl OwnedTarget {
+    pub(crate) fn new(adapter: Box<dyn EnvAdapter>, close: bool) -> Self {
+        let close = close || adapter.owns_env();
+        Self {
+            adapter,
+            close,
+            released: false,
+        }
+    }
+    pub(crate) fn open(&mut self, edition: Option<&str>, caller: CallerJobs) -> Result<AdaptedEnv> {
+        self.adapter.open(edition, caller)
+    }
+    pub(crate) fn release(&mut self) -> Result<()> {
+        if std::mem::replace(&mut self.released, true) {
+            return Ok(());
+        }
+        self.adapter.release(self.close)
+    }
+}
+impl Drop for OwnedTarget {
+    fn drop(&mut self) {
+        let _ = self.release();
+    }
+}
+
+/// Poll language signals on the caller between facade driver segments. The
+/// binding decides how a signal maps to its cancellation token and exception.
+pub fn with_caller_poll<R>(poll: Arc<dyn Fn() + Send + Sync>, call: impl FnOnce() -> R) -> R {
+    crate::run::drive::with_caller_poll(poll, call)
+}
+
+/// Presentation frames at the facade's binding seam.
+pub use crate::run::RunFrame;
+
+/// Preserve tensor ownership and scalar/metadata types when crossing an
+/// existing language adapter's neutral-value codec.
+pub fn adapter_value(value: &crate::Value) -> Result<rlmesh_adapters::v1::Value> {
+    crate::model::bridge::to_adapter(value)
+}
+
+pub use crate::model::facade::RunSlot as RunLease;
+
+/// Retain run admission through a language binding's exception conversion.
+/// A nested/parallel run fails before it can replace the active run's errors.
+pub fn claim_run(gate: Arc<std::sync::atomic::AtomicBool>) -> Result<Arc<RunLease>> {
+    RunLease::claim(gate).map(Arc::new)
+}
+
+pub(crate) fn caller_port(port: crate::run::drive::CallerPort) -> CallerJobs {
+    CallerJobs(port)
+}
+
+/// Attach an owned host observer to a manual binding.
+#[cfg(feature = "lockstep")]
+pub fn observe_binding(
+    binding: &mut crate::Binding<'_>,
+    hooks: Box<dyn crate::RunHooks>,
+    presentation: Box<dyn Presentation>,
+) -> Result<()> {
+    binding.observe(hooks, presentation)
+}
+
+/// The next manual operation's signal cancellation.
+#[cfg(feature = "lockstep")]
+pub fn binding_cancellation(
+    binding: &mut crate::Binding<'_>,
+) -> tokio_util::sync::CancellationToken {
+    binding.cancellation()
+}
+
+/// Read episode status from callbacks without borrowing the mutable binding.
+#[cfg(feature = "lockstep")]
+pub fn binding_done_flag(binding: &crate::Binding<'_>) -> Arc<std::sync::atomic::AtomicBool> {
+    binding.done_flag()
+}
+
+/// A render callback usable while a manual binding is dispatching a hook.
+#[cfg(feature = "lockstep")]
+pub fn binding_renderer(
+    binding: &crate::Binding<'_>,
+) -> Result<Arc<dyn Fn() -> Result<crate::Value> + Send + Sync>> {
+    binding.renderer()
+}
+
+/// A language's drawing observer, paired with its ordinary RunHooks. The
+/// shared core supplies accounting and applies its truncation/quit requests.
+/// Kept in the semver-exempt binding namespace, not the public hooks contract.
+pub trait Presentation: Send {
+    fn on_frame(&mut self, frame: &RunFrame<'_>) -> Result<()>;
+    fn directive(&mut self) -> Result<crate::run::runtime::RunDirective>;
+}

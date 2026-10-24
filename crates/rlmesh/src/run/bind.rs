@@ -30,9 +30,32 @@ enum Local<'a> {
     Made(OwnedMadeEnv),
 }
 
+enum HookSink<'a> {
+    Borrowed(&'a mut dyn RunHooks),
+    Owned(Box<dyn RunHooks>),
+}
+
+impl<'a> std::ops::Deref for HookSink<'a> {
+    type Target = dyn RunHooks + 'a;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(hooks) => &**hooks,
+            Self::Owned(hooks) => &**hooks,
+        }
+    }
+}
+impl<'a> std::ops::DerefMut for HookSink<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Borrowed(hooks) => &mut **hooks,
+            Self::Owned(hooks) => &mut **hooks,
+        }
+    }
+}
+
 /// The hooks a binding feeds, with the episodes it has seen.
 struct Track<'a> {
-    hooks: &'a mut dyn RunHooks,
+    hooks: HookSink<'a>,
     /// The info keys the binding's edition reads an episode's success from.
     success_keys: &'static [&'static str],
     episodes: Vec<EpisodeResult>,
@@ -61,8 +84,11 @@ pub struct Binding<'a> {
     /// A served env this binding shuts down on close (`close_env`).
     shutdown: Option<&'a EnvServer>,
     close_env: bool,
-    done: bool,
+    done: Arc<std::sync::atomic::AtomicBool>,
+    cancel: tokio_util::sync::CancellationToken,
     track: Option<Track<'a>>,
+    adapted: Option<crate::binding::model::OwnedTarget>,
+    workflow_edition: Option<String>,
 }
 
 impl std::fmt::Debug for Binding<'_> {
@@ -166,6 +192,31 @@ impl<'a> Binding<'a> {
                     execution_horizon,
                 )
             }
+            ModelKind::Prepared(model) => {
+                let horizon = super::options::resolve_execution_horizon(
+                    execution_horizon.map(i128::from),
+                    model.execution_horizon.map(i128::from),
+                    None,
+                    model.native_chunk,
+                )?;
+                let edition = crate::editions::resolve_native(
+                    crate::editions::EditionSources {
+                        call: workflow_edition.as_deref(),
+                        option: None,
+                        declared: model.workflow_edition.as_deref(),
+                    },
+                    model.authored,
+                )?;
+                if horizon > 1 && model.has_chunk == Some(false) {
+                    crate::warnings::warn(
+                        crate::WarningCategory::UserWarning,
+                        format!(
+                            "execution_horizon={horizon} was requested but the model defines no predict_chunk(); running un-chunked."
+                        ),
+                    )?;
+                }
+                (model.handler, edition, horizon)
+            }
             ModelKind::Random => {
                 let execution_horizon = execution_horizon.unwrap_or(1);
                 check_horizon(execution_horizon, None)?;
@@ -186,11 +237,30 @@ impl<'a> Binding<'a> {
             loopback: None,
             shutdown: None,
             close_env,
-            done: true,
+            done: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            cancel: tokio_util::sync::CancellationToken::new(),
             track: None,
+            adapted: None,
+            workflow_edition: edition.clone(),
         };
         let address = match env.0 {
-            EnvKind::Address(address) => address,
+            EnvKind::Address(address) => {
+                super::options::check_address_close(&address, close_env)?;
+                address
+            }
+            EnvKind::Adapted(adapter) => {
+                binding.adapted = Some(crate::binding::model::OwnedTarget::new(adapter, close_env));
+                let target = binding.adapted.as_mut().expect("installed target").open(
+                    edition.as_deref(),
+                    crate::binding::model::caller_port(port.clone()),
+                )?;
+                super::options::check_address_close(
+                    &target.address,
+                    close_env && target.close_over_wire,
+                )?;
+                target.address
+            }
+
             EnvKind::Server(server) => {
                 if close_env {
                     binding.shutdown = Some(server);
@@ -226,28 +296,45 @@ impl<'a> Binding<'a> {
         binding.contract = Some(contract);
         binding.inner = Some(inner);
         if let Some(hooks) = hooks {
-            let edition = edition
-                .as_deref()
-                .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
-            let edition =
-                rlmesh_proto::parse_retained_edition(edition).map_err(Error::invalid_argument)?;
-            let track = binding.track.insert(Track {
-                hooks,
-                success_keys: rlmesh_proto::defaults(edition).success_info_keys,
-                episodes: Vec::new(),
-                index: -1,
-                seed: None,
-                steps: 0,
-                reward: 0.0,
-                started: Instant::now(),
-                predict_ms: Vec::new(),
-                step_ms: Vec::new(),
-                info: InfoDict::new(),
-                last: Value::None,
-            });
-            track.hooks.on_run_start(binding.context.clone())?;
+            binding.attach_hooks(HookSink::Borrowed(hooks))?;
         }
         Ok(binding)
+    }
+
+    /// Install an owned binding observer, without a self-referential host borrow.
+    #[doc(hidden)]
+    pub(crate) fn observe(
+        &mut self,
+        hooks: Box<dyn RunHooks>,
+        presentation: Box<dyn crate::binding::model::Presentation>,
+    ) -> Result<()> {
+        self.context.set_presentation(Some(presentation));
+        self.attach_hooks(HookSink::Owned(hooks))
+    }
+
+    fn attach_hooks(&mut self, hooks: HookSink<'a>) -> Result<()> {
+        let edition = self
+            .workflow_edition
+            .as_deref()
+            .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
+        let edition =
+            rlmesh_proto::parse_retained_edition(edition).map_err(Error::invalid_argument)?;
+        let track = self.track.insert(Track {
+            hooks,
+            success_keys: rlmesh_proto::defaults(edition).success_info_keys,
+            episodes: Vec::new(),
+            index: -1,
+            seed: None,
+            steps: 0,
+            reward: 0.0,
+            started: Instant::now(),
+            predict_ms: Vec::new(),
+            step_ms: Vec::new(),
+            info: InfoDict::new(),
+            last: Value::None,
+        });
+        track.hooks.on_run_start(self.context.clone())?;
+        Ok(())
     }
 
     /// Serve `local` behind a loopback server relaying to this thread.
@@ -290,10 +377,27 @@ impl<'a> Binding<'a> {
         CallerSide { env, hooks: None }
     }
 
-    /// Drive `future` here, running the local env's calls between polls.
-    fn drive<F: std::future::Future>(&mut self, future: F) -> F::Output {
+    /// Start one host operation; its token spans every internal driver call
+    /// (for example ending a live episode and then resetting its env).
+    #[doc(hidden)]
+    pub(crate) fn cancellation(&mut self) -> tokio_util::sync::CancellationToken {
+        self.cancel = tokio_util::sync::CancellationToken::new();
+        self.cancel.clone()
+    }
+
+    fn drive<F, T>(&mut self, future: F) -> Result<T>
+    where
+        F: std::future::Future<Output = Result<T>>,
+    {
         let mut queue = std::mem::replace(&mut self.queue, caller_channel().1);
-        let out = block_on_caller(future, &mut queue, &mut self.side());
+        let cancel = self.cancel.clone();
+        let call = async {
+            tokio::select! {
+                result = future => result,
+                _ = cancel.cancelled() => Err(Error::Cancelled),
+            }
+        };
+        let out = block_on_caller(call, &mut queue, &mut self.side());
         self.queue = queue;
         out
     }
@@ -320,7 +424,7 @@ impl<'a> Binding<'a> {
         let out = self.drive(inner.reset(seed, options));
         self.inner = Some(inner);
         let (observation, info) = out?;
-        self.done = false;
+        self.done.store(false, std::sync::atomic::Ordering::Release);
         let observation =
             space_codec::value_from_space(self.contract().observation_space().wire(), observation)?;
         let info = info.map_or_else(Metadata::new, meta_codec::metadata_from_wire);
@@ -335,6 +439,17 @@ impl<'a> Binding<'a> {
             track.info = info.clone();
             track.last = observation.clone();
             track.hooks.on_episode_start(track.index, seed)?;
+            self.context.frame(&super::RunFrame {
+                observation: &observation,
+                episode: track.index,
+                seed,
+                steps: 0,
+                reward: 0.0,
+                outcome: Some(""),
+                predict_ms: 0.0,
+                step_ms: 0.0,
+                elapsed_s: track.started.elapsed().as_secs_f64(),
+            })?;
         }
         Ok((observation, info))
     }
@@ -342,6 +457,11 @@ impl<'a> Binding<'a> {
     /// One env step under `action`, or the model's when `None`:
     /// `(observation, reward, terminated, truncated, info)`.
     pub fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
+        if self.done() {
+            return Err(Error::Runtime(
+                "the episode ended; reset to start the next".into(),
+            ));
+        }
         let action = action
             .map(|action| {
                 space_codec::value_to_space(self.contract().action_space().wire(), &action)
@@ -358,6 +478,7 @@ impl<'a> Binding<'a> {
         let info = step
             .info
             .map_or_else(Metadata::new, meta_codec::metadata_from_wire);
+        let mut truncated = step.truncated;
         if let Some(track) = &mut self.track {
             let action = space_codec::value_from_space(
                 self.contract
@@ -375,6 +496,31 @@ impl<'a> Binding<'a> {
             track.predict_ms.push(predict_ms);
             track.step_ms.push(step_ms);
             track.info = info.clone();
+            let outcome = if !step.terminated && !step.truncated {
+                ""
+            } else {
+                match info_success(track.success_keys, &info) {
+                    Some(true) => "success",
+                    Some(false) if step.terminated => "failure",
+                    Some(false) => "timeout",
+                    None if step.terminated => "done",
+                    None => "timeout",
+                }
+            };
+            self.context.frame(&super::RunFrame {
+                observation: &observation,
+                episode: track.index,
+                seed: track.seed,
+                steps: track.steps,
+                reward: track.reward,
+                outcome: Some(outcome),
+                predict_ms,
+                step_ms,
+                elapsed_s: track.started.elapsed().as_secs_f64(),
+            })?;
+            if self.context.directive()? != super::runtime::RunDirective::Continue {
+                truncated = true;
+            }
             let context: Arc<dyn RunContext> = self.context.clone();
             track.hooks.on_step(&StepEvent {
                 read: super::read::read_fn(context, before.clone()),
@@ -385,29 +531,29 @@ impl<'a> Binding<'a> {
                 action,
                 reward: step.reward,
                 terminated: step.terminated,
-                truncated: step.truncated,
+                truncated,
                 info: info.clone(),
                 predict_ms,
                 step_ms,
             })?;
         }
-        if step.terminated || step.truncated {
-            self.end_episode(step.terminated, step.truncated)?;
+        if step.terminated || truncated {
+            self.end_episode(step.terminated, truncated)?;
         }
-        Ok((
-            observation,
-            step.reward,
-            step.terminated,
-            step.truncated,
-            info,
-        ))
+        Ok((observation, step.reward, step.terminated, truncated, info))
     }
 
     /// Record the episode in flight as ended, once, for the hooks.
     fn end_episode(&mut self, terminated: bool, truncated: bool) -> Result<()> {
-        if std::mem::replace(&mut self.done, true) {
+        if self.done.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return Ok(());
         }
+        // Directives and reset-over-live episodes evict model state at the
+        // same edge as a natural terminal step; the engine's end is idempotent.
+        let mut inner = self.engine()?;
+        let ended = self.drive(inner.end());
+        self.inner = Some(inner);
+        ended?;
         let Some(track) = &mut self.track else {
             return Ok(());
         };
@@ -433,7 +579,18 @@ impl<'a> Binding<'a> {
 
     /// Whether the episode ended (or none started yet).
     pub fn done(&self) -> bool {
-        self.done
+        self.done.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[doc(hidden)]
+    pub(crate) fn done_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.done.clone()
+    }
+
+    /// A renderer independent of a mutable binding borrow, for hook observers.
+    #[doc(hidden)]
+    pub(crate) fn renderer(&self) -> Result<Arc<dyn Fn() -> Result<Value> + Send + Sync>> {
+        Ok(self.inner.as_ref().ok_or_else(closed_error)?.renderer())
     }
 
     /// The env's contract.
@@ -523,13 +680,17 @@ impl<'a> Binding<'a> {
             _ => Ok(()),
         };
         let mut result = result.and(closed);
-        if let Some(track) = self.track.take() {
+        if let Some(mut target) = self.adapted.take() {
+            result = result.and(target.release());
+        }
+        if let Some(mut track) = self.track.take() {
             let episodes = track.episodes;
             result = result.and(track.hooks.on_run_end(&RunResult {
                 episodes,
                 ..RunResult::default()
             }));
         }
+        self.context.set_presentation(None);
         result
     }
 }

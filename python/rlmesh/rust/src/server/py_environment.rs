@@ -143,11 +143,39 @@ fn as_server_callback<R>(id: u64, work: impl FnOnce() -> R) -> R {
 /// A Python call queued for the foreground thread (see [`Dispatch::Foreground`]).
 pub type ForegroundJob = Box<dyn FnOnce() + Send>;
 
+thread_local! {
+    static FACADE_CALLER: std::cell::RefCell<Option<(rlmesh::binding::model::CallerJobs, crate::model::LastPyError)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn with_facade_caller<R>(
+    caller: rlmesh::binding::model::CallerJobs,
+    error: crate::model::LastPyError,
+    call: impl FnOnce() -> R,
+) -> R {
+    struct Restore(
+        Option<(
+            rlmesh::binding::model::CallerJobs,
+            crate::model::LastPyError,
+        )>,
+    );
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FACADE_CALLER.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(FACADE_CALLER.with(|slot| slot.replace(Some((caller, error)))));
+    call()
+}
+
 /// Where an env's Python calls run.
 #[derive(Clone)]
 pub enum Dispatch {
     /// Tokio's blocking pool: any thread, so a call may hop between threads.
     Pool,
+    Facade(
+        rlmesh::binding::model::CallerJobs,
+        crate::model::LastPyError,
+    ),
     /// Inline on the calling thread. A lane actor sets this so a lane's env
     /// always executes on its own OS thread (what OSMesa/Vulkan contexts expect).
     Pinned,
@@ -208,6 +236,9 @@ impl PyServerEnv {
     pub fn dispatch_vector(&mut self, jobs: std::sync::mpsc::Sender<ForegroundJob>) -> bool {
         match self {
             PyServerEnv::Vector(env) => {
+                if matches!(env.0.dispatch, Dispatch::Facade(..)) {
+                    return false;
+                }
                 env.0.dispatch = Dispatch::Foreground(jobs);
                 true
             }
@@ -289,7 +320,11 @@ impl PyEnvironment {
                 env_contract,
                 num_envs,
                 uses_vector_api,
-                dispatch: Dispatch::Pool,
+                dispatch: FACADE_CALLER
+                    .with(|slot| slot.borrow().clone())
+                    .map_or(Dispatch::Pool, |(caller, error)| {
+                        Dispatch::Facade(caller, error)
+                    }),
                 server_id: 0,
                 profiler,
                 last_phases: EndpointPhases::default(),
@@ -429,7 +464,9 @@ pub fn build_lane_server_env(envs: Vec<Py<PyAny>>, native_values: bool) -> PyRes
     let mut lanes: Vec<PySingleEnv> = Vec::with_capacity(envs.len());
     for env in envs {
         let mut env = PyEnvironment::new(env, native_values)?;
-        env.dispatch = Dispatch::Pinned;
+        if !matches!(env.dispatch, Dispatch::Facade(..)) {
+            env.dispatch = Dispatch::Pinned;
+        }
         if !env.uses_single_env_api() {
             return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "EnvServer serves scalar environments (one per lane). Use VectorEnvServer for \
@@ -527,6 +564,23 @@ where
     let work = move |py: Python<'_>| as_server_callback(server_id, || work(py));
     let result = match dispatch {
         Dispatch::Pinned => Python::attach(work),
+        Dispatch::Facade(caller, error) => caller
+            .run(move || {
+                let result = Python::attach(work);
+                if let Err(err) = &result
+                    && Python::attach(|py| {
+                        err.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+                    })
+                {
+                    error
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get_or_insert_with(|| Python::attach(|py| err.clone_ref(py)));
+                }
+                result
+            })
+            .await
+            .map_err(|err| into_err(err.to_string(), false, None))?,
         Dispatch::Pool => tokio::task::spawn_blocking(move || Python::attach(work))
             .await
             .map_err(|e| into_err(format!("{phase} task panicked: {e}"), false, None))?,
@@ -1334,7 +1388,9 @@ env = Env()
             .unbind()
         });
         let mut env = PyEnvironment::new(env, false).unwrap();
-        env.dispatch = Dispatch::Pinned;
+        if !matches!(env.dispatch, Dispatch::Facade(..)) {
+            env.dispatch = Dispatch::Pinned;
+        }
         for policy in [
             ValidationPolicy::Warn,
             ValidationPolicy::Strict,

@@ -179,6 +179,34 @@ enum Segment<T> {
     Job(Job),
 }
 
+thread_local! {
+    static CALLER_POLL: std::cell::RefCell<Option<Arc<dyn Fn() + Send + Sync>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn with_caller_poll<R>(
+    poll: Arc<dyn Fn() + Send + Sync>,
+    call: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<Arc<dyn Fn() + Send + Sync>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CALLER_POLL.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(CALLER_POLL.with(|slot| slot.replace(Some(poll))));
+    call()
+}
+
+fn caller_poll() -> bool {
+    let poll = CALLER_POLL.with(|slot| slot.borrow().clone());
+    if let Some(poll) = poll {
+        as_caller(|| poll());
+        true
+    } else {
+        false
+    }
+}
+
 /// Drive `future` on this thread in segments, running each job the future
 /// sends between segments with the driving flag clear (the sync entry
 /// points). The caller has checked it is not in an async context.
@@ -192,6 +220,7 @@ pub(crate) fn block_on_caller<F: Future>(
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
     loop {
+        let polling = caller_poll();
         let segment = {
             let _driving = Driving::set();
             match future.as_mut().poll(&mut cx) {
@@ -205,6 +234,7 @@ pub(crate) fn block_on_caller<F: Future>(
         match segment {
             Some(Segment::Done(out)) => return out,
             Some(Segment::Job(job)) => job(side),
+            None if polling => std::thread::park_timeout(Duration::from_millis(10)),
             None => std::thread::park(),
         }
     }

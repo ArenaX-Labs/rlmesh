@@ -31,6 +31,7 @@ pub(crate) enum ModelKind<'a> {
     Model(&'a Model),
     Remote(&'a crate::RemoteModel),
     Random,
+    Prepared(crate::binding::model::PreparedModel),
 }
 
 impl<'a> From<&'a Model> for ModelTarget<'a> {
@@ -57,6 +58,7 @@ impl fmt::Debug for ModelTarget<'_> {
             ModelKind::Model(model) => f.debug_tuple("ModelTarget").field(model).finish(),
             ModelKind::Remote(model) => f.debug_tuple("ModelTarget").field(model).finish(),
             ModelKind::Random => f.write_str("ModelTarget(RANDOM_SAMPLE)"),
+            ModelKind::Prepared(_) => f.write_str("ModelTarget(<binding handler>)"),
         }
     }
 }
@@ -88,6 +90,7 @@ pub struct EnvTarget<'a>(pub(crate) EnvKind<'a>);
 
 pub(crate) enum EnvKind<'a> {
     Address(String),
+    Adapted(Box<dyn crate::binding::model::EnvAdapter>),
     Server(&'a EnvServer),
     /// A caller's remote client: a run dials a v1 one's address and refuses
     /// a session one, which holds its env's lease; a binding refuses both.
@@ -149,6 +152,7 @@ impl<'a, E: Env + Send + 'a> From<&'a mut E> for EnvTarget<'a> {
 impl fmt::Debug for EnvTarget<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
+            EnvKind::Adapted(_) => f.write_str("EnvTarget(<binding target>)"),
             EnvKind::Address(address) => write!(f, "EnvTarget({address:?})"),
             EnvKind::Server(server) => write!(f, "EnvTarget({server})"),
             EnvKind::Remote(env) => write!(f, "EnvTarget(<remote {}>)", env.remote_address()),

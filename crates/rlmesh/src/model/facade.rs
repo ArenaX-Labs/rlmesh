@@ -695,15 +695,26 @@ pub(crate) struct Shared {
     life: Arc<Life>,
     refuse: AtomicBool,
     /// Set while a run drives this model.
-    running: AtomicBool,
+    running: Arc<AtomicBool>,
 }
 
 /// Holds a model's run slot; released on drop.
-pub(crate) struct RunSlot(Arc<Shared>);
+pub struct RunSlot(Arc<AtomicBool>);
+
+impl RunSlot {
+    pub(crate) fn claim(gate: Arc<AtomicBool>) -> Result<Self> {
+        if gate.swap(true, Ordering::SeqCst) {
+            return Err(Error::Runtime(
+                "run() is already in progress on this model; a model runs one run at a time".into(),
+            ));
+        }
+        Ok(Self(gate))
+    }
+}
 
 impl Drop for RunSlot {
     fn drop(&mut self) {
-        self.0.running.store(false, Ordering::SeqCst);
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -760,7 +771,7 @@ impl Shared {
                 changed: Condvar::new(),
             }),
             refuse: AtomicBool::new(false),
-            running: AtomicBool::new(false),
+            running: Arc::new(AtomicBool::new(false)),
         }))
     }
 
@@ -825,13 +836,7 @@ impl Shared {
     /// Claim the model's one run slot: a second run while one is in progress
     /// fails at once with the `RuntimeError` class.
     pub(crate) fn claim_run(self: &Arc<Self>) -> Result<RunSlot> {
-        if self.running.swap(true, Ordering::SeqCst) {
-            return Err(Error::Runtime(
-                "run() is already in progress on this model; a model runs one run at a time"
-                    .to_string(),
-            ));
-        }
-        Ok(RunSlot(Arc::clone(self)))
+        RunSlot::claim(self.running.clone())
     }
 
     /// Refuse a new run or serve once `close()` has begun.

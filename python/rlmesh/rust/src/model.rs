@@ -6,10 +6,9 @@ use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass, gen_stub_
 use pyo3_stub_gen::inventory::submit;
 use rlmesh::Error as RLMeshError;
 use rlmesh::binding::model::{
-    AdaptedModelHandler, EpisodeInfo, ModelHandler, ModelObservation, ModelWorker, PredictFn,
-    PredictFrames, RouteConfig, RouteResolver, RunLocalOptions,
+    AdaptedModelHandler, EpisodeInfo, ModelHandler, ModelObservation, PredictFn, PredictFrames,
+    RouteConfig, RouteResolver,
 };
-use rlmesh::ext::ConnectAddress;
 use rlmesh_adapters::v1::Value;
 use rlmesh_spaces::{EnvContract, SpaceValue};
 use std::collections::HashMap;
@@ -17,7 +16,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::adapters::{PyCustomTransform, PyEncodings, decode_value, encode_value};
-use crate::hooks::PyRunHooks;
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::{
     ValueBackend, batched_space_values_to_py_neutral, env_contract_to_py,
@@ -649,160 +647,6 @@ fn call_batched(
     })
 }
 
-/// The in-process run's report as a Python dict: `episodes` (the per-episode
-/// summaries) and `telemetry` (the session metric aggregate).
-fn report_to_py(py: Python<'_>, report: &rlmesh::binding::RuntimeReport) -> PyResult<Py<PyAny>> {
-    let out = pyo3::types::PyDict::new(py);
-    out.set_item("episodes", report_episodes_to_py(py, &report.episodes)?)?;
-    out.set_item("telemetry", report_telemetry_to_py(py, report)?)?;
-    let advisories: Vec<crate::adapters::PyAdvisory> = report
-        .advisories
-        .iter()
-        .cloned()
-        .map(crate::adapters::PyAdvisory::from)
-        .collect();
-    out.set_item("advisories", advisories)?;
-    Ok(out.into_any().unbind())
-}
-
-/// The session telemetry aggregate as a `list[dict]`: one row per
-/// (op, component, metric) with count/avg/p50/p95/p99 in the metric's unit
-/// (`ms` for durations), keys matching the SDK's `TelemetryRow` fields.
-fn report_telemetry_to_py(
-    py: Python<'_>,
-    report: &rlmesh::binding::RuntimeReport,
-) -> PyResult<Py<PyAny>> {
-    use rlmesh::binding::telemetry::Kind;
-    let rows = pyo3::types::PyList::empty(py);
-    for row in &report.telemetry.rows {
-        let entry = pyo3::types::PyDict::new(py);
-        entry.set_item("op", row.source.op)?;
-        entry.set_item("component", row.source.component)?;
-        entry.set_item("metric", row.metric.name)?;
-        entry.set_item(
-            "unit",
-            match row.metric.kind {
-                Kind::Duration => "ms",
-                Kind::Bytes => "bytes",
-                Kind::Count => "count",
-            },
-        )?;
-        entry.set_item("count", row.count)?;
-        entry.set_item("avg", row.avg)?;
-        entry.set_item("p50", row.p50)?;
-        entry.set_item("p95", row.p95)?;
-        entry.set_item("p99", row.p99)?;
-        rows.append(entry)?;
-    }
-    Ok(rows.into_any().unbind())
-}
-
-/// The in-process run's per-episode results as a Python `list[dict]` (keys
-/// matching the SDK's `EpisodeResult` fields), from the runtime report's
-/// episode summaries, each episode's own latency means included.
-fn report_episodes_to_py(
-    py: Python<'_>,
-    summaries: &[rlmesh::binding::runtime::spec::EpisodeSummary],
-) -> PyResult<Py<PyAny>> {
-    let episodes = pyo3::types::PyList::empty(py);
-    for episode in summaries {
-        let entry = pyo3::types::PyDict::new(py);
-        entry.set_item("index", episode.episode_index)?;
-        entry.set_item("env_index", episode.env_index)?;
-        entry.set_item("seed", episode.seed)?;
-        entry.set_item("trial", episode.trial_index)?;
-        entry.set_item("steps", episode.step_count)?;
-        entry.set_item("reward", episode.cumulative_reward)?;
-        entry.set_item("terminated", episode.terminated)?;
-        entry.set_item("truncated", episode.truncated)?;
-        entry.set_item("success", episode.success)?;
-        entry.set_item("duration_s", episode.duration_ms as f64 / 1000.0)?;
-        entry.set_item("predict_ms", episode.predict_ms)?;
-        entry.set_item("step_ms", episode.step_ms)?;
-        episodes.append(entry)?;
-    }
-    Ok(episodes.into_any().unbind())
-}
-
-/// Run the in-process worker loop on the facade's sync driver (RUN-8): the
-/// calling thread polls the run in segments and, between them, runs each
-/// hook and each Python signal check itself, outside any async context, so a
-/// hook's sync rlmesh calls work and SIGINT is checked on the thread that
-/// called `Model.run`. A pending signal (Ctrl-C) cancels the runtime session
-/// and re-raises the signal's exception, so a long eval aborts between
-/// operations instead of blocking SIGINT until the final episode; the
-/// exception carries the episodes that finished as `partial_episodes`.
-fn run_local_blocking(
-    py: Python<'_>,
-    handler: Box<dyn ModelHandler>,
-    options: RunLocalOptions,
-    relay: Option<Py<PyAny>>,
-    last_error: &LastPyError,
-) -> PyResult<rlmesh::binding::RuntimeReport> {
-    enum RunOutcome {
-        Done(rlmesh::Result<rlmesh::binding::RuntimeReport>),
-        Signal(PyErr),
-    }
-    let cancellation = rlmesh::binding::CancellationToken::new();
-    let run_token = cancellation.clone();
-    let (jobs, mut queue) = rlmesh::binding::model::caller_jobs();
-    // A hook exception cancels the run through this same token; the relay keeps
-    // the exception so it, not the cancellation, is what the caller sees.
-    let hooks =
-        relay.map(|relay| Arc::new(PyRunHooks::new(relay, cancellation.clone(), jobs.clone())));
-    let inner: Arc<dyn rlmesh::binding::RuntimeHooks> = match &hooks {
-        Some(hooks) => Arc::clone(hooks) as Arc<dyn rlmesh::binding::RuntimeHooks>,
-        None => Arc::new(rlmesh::binding::NoopRuntimeHooks),
-    };
-    let finished = Arc::new(crate::hooks::FinishedEpisodes::new(inner));
-    let runtime_hooks: Arc<dyn rlmesh::binding::RuntimeHooks> = finished.clone();
-    let outcome = py.detach(|| {
-        let run = async move {
-            let run =
-                ModelWorker::new(handler).run_local_hooked_async(options, run_token, runtime_hooks);
-            let mut run = std::pin::pin!(run);
-            let mut poll = crate::client::signal_poll();
-            loop {
-                tokio::select! {
-                    result = &mut run => return RunOutcome::Done(result),
-                    _ = poll.tick() => {
-                        let checked = jobs
-                            .run(crate::client::check_signals)
-                            .await;
-                        if let Ok(Err(err)) = checked {
-                            cancellation.cancel();
-                            let _ = (&mut run).await;
-                            return RunOutcome::Signal(err);
-                        }
-                    }
-                }
-            }
-        };
-        rlmesh::binding::model::block_on_caller(run, &mut queue)
-    });
-    let result = if let Some(err) = hooks.as_ref().and_then(|hooks| hooks.take_error()) {
-        Err(err)
-    } else {
-        match outcome {
-            RunOutcome::Done(Ok(report)) => Ok(report),
-            RunOutcome::Done(Err(err)) => {
-                let raised = last_error.lock().expect("last_error lock poisoned").take();
-                Err(raised.unwrap_or_else(|| to_py_err(err)))
-            }
-            RunOutcome::Signal(err) => Err(err),
-        }
-    };
-    // Ctrl-C, whether it cut the loop or landed inside a predict or a hook,
-    // carries the episodes that finished before it.
-    if let Err(err) = &result
-        && err.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
-    {
-        let episodes = report_episodes_to_py(py, &finished.take())?;
-        err.value(py).setattr("partial_episodes", episodes)?;
-    }
-    result
-}
-
 /// The per-route resolver the served model exposes via `route_setup`. Runs the
 /// Python `configure_fn` (which resolves the spec into a native plan + neutral
 /// host holes) off the predict lock and hands the engine a [`RouteConfig`];
@@ -912,6 +756,7 @@ pub struct PyModel {
     inners: std::sync::Mutex<Vec<(u64, Py<PyModel>)>>,
     /// The random baseline (`RANDOM_SAMPLE`) rather than the callbacks.
     random: bool,
+    run_gate: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -975,6 +820,21 @@ impl PyModel {
                 nested,
             }),
             None => handler,
+        }
+    }
+
+    fn prepared(&self) -> rlmesh::binding::model::PreparedModel {
+        rlmesh::binding::model::PreparedModel {
+            handler: self.build_handler(),
+            presentation: None,
+            run_gate: self.run_gate.clone(),
+            run_lease: None,
+            native_chunk: self.native_chunk,
+            execution_horizon: None,
+            workflow_edition: None,
+            authored: false,
+            has_chunk: (self.served.is_none() && !self.random)
+                .then_some(self.predict_chunk_fn.is_some()),
         }
     }
 
@@ -1105,6 +965,7 @@ impl PyModel {
             reset_options_fn,
             inners: Default::default(),
             random: false,
+            run_gate: Arc::default(),
         })
     }
 
@@ -1132,6 +993,7 @@ impl PyModel {
             reset_options_fn: None,
             inners: Default::default(),
             random: false,
+            run_gate: Arc::default(),
         })
     }
 
@@ -1157,7 +1019,160 @@ impl PyModel {
             reset_options_fn: None,
             inners: Default::default(),
             random: true,
+            run_gate: Arc::default(),
         }
+    }
+
+    /// Language target and presentation conversion over the shared run facade.
+    fn run_facade(
+        &self,
+        py: Python<'_>,
+        target: Py<PyAny>,
+        relay: Py<PyAny>,
+        options: &Bound<'_, pyo3::types::PyDict>,
+    ) -> PyResult<Py<PyAny>> {
+        let lease = rlmesh::binding::model::claim_run(self.run_gate.clone()).map_err(to_py_err)?;
+        macro_rules! option {
+            ($key:literal, $ty:ty) => {
+                options
+                    .get_item($key)?
+                    .filter(|v| !v.is_none())
+                    .map(|v| v.extract::<$ty>())
+                    .transpose()?
+            };
+        }
+        let nonnegative = |name: &str, v: i128| -> PyResult<u64> {
+            u64::try_from(v).map_err(|_| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "{name} must be >= 0 and <= {}, got {v}",
+                    u64::MAX
+                ))
+            })
+        };
+        let episodes = option!("episodes", i128)
+            .map(|v| nonnegative("episodes", v))
+            .transpose()?;
+        let seeds = option!("seeds", Vec<i64>);
+        let max_episode_steps = option!("max_episode_steps", i128)
+            .map(|v| nonnegative("max_episode_steps", v))
+            .transpose()?;
+        let max_episode = option!("max_episode_seconds", f64)
+            .map(|v| {
+                if v == f64::INFINITY {
+                    return Ok(std::time::Duration::MAX);
+                }
+                std::time::Duration::try_from_secs_f64(v).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "max_episode_seconds must be > 0, got {}",
+                        if v.is_nan() {
+                            "nan".to_owned()
+                        } else {
+                            v.to_string()
+                        }
+                    ))
+                })
+            })
+            .transpose()?;
+        let execution_horizon = option!("execution_horizon", i128)
+            .map(|v| {
+                rlmesh::binding::resolve_execution_horizon(Some(v), None, None, self.native_chunk)
+                    .map_err(to_py_err)
+            })
+            .transpose()?;
+        let default_horizon = option!("default_horizon", u32);
+        let prefetch_lead =
+            nonnegative("prefetch_lead", option!("prefetch_lead", i128).unwrap_or(0))?;
+        let trial_index_base = nonnegative(
+            "trial_index_base",
+            option!("trial_index_base", i128).unwrap_or(0),
+        )?;
+        let close_env = option!("close_env", bool).unwrap_or(false);
+        let workflow_edition = option!("workflow_edition", String);
+        let cancel = rlmesh::ext::CancelToken::new();
+        let signal_cancel = cancel.clone();
+        self.last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let target = crate::facade::PyEnvTarget::new(py, target, self.last_error.clone())?;
+        let mut hooks = crate::facade::PyFacadeHooks::new(relay, self.last_error.clone());
+        let mut prepared = self.prepared();
+        prepared.presentation = Some(Box::new(hooks.clone()));
+        prepared.run_lease = Some(lease.clone());
+        prepared.execution_horizon = default_horizon;
+        let options = rlmesh::RunOptions {
+            episodes,
+            seeds,
+            max_episode_steps,
+            max_episode,
+            execution_horizon,
+            prefetch_lead,
+            trial_index_base,
+            close_env,
+            workflow_edition,
+            cancel: Some(cancel),
+            hooks: Some(&mut hooks),
+            ..Default::default()
+        };
+        let poll =
+            crate::facade::signal_poll(self.last_error.clone(), move || signal_cancel.cancel());
+        let result = py.detach(|| {
+            rlmesh::binding::model::with_caller_poll(poll, || {
+                rlmesh::binding::model::run_prepared(
+                    prepared,
+                    rlmesh::binding::model::adapted_env(Box::new(target)),
+                    options,
+                )
+            })
+        });
+        match result {
+            Ok(result) => Ok(crate::facade::result_to_py(py, &result)?
+                .into_any()
+                .unbind()),
+            Err(error) => Err(self
+                .last_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .unwrap_or_else(|| to_py_err(error))),
+        }
+    }
+
+    #[pyo3(signature = (target, execution_horizon=1, workflow_edition=None, close_env=false))]
+    fn bind_facade(
+        &self,
+        py: Python<'_>,
+        target: Py<PyAny>,
+        execution_horizon: u32,
+        workflow_edition: Option<String>,
+        close_env: bool,
+    ) -> PyResult<crate::bind::PyBinding> {
+        self.last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let target = crate::facade::PyEnvTarget::new(py, target, self.last_error.clone())?;
+        let model = self.prepared();
+        let result = py.detach(|| {
+            rlmesh::binding::model::bind_prepared(
+                model,
+                rlmesh::binding::model::adapted_env(Box::new(target)),
+                rlmesh::BindOptions {
+                    execution_horizon: Some(execution_horizon),
+                    workflow_edition,
+                    close_env,
+                    ..Default::default()
+                },
+            )
+        });
+        let binding = result.map_err(|error| {
+            self.last_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .unwrap_or_else(|| to_py_err(error))
+        })?;
+        crate::bind::PyBinding::from_binding(py, binding, self.last_error.clone())
     }
 
     /// Binds the model to the env at the session address `env_address`, to
@@ -1172,7 +1187,7 @@ impl PyModel {
     ) -> PyResult<crate::bind::PyBinding> {
         crate::bind::PyBinding::connect(
             py,
-            self.build_handler(),
+            self.prepared(),
             Arc::clone(&self.last_error),
             env_address,
             execution_horizon,
@@ -1219,22 +1234,21 @@ impl PyModel {
         prefetch_lead: u32,
         workflow_edition: Option<String>,
     ) -> PyResult<Py<PyAny>> {
-        let run_span = tracing::info_span!("rlmesh.model.run_local", env_address = env_address);
-        let _run_enter = run_span.enter();
-        let total_guard = self.profiler.start("model.run_local.total");
-
-        let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        let handler = self.build_handler();
-        let mut options = RunLocalOptions::new(env_address)
-            .execution_horizon(execution_horizon)
-            .prefetch_lead(prefetch_lead);
-        options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
-
-        let report = run_local_blocking(py, handler, options, None, &self.last_error)?;
-
-        let _ = total_guard.finish(0);
-        self.profiler.log_summary_once();
-        report_to_py(py, &report)
+        self.run_local_for_episodes(
+            py,
+            env_address,
+            1,
+            execution_horizon,
+            None,
+            None,
+            None,
+            false,
+            None,
+            prefetch_lead,
+            workflow_edition,
+            None,
+            None,
+        )
     }
 
     /// `hooks` is a relay object receiving the runtime's per-episode events as
@@ -1264,41 +1278,83 @@ impl PyModel {
         hooks: Option<Py<PyAny>>,
         invite_at: Option<String>,
     ) -> PyResult<Py<PyAny>> {
-        let run_span = tracing::info_span!(
-            "rlmesh.model.run_local_for_episodes",
-            env_address = env_address,
-            episodes
-        );
-        let _run_enter = run_span.enter();
-        let total_guard = self.profiler.start("model.run_local.total");
-
-        let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        let handler = self.build_handler();
-        let mut options = RunLocalOptions::new(env_address)
-            .for_episodes(episodes)
-            .execution_horizon(execution_horizon)
-            .prefetch_lead(prefetch_lead)
-            .episode_seeds(seeds.unwrap_or_default())
-            .close_env(close_env)
-            // The Python model outlives this run: its close() is the caller's.
-            .close_model(false);
-        options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
-        options.invite_at = invite_at;
-        if let Some(cap) = max_episode_steps {
-            options = options.max_episode_steps(cap);
+        let lease = rlmesh::binding::model::claim_run(self.run_gate.clone()).map_err(to_py_err)?;
+        let mut hooks = crate::facade::PyFacadeHooks::optional(hooks, self.last_error.clone());
+        let cancel = rlmesh::ext::CancelToken::new();
+        let signal = cancel.clone();
+        let max_episode = max_episode_seconds
+            .map(|seconds| {
+                if seconds == f64::INFINITY {
+                    return Ok(Duration::MAX);
+                }
+                Duration::try_from_secs_f64(seconds).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err("max_episode_seconds must be > 0")
+                })
+            })
+            .transpose()?;
+        let max_episode_steps = max_episode_steps
+            .map(|steps| {
+                u64::try_from(steps).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err("max_episode_steps must be >= 1")
+                })
+            })
+            .transpose()?;
+        let mut prepared = self.prepared();
+        prepared.presentation = Some(Box::new(hooks.clone()));
+        prepared.run_lease = Some(lease.clone());
+        let options = rlmesh::RunOptions {
+            episodes: Some(episodes),
+            seeds,
+            max_episode_steps,
+            max_episode,
+            execution_horizon: Some(execution_horizon),
+            prefetch_lead: prefetch_lead.into(),
+            trial_index_base: trial_index_base.unwrap_or(0),
+            workflow_edition,
+            close_env,
+            hooks: Some(&mut hooks),
+            cancel: Some(cancel),
+            ..Default::default()
+        };
+        let target = crate::facade::AddressTarget {
+            address: env_address.to_owned(),
+            invite_at,
+        };
+        let poll = crate::facade::signal_poll(self.last_error.clone(), move || signal.cancel());
+        self.last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let result = py
+            .detach(|| {
+                rlmesh::binding::model::with_caller_poll(poll, || {
+                    rlmesh::binding::model::run_prepared(
+                        prepared,
+                        rlmesh::binding::model::adapted_env(Box::new(target)),
+                        options,
+                    )
+                })
+            })
+            .map_err(|error| {
+                self.last_error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .unwrap_or_else(|| to_py_err(error))
+            })?;
+        let out = crate::facade::result_to_py(py, &result)?;
+        // Compatibility of this private, low-level report: runtime ordinals
+        // were one-based. Public run/hooks use the facade's zero-based records.
+        for episode in out
+            .get_item("episodes")?
+            .expect("report episodes")
+            .try_iter()?
+        {
+            let episode = episode?;
+            let index: i64 = episode.get_item("index")?.extract()?;
+            episode.set_item("index", index + 1)?;
         }
-        if let Some(cap) = max_episode_seconds {
-            options = options.max_episode_seconds(cap);
-        }
-        if let Some(base) = trial_index_base {
-            options = options.trial_index_base(base);
-        }
-
-        let report = run_local_blocking(py, handler, options, hooks, &self.last_error)?;
-
-        let _ = total_guard.finish(0);
-        self.profiler.log_summary_once();
-        report_to_py(py, &report)
+        Ok(out.into_any().unbind())
     }
 
     /// Serves the model as the participant `name` in the session at
@@ -1347,6 +1403,8 @@ class PyModel:
     @staticmethod
     def random_sample() -> PyModel: ...
     def bind(self, env_address: str, execution_horizon: int = 1, workflow_edition: str | None = None) -> PyBinding: ...
+    def run_facade(self, target: object, relay: object, options: dict[str, typing.Any]) -> dict[str, typing.Any]: ...
+    def bind_facade(self, target: object, execution_horizon: int = 1, workflow_edition: str | None = None, close_env: bool = False) -> PyBinding: ...
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...

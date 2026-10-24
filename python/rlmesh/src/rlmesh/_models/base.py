@@ -7,10 +7,7 @@ import contextlib
 import contextvars
 import functools
 import inspect
-import math
-import threading
 import uuid
-import warnings
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import (
@@ -24,7 +21,6 @@ from typing import (
     overload,
 )
 
-from .._editions import _caller_stacklevel  # pyright: ignore[reportPrivateUsage]
 from .._load_native import load_native
 from .._upgrade import model_session, removed
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
@@ -39,7 +35,7 @@ if TYPE_CHECKING:
 
     from .._server import EnvServer
     from ._binding import Binding
-    from ._eval import HooksArg, NativeRunContext, RunHooks, RunResult
+    from ._eval import HooksArg, NativeRunContext, RunResult
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -71,18 +67,6 @@ def _random_only(observation: object) -> object:
     raise TypeError(
         "RANDOM_SAMPLE samples the env's action space: run or bind it to an env"
     )
-
-
-def _release_local(server: EnvServer | None, env: object, *, close: bool) -> None:
-    """Stop a binding's in-process env server, and close its env on ``close``."""
-    try:
-        if server is not None:
-            server.shutdown()
-    finally:
-        if close:
-            env_close = getattr(env, "close", None)
-            if callable(env_close):
-                env_close()
 
 
 def _served_handle(model: object) -> bool:
@@ -692,7 +676,6 @@ class ModelBase(Generic[ObsT, ActT]):
         # session, run and serve on this model, runs through it one at a time.
         self._calls = ModelCalls()
         #: Held while a run drives this model (RUN-9).
-        self._run_slot = threading.Lock()
         self._bridge.ensure_available()
 
         # A Model subclass overrides at least one predict corner (plus optionally
@@ -1458,184 +1441,55 @@ class ModelBase(Generic[ObsT, ActT]):
         truncates the episodes in flight and the run goes on, and quitting
         truncates them and returns the partial result.
         """
-        from ._eval import as_hooks
-
-        self._calls.check_open("run()")
-        run_hooks = as_hooks(hooks)
-        # One run at a time (RUN-9): a second run while one is in progress
-        # would share this model's per-run state, so it fails at once.
-        if not self._run_slot.acquire(blocking=False):
-            raise RuntimeError(
-                "run() is already in progress on this model; a model runs one run "
-                "at a time"
-            )
-        try:
-            return self._run_holding_slot(
-                env_or_address,
-                seeds=seeds,
-                episodes=episodes,
-                max_episode_steps=max_episode_steps,
-                max_episode_seconds=max_episode_seconds,
-                hooks=run_hooks,
-                instruction=instruction,
-                close_env=close_env,
-                trust_entrypoints=trust_entrypoints,
-                execution_horizon=execution_horizon,
-                prefetch_lead=prefetch_lead,
-                trial_index_base=trial_index_base,
-                workflow_edition=workflow_edition,
-                view=view,
-            )
-        finally:
-            self._run_slot.release()
-
-    def _run_holding_slot(
-        self,
-        env_or_address: LocalEnvTarget,
-        *,
-        seeds: Sequence[int] | None = None,
-        episodes: int | None = None,
-        max_episode_steps: int | None = None,
-        max_episode_seconds: float | None = None,
-        hooks: RunHooks | None = None,
-        instruction: str | None = None,
-        close_env: bool = False,
-        trust_entrypoints: bool | None = None,
-        execution_horizon: int | None = None,
-        prefetch_lead: int = 0,
-        trial_index_base: int = 0,
-        workflow_edition: str | None = None,
-        view: ViewArg = None,
-    ) -> RunResult:
-        """:meth:`run`'s body, holding the model's run slot."""
-        from ._eval import (
-            check_episode_caps,
-            check_prefetch_lead,
-        )
-
-        # Everything the options alone decide fails before anything dials.
-        execution_horizon = self._execution_horizon(execution_horizon)
-        check_episode_caps(max_episode_steps, max_episode_seconds)
-        check_prefetch_lead(prefetch_lead)
-        if trial_index_base < 0:
-            raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
-        declared_edition = self._declared_workflow_edition(workflow_edition)
-        self._require_device_support()
-        # A served model's corners and adapter are its own, resolved there.
-        served = self._served_address is not None
-        if execution_horizon > 1 and self._raw_predict_chunk is None and not served:
-            warnings.warn(
-                f"execution_horizon={execution_horizon} was requested but "
-                "the model defines no predict_chunk(); running un-chunked.",
-                stacklevel=_caller_stacklevel(),
-            )
-        from ._eval import (
-            EpisodeResult,
-            Interrupted,
-            NativeHookRelay,
-            NativeRunContext,
-            RunHooks,
-            RunResult,
-            TelemetryRow,
-            resolve_episode_budget,
-        )
+        from ._eval import Interrupted, NativeRunContext, as_hooks
+        from ._facade import EnvTarget, FacadeHookRelay, result_from_native
         from ._view import ViewerDriver, resolve_view
 
-        episodes = resolve_episode_budget(episodes, seeds)
-
-        def episode_result(episode: dict[str, Any]) -> EpisodeResult:
-            return EpisodeResult(
-                # The runtime reports 1-based slot ordinals; EpisodeResult.index
-                # is 0-based, matching a Binding, the hooks, and
-                # trial == trial_index_base + index.
-                index=episode["index"] - 1,
-                seed=episode["seed"],
-                trial=episode["trial"],
-                steps=episode["steps"],
-                reward=episode["reward"],
-                terminated=episode["terminated"],
-                truncated=episode["truncated"],
-                success=episode["success"],
-                duration_s=episode["duration_s"],
-                predict_ms=episode["predict_ms"],
-                step_ms=episode["step_ms"],
+        self._calls.check_open("run()")
+        self._require_device_support()
+        context = NativeRunContext(
+            trust=bool(
+                self._trust_entrypoints
+                if trust_entrypoints is None
+                else trust_entrypoints
             )
-
-        previous_trust = self._trust_entrypoints
-        if trust_entrypoints is not None:
-            self._trust_entrypoints = trust_entrypoints
-        relay: NativeHookRelay | None = None
-        run_context = NativeRunContext(trust=bool(self._trust_entrypoints))
+        )
         resolved_view = resolve_view(view)
         viewer = ViewerDriver(resolved_view) if resolved_view is not None else None
-        self._instruction = instruction
+        relay = FacadeHookRelay(as_hooks(hooks), context, viewer)
+        target = EnvTarget(
+            self,
+            env_or_address,
+            context,
+            trust=trust_entrypoints,
+            instruction=instruction,
+        )
         failed = True
         try:
-            if hooks is not None or viewer is not None:
-                self._native_run = run_context
-                relay = NativeHookRelay(hooks or RunHooks(), run_context, viewer)
-            if hooks is not None:
-                with run_context.dispatch():
-                    hooks.on_run_start(run_context)
-            if episodes == 0:
-                report: dict[str, Any] = {
-                    "episodes": [],
-                    "telemetry": [],
-                }
-            else:
-                report = self._run_native(
-                    env_or_address,
+            report = self._install_worker().run_facade(
+                target,
+                relay,
+                dict(
                     episodes=episodes,
-                    seeds=seeds,
+                    seeds=list(seeds) if seeds is not None else None,
                     max_episode_steps=max_episode_steps,
-                    # ``inf`` is no cap, as None is (a NEXT_STEP env takes both).
-                    max_episode_seconds=(
-                        None
-                        if max_episode_seconds is not None
-                        and math.isinf(max_episode_seconds)
-                        else max_episode_seconds
-                    ),
-                    close_env=close_env,
-                    execution_horizon=execution_horizon,
+                    max_episode_seconds=max_episode_seconds,
+                    execution_horizon=self._execution_horizon(execution_horizon),
                     prefetch_lead=prefetch_lead,
                     trial_index_base=trial_index_base,
-                    workflow_edition=declared_edition,
-                    relay=relay,
-                )
+                    close_env=close_env,
+                    workflow_edition=self._declared_workflow_edition(workflow_edition),
+                ),
+            )
             failed = False
-        except BaseException as exc:
-            # The run's own exception wins over anything on_run_end raises.
-            if hooks is not None:
-                with contextlib.suppress(BaseException), run_context.dispatch():
-                    hooks.on_run_end(
-                        RunResult(episodes=tuple(relay.results if relay else ()))
-                    )
-            # Ctrl-C keeps the episodes that finished before it (the native
-            # run hands them over on the interrupt).
-            if isinstance(exc, KeyboardInterrupt) and not isinstance(exc, Interrupted):
-                partial = cast(
-                    "list[dict[str, Any]]", getattr(exc, "partial_episodes", [])
-                )
-                raise Interrupted(
-                    RunResult(episodes=tuple(map(episode_result, partial)))
-                ) from exc
-            raise
+            return result_from_native(report)
+        except KeyboardInterrupt as exc:
+            if isinstance(exc, Interrupted):
+                raise
+            raise Interrupted(relay.result) from exc
         finally:
-            self._trust_entrypoints = previous_trust
-            self._instruction = None
-            self._native_run = None
             if viewer is not None:
                 viewer.close(hold=not failed)
-
-        result = RunResult(
-            episodes=tuple(map(episode_result, report["episodes"])),
-            telemetry=tuple(TelemetryRow(**row) for row in report["telemetry"]),
-            advisories=tuple(report.get("advisories", ())),
-        )
-        if hooks is not None:
-            with run_context.dispatch():
-                hooks.on_run_end(result)
-        return result
 
     def _serve_here(self, env_obj: object, workflow_edition: str | None) -> EnvServer:
         """Serve the local env ``env_obj`` in this process for one run or binding.
@@ -1692,162 +1546,6 @@ class ModelBase(Generic[ObsT, ActT]):
         server.start()
         return server
 
-    def _run_native(
-        self,
-        env_or_address: object,
-        *,
-        episodes: int,
-        seeds: Sequence[int] | None,
-        max_episode_steps: int | None,
-        max_episode_seconds: float | None,
-        close_env: bool,
-        execution_horizon: int,
-        prefetch_lead: int = 0,
-        trial_index_base: int = 0,
-        workflow_edition: str | None = None,
-        relay: object | None = None,
-    ) -> dict[str, Any]:
-        """Normalize the env target, drive the native loop, return the report.
-
-        Target handling follows :func:`~rlmesh._models._connect.classify_env_target`
-        (the same precedence ``bind()`` uses): a bare address is dialed; a
-        remote handle is dialed by its own address (it cannot be re-served); a
-        local env or a built :class:`~rlmesh.EnvFactory` env is served in this
-        process for the duration of the run. ``close_env`` maps per kind:
-        the wire close op for a bare address, the handle's ``shutdown``/``close``
-        for a handle, and the env object's ``close()`` for a locally served env.
-        An env built from a factory is closed either way: it was made here.
-
-        A local single env's spec/tags pairing is pre-flighted in Python so a
-        mismatch surfaces as the typed ``AdapterResolutionError`` rather than
-        stringified out of the native route resolve (a vector env's local spaces
-        are batched while tags describe one lane, so its check stays at the
-        served resolve).
-        """
-        with contextlib.ExitStack() as lent:
-            return self._run_native_on(
-                lent,
-                env_or_address,
-                episodes=episodes,
-                seeds=seeds,
-                max_episode_steps=max_episode_steps,
-                max_episode_seconds=max_episode_seconds,
-                close_env=close_env,
-                execution_horizon=execution_horizon,
-                prefetch_lead=prefetch_lead,
-                trial_index_base=trial_index_base,
-                workflow_edition=workflow_edition,
-                relay=relay,
-            )
-
-    def _run_native_on(
-        self,
-        lent: contextlib.ExitStack,
-        env_or_address: object,
-        *,
-        episodes: int,
-        seeds: Sequence[int] | None,
-        max_episode_steps: int | None,
-        max_episode_seconds: float | None,
-        close_env: bool,
-        execution_horizon: int,
-        prefetch_lead: int,
-        trial_index_base: int,
-        workflow_edition: str | None,
-        relay: object | None,
-    ) -> dict[str, Any]:
-        """:meth:`_run_native`'s body; a lent sandbox env returns to ``lent``."""
-        from .._sandbox.session import SandboxLifecycle, peer_session
-        from ._connect import classify_env_target
-
-        kind, payload = classify_env_target(env_or_address)
-        env_obj: object = payload
-        address: str | None = None
-        invite_at: str | None = None
-        server = None
-        if kind == "address":
-            address = cast(str, payload)
-        elif kind == "handle" and isinstance(payload, SandboxLifecycle):
-            # A sandbox env lends its container to the run (closing the
-            # handle would stop it); a sandboxed model joins its session
-            # over their shared network.
-            if self._native_run is not None:
-                self._native_run.bind_client(payload, local=False)
-            address = lent.enter_context(payload._lent())  # pyright: ignore[reportPrivateUsage]
-            if self._env_session is not None:
-                invite_at = peer_session(payload.sandbox)
-        elif kind == "handle":
-            from .._client._remote_base import RemoteClientBase
-            from .._rlmesh import is_v2_address
-            from .._upgrade import removed
-
-            handle_address = getattr(payload, "address", None)
-            if not isinstance(handle_address, str):
-                raise TypeError(
-                    "this env handle exposes env_contract but no dialable "
-                    "address; pass the env's address string instead"
-                )
-            if isinstance(payload, RemoteClientBase) and is_v2_address(handle_address):
-                removed(
-                    "run(RemoteEnv(address))",
-                    "an open RemoteEnv holds its env's lease, so close it and "
-                    "pass the address: run(address)",
-                )
-            if self._native_run is not None:
-                self._native_run.bind_client(cast(object, payload), local=False)
-            address = handle_address
-        elif kind == "factory":
-            from ._connect import factory_env
-
-            env_obj = factory_env(payload)
-        try:
-            if address is None:
-                server = self._serve_here(env_obj, workflow_edition)
-                address = server.address
-                if self._native_run is not None:
-                    self._native_run.bind_client(env_obj)
-                    # The route resolve refines it; a model with no resolve
-                    # (served, RANDOM_SAMPLE) reads roles off this one.
-                    self._native_run.contract = server.env_contract
-            return self._run_local_for_episodes(
-                address,
-                episodes=episodes,
-                execution_horizon=execution_horizon,
-                prefetch_lead=prefetch_lead,
-                seeds=list(seeds) if seeds is not None else None,
-                max_episode_steps=max_episode_steps,
-                max_episode_seconds=max_episode_seconds,
-                close_env=close_env and kind == "address",
-                trial_index_base=trial_index_base,
-                workflow_edition=workflow_edition,
-                hooks=relay,
-                invite_at=invite_at,
-            )
-        except (RuntimeError, ConnectionError) as error:
-            if "held by another driver" in str(error):
-                raise RuntimeError(
-                    "the target env already has an active session: another "
-                    "driver (an open RemoteEnv / RemoteVectorEnv, or another "
-                    "run) holds the env's lease. close() it before run()."
-                ) from error
-            raise
-        finally:
-            try:
-                if server is not None:
-                    server.shutdown()
-            finally:
-                if kind == "handle":
-                    if close_env:
-                        from ._connect import shutdown_env
-
-                        shutdown_env(env_obj)
-                # A factory-built env is this call's own; a caller's env closes
-                # only on the opt-in.
-                elif kind != "address" and (close_env or kind == "factory"):
-                    close = getattr(env_obj, "close", None)
-                    if callable(close):
-                        close()
-
     # The 0.1 shape, refused with its 0.2 form.
     session = model_session
 
@@ -1875,64 +1573,31 @@ class ModelBase(Generic[ObsT, ActT]):
         opts a local env into closing with it.
         """
         from ._binding import Binding
-        from ._connect import classify_env_target
         from ._eval import as_hooks
-
-        hooks = as_hooks(hooks)
+        from ._facade import EnvTarget
+        from ._view import resolve_view
 
         self._calls.check_open("bind()")
-        declared = self._declared_workflow_edition(workflow_edition)
         self._require_device_support()
-        execution_horizon = self._execution_horizon(execution_horizon)
-        if (
-            execution_horizon > 1
-            and self._raw_predict_chunk is None
-            and not (self._served_address or self._random)
-        ):
-            warnings.warn(
-                f"execution_horizon={execution_horizon} was requested but "
-                "the model defines no predict_chunk(); running un-chunked.",
-                stacklevel=_caller_stacklevel(),
-            )
-        kind, payload = classify_env_target(target)
-        if close_env and kind == "address":
-            from .._upgrade import refuse_remote_close_env
-
-            refuse_remote_close_env(payload)
-        if kind == "handle":
-            removed(
-                "bind(RemoteEnv(address))",
-                "an open RemoteEnv holds its env's lease, so close it and "
-                "pass the address: bind(address)",
-            )
-        env_obj: object = payload
-        if kind == "factory":
-            from ._connect import factory_env
-
-            env_obj = factory_env(payload)
-        server = None
-        try:
-            if kind == "address":
-                address = cast(str, payload)
-            else:
-                server = self._serve_here(env_obj, declared)
-                address = server.address
-            native = self._install_worker().bind(address, execution_horizon, declared)
-        except BaseException:
-            _release_local(server, env_obj, close=kind == "factory")
-            raise
-        return Binding._create(  # pyright: ignore[reportPrivateUsage]
-            native=native,
-            bridge=self._bridge,
-            hooks=hooks,
-            view=view,
-            release=functools.partial(
-                _release_local,
-                server,
-                env_obj,
-                close=kind == "factory" or (close_env and kind == "env"),
-            ),
+        view = resolve_view(view)
+        declared = self._declared_workflow_edition(workflow_edition)
+        horizon = self._execution_horizon(execution_horizon)
+        target_adapter = EnvTarget(self, target, binding=True)
+        native = self._install_worker().bind_facade(
+            target_adapter, horizon, declared, close_env
         )
+        try:
+            return Binding._create(  # pyright: ignore[reportPrivateUsage]
+                native=native,
+                bridge=self._bridge,
+                hooks=as_hooks(hooks),
+                view=view,
+                target=target_adapter,
+            )
+        except BaseException:
+            with contextlib.suppress(BaseException):
+                native.close()
+            raise
 
     def serve(
         self,

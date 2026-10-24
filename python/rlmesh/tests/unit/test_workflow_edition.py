@@ -394,9 +394,13 @@ class TestServeOptionsDeclaring:
 
         class Worker:
             def serve(
-                self, address: str, name: str, options: ServeOptions | None
+                self,
+                address: str,
+                name: str,
+                options: ServeOptions | None,
+                envelope: str,
             ) -> None:
-                _ = address, name
+                _ = address, name, envelope
                 served.append(options)
 
             def stop_serving(self) -> None:

@@ -1,20 +1,17 @@
 """A run's results and hooks, shared by every framework ``Model``.
 
-The native run loop reports through :class:`NativeHookRelay` into
-:class:`RunHooks`; a :class:`~rlmesh.Binding` fires the same hooks by hand.
-Both return a typed :class:`RunResult`.
+The Rust facade drives both runs and manual bindings. Python converts its
+callbacks and values into :class:`RunHooks` and typed :class:`RunResult`.
 """
 
 from __future__ import annotations
 
 import contextlib
-import math
 import numbers
 import os
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
@@ -24,7 +21,7 @@ from ._connect import (
 )
 from ._read import Reader, resolve_read_adapter
 from ._resolve import resolve_adapter
-from ._view import FrameSources, ViewerDriver, discover_frame_sources
+from ._view import FrameSources, discover_frame_sources
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import Advisory
@@ -97,70 +94,6 @@ def episode_outcome(terminated: bool, truncated: bool, info: Mapping[str, Any]) 
     if success:
         return "success"
     return "failure" if terminated else "timeout"
-
-
-#: The runtime's bounds on the native loop's caps (``Option<i64>`` steps and a
-#: ``u32`` prefetch lead), checked on both loops so they validate alike.
-_MAX_EPISODE_STEPS = 2**63 - 1
-_MAX_PREFETCH_LEAD = 2**32 - 1
-
-
-def check_execution_horizon(execution_horizon: int, native_chunk: int | None) -> None:
-    """Refuse an ``execution_horizon`` outside ``1..=1024`` or past ``native_chunk``."""
-    from .._rlmesh import resolve_execution_horizon
-
-    resolve_execution_horizon(execution_horizon, None, None, native_chunk)
-
-
-def check_episode_caps(
-    max_episode_steps: int | None, max_episode_seconds: float | None
-) -> None:
-    """Refuse a step cap outside ``1..=2**63-1`` and a time cap not ``> 0``.
-
-    NaN is refused (it is no cap a native caller can spell); ``inf`` is no cap.
-    """
-    if max_episode_steps is not None:
-        if max_episode_steps < 1:
-            raise ValueError(f"max_episode_steps must be >= 1, got {max_episode_steps}")
-        if max_episode_steps > _MAX_EPISODE_STEPS:
-            raise ValueError(
-                f"max_episode_steps must be <= {_MAX_EPISODE_STEPS}, got "
-                f"{max_episode_steps}"
-            )
-    if max_episode_seconds is not None and (
-        math.isnan(max_episode_seconds) or max_episode_seconds <= 0
-    ):
-        raise ValueError(f"max_episode_seconds must be > 0, got {max_episode_seconds}")
-
-
-def check_prefetch_lead(prefetch_lead: int) -> None:
-    """Refuse a ``prefetch_lead`` outside the runtime's ``0..=2**32-1``."""
-    if prefetch_lead < 0:
-        raise ValueError(f"prefetch_lead must be >= 0, got {prefetch_lead}")
-    if prefetch_lead > _MAX_PREFETCH_LEAD:
-        raise ValueError(
-            f"prefetch_lead must be <= {_MAX_PREFETCH_LEAD}, got {prefetch_lead}"
-        )
-
-
-def resolve_episode_budget(episodes: int | None, seeds: Sequence[int] | None) -> int:
-    """The exact number of episodes a run executes.
-
-    One when neither ``episodes`` nor ``seeds`` is given; the length of
-    ``seeds`` when only seeds are; ``episodes`` itself otherwise, which must
-    then match the seed count (a seed per episode, no unseeded tail). Zero
-    runs nothing; a negative count is refused.
-    """
-    if episodes is None:
-        return len(seeds) if seeds is not None else 1
-    if episodes < 0:
-        raise ValueError(f"episodes must be >= 0, got {episodes}")
-    if seeds is not None and len(seeds) != episodes:
-        raise ValueError(
-            f"episodes={episodes} does not match len(seeds)={len(seeds)}: pass "
-            "one seed per episode, or only one of the two"
-        )
-    return episodes
 
 
 @dataclass(frozen=True)
@@ -604,15 +537,24 @@ class NativeRunContext:
 
     def __init__(self, *, trust: bool) -> None:
         self._trust = trust
-        self.contract: Any = None
+        self._contract: Any = None
+        self._core: Any = None
         self._client: object | None = None
         self._bridge = adapter_env_bridge(None)
         self._read_cache: dict[Any, Reader] = {}
         self._hook_thread: int | None = None
         self._rendering = False
 
+    @property
+    def contract(self) -> Any:
+        return self._core.env_contract if self._core is not None else self._contract
+
+    @contract.setter
+    def contract(self, value: Any) -> None:
+        self._contract = value
+
     @contextlib.contextmanager
-    def dispatch(self) -> Iterator[None]:
+    def _dispatch(self) -> Iterator[None]:
         previous = self._hook_thread
         self._hook_thread = threading.get_ident()
         try:
@@ -637,7 +579,7 @@ class NativeRunContext:
     def num_envs(self) -> int:
         return int(getattr(self.contract, "num_envs", 1) or 1)
 
-    def decode(self, value: object) -> Any:
+    def _decode(self, value: object) -> Any:
         """A neutral runtime value in the env's own framework."""
         return self._bridge.decode(cast("Any", value))
 
@@ -665,176 +607,3 @@ class NativeRunContext:
                 self._rendering = False
 
         return FrameSources(sources.roles, sources.render_label, render)
-
-
-@dataclass
-class _NativeEpisode:
-    index: int
-    seed: int | None
-    trial: int | None
-    steps: int = 0
-    reward: float = 0.0
-
-
-@dataclass
-class _NativeGroup:
-    """One lane group's in-flight step: what it observed, then what it did."""
-
-    ids: list[str]
-    observations: list[Any]
-    actions: list[Any] | None = None
-
-
-class NativeHookRelay:
-    """Turns the native runtime's plain-data events into :class:`RunHooks` calls.
-
-    Events arrive per lane group, keyed by the group's primary ``env_index``:
-    an observation, the action predicted from it, then the step's outcome with
-    the terminal flags the runtime already knows (so a ``StepEvent`` is exact,
-    never reconstructed). ``results`` collects the completed episodes for
-    :meth:`RunHooks.on_run_end` on a run that fails midway.
-
-    A ``view`` watches the first lane of each group and paces the steps; its
-    skip and quit come back from :meth:`step` as "skip" (the runtime truncates
-    the live episodes at the next step) and "quit" (it truncates them and
-    stops starting new ones).
-    """
-
-    def __init__(
-        self,
-        hooks: RunHooks,
-        context: NativeRunContext,
-        view: ViewerDriver | None = None,
-    ) -> None:
-        self._hooks = hooks
-        self._context = context
-        self._view = view
-        self._outcome = ""
-        self._episodes: dict[str, _NativeEpisode] = {}
-        self._groups: dict[int, _NativeGroup] = {}
-        self.results: list[EpisodeResult] = []
-
-    def session_started(self, contract: Any) -> None:
-        if self._context.contract is None:
-            self._context.contract = contract
-
-    def episode_started(
-        self,
-        episode_id: str,
-        index: int,
-        env_index: int,
-        seed: int | None,
-        trial: int | None,
-    ) -> None:
-        _ = env_index
-        self._episodes[episode_id] = _NativeEpisode(index - 1, seed, trial)
-        with self._context.dispatch():
-            self._hooks.on_episode_start(episode=index - 1, seed=seed)
-
-    def observation(self, env_index: int, ids: list[str], values: list[Any]) -> None:
-        decoded = [self._context.decode(v) for v in values]
-        self._groups[env_index] = _NativeGroup(ids, decoded)
-        episode = self._episodes.get(ids[0]) if ids else None
-        if self._view is not None and episode is not None:
-            context = self._context
-            self._view.feed(
-                contract=context.contract,
-                client=context.client,
-                obs=decoded[0],
-                read=context.read,
-                steps=episode.steps,
-                reward=episode.reward,
-                outcome=self._outcome,
-                episode=episode.index,
-                seed=episode.seed,
-            )
-            self._outcome = ""
-
-    def action(self, env_index: int, values: list[Any]) -> None:
-        self._groups[env_index].actions = [self._context.decode(v) for v in values]
-
-    def step(
-        self,
-        env_index: int,
-        rewards: list[float],
-        terminated: list[bool],
-        truncated: list[bool],
-        autoreset_roll: list[bool],
-        info: Mapping[str, Any] | None,
-        predict_ms: float,
-        step_ms: float,
-    ) -> str | None:
-        group = self._groups[env_index]
-        actions = group.actions or []
-        for lane, episode_id in enumerate(group.ids):
-            episode = self._episodes.get(episode_id)
-            if episode is None or autoreset_roll[lane]:
-                continue
-            if lane >= len(actions):
-                # The runtime always sends the action it stepped (RUN-21).
-                from .._rlmesh import RLMeshException
-
-                raise RLMeshException("the runtime reported a step without its action")
-            observation = group.observations[lane]
-            event = StepEvent(
-                episode=episode.index,
-                seed=episode.seed,
-                step=episode.steps,
-                observation=observation,
-                action=actions[lane],
-                reward=rewards[lane],
-                terminated=terminated[lane],
-                truncated=truncated[lane],
-                info=info or {},
-                predict_ms=predict_ms,
-                step_ms=step_ms,
-                read=partial(self._context.read, observation),
-            )
-            episode.steps += 1
-            episode.reward += rewards[lane]
-            if lane == 0:
-                self._outcome = episode_outcome(terminated[0], truncated[0], info or {})
-            with self._context.dispatch():
-                self._hooks.on_step(event)
-        view = self._view
-        if view is None:
-            return None
-        view.pace()
-        if view.quit_requested():
-            return "quit"
-        return "skip" if view.consume_skip() else None
-
-    def episode_completed(
-        self,
-        episode_id: str,
-        index: int,
-        env_index: int,
-        seed: int | None,
-        trial: int | None,
-        steps: int,
-        reward: float,
-        terminated: bool,
-        truncated: bool,
-        success: bool | None,
-        duration_s: float,
-        timings: tuple[float | None, float | None],
-    ) -> None:
-        _ = env_index
-        self._episodes.pop(episode_id, None)
-        predict_ms, step_ms = timings
-        result = EpisodeResult(
-            index=index - 1,
-            seed=seed,
-            trial=trial,
-            steps=steps,
-            reward=reward,
-            terminated=terminated,
-            truncated=truncated,
-            success=success,
-            duration_s=duration_s,
-            predict_ms=predict_ms,
-            step_ms=step_ms,
-        )
-        self.results.append(result)
-        with self._context.dispatch():
-            self._hooks.on_episode_end(result)

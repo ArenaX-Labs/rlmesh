@@ -212,3 +212,12 @@ impl RunOptions<'_> {
         self
     }
 }
+
+pub(crate) fn check_address_close(address: &str, close: bool) -> Result<()> {
+    if close && crate::address::is_v2(address) {
+        return Err(Error::invalid_argument(
+            "close_env=True on a session address is gone in rlmesh 0.2: the env belongs to its serving process; an owner shutdown is server.shutdown() there",
+        ));
+    }
+    Ok(())
+}

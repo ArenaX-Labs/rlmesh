@@ -22,7 +22,7 @@ mod tests;
 
 #[cfg(feature = "lockstep")]
 pub use bind::Binding;
-pub use hooks::{RunContext, RunHooks};
+pub use hooks::{RunContext, RunFrame, RunHooks};
 pub(crate) use options::check_horizon;
 pub use options::{BindOptions, RunOptions, resolve_execution_horizon};
 pub use results::{EpisodeResult, RunResult, RunResultSaveOptions, StepEvent, TelemetryRow};
@@ -125,6 +125,7 @@ fn driven(model: ModelTarget<'_>) -> Result<native::Driven<'_>> {
             )));
         }
         ModelKind::Random => native::Driven::Random,
+        ModelKind::Prepared(model) => native::Driven::Prepared(model),
     })
 }
 
@@ -136,4 +137,35 @@ pub fn bind<'a>(
     options: BindOptions<'a>,
 ) -> Result<Binding<'a>> {
     Binding::create(model.into(), env.into(), options)
+}
+
+// Host handlers and resources enter the same private implementation as the
+// public facade, without exposing its modules as alternate API paths.
+pub(crate) fn run_prepared(
+    model: crate::binding::model::PreparedModel,
+    env: EnvTarget<'_>,
+    options: RunOptions<'_>,
+) -> Result<RunResult> {
+    drive::refuse_in_async_context("run")?;
+    drive::run_sync(native::run_model(
+        native::Driven::Prepared(model),
+        env,
+        options,
+        Mode::Sync,
+    ))
+}
+
+#[cfg(feature = "lockstep")]
+pub(crate) fn bind_prepared<'a>(
+    model: crate::binding::model::PreparedModel,
+    env: EnvTarget<'a>,
+    options: BindOptions<'a>,
+) -> Result<Binding<'a>> {
+    Binding::create(ModelTarget(ModelKind::Prepared(model)), env, options)
+}
+
+pub(crate) fn adapted_env(
+    adapter: Box<dyn crate::binding::model::EnvAdapter>,
+) -> EnvTarget<'static> {
+    EnvTarget(targets::EnvKind::Adapted(adapter))
 }

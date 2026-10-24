@@ -6,6 +6,29 @@ use super::{EpisodeResult, RunResult, StepEvent};
 use super::{FrameSources, ReadItem, RenderFn};
 use crate::{EnvContract, Error, Result, Value};
 
+/// Presentation data emitted by the core after an observation is available.
+/// The observer may draw it; episode accounting remains in the driver.
+pub struct RunFrame<'a> {
+    /// The newly available observation.
+    pub observation: &'a Value,
+    /// Zero-based episode index.
+    pub episode: i64,
+    /// The reset seed.
+    pub seed: Option<i64>,
+    /// Completed steps in this episode.
+    pub steps: i64,
+    /// Cumulative episode reward.
+    pub reward: f64,
+    /// An already-known outcome for this frame; otherwise use the last step.
+    pub outcome: Option<&'a str>,
+    /// Most recent prediction latency in milliseconds.
+    pub predict_ms: f64,
+    /// Most recent environment latency in milliseconds.
+    pub step_ms: f64,
+    /// Time since this episode started, in seconds.
+    pub elapsed_s: f64,
+}
+
 /// Observer callbacks for a run. Every default is a no-op; implement any
 /// subset.
 ///
@@ -69,6 +92,7 @@ pub(crate) struct LibraryContext {
     pub(crate) id: u64,
     readers: Mutex<Vec<(ReadItem, super::Reader)>>,
     advisories: Mutex<Vec<crate::adapters::Advisory>>,
+    presentation: Mutex<Option<Box<dyn crate::binding::model::Presentation>>>,
 }
 
 impl LibraryContext {
@@ -77,10 +101,30 @@ impl LibraryContext {
         Arc::new(LibraryContext {
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             readers: Mutex::new(Vec::new()),
+            presentation: Mutex::new(None),
             advisories: Mutex::new(Vec::new()),
             contract: Mutex::new(None),
             closed: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    pub(crate) fn set_presentation(
+        &self,
+        observer: Option<Box<dyn crate::binding::model::Presentation>>,
+    ) {
+        *self.presentation.lock().unwrap_or_else(|e| e.into_inner()) = observer;
+    }
+    pub(crate) fn frame(&self, frame: &RunFrame<'_>) -> Result<()> {
+        match &mut *self.presentation.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(observer) => observer.on_frame(frame),
+            None => Ok(()),
+        }
+    }
+    pub(crate) fn directive(&self) -> Result<super::runtime::RunDirective> {
+        match &mut *self.presentation.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(observer) => observer.directive(),
+            None => Ok(super::runtime::RunDirective::Continue),
+        }
     }
 
     pub(crate) fn connect(&self, contract: EnvContract) {
