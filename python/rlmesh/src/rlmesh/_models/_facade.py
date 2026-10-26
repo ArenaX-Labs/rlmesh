@@ -84,16 +84,18 @@ class FacadeHookRelay:
     ) -> Any:
         assert self.hooks is not None
         with self.context._dispatch():
-            return self.hooks.transform_observation(
+            out = self.hooks.transform_observation(
                 self.context._decode(observation), episode=episode, step=step
             )
+        return None if out is None else self.context._bridge.encode(out)
 
     def transform_action(self, action: object, episode: int, step: int) -> Any:
         assert self.hooks is not None
         with self.context._dispatch():
-            return self.hooks.transform_action(
+            out = self.hooks.transform_action(
                 self.context._decode(action), episode=episode, step=step
             )
+        return None if out is None else self.context._bridge.encode(out)
 
     def frame(
         self,

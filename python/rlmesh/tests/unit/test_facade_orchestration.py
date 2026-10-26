@@ -373,6 +373,43 @@ def test_run_hooks_transform_each_observation_and_action_on_the_way() -> None:
     ]
 
 
+def test_a_transform_returns_an_image_in_the_env_framework() -> None:
+    class Camera:
+        render_mode = None
+
+        def __init__(self) -> None:
+            self.observation_space = spaces.Box(0, 255, (2, 2, 3), np.uint8)
+            self.action_space = spaces.Discrete(2)
+
+        def reset(self, **kwargs: object) -> tuple[object, dict[str, object]]:
+            return np.zeros((2, 2, 3), np.uint8), {}
+
+        def step(
+            self, action: object
+        ) -> tuple[object, float, bool, bool, dict[str, object]]:
+            return np.zeros((2, 2, 3), np.uint8), 0.0, True, False, {}
+
+        def close(self) -> None:
+            pass
+
+    seen: list[np.ndarray] = []
+
+    class Invert(rlmesh.RunHooks):
+        def transform_observation(
+            self, observation: Any, *, episode: int, step: int
+        ) -> Any:
+            return 255 - observation
+
+    def predict(observation: object) -> int:
+        seen.append(np.asarray(observation))
+        return 0
+
+    rlmesh.Model(predict).run(Camera(), episodes=1, hooks=Invert())
+
+    assert len(seen) == 1 and seen[0].dtype == np.uint8
+    assert (seen[0] == 255).all(), "the model sees the transformed image"
+
+
 def test_a_raising_transform_aborts_the_run_with_its_own_exception() -> None:
     class Broken(rlmesh.RunHooks):
         def transform_action(self, action: Any, *, episode: int, step: int) -> Any:
