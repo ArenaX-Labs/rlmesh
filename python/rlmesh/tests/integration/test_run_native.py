@@ -536,7 +536,10 @@ def test_a_viewer_quit_ends_every_lane_of_a_driver_reset_lane_env(
     finally:
         server.shutdown()
     assert result.num_episodes == 2
-    assert all(e.truncated and e.steps > 1 for e in result.episodes)
+    # The lanes step independently, so the quit finds each wherever it got
+    # to: one may have taken every step before it.
+    assert all(e.truncated for e in result.episodes)
+    assert sum(e.steps for e in result.episodes) >= 4
 
 
 # ---------------------------------------------------------------------------
