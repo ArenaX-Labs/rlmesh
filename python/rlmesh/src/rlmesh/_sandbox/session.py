@@ -562,12 +562,10 @@ def start_prebuilt_container(
     with _PORTS_LOCK:
         host_port = _sandbox_session_ports()
         # The container hosts its session on the host's own port numbers, so a
-        # session address means the same inside it and out, and its participants
-        # join as clients, which its host routes for (see JOIN_AS_CLIENT_VAR).
+        # session address means the same inside it and out.
         env_vars = {
             "RLMESH_ADDRESS": f"0.0.0.0:{host_port}",
             "RLMESH_NAME": name,
-            "RLMESH_JOIN_AS_CLIENT": "1",
         }
         if binding:
             env_vars["RLMESH_MAKE_KWARGS"] = binding_json(binding)

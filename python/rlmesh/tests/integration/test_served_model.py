@@ -550,3 +550,66 @@ def test_horizon_defaults_use_rust_selection_and_preserve_action_bytes(
                 binding.step()
         assert world.actions == first
         assert seen == [expected] * (6 // expected)
+
+
+SERVE_IN_ITS_OWN_PROCESS = """
+import sys, rlmesh
+
+class Policy(rlmesh.Model):
+    workflow_edition = "2026.10"
+
+    def predict(self, observation):
+        return 1
+
+Policy().serve(sys.argv[1], name="policy")
+"""
+
+DRIVE_MANY_ROUTES = """
+import sys, rlmesh
+from rlmesh import spaces
+
+class Env:
+    observation_space = spaces.Discrete(2)
+    action_space = spaces.Discrete(2)
+
+    def reset(self, *, seed=None, options=None):
+        return 0, {}
+
+    def step(self, action):
+        return 1, 1.0, True, False, {}
+
+    def close(self):
+        pass
+
+model = rlmesh.Model(sys.argv[1])
+for _ in range(4):
+    results = model.run_routes(
+        [Env() for _ in range(32)], episodes=32, workflow_edition="2026.10"
+    )
+    assert all(isinstance(r, rlmesh.RunResult) for r in results), results
+"""
+
+
+def test_many_routes_of_one_process_drive_a_model_another_process_hosts(
+    session_port: int,
+) -> None:
+    # Each route joins the model's host from a session of its own. Joined as
+    # Zenoh peers, the host's gossip meshed every route of every session with
+    # the others, and runs slowed down and then lost replies until they hung.
+    # The driver runs in a process of its own, so a hang fails the test.
+    import subprocess
+    import sys
+
+    session = f"127.0.0.1:{session_port}"
+    host = subprocess.Popen([sys.executable, "-c", SERVE_IN_ITS_OWN_PROCESS, session])
+    try:
+        driver = subprocess.run(
+            [sys.executable, "-c", DRIVE_MANY_ROUTES, f"{session}/policy"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert driver.returncode == 0, driver.stderr[-2000:]
+    finally:
+        host.kill()
+        host.wait(10)

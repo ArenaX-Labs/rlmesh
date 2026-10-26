@@ -39,6 +39,6 @@ result = rlmesh.Model("127.0.0.1:7447/model").run(env, episodes=1)
 
 ## The bare protocol contract
 
-Both containers host a session on `RLMESH_ADDRESS` (default `0.0.0.0:7447`) and serve in it as `RLMESH_NAME` (`env` or `model`). A sandbox picks four free ports, hosts the session on them and publishes them to the same numbers on loopback, so a session address means the same inside the container and out. It also sets `RLMESH_JOIN_AS_CLIENT=1`, under which the container's participants join as clients of its session host, which routes for them: the machine outside reaches that host through the published ports, but not the participants' own listeners.
+Both containers host a session on `RLMESH_ADDRESS` (default `0.0.0.0:7447`) and serve in it as `RLMESH_NAME` (`env` or `model`). A sandbox picks four free ports, hosts the session on them and publishes them to the same numbers on loopback, so a session address means the same inside the container and out. A participant that joins a session host another process runs joins it as a Zenoh client, which the host routes for, so the published ports are all the machine outside needs to reach.
 
 An image must be built with rlmesh 0.2: one built with rlmesh 0.1 serves the v1 wire, and a sandbox refuses it, naming the image. Pin the same `rlmesh` version in your Dockerfile as the host that drives it.

@@ -209,11 +209,6 @@ fn start(image: &str, name: &str, args: &ProbeImageArgs) -> Result<Result<Contai
 /// Run `work` on a thread of its own: the probe blocks, and a blocking
 /// rlmesh call refuses to run on the CLI's async runtime.
 fn off_runtime<T: Send>(work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
-    // Every session this command joins is hosted in a container, behind its
-    // published ports: join as a client the host routes for, as the
-    // container's own participants do. As concurrent peers of one container
-    // host, this process's participants trip zenoh's peer routing.
-    rlmesh_session::address::join_as_client();
     std::thread::scope(|scope| {
         scope
             .spawn(work)

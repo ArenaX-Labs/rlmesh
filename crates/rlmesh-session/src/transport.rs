@@ -230,8 +230,13 @@ pub struct TransportTuning {
     pub tls: Option<TlsFiles>,
     /// Join as a Zenoh client: listen nowhere and reach everyone through
     /// the host dialed, which routes for its clients. A peer (the default)
-    /// talks to the other peers directly.
+    /// talks to the other peers directly, once the gossip of the peers it
+    /// dials tells it where they listen.
     pub client: bool,
+    /// How long a client's open keeps dialing a host that does not listen
+    /// yet before it fails; `None` fails at once, as Zenoh clients do.
+    /// Peers always keep dialing in the background.
+    pub connect_timeout: Option<Duration>,
 }
 
 impl Default for TransportTuning {
@@ -242,6 +247,7 @@ impl Default for TransportTuning {
             drop_wait: None,
             tls: None,
             client: false,
+            connect_timeout: None,
         }
     }
 }
@@ -348,6 +354,19 @@ pub fn zenoh_config(
     set(&mut config, "scouting/multicast/enabled", "false".into())?;
     set(&mut config, "listen/endpoints", listen)?;
     set(&mut config, "connect/endpoints", list(&endpoints.connect))?;
+    if let (true, Some(timeout)) = (tuning.client, tuning.connect_timeout) {
+        let timeout_ms = u64::try_from(timeout.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        set(&mut config, "connect/timeout_ms", timeout_ms.to_string())?;
+        // Zenoh's first retry comes after a second; a host coming up is
+        // usually there sooner.
+        set(
+            &mut config,
+            "connect/retry",
+            "{period_init_ms:100,period_max_ms:1000}".into(),
+        )?;
+    }
     let lease_ms = u64::try_from(tuning.lease.as_millis())
         .unwrap_or(u64::MAX)
         .max(1);
@@ -603,6 +622,7 @@ mod tests {
             }),
             drop_wait: Some(Duration::from_micros(50)),
             client: false,
+            connect_timeout: None,
         };
         let endpoints = Endpoints {
             listen: vec!["tcp/127.0.0.1:0".into()],
@@ -623,6 +643,7 @@ mod tests {
 
         let client = TransportTuning {
             client: true,
+            connect_timeout: Some(Duration::from_secs(2)),
             ..TransportTuning::default()
         };
         let config = zenoh_config(&endpoints, &client).expect("every key is valid");
@@ -630,6 +651,7 @@ mod tests {
         assert_eq!(get("mode"), "\"client\"");
         assert_eq!(get("listen/endpoints"), "[]");
         assert!(get("connect/endpoints").contains("tcp/10.0.0.1:7447"));
+        assert_eq!(get("connect/timeout_ms"), "2000");
     }
 
     #[test]

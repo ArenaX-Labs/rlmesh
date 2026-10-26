@@ -168,8 +168,6 @@ def test_start_prebuilt_container_injects_binding_and_serves_in_a_session(
     # It hosts a session on all its interfaces and serves in it as env.
     assert "RLMESH_ADDRESS=0.0.0.0:40000" in run_cmd
     assert "RLMESH_NAME=env" in run_cmd
-    # Its participants join as clients of its host, which routes for them.
-    assert "RLMESH_JOIN_AS_CLIENT=1" in run_cmd
     assert info.container_id == "container-9"
     assert info.address == "127.0.0.1:40000/env"
     assert info.resolved_source == "docker://libero:latest"

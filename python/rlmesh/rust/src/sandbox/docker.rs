@@ -752,14 +752,11 @@ fn docker_run_args(
         format!("RLMESH_BOOTSTRAP_JSON={bootstrap_json}"),
         // The env serves in a session the container hosts on all its
         // interfaces, on the host's own port numbers, so a session address
-        // means the same inside the container and out; its participants
-        // join as clients, which the host routes for.
+        // means the same inside the container and out.
         "--env".to_string(),
         format!("RLMESH_ADDRESS=0.0.0.0:{host_port}"),
         "--env".to_string(),
         format!("RLMESH_NAME={ENV_NAME}"),
-        "--env".to_string(),
-        format!("{}=1", rlmesh_session::address::JOIN_AS_CLIENT_VAR),
         "--name".to_string(),
         container_name.to_string(),
         "-p".to_string(),
@@ -1147,7 +1144,6 @@ mod tests {
         );
         assert!(args.iter().any(|arg| arg == "RLMESH_ADDRESS=0.0.0.0:40000"));
         assert!(args.iter().any(|arg| arg == "RLMESH_NAME=env"));
-        assert!(args.iter().any(|arg| arg == "RLMESH_JOIN_AS_CLIENT=1"));
     }
 
     #[test]

@@ -50,18 +50,6 @@ pub fn well_known_port() -> Result<u16, SessionError> {
         Err(_) => Ok(DEFAULT_PORT),
     }
 }
-/// The environment variable (`1`) under which participants join as Zenoh
-/// clients of the host they dial: a sandbox sets it on its container.
-pub const JOIN_AS_CLIENT_VAR: &str = "RLMESH_JOIN_AS_CLIENT";
-
-static JOIN_AS_CLIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Join every later session as a Zenoh client of the host it dials, as
-/// [`JOIN_AS_CLIENT_VAR`] does, for a process whose participants all join
-/// sessions that sandbox containers host (`rlmesh doctor`, `rlmesh bench`).
-pub fn join_as_client() {
-    JOIN_AS_CLIENT.store(true, std::sync::atomic::Ordering::Relaxed);
-}
 /// The session an address names when it names none.
 pub const DEFAULT_SESSION: &str = "default";
 /// The tenant every local session runs in.
@@ -413,8 +401,9 @@ impl fmt::Display for SessionAddress {
 }
 
 impl SessionAddress {
-    /// Opens a transport to the host (listening on the host's interface,
-    /// any port) and attaches as `id`, on this process's
+    /// Joins the host as a Zenoh client (riding its transport when this
+    /// process runs it), waiting up to `host_timeout` for it to listen and
+    /// answer, and attaches as `id`, on this process's
     /// `CLOCK_MONOTONIC` (so capture times line up with other local
     /// processes').
     pub async fn join(
@@ -444,33 +433,35 @@ impl SessionAddress {
         host_timeout: Duration,
         (workflow_edition, workflow_editions): (String, Vec<String>),
     ) -> Result<Participant, SessionError> {
-        let listen_ip = if self.base.ip().is_loopback() {
-            self.base.ip()
-        } else {
-            IpAddr::from([0, 0, 0, 0])
-        };
-        // A sandbox container's participants sit behind its published ports:
-        // the machine outside reaches the container's session host but not
-        // their own listeners, and peers do not route for each other. So the
-        // sandbox starts its container with JOIN_AS_CLIENT_VAR set, and there
-        // participants join as Zenoh clients, which the host routes for.
-        // Everywhere else they join as peers, which talk directly.
-        let tuning = TransportTuning {
-            client: JOIN_AS_CLIENT.load(std::sync::atomic::Ordering::Relaxed)
-                || std::env::var_os(JOIN_AS_CLIENT_VAR).is_some_and(|value| value == "1"),
-            ..TransportTuning::default()
-        };
+        // A participant joins a host another process runs as a Zenoh
+        // client: its one link is to the host, which routes for it. Joined
+        // as peers, they were introduced to each other by the host's gossip,
+        // so every participant that joined it, of any session, dialed every
+        // other one (and a participant behind a sandbox's published ports
+        // advertises addresses the other side cannot reach). Zenoh 1.10's
+        // peer routing then lost declarations and replies, and runs of many
+        // routes slowed and hung. The price: two participants that both join
+        // one host reach each other through it rather than directly.
+        let deadline = tokio::time::Instant::now() + host_timeout;
         let transport = match local_host(self.base) {
             Some(transport) => transport,
             None => {
+                let tuning = TransportTuning {
+                    client: true,
+                    connect_timeout: Some(host_timeout),
+                    ..TransportTuning::default()
+                };
                 Transport::open(
-                    &TransportConfig::per_class_tcp(
-                        Some(SocketAddr::new(listen_ip, 0)),
-                        Some(self.base),
-                    )?
-                    .with_tuning(tuning),
+                    &TransportConfig::per_class_tcp(None, Some(self.base))?.with_tuning(tuning),
                 )
-                .await?
+                .await
+                .map_err(|err| match err {
+                    SessionError::Zenoh(_) => SessionError::Timeout(
+                        host_timeout,
+                        format!("the session host at {}", self.base),
+                    ),
+                    other => other,
+                })?
             }
         };
         let mut config = ParticipantConfig::new(
@@ -481,7 +472,7 @@ impl SessionAddress {
             priority,
         );
         config.clock = SystemMonotonicClock.shared();
-        config.host_timeout = host_timeout;
+        config.host_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
         config.workflow_edition = workflow_edition;
         config.workflow_editions = workflow_editions;
         Participant::attach(transport, config)

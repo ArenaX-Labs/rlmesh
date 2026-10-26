@@ -8,7 +8,6 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use rlmesh_session::address::JOIN_AS_CLIENT_VAR;
 use rlmesh_session::transport::TrafficClass;
 
 /// The longest one readiness attempt waits, so an image that died is told
@@ -52,7 +51,6 @@ impl Container {
         for (key, value) in [
             ("RLMESH_ADDRESS", format!("0.0.0.0:{port}")),
             ("RLMESH_NAME", name.to_string()),
-            (JOIN_AS_CLIENT_VAR, "1".to_string()),
         ] {
             command.args(["-e", &format!("{key}={value}")]);
         }
