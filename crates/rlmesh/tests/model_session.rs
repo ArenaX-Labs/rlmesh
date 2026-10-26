@@ -344,13 +344,33 @@ async fn a_served_model_declares_its_workflow_editions_in_the_roster() {
     served.await.unwrap().unwrap();
 }
 
+/// A session host's four class ports on 127.0.0.1, held until the sockets
+/// drop: bound with `SO_REUSEADDR` but not listening, so a connect is
+/// refused and no other socket can take them, while the host's own
+/// listeners (Zenoh sets `SO_REUSEADDR` too) bind and listen on them.
+fn reserve_session_ports() -> (u16, Vec<tokio::net::TcpSocket>) {
+    let reserve = |port: u16| {
+        let socket = tokio::net::TcpSocket::new_v4().ok()?;
+        socket.set_reuseaddr(true).ok()?;
+        socket.bind(([127, 0, 0, 1], port).into()).ok()?;
+        Some(socket)
+    };
+    for _ in 0..64 {
+        let first = reserve(0).unwrap();
+        let base = first.local_addr().unwrap().port();
+        let rest: Option<Vec<_>> = (1..4)
+            .map(|i| base.checked_add(i).and_then(reserve))
+            .collect();
+        if let Some(rest) = rest {
+            return (base, std::iter::once(first).chain(rest).collect());
+        }
+    }
+    panic!("no four consecutive free ports on 127.0.0.1")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_driver_waits_for_a_model_not_up_yet_and_never_hosts_its_session() {
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    let (port, reserved) = reserve_session_ports();
     let address = format!("127.0.0.1:{port}/echo");
     let connecting = tokio::spawn({
         let address = address.clone();
@@ -361,6 +381,7 @@ async fn a_driver_waits_for_a_model_not_up_yet_and_never_hosts_its_session() {
     assert!(!listening, "the driver hosted the model's session");
 
     let binding = ModelBinding::bind(&address).await.unwrap();
+    drop(reserved);
     let cancel = tokio_util::sync::CancellationToken::new();
     let service = Arc::new(ModelService::new(Echo, String::new()));
     let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
