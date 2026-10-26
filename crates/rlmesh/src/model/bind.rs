@@ -71,10 +71,12 @@ pub struct Binding {
 
 impl Binding {
     /// Binds `handler` to the env at the session address `address`: the
-    /// model joins the env's session and resolves its route there.
+    /// model joins the env's session (at `invite_at` when set, as a run's
+    /// does) and resolves its route there.
     pub async fn connect(
         mut handler: Box<dyn ModelHandler>,
         address: &str,
+        invite_at: Option<&str>,
         execution_horizon: u32,
         workflow_edition: Option<&str>,
     ) -> Result<Self> {
@@ -95,7 +97,7 @@ impl Binding {
         }
         let DrivenEnv::Lockstep(env) = connected.env;
         let client = env.client().clone();
-        if let Some(session) = &connected.session {
+        if let Some(session) = invite_at.or(connected.session.as_deref()) {
             handler.join(session).await?;
         }
         let workflow_edition = connected

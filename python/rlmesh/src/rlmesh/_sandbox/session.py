@@ -302,6 +302,8 @@ class SandboxLifecycle:
     _closed: bool
     _connect_timeout: float
     sandbox: SandboxInfo
+    # Lent to a run or binding, which holds the env's lease until it ends.
+    _on_loan: bool = False
 
     if TYPE_CHECKING:
         # Supplied by the ``Remote*EnvBase`` mixed in (declared here so :meth:`_attach`
@@ -331,12 +333,21 @@ class SandboxLifecycle:
 
         A run drives the env on a lease of its own, so this handle lets go of
         its lease (and episode) for the run and takes it back after, unless
-        the run closed the sandbox.
+        the run closed the sandbox. A second loan is refused before it lets
+        go of anything: its attach would wait out the first's lease, then stop
+        the container under it.
         """
+        if self._on_loan:
+            raise RuntimeError(
+                "the env is held by another driver (a binding, a run or a "
+                "RemoteEnv): close that one first"
+            )
         self._detach()
+        self._on_loan = True
         try:
             yield self.sandbox.address
         finally:
+            self._on_loan = False
             if not self._closed:
                 self._attach(self._connect_timeout)
 

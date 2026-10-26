@@ -243,6 +243,7 @@ impl<'a> Binding<'a> {
             adapted: None,
             workflow_edition: edition.clone(),
         };
+        let mut invite_at = None;
         let address = match env.0 {
             EnvKind::Address(address) => {
                 super::options::check_address_close(&address, close_env)?;
@@ -258,6 +259,7 @@ impl<'a> Binding<'a> {
                     &target.address,
                     close_env && target.close_over_wire,
                 )?;
+                invite_at = target.invite_at;
                 target.address
             }
 
@@ -288,6 +290,7 @@ impl<'a> Binding<'a> {
         let inner = binding.drive(crate::model::bind::Binding::connect(
             handler,
             &address,
+            invite_at.as_deref(),
             execution_horizon,
             edition.as_deref(),
         ))?;

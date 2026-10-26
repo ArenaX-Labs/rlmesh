@@ -334,7 +334,7 @@ def _sandbox_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
         server.shutdown()
 
 
-def test_a_run_borrows_a_sandbox_env_and_hands_it_back(
+def test_a_run_or_binding_borrows_a_sandbox_env_and_hands_it_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import rlmesh
@@ -342,6 +342,15 @@ def test_a_run_borrows_a_sandbox_env_and_hands_it_back(
     with _sandbox_env(monkeypatch) as env:
         result = rlmesh.run(rlmesh.Model(lambda obs: 0), env, seeds=[0, 1])
         assert (result.num_episodes, result.total_steps) == (2, 6)
+        env.reset(seed=0)
+        assert env.step(0)[1] == 1.0
+        with rlmesh.Model(lambda obs: 0).bind(env) as binding:
+            binding.reset(seed=0)
+            assert binding.step()[1] == 1.0
+            # A second loan is refused, leaving the binding's lease alone.
+            with pytest.raises(RuntimeError, match="held by another driver"):
+                rlmesh.run(rlmesh.Model(lambda obs: 0), env)
+            assert binding.step()[1] == 1.0
         env.reset(seed=0)
         assert env.step(0)[1] == 1.0
 
@@ -363,12 +372,17 @@ def test_a_sandboxed_model_joins_a_sandbox_env_where_its_container_reaches_it(
             sandbox, "peer_session", lambda info: info.address.rsplit("/", 1)[0]
         )
         assert model.run(env, seeds=[0, 1]).total_steps == 6
+        with model.bind(env) as binding:
+            binding.reset(seed=0)
+            assert [binding.step()[2] for _ in range(3)] == [False, False, True]
         # The invitation is the peer session, not the one this driver dialed.
         monkeypatch.setattr(
             sandbox, "peer_session", lambda _info: "nowhere.invalid:7447"
         )
         with pytest.raises(ConnectionError, match=r"nowhere\.invalid:7447"):
             model.run(env)
+        with pytest.raises(ConnectionError, match=r"nowhere\.invalid:7447"):
+            model.bind(env)
         model.close()
 
 

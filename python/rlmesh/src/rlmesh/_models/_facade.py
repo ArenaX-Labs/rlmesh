@@ -183,13 +183,6 @@ class EnvTarget:
         if kind == "address":
             return cast(str, payload), None, True
         if kind == "handle":
-            if self.binding:
-                from .._upgrade import removed
-
-                removed(
-                    "bind(RemoteEnv(address))",
-                    "an open RemoteEnv holds its env's lease, so close it and pass the address: bind(address)",
-                )
             if isinstance(payload, SandboxLifecycle):
                 if self.context is not None:
                     self.context.bind_client(payload, local=False)
@@ -197,6 +190,15 @@ class EnvTarget:
                 if model._env_session is not None:
                     invite = peer_session(payload.sandbox)
                 return address, invite, False
+            # A SandboxEnv lends its container, as to a run; any other open
+            # handle holds its env's lease.
+            if self.binding:
+                from .._upgrade import removed
+
+                removed(
+                    "bind(RemoteEnv(address))",
+                    "an open RemoteEnv holds its env's lease, so close it and pass the address: bind(address)",
+                )
             from .._client._remote_base import RemoteClientBase
             from .._rlmesh import is_v2_address
 
