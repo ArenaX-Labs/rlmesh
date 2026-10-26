@@ -197,7 +197,8 @@ pub(crate) fn with_caller_poll<R>(
     call()
 }
 
-fn caller_poll() -> bool {
+/// Run the caller's signal poll, if one is set; whether one is.
+pub(crate) fn caller_poll() -> bool {
     let poll = CALLER_POLL.with(|slot| slot.borrow().clone());
     if let Some(poll) = poll {
         as_caller(|| poll());

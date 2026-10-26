@@ -181,6 +181,15 @@ pub mod report {
     pub use crate::run::report::*;
 }
 
+/// Many routes against one model in one process: a start barrier, env
+/// connect retry, and a verdict per route. Drives Python's Experimental
+/// `Model.run_routes` and `RunResult.merge` (R-25); C and C++ are deferred.
+pub mod routes {
+    pub use crate::run::routes::{
+        Route, merge_results, run_routes, run_routes_async, run_routes_prepared,
+    };
+}
+
 /// The runtime driver itself, for in-repo tests and the managed runner.
 #[doc(hidden)]
 pub use crate::run::runtime;

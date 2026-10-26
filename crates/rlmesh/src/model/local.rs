@@ -22,6 +22,10 @@ pub(crate) struct LocalRun {
     /// The resolved budget (at least 1).
     pub(crate) episodes: u64,
     pub(crate) base_seed: Option<i64>,
+    /// What a `base_seed` keys on; `None` is the env's own id.
+    pub(crate) seed_key: Option<String>,
+    /// A multi-route run's start: connect retry and the start barrier.
+    pub(crate) start: Option<crate::run::routes::RouteStart>,
     pub(crate) seeds: Vec<i64>,
     pub(crate) trial_index_base: Option<u64>,
     pub(crate) max_episode_steps: Option<i64>,
@@ -58,6 +62,8 @@ where
         token: options.token,
         episodes,
         base_seed: options.base_seed,
+        seed_key: None,
+        start: None,
         seeds: options.episode_seeds,
         trial_index_base: options.trial_index_base,
         max_episode_steps: options.max_episode_steps,
@@ -80,7 +86,7 @@ where
 /// answered, before the route resolves.
 pub(crate) async fn drive_local<H>(
     handler: &mut H,
-    options: LocalRun,
+    mut options: LocalRun,
     cancellation: tokio_util::sync::CancellationToken,
     hooks: Arc<dyn RuntimeHooks>,
     connected: &(dyn Fn(&spaces::EnvContract) + Send + Sync),
@@ -88,6 +94,10 @@ pub(crate) async fn drive_local<H>(
 where
     H: ModelHandler + 'static,
 {
+    // A route of a multi-route run retries its connect (its env may still
+    // be coming up) and holds at the start barrier once it is ready; leaving
+    // early, on any error below, counts it as arrived.
+    let start = options.start.take();
     let Connected {
         env,
         contract: env_contract,
@@ -95,7 +105,15 @@ where
         subset_step,
         edition,
         session,
-    } = connect_env(&options).await?;
+    } = match &start {
+        Some(start) => {
+            crate::run::routes::connect_with_retry(start.connect_timeout, &cancellation, || {
+                connect_env(&options)
+            })
+            .await?
+        }
+        None => connect_env(&options).await?,
+    };
     // The handler returns typed actions the runtime encodes against this space;
     // a missing one would fail every predict, so reject at connect, not mid-run.
     if env_contract.action_space.is_none() {
@@ -161,8 +179,9 @@ where
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
         base_seed: options.base_seed,
-        // The env's own id: what no model can change, so models pair.
-        seed_key: env_contract.id.clone(),
+        // The env's own id unless the route names one: what no model can
+        // change, so models pair.
+        seed_key: options.seed_key.unwrap_or_else(|| env_contract.id.clone()),
         episode_seeds: options.seeds,
         max_episodes: Some(options.episodes),
         trial_index_base: options.trial_index_base,
@@ -175,6 +194,9 @@ where
         subset_step,
         limits: Default::default(),
     };
+    if let Some(start) = start {
+        start.arrival.arrive(&cancellation).await;
+    }
     RuntimeDriver::new(spec, env, handler, env_contract, hooks)
         .with_history(wants_history)
         .with_prefetch(options.prefetch_lead)

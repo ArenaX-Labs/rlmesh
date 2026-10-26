@@ -15,6 +15,7 @@ mod native;
 mod options;
 pub(crate) mod report;
 mod results;
+pub(crate) mod routes;
 pub mod runtime;
 mod targets;
 

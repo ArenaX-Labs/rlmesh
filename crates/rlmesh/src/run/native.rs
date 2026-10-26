@@ -20,6 +20,7 @@ use super::hooks::LibraryContext;
 use super::lent::{LentEnv, LentVectorEnv};
 use super::options::{check_caps, check_horizon, check_prefetch, episode_budget};
 use super::results::{self, EpisodeResult, RunResult, StepEvent};
+use super::routes::RouteSpec;
 use super::targets::{EnvKind, EnvTarget};
 use super::{LoopbackEnv, RunHooks, RunOptions};
 use crate::editions::EditionSources;
@@ -76,10 +77,21 @@ type MakeHandler =
 
 /// `Model::run` / `run_async`, and `run` of a served model.
 pub(crate) async fn run_model(
+    model: Driven<'_>,
+    env: EnvTarget<'_>,
+    options: RunOptions<'_>,
+    mode: Mode,
+) -> Result<RunResult> {
+    run_route(model, env, options, mode, RouteSpec::default()).await
+}
+
+/// [`run_model`] as one route of a multi-route run.
+pub(crate) async fn run_route(
     mut model: Driven<'_>,
     env: EnvTarget<'_>,
     options: RunOptions<'_>,
     mode: Mode,
+    route: RouteSpec,
 ) -> Result<RunResult> {
     let presentation = match &mut model {
         Driven::Prepared(model) => model.presentation.take(),
@@ -246,6 +258,7 @@ pub(crate) async fn run_model(
             prefetch_lead,
             edition,
             trial_index_base,
+            route,
         };
         let outcome = run_body(
             plan,
@@ -355,6 +368,7 @@ struct Plan {
     prefetch_lead: u32,
     edition: Option<String>,
     trial_index_base: u64,
+    route: RouteSpec,
 }
 
 /// Where the driver dials, and what the run releases afterwards.
@@ -494,7 +508,9 @@ async fn run_body(
         #[cfg(not(feature = "lockstep"))]
         token: dial.token.clone(),
         episodes: plan.budget,
-        base_seed: None,
+        base_seed: plan.route.base_seed,
+        seed_key: plan.route.seed_key,
+        start: plan.route.start,
         seeds: plan.seeds,
         trial_index_base: Some(plan.trial_index_base),
         max_episode_steps: plan.caps.max_episode_steps,

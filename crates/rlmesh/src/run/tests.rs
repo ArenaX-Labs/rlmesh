@@ -20,6 +20,8 @@ struct Steps {
     closes: Arc<AtomicUsize>,
     resets: Arc<Mutex<Vec<Reset>>>,
     metadata: Option<Metadata>,
+    /// Fail the step that reaches this count, as an env whose container died.
+    fail_at: Option<i64>,
 }
 
 impl Steps {
@@ -29,6 +31,7 @@ impl Steps {
             closes: Arc::default(),
             resets: Arc::default(),
             metadata: None,
+            fail_at: None,
         }
     }
 }
@@ -51,6 +54,9 @@ impl Env for Steps {
     }
     fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
         self.step += 1;
+        if self.fail_at == Some(self.step) {
+            return Err(Error::Runtime("env gone".into()));
+        }
         let reward = match action {
             Some(Value::Int(action)) => action as f64,
             _ => -1.0,
@@ -246,6 +252,85 @@ fn a_run_dials_an_address_or_an_env_server() {
     .unwrap();
     assert_eq!(by_server.num_episodes(), 2);
     server.shutdown().unwrap();
+}
+
+/// One model served in process answers four routes at once. The route whose
+/// env dies mid-episode fails alone; its siblings finish, and their trials
+/// and seeds are the ones a single route over the whole range would draw.
+#[cfg(feature = "lockstep")]
+#[test]
+fn a_failed_route_leaves_its_siblings_running_against_a_shared_served_model() {
+    use crate::binding::routes::{Route, merge_results, run_routes};
+    use crate::lockstep::{ModelBinding, ModelService};
+
+    let runtime = drive::runtime();
+    let binding = runtime.block_on(ModelBinding::bind(":0/random")).unwrap();
+    let address = binding.address();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let service = ModelService::new(
+        crate::model::random::RandomSampleHandler::default(),
+        String::new(),
+    );
+    let served =
+        runtime.spawn(binding.serve(Arc::new(service), Duration::from_secs(5), stop.clone()));
+    let model =
+        crate::RemoteModel::new(crate::RemoteModelOptions::default().address(address)).unwrap();
+    let servers: Vec<EnvServer> = (0..4)
+        .map(|route| {
+            let mut env = Steps::new();
+            env.fail_at = (route == 2).then_some(2);
+            let server = EnvServer::new(env, quick()).unwrap();
+            server.start().unwrap();
+            server
+        })
+        .collect();
+    let routes = |base_seed| {
+        servers
+            .iter()
+            .enumerate()
+            .map(|(route, server)| Route {
+                base_seed,
+                ..Route::new(
+                    server,
+                    RunOptions {
+                        episodes: Some(3),
+                        trial_index_base: 3 * route as u64,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let results = run_routes(&model, routes(Some(7))).unwrap();
+
+    let verdicts: Vec<bool> = results.iter().map(Result::is_ok).collect();
+    assert_eq!(verdicts, [true, true, false, true]);
+    let failure = results[2].as_ref().unwrap_err().to_string();
+    assert!(failure.contains("env gone"), "{failure}");
+    let merged = merge_results(results.iter().flatten());
+    let trials: Vec<Option<i64>> = merged.episodes.iter().map(|e| e.trial).collect();
+    assert_eq!(trials, [0, 1, 2, 3, 4, 5, 9, 10, 11].map(Some));
+    let indices: Vec<i64> = merged.episodes.iter().map(|e| e.index).collect();
+    assert_eq!(indices, (0..9).collect::<Vec<_>>());
+    let contract_id = servers[0].env_contract().id().to_string();
+    for episode in &merged.episodes {
+        let slot = episode.trial.unwrap() as u64;
+        assert_eq!(
+            episode.seed,
+            Some(crate::run::runtime::episode_seed(7, &contract_id, slot))
+        );
+    }
+
+    // An in-process model drives one route at a time.
+    let error = run_routes(&ones(), routes(None)).unwrap_err();
+    assert_eq!(error.class(), ErrorClass::ValueError, "{error}");
+
+    for server in servers {
+        server.shutdown().unwrap();
+    }
+    stop.cancel();
+    runtime.block_on(served).unwrap().unwrap();
 }
 
 #[test]
