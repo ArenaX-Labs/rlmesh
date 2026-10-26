@@ -939,8 +939,10 @@ def check(
                             or target
                             in {
                                 "rlmesh::Error::Attached",
+                                "rlmesh::RunHooks::artifacts",
                                 "rlmesh::RunHooks::transform_action",
                                 "rlmesh::RunHooks::transform_observation",
+                                "rlmesh::recorder::RecorderCaptureOptions::record",
                             }
                         )
                     )

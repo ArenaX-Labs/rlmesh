@@ -35,7 +35,7 @@ rlmesh-grpc = { workspace = true }
 rlmesh-session = { workspace = true, features = ["record"], optional = true }
 rlmesh-proto = { workspace = true }
 prost = { workspace = true }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 tempfile = { workspace = true }
 # Reads zips the Python recorder deflates.
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -43,6 +43,11 @@ futures = { workspace = true }
 image = { workspace = true, features = ["png"] }
 # The recorder's in-process AV1 episode videos.
 rav1e = { workspace = true }
+# The recorder's per-episode trajectories (`trajectory.parquet`).
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+half = { workspace = true }
+parquet = { workspace = true }
 # The live viewer (feature `viewer`): terminal and HTTP backends.
 crossterm = { version = "0.29", optional = true }
 tiny_http = { version = "0.12", optional = true }

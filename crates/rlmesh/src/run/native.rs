@@ -3,9 +3,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::recorder::artifacts::{ArtifactTap, EpisodeArtifacts};
 use crate::run::runtime::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    ObservationEmittedEvent, RuntimeHooks, StepCompletedEvent,
+    ObservationEmittedEvent, RuntimeHooks, SessionFailedEvent, SessionStartedEvent,
+    StepCompletedEvent, TelemetrySnapshotEvent,
 };
 use async_trait::async_trait;
 use rlmesh_grpc::wire::{
@@ -706,6 +708,8 @@ pub(crate) struct HookRelay {
     state: Mutex<RelayState>,
     context: Arc<LibraryContext>,
     directive: Arc<Mutex<super::runtime::RunDirective>>,
+    /// The hooks' artifact writer, asked for at each session start.
+    artifacts: Mutex<Option<ArtifactTap>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -737,7 +741,26 @@ impl HookRelay {
             state: Mutex::new(RelayState::default()),
             context,
             directive: Arc::default(),
+            artifacts: Mutex::default(),
         }
+    }
+
+    /// Feed the hooks' artifact writer on the caller's thread. Recording is
+    /// best-effort: a failure warns and the run goes on.
+    async fn record(
+        &self,
+        feed: impl FnOnce(&mut EpisodeArtifacts) -> Result<()> + Send + 'static,
+    ) {
+        let Some(tap) = lock(&self.artifacts).clone() else {
+            return;
+        };
+        self.dispatch(move |_| {
+            if let Err(err) = feed(&mut lock(&tap)) {
+                crate::recorder::artifacts::warn(format!("recorder: {err}"));
+            }
+            Ok(())
+        })
+        .await;
     }
 
     fn attach(&self, port: CallerPort) {
@@ -853,10 +876,47 @@ impl RuntimeHooks for HookRelay {
         }
     }
 
+    async fn session_started(
+        &self,
+        event: SessionStartedEvent,
+    ) -> std::result::Result<(), HookError> {
+        let tap = self.transform(|hooks| Ok(hooks.artifacts())).await?;
+        *lock(&self.artifacts) = tap.flatten();
+        self.record(move |artifacts| artifacts.session_started(&event))
+            .await;
+        Ok(())
+    }
+
+    async fn session_failed(
+        &self,
+        _event: SessionFailedEvent,
+    ) -> std::result::Result<(), HookError> {
+        self.record(|artifacts| {
+            artifacts.abandon();
+            Ok(())
+        })
+        .await;
+        Ok(())
+    }
+
+    async fn on_telemetry(
+        &self,
+        event: TelemetrySnapshotEvent,
+    ) -> std::result::Result<(), HookError> {
+        self.record(move |artifacts| artifacts.telemetry(&event))
+            .await;
+        Ok(())
+    }
+
     async fn episode_started(
         &self,
         event: EpisodeStartedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.episode_started(&recorded))
+                .await;
+        }
         let index = event.episode_index - 1;
         lock(&self.state).episodes.insert(
             event.episode_id,
@@ -880,6 +940,11 @@ impl RuntimeHooks for HookRelay {
         &self,
         event: ObservationEmittedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.observation(&recorded))
+                .await;
+        }
         let Some(leaves) = event.observation else {
             return Ok(());
         };
@@ -997,6 +1062,11 @@ impl RuntimeHooks for HookRelay {
         &self,
         event: ActionReceivedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.action(&recorded))
+                .await;
+        }
         let Some(leaves) = event.action else {
             return Ok(());
         };
@@ -1020,6 +1090,11 @@ impl RuntimeHooks for HookRelay {
         &self,
         event: StepCompletedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.step(&recorded))
+                .await;
+        }
         let info = event
             .infos
             .map(|infos| meta_codec::metadata_from_wire(meta_map_from_proto(infos)))
@@ -1095,6 +1170,11 @@ impl RuntimeHooks for HookRelay {
         &self,
         event: EpisodeCompletedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.episode_completed(&recorded))
+                .await;
+        }
         let result = EpisodeResult {
             index: event.episode_index - 1,
             seed: event.seed,

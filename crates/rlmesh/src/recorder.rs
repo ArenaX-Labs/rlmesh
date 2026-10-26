@@ -1,4 +1,5 @@
 //! Portable evaluation bundles.
+pub(crate) mod artifacts;
 mod capture;
 mod export;
 mod records;
@@ -9,6 +10,8 @@ mod tests;
 #[doc(hidden)]
 pub mod video;
 use crate::{Error, Metadata, Result, RunContext, RunHooks, RunResult, TelemetryRow, Value};
+use artifacts::schema::{AttemptStamp, RecordSpec};
+use artifacts::{ArtifactOptions, ArtifactTap, EpisodeArtifacts};
 pub use records::{EpisodeRecord, MediaRef, WorkloadRecord};
 use std::{
     path::{Path, PathBuf},
@@ -70,6 +73,11 @@ pub struct RecorderCaptureOptions {
     pub video_info_keys: Vec<String>,
     /// Include the episodes in reward and success aggregates.
     pub included_in_metrics: bool,
+    /// Binding plumbing for Python's Experimental `Recorder.record` (R-25):
+    /// write the per-episode artifact tree this spec selects (episode
+    /// records, trajectories, sampled videos) instead of `cameras` media.
+    #[doc(hidden)]
+    pub record: Option<RecordSpec>,
 }
 impl Default for RecorderCaptureOptions {
     fn default() -> Self {
@@ -80,6 +88,7 @@ impl Default for RecorderCaptureOptions {
             binding: None,
             video_info_keys: vec!["video_artifact_path".into(), "video_url".into()],
             included_in_metrics: true,
+            record: None,
         }
     }
 }
@@ -92,6 +101,7 @@ impl std::fmt::Debug for RecorderCaptureOptions {
             .field("binding", &self.binding.as_ref().map(|_| "<context>"))
             .field("video_info_keys", &self.video_info_keys)
             .field("included_in_metrics", &self.included_in_metrics)
+            .field("record", &self.record)
             .finish()
     }
 }
@@ -113,6 +123,10 @@ struct State {
     workloads: Vec<WorkloadRecord>,
     /// Each workload's telemetry rows, one batch per recorded run.
     telemetry: Vec<Vec<TelemetryRow>>,
+    /// Each workload's artifact tree: its bundle prefix and writer.
+    trees: Vec<Option<(String, ArtifactTap)>>,
+    /// The machine's stamp, taken with the first artifact tree.
+    stamp: Option<AttemptStamp>,
     staging: Option<tempfile::TempDir>,
     assets: Vec<(PathBuf, String)>,
     used: std::collections::HashSet<String>,
@@ -132,7 +146,7 @@ impl Drop for State {
     }
 }
 impl State {
-    fn stage(&mut self, prefix: &str, index: i64, filename: &str) -> Result<(PathBuf, String)> {
+    fn staging(&mut self) -> Result<&Path> {
         if self.closed {
             return Err(Error::Runtime("Recorder is closed".into()));
         }
@@ -144,6 +158,14 @@ impl State {
                     .map_err(os)?,
             );
         }
+        Ok(self
+            .staging
+            .as_ref()
+            .expect("staging was initialized above")
+            .path())
+    }
+    fn stage(&mut self, prefix: &str, index: i64, filename: &str) -> Result<(PathBuf, String)> {
+        self.staging()?;
         let mut rel = format!("media/{prefix}/ep{index:05}/{filename}");
         let (stem, ext) = filename.rsplit_once('.').unwrap_or((filename, ""));
         let mut n = 2;
@@ -175,13 +197,20 @@ impl State {
             episodes: Vec::new(),
         });
         self.telemetry.push(Vec::new());
+        self.trees.push(None);
         ordinal
+    }
+    /// Export a file a writer staged at `source` as `rel`, once.
+    fn adopt(&mut self, source: PathBuf, rel: String) {
+        if self.used.insert(rel.clone()) {
+            self.assets.push((source, rel));
+        }
     }
 }
 fn os(err: impl std::fmt::Display) -> Error {
     Error::Os(err.to_string())
 }
-fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
+fn lock<T>(state: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     state.lock().unwrap_or_else(|err| err.into_inner())
 }
 fn now() -> String {
@@ -205,10 +234,18 @@ fn document(id: &str, state: &State, recorded_at: Option<String>) -> Metadata {
                     .workloads
                     .iter()
                     .zip(&state.telemetry)
-                    .map(|(w, rows)| {
+                    .zip(&state.trees)
+                    .map(|((w, rows), tree)| {
                         let mut workload = w.to_dict();
                         if !rows.is_empty() {
                             workload.insert("telemetry", telemetry(rows));
+                        }
+                        if let Some((prefix, tap)) = tree {
+                            workload.insert("artifactRoot", Value::Text(prefix.clone()));
+                            let phases = lock(tap).phases().to_vec();
+                            if !phases.is_empty() {
+                                workload.insert("phases", json_value(&phases));
+                            }
                         }
                         Value::Dict(workload)
                     })
@@ -217,7 +254,32 @@ fn document(id: &str, state: &State, recorded_at: Option<String>) -> Metadata {
         ),
     ]
     .into_iter()
+    .chain(
+        state
+            .stamp
+            .as_ref()
+            .map(|stamp| ("stamp", json_value(stamp))),
+    )
     .collect()
+}
+/// A serde record as a bundle value.
+fn json_value(record: &impl serde::Serialize) -> Value {
+    fn value(json: serde_json::Value) -> Value {
+        match json {
+            serde_json::Value::Null => Value::None,
+            serde_json::Value::Bool(b) => b.into(),
+            serde_json::Value::Number(n) => match n.as_i64() {
+                Some(i) => i.into(),
+                None => n.as_f64().unwrap_or(f64::NAN).into(),
+            },
+            serde_json::Value::String(s) => s.into(),
+            serde_json::Value::Array(items) => Value::List(items.into_iter().map(value).collect()),
+            serde_json::Value::Object(map) => {
+                Value::Dict(map.into_iter().map(|(k, v)| (k, value(v))).collect())
+            }
+        }
+    }
+    value(serde_json::to_value(record).unwrap_or_default())
 }
 fn telemetry(rows: &[TelemetryRow]) -> Value {
     Value::List(
@@ -281,6 +343,8 @@ impl Recorder {
             state: Arc::new(Mutex::new(State {
                 workloads: Vec::new(),
                 telemetry: Vec::new(),
+                trees: Vec::new(),
+                stamp: None,
                 staging: None,
                 assets: Vec::new(),
                 used: Default::default(),
@@ -322,20 +386,57 @@ impl Recorder {
         &mut self,
         model: &str,
         env: &str,
-        options: RecorderCaptureOptions,
+        mut options: RecorderCaptureOptions,
     ) -> Result<Box<dyn RunHooks>> {
         let mut state = lock(&self.state);
+        // A tree stages from the start; a closed recorder refuses it here.
+        let root = match options.record {
+            Some(_) => Some(
+                state
+                    .staging()?
+                    .join(uuid::Uuid::new_v4().simple().to_string()),
+            ),
+            None => None,
+        };
         let index = state.workload(model, env, options.task.clone(), options.config.clone());
         let prefix = format!(
             "w{index:03}-{}/{}",
             capture::sanitize(model),
             capture::sanitize(&state.workloads[index].task)
         );
+        let tap = match options.record.take().zip(root) {
+            Some((record, root)) => {
+                // The platform's attempt tree, positional as there: workload
+                // `c0001` is the first, and a local run is its one attempt.
+                let workload = format!("c{:04}", index + 1);
+                let tap: ArtifactTap = Arc::new(Mutex::new(EpisodeArtifacts::new(
+                    root,
+                    ArtifactOptions {
+                        record,
+                        task_id: state.workloads[index].task.clone(),
+                        workload_id: workload.clone(),
+                        workload_artifact_id: workload.clone(),
+                        quality: state.quality,
+                        ..ArtifactOptions::default()
+                    },
+                )));
+                state.trees[index] =
+                    Some((format!("workloads/{workload}/attempts/a001"), tap.clone()));
+                if state.stamp.is_none() {
+                    state.stamp = Some(artifacts::collect_stamp());
+                }
+                // The tree records the videos; cameras= media stays off.
+                options.cameras = Some(Vec::new());
+                Some(tap)
+            }
+            None => None,
+        };
         Ok(Box::new(capture::Capture::new(
             self.state.clone(),
             index,
             prefix,
             options,
+            tap,
         )))
     }
     /// Snapshot the `rlmesh.result.v1` document.

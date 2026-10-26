@@ -49,6 +49,8 @@ pub(super) struct Capture {
     disabled: BTreeSet<String>,
     captured: BTreeSet<String>,
     video_path: Option<String>,
+    /// The workload's artifact tree writer, when it records one.
+    tap: Option<super::ArtifactTap>,
 }
 impl Capture {
     pub(super) fn new(
@@ -56,8 +58,10 @@ impl Capture {
         index: usize,
         prefix: String,
         options: RecorderCaptureOptions,
+        tap: Option<super::ArtifactTap>,
     ) -> Self {
         Self {
+            tap,
             state,
             index,
             prefix,
@@ -140,6 +144,51 @@ impl Capture {
         self.captured.insert(camera.into());
         Ok(())
     }
+    fn tree_prefix(&self) -> String {
+        lock(&self.state).trees[self.index]
+            .as_ref()
+            .map(|(prefix, _)| prefix.clone())
+            .unwrap_or_default()
+    }
+    /// The artifact tree's record of the episode that just ended: its files
+    /// join the bundle and its videos the episode's media.
+    fn adopt_episode(&self) -> Vec<MediaRef> {
+        let Some(tap) = &self.tap else {
+            return Vec::new();
+        };
+        let (record, root) = {
+            let mut artifacts = lock(tap);
+            (artifacts.take_finished(), artifacts.root().to_path_buf())
+        };
+        let Some(record) = record else {
+            return Vec::new();
+        };
+        let prefix = self.tree_prefix();
+        let dir = super::artifacts::schema::episode_dir(record.episode_index);
+        let mut state = lock(&self.state);
+        for path in record
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .chain([format!("{dir}/{}", super::artifacts::schema::EPISODE_JSON)])
+        {
+            state.adopt(root.join(&path), format!("{prefix}/{path}"));
+        }
+        record
+            .recordings
+            .iter()
+            .map(|r| MediaRef {
+                camera: format!("{}.{}", r.camera, r.stream.as_str()),
+                kind: "video".into(),
+                path: format!("{prefix}/{}", r.path),
+                format: "mp4".into(),
+                frame_count: Some(r.frames as i64),
+                width: Some(i64::from(r.width)),
+                height: Some(i64::from(r.height)),
+                fps: Some(f64::from(r.fps)),
+            })
+            .collect()
+    }
     fn carry(&self, source: &str, index: i64) -> Result<Option<MediaRef>> {
         let root = std::env::current_dir()
             .and_then(std::fs::canonicalize)
@@ -174,7 +223,15 @@ impl RunHooks for Capture {
         if !self.explicit_context {
             self.context = Some(context);
         }
+        if let Some(tap) = &self.tap {
+            // Several runs into one workload continue its episode numbering.
+            let recorded = lock(&self.state).workloads[self.index].episodes.len();
+            lock(tap).set_episode_offset(u32::try_from(recorded).unwrap_or(u32::MAX));
+        }
         Ok(())
+    }
+    fn artifacts(&mut self) -> Option<super::ArtifactTap> {
+        self.tap.clone()
     }
     fn on_episode_start(&mut self, _episode: i64, _seed: Option<i64>) -> Result<()> {
         if (self.cameras.as_ref().is_none_or(|c| !c.is_empty()))
@@ -218,7 +275,7 @@ impl RunHooks for Capture {
     }
     fn on_episode_end(&mut self, result: &EpisodeResult) -> Result<()> {
         let index = lock(&self.state).workloads[self.index].episodes.len() as i64;
-        let mut media = Vec::new();
+        let mut media = self.adopt_episode();
         for (camera, cam) in std::mem::take(&mut self.writers) {
             match cam.writer.finish() {
                 Ok(stats) => {
@@ -263,6 +320,18 @@ impl RunHooks for Capture {
     }
     fn on_run_end(&mut self, result: &RunResult) -> Result<()> {
         self.writers.clear();
+        if let Some(tap) = &self.tap {
+            let root = lock(tap).root().to_path_buf();
+            let windows = root.join(super::artifacts::schema::TELEMETRY_WINDOWS);
+            if windows.is_file() {
+                let rel = format!(
+                    "{}/{}",
+                    self.tree_prefix(),
+                    super::artifacts::schema::TELEMETRY_WINDOWS
+                );
+                lock(&self.state).adopt(windows, rel);
+            }
+        }
         lock(&self.state).telemetry[self.index].extend(result.telemetry.iter().cloned());
         let missing: Vec<_> = self
             .cameras

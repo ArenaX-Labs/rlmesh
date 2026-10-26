@@ -190,6 +190,14 @@ pub mod routes {
     };
 }
 
+/// The per-episode artifact tree (`episodes/epNNNNNN/`, the managed
+/// platform's evaluation-artifacts layout), its records, invariants and the
+/// hardware stamp: [`crate::Recorder`]'s `record` capture and the managed
+/// runner write through it (R-25). C and C++ are deferred.
+pub mod artifacts {
+    pub use crate::recorder::artifacts::*;
+}
+
 /// The runtime driver itself, for in-repo tests and the managed runner.
 #[doc(hidden)]
 pub use crate::run::runtime;

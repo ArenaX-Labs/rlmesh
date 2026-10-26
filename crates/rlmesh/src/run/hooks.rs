@@ -99,6 +99,15 @@ pub trait RunHooks: Send {
         let _ = (episode, step, action);
         Ok(None)
     }
+
+    /// Binding plumbing for the recorder's artifact tree (R-25): a writer
+    /// the run feeds its runtime events (raw and transformed observations
+    /// and actions, step infos, telemetry), on this thread, each before the
+    /// hook it precedes. Asked once per session; runs only.
+    #[doc(hidden)]
+    fn artifacts(&mut self) -> Option<crate::recorder::artifacts::ArtifactTap> {
+        None
+    }
 }
 
 /// What a run exposes to its hooks.
