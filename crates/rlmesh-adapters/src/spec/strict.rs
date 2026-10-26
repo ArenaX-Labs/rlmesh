@@ -28,8 +28,8 @@ use crate::path::NodePath;
 
 use super::action::Action;
 use super::env_tags::{EnvTags, ObsLeaf, ObsNode};
-use super::frames::{Attr, FrameLaw, FrameRef, ReferenceLaw};
 use super::model::{InputNode, ModelLeaf, ModelSpec};
+use super::{Attr, FrameLaw, FrameRef, ReferenceLaw};
 
 /// Reject any bare unknown field **or** unknown leaf kind in an env spec (the
 /// PUBLISH gate: an author's own core must understand every kind and bare field).

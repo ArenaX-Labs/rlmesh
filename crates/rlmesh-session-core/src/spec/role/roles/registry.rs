@@ -25,7 +25,7 @@
 //! ([`parts`](super::parts)); the role name itself never repeats.
 
 use super::{body, core, manipulation};
-use crate::spec::{FrameLaw, ReferenceLaw};
+use crate::spec::role::frames::{FrameLaw, ReferenceLaw};
 
 /// The closed set of feature kinds a role's prefix may name.
 pub const KINDS: [&str; 5] = ["image/", "proprio/", "text/", "action/", "command/"];

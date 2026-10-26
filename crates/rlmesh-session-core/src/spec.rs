@@ -21,6 +21,8 @@
 //! - [`contract`]: delivery contracts, freshness bounds, admission and the
 //!   publication plan per stream (§8.2, §8.7), shared by the binder and the
 //!   host.
+//! - [`role`]: the binder's Gym door: the role vocabulary a Gym env's tags
+//!   and a model spec bind by.
 //!
 //! The generic core ([`wire`](crate::wire), `rlmesh-session` and its edge)
 //! works on streams and never interprets kinds; only this module does.
@@ -37,6 +39,7 @@ pub mod normalise;
 pub mod plan;
 pub mod policy;
 pub mod projection;
+pub mod role;
 pub mod rotation;
 pub mod selector;
 pub mod units;

@@ -612,8 +612,10 @@ def test_role_constants_match_rust_crate():
     roles_dir = (
         Path(__file__).resolve().parents[4]
         / "crates"
-        / "rlmesh-adapters"
+        / "rlmesh-session-core"
         / "src"
+        / "spec"
+        / "role"
         / "roles"
     )
     rust_roles: dict[str, str] = {}

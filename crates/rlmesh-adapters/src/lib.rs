@@ -27,15 +27,15 @@ mod error;
 mod fmt;
 mod join;
 mod keys;
-mod path;
 mod plans;
 mod resolver;
-pub mod roles;
 mod space_json;
 mod space_view;
 mod spec;
 mod stateful;
 
+use rlmesh_session_core::spec::role::path;
+pub use rlmesh_session_core::spec::role::roles;
 use rlmesh_spaces::advisory;
 
 /// Version 1 of the adapter spec format and resolution semantics.

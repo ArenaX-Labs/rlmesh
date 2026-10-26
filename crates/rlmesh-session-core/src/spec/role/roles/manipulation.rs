@@ -11,20 +11,27 @@
 //! in `robot_base`, and the two are different numbers for the same contact.
 
 use super::registry::{DimLaw, RoleDef};
-use crate::spec::{FrameLaw, ReferenceLaw};
+use crate::spec::role::frames::{FrameLaw, ReferenceLaw};
 
+/// The wrist camera frame.
 pub const IMAGE_WRIST: &str = "image/wrist";
 
+/// End-effector Cartesian position.
 pub const EEF_POS: &str = "proprio/eef_pos";
+/// End-effector rotation.
 pub const EEF_ROT: &str = "proprio/eef_rot";
+/// Gripper width (finger count varies).
 pub const GRIPPER_POS: &str = "proprio/gripper";
 /// End-effector wrench `[fx, fy, fz, tx, ty, tz]`, expressed in a frame. The
 /// raw force/torque reading (a wrist sensor, or a simulated one), never a
 /// contact model's output.
 pub const EEF_WRENCH: &str = "proprio/eef_wrench";
 
+/// Cartesian end-effector position delta.
 pub const ACTION_DELTA_POS: &str = "action/delta_eef_pos";
+/// End-effector rotation delta.
 pub const ACTION_DELTA_ROT: &str = "action/delta_eef_rot";
+/// Gripper command.
 pub const ACTION_GRIPPER: &str = "action/gripper";
 
 /// Absolute end-effector targets, for policies trained on controller goals
@@ -32,6 +39,7 @@ pub const ACTION_GRIPPER: &str = "action/gripper";
 /// runs its Cartesian controller in absolute mode and receives the target
 /// verbatim; the frame is the env's `proprio/eef_*` frame.
 pub const ACTION_EEF_POS: &str = "action/eef_pos";
+/// Absolute end-effector rotation target.
 pub const ACTION_EEF_ROT: &str = "action/eef_rot";
 
 /// Manipulation role table. `eef_pos`/`delta_eef_pos` are 3-D Cartesian

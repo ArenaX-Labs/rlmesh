@@ -9,7 +9,7 @@
 //! role would silently mean two different things in sim and on hardware.
 
 use super::registry::{DimLaw, RoleDef};
-use crate::spec::{FrameLaw, ReferenceLaw};
+use crate::spec::role::frames::{FrameLaw, ReferenceLaw};
 
 /// Base angular velocity (the IMU gyro), 3-D, expressed in a frame.
 pub const BASE_ANG_VEL: &str = "proprio/base_ang_vel";

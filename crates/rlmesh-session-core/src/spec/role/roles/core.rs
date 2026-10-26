@@ -1,19 +1,25 @@
 //! Domain-agnostic roles shared across environment/model domains.
 
 use super::registry::{DimLaw, RoleDef};
-use crate::spec::{FrameLaw, ReferenceLaw};
+use crate::spec::role::frames::{FrameLaw, ReferenceLaw};
 
+/// The primary camera frame.
 pub const IMAGE_PRIMARY: &str = "image/primary";
+/// A secondary camera frame.
 pub const IMAGE_SECONDARY: &str = "image/secondary";
 
+/// The natural-language task instruction.
 pub const INSTRUCTION: &str = "text/instruction";
 
+/// Joint positions (DoF varies by embodiment).
 pub const JOINT_POS: &str = "proprio/joint_pos";
+/// Joint velocities (DoF varies by embodiment).
 pub const JOINT_VEL: &str = "proprio/joint_vel";
 
-// Joint-space action (e.g. gym-aloha's absolute joint positions). Blessed when
-// its first real env/model pair landed (joint-control catalog envs).
+/// Commanded joint positions (gym-aloha's absolute joint positions). Blessed when
+/// its first real env/model pair landed (joint-control catalog envs).
 pub const ACTION_JOINT_POS: &str = "action/joint_pos";
+/// Commanded joint velocities.
 pub const ACTION_JOINT_VEL: &str = "action/joint_vel";
 
 /// Core domain role table. Joint widths vary by embodiment (DoF), so joint roles

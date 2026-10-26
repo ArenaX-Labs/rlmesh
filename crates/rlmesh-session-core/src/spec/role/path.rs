@@ -17,7 +17,9 @@ use std::fmt;
 /// One step into a nested tree: a `Dict` key or a `Tuple` index.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PathSeg {
+    /// A `Dict` key.
     Key(String),
+    /// A `Tuple` position.
     Index(usize),
 }
 

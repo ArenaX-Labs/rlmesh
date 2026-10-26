@@ -4,12 +4,19 @@
 //! no registry and nothing here validates one. These constants are
 //! conventions for the common places a role repeats, nothing more.
 
+/// The left arm.
 pub const LEFT_ARM: &str = "left_arm";
+/// The right arm.
 pub const RIGHT_ARM: &str = "right_arm";
+/// The head.
 pub const HEAD: &str = "head";
+/// The torso.
 pub const TORSO: &str = "torso";
+/// The mobile base.
 pub const BASE: &str = "base";
+/// The left leg.
 pub const LEFT_LEG: &str = "left_leg";
+/// The right leg.
 pub const RIGHT_LEG: &str = "right_leg";
 
 /// The suggested part names, for consumers exporting the conventions.

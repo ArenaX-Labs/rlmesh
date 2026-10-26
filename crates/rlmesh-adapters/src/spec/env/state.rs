@@ -4,7 +4,7 @@
 
 use crate::path::NodePath;
 use crate::spec::AcceptSet;
-use crate::spec::frames::FrameRef;
+use crate::spec::FrameRef;
 use crate::spec::rotations::RotationEncoding;
 
 /// A numeric proprioception entry in an environment observation.

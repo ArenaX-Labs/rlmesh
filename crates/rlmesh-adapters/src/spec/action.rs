@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use super::conventions::Polarity;
 use serde::{Deserialize, Serialize};
 
+use super::FrameRef;
 use super::custom_encoding::ActionEncoding;
-use super::frames::FrameRef;
 
 /// One contiguous slice of an action vector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

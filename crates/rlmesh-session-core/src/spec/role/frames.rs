@@ -72,13 +72,10 @@ impl Provenance {
     }
 }
 
-impl super::accept_set::WireVocab for Provenance {
-    fn from_wire(name: &str) -> Option<Self> {
+impl Provenance {
+    /// The provenance `name` names.
+    pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|value| value.as_str() == name)
-    }
-
-    fn as_wire(self) -> &'static str {
-        self.as_str()
     }
 }
 
@@ -111,8 +108,11 @@ impl std::fmt::Display for FrameRef {
 /// implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attr {
+    /// The frame an absolute pose is expressed in.
     Frame,
+    /// The pose a delta is integrated against.
     Reference,
+    /// Where a state leaf's numbers come from.
     Provenance,
 }
 
@@ -153,8 +153,8 @@ impl Attr {
 
 /// Whether a registered role's values are expressed in a reference frame.
 ///
-/// Validation only, and only at the opt-in [`FramePolicy::Require`](super::strict::FramePolicy::Require) tier
-/// (`crate::spec::FramePolicy`): nothing here supplies a frame, and a role
+/// Validation only, and only at the publish gate's opt-in require-frames tier
+/// (`rlmesh-adapters`' `FramePolicy::Require`): nothing here supplies a frame, and a role
 /// that is `Frameless` still has any declared `frame` checked for agreement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameLaw {
@@ -181,10 +181,9 @@ pub enum ReferenceLaw {
 #[cfg(test)]
 mod tests {
     use super::{Attr, FrameRef, PROVENANCES, Provenance};
-    use crate::spec::AcceptSet;
 
     #[test]
-    fn provenance_is_a_closed_vocabulary_the_accept_set_tolerates() {
+    fn provenance_is_a_closed_vocabulary() {
         assert_eq!(
             Provenance::ALL.map(Provenance::as_str),
             PROVENANCES,
@@ -194,14 +193,5 @@ mod tests {
             assert!(Attr::Provenance.recognizes(&FrameRef::from(value)));
         }
         assert!(!Attr::Provenance.recognizes(&FrameRef::from("guessed")));
-        // A single value is a bare string on the wire; an unknown one rides
-        // along and is simply not a known entry.
-        let set: AcceptSet<Provenance> = serde_json::from_str(r#""estimated""#).unwrap();
-        assert_eq!(set.first_known(), Some(Provenance::Estimated));
-        assert_eq!(serde_json::to_string(&set).unwrap(), r#""estimated""#);
-        let set: AcceptSet<Provenance> =
-            serde_json::from_str(r#"["privileged", "estimated", "guessed"]"#).unwrap();
-        assert_eq!(set.known().count(), 2);
-        assert_eq!(set.wire_names(), vec!["privileged", "estimated", "guessed"]);
     }
 }

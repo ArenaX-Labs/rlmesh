@@ -13,8 +13,8 @@ use super::conventions::Polarity;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::AcceptSet;
+use super::FrameRef;
 use super::action::Action;
-use super::frames::FrameRef;
 use super::layouts::ImageLayout;
 use super::leaf_codec::leaf_codec;
 use super::model::{NodeShape, TreeNode, deserialize_node};
@@ -65,7 +65,7 @@ pub struct StateTag {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
     /// Where this feature's numbers come from: `sensed`, `estimated` or
-    /// `privileged` (see [`PROVENANCES`](super::frames::PROVENANCES)). Part
+    /// `privileged` (see [`PROVENANCES`](super::PROVENANCES)). Part
     /// of the leaf's identity, so an env may publish one role under two
     /// provenances. Omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
