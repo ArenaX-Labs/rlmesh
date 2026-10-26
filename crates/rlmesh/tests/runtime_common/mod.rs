@@ -157,6 +157,9 @@ pub struct TestModel {
     pub arrived: Arc<AtomicUsize>,
     // One `()` per predict as it arrives, ahead of any delay or gate.
     pub arrivals: Option<mpsc::UnboundedSender<()>>,
+    // Per `predict_grouped` call, each request's observation leaves: the
+    // fused batches as the model saw them.
+    pub batches: Arc<Mutex<Vec<Vec<Vec<Bytes>>>>>,
 }
 
 impl TestModel {
@@ -231,6 +234,12 @@ impl ModelHandler for TestModel {
         if let Some(arrivals) = &self.arrivals {
             let _ = arrivals.unbounded_send(());
         }
+        self.batches.lock().expect("batch recorder poisoned").push(
+            observations
+                .iter()
+                .map(|o| o.observation.clone().unwrap_or_default())
+                .collect(),
+        );
         if let Some(gate) = &self.gate
             && self.arrived.fetch_add(1, Ordering::SeqCst) == self.gate_at
         {
@@ -360,6 +369,7 @@ pub fn info_map(key: &str, value: &str) -> MetaMap {
 pub struct EmittedObservation {
     pub episode_ids: Vec<String>,
     pub observation: Vec<u8>,
+    pub raw_observation: Option<Vec<u8>>,
     pub infos: Option<MetaMap>,
 }
 
@@ -371,6 +381,11 @@ pub struct RecordingHooks {
     pub actions: AtomicUsize,
     pub ended: AtomicUsize,
     pub failed: AtomicUsize,
+    // When set, transform_observation prepends this marker byte to the first
+    // leaf of every observation it forwards to the model.
+    pub observation_marker: Option<u8>,
+    // When set, transform_observation fails on the route with this env id.
+    pub fail_transform_on: Option<String>,
     pub emitted_observations: Mutex<Vec<EmittedObservation>>,
     pub step_infos: Mutex<Vec<Option<MetaMap>>>,
     // Per step event: (terminated, truncated, autoreset_roll), each per lane.
@@ -430,6 +445,23 @@ impl RuntimeHooks for RecordingHooks {
         Ok(())
     }
 
+    async fn transform_observation(
+        &self,
+        event: &rlmesh::binding::runtime::ObservationEmittedEvent,
+    ) -> Result<Option<Vec<Bytes>>, HookError> {
+        if self.fail_transform_on.as_deref() == Some(event.route.env_id.as_str()) {
+            return Err(HookError::Message("perturbation engine refused".into()));
+        }
+        let Some(marker) = self.observation_marker else {
+            return Ok(None);
+        };
+        let mut leaves = event.observation.clone().unwrap_or_default();
+        if let Some(first) = leaves.first_mut() {
+            *first = Bytes::from([&[marker][..], first].concat());
+        }
+        Ok(Some(leaves))
+    }
+
     async fn observation_emitted(
         &self,
         event: rlmesh::binding::runtime::ObservationEmittedEvent,
@@ -440,6 +472,7 @@ impl RuntimeHooks for RecordingHooks {
                 .map(|leaf| leaf.to_vec())
                 .unwrap_or_default()
         };
+        let raw_observation = event.raw_observation.map(|raw| first_leaf(Some(raw)));
         self.note_event("observation", event.episode_ids.clone());
         self.emitted_observations
             .lock()
@@ -447,6 +480,7 @@ impl RuntimeHooks for RecordingHooks {
             .push(EmittedObservation {
                 episode_ids: event.episode_ids,
                 observation: first_leaf(event.observation),
+                raw_observation,
                 infos: event.infos,
             });
         Ok(())

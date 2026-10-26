@@ -32,7 +32,7 @@ use tokio_util::sync::CancellationToken;
 use crate::model::handler::{ModelHandler, ModelResetOptions, PredictFrames};
 use crate::model::types::{EpisodeInfo, HistoryFrame, ModelObservation};
 use crate::run::runtime::hooks::{
-    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError, LogEvent, LogLevel,
     ObservationEmittedEvent, RunDirective, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
     SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
@@ -198,6 +198,16 @@ const SRC_RESET: Source = Source {
     op: "env.reset",
     component: "env",
 };
+// Recorded only for a transform that replaced its payload, so a run whose
+// hooks transform nothing records nothing.
+const SRC_TRANSFORM_OBS: Source = Source {
+    op: "runner.transform_observation",
+    component: "runner",
+};
+const SRC_TRANSFORM_ACTION: Source = Source {
+    op: "runner.transform_action",
+    component: "runner",
+};
 // Wall clock of one group's full predict -> step -> transform cycle: from one
 // step completing (or the reset) to the next step completing. Consumers
 // subtract the per-op rows to get the driver's own residual.
@@ -257,6 +267,10 @@ pub struct RuntimeDriver<E, M> {
     vector_replay_warned: bool,
     /// The options the model adds to the resets that start its episodes.
     reset_options: Option<Arc<dyn ModelResetOptions>>,
+    /// The canonical index and space of the observation leaf the env tags
+    /// `text/instruction`, which `transform_instruction` rewrites; `None`
+    /// when the env tags none.
+    instruction_leaf: Option<(usize, rlmesh_spaces::SpaceSpec)>,
 }
 
 /// Where a group is in its env lifecycle.
@@ -335,6 +349,13 @@ struct Group<E> {
     /// Wall time of the predict(s) that landed since the group's last step,
     /// charged to its next step (see `StepCompletedEvent::predict_ms`).
     pending_predict: Duration,
+    /// Instruction routes: the episodes started since the group's last
+    /// observation, whose instruction `transform_instruction` is asked for
+    /// on it.
+    instruction_starts: Vec<EpisodeStartedEvent>,
+    /// Instruction routes, per lane: the episode id and the instruction text
+    /// that replaces the env's in every observation of that episode.
+    instructions: Vec<Option<(String, String)>>,
 }
 
 impl<E> Group<E> {
@@ -410,6 +431,7 @@ where
             held_evictions: Vec::new(),
             trial_options_warned: AtomicBool::new(false),
             vector_replay_warned: false,
+            instruction_leaf: None,
         }
     }
 
@@ -515,6 +537,7 @@ where
             .into_iter()
             .map(|lanes| Group {
                 positions: lanes.iter().map(|&lane| lane as usize).collect(),
+                instructions: vec![None; lanes.len()],
                 whole: !lane_group,
                 lane_group,
                 lanes,
@@ -530,6 +553,7 @@ where
                 pending_start: None,
                 round_started: Instant::now(),
                 pending_predict: Duration::ZERO,
+                instruction_starts: Vec::new(),
             })
             .collect()
     }
@@ -608,6 +632,7 @@ where
         // Arcs so per-step hook events clone a pointer, not the whole spec.
         self.action_space = Arc::new(self.spec.action_space_validated().clone());
         self.observation_space = Arc::new(self.spec.observation_space_validated().clone());
+        self.instruction_leaf = instruction_leaf(&self.contract);
         let mut state = RouteState::new(&self.spec);
         // Telemetry lives here, not in run_loop, so the final Session snapshot is
         // delivered on EVERY exit (including aborts). The background ticker only
@@ -966,7 +991,7 @@ where
             let snapshot = state.snapshot_at(&group.positions);
             let context = state.group_context(&group.positions, group.lane_group);
             let action_step = snapshot.step + 1;
-            let action_event = ActionReceivedEvent {
+            let mut action_event = ActionReceivedEvent {
                 session_id: state.session_id().to_string(),
                 route: context,
                 episode_id: snapshot.episode_id.clone(),
@@ -976,14 +1001,26 @@ where
                 step: action_step,
                 env_index: snapshot.env_index,
                 action_space: Arc::clone(&self.action_space),
-                action: Some(model_action.clone()),
+                action: Some(model_action),
+                raw_action: None,
             };
+            let started = Instant::now();
+            let transformed = self
+                .hooks
+                .transform_action(&action_event)
+                .await
+                .map_err(|err| transform_failed("transform_action", err))?;
+            if let Some(action) = transformed {
+                record_transform(telemetry, SRC_TRANSFORM_ACTION, started);
+                action_event.raw_action = action_event.action.replace(action);
+            }
+            let action = action_event.action.clone().unwrap_or_default();
             fan_out_event!(self, action_received, action_event);
 
             let group = &mut groups[gid];
-            let request_bytes = leaf_bytes(&model_action);
+            let request_bytes = leaf_bytes(&action);
             let request = EnvStepRequest {
-                action: model_action,
+                action,
                 env_indices: if group.whole {
                     Vec::new()
                 } else {
@@ -1269,7 +1306,8 @@ where
                 }
                 let started =
                     state.start_episodes_at(&groups[gid].positions, episode_ids, !initial, &slots);
-                self.invoke_started_episodes(state, &context, started).await;
+                let started = self.invoke_started_episodes(state, &context, started).await;
+                groups[gid].instruction_starts.extend(started);
                 groups[gid].round_started = Instant::now();
                 self.observe(
                     gid,
@@ -1434,7 +1472,8 @@ where
                 }
             }
             let started = state.observe_episode_ids_at(&positions, roll_ids, &rolling);
-            self.invoke_started_episodes(state, &context, started).await;
+            let started = self.invoke_started_episodes(state, &context, started).await;
+            groups[gid].instruction_starts.extend(started);
         }
 
         let completions = self.complete_episodes(state, &context, &completed_episodes);
@@ -1591,9 +1630,7 @@ where
     ) -> Result<(), RuntimeError> {
         let positions = groups[gid].positions.clone();
         let context = state.group_context(&positions, groups[gid].lane_group);
-        let mut msg =
-            state.predict_request_at(&positions, observation.clone(), phase, &self.contract);
-        let event = self.observation_event(
+        let mut event = self.observation_event(
             state,
             context,
             state.snapshot_at(&positions),
@@ -1602,8 +1639,27 @@ where
             infos,
             groups[gid].width(),
         );
+        let started = Instant::now();
+        self.transform_instruction(&mut groups[gid], &mut event)
+            .await?;
+        let transformed = self
+            .hooks
+            .transform_observation(&event)
+            .await
+            .map_err(|err| transform_failed("transform_observation", err))?;
+        if let Some(observation) = transformed {
+            let raw = event.observation.replace(observation);
+            event
+                .raw_observation
+                .get_or_insert_with(|| raw.unwrap_or_default());
+        }
+        if event.raw_observation.is_some() {
+            record_transform(telemetry, SRC_TRANSFORM_OBS, started);
+        }
+        let mut msg =
+            state.predict_request_at(&positions, event.observation.clone(), phase, &self.contract);
         // Hooks see the observation the model receives, for both step and
-        // reset observations.
+        // reset observations, and the env's when a transform replaced it.
         fan_out_event!(self, observation_emitted, event);
 
         let group = &mut groups[gid];
@@ -1745,33 +1801,37 @@ where
         RuntimeError::route_cancelled(state.env_id(), step, self.cancellation_reason.as_str())
     }
 
+    /// Fan out the scored episodes' starts; on an instruction route, hand
+    /// them back for `transform_instruction` at their first observation.
     async fn invoke_started_episodes(
         &self,
         state: &RouteState,
         context: &RuntimeEnvContext,
         episodes: Vec<StartedEpisode>,
-    ) {
+    ) -> Vec<EpisodeStartedEvent> {
+        let mut instruction_starts = Vec::new();
         for episode in episodes {
             if state.is_surplus(&episode.episode_id) {
                 continue;
             }
             let record = &episode.record;
-            fan_out_event!(
-                self,
-                episode_started,
-                EpisodeStartedEvent {
-                    session_id: state.session_id().to_string(),
-                    route: context.clone(),
-                    episode_id: episode.episode_id.clone(),
-                    episode_record_id: record.record_id.clone(),
-                    episode_index: record.index,
-                    env_index: record.env_index,
-                    started_from_auto_reset: record.started_from_auto_reset,
-                    seed: state.seed_for_episode(&episode.episode_id),
-                    trial_index: state.trial_for_episode(&episode.episode_id),
-                }
-            );
+            let event = EpisodeStartedEvent {
+                session_id: state.session_id().to_string(),
+                route: context.clone(),
+                episode_id: episode.episode_id.clone(),
+                episode_record_id: record.record_id.clone(),
+                episode_index: record.index,
+                env_index: record.env_index,
+                started_from_auto_reset: record.started_from_auto_reset,
+                seed: state.seed_for_episode(&episode.episode_id),
+                trial_index: state.trial_for_episode(&episode.episode_id),
+            };
+            if self.instruction_leaf.is_some() {
+                instruction_starts.push(event.clone());
+            }
+            fan_out_event!(self, episode_started, event);
         }
+        instruction_starts
     }
 
     /// The completions of the lanes the env ended this step: each built
@@ -2065,9 +2125,139 @@ where
             num_envs: width as u32,
             observation_space: Arc::clone(&self.observation_space),
             observation,
+            raw_observation: None,
             infos,
         }
     }
+
+    /// Instruction routes: ask `transform_instruction` for the episodes that
+    /// started since the group's last observation, then put each lane's
+    /// replacement into its instruction leaf while that episode runs.
+    async fn transform_instruction(
+        &self,
+        group: &mut Group<E>,
+        event: &mut ObservationEmittedEvent,
+    ) -> Result<(), RuntimeError> {
+        let Some((leaf, space)) = &self.instruction_leaf else {
+            return Ok(());
+        };
+        let Some(leaves) = event.observation.as_ref() else {
+            return Ok(());
+        };
+        let width = group.width();
+        let decode = |leaves: &[Bytes]| {
+            let slab = leaves.get(*leaf..=*leaf).ok_or_else(|| {
+                RuntimeError::Protocol(format!("observation has no instruction leaf {leaf}"))
+            })?;
+            rlmesh_spaces::leaves::decode_leaf_slab(slab, space, width)
+                .map_err(|err| RuntimeError::Protocol(format!("instruction leaf: {err}")))
+        };
+        let mut texts = None;
+        for episode in std::mem::take(&mut group.instruction_starts) {
+            let Some(lane) = group
+                .lanes
+                .iter()
+                .position(|&lane| i64::from(lane) == i64::from(episode.env_index))
+            else {
+                continue;
+            };
+            if texts.is_none() {
+                texts = Some(decode(leaves)?);
+            }
+            let current = match texts.as_ref().and_then(|texts| texts.get(lane)) {
+                Some(rlmesh_spaces::SpaceValue::Text(text)) => text.as_str(),
+                _ => "",
+            };
+            group.instructions[lane] = self
+                .hooks
+                .transform_instruction(&episode, current)
+                .await
+                .map_err(|err| transform_failed("transform_instruction", err))?
+                .map(|text| (episode.episode_id, text));
+        }
+        let live = |lane: usize| {
+            group.instructions[lane]
+                .as_ref()
+                .filter(|(id, _)| event.episode_ids.get(lane) == Some(id))
+                .map(|(_, text)| text.clone())
+        };
+        if !(0..width).any(|lane| live(lane).is_some()) {
+            return Ok(());
+        }
+        let mut texts = match texts {
+            Some(texts) => texts,
+            None => decode(leaves)?,
+        };
+        for (lane, value) in texts.iter_mut().enumerate() {
+            if let Some(text) = live(lane) {
+                *value = rlmesh_spaces::SpaceValue::Text(text);
+            }
+        }
+        let slab = rlmesh_spaces::leaves::encode_leaf_slab(&texts, space)
+            .map_err(|err| RuntimeError::Protocol(format!("instruction leaf: {err}")))?
+            .pop()
+            .unwrap_or_default();
+        let mut rewritten = leaves.clone();
+        rewritten[*leaf] = slab;
+        event.raw_observation = event.observation.replace(rewritten);
+        Ok(())
+    }
+}
+
+/// A fatal transform's failure, naming the hook.
+fn transform_failed(hook: &str, err: HookError) -> RuntimeError {
+    tracing::warn!("runtime hook {hook} failed: {err}");
+    RuntimeError::Hook(HookError::Message(format!("{hook}: {err}")))
+}
+
+fn record_transform(telemetry: &Mutex<Aggregator>, source: Source, started: Instant) {
+    lock_agg(telemetry).record(Sample::dur(source, metrics::RPC_TOTAL, started.elapsed()));
+}
+
+/// The canonical leaf index and space of the Text observation leaf the env
+/// tags `text/instruction`, walking its tag tree beside the space.
+fn instruction_leaf(
+    contract: &rlmesh_spaces::EnvContract,
+) -> Option<(usize, rlmesh_spaces::SpaceSpec)> {
+    use crate::adapters::{EnvTags, INSTRUCTION, ObsLeaf, ObsNode};
+    use rlmesh_spaces::SpaceKind;
+    fn leaves(space: &rlmesh_spaces::SpaceSpec) -> usize {
+        rlmesh_spaces::leaf_specs(space).len()
+    }
+    fn walk<'a>(
+        node: Option<&ObsNode>,
+        space: &'a rlmesh_spaces::SpaceSpec,
+        offset: &mut usize,
+    ) -> Option<&'a rlmesh_spaces::SpaceSpec> {
+        match (node, space.spec.as_ref()) {
+            (Some(ObsNode::Dict(nodes)), Some(SpaceKind::Dict(dict))) => {
+                dict.keys.iter().zip(&dict.spaces).find_map(|(key, child)| {
+                    let node = nodes.iter().find(|(k, _)| k == key).map(|(_, n)| n);
+                    walk(node, child, offset)
+                })
+            }
+            (Some(ObsNode::Tuple(nodes)), Some(SpaceKind::Tuple(tuple))) => tuple
+                .spaces
+                .iter()
+                .enumerate()
+                .find_map(|(i, child)| walk(nodes.get(i), child, offset)),
+            (Some(ObsNode::Leaf(ObsLeaf::TextTag(tag))), Some(SpaceKind::Text(_)))
+                if tag.role == INSTRUCTION =>
+            {
+                Some(space)
+            }
+            _ => {
+                *offset += leaves(space);
+                None
+            }
+        }
+    }
+    let facade = crate::specs::EnvContract::from_wire(contract).ok()?;
+    let tags = EnvTags::from_metadata(facade.metadata()?).ok()??;
+    let space = contract.observation_space.as_ref()?;
+    let mut offset = 0;
+    let found = walk(Some(tags.observation()), space, &mut offset)?;
+    Some((offset, found.clone()))
 }
 
 /// The bytes of a payload's leaf slabs.

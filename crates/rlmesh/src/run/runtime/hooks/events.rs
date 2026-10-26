@@ -123,8 +123,12 @@ pub struct ActionReceivedEvent {
     /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
     /// rather than deep-copying the action space spec on every step.
     pub action_space: Arc<SpaceSpec>,
-    /// The action's leaf slabs, typed by `action_space`.
+    /// The action's leaf slabs, typed by `action_space`: what the env
+    /// receives.
     pub action: Option<Vec<Bytes>>,
+    /// The model's action when `transform_action` replaced it; `None` when
+    /// `action` is the model's own.
+    pub raw_action: Option<Vec<Bytes>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -173,8 +177,12 @@ pub struct ObservationEmittedEvent {
     /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
     /// rather than deep-copying the observation space spec on every step.
     pub observation_space: Arc<SpaceSpec>,
-    /// The observation's leaf slabs, typed by `observation_space`.
+    /// The observation's leaf slabs, typed by `observation_space`: what the
+    /// model receives.
     pub observation: Option<Vec<Bytes>>,
+    /// The env's observation when a transform (instruction or observation)
+    /// replaced it; `None` when `observation` is the env's own.
+    pub raw_observation: Option<Vec<Bytes>>,
     /// The env's reset infos when `is_reset`; step infos ride on
     /// `StepCompletedEvent` instead.
     pub infos: Option<MetaMap>,
