@@ -17,6 +17,7 @@ def test_root_namespace_is_small() -> None:
         "EnvServer",
         "EnvironmentException",
         "EpisodeResult",
+        "EvalReport",
         "FrameSources",
         "Interrupted",
         "Model",
