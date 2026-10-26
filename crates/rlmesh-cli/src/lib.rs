@@ -2,6 +2,7 @@ mod auth;
 mod check;
 mod cli;
 mod config;
+mod eval_run;
 mod helpers;
 mod host;
 pub mod image_check;
@@ -80,6 +81,9 @@ pub async fn run_cli_in(
         | Command::CheckImage(_)
         | Command::Describe(_)
         | Command::Host(_)
+        | Command::Eval(cli::EvalArgs {
+            command: cli::EvalCommand::Run(_) | cli::EvalCommand::Report(_),
+        })
         | Command::Registry(cli::RegistryArgs {
             command: cli::RegistryCommand::Publish(_),
         }) => None,
@@ -174,6 +178,7 @@ pub async fn run_cli_in(
                     .map(|()| 0)
             }
             cli::EvalCommand::Report(args) => eval_report(&args, stdout).map(|()| 0),
+            cli::EvalCommand::Run(args) => eval_run::eval_run(&args, stdout, stderr),
         },
         Command::Check(args) => check::check_target(&args, stdout, stdout_style),
         Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),

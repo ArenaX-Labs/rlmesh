@@ -1563,11 +1563,6 @@ class ModelBase(Generic[ObsT, ActT]):
         own side. A model running in this process drives one route at a time:
         serve it to share it.
         """
-        from ._eval import NativeRunContext
-        from ._facade import EnvTarget, result_from_native
-
-        self._calls.check_open("run_routes()")
-        self._require_device_support()
         targets = list(envs)
         if episodes is not None and seeds is not None and len(seeds) != episodes:
             raise ValueError(
@@ -1582,16 +1577,13 @@ class ModelBase(Generic[ObsT, ActT]):
             else len(targets)
         )
         share, extra = divmod(total, max(len(targets), 1))
-        horizon = self._execution_horizon(execution_horizon)
-        edition = self._declared_workflow_edition(workflow_edition)
-        routes: list[tuple[object, dict[str, object]]] = []
+        routes: list[tuple[LocalEnvTarget, dict[str, Any]]] = []
         first = 0
         for index, env in enumerate(targets):
             count = share + (index < extra)
-            context = NativeRunContext(trust=bool(self._trust_entrypoints))
             routes.append(
                 (
-                    EnvTarget(self, env, context),
+                    env,
                     dict(
                         episodes=count,
                         seeds=list(seeds[first : first + count])
@@ -1601,20 +1593,54 @@ class ModelBase(Generic[ObsT, ActT]):
                         seed_key=seed_key,
                         max_episode_steps=max_episode_steps,
                         max_episode_seconds=max_episode_seconds,
-                        execution_horizon=horizon,
                         prefetch_lead=prefetch_lead,
                         trial_index_base=trial_index_base + first,
                         close_env=close_env,
-                        workflow_edition=edition,
                     ),
                 )
             )
             first += count
+        return self._run_routes(
+            routes,
+            execution_horizon=execution_horizon,
+            workflow_edition=workflow_edition,
+        )
+
+    def _run_routes(
+        self,
+        routes: Sequence[tuple[LocalEnvTarget, dict[str, Any]]],
+        *,
+        execution_horizon: int | None = None,
+        workflow_edition: str | None = None,
+    ) -> list[RunResult | Exception]:
+        """:meth:`run_routes` with each route's own options.
+
+        Each option dict holds ``episodes``, ``seeds``, ``base_seed``,
+        ``seed_key``, ``max_episode_steps``, ``max_episode_seconds``,
+        ``prefetch_lead``, ``trial_index_base`` and ``close_env`` for its env;
+        ``rlmesh eval run`` drives a plan's workloads through it.
+        """
+        from ._eval import NativeRunContext
+        from ._facade import EnvTarget, result_from_native
+
+        self._calls.check_open("run_routes()")
+        self._require_device_support()
+        horizon = self._execution_horizon(execution_horizon)
+        edition = self._declared_workflow_edition(workflow_edition)
+        native_routes: list[tuple[object, dict[str, Any]]] = [
+            (
+                EnvTarget(
+                    self, env, NativeRunContext(trust=bool(self._trust_entrypoints))
+                ),
+                {**options, "execution_horizon": horizon, "workflow_edition": edition},
+            )
+            for env, options in routes
+        ]
         # Each route's target swaps the model's run state in and out on its
         # own thread; the state from before the call is the one that stays.
         previous = self._trust_entrypoints, self._instruction, self._native_run
         try:
-            reports = self._install_worker().run_routes_facade(routes)
+            reports = self._install_worker().run_routes_facade(native_routes)
         finally:
             self._trust_entrypoints, self._instruction, self._native_run = previous
         return [

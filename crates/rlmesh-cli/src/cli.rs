@@ -242,6 +242,36 @@ pub enum EvalCommand {
     Cancel(EvalIdArgs),
     /// Print per-task, per-suite and overall success of saved result bundles.
     Report(EvalReportArgs),
+    /// Run an evaluation request on this machine, in Docker.
+    Run(EvalRunArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct EvalRunArgs {
+    /// Path to the request JSON (`-` reads stdin), the file `eval submit` takes.
+    pub request: String,
+    /// Resolve catalog names (`prebuilt/<model>/<env>`, `prebuilt/<env>`): a
+    /// local build `rlmesh-<model>-<env>:TAG` when there is one (TAG is
+    /// `latest` unless given), else the registry's image.
+    #[arg(long, value_name = "TAG", num_args = 0..=1, default_missing_value = "latest")]
+    pub catalog: Option<String>,
+    /// `docker run --gpus` for the images whose package declares a GPU, e.g. `all`.
+    #[arg(long)]
+    pub gpus: Option<String>,
+    /// A `docker run -v` mount for every container, e.g. a checkpoint store
+    /// at the path its package label names; repeatable.
+    #[arg(long = "volume", value_name = "HOST:CONTAINER")]
+    pub volumes: Vec<String>,
+    /// The folder for the run index and one result bundle per workload.
+    #[arg(long, default_value = "rlmesh-eval")]
+    pub out: std::path::PathBuf,
+    /// Continue the run in `--out`: skip the workloads whose bundles already
+    /// hold their episodes.
+    #[arg(long)]
+    pub resume: bool,
+    /// Print the report as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]

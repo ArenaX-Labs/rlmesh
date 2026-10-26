@@ -13,6 +13,7 @@ mod bind;
 mod lent;
 mod native;
 mod options;
+pub(crate) mod plan;
 pub(crate) mod report;
 mod results;
 pub(crate) mod routes;

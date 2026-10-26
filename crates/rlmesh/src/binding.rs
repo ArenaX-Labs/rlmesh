@@ -181,6 +181,14 @@ pub mod report {
     pub use crate::run::report::*;
 }
 
+/// Evaluation plans: a request compiled into workloads under the managed
+/// platform's rules, so it draws the same episodes locally as on the
+/// platform. Drives the CLI's `eval run` (R-25); the request file is the
+/// surface, the plan types are not.
+pub mod plan {
+    pub use crate::run::plan::*;
+}
+
 /// Many routes against one model in one process: a start barrier, env
 /// connect retry, and a verdict per route. Drives Python's Experimental
 /// `Model.run_routes` and `RunResult.merge` (R-25); C and C++ are deferred.

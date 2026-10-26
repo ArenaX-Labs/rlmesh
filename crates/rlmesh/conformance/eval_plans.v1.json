@@ -1,0 +1,1386 @@
+{
+  "cases": [
+    {
+      "name": "models x a LIBERO suite x episodes over workers",
+      "request": {
+        "models": [
+          {
+            "model": "prebuilt/noop/base"
+          },
+          {
+            "model": "prebuilt/evo1/libero"
+          },
+          {
+            "model": "prebuilt/xvla/libero"
+          }
+        ],
+        "tags": {
+          "benchmark": "e1"
+        },
+        "tasks": [
+          {
+            "env": "prebuilt/libero",
+            "episodes": 5,
+            "taskId": "libero_spatial/0",
+            "workers": 2
+          },
+          {
+            "env": "prebuilt/libero",
+            "episodes": 5,
+            "taskId": "libero_spatial/1",
+            "workers": 2
+          },
+          {
+            "env": "prebuilt/libero",
+            "episodes": 5,
+            "taskId": "libero_spatial/2",
+            "workers": 2
+          },
+          {
+            "env": "prebuilt/libero",
+            "episodes": 3,
+            "seed": 7,
+            "taskId": "libero_10/0",
+            "workers": 3
+          }
+        ]
+      },
+      "workloads": [
+        {
+          "envParams": {
+            "max_episode_steps": 220,
+            "task_id": 0,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2265233385, 2081779144, 2632141867],
+          "episodes": 3,
+          "maxEpisodeSteps": 220,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/0",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/0",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 220,
+            "task_id": 0,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2448687626, 2999050349],
+          "episodes": 2,
+          "maxEpisodeSteps": 220,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/0",
+          "seedSlotOffset": 3,
+          "shard": 1,
+          "task": "libero_spatial/0",
+          "trialIndexBase": 3
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 220,
+            "task_id": 1,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [488704340, 672158581, 855612822],
+          "episodes": 3,
+          "maxEpisodeSteps": 220,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/1",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/1",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 220,
+            "task_id": 1,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [1039067063, 4049854672],
+          "episodes": 2,
+          "maxEpisodeSteps": 220,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/1",
+          "seedSlotOffset": 3,
+          "shard": 1,
+          "task": "libero_spatial/1",
+          "trialIndexBase": 3
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 220,
+            "task_id": 2,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2574561839, 2391107598, 2207653357],
+          "episodes": 3,
+          "maxEpisodeSteps": 220,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/2",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/2",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 220,
+            "task_id": 2,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2024199116, 1840744875],
+          "episodes": 2,
+          "maxEpisodeSteps": 220,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/2",
+          "seedSlotOffset": 3,
+          "shard": 1,
+          "task": "libero_spatial/2",
+          "trialIndexBase": 3
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 520,
+            "task_id": 0,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [2657576185],
+          "episodes": 1,
+          "maxEpisodeSteps": 520,
+          "model": "prebuilt/noop/base",
+          "seed": 7,
+          "seedKey": "prebuilt/libero:libero_10/0",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_10/0",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 520,
+            "task_id": 0,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [2474121944],
+          "episodes": 1,
+          "maxEpisodeSteps": 520,
+          "model": "prebuilt/noop/base",
+          "seed": 7,
+          "seedKey": "prebuilt/libero:libero_10/0",
+          "seedSlotOffset": 1,
+          "shard": 1,
+          "task": "libero_10/0",
+          "trialIndexBase": 1
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 520,
+            "task_id": 0,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [3024484667],
+          "episodes": 1,
+          "maxEpisodeSteps": 520,
+          "model": "prebuilt/noop/base",
+          "seed": 7,
+          "seedKey": "prebuilt/libero:libero_10/0",
+          "seedSlotOffset": 2,
+          "shard": 2,
+          "task": "libero_10/0",
+          "trialIndexBase": 2
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 350,
+            "settle_gripper": 0,
+            "task_id": 0,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2265233385, 2081779144, 2632141867],
+          "episodes": 3,
+          "maxEpisodeSteps": 350,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/0",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/0",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 350,
+            "settle_gripper": 0,
+            "task_id": 0,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2448687626, 2999050349],
+          "episodes": 2,
+          "maxEpisodeSteps": 350,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/0",
+          "seedSlotOffset": 3,
+          "shard": 1,
+          "task": "libero_spatial/0",
+          "trialIndexBase": 3
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 350,
+            "settle_gripper": 0,
+            "task_id": 1,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [488704340, 672158581, 855612822],
+          "episodes": 3,
+          "maxEpisodeSteps": 350,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/1",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/1",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 350,
+            "settle_gripper": 0,
+            "task_id": 1,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [1039067063, 4049854672],
+          "episodes": 2,
+          "maxEpisodeSteps": 350,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/1",
+          "seedSlotOffset": 3,
+          "shard": 1,
+          "task": "libero_spatial/1",
+          "trialIndexBase": 3
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 350,
+            "settle_gripper": 0,
+            "task_id": 2,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2574561839, 2391107598, 2207653357],
+          "episodes": 3,
+          "maxEpisodeSteps": 350,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/2",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/2",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 350,
+            "settle_gripper": 0,
+            "task_id": 2,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2024199116, 1840744875],
+          "episodes": 2,
+          "maxEpisodeSteps": 350,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/2",
+          "seedSlotOffset": 3,
+          "shard": 1,
+          "task": "libero_spatial/2",
+          "trialIndexBase": 3
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 1330,
+            "settle_gripper": 0,
+            "task_id": 0,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [2657576185],
+          "episodes": 1,
+          "maxEpisodeSteps": 1330,
+          "model": "prebuilt/evo1/libero",
+          "seed": 7,
+          "seedKey": "prebuilt/libero:libero_10/0",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_10/0",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 1330,
+            "settle_gripper": 0,
+            "task_id": 0,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [2474121944],
+          "episodes": 1,
+          "maxEpisodeSteps": 1330,
+          "model": "prebuilt/evo1/libero",
+          "seed": 7,
+          "seedKey": "prebuilt/libero:libero_10/0",
+          "seedSlotOffset": 1,
+          "shard": 1,
+          "task": "libero_10/0",
+          "trialIndexBase": 1
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 1330,
+            "settle_gripper": 0,
+            "task_id": 0,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [3024484667],
+          "episodes": 1,
+          "maxEpisodeSteps": 1330,
+          "model": "prebuilt/evo1/libero",
+          "seed": 7,
+          "seedKey": "prebuilt/libero:libero_10/0",
+          "seedSlotOffset": 2,
+          "shard": 2,
+          "task": "libero_10/0",
+          "trialIndexBase": 2
+        },
+        {
+          "envParams": {
+            "action_type": "abs",
+            "max_episode_steps": 800,
+            "task_id": 0,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2265233385, 2081779144, 2632141867],
+          "episodes": 3,
+          "maxEpisodeSteps": 800,
+          "model": "prebuilt/xvla/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/0",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/0",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "action_type": "abs",
+            "max_episode_steps": 800,
+            "task_id": 0,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2448687626, 2999050349],
+          "episodes": 2,
+          "maxEpisodeSteps": 800,
+          "model": "prebuilt/xvla/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/0",
+          "seedSlotOffset": 3,
+          "shard": 1,
+          "task": "libero_spatial/0",
+          "trialIndexBase": 3
+        },
+        {
+          "envParams": {
+            "action_type": "abs",
+            "max_episode_steps": 800,
+            "task_id": 1,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [488704340, 672158581, 855612822],
+          "episodes": 3,
+          "maxEpisodeSteps": 800,
+          "model": "prebuilt/xvla/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/1",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/1",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "action_type": "abs",
+            "max_episode_steps": 800,
+            "task_id": 1,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [1039067063, 4049854672],
+          "episodes": 2,
+          "maxEpisodeSteps": 800,
+          "model": "prebuilt/xvla/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/1",
+          "seedSlotOffset": 3,
+          "shard": 1,
+          "task": "libero_spatial/1",
+          "trialIndexBase": 3
+        },
+        {
+          "envParams": {
+            "action_type": "abs",
+            "max_episode_steps": 800,
+            "task_id": 2,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2574561839, 2391107598, 2207653357],
+          "episodes": 3,
+          "maxEpisodeSteps": 800,
+          "model": "prebuilt/xvla/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/2",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/2",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "action_type": "abs",
+            "max_episode_steps": 800,
+            "task_id": 2,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2024199116, 1840744875],
+          "episodes": 2,
+          "maxEpisodeSteps": 800,
+          "model": "prebuilt/xvla/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/2",
+          "seedSlotOffset": 3,
+          "shard": 1,
+          "task": "libero_spatial/2",
+          "trialIndexBase": 3
+        },
+        {
+          "envParams": {
+            "action_type": "abs",
+            "max_episode_steps": 900,
+            "task_id": 0,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [2657576185],
+          "episodes": 1,
+          "maxEpisodeSteps": 900,
+          "model": "prebuilt/xvla/libero",
+          "seed": 7,
+          "seedKey": "prebuilt/libero:libero_10/0",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_10/0",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "action_type": "abs",
+            "max_episode_steps": 900,
+            "task_id": 0,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [2474121944],
+          "episodes": 1,
+          "maxEpisodeSteps": 900,
+          "model": "prebuilt/xvla/libero",
+          "seed": 7,
+          "seedKey": "prebuilt/libero:libero_10/0",
+          "seedSlotOffset": 1,
+          "shard": 1,
+          "task": "libero_10/0",
+          "trialIndexBase": 1
+        },
+        {
+          "envParams": {
+            "action_type": "abs",
+            "max_episode_steps": 900,
+            "task_id": 0,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [3024484667],
+          "episodes": 1,
+          "maxEpisodeSteps": 900,
+          "model": "prebuilt/xvla/libero",
+          "seed": 7,
+          "seedKey": "prebuilt/libero:libero_10/0",
+          "seedSlotOffset": 2,
+          "shard": 2,
+          "task": "libero_10/0",
+          "trialIndexBase": 2
+        }
+      ]
+    },
+    {
+      "name": "default workers, explicit seeds and bare scenario ids",
+      "request": {
+        "models": [
+          {
+            "model": "prebuilt/noop/base"
+          }
+        ],
+        "tasks": [
+          {
+            "env": "prebuilt/noop",
+            "episodes": 4,
+            "taskId": "box4-disc2"
+          },
+          {
+            "env": "prebuilt/noop",
+            "episodes": 3,
+            "seeds": [11, 22, 33],
+            "taskId": "box2-multi/slow",
+            "workers": 2
+          },
+          {
+            "env": "prebuilt/noop",
+            "episodes": 2,
+            "seed": 5,
+            "taskId": "box8-cont7--perturbed",
+            "workers": 1
+          }
+        ]
+      },
+      "workloads": [
+        {
+          "envParams": {
+            "shape": "box4-disc2"
+          },
+          "episodeSeeds": [1072330735],
+          "episodes": 1,
+          "maxEpisodeSteps": null,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/noop:tasks/box4-disc2",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "box4-disc2",
+          "trialIndexBase": null
+        },
+        {
+          "envParams": {
+            "shape": "box4-disc2"
+          },
+          "episodeSeeds": [888876494],
+          "episodes": 1,
+          "maxEpisodeSteps": null,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/noop:tasks/box4-disc2",
+          "seedSlotOffset": 1,
+          "shard": 1,
+          "task": "box4-disc2",
+          "trialIndexBase": null
+        },
+        {
+          "envParams": {
+            "shape": "box4-disc2"
+          },
+          "episodeSeeds": [705422253],
+          "episodes": 1,
+          "maxEpisodeSteps": null,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/noop:tasks/box4-disc2",
+          "seedSlotOffset": 2,
+          "shard": 2,
+          "task": "box4-disc2",
+          "trialIndexBase": null
+        },
+        {
+          "envParams": {
+            "shape": "box4-disc2"
+          },
+          "episodeSeeds": [521968012],
+          "episodes": 1,
+          "maxEpisodeSteps": null,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/noop:tasks/box4-disc2",
+          "seedSlotOffset": 3,
+          "shard": 3,
+          "task": "box4-disc2",
+          "trialIndexBase": null
+        },
+        {
+          "envParams": {
+            "shape": "box2-multi",
+            "step_delay_ms": 250
+          },
+          "episodeSeeds": [11, 22],
+          "episodes": 2,
+          "maxEpisodeSteps": null,
+          "model": "prebuilt/noop/base",
+          "seed": null,
+          "seedKey": "prebuilt/noop:box2-multi/slow",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "box2-multi/slow",
+          "trialIndexBase": null
+        },
+        {
+          "envParams": {
+            "shape": "box2-multi",
+            "step_delay_ms": 250
+          },
+          "episodeSeeds": [33],
+          "episodes": 1,
+          "maxEpisodeSteps": null,
+          "model": "prebuilt/noop/base",
+          "seed": null,
+          "seedKey": "prebuilt/noop:box2-multi/slow",
+          "seedSlotOffset": 2,
+          "shard": 1,
+          "task": "box2-multi/slow",
+          "trialIndexBase": null
+        },
+        {
+          "envParams": {
+            "shape": "box8-cont7"
+          },
+          "episodeSeeds": [295240146, 478694387],
+          "episodes": 2,
+          "maxEpisodeSteps": null,
+          "model": "prebuilt/noop/base",
+          "seed": 5,
+          "seedKey": "prebuilt/noop:tasks/box8-cont7",
+          "seedSlotOffset": 0,
+          "shard": null,
+          "task": "box8-cont7--perturbed",
+          "trialIndexBase": null
+        }
+      ]
+    },
+    {
+      "name": "environmentId, pinned make kwargs and the models filter",
+      "request": {
+        "models": [
+          {
+            "model": "prebuilt/evo1/libero"
+          },
+          {
+            "envVars": {
+              "RLMESH_MAKE_KWARGS": "{\"seed_offset\": 1}"
+            },
+            "model": "prebuilt/noop/base"
+          }
+        ],
+        "tasks": [
+          {
+            "env": "prebuilt/libero",
+            "episodes": 2,
+            "metadata": {
+              "environmentId": "prebuilt/libero:libero_10/1"
+            },
+            "taskId": "dashboard-1"
+          },
+          {
+            "env": "prebuilt/libero",
+            "envVars": {
+              "RLMESH_MAKE_KWARGS": "{\"task_suite\": \"libero_10\", \"task_id\": 2}"
+            },
+            "episodes": 2,
+            "models": ["prebuilt/evo1/libero"],
+            "taskId": "pinned"
+          },
+          {
+            "env": "prebuilt/libero",
+            "envVars": {
+              "RLMESH_MAKE_KWARGS": "{\"task_suite\": \"libero_spatial\", \"task_id\": 1, \"max_episode_steps\": 99}"
+            },
+            "episodes": 1,
+            "models": ["prebuilt/noop/base"],
+            "taskId": "libero_spatial/1"
+          },
+          {
+            "env": "prebuilt/libero",
+            "episodes": 4,
+            "metadata": {
+              "environmentId": "shared-key"
+            },
+            "models": ["prebuilt/noop/base"],
+            "taskId": "libero_spatial/2",
+            "workers": 2
+          }
+        ]
+      },
+      "workloads": [
+        {
+          "envParams": {
+            "max_episode_steps": 1330,
+            "settle_gripper": 0,
+            "task_id": 1,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [4003692421],
+          "episodes": 1,
+          "maxEpisodeSteps": 1330,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_10/1",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "dashboard-1",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 1330,
+            "settle_gripper": 0,
+            "task_id": 1,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [3820238180],
+          "episodes": 1,
+          "maxEpisodeSteps": 1330,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_10/1",
+          "seedSlotOffset": 1,
+          "shard": 1,
+          "task": "dashboard-1",
+          "trialIndexBase": 1
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 1330,
+            "settle_gripper": 0,
+            "task_id": 2,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [3602717458],
+          "episodes": 1,
+          "maxEpisodeSteps": 1330,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "pinned",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 1330,
+            "settle_gripper": 0,
+            "task_id": 2,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [3786171699],
+          "episodes": 1,
+          "maxEpisodeSteps": 1330,
+          "model": "prebuilt/evo1/libero",
+          "seed": 0,
+          "seedKey": "prebuilt/libero",
+          "seedSlotOffset": 1,
+          "shard": 1,
+          "task": "pinned",
+          "trialIndexBase": 1
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 520,
+            "task_id": 1,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [4003692421],
+          "episodes": 1,
+          "maxEpisodeSteps": 520,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_10/1",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "dashboard-1",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 520,
+            "task_id": 1,
+            "task_suite": "libero_10"
+          },
+          "episodeSeeds": [3820238180],
+          "episodes": 1,
+          "maxEpisodeSteps": 520,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_10/1",
+          "seedSlotOffset": 1,
+          "shard": 1,
+          "task": "dashboard-1",
+          "trialIndexBase": 1
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 99,
+            "task_id": 1,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [488704340],
+          "episodes": 1,
+          "maxEpisodeSteps": 99,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "prebuilt/libero:libero_spatial/1",
+          "seedSlotOffset": 0,
+          "shard": null,
+          "task": "libero_spatial/1",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 220,
+            "task_id": 2,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [2805220340, 2988674581],
+          "episodes": 2,
+          "maxEpisodeSteps": 220,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "shared-key",
+          "seedSlotOffset": 0,
+          "shard": 0,
+          "task": "libero_spatial/2",
+          "trialIndexBase": 0
+        },
+        {
+          "envParams": {
+            "max_episode_steps": 220,
+            "task_id": 2,
+            "task_suite": "libero_spatial"
+          },
+          "episodeSeeds": [3172128822, 3355583063],
+          "episodes": 2,
+          "maxEpisodeSteps": 220,
+          "model": "prebuilt/noop/base",
+          "seed": 0,
+          "seedKey": "shared-key",
+          "seedSlotOffset": 2,
+          "shard": 1,
+          "task": "libero_spatial/2",
+          "trialIndexBase": 2
+        }
+      ]
+    },
+    {
+      "error": "requiresEpisodeCap",
+      "name": "an env without a horizon under a model that pairs none",
+      "request": {
+        "models": [
+          {
+            "model": "prebuilt/plain/model"
+          }
+        ],
+        "tasks": [
+          {
+            "env": "prebuilt/libero",
+            "episodes": 1,
+            "taskId": "libero_spatial/0"
+          }
+        ]
+      }
+    },
+    {
+      "error": "has no scenario",
+      "name": "an unknown scenario",
+      "request": {
+        "models": [
+          {
+            "model": "prebuilt/noop/base"
+          }
+        ],
+        "tasks": [
+          {
+            "env": "prebuilt/libero",
+            "episodes": 1,
+            "taskId": "libero_spatial/9"
+          }
+        ]
+      }
+    },
+    {
+      "error": "discriminant",
+      "name": "a pinned discriminant against the pairing",
+      "request": {
+        "models": [
+          {
+            "model": "prebuilt/xvla/libero"
+          }
+        ],
+        "tasks": [
+          {
+            "env": "prebuilt/libero",
+            "envVars": {
+              "RLMESH_MAKE_KWARGS": "{\"task_suite\": \"libero_spatial\", \"task_id\": 0, \"action_type\": \"delta\"}"
+            },
+            "episodes": 1,
+            "taskId": "libero_spatial/0"
+          }
+        ]
+      }
+    }
+  ],
+  "description": "eval_plans v1: an evaluation request and the package labels and describe envelopes of the images it names, in; the workloads the managed platform's run builder compiles, out (model, task, shard, episodes, seed base, seed key, slot offset, trial base, episode cap, env make kwargs, each episode's seed), or an error. The expected workloads come from the platform's builder.",
+  "images": {
+    "envs": {
+      "prebuilt/libero": {
+        "image": "rlmesh-libero:v0.2-binder-post",
+        "package": {
+          "gymId": "libero",
+          "name": "libero",
+          "renderParams": {
+            "default": [256, 256],
+            "height": "cam_height",
+            "width": "cam_width"
+          },
+          "requiresEpisodeCap": true,
+          "resetOptions": ["trial_index"],
+          "resources": {
+            "cpu": "3",
+            "memory": "3Gi"
+          },
+          "schemaVersion": 1,
+          "tags": ["libero"]
+        },
+        "describe": {
+          "env_contracts": {
+            "discriminants": ["action_type"]
+          },
+          "params": {
+            "param_spec": {
+              "extra": "forbid",
+              "params": [
+                {
+                  "name": "action_type"
+                },
+                {
+                  "name": "task_suite"
+                },
+                {
+                  "name": "task_id"
+                },
+                {
+                  "name": "init_state_id"
+                },
+                {
+                  "name": "cam_width"
+                },
+                {
+                  "name": "cam_height"
+                },
+                {
+                  "name": "max_episode_steps"
+                },
+                {
+                  "name": "wait_steps"
+                },
+                {
+                  "name": "settle_gripper"
+                },
+                {
+                  "name": "control_freq"
+                },
+                {
+                  "name": "controller_kp"
+                },
+                {
+                  "name": "controller_damping_ratio"
+                }
+              ]
+            }
+          },
+          "variants": {
+            "catalog": [
+              {
+                "id": "libero_spatial/0",
+                "metadata": {
+                  "instruction": "pick up the black bowl between the plate and the ramekin and place it on the plate",
+                  "name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate"
+                },
+                "params": {
+                  "task_id": 0,
+                  "task_suite": "libero_spatial"
+                }
+              },
+              {
+                "id": "libero_spatial/1",
+                "metadata": {
+                  "instruction": "pick up the black bowl next to the ramekin and place it on the plate",
+                  "name": "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate"
+                },
+                "params": {
+                  "task_id": 1,
+                  "task_suite": "libero_spatial"
+                }
+              },
+              {
+                "id": "libero_spatial/2",
+                "metadata": {
+                  "instruction": "pick up the black bowl from table center and place it on the plate",
+                  "name": "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate"
+                },
+                "params": {
+                  "task_id": 2,
+                  "task_suite": "libero_spatial"
+                }
+              },
+              {
+                "id": "libero_10/0",
+                "metadata": {
+                  "instruction": "put both the alphabet soup and the tomato sauce in the basket",
+                  "name": "LIVING_ROOM_SCENE2_put_both_the_alphabet_soup_and_the_tomato_sauce_in_the_basket"
+                },
+                "params": {
+                  "task_id": 0,
+                  "task_suite": "libero_10"
+                }
+              },
+              {
+                "id": "libero_10/1",
+                "metadata": {
+                  "instruction": "put both the cream cheese box and the butter in the basket",
+                  "name": "LIVING_ROOM_SCENE2_put_both_the_cream_cheese_box_and_the_butter_in_the_basket"
+                },
+                "params": {
+                  "task_id": 1,
+                  "task_suite": "libero_10"
+                }
+              },
+              {
+                "id": "libero_10/2",
+                "metadata": {
+                  "instruction": "turn on the stove and put the moka pot on it",
+                  "name": "KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it"
+                },
+                "params": {
+                  "task_id": 2,
+                  "task_suite": "libero_10"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "prebuilt/noop": {
+        "image": "rlmesh-noop-env:v0.2-binder-post",
+        "package": {
+          "gymId": "noop",
+          "name": "noop",
+          "resources": {
+            "cpu": "250m",
+            "memory": "512Mi"
+          },
+          "schemaVersion": 1,
+          "tags": ["noop"]
+        },
+        "describe": {
+          "env_contracts": {
+            "discriminants": []
+          },
+          "params": {
+            "param_spec": {
+              "extra": "forbid",
+              "params": [
+                {
+                  "name": "shape"
+                },
+                {
+                  "name": "episode_len"
+                },
+                {
+                  "name": "step_delay_ms"
+                },
+                {
+                  "name": "fail_rate"
+                },
+                {
+                  "name": "render"
+                }
+              ]
+            }
+          },
+          "variants": {
+            "catalog": [
+              {
+                "id": "box4-disc2",
+                "metadata": {
+                  "name": "box4-disc2"
+                },
+                "params": {
+                  "shape": "box4-disc2"
+                }
+              },
+              {
+                "id": "box4-disc2/slow",
+                "metadata": {
+                  "name": "box4-disc2 (slow)"
+                },
+                "params": {
+                  "shape": "box4-disc2",
+                  "step_delay_ms": 250
+                }
+              },
+              {
+                "id": "box4-disc2/flaky",
+                "metadata": {
+                  "name": "box4-disc2 (flaky)"
+                },
+                "params": {
+                  "fail_rate": 0.25,
+                  "shape": "box4-disc2"
+                }
+              },
+              {
+                "id": "box4-disc2/render",
+                "metadata": {
+                  "name": "box4-disc2 (render)"
+                },
+                "params": {
+                  "render": true,
+                  "shape": "box4-disc2"
+                }
+              },
+              {
+                "id": "box2-multi",
+                "metadata": {
+                  "name": "box2-multi"
+                },
+                "params": {
+                  "shape": "box2-multi"
+                }
+              },
+              {
+                "id": "box2-multi/slow",
+                "metadata": {
+                  "name": "box2-multi (slow)"
+                },
+                "params": {
+                  "shape": "box2-multi",
+                  "step_delay_ms": 250
+                }
+              },
+              {
+                "id": "box2-multi/flaky",
+                "metadata": {
+                  "name": "box2-multi (flaky)"
+                },
+                "params": {
+                  "fail_rate": 0.25,
+                  "shape": "box2-multi"
+                }
+              },
+              {
+                "id": "box2-multi/render",
+                "metadata": {
+                  "name": "box2-multi (render)"
+                },
+                "params": {
+                  "render": true,
+                  "shape": "box2-multi"
+                }
+              },
+              {
+                "id": "box8-cont7",
+                "metadata": {
+                  "name": "box8-cont7"
+                },
+                "params": {
+                  "shape": "box8-cont7"
+                }
+              },
+              {
+                "id": "box8-cont7/slow",
+                "metadata": {
+                  "name": "box8-cont7 (slow)"
+                },
+                "params": {
+                  "shape": "box8-cont7",
+                  "step_delay_ms": 250
+                }
+              },
+              {
+                "id": "box8-cont7/flaky",
+                "metadata": {
+                  "name": "box8-cont7 (flaky)"
+                },
+                "params": {
+                  "fail_rate": 0.25,
+                  "shape": "box8-cont7"
+                }
+              },
+              {
+                "id": "box8-cont7/render",
+                "metadata": {
+                  "name": "box8-cont7 (render)"
+                },
+                "params": {
+                  "render": true,
+                  "shape": "box8-cont7"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "models": {
+      "prebuilt/evo1/libero": {
+        "image": "rlmesh-evo1-libero:v0.2-binder-post",
+        "package": {
+          "checkpoints": [
+            {
+              "default": true,
+              "name": "libero",
+              "params": {
+                "model": "/rlmesh/checkpoints/MINT-SJTU/Evo1_LIBERO"
+              },
+              "targetPath": "/rlmesh/checkpoints/MINT-SJTU/Evo1_LIBERO",
+              "uri": "hf://model/MINT-SJTU/Evo1_LIBERO?revision=3ddc6c9cafc57d5e678d0c7c2129060066feaaf3"
+            }
+          ],
+          "compatibility": {
+            "envParams": {
+              "libero": {
+                "params": {
+                  "max_episode_steps": 350,
+                  "settle_gripper": 0
+                },
+                "scenarios": {
+                  "libero_10": {
+                    "max_episode_steps": 1330
+                  }
+                }
+              }
+            },
+            "environments": ["libero"]
+          },
+          "envVars": {
+            "RLMESH_MAKE_KWARGS": "{\"model\": \"/rlmesh/checkpoints/MINT-SJTU/Evo1_LIBERO\"}"
+          },
+          "inputArtifacts": [
+            {
+              "name": "require-internvl3-1b",
+              "required": true,
+              "targetPath": "/rlmesh/checkpoints/OpenGVLab/InternVL3-1B",
+              "uri": "hf://model/OpenGVLab/InternVL3-1B?revision=4415a3b810e636d11dfa86b0e9ba40bb00535aa8"
+            }
+          ],
+          "name": "evo1-libero",
+          "resourceClass": "gpu",
+          "resources": {
+            "cpu": "2",
+            "memory": "4Gi",
+            "vram": "3Gi"
+          },
+          "schemaVersion": 1,
+          "tags": ["evo1", "gpu"]
+        },
+        "describe": null
+      },
+      "prebuilt/noop/base": {
+        "image": "rlmesh-noop-base:v0.2-binder-post",
+        "package": {
+          "compatibility": {
+            "envParams": {
+              "libero": {
+                "scenarios": {
+                  "libero_10": {
+                    "max_episode_steps": 520
+                  },
+                  "libero_90": {
+                    "max_episode_steps": 400
+                  },
+                  "libero_goal": {
+                    "max_episode_steps": 300
+                  },
+                  "libero_object": {
+                    "max_episode_steps": 280
+                  },
+                  "libero_spatial": {
+                    "max_episode_steps": 220
+                  }
+                }
+              }
+            },
+            "environments": ["noop", "libero"]
+          },
+          "name": "noop-base",
+          "schemaVersion": 1,
+          "tags": ["noop"]
+        },
+        "describe": null
+      },
+      "prebuilt/plain/model": {
+        "image": "plain-model:latest",
+        "package": {
+          "name": "plain",
+          "schemaVersion": 1
+        },
+        "describe": null
+      },
+      "prebuilt/xvla/libero": {
+        "image": "rlmesh-xvla-libero:latest",
+        "package": {
+          "checkpoints": [
+            {
+              "default": true,
+              "name": "libero",
+              "params": {
+                "model": "/rlmesh/checkpoints/2toINF/X-VLA-Libero"
+              },
+              "targetPath": "/rlmesh/checkpoints/2toINF/X-VLA-Libero",
+              "uri": "hf://model/2toINF/X-VLA-Libero?revision=129e71460678b7236cee6fc9707f09d9fa0c3590"
+            }
+          ],
+          "compatibility": {
+            "envParams": {
+              "libero": {
+                "params": {
+                  "action_type": "abs"
+                },
+                "scenarios": {
+                  "libero_10": {
+                    "max_episode_steps": 900
+                  },
+                  "libero_90": {
+                    "max_episode_steps": 900
+                  },
+                  "libero_goal": {
+                    "max_episode_steps": 800
+                  },
+                  "libero_object": {
+                    "max_episode_steps": 800
+                  },
+                  "libero_spatial": {
+                    "max_episode_steps": 800
+                  }
+                }
+              }
+            },
+            "environments": ["libero"]
+          },
+          "name": "xvla-libero",
+          "resourceClass": "gpu",
+          "schemaVersion": 1
+        },
+        "describe": null
+      }
+    }
+  }
+}

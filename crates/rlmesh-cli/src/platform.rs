@@ -352,7 +352,7 @@ async fn wait_for(
     }
 }
 
-fn read_request(path: &str) -> Result<Value> {
+pub(crate) fn read_request(path: &str) -> Result<Value> {
     let text = if path == "-" {
         let mut text = String::new();
         std::io::stdin()
