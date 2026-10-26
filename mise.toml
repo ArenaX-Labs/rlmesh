@@ -301,10 +301,11 @@ depends = ["test:rust", "test:python", "test:cxx"]
 # The single test entrypoint CI runs after `check`; run it locally for CI parity.
 [tasks."test:ci"]
 depends = ["parity:fixtures"]
-description = "Everything CI tests: test + API surface + examples + system harness + installed-wheel system profile against a freshly built local wheel"
+description = "Everything CI tests: test + API surface + perf budgets + examples + system harness + installed-wheel system profile against a freshly built local wheel"
 run = [
   "mise run test",
   "mise run test:python:api-surface",
+  "mise run test:python:perf",
   "mise run test:python:examples",
   "mise run test:system:harness",
   "mise run build:python:local",
@@ -348,6 +349,10 @@ run = "uv run pytest python/rlmesh/tests/integration -q"
 [tasks."test:python:conformance"]
 description = "Run Python conformance gates: adapter-spec vectors (cross-engine parity) and Gymnasium (served envs behave as plain gymnasium, over gRPC and lockstep)"
 run = "uv run pytest python/rlmesh/tests/conformance -q"
+
+[tasks."test:python:perf"]
+description = "Run the Python wall-clock budgets (pytest marker perf), which the other runs leave out"
+run = "uv run pytest python/rlmesh/tests -m perf -q"
 
 [tasks."test:python:api-surface"]
 description = "Run Python API surface tests"

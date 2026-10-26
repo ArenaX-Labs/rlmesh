@@ -18,7 +18,13 @@ mise run test:python
 mise run test:python:unit
 mise run test:python:integration
 mise run test:python:conformance
+mise run test:python:perf
 ```
+
+`test:python:perf` runs the tests marked `perf`, the ones that hold a
+wall-clock budget. A busy machine fails them whatever the code does, so every
+other run leaves them out (`addopts` in `pyproject.toml`) and `test:ci` runs
+them on its own.
 
 `test:python:conformance` holds the gates other code is measured against. The
 Gymnasium gate (`python/rlmesh/tests/conformance/test_gym_conformance.py`) runs
@@ -67,7 +73,7 @@ mise watch test:python:unit
 
 ## CI Parity
 
-`test:ci` is the single test entrypoint CI runs after `check`. It runs `test`, the API surface tests, the example programs, the system harness tests, then builds a local wheel and runs the installed-artifact system profile against it:
+`test:ci` is the single test entrypoint CI runs after `check`. It runs `test`, the API surface tests, the perf budgets, the example programs, the system harness tests, then builds a local wheel and runs the installed-artifact system profile against it:
 
 ```bash
 mise run test:ci

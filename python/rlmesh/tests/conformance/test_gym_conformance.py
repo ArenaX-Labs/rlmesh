@@ -798,6 +798,7 @@ PERF = {  # env, steps, median step budget in seconds
 }
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("case", sorted(PERF))
 def test_a_two_process_step_is_fast(case: str) -> None:
     env, steps, budget = PERF[case]
