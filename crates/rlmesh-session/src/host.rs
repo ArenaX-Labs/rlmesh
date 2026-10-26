@@ -60,6 +60,8 @@ use crate::virtual_clock::VirtualConfig;
 /// Heartbeats queued between the Zenoh callback and the host task. Beyond
 /// this the host is overloaded and drops them (the echo was already sent).
 const HEARTBEAT_QUEUE: usize = 4096;
+/// How long a host asks whether a participant whose token left has another.
+const PRESENCE_QUERY: Duration = Duration::from_millis(500);
 /// The most gap ranges a stream's history remembers.
 const MAX_GAPS: usize = 64;
 
@@ -891,12 +893,39 @@ impl HostActor {
         match sample.kind() {
             SampleKind::Put => debug!(%id, "participant present"),
             SampleKind::Delete => {
+                // A participant that left and joined again under its id (a
+                // refused bind, then another) declares its new token before
+                // its old token's delete may arrive here: only a delete that
+                // leaves no token for the id means it is gone.
+                if self.authority.is_attached(&id) && self.present(sample.key_expr()).await {
+                    debug!(%id, "a departed participant's token left; its new one stays");
+                    return;
+                }
                 info!(%id, "participant liveliness lost");
                 let events = self.authority.participant_lost(&id, self.now());
                 self.record(events).await;
                 self.publish_ticks().await;
             }
         }
+    }
+
+    /// Whether a liveliness token on `key` is declared.
+    async fn present(&self, key: &zenoh::key_expr::KeyExpr<'_>) -> bool {
+        let Ok(replies) = self
+            .transport
+            .control()
+            .liveliness()
+            .get(key)
+            .timeout(PRESENCE_QUERY)
+            .await
+        else {
+            return false;
+        };
+        let mut present = false;
+        while let Ok(reply) = replies.recv_async().await {
+            present |= reply.result().is_ok();
+        }
+        present
     }
 
     /// Logs and broadcasts events, keeps the link table in step with the
