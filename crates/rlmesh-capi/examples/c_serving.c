@@ -1,4 +1,4 @@
-/* Factory start ownership/failures, factory host identity, and model signals. */
+/* Factory start ownership/failures, factory host identity, and model serve signals. */
 #define _POSIX_C_SOURCE 200809L
 #include <arpa/inet.h>
 #include <pthread.h>
@@ -508,15 +508,38 @@ static volatile sig_atomic_t host_ints;
 static void host_signal(int sig) {
   if (sig == SIGINT) ++host_ints;
 }
+/* The participant address the model serves at, once its host session is up. */
+static char served_at[96];
+static atomic_bool hosting;
+/* A run through the served model returns only once its serve has joined, past
+ * where it installs (or skips) its signal handlers. */
+static void wait_served(State* s) {
+  struct timespec poll = {0, 10000000};
+  while (!atomic_load(&hosting)) nanosleep(&poll, NULL);
+  RLMeshModel* served = NULL;
+  CHECK(rlmesh_model_from_address(served_at, &served) == RLMESH_OK);
+  RLMeshEnv* env = NULL;
+  RLMeshVectorEnv* vector = NULL;
+  CHECK(make(s, NULL, &env, &vector) == RLMESH_OK);
+  RLMeshRunOptions o = RLMESH_RUN_OPTIONS_INIT;
+  o.close_env = true;
+  RLMeshRunResult* result = NULL;
+  CHECK(rlmesh_model_run(served, rlmesh_env_target(env), &o, &result) == RLMESH_OK);
+  rlmesh_run_result_free(result);
+  rlmesh_env_free(env);
+  rlmesh_model_free(served);
+}
 typedef struct Commands {
   RLMeshExtCancelToken* cancel;
   bool no_handlers;
+  State* model; /* set when a served model is probed */
 } Commands;
 static void* commands(void* u) {
   Commands* c = (Commands*)u;
   int command;
   while ((command = getchar()) != EOF) {
     if (command == 'i') {
+      if (c->model) wait_served(c->model);
       struct sigaction action;
       CHECK(sigaction(SIGINT, NULL, &action) == 0);
       CHECK((action.sa_handler == host_signal) == c->no_handlers);
@@ -555,7 +578,9 @@ int main(int argc, char** argv) {
     CHECK(sigaction(SIGINT, &action, NULL) == 0 && sigaction(SIGTERM, &action, NULL) == 0);
     bool is_factory = strstr(argv[1], "foreground") || strstr(argv[1], "start");
     bool background = strstr(argv[1], "start") || !strcmp(argv[1], "env-server");
-    Commands c = {state.cancel, !strcmp(argv[1], "no-signals") || background};
+    bool is_model = !is_factory && strcmp(argv[1], "env-server");
+    Commands c = {state.cancel, !strcmp(argv[1], "no-signals") || background,
+                  is_model ? &state : NULL};
     pthread_t reader;
     CHECK(pthread_create(&reader, NULL, commands, &c) == 0);
     if (is_factory) {
@@ -598,6 +623,22 @@ int main(int argc, char** argv) {
       stop(server);
       rlmesh_env_free(env);
     } else {
+      /* The model joins a session this process hosts on argv[2]. */
+      RLMeshEnv* host_env = NULL;
+      RLMeshVectorEnv* host_vector = NULL;
+      CHECK(make(&state, NULL, &host_env, &host_vector) == RLMESH_OK);
+      RLMeshEnvServerOptions host_opts = RLMESH_ENV_SERVER_OPTIONS_INIT;
+      host_opts.address = argv[2];
+      RLMeshEnvServer* host = NULL;
+      CHECK(rlmesh_env_server_new(&host_env, 1, &host_opts, &host) == RLMESH_OK);
+      CHECK(rlmesh_env_server_start(host) == RLMESH_OK);
+      RLMeshBytes bytes;
+      CHECK(rlmesh_env_server_address(host, &bytes) == RLMESH_OK);
+      size_t session = bytes.len;
+      while (session && bytes.data[session - 1] != '/') --session;
+      snprintf(served_at, sizeof(served_at), "%.*spolicy", (int)session, (const char*)bytes.data);
+      rlmesh_bytes_free(bytes);
+      atomic_store(&hosting, true);
       RLMeshModelVtable vt = RLMESH_MODEL_VTABLE_INIT;
       vt.predict = predict;
       vt.workflow_edition = rlmesh_current_workflow_edition();
@@ -612,12 +653,14 @@ int main(int argc, char** argv) {
       RLMeshExtModelServeOptions invalid = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;
       ((unsigned char*)&invalid)[offsetof(RLMeshExtModelServeOptions, no_signal_handlers)] = 2;
       opts.ext = &invalid;
-      CHECK(rlmesh_model_serve(model, argv[2], &opts) == RLMESH_ERR_INVALID_ARGUMENT);
+      CHECK(rlmesh_model_serve(model, served_at, &opts) == RLMESH_ERR_INVALID_ARGUMENT);
       invalid.struct_size = RLMESH_EXT_MODEL_SERVE_OPTIONS_MIN_SIZE + 2;
-      CHECK(rlmesh_model_serve(model, argv[2], &opts) == RLMESH_ERR_INVALID_ARGUMENT);
+      CHECK(rlmesh_model_serve(model, served_at, &opts) == RLMESH_ERR_INVALID_ARGUMENT);
       opts.ext = !strcmp(argv[1], "old-signals") ? (const RLMeshExtModelServeOptions*)&old : &ext;
-      CHECK(rlmesh_model_serve(model, argv[2], &opts) == RLMESH_ERR_CANCELLED);
+      CHECK(rlmesh_model_serve(model, served_at, &opts) == RLMESH_ERR_CANCELLED);
       rlmesh_model_free(model);
+      stop(host);
+      rlmesh_env_free(host_env);
     }
     if (!background) CHECK(pthread_join(reader, NULL) == 0);
     CHECK(sigaction(SIGINT, NULL, &action) == 0 && action.sa_handler == host_signal);

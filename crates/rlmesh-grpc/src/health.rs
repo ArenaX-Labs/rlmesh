@@ -1,7 +1,7 @@
 //! Standard gRPC health service (`grpc.health.v1`) wiring.
 //!
 //! RLMesh servers bind their listener up front (see the bind-first
-//! `BoundEnvServer` / `BoundModelServer` paths), so by the time the health
+//! `BoundEnvServer` path), so by the time the health
 //! service is registered the socket is already accepting connections. We
 //! therefore mark the overall server health as `SERVING` immediately and hand
 //! back the ready-to-add tonic service.

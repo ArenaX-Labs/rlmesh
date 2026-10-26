@@ -131,8 +131,8 @@ pub struct HeldState {
 /// Implement [`predict`](ModelHandler::predict) to map an observation to encoded
 /// action bytes. The default hooks let stateful policies track resets, episode
 /// ends, and shutdown. Drive the handler with
-/// [`ModelWorker::run_local`](crate::binding::model::ModelWorker::run_local) or host it with
-/// [`ModelWorker::serve`](crate::binding::model::ModelWorker::serve).
+/// [`ModelWorker::run_local`](crate::binding::model::ModelWorker::run_local) or serve it
+/// on a session with `lockstep::ModelService`.
 #[async_trait]
 pub trait ModelHandler: Send {
     /// Produce an action for `observation`.
@@ -149,16 +149,10 @@ pub trait ModelHandler: Send {
     /// [`Error::model_recoverable`](crate::Error::model_recoverable) when the
     /// policy declines a request.
     ///
-    /// # Concurrency contract (pipelined predict)
+    /// # Concurrency
     ///
-    /// The served model endpoint pipelines Join-stream requests, so responses
-    /// may complete out of arrival order. The handler itself is never invoked
-    /// concurrently: `predict` and the lifecycle hooks take `&mut self`, and
-    /// the server holds a per-handler mutex across each call.
-    ///
-    /// Per-route lifecycle order is preserved. Calls for different routes may
-    /// interleave, still one at a time. The `model.concurrent_predict.v1`
-    /// handshake capability advertises this pipelining to clients.
+    /// The handler is never invoked concurrently: `predict` and the lifecycle
+    /// hooks take `&mut self`, one call at a time.
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>>;
 
     /// Produce an action for `observation` plus any open-loop chunk replay frames

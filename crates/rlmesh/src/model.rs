@@ -14,9 +14,7 @@ mod policy;
 pub(crate) mod predict_fn;
 pub(crate) mod random;
 pub(crate) mod remote;
-pub(crate) mod server;
 pub(crate) mod types;
-pub(crate) mod wire;
 pub(crate) mod worker;
 
 pub use context::{BatchPredictContext, EpisodeState, PredictContext};
@@ -38,11 +36,9 @@ pub(crate) use handler::{
 #[allow(unused_imports)]
 pub(crate) use predict_fn::{PredictFn, RouteConfig, RouteResolver};
 #[allow(unused_imports)]
-pub(crate) use server::BoundModelServer;
-#[allow(unused_imports)]
 pub(crate) use types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
 #[allow(unused_imports)]
-pub(crate) use worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
+pub(crate) use worker::{ModelWorker, RunLocalOptions};
 
 #[cfg(test)]
 mod facade_tests;

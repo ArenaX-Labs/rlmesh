@@ -279,6 +279,7 @@ impl AttachedError {
         Error::Attached(attached)
     }
 
+    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     pub(crate) fn authored_message(&self) -> Option<&str> {
         self.message.as_deref()
     }

@@ -20013,7 +20013,6 @@ rust = [
   { path = "rlmesh::ext::BindAddress::Debug", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::Display", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::Eq", rule = "R-25" },
-  { path = "rlmesh::ext::BindAddress::From<BindAddress>", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::FromStr", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::PartialEq", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::StructuralPartialEq", rule = "R-25" },

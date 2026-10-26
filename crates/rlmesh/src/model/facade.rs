@@ -15,8 +15,9 @@ use rlmesh_grpc::lifecycle::ShutdownTrigger;
 use super::context::{BatchPredictContext, EpisodeStore, OwnedContext, PredictContext};
 use super::policy::{Corners, LoadKey, Policy, SpecArg};
 use super::types::EpisodeInfo;
+#[cfg(feature = "lockstep")]
 use crate::editions::EditionSources;
-use crate::{BindAddress, Error, Kwargs, Metadata, Result, ServeOptions, Value};
+use crate::{Error, Kwargs, Metadata, Result, ServeOptions, Value};
 
 /// The cap on a `None` drain or close timeout, which a model serve takes
 /// too.
@@ -630,6 +631,7 @@ enum Phase {
 struct LifeState {
     phase: Phase,
     serves: std::collections::HashMap<u64, ShutdownTrigger>,
+    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     next_serve: u64,
 }
 
@@ -847,6 +849,7 @@ impl Shared {
         Ok(())
     }
 
+    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     fn register_serve(&self, trigger: ShutdownTrigger) -> Result<u64> {
         let mut state = self.life.lock();
         if state.phase != Phase::Open {
@@ -858,6 +861,7 @@ impl Shared {
         Ok(id)
     }
 
+    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     fn deregister_serve(&self, id: u64) {
         self.life.lock().serves.remove(&id);
         self.life.changed.notify_all();
@@ -1170,12 +1174,14 @@ impl Drop for DropCancels {
 }
 
 /// Watches cancel tokens and stops a server when one fires.
+#[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
 pub(crate) struct CancelWatcher {
     stop: Arc<AtomicBool>,
     fired: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+#[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
 impl CancelWatcher {
     pub(crate) fn start(
         tokens: Vec<crate::ext::CancelToken>,
@@ -1223,8 +1229,8 @@ impl CancelWatcher {
 }
 
 /// One serve, blocking the calling thread: validate, resolve the edition,
-/// bind, serve until stopped, then close the model. A session address joins
-/// the session as the model participant it names, as Python's serve does.
+/// join the session of the participant address as the model it names, as
+/// Python's serve does, serve until stopped, then close the model.
 fn serve_blocking(
     shared: &Arc<Shared>,
     address: &str,
@@ -1247,8 +1253,14 @@ fn serve_blocking(
         None => address.to_string(),
     };
     let address = participant.as_str();
+    if !crate::address::is_v2(address) {
+        return Err(Error::invalid_argument(format!(
+            "serve: {address:?} is a v1 model endpoint, which rlmesh 0.2 no longer serves; \
+             serve on a participant address (e.g. 'lab:7447/policy')"
+        )));
+    }
     shared.admit()?;
-    let mut serve = options.unwrap_or_default();
+    let serve = options.unwrap_or_default();
     serve.validate()?;
     let ext = ext.unwrap_or_default();
     if ext.predict_concurrency == Some(0) {
@@ -1256,21 +1268,16 @@ fn serve_blocking(
             "predict_concurrency must be at least 1",
         ));
     }
-    // The call's edition wins over the environment variable; a served peer
-    // is authored, so a floating one warns (COR-6, COR-7).
-    let edition = |serve: &ServeOptions| {
-        crate::editions::resolve_native(
-            EditionSources {
-                call: serve.workflow_edition.as_deref(),
-                option: None,
-                declared: shared.decl.workflow_edition.as_deref(),
-            },
-            true,
-        )
-    };
     let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
+    #[cfg(not(feature = "lockstep"))]
+    {
+        let _ = (serve, ext, foreground, tokens);
+        Err(Error::invalid_argument(
+            "serve: a session model needs rlmesh's `lockstep` feature",
+        ))
+    }
     #[cfg(feature = "lockstep")]
-    if crate::address::is_v2(address) {
+    {
         crate::binding::check_session_model_serve(&serve)?;
         crate::serve_options::check_session_token(
             crate::serve_options::MODEL_ENDPOINT_TOKEN_ENV,
@@ -1282,33 +1289,19 @@ fn serve_blocking(
                  rlmesh 0.2 for a session address)",
             ));
         }
-        let edition = edition(&serve)?;
+        // The call's edition wins over the environment variable; a served peer
+        // is authored, so a floating one warns (COR-6, COR-7).
+        let edition = crate::editions::resolve_native(
+            EditionSources {
+                call: serve.workflow_edition.as_deref(),
+                option: None,
+                declared: shared.decl.workflow_edition.as_deref(),
+            },
+            true,
+        )?;
         let join = serve.close_timeout.unwrap_or(SESSION_JOIN);
-        return serve_session(shared, address, edition, join, foreground, tokens);
+        serve_session(shared, address, edition, join, foreground, tokens)
     }
-    let token = crate::serve_options::model_endpoint_token(ext.token)?.unwrap_or_default();
-    let address = BindAddress::parse(address)?;
-    serve.workflow_edition = edition(&serve)?;
-    serve.drain_timeout = Some(serve.drain_timeout.unwrap_or(SERVE_GRACE));
-    let close_timeout = serve.close_timeout.unwrap_or(SERVE_GRACE);
-    serve.close_timeout = Some(close_timeout);
-    let handler = super::bridge::engine_handler(Arc::clone(shared));
-    let bound = crate::run::drive::block_on_library(super::server::bind_model_with_options(
-        handler,
-        address,
-        &token,
-        ext.predict_concurrency,
-        serve,
-    ))?;
-    let trigger = bound.shutdown_trigger();
-    serve_until_stopped(
-        shared,
-        trigger,
-        foreground,
-        tokens,
-        close_timeout,
-        bound.serve(),
-    )
 }
 
 /// How long a session model's join and close may take when the options set
@@ -1361,6 +1354,7 @@ fn serve_session(
 /// Serves until `trigger` fires (a signal, a cancel token, the model's
 /// close), then closes the model: the cancellation class when a token or
 /// SIGINT stopped it.
+#[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
 fn serve_until_stopped(
     shared: &Arc<Shared>,
     trigger: ShutdownTrigger,

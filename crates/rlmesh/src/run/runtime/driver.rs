@@ -2234,7 +2234,7 @@ async fn predict_grouped<M: ModelHandler>(
                             frame.len()
                         ))));
                     }
-                    crate::model::wire::check_actions_conform(action_space, &frame)
+                    crate::model::types::check_actions_conform(action_space, &frame)
                         .map_err(model_error)?;
                     rlmesh_spaces::leaves::encode_leaf_slab(&frame, action_space)
                         .map_err(|err| model_error(crate::Error::model(err.to_string())))

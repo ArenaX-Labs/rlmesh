@@ -230,7 +230,7 @@ impl Binding {
             .action_space
             .as_ref()
             .ok_or_else(|| Error::Internal("the env has no action space".into()))?;
-        crate::model::wire::check_actions_conform(space, std::slice::from_ref(&action))?;
+        crate::model::types::check_actions_conform(space, std::slice::from_ref(&action))?;
         let leaves = encode_leaf_slab(std::slice::from_ref(&action), space)
             .map_err(|e| Error::invalid_argument(e.to_string()))?;
         let started = std::time::Instant::now();

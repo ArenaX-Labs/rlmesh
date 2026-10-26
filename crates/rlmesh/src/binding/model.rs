@@ -1,6 +1,6 @@
 //! The model engine plumbing the in-repo bindings drive: the async
 //! `ModelHandler` seam, the `PredictFn` holes of the adapter engine, the
-//! worker that runs or serves a handler, and the facade `Model`'s erased
+//! worker that runs a handler, and the facade `Model`'s erased
 //! construction for runtime corner declarations (R-25).
 
 use std::sync::Arc;
@@ -17,10 +17,8 @@ pub use crate::model::local::EnvClientRuntimeEnv;
 pub use crate::model::local::LockstepEnv;
 pub use crate::model::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 pub use crate::model::random::RandomSampleHandler;
-pub use crate::model::remote::{ModelClient, ModelConnect};
-pub use crate::model::server::BoundModelServer;
 pub use crate::model::types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
-pub use crate::model::worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
+pub use crate::model::worker::{ModelWorker, RunLocalOptions};
 pub use crate::model::{DynPolicy, PolicyDecl};
 
 use crate::{Corners, Error, Kwargs, Model, ModelOptions, Result};

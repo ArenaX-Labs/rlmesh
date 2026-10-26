@@ -425,7 +425,7 @@ fn encode_frames(
                     frame.len()
                 )));
             }
-            crate::model::wire::check_actions_conform(space, &frame)?;
+            crate::model::types::check_actions_conform(space, &frame)?;
             encode_leaf_slab(&frame, space).map_err(|e| Error::model(e.to_string()))
         })
         .collect()

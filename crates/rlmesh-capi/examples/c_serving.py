@@ -1,4 +1,4 @@
-"""Probe the C foreground/start envelopes and model signal modes over gRPC."""
+"""Probe the C env serving envelopes over gRPC and the model serve signal modes."""
 
 from __future__ import annotations
 
@@ -97,18 +97,42 @@ def read_checked(process: subprocess.Popen[str]) -> None:
         output += chunk
 
 
+def command(process: subprocess.Popen[str], mode: str) -> None:
+    """Drive the C consumer's signal check and stop, and expect a clean exit."""
+    assert process.stdin is not None
+    if "foreground" not in mode:
+        process.stdin.write("i\n")
+        process.stdin.flush()
+        read_checked(process)
+    if mode not in {"signals", "old-signals"}:
+        process.stdin.write("q\n")
+        process.stdin.flush()
+    stdout, _ = process.communicate(timeout=15)
+    assert process.returncode == 0, (mode, stdout)
+
+
 def probe(binary: str, mode: str) -> None:
     """Run one fresh process so signal dispositions cannot leak between cases."""
+    if mode in {"no-signals", "signals", "old-signals"}:
+        # The model serves on a session the C process hosts; it waits for its
+        # own run through the served model before checking signals.
+        process = subprocess.Popen(
+            [binary, mode, ":0/host"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        try:
+            command(process, mode)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        return
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         address = f"127.0.0.1:{listener.getsockname()[1]}"
-    is_env = mode in {
-        "foreground",
-        "start",
-        "legacy-foreground",
-        "legacy-start",
-        "env-server",
-    }
     process = subprocess.Popen(
         [binary, mode, f"tcp://{address}"],
         stdin=subprocess.PIPE,
@@ -119,9 +143,7 @@ def probe(binary: str, mode: str) -> None:
     channel = grpc.insecure_channel(address)
     try:
         grpc.channel_ready_future(channel).result(timeout=15)
-        service = (
-            "rlmesh.env.v1.EnvService" if is_env else "rlmesh.model.v1.ModelService"
-        )
+        service = "rlmesh.env.v1.EnvService"
         generation = tomllib.loads((ROOT / "rlmesh.toml").read_text())["protocol"][
             "current_generation"
         ]
@@ -132,36 +154,26 @@ def probe(binary: str, mode: str) -> None:
         )(_delimited(1, _text(1, generation)), timeout=5)
         base = _message(_decode(reply), 1)
         assert base[1] == [1], base
-        if is_env:
-            peer = _message(base, 2)
-            extra = {
-                _string(_decode(bytes(v)), 1): _string(_decode(bytes(v)), 2)
-                for v in peer.get(15, [])
-            }
-            envelope = json.loads(extra["rlmesh.describe.v1"])
-            legacy = mode.startswith("legacy-")
-            language, version = ("c", "") if legacy else ("csharp", "9.0")
-            frameworks = {
-                _string(_decode(bytes(v)), 1): _string(_decode(bytes(v)), 2)
-                for v in peer.get(8, [])
-            }
-            assert _string(peer, 3) == language, peer
-            assert _string(peer, 4) == version, peer
-            assert frameworks == ({} if legacy else {"unity": "6"}), peer
-            assert envelope["runtime"]["language"] == language, envelope
-            if not legacy:
-                assert envelope["runtime"]["language_version"] == version, envelope
-                assert envelope["runtime"]["framework_versions"] == frameworks, envelope
-        assert process.stdin is not None
-        if "foreground" not in mode:
-            process.stdin.write("i\n")
-            process.stdin.flush()
-            read_checked(process)
-        if mode not in {"signals", "old-signals"}:
-            process.stdin.write("q\n")
-            process.stdin.flush()
-        stdout, _ = process.communicate(timeout=15)
-        assert process.returncode == 0, (mode, stdout)
+        peer = _message(base, 2)
+        extra = {
+            _string(_decode(bytes(v)), 1): _string(_decode(bytes(v)), 2)
+            for v in peer.get(15, [])
+        }
+        envelope = json.loads(extra["rlmesh.describe.v1"])
+        legacy = mode.startswith("legacy-")
+        language, version = ("c", "") if legacy else ("csharp", "9.0")
+        frameworks = {
+            _string(_decode(bytes(v)), 1): _string(_decode(bytes(v)), 2)
+            for v in peer.get(8, [])
+        }
+        assert _string(peer, 3) == language, peer
+        assert _string(peer, 4) == version, peer
+        assert frameworks == ({} if legacy else {"unity": "6"}), peer
+        assert envelope["runtime"]["language"] == language, envelope
+        if not legacy:
+            assert envelope["runtime"]["language_version"] == version, envelope
+            assert envelope["runtime"]["framework_versions"] == frameworks, envelope
+        command(process, mode)
     finally:
         channel.close()
         if process.poll() is None:

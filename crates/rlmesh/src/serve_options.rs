@@ -140,17 +140,6 @@ pub(crate) fn env_endpoint_token(configured: Option<String>) -> Result<Option<St
     env_endpoint_token_from(configured, std::env::var(ENV_ENDPOINT_TOKEN_ENV))
 }
 
-/// A model server's token: `RLMESH_MODEL_ENDPOINT_TOKEN` when set (its
-/// failures are the `RLMeshException` class), else the configured
-/// `ext.token` (a token no header can carry is the `ValueError` class).
-pub(crate) fn model_endpoint_token(configured: Option<String>) -> Result<Option<String>> {
-    configured_endpoint_token(
-        MODEL_ENDPOINT_TOKEN_ENV,
-        configured,
-        std::env::var(MODEL_ENDPOINT_TOKEN_ENV),
-    )
-}
-
 fn env_endpoint_token_from(
     configured: Option<String>,
     environment: std::result::Result<String, std::env::VarError>,
