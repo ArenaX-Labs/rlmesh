@@ -206,6 +206,15 @@ pub mod artifacts {
     pub use crate::recorder::artifacts::*;
 }
 
+/// `rlmesh doctor`: the platform's probe on one machine,
+/// against a served env or model, reporting in the platform's
+/// `probe-report.json` shape. Drives the CLI (R-25); no language binding
+/// reaches it in 0.2.
+#[cfg(feature = "lockstep")]
+pub mod doctor {
+    pub use crate::doctor::*;
+}
+
 /// The runtime driver itself, for in-repo tests and the managed runner.
 #[doc(hidden)]
 pub use crate::run::runtime;

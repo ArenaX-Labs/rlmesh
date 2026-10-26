@@ -53,6 +53,15 @@ pub fn well_known_port() -> Result<u16, SessionError> {
 /// The environment variable (`1`) under which participants join as Zenoh
 /// clients of the host they dial: a sandbox sets it on its container.
 pub const JOIN_AS_CLIENT_VAR: &str = "RLMESH_JOIN_AS_CLIENT";
+
+static JOIN_AS_CLIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Join every later session as a Zenoh client of the host it dials, as
+/// [`JOIN_AS_CLIENT_VAR`] does, for a process whose participants all join
+/// sessions that sandbox containers host (`rlmesh doctor`, `rlmesh bench`).
+pub fn join_as_client() {
+    JOIN_AS_CLIENT.store(true, std::sync::atomic::Ordering::Relaxed);
+}
 /// The session an address names when it names none.
 pub const DEFAULT_SESSION: &str = "default";
 /// The tenant every local session runs in.
@@ -447,7 +456,8 @@ impl SessionAddress {
         // participants join as Zenoh clients, which the host routes for.
         // Everywhere else they join as peers, which talk directly.
         let tuning = TransportTuning {
-            client: std::env::var_os(JOIN_AS_CLIENT_VAR).is_some_and(|value| value == "1"),
+            client: JOIN_AS_CLIENT.load(std::sync::atomic::Ordering::Relaxed)
+                || std::env::var_os(JOIN_AS_CLIENT_VAR).is_some_and(|value| value == "1"),
             ..TransportTuning::default()
         };
         let transport = match local_host(self.base) {

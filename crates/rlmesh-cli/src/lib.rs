@@ -2,6 +2,8 @@ mod auth;
 mod check;
 mod cli;
 mod config;
+mod container;
+mod doctor;
 mod eval_run;
 mod helpers;
 mod host;
@@ -184,6 +186,7 @@ pub async fn run_cli_in(
         Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),
         Command::Describe(args) => check::describe(&args, stdout, stderr),
         Command::Host(args) => host::host(&args, stdout).await.map(|()| 0),
+        Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
     };
 
     match result {
@@ -321,11 +324,12 @@ mod tests {
         assert!(stdout.contains("check"));
         assert!(stdout.contains("check-image"));
         assert!(stdout.contains("describe"));
+        assert!(stdout.contains("doctor"));
         assert!(!stdout.contains("viewer"));
 
         let mut command = cli::Cli::command();
         let subcommands: Vec<&str> = command.get_subcommands().map(|c| c.get_name()).collect();
-        for command_name in ["auth", "init", "doctor", "probe", "build", "catalog"] {
+        for command_name in ["auth", "init", "probe", "build", "catalog"] {
             assert!(!subcommands.contains(&command_name), "{command_name}");
         }
 

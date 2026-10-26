@@ -134,6 +134,8 @@ mod build_info;
 mod credentials;
 mod describe;
 mod dlpack;
+#[cfg(feature = "lockstep")]
+mod doctor;
 mod dtype;
 mod editions;
 pub mod env;

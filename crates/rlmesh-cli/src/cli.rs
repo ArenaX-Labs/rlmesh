@@ -46,6 +46,10 @@ pub enum Command {
     /// Host v2 sessions on this machine until Ctrl-C: the default session,
     /// and any other a participant names. Prints the address it listens on.
     Host(HostArgs),
+    /// Run an env or model image and check it the way the platform's probe
+    /// does: handshake, describe, conformance, reproducibility, and an env's
+    /// preview clip (exits 1 on a failed check).
+    Doctor(DoctorArgs),
 }
 
 /// Shared flag selecting which named profile to act on.
@@ -364,6 +368,46 @@ pub struct CheckImageArgs {
     /// Print the report as JSON: `{"failed","warnings","not_checked","passed"}`.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Flags for the image `doctor` probes and how it runs.
+#[derive(Args, Debug)]
+pub struct ProbeImageArgs {
+    /// A local image reference (`name:tag` or id).
+    pub image: String,
+    /// For a model that declares no ModelSpec: an env image whose spaces it is
+    /// checked against (run beside it, never stepped).
+    #[arg(long, value_name = "IMAGE")]
+    pub env: Option<String>,
+    /// GPUs for the container(s), as `docker run --gpus` takes them (`all`, `device=0`).
+    #[arg(long, value_name = "SPEC")]
+    pub gpus: Option<String>,
+    /// Seconds the image gets to start serving and to answer each call.
+    #[arg(long, value_name = "SECONDS", default_value_t = 120)]
+    pub timeout: u64,
+    /// Print the report as JSON, in the platform's `probe-report.json` shape.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Flags for `rlmesh doctor`.
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+    #[command(flatten)]
+    pub image: ProbeImageArgs,
+    /// Probe the image as this kind instead of the one its labels and command declare.
+    #[arg(long, value_enum)]
+    pub kind: Option<ProbeKind>,
+    /// Write `probe-report.json` and an env's preview clip here.
+    #[arg(long, value_name = "DIR", default_value = "rlmesh-doctor")]
+    pub output: std::path::PathBuf,
+}
+
+/// What `doctor` probes an image as.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeKind {
+    Env,
+    Model,
 }
 
 /// Flags for `rlmesh host`.
