@@ -73,7 +73,7 @@ description = "Install tools, Python dev dependencies, and git hooks"
 depends = ["setup:python", "setup:hooks"]
 
 [tasks."setup:python"]
-description = "Sync Python dev environment"
+description = "Sync the Python dev environment, rebuilding the in-tree extension when a source or the commit changed"
 run = "uv sync --group dev"
 
 [tasks."setup:python:release"]
@@ -101,7 +101,7 @@ run = "cargo fmt --all"
 
 [tasks."fmt:python"]
 description = "Format Python code"
-run = "uv run ruff format"
+run = "uv run --no-sync ruff format"
 
 [tasks."fmt:proto"]
 description = "Format Protobuf definitions"
@@ -130,7 +130,7 @@ run = "cargo fmt --all --check"
 
 [tasks."fmt:check:python"]
 description = "Check Python formatting"
-run = "uv run ruff format --check"
+run = "uv run --no-sync ruff format --check"
 
 [tasks."fmt:cxx"]
 description = "Format the C/C++ bindings and examples (clang-format)"
@@ -162,7 +162,7 @@ run = "cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
 [tasks."fix:python"]
 description = "Apply safe Python lint fixes"
-run = "uv run ruff check --fix"
+run = "uv run --no-sync ruff check --fix"
 
 # ──────────────────────────────────────────────
 # Lint (non-mutating)
@@ -178,7 +178,7 @@ run = "cargo clippy --workspace --all-targets -- -D warnings"
 
 [tasks."lint:python"]
 description = "Lint Python code"
-run = "uv run ruff check"
+run = "uv run --no-sync ruff check"
 
 [tasks."lint:proto"]
 description = "Lint Protobuf definitions"
@@ -294,6 +294,9 @@ depends = [
 # ──────────────────────────────────────────────
 # Test
 # ──────────────────────────────────────────────
+# test:python syncs the dev environment first (setup:python), which rebuilds
+# the in-tree extension after a commit; the other two wait for it, so every
+# Python process of the run loads one build, stamped like the C library.
 [tasks."test"]
 description = "Run Rust tests, Python unit/integration tests, and the C/C++ binding smoke + e2e"
 depends = ["test:rust", "test:python", "test:cxx"]
@@ -322,6 +325,7 @@ file = "scripts/test-cxx-pkg.sh"
 # own on every platform (macOS), so its site-packages is put on PYTHONPATH.
 [tasks."test:rust"]
 description = "Run Rust workspace tests and doctests"
+wait_for = ["setup:python"]
 run = '''
 export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" &&
   cargo nextest run --workspace --all-targets -E 'not (binary(parity_fixtures) | binary(parity_defaults))' &&
@@ -336,6 +340,7 @@ run = 'mise run dev:heavy -- python scripts/dev/affected.py {{arg(name="args", v
 
 [tasks."test:python"]
 description = "Run Python unit, integration, and conformance tests plus the authoring-import guard"
+depends = ["setup:python"]
 run = "uv run pytest python/rlmesh/tests/unit python/rlmesh/tests/integration python/rlmesh/tests/conformance python/rlmesh/tests/test_no_authoring_import.py -q"
 
 [tasks."test:python:unit"]

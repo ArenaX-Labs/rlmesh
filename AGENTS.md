@@ -31,8 +31,8 @@ The host has limited CPU and memory and is shared with other worktrees:
 
 Compiled crates are cached by sccache (`RUSTC_WRAPPER` in `mise.toml`), so a
 fresh worktree mostly rebuilds from cache. The editable Python install loads
-the in-tree extension; after Rust changes, `mise run build:python:develop`
-refreshes it (`test:affected` does this itself).
+the in-tree extension; after Rust changes or a commit, `mise run setup:python`
+refreshes it (`test` and `test:affected` do this themselves).
 
 ## Rules
 

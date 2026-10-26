@@ -78,7 +78,10 @@ exclude = [
 ]
 
 [tool.uv]
+# The extension stamps its dev workflow edition with the commit it is built
+# from (crates/rlmesh-proto/build.rs), so a commit makes it stale too.
 cache-keys = [
+  { git = { commit = true } },
   { file = "pyproject.toml" },
   { file = "rust/Cargo.toml" },
   { file = "rust/**/*.rs" },
