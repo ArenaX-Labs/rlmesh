@@ -94,7 +94,9 @@ __all__ = [
     "dict_space_spec",
     "discrete_space_spec",
     "episode_seed",
+    "eval_report",
     "is_v2_address",
+    "load_run_result",
     "local_run_session",
     "model_answers",
     "model_describe",
@@ -1181,7 +1183,11 @@ def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> Spa
 
 def episode_seed(base_seed: int, seed_key: str, slot: int) -> int: ...
 
+def eval_report(paths: list[str]) -> tuple[str, str]: ...
+
 def is_v2_address(text: str) -> bool: ...
+
+def load_run_result(paths: list[str]) -> dict[str, typing.Any]: ...
 
 def local_run_session() -> str: ...
 

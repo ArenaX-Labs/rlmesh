@@ -3390,8 +3390,8 @@ typedef struct RLMeshRunResultSaveOptions {
 RLMESH_API RLMeshStatus rlmesh_run_result_save(
     const RLMeshRunResult* run_result, const char* path,
     const RLMeshRunResultSaveOptions* options /* NULL = INIT */, RLMeshBytes* out);
-/* Reads a one-workload rlmesh.result.v1 bundle back; *out is freed with
- * rlmesh_run_result_free. */
+/* Reads an rlmesh.result.v1 bundle, or a folder of them, back as one model's
+ * result (as RunResult::load); *out is freed with rlmesh_run_result_free. */
 RLMESH_API RLMeshStatus rlmesh_run_result_load(const char* path, RLMeshRunResult** out);
 RLMESH_API RLMeshStatus rlmesh_telemetry_row_new(const char* op, const char* component,
                                                  const char* metric, const char* unit,

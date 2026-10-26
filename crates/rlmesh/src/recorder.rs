@@ -8,7 +8,7 @@ mod tests;
 /// recorder and the Python binding drive it).
 #[doc(hidden)]
 pub mod video;
-use crate::{Error, Metadata, Result, RunContext, RunHooks, RunResult, Value};
+use crate::{Error, Metadata, Result, RunContext, RunHooks, RunResult, TelemetryRow, Value};
 pub use records::{EpisodeRecord, MediaRef, WorkloadRecord};
 use std::{
     path::{Path, PathBuf},
@@ -111,6 +111,8 @@ pub struct RecorderExportOptions {
 }
 struct State {
     workloads: Vec<WorkloadRecord>,
+    /// Each workload's telemetry rows, one batch per recorded run.
+    telemetry: Vec<Vec<TelemetryRow>>,
     staging: Option<tempfile::TempDir>,
     assets: Vec<(PathBuf, String)>,
     used: std::collections::HashSet<String>,
@@ -172,6 +174,7 @@ impl State {
             config: config.unwrap_or_default(),
             episodes: Vec::new(),
         });
+        self.telemetry.push(Vec::new());
         ordinal
     }
 }
@@ -201,13 +204,43 @@ fn document(id: &str, state: &State, recorded_at: Option<String>) -> Metadata {
                 state
                     .workloads
                     .iter()
-                    .map(|w| Value::Dict(w.to_dict()))
+                    .zip(&state.telemetry)
+                    .map(|(w, rows)| {
+                        let mut workload = w.to_dict();
+                        if !rows.is_empty() {
+                            workload.insert("telemetry", telemetry(rows));
+                        }
+                        Value::Dict(workload)
+                    })
                     .collect(),
             ),
         ),
     ]
     .into_iter()
     .collect()
+}
+fn telemetry(rows: &[TelemetryRow]) -> Value {
+    Value::List(
+        rows.iter()
+            .map(|r| {
+                Value::Dict(
+                    [
+                        ("op", Value::Text(r.op.clone())),
+                        ("component", r.component.clone().into()),
+                        ("metric", r.metric.clone().into()),
+                        ("unit", r.unit.clone().into()),
+                        ("count", r.count.into()),
+                        ("avg", r.avg.into()),
+                        ("p50", r.p50.into()),
+                        ("p95", r.p95.into()),
+                        ("p99", r.p99.into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                )
+            })
+            .collect(),
+    )
 }
 /// Accumulate workloads and export a portable result bundle.
 ///
@@ -247,6 +280,7 @@ impl Recorder {
                 .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
             state: Arc::new(Mutex::new(State {
                 workloads: Vec::new(),
+                telemetry: Vec::new(),
                 staging: None,
                 assets: Vec::new(),
                 used: Default::default(),
@@ -274,6 +308,7 @@ impl Recorder {
     ) -> Result<WorkloadRecord> {
         let mut state = lock(&self.state);
         let index = state.workload(model, env, options.task, options.config);
+        state.telemetry[index].extend(result.telemetry.iter().cloned());
         let workload = &mut state.workloads[index];
         workload
             .episodes

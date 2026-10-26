@@ -32,6 +32,11 @@ The `params` module and the `Model.params` and `EnvFactory.params` declarations
 are Experimental; their native counterparts are deferred until that surface is
 Stable.
 
+`rlmesh.EvalReport` (per-task and per-suite success of saved result bundles)
+is Experimental. Rust reaches it as `rlmesh::binding::report` (binding
+plumbing, semver-exempt) and the CLI as `rlmesh eval report`; C and C++ are
+deferred.
+
 > [!WARNING]
 > The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an earlier release fails with a decode error naming the unknown dtype when it meets an environment that uses them: a clean refusal at the decoding peer, not a conversion. A per-leg dtype ceiling that refuses on the sending side instead is on the roadmap below.
 

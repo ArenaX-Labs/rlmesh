@@ -12,6 +12,7 @@
       "EnvServer",
       "EnvironmentException",
       "EpisodeResult",
+      "EvalReport",
       "FrameSources",
       "Interrupted",
       "Model",
@@ -317,6 +318,25 @@
         },
         "signature": "EpisodeResult(index: int, seed: int | None, steps: int, reward: float, terminated: bool, truncated: bool, success: bool | None = None, duration_s: float = 0.0, predict_ms: float | None = None, step_ms: float | None = None, trial: int | None = None)",
         "stability": "Stable"
+      },
+      "EvalReport": {
+        "kind": "class",
+        "members": {
+          "format_table": {
+            "kind": "function",
+            "signature": "format_table()"
+          },
+          "load": {
+            "kind": "function",
+            "signature": "load(path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]])"
+          },
+          "to_dict": {
+            "kind": "function",
+            "signature": "to_dict()"
+          }
+        },
+        "signature": "EvalReport(document: dict[str, Any], table: str)",
+        "stability": "Experimental"
       },
       "FrameSources": {
         "kind": "class",
@@ -811,7 +831,7 @@
           },
           "load": {
             "kind": "function",
-            "signature": "load(path: str | os.PathLike[str])"
+            "signature": "load(path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]])"
           },
           "mean_reward": {
             "kind": "property",

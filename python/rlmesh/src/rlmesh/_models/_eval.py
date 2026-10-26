@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 __all__ = [
     "RANDOM_SAMPLE",
     "EpisodeResult",
+    "EvalReport",
     "Interrupted",
     "RunHooks",
     "RunResult",
@@ -284,9 +285,9 @@ class RunResult:
         One workload of ``model`` on ``env``, with ``config`` recorded beside
         it: a folder, or a zip when ``path`` ends ``.zip`` (as
         :meth:`Recorder.export <rlmesh.Recorder.export>` writes). The bundle
-        keeps each episode's outcome, not its trial ordinal, latency or the
-        run's telemetry. For media, record the run with
-        :meth:`Recorder.capture <rlmesh.Recorder.capture>` instead.
+        keeps each episode's outcome, not its trial ordinal or latency; the
+        run's telemetry rows are kept beside the workload. For media, record
+        the run with :meth:`Recorder.capture <rlmesh.Recorder.capture>` instead.
         """
         from ..recorder import Recorder
 
@@ -297,53 +298,76 @@ class RunResult:
             return recorder.export(Path(path))
 
     @classmethod
-    def load(cls, path: str | os.PathLike[str]) -> RunResult:
-        """The result an ``rlmesh.result.v1`` bundle (folder or zip) holds.
+    def load(
+        cls, path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]]
+    ) -> RunResult:
+        """The result the ``rlmesh.result.v1`` bundles at ``path`` hold.
 
-        The bundle must hold exactly one workload, as :meth:`save` writes; its
-        episodes come back with the fields the bundle keeps.
+        ``path`` is a bundle (folder or zip) of one or several workloads, a
+        folder of bundles (read in name order), or a list of these. The
+        workloads' episodes come back in order with the fields the bundle
+        keeps, indexed afresh from 0, and their telemetry merged per series
+        (counts add; ``avg`` and percentiles are count-weighted means).
+        Workloads of several models raise ``ValueError``; report them with
+        :class:`EvalReport` instead.
         """
-        import json
-        import zipfile
+        from .._rlmesh import load_run_result
+        from ._facade import result_from_native
 
-        from ..recorder.constants import RESULT_FILENAME
-
-        bundle = Path(path)
-        if bundle.is_dir():
-            text = (bundle / RESULT_FILENAME).read_text(encoding="utf-8")
-        else:
-            with zipfile.ZipFile(bundle) as archive:
-                text = archive.read(RESULT_FILENAME).decode("utf-8")
-        document = cast("dict[str, Any]", json.loads(text))
-        workloads = cast("list[dict[str, Any]]", document.get("workloads") or [])
-        if len(workloads) != 1:
-            raise ValueError(
-                f"{bundle} holds {len(workloads)} workloads; RunResult.load reads a "
-                "bundle of one (a Recorder bundle of several is read per workload)"
-            )
-        return cls(
-            episodes=tuple(
-                EpisodeResult(
-                    index=e["index"],
-                    seed=e.get("seed"),
-                    steps=e["steps"],
-                    reward=e["reward"],
-                    terminated=e["terminated"],
-                    truncated=e["truncated"],
-                    success=e.get("success"),
-                    duration_s=e.get("durationS", 0.0),
-                )
-                for e in cast(
-                    "list[dict[str, Any]]", workloads[0].get("episodes") or []
-                )
-            )
-        )
+        return result_from_native(load_run_result(_bundle_paths(path)))
 
     def __repr__(self) -> str:
         return (
             f"RunResult(episodes={self.num_episodes}, mean_reward={self.mean_reward:.3f}, "
             f"total_steps={self.total_steps})"
         )
+
+
+def _bundle_paths(
+    path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]],
+) -> list[str]:
+    paths = [path] if isinstance(path, (str, os.PathLike)) else path
+    return [os.fspath(p) for p in paths]
+
+
+class EvalReport:
+    """Success and telemetry of saved ``rlmesh.result.v1`` bundles, per model.
+
+    Experimental. Per task, per suite (a workload's ``config["suite"]``) and
+    overall: counted episodes, successes, the success rate with its Wilson
+    95% interval, steps, mean episode length and wall time; and the runs'
+    telemetry merged per series. An episode with no success signal counts as
+    a failure and is reported as ``unknown``, as on the managed platform.
+    """
+
+    def __init__(self, document: dict[str, Any], table: str) -> None:
+        self._document = document
+        self._table = table
+
+    @classmethod
+    def load(
+        cls, path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]]
+    ) -> EvalReport:
+        """The report of the bundles at ``path`` (as :meth:`RunResult.load` reads them)."""
+        import json
+
+        from .._rlmesh import eval_report
+
+        document, table = eval_report(_bundle_paths(path))
+        return cls(json.loads(document), table)
+
+    def to_dict(self) -> dict[str, Any]:
+        """The report as a JSON-native dict: ``{"models": [...]}``."""
+        import copy
+
+        return copy.deepcopy(self._document)
+
+    def format_table(self) -> str:
+        """The report as aligned text tables, one per model."""
+        return self._table
+
+    def __str__(self) -> str:
+        return self._table
 
 
 class Interrupted(KeyboardInterrupt):

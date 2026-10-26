@@ -37,7 +37,8 @@ rlmesh-proto = { workspace = true }
 prost = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tempfile = { workspace = true }
-zip = { version = "2", default-features = false }
+# Reads zips the Python recorder deflates.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 futures = { workspace = true }
 image = { workspace = true, features = ["png"] }
 # The recorder's in-process AV1 episode videos.

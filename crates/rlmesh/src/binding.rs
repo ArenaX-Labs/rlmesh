@@ -173,6 +173,14 @@ pub use crate::run::runtime::{
 };
 pub use tokio_util::sync::CancellationToken;
 
+/// Evaluation results over saved bundles: per-task, per-suite and overall
+/// success with Wilson intervals and merged telemetry. Drives the CLI's
+/// `eval report` and Python's Experimental `EvalReport` (R-25); C and C++
+/// are deferred.
+pub mod report {
+    pub use crate::run::report::*;
+}
+
 /// The runtime driver itself, for in-repo tests and the managed runner.
 #[doc(hidden)]
 pub use crate::run::runtime;

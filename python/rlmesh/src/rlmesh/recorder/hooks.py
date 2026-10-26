@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
 
-    from .._models import EpisodeResult, RunResult, StepEvent
+    from .._models import EpisodeResult, RunResult, StepEvent, TelemetryRow
     from .._rlmesh import PyVideoWriter
     from .media import MediaStager
     from .schema import WorkloadRecord
@@ -99,8 +99,10 @@ class CaptureHooks(RunHooks):
         binding: RunContext | None,
         video_keys: tuple[str, ...],
         included_in_metrics: bool,
+        telemetry: list[TelemetryRow],
     ) -> None:
         self._workload = workload
+        self._telemetry = telemetry
         self._stager = stager
         self._prefix = prefix
         self._cameras = tuple(cameras) if cameras is not None else ()
@@ -290,7 +292,8 @@ class CaptureHooks(RunHooks):
         self._video_path = None
 
     def on_run_end(self, result: RunResult) -> None:
-        """Flag any requested camera that never yielded a recordable frame."""
+        """Keep the run's telemetry; flag cameras that never yielded a frame."""
+        self._telemetry.extend(result.telemetry)
         for cam in self._writers.values():
             try:
                 cam.writer.finish()

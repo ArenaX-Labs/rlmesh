@@ -6123,7 +6123,8 @@ struct RunResult {
     c.config = options.config ? cfg.raw() : nullptr;
     return detail::text(rlmesh_run_result_save, p.get(), path.string().c_str(), &c);
   }
-  // The result a one-workload rlmesh.result.v1 bundle (folder or zip) holds.
+  // The result an rlmesh.result.v1 bundle (folder or zip), or a folder of
+  // them, holds for one model (as RunResult::load).
   static RunResult load(const std::filesystem::path& path) {
     RLMeshRunResult* p = nullptr;
     detail::check_status(rlmesh_run_result_load(path.string().c_str(), &p));

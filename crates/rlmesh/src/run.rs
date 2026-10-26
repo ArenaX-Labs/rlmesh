@@ -13,6 +13,7 @@ mod bind;
 mod lent;
 mod native;
 mod options;
+pub(crate) mod report;
 mod results;
 pub mod runtime;
 mod targets;

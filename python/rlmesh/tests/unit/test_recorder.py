@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import rlmesh
 import rlmesh.adapters as adapt
-from rlmesh import EpisodeResult, Recorder, RunResult, StepEvent
+from rlmesh import EpisodeResult, Recorder, RunResult, StepEvent, TelemetryRow
 from rlmesh.recorder import SCHEMA
 
 
@@ -1044,14 +1044,58 @@ def test_a_saved_result_loads_back_with_its_outcomes(tmp_path: Path, name: str) 
     assert loaded.success_rate == 0.5
 
 
-def test_loading_a_bundle_of_several_workloads_is_refused(tmp_path: Path) -> None:
-    result = RunResult(episodes=(EpisodeResult(0, 0, 1, 1.0, True, False),))
+def test_bundles_of_one_model_load_as_one_result_and_report_per_task(
+    tmp_path: Path,
+) -> None:
+    def result(*outcomes: bool, avg: float) -> RunResult:
+        return RunResult(
+            episodes=tuple(
+                EpisodeResult(i, i, 10, 1.0, True, False, ok, 0.5)
+                for i, ok in enumerate(outcomes)
+            ),
+            telemetry=(
+                TelemetryRow(
+                    "env.step", "env", "rpc.total", "ms", 2, avg, avg, avg, avg
+                ),
+            ),
+        )
+
     recorder = Recorder()
-    recorder.add(result, model="a", env="e")
-    recorder.add(result, model="b", env="e")
-    path = recorder.export(tmp_path / "two")
-    with pytest.raises(ValueError, match="2 workloads"):
-        RunResult.load(path)
+    recorder.add(
+        result(True, False, avg=1.0),
+        model="a",
+        env="e",
+        task="t1",
+        config={"suite": "s"},
+    )
+    recorder.add(
+        result(True, avg=4.0), model="a", env="e", task="t2", config={"suite": "s"}
+    )
+    folder = recorder.export(tmp_path / "runs" / "1")
+    zipped = result(False, avg=7.0).save(
+        tmp_path / "runs" / "2.zip", model="a", env="e"
+    )
+
+    loaded = RunResult.load([folder, zipped])
+    assert [e.index for e in loaded.episodes] == [0, 1, 2, 3]
+    assert [(r.count, r.avg) for r in loaded.telemetry] == [(6, 4.0)]
+    assert RunResult.load(tmp_path / "runs").episodes == loaded.episodes
+
+    (model,) = rlmesh.EvalReport.load(tmp_path / "runs").to_dict()["models"]
+    assert [
+        (t["suite"], t["task"], t["successes"], t["episodes"]) for t in model["tasks"]
+    ] == [
+        (None, "e", 0, 1),
+        ("s", "t1", 1, 2),
+        ("s", "t2", 1, 1),
+    ]
+    assert model["overall"]["successRate"] == 0.5
+
+    other = Recorder()
+    other.add(result(True, avg=1.0), model="b", env="e")
+    other.export(tmp_path / "runs" / "3")
+    with pytest.raises(ValueError, match="2 models"):
+        RunResult.load(tmp_path / "runs")
 
 
 def _result_json(path: Path) -> str:

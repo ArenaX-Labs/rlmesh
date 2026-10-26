@@ -3,6 +3,8 @@ use crate::model::LastPyError;
 use crate::types::to_py_err;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+#[cfg(feature = "stub-gen")]
+use pyo3_stub_gen::derive::gen_stub_pyfunction;
 use rlmesh::binding::RunDirective;
 use rlmesh::{EpisodeResult, RunContext, RunHooks, RunResult, StepEvent, Value};
 use std::sync::Arc;
@@ -72,6 +74,50 @@ pub(crate) fn result_to_py<'py>(
     }
     out.set_item("advisories", advisories)?;
     Ok(out)
+}
+
+/// `RunResult.load`: the bundles at `paths` as one result.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def load_run_result(paths: list[str]) -> dict[str, typing.Any]: ...
+"#
+    )
+)]
+#[pyfunction]
+pub(crate) fn load_run_result(
+    py: Python<'_>,
+    paths: Vec<std::path::PathBuf>,
+) -> PyResult<Bound<'_, PyDict>> {
+    use rlmesh::binding::report;
+    let result = py
+        .detach(|| report::merge(&report::read_bundles(&paths)?))
+        .map_err(to_py_err)?;
+    result_to_py(py, &result)
+}
+
+/// `EvalReport.load`: the report of the bundles at `paths`, as its JSON
+/// document and its table.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def eval_report(paths: list[str]) -> tuple[str, str]: ...
+"#
+    )
+)]
+#[pyfunction]
+pub(crate) fn eval_report(
+    py: Python<'_>,
+    paths: Vec<std::path::PathBuf>,
+) -> PyResult<(String, String)> {
+    let report = py
+        .detach(|| rlmesh::binding::report::EvalReport::load(&paths))
+        .map_err(to_py_err)?;
+    Ok((report.to_json().to_string(), report.format_table()))
 }
 
 #[pyclass(module = "rlmesh._rlmesh")]

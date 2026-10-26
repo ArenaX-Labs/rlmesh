@@ -11,6 +11,7 @@ Python-driven paths. Either way, :meth:`Recorder.export` writes an
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,7 @@ from .media import MediaStager
 from .schema import EpisodeRecord, ResultSet, WorkloadRecord
 
 if TYPE_CHECKING:
-    from .._models import RunContext, RunHooks, RunResult
+    from .._models import RunContext, RunHooks, RunResult, TelemetryRow
 
 
 def _now_iso() -> str:
@@ -84,6 +85,9 @@ class Recorder:
             )
         self._result_set = ResultSet(result_set_id=result_set_id or uuid.uuid4().hex)
         self._stager = MediaStager(fps=fps, quality=quality)
+        #: Each workload's telemetry rows (keyed by ``id(workload)``), one
+        #: batch per recorded run, written beside the workload.
+        self._telemetry: dict[int, list[TelemetryRow]] = {}
 
     @property
     def result_set_id(self) -> str:
@@ -127,6 +131,7 @@ class Recorder:
         ``rlmesh.run``. For video/frames, use :meth:`capture` instead.
         """
         workload = self._new_workload(model, env, task, config)
+        self._telemetry[id(workload)] = list(result.telemetry)
         for episode in result.episodes:
             workload.episodes.append(
                 EpisodeRecord.from_result(
@@ -192,11 +197,18 @@ class Recorder:
             binding=binding,
             video_keys=tuple(video_info_keys),
             included_in_metrics=included_in_metrics,
+            telemetry=self._telemetry.setdefault(id(workload), []),
         )
 
     def to_dict(self, *, recorded_at: str | None = None) -> dict[str, Any]:
         """The ``rlmesh.result.v1`` document as a JSON-native dict."""
-        return self._result_set.to_dict(recorded_at=recorded_at or _now_iso())
+        document = self._result_set.to_dict(recorded_at=recorded_at or _now_iso())
+        for workload, out in zip(
+            self._result_set.workloads, document["workloads"], strict=True
+        ):
+            if rows := self._telemetry.get(id(workload)):
+                out["telemetry"] = [dataclasses.asdict(row) for row in rows]
+        return document
 
     def export(
         self,
@@ -216,10 +228,9 @@ class Recorder:
                 "export before close()"
             )
         return write_bundle(
-            self._result_set,
+            self.to_dict(recorded_at=recorded_at),
             Path(path),
             assets=self._stager.assets,
-            recorded_at=recorded_at or _now_iso(),
             archive=archive,
         )
 

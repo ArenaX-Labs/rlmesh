@@ -240,6 +240,18 @@ pub enum EvalCommand {
     Wait(EvalIdArgs),
     /// Cancel a running evaluation.
     Cancel(EvalIdArgs),
+    /// Print per-task, per-suite and overall success of saved result bundles.
+    Report(EvalReportArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct EvalReportArgs {
+    /// Result bundles (folders or zips), or folders of bundles.
+    #[arg(required = true)]
+    pub paths: Vec<std::path::PathBuf>,
+    /// Print the report as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]

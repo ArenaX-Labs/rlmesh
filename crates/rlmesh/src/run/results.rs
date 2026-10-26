@@ -157,7 +157,8 @@ impl RunResult {
     /// Write this result as an `rlmesh.result.v1` bundle and return its path:
     /// one workload of `options.model` on `options.env`, a folder, or a zip
     /// when `path` ends `.zip`. The bundle keeps each episode's outcome, not
-    /// its trial ordinal, latency or the run's telemetry.
+    /// its trial ordinal or latency; the run's telemetry rows are kept beside
+    /// the workload.
     pub fn save(
         &self,
         path: impl AsRef<std::path::Path>,
@@ -178,75 +179,14 @@ impl RunResult {
         written
     }
 
-    /// The result an `rlmesh.result.v1` bundle (folder or zip) holds. The
-    /// bundle must hold exactly one workload, as [`RunResult::save`]
-    /// writes; its episodes come back with the fields the bundle keeps.
+    /// The result the `rlmesh.result.v1` bundle at `path` holds: a bundle
+    /// (folder or zip) of one or several workloads, or a folder of bundles
+    /// read in name order. The workloads' episodes come back in order with
+    /// the fields the bundle keeps, indexed afresh from 0, and their
+    /// telemetry merged per series (counts add; `avg` and percentiles are
+    /// count-weighted means). Workloads of several models are refused.
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<RunResult> {
-        use std::io::Read;
-        let bundle = path.as_ref();
-        let os = |err: std::io::Error| crate::Error::Os(format!("{}: {err}", bundle.display()));
-        let text = if bundle.is_dir() {
-            std::fs::read_to_string(bundle.join("result.json")).map_err(os)?
-        } else {
-            let file = std::fs::File::open(bundle).map_err(os)?;
-            let mut archive = zip::ZipArchive::new(file).map_err(|err| {
-                crate::Error::invalid_argument(format!("{}: {err}", bundle.display()))
-            })?;
-            let mut entry = archive.by_name("result.json").map_err(|err| {
-                crate::Error::invalid_argument(format!("{}: {err}", bundle.display()))
-            })?;
-            let mut text = String::new();
-            entry.read_to_string(&mut text).map_err(os)?;
-            text
-        };
-        let document: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
-            crate::Error::invalid_argument(format!("{}: {err}", bundle.display()))
-        })?;
-        let workloads = document["workloads"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        if workloads.len() != 1 {
-            return Err(crate::Error::invalid_argument(format!(
-                "{} holds {} workloads; RunResult.load reads a bundle of one (a Recorder \
-                 bundle of several is read per workload)",
-                bundle.display(),
-                workloads.len()
-            )));
-        }
-        let malformed = |key: &str| {
-            crate::Error::invalid_argument(format!(
-                "{}: an episode has no valid {key:?}",
-                bundle.display()
-            ))
-        };
-        let episodes = workloads[0]["episodes"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .map(|e| {
-                Ok(EpisodeResult {
-                    index: e["index"].as_i64().ok_or_else(|| malformed("index"))?,
-                    seed: e["seed"].as_i64(),
-                    steps: e["steps"].as_i64().ok_or_else(|| malformed("steps"))?,
-                    reward: e["reward"].as_f64().ok_or_else(|| malformed("reward"))?,
-                    terminated: e["terminated"]
-                        .as_bool()
-                        .ok_or_else(|| malformed("terminated"))?,
-                    truncated: e["truncated"]
-                        .as_bool()
-                        .ok_or_else(|| malformed("truncated"))?,
-                    success: e["success"].as_bool(),
-                    duration_s: e["durationS"].as_f64().unwrap_or(0.0),
-                    ..Default::default()
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(RunResult {
-            episodes,
-            ..Default::default()
-        })
+        super::report::merge(&super::report::read_bundles([path])?)
     }
 
     /// Number of episodes in this result.

@@ -15,6 +15,7 @@ from ._binding import Binding
 from ._eval import (
     RANDOM_SAMPLE,
     EpisodeResult,
+    EvalReport,
     Interrupted,
     RunContext,
     RunHooks,
@@ -31,6 +32,7 @@ __all__ = [
     "RANDOM_SAMPLE",
     "Binding",
     "EpisodeResult",
+    "EvalReport",
     "FrameSources",
     "Interrupted",
     "Reader",

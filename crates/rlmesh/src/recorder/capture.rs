@@ -261,8 +261,9 @@ impl RunHooks for Capture {
             ));
         Ok(())
     }
-    fn on_run_end(&mut self, _result: &RunResult) -> Result<()> {
+    fn on_run_end(&mut self, result: &RunResult) -> Result<()> {
         self.writers.clear();
+        lock(&self.state).telemetry[self.index].extend(result.telemetry.iter().cloned());
         let missing: Vec<_> = self
             .cameras
             .as_ref()

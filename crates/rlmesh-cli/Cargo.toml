@@ -30,6 +30,8 @@ clap = { workspace = true, features = ["derive", "env"] }
 dirs = { workspace = true }
 keyring = { workspace = true }
 reqwest = { workspace = true, features = ["form", "json", "query"] }
+# `rlmesh eval report`: results of saved bundles.
+rlmesh = { workspace = true, default-features = false }
 rlmesh-proto = { workspace = true }
 # `rlmesh host`: v2 sessions over Zenoh.
 rlmesh-session = { workspace = true }

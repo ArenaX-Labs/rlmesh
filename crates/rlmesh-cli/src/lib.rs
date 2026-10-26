@@ -173,6 +173,7 @@ pub async fn run_cli_in(
                     .await
                     .map(|()| 0)
             }
+            cli::EvalCommand::Report(args) => eval_report(&args, stdout).map(|()| 0),
         },
         Command::Check(args) => check::check_target(&args, stdout, stdout_style),
         Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),
@@ -187,6 +188,20 @@ pub async fn run_cli_in(
             Ok(1)
         }
     }
+}
+
+fn eval_report(args: &cli::EvalReportArgs, stdout: &mut impl Write) -> Result<()> {
+    let report = rlmesh::binding::report::EvalReport::load(&args.paths)?;
+    if args.json {
+        writeln!(
+            stdout,
+            "{}",
+            serde_json::to_string_pretty(&report.to_json())?
+        )?;
+    } else {
+        writeln!(stdout, "{}", report.format_table())?;
+    }
+    Ok(())
 }
 
 /// Terminal entrypoint shared by the `rlmesh` and `docker-credential-rlmesh`
