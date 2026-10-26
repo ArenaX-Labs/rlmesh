@@ -341,57 +341,61 @@ async fn telemetry_ticks_on_wall_clock_during_a_stalled_step() {
     );
 }
 
+/// The reset seeds a route threads, one inner list per reset.
+async fn threaded_seeds(spec: RuntimeSessionSpec, hooks: Arc<RecordingHooks>) -> Vec<Vec<i64>> {
+    let env = TestEnv::default();
+    new_driver(spec, env.clone(), TestModel::default(), hooks)
+        .run()
+        .await
+        .expect("the seeded route completes");
+    env.reset_seeds
+        .lock()
+        .expect("reset seed recorder lock poisoned")
+        .clone()
+}
+
 #[tokio::test]
-async fn driver_threads_deterministic_reset_seeds() {
+async fn base_seed_episodes_are_paired_across_models_and_shards() {
     let mut spec = one_episode_spec();
     spec.base_seed = Some(1234);
     spec.max_episodes = Some(2);
 
-    let first_env = TestEnv::default();
-    let first_model = TestModel::default();
-    let first_hooks = Arc::new(RecordingHooks::default());
-    new_driver(
-        spec.clone(),
-        first_env.clone(),
-        first_model,
-        first_hooks.clone(),
-    )
-    .run()
-    .await
-    .unwrap();
-
-    let second_env = TestEnv::default();
-    let second_model = TestModel::default();
-    new_driver(
-        spec,
-        second_env.clone(),
-        second_model,
-        Arc::new(RecordingHooks::default()),
-    )
-    .run()
-    .await
-    .unwrap();
-
-    let first_seeds = first_env
-        .reset_seeds
-        .lock()
-        .expect("reset seed recorder lock poisoned")
-        .clone();
-    let second_seeds = second_env
-        .reset_seeds
-        .lock()
-        .expect("reset seed recorder lock poisoned")
-        .clone();
-
-    assert_eq!(first_seeds, second_seeds);
-    assert_eq!(first_seeds.len(), 2);
-    assert_eq!(first_seeds[0].len(), 1);
-    assert_eq!(first_seeds[1].len(), 1);
-    assert_ne!(first_seeds[0], first_seeds[1]);
+    let hooks = Arc::new(RecordingHooks::default());
+    let seeds = threaded_seeds(spec.clone(), hooks.clone()).await;
+    let derived: Vec<Vec<i64>> = (0..2)
+        .map(|slot| {
+            vec![rlmesh::binding::runtime::episode_seed(
+                1234,
+                "TestEnv-v0",
+                slot,
+            )]
+        })
+        .collect();
+    assert_eq!(seeds, derived);
     // Both episode events carry the seed the episode was reset with.
-    let seeded: Vec<Option<i64>> = first_seeds.iter().map(|seeds| Some(seeds[0])).collect();
-    assert_eq!(*first_hooks.started_seeds.lock().unwrap(), seeded);
-    assert_eq!(*first_hooks.completed_seeds.lock().unwrap(), seeded);
+    let seeded: Vec<Option<i64>> = seeds.iter().map(|seeds| Some(seeds[0])).collect();
+    assert_eq!(*hooks.started_seeds.lock().unwrap(), seeded);
+    assert_eq!(*hooks.completed_seeds.lock().unwrap(), seeded);
+
+    // Another model in another session draws the same episodes.
+    let other_model = RuntimeSessionSpec {
+        session_id: "session-2".to_string(),
+        model_component_id: "model-2".to_string(),
+        ..spec.clone()
+    };
+    assert_eq!(threaded_seeds(other_model, Arc::default()).await, seeds);
+
+    // Two one-episode shards walk the same slots as the two-episode route.
+    let mut sharded = Vec::new();
+    for base in 0..2 {
+        let shard = RuntimeSessionSpec {
+            max_episodes: Some(1),
+            trial_index_base: Some(base),
+            ..spec.clone()
+        };
+        sharded.extend(threaded_seeds(shard, Arc::default()).await);
+    }
+    assert_eq!(sharded, seeds);
 }
 
 #[test]

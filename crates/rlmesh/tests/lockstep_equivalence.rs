@@ -324,7 +324,9 @@ use rlmesh::lockstep::{ModelBinding, ModelService, ServedModel};
 
 /// The managed runner's route: the runtime drives the lockstep env at
 /// `env_address` with the model served at `model_address`, under the
-/// session id, env id and base seed the v1 runtime ran it with.
+/// session id, env id and base seed the v1 runtime ran it with. Its golden
+/// was re-recorded when base seeds became paired: the env's episodes follow
+/// from their seeds, and the v1 runtime mixed the session id into them.
 async fn drive_managed(
     env_address: &str,
     model_address: &str,
@@ -357,6 +359,7 @@ async fn drive_managed(
         env_contract: rlmesh_grpc::wire::env_contract_to_proto(&contract),
         num_envs: contract.num_envs as usize,
         base_seed: Some(5),
+        seed_key: "catalog".into(),
         episode_seeds: Vec::new(),
         max_episodes: Some(episodes),
         trial_index_base: None,

@@ -865,7 +865,7 @@ fn steps_server() -> EnvServer {
 }
 
 /// A `base_seed` derives the same reset seeds on every run, in any process on
-/// any machine: these values follow from `(4242, generation, lane 0)` alone.
+/// any machine: these values follow from `(4242, the env's id, slot)` alone.
 #[cfg(feature = "lockstep")]
 #[tokio::test]
 async fn a_base_seed_derives_the_same_reset_seeds_in_every_process() {
@@ -886,13 +886,7 @@ async fn a_base_seed_derives_the_same_reset_seeds_in_every_process() {
         .unwrap();
     server.shutdown_async().await.unwrap();
     let seeds: Vec<Option<i64>> = resets.lock().unwrap().iter().map(|reset| reset.0).collect();
-    assert_eq!(
-        seeds,
-        [
-            Some(3_230_666_292_628_274_642),
-            Some(2_384_531_154_939_834_245)
-        ]
-    );
+    assert_eq!(seeds, [Some(3_549_056_084), Some(3_732_510_325)]);
 }
 
 #[cfg(feature = "lockstep")]

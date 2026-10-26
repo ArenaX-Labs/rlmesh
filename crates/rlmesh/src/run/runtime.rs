@@ -8,6 +8,7 @@
 
 mod driver;
 pub mod hooks;
+mod seeding;
 pub mod spec;
 pub mod telemetry;
 
@@ -25,6 +26,7 @@ pub use hooks::{
     TelemetrySnapshotEvent,
 };
 pub use rlmesh_proto::EndpointPhases;
+pub use seeding::episode_seed;
 pub use spec::{
     ENV_RENDER_PARAMS_KEY, ENV_REQUIRES_EPISODE_CAP_KEY, ENV_RESET_OPTIONS_KEY, RuntimeLimits,
     RuntimeReport, RuntimeSessionSpec, TRIAL_INDEX_OPTION, declares_reset_option,

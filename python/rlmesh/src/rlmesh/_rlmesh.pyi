@@ -93,6 +93,7 @@ __all__ = [
     "describe_envelope_normalize",
     "dict_space_spec",
     "discrete_space_spec",
+    "episode_seed",
     "is_v2_address",
     "local_run_session",
     "model_answers",
@@ -1177,6 +1178,8 @@ def describe_envelope_normalize(kind: str, pieces_json: str, generated_at: str |
 def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
 
 def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> SpaceSpec: ...
+
+def episode_seed(base_seed: int, seed_key: str, slot: int) -> int: ...
 
 def is_v2_address(text: str) -> bool: ...
 

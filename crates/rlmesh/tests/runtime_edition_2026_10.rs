@@ -6,7 +6,8 @@
 //! under each episode id, the model lifecycle, the seeds a reset threads, the
 //! refusals -- into a deterministic JSON record compared byte for byte against a
 //! committed fixture. Every record here is unchanged from 2026.06, whose
-//! contract 2026.10 keeps for these scenarios. 2026.10 seals at v0.2.0; from
+//! contract 2026.10 keeps for these scenarios, except scenario 9's seeds: a
+//! `base_seed` derivation no longer mixes the session id. 2026.10 seals at v0.2.0; from
 //! then, if a test here fails you are BREAKING THE BEHAVIOR CONTRACT of an
 //! edition in the field, and the fix is to seal a NEW edition, never to update
 //! the fixture. Nothing time-dependent
@@ -834,7 +835,7 @@ async fn scenario_09_episode_id_and_trial_authority() {
         .collect();
 
     // The same spec run twice threads the same seeds: the derivation mixes only
-    // base_seed, session id, reset generation and lane.
+    // base_seed, the seed key and the episode's slot (its trial ordinal).
     let seeded = RuntimeSessionSpec {
         base_seed: Some(1234),
         max_episodes: Some(2),

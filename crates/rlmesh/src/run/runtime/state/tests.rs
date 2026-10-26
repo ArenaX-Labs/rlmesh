@@ -146,6 +146,7 @@ fn test_session_spec() -> RuntimeSessionSpec {
         num_envs: 1,
         episode_seeds: Vec::new(),
         base_seed: None,
+        seed_key: String::new(),
         max_episodes: Some(1),
         trial_index_base: None,
         max_episode_steps: None,

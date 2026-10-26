@@ -108,7 +108,7 @@ where
     // The runtime is the env-id authority (R1); for the in-process path mint a
     // UUIDv7 container id. The human env name lives on the SDK's own contract.
     let env_id = crate::mint_id();
-    let session_id = LOCAL_SESSION_ID.to_string();
+    let session_id = format!("local-{}", std::process::id());
 
     // Action chunking across a lockstep vector env would replay one whole-batch
     // chunk for every lane, and a lane that ends mid-chunk invalidates the buffer
@@ -161,6 +161,8 @@ where
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
         base_seed: options.base_seed,
+        // The env's own id: what no model can change, so models pair.
+        seed_key: env_contract.id.clone(),
         episode_seeds: options.seeds,
         max_episodes: Some(options.episodes),
         trial_index_base: options.trial_index_base,
@@ -488,14 +490,10 @@ fn lockstep_runtime_error(operation: &'static str, error: GymError) -> RuntimeEr
     RuntimeError::env_rpc_with_recoverability(operation, 0, recoverable, source)
 }
 
-/// The session id of every local run. A `base_seed` derivation mixes it in, so
-/// it is a constant: the same seed must replay the same episodes in any process.
-const LOCAL_SESSION_ID: &str = "local";
-
 /// The report of a zero-episode run: nothing ran, nothing was measured.
 pub(crate) fn empty_report() -> RuntimeReport {
     RuntimeReport {
-        session_id: LOCAL_SESSION_ID.to_string(),
+        session_id: format!("local-{}", std::process::id()),
         env_id: String::new(),
         total_steps: 0,
         total_episodes: 0,

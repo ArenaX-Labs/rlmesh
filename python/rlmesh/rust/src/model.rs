@@ -502,6 +502,24 @@ pub fn predict_seed(episode_seed: i64, predict_index: u64) -> i64 {
     rlmesh::predict_seed(episode_seed, predict_index)
 }
 
+/// The paired reset seed of episode `slot` under `base_seed` and `seed_key`.
+///
+/// Private: exported so the cross-language seed fixture checks the runtime's
+/// own derivation from Python.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def episode_seed(base_seed: int, seed_key: str, slot: int) -> int: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn episode_seed(base_seed: i64, seed_key: &str, slot: u64) -> i64 {
+    rlmesh::binding::runtime::episode_seed(base_seed, seed_key, slot)
+}
+
 /// Waits up to `timeout_s` seconds for the model at the participant address
 /// `address` to answer: ConnectionError when it does not. A sandbox's
 /// readiness check.

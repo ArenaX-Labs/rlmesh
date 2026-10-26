@@ -36,6 +36,7 @@ use crate::run::runtime::hooks::{
     ObservationEmittedEvent, RunDirective, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
     SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
+use crate::run::runtime::seeding::episode_seed;
 use crate::run::runtime::spec::{
     ENV_RESET_OPTIONS_KEY, RuntimeReport, RuntimeSessionSpec, reset_options_for,
 };
@@ -330,7 +331,6 @@ struct Group<E> {
     pending_completed: Vec<EpisodeCompletedEvent>,
     /// The ids and slots of the episodes a pending reset starts.
     pending_start: Option<(Vec<String>, Vec<u64>)>,
-    reset_generation: u64,
     round_started: Instant,
     /// Wall time of the predict(s) that landed since the group's last step,
     /// charged to its next step (see `StepCompletedEvent::predict_ms`).
@@ -528,7 +528,6 @@ where
                 pending_roll: HashSet::new(),
                 pending_completed: Vec::new(),
                 pending_start: None,
-                reset_generation: 0,
                 round_started: Instant::now(),
                 pending_predict: Duration::ZERO,
             })
@@ -566,27 +565,17 @@ where
         let Some(base_seed) = self.spec.base_seed else {
             return Vec::new();
         };
-        if group.lane_group {
-            // The route-global slot fixes the seed, so an episode's seed depends
-            // on its slot alone, never on which lane ran it or when.
-            slots
-                .iter()
-                .map(|&slot| deterministic_reset_seed(base_seed, &self.spec.session_id, slot, 0))
-                .collect()
-        } else {
-            group
-                .lanes
-                .iter()
-                .map(|&lane| {
-                    deterministic_reset_seed(
-                        base_seed,
-                        &self.spec.session_id,
-                        group.reset_generation,
-                        lane as usize,
-                    )
-                })
-                .collect()
-        }
+        // An episode's seed slot is its trial ordinal, `trial_index_base` plus
+        // its route slot, so shards that split one total partition one slot
+        // range. A lockstep vector's slots are consecutive from the first lane;
+        // a surplus lane past the budget takes the next, never-scored slot.
+        let Some(&first) = slots.first() else {
+            return Vec::new();
+        };
+        let first = self.spec.trial_index_base().saturating_add(first);
+        (0..group.width() as u64)
+            .map(|lane| episode_seed(base_seed, &self.spec.seed_key, first.saturating_add(lane)))
+            .collect()
     }
 
     pub async fn run(self) -> Result<RuntimeReport, RuntimeError> {
@@ -856,9 +845,6 @@ where
             groups[gid].phase = EnvPhase::Idle;
             groups[gid].predict = PredictState::None;
             return;
-        }
-        if !initial {
-            groups[gid].reset_generation += 1;
         }
         let seeds = self.seeds_for(&groups[gid], &slots);
         // The runtime is the sole id authority (R1): a fresh UUIDv7 per lane.
@@ -2082,39 +2068,6 @@ where
             infos,
         }
     }
-}
-
-/// The per-lane reset seed, derived purely from reproducible inputs: the user's
-/// base_seed, the session id, the reset generation (or route-global slot), and
-/// the lane index. The container env_id is deliberately NOT mixed in — it is a
-/// per-attach random UUIDv7, so including it would make a base_seed
-/// non-reproducible across runs.
-fn deterministic_reset_seed(
-    base_seed: i64,
-    session_id: &str,
-    reset_generation: u64,
-    env_index: usize,
-) -> i64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    fn update(mut hash: u64, bytes: &[u8]) -> u64 {
-        for byte in bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        hash
-    }
-
-    let mut hash = FNV_OFFSET;
-    hash = update(hash, &base_seed.to_le_bytes());
-    hash = update(hash, &[0xff]);
-    hash = update(hash, session_id.as_bytes());
-    hash = update(hash, &[0xfd]);
-    hash = update(hash, &reset_generation.to_le_bytes());
-    hash = update(hash, &[0xfc]);
-    hash = update(hash, &(env_index as u64).to_le_bytes());
-    (hash & i64::MAX as u64) as i64
 }
 
 /// The bytes of a payload's leaf slabs.

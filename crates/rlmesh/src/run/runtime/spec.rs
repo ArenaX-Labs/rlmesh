@@ -129,6 +129,11 @@ pub struct RuntimeSessionSpec {
     pub env_contract: EnvContract,
     pub num_envs: usize,
     pub base_seed: Option<i64>,
+    /// What a `base_seed` derivation keys on besides the base and the episode's
+    /// slot (see [`episode_seed`](super::episode_seed)): the environment, never
+    /// the model or a per-launch id, so two models over one environment draw
+    /// the same episodes. The managed platform passes its environment id.
+    pub seed_key: String,
     /// Explicit per-episode reset seeds, consumed in episode-start order (a
     /// vector reset claims one per lane). Overrides `base_seed` derivation when
     /// non-empty; episodes beyond the list reset unseeded. Requires
@@ -606,6 +611,7 @@ mod tests {
             num_envs: 1,
             episode_seeds: Vec::new(),
             base_seed: None,
+            seed_key: String::new(),
             max_episodes: Some(1),
             trial_index_base: None,
             max_episode_steps: None,

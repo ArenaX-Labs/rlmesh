@@ -182,9 +182,9 @@ async fn user_set_base_seed_reaches_the_env_reset_seeds() {
         "expected a concrete reset seed, got {seeded:?}"
     );
 
-    // base_seed is reproducible: the derived per-lane reset seed depends only on
-    // (base_seed, session_id, reset_generation, lane) — NOT the per-attach random
-    // env_id — so two runs with the same base_seed in the same session replay the
+    // base_seed is reproducible: the derived reset seed depends only on
+    // (base_seed, the env's id, the episode slot) — NOT the per-attach random
+    // env_id or the session — so two runs with the same base_seed replay the
     // identical derived seed.
     let seeded_again = run_with_base_seed(Some(4242)).await;
     assert_eq!(

@@ -66,6 +66,7 @@ The `rlmesh` facade crate now exposes spaces, values, envs, models, runs and ses
 - `RemoteEnv` and `RemoteVectorEnv` are built from `RemoteEnvOptions` and connect at `new`; an endpoint token is sent as `RemoteEnvOptions::api_key`.
 - `Error` has one variant per error class and is `#[non_exhaustive]`: `Address` became `InvalidArgument`, `Server` became `Internal`, and `Protocol`, `Type`, `Runtime`, `Os` and `Cancelled` are new. `Error::class()` returns the exact `ErrorClass` (with `is_subclass_of` testing the class hierarchy). Error classes and rendered text (`Display`, last-error messages, `what()` and exception strings) are the same in every RLMesh language. `ErrorCode` gains `Unsupported`.
 - `BindOptions` borrows its new `hooks` for the binding's life, so it carries a lifetime (`BindOptions<'h>`) and is no longer `Clone`. `recorder::RecorderCaptureOptions::session` is `binding`.
+- A `base_seed` (`binding::model::RunLocalOptions::base_seed`, `binding::runtime::RuntimeSessionSpec::base_seed`) derives each episode's reset seed from the base, the new `RuntimeSessionSpec::seed_key` and the episode's trial ordinal (`trial_index_base` plus its index), with the managed platform's FNV-1a and no session id. A local run keys on the env's id. Every model, and every sharding of one total, now gets the same episodes from one base. Seeds are below `2**32`, and every `base_seed` run's seeds change once ([2026.10 Seeds](docs/editions/2026.10.md#seeds)).
 
 #### C
 
