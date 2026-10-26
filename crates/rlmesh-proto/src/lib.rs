@@ -198,7 +198,9 @@ impl std::error::Error for UnknownEdition {}
 pub struct EditionDefaults {
     /// Per-episode step bound applied when the session sets no explicit
     /// `max_episode_steps` and the runtime owns resets, so a broken termination
-    /// condition surfaces as a truncation instead of hanging the run.
+    /// condition surfaces as a truncation instead of hanging the run. Under
+    /// env-owned resets (`NEXT_STEP`) the runtime cannot truncate a lane, so an
+    /// episode the env has not ended by this bound fails the run instead.
     ///
     /// Not named in the prose of `docs/editions/2026.06.md`, but observable in
     /// the episode ledger the edition's "Episode Accounting" section governs

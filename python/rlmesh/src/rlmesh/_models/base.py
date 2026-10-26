@@ -1391,7 +1391,9 @@ class ModelBase(Generic[ObsT, ActT]):
         reported, or seen by ``hooks``. ``max_episode_steps`` /
         ``max_episode_seconds`` truncate an episode at a step / wall-clock cap,
         and a non-terminating env is bounded regardless: without an explicit
-        cap the runtime truncates any episode at 100,000 steps. Explicit
+        cap the runtime truncates any episode at 100,000 steps (an
+        autoresetting vector env owns its episodes, so there an episode that
+        reaches it fails the run instead). Explicit
         seeds and caps need the runtime to own resets, so they are refused
         before any episode starts on an autoresetting vector env (drive it
         with ``episodes``; on a driver-reset vector env seeds are consumed one

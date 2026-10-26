@@ -1502,6 +1502,36 @@ where
             }
         }
 
+        // The edition's default step bound truncates under driver-owned resets
+        // (`capped_completions`). Under NEXT_STEP the env owns its lanes, so a
+        // scored episode it never ends fails the run there instead of hanging.
+        if !self.driver_owns_resets() {
+            let bound = self.spec.edition_defaults().default_max_episode_steps;
+            let endless = state.slots_at(&positions).into_iter().find(|slot| {
+                slot.step >= bound
+                    && slot.episode.as_ref().is_some_and(|episode| {
+                        !state.is_surplus(&episode.episode_id)
+                            && !completed_episodes
+                                .iter()
+                                .any(|ended| ended.episode_id == episode.episode_id)
+                    })
+            });
+            if let Some(slot) = endless {
+                return Err(RuntimeError::EnvRpc {
+                    operation: "step",
+                    step: slot.step,
+                    message: format!(
+                        "lane {}'s episode ran {bound} steps without the env ending it; under \
+                         NEXT_STEP autoreset the env owns its episodes, so the runtime cannot \
+                         truncate one: give the env a step limit (e.g. Gymnasium's TimeLimit)",
+                        slot.env_index
+                    ),
+                    recoverable: false,
+                    source: None,
+                });
+            }
+        }
+
         // A group runs until every scored episode completed -- the budget bounds
         // episode starts (slot claims), so `total_episodes` reaching it means
         // nothing scored is live anywhere (surplus lanes the env rolled past the

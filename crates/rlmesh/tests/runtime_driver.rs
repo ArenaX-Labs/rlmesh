@@ -1919,6 +1919,32 @@ async fn lane_sessions_idle_surplus_lanes_when_the_budget_is_smaller() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn an_endless_episode_under_next_step_fails_at_the_default_bound() {
+    // Lane 0 keeps finishing, lane 1 never does. Under NEXT_STEP the env owns
+    // its lanes, so the runtime cannot truncate lane 1; the edition's default
+    // bound fails the run there rather than letting it wait forever.
+    let env = VectorTestEnv::new(vec![1, usize::MAX]);
+    let error = tokio::time::timeout(
+        Duration::from_secs(60),
+        new_driver(
+            vector_spec(2, 3),
+            env,
+            TestModel::default(),
+            Arc::new(RecordingHooks::default()),
+        )
+        .run(),
+    )
+    .await
+    .expect("the default bound ends the run")
+    .expect_err("an episode the env never ends fails the run");
+    let message = error.to_string();
+    assert!(
+        message.contains("lane 1") && message.contains("100000 steps"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
 async fn a_runtime_truncated_episode_counts_once() {
     // max_episode_steps=4 over 3 episodes on an env that never terminates: the
     // driver truncates and resets mid-episode, and each truncation completes
