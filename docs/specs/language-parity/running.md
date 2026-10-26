@@ -362,6 +362,14 @@ holds its own `rlmesh_run_context_clone`, released by its `SafeHandle`.
 | `on_run_end(result)`                 | `fn on_run_end(&mut self, result: &RunResult) -> Result<()>`                    | `RLMeshStatus (*on_run_end)(void*, const RLMeshRunResult*)`                                   | `virtual void on_run_end(const RunResult&)`                                   | `void OnRunEnd(RunResult result)`                                                                      |
 | hooks object, called by hand         | any `impl RunHooks`                                                             | `rlmesh_run_hooks_new`, `_free` and one `rlmesh_run_hooks_on_<name>` per hook (C block below) | a `RunHooks` object                                                           | any `IRunHooks`, called directly                                                                       |
 
+Python's Experimental `transform_observation(observation, *, episode, step)`
+and `transform_action(action, *, episode, step)` replace one lane's
+observation before the model sees it and its action before the env receives
+it (`None` keeps it), once per env step and on `run` only. Rust carries them
+to the run as `#[doc(hidden)]` `RunHooks` binding plumbing (R-25), with the
+runtime's batch-aware `RuntimeHooks::transform_*` underneath; C, C++ and C#
+have no counterpart in v0.2.
+
 ```c
 typedef struct RLMeshRunHooksVtable {
   size_t struct_size;

@@ -810,6 +810,16 @@
           "on_step": {
             "kind": "function",
             "signature": "on_step(event: StepEvent)"
+          },
+          "transform_action": {
+            "kind": "function",
+            "signature": "transform_action(action: Any, *, episode: int, step: int)",
+            "stability": "Experimental"
+          },
+          "transform_observation": {
+            "kind": "function",
+            "signature": "transform_observation(observation: Any, *, episode: int, step: int)",
+            "stability": "Experimental"
           }
         },
         "stability": "Stable"

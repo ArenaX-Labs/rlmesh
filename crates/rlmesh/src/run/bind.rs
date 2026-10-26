@@ -459,6 +459,9 @@ impl<'a> Binding<'a> {
 
     /// One env step under `action`, or the model's when `None`:
     /// `(observation, reward, terminated, truncated, info)`.
+    // TODO: the hooks' transform_observation / transform_action apply to runs
+    // only; apply them in the bind engine's predict/step once a binding user
+    // needs perturbations.
     pub fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
         if self.done() {
             return Err(Error::Runtime(

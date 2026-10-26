@@ -143,18 +143,23 @@ impl PyRunContext {
 pub(crate) struct PyFacadeHooks {
     relay: Option<Arc<Py<PyAny>>>,
     error: LastPyError,
+    /// Whether the Python hooks override a transform, asked once so a run
+    /// without one never takes the GIL for them.
+    transforms: Option<bool>,
 }
 impl PyFacadeHooks {
     pub(crate) fn new(relay: Py<PyAny>, error: LastPyError) -> Self {
         Self {
             relay: Some(Arc::new(relay)),
             error,
+            transforms: None,
         }
     }
     pub(crate) fn optional(relay: Option<Py<PyAny>>, error: LastPyError) -> Self {
         Self {
             relay: relay.map(Arc::new),
             error,
+            transforms: None,
         }
     }
     fn call(
@@ -173,7 +178,39 @@ impl PyFacadeHooks {
             native
         })
     }
+
+    /// Run the relay's `method` transform on one lane's `value`.
+    fn transform(
+        &mut self,
+        method: &str,
+        episode: i64,
+        step: i64,
+        value: &Value,
+    ) -> rlmesh::Result<Option<Value>> {
+        if self.transforms.is_none() {
+            let mut wants = false;
+            self.call(|_, relay| {
+                wants = relay.call_method0("wants_transforms")?.extract()?;
+                Ok(())
+            })?;
+            self.transforms = Some(wants);
+        }
+        if self.transforms != Some(true) {
+            return Ok(None);
+        }
+        let mut out = None;
+        self.call(|py, relay| {
+            let replaced = relay.call_method1(method, (value_to_py(py, value)?, episode, step))?;
+            if !replaced.is_none() {
+                let value = crate::adapters::decode_value(&replaced)?;
+                out = Some(rlmesh::binding::model::facade_value(value).map_err(to_py_err)?);
+            }
+            Ok(())
+        })?;
+        Ok(out)
+    }
 }
+
 impl RunHooks for PyFacadeHooks {
     fn on_run_start(&mut self, context: Arc<dyn RunContext>) -> rlmesh::Result<()> {
         self.call(|py, relay| {
@@ -222,6 +259,22 @@ impl RunHooks for PyFacadeHooks {
                 .call_method1("end", (result_to_py(py, result)?,))
                 .map(drop)
         })
+    }
+    fn transform_observation(
+        &mut self,
+        episode: i64,
+        step: i64,
+        observation: &Value,
+    ) -> rlmesh::Result<Option<Value>> {
+        self.transform("transform_observation", episode, step, observation)
+    }
+    fn transform_action(
+        &mut self,
+        episode: i64,
+        step: i64,
+        action: &Value,
+    ) -> rlmesh::Result<Option<Value>> {
+        self.transform("transform_action", episode, step, action)
     }
 }
 

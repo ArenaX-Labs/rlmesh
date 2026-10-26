@@ -936,7 +936,12 @@ def check(
                         language == "rust"
                         and (
                             target.startswith("rlmesh::binding::")
-                            or target == "rlmesh::Error::Attached"
+                            or target
+                            in {
+                                "rlmesh::Error::Attached",
+                                "rlmesh::RunHooks::transform_action",
+                                "rlmesh::RunHooks::transform_observation",
+                            }
                         )
                     )
                     or (

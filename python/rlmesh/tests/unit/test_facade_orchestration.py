@@ -316,3 +316,67 @@ def test_ctrl_c_interrupts_reset_over_a_live_episode() -> None:
                 watchdog.join()
     finally:
         server.shutdown()
+
+
+class Counter:
+    """Observes its step count; three steps an episode; records each action."""
+
+    render_mode = None
+
+    def __init__(self) -> None:
+        self.observation_space = spaces.Discrete(10)
+        self.action_space = spaces.Discrete(10)
+        self.actions: list[int] = []
+        self.t = 0
+
+    def reset(self, **kwargs: object) -> tuple[int, dict[str, object]]:
+        self.t = 0
+        return 0, {}
+
+    def step(self, action: object) -> tuple[int, float, bool, bool, dict[str, object]]:
+        self.actions.append(int(cast("int", action)))
+        self.t += 1
+        return self.t, 0.0, self.t >= 3, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+def test_run_hooks_transform_each_observation_and_action_on_the_way() -> None:
+    env, seen, calls, stepped = Counter(), [], [], []
+
+    def predict(observation: object) -> int:
+        seen.append(int(cast("int", observation)))
+        return 9
+
+    class Shift(rlmesh.RunHooks):
+        def transform_observation(
+            self, observation: Any, *, episode: int, step: int
+        ) -> Any:
+            calls.append(("observation", episode, step))
+            return int(observation) + 5
+
+        def transform_action(self, action: Any, *, episode: int, step: int) -> Any:
+            calls.append(("action", episode, step))
+            return step
+
+        def on_step(self, event: rlmesh.StepEvent) -> None:
+            stepped.append((int(event.observation), int(event.action)))
+
+    rlmesh.Model(predict).run(env, episodes=1, hooks=[rlmesh.RunHooks(), Shift()])
+
+    assert seen == [5, 6, 7], "the model sees each transformed observation"
+    assert env.actions == [0, 1, 2], "the env receives each transformed action"
+    assert stepped == [(5, 0), (6, 1), (7, 2)], "on_step reports what was sent"
+    assert calls == [
+        (kind, 0, step) for step in range(3) for kind in ("observation", "action")
+    ]
+
+
+def test_a_raising_transform_aborts_the_run_with_its_own_exception() -> None:
+    class Broken(rlmesh.RunHooks):
+        def transform_action(self, action: Any, *, episode: int, step: int) -> Any:
+            raise ZeroDivisionError("perturbation failed")
+
+    with pytest.raises(ZeroDivisionError, match="perturbation failed"):
+        rlmesh.Model(lambda obs: 0).run(Counter(), episodes=1, hooks=Broken())

@@ -252,6 +252,11 @@ pub fn adapter_value(value: &crate::Value) -> Result<rlmesh_adapters::v1::Value>
     crate::model::bridge::to_adapter(value)
 }
 
+/// The facade value of a language adapter's neutral value.
+pub fn facade_value(value: rlmesh_adapters::v1::Value) -> Result<crate::Value> {
+    crate::model::bridge::from_adapter(value)
+}
+
 pub use crate::model::facade::RunSlot as RunLease;
 
 /// Retain run admission through a language binding's exception conversion.

@@ -499,6 +499,44 @@ class RunHooks:
         :class:`RunResult` of the episodes that completed.
         """
 
+    def transform_observation(
+        self, observation: Any, *, episode: int, step: int
+    ) -> Any | None:
+        """Replace one lane's observation before the model sees it (Experimental).
+
+        Return the replacement, in the observation's own space, or ``None`` to
+        keep it (the default). Runs on ``run`` only, not on a manual
+        :meth:`Model.bind <rlmesh.Model.bind>`. An exception aborts the run.
+        :meth:`on_step` reports the observation the model saw.
+
+        Args:
+            observation: The lane's observation, decoded as the env's framework.
+            episode: 0-based episode index.
+            step: Steps the episode has taken (0 for its reset observation).
+        """
+        return None
+
+    def transform_action(self, action: Any, *, episode: int, step: int) -> Any | None:
+        """Replace one lane's action before the env receives it (Experimental).
+
+        As :meth:`transform_observation`, once per env step, so a hook that
+        keeps the episode's recent actions can delay them, drop one (send the
+        previous action again) or freeze them for a burst. :meth:`on_step`
+        reports the action the env received.
+        """
+        return None
+
+
+def overrides_transforms(hooks: RunHooks) -> bool:
+    """Whether ``hooks`` override either transform."""
+    if isinstance(hooks, _HookList):
+        return any(overrides_transforms(hook) for hook in hooks.hooks)
+    kind = type(hooks)
+    return (
+        kind.transform_observation is not RunHooks.transform_observation
+        or kind.transform_action is not RunHooks.transform_action
+    )
+
 
 HooksArg = RunHooks | Sequence[RunHooks] | None
 
@@ -512,6 +550,10 @@ class _HookList(RunHooks):
 
     def __init__(self, hooks: Sequence[RunHooks]) -> None:
         self._hooks = tuple(hooks)
+
+    @property
+    def hooks(self) -> tuple[RunHooks, ...]:
+        return self._hooks
 
     def on_run_start(self, context: RunContext) -> None:
         for hook in self._hooks:
@@ -528,6 +570,24 @@ class _HookList(RunHooks):
     def on_episode_end(self, result: EpisodeResult) -> None:
         for hook in self._hooks:
             hook.on_episode_end(result)
+
+    def transform_observation(
+        self, observation: Any, *, episode: int, step: int
+    ) -> Any | None:
+        changed = False
+        for hook in self._hooks:
+            out = hook.transform_observation(observation, episode=episode, step=step)
+            if out is not None:
+                observation, changed = out, True
+        return observation if changed else None
+
+    def transform_action(self, action: Any, *, episode: int, step: int) -> Any | None:
+        changed = False
+        for hook in self._hooks:
+            out = hook.transform_action(action, episode=episode, step=step)
+            if out is not None:
+                action, changed = out, True
+        return action if changed else None
 
     def on_run_end(self, result: RunResult) -> None:
         error: BaseException | None = None

@@ -69,6 +69,36 @@ pub trait RunHooks: Send {
         let _ = result;
         Ok(())
     }
+
+    /// Binding plumbing for Python's Experimental `RunHooks` pair (R-25):
+    /// one lane's observation before the model sees it, with its 0-based
+    /// episode and the steps that episode has taken; return a replacement of
+    /// the same space, or `None` to keep it. Runs only; a manual binding does
+    /// not call it.
+    #[doc(hidden)]
+    fn transform_observation(
+        &mut self,
+        episode: i64,
+        step: i64,
+        observation: &Value,
+    ) -> Result<Option<Value>> {
+        let _ = (episode, step, observation);
+        Ok(None)
+    }
+
+    /// Binding plumbing, as `transform_observation`: one lane's action
+    /// before the env receives it, once per env step, so a hook keeping
+    /// recent actions can delay, drop (hold the previous one) or freeze them.
+    #[doc(hidden)]
+    fn transform_action(
+        &mut self,
+        episode: i64,
+        step: i64,
+        action: &Value,
+    ) -> Result<Option<Value>> {
+        let _ = (episode, step, action);
+        Ok(None)
+    }
 }
 
 /// What a run exposes to its hooks.

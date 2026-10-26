@@ -647,6 +647,21 @@ struct Episode {
     step_ms: f64,
 }
 
+/// The facade value of each lane of a group, encoded back into wire leaves.
+fn encode_lanes(
+    values: &[Value],
+    space: &rlmesh_proto::spaces::v1::SpaceSpec,
+) -> Result<Vec<rlmesh_grpc::wire::Bytes>> {
+    let space =
+        space_spec_from_proto(space.clone()).map_err(|err| Error::Protocol(err.to_string()))?;
+    let values = values
+        .iter()
+        .map(|value| space_codec::value_to_space(&space, value))
+        .collect::<Result<Vec<_>>>()?;
+    rlmesh_spaces::leaves::encode_leaf_slab(&values, &space)
+        .map_err(|err| Error::Protocol(err.to_string()))
+}
+
 /// One lane group's in-flight step: what it observed, then what it did.
 struct Group {
     ids: Vec<String>,
@@ -659,6 +674,10 @@ struct RelayState {
     episodes: HashMap<String, Episode>,
     groups: HashMap<i32, Group>,
     results: Vec<EpisodeResult>,
+    /// A group's observation and action as the transforms decoded (and
+    /// maybe replaced) them, so the events after them do not decode again.
+    observed: HashMap<i32, Vec<Value>>,
+    acted: HashMap<i32, Vec<Value>>,
 }
 
 /// Turns the runtime's events into [`RunHooks`] calls on the caller: each is
@@ -724,17 +743,87 @@ impl HookRelay {
 
     /// Run `call` on the caller's hooks and wait for it.
     async fn dispatch(&self, call: impl FnOnce(&mut dyn RunHooks) -> Result<()> + Send + 'static) {
+        let _ = self.transform(call).await;
+    }
+
+    /// Run `call` on the caller's hooks and hand back its value, `None` when
+    /// there is no caller to run it; a failure is kept, cancels the run and
+    /// fails the route.
+    async fn transform<R: Send + 'static>(
+        &self,
+        call: impl FnOnce(&mut dyn RunHooks) -> Result<R> + Send + 'static,
+    ) -> std::result::Result<Option<R>, HookError> {
         if self.driver.is_cancelled() {
-            return;
+            return Ok(None);
         }
         let Some(port) = lock(&self.port).clone() else {
-            return;
+            return Ok(None);
         };
         let id = self.context.id;
-        let result = port.call(move |side| side.hook(id, call).map(|_| ())).await;
-        if let Err(err) = result {
-            self.fail(err);
+        port.call(move |side| side.hook(id, call))
+            .await
+            .map_err(|err| self.fatal(err))
+    }
+
+    /// Keep `err` as the run's error, cancel the run, and fail the route.
+    fn fatal(&self, err: Error) -> HookError {
+        let message = err.to_string();
+        self.fail(err);
+        HookError::Message(message)
+    }
+
+    /// Each lane's `(episode, steps taken)`; `None` for a lane outside any
+    /// scored episode.
+    fn lanes(&self, episode_ids: &[String]) -> Vec<Option<(i64, i64)>> {
+        let state = lock(&self.state);
+        episode_ids
+            .iter()
+            .map(|id| state.episodes.get(id).map(|e| (e.index, e.steps)))
+            .collect()
+    }
+
+    /// Run a lane transform (`transform_observation` or `transform_action`)
+    /// over a group's leaves, decoded per lane: the lanes, transformed where
+    /// a hook replaced them, and the re-encoded leaves when one did. `None`
+    /// when no caller ran it.
+    async fn transform_lanes(
+        &self,
+        episode_ids: &[String],
+        leaves: &[rlmesh_grpc::wire::Bytes],
+        space: &rlmesh_proto::spaces::v1::SpaceSpec,
+        call: fn(&mut dyn RunHooks, i64, i64, &Value) -> Result<Option<Value>>,
+    ) -> std::result::Result<Option<(Vec<Value>, Option<Vec<rlmesh_grpc::wire::Bytes>>)>, HookError>
+    {
+        let values = decode_lanes(leaves.to_vec(), space, episode_ids.len())
+            .map_err(|err| self.fatal(err))?;
+        let lanes = self.lanes(episode_ids);
+        if lanes.iter().all(Option::is_none) {
+            return Ok(Some((values, None)));
         }
+        let out = self
+            .transform(move |hooks| {
+                let mut changed = false;
+                let mut values = values;
+                for (value, lane) in values.iter_mut().zip(lanes) {
+                    let Some((episode, step)) = lane else {
+                        continue;
+                    };
+                    if let Some(replaced) = call(hooks, episode, step, value)? {
+                        *value = replaced;
+                        changed = true;
+                    }
+                }
+                Ok((values, changed))
+            })
+            .await?;
+        let Some((values, changed)) = out else {
+            return Ok(None);
+        };
+        let leaves = changed
+            .then(|| encode_lanes(&values, space))
+            .transpose()
+            .map_err(|err| self.fatal(err))?;
+        Ok(Some((values, leaves)))
     }
 }
 
@@ -778,7 +867,12 @@ impl RuntimeHooks for HookRelay {
         let Some(leaves) = event.observation else {
             return Ok(());
         };
-        match decode_lanes(leaves, &event.observation_space, event.episode_ids.len()) {
+        let observed = lock(&self.state).observed.remove(&event.env_index);
+        let decoded = match observed {
+            Some(observations) => Ok(observations),
+            None => decode_lanes(leaves, &event.observation_space, event.episode_ids.len()),
+        };
+        match decoded {
             Ok(observations) => {
                 let frame = {
                     let state = lock(&self.state);
@@ -841,6 +935,48 @@ impl RuntimeHooks for HookRelay {
         Ok(())
     }
 
+    async fn transform_observation(
+        &self,
+        event: &ObservationEmittedEvent,
+    ) -> std::result::Result<Option<Vec<rlmesh_grpc::wire::Bytes>>, HookError> {
+        let Some(leaves) = &event.observation else {
+            return Ok(None);
+        };
+        let out = self
+            .transform_lanes(
+                &event.episode_ids,
+                leaves,
+                &event.observation_space,
+                |hooks, episode, step, value| hooks.transform_observation(episode, step, value),
+            )
+            .await?;
+        Ok(out.and_then(|(values, leaves)| {
+            lock(&self.state).observed.insert(event.env_index, values);
+            leaves
+        }))
+    }
+
+    async fn transform_action(
+        &self,
+        event: &ActionReceivedEvent,
+    ) -> std::result::Result<Option<Vec<rlmesh_grpc::wire::Bytes>>, HookError> {
+        let Some(leaves) = &event.action else {
+            return Ok(None);
+        };
+        let out = self
+            .transform_lanes(
+                &event.episode_ids,
+                leaves,
+                &event.action_space,
+                |hooks, episode, step, value| hooks.transform_action(episode, step, value),
+            )
+            .await?;
+        Ok(out.and_then(|(values, leaves)| {
+            lock(&self.state).acted.insert(event.env_index, values);
+            leaves
+        }))
+    }
+
     async fn action_received(
         &self,
         event: ActionReceivedEvent,
@@ -848,7 +984,12 @@ impl RuntimeHooks for HookRelay {
         let Some(leaves) = event.action else {
             return Ok(());
         };
-        match decode_lanes(leaves, &event.action_space, event.episode_ids.len()) {
+        let acted = lock(&self.state).acted.remove(&event.env_index);
+        let decoded = match acted {
+            Some(actions) => Ok(actions),
+            None => decode_lanes(leaves, &event.action_space, event.episode_ids.len()),
+        };
+        match decoded {
             Ok(actions) => {
                 if let Some(group) = lock(&self.state).groups.get_mut(&event.env_index) {
                     group.actions = Some(actions);

@@ -1458,7 +1458,10 @@ spans (Spaces SPC-31); an engine-specific bridge belongs to its integration
   No other shared type carries a user-facing fenced member. Rust `Error`'s
   `#[doc(hidden)]` `Attached` variant (R-12's error payload channel) is
   `binding` plumbing, not an extra: no shared-surface call returns it and
-  C, C++ and C# have no counterpart. The ABI
+  C, C++ and C# have no counterpart. So are `RunHooks`' `#[doc(hidden)]`
+  `transform_observation` and `transform_action`, which carry Python's
+  Experimental `RunHooks` pair to the run; C, C++ and C# have no
+  counterpart in v0.2. The ABI
   identification items `RLMESH_ABI_VERSION`, `rlmesh_abi_version` and
   `rlmesh_abi_check` keep their names, because a consumer must call them
   against any ABI generation.

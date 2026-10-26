@@ -601,6 +601,16 @@
     "rlmesh.params": {
       "stability": "Experimental"
     },
+    "rlmesh.RunHooks": {
+      "members": {
+        "transform_action": {
+          "stability": "Experimental"
+        },
+        "transform_observation": {
+          "stability": "Experimental"
+        }
+      }
+    },
     "rlmesh.EnvFactory": {
       "members": {
         "params": {

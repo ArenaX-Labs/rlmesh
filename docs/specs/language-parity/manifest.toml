@@ -20251,7 +20251,11 @@ cpp = [
 ]
 
 [binding]
-rust = [{ path = "rlmesh::Error::Attached", rule = "R-12" }]
+rust = [
+  { path = "rlmesh::Error::Attached", rule = "R-12" },
+  { path = "rlmesh::RunHooks::transform_action", rule = "R-25" },
+  { path = "rlmesh::RunHooks::transform_observation", rule = "R-25" },
+]
 c = [
   { path = "RLMESH_HOST_RUNTIME_JSON", rule = "ENV-12" },
   { path = "DLPackVersion", rule = "SPC-19" },

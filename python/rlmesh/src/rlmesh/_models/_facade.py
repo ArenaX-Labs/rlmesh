@@ -14,6 +14,7 @@ from ._eval import (
     StepEvent,
     TelemetryRow,
     episode_outcome,
+    overrides_transforms,
 )
 
 
@@ -70,6 +71,25 @@ class FacadeHookRelay:
 
     def wants_step(self) -> bool:
         return self.hooks is not None or self._viewer() is not None
+
+    def wants_transforms(self) -> bool:
+        return self.hooks is not None and overrides_transforms(self.hooks)
+
+    def transform_observation(
+        self, observation: object, episode: int, step: int
+    ) -> Any:
+        assert self.hooks is not None
+        with self.context._dispatch():
+            return self.hooks.transform_observation(
+                self.context._decode(observation), episode=episode, step=step
+            )
+
+    def transform_action(self, action: object, episode: int, step: int) -> Any:
+        assert self.hooks is not None
+        with self.context._dispatch():
+            return self.hooks.transform_action(
+                self.context._decode(action), episode=episode, step=step
+            )
 
     def frame(
         self,
