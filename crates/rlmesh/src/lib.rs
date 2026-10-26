@@ -202,7 +202,7 @@ pub use run::{
 };
 #[cfg(feature = "lockstep")]
 pub use run::{Binding, bind};
-pub use serve_options::ServeOptions;
+pub use serve_options::{BatchOptions, ServeOptions};
 pub use specs::EnvContract;
 pub use tensor::{Tensor, ToDlpackOptions};
 pub use value::{InfoDict, Kwargs, Metadata, MetadataIter, Value, ValueKind};

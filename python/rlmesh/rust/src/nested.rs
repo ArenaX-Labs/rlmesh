@@ -215,6 +215,10 @@ impl ModelHandler for NestedHandler {
         self.outer.predict_grouped(observations).await
     }
 
+    fn fuses_groups(&self) -> bool {
+        self.outer.fuses_groups()
+    }
+
     fn held_state(&self) -> Option<HeldState> {
         self.outer.held_state()
     }

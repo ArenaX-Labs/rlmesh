@@ -25,11 +25,12 @@ from ._eval import (
 )
 from ._read import Reader
 from ._view import FrameSources, View
-from .base import run
+from .base import BatchOptions, run
 
 __all__ = [
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
+    "BatchOptions",
     "Binding",
     "EpisodeResult",
     "EvalReport",

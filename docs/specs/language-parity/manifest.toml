@@ -182,6 +182,121 @@ status = "bridge"
 ["rlmesh.numpy:RemoteVectorEnv.spec".cpp]
 status = "bridge"
 
+["rlmesh:BatchOptions"]
+area = "model"
+rule = ["R-4"]
+parameters = { "max_batch_size" = { "default" = "32" }, "batch_window_ms" = { "default" = "5" }, "batch_byte_budget" = { "default" = "268431360", "expression" = "256 * 1024 * 1024 - 4 * 1024" }, "max_in_flight_batches" = { "default" = "2" }, "batch_records" = { "default" = "None" } }
+
+["rlmesh:BatchOptions".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions"
+params = { "max_batch_size" = "rlmesh::serve_options::BatchOptions#max_batch_size", "batch_window_ms" = "rlmesh::serve_options::BatchOptions#batch_window_ms", "batch_byte_budget" = "rlmesh::serve_options::BatchOptions#batch_byte_budget", "max_in_flight_batches" = "rlmesh::serve_options::BatchOptions#max_in_flight_batches", "batch_records" = "rlmesh::serve_options::BatchOptions#batch_records" }
+also = [
+  "rlmesh::BatchOptions",
+  "rlmesh::serve_options::BatchOptions::Clone",
+  "rlmesh::serve_options::BatchOptions::Debug",
+  "rlmesh::serve_options::BatchOptions::Default",
+]
+rule = ["R-3"]
+
+["rlmesh:BatchOptions".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_byte_budget"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.batch_byte_budget".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::batch_byte_budget"
+params = {}
+
+["rlmesh:BatchOptions.batch_byte_budget".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_byte_budget".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_records"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.batch_records".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::batch_records"
+params = {}
+
+["rlmesh:BatchOptions.batch_records".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_records".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_window_ms"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.batch_window_ms".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::batch_window_ms"
+params = {}
+
+["rlmesh:BatchOptions.batch_window_ms".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_window_ms".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.max_batch_size"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.max_batch_size".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::max_batch_size"
+params = {}
+
+["rlmesh:BatchOptions.max_batch_size".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.max_batch_size".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.max_in_flight_batches"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.max_in_flight_batches".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::max_in_flight_batches"
+params = {}
+
+["rlmesh:BatchOptions.max_in_flight_batches".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.max_in_flight_batches".cpp]
+status = "exempt"
+rule = ["D-46"]
+
 ["rlmesh:Binding"]
 area = "running"
 rule = ["R-4"]
@@ -2870,12 +2985,12 @@ rule = ["R-3"]
 ["rlmesh:Model.serve"]
 area = "model"
 rule = ["R-4"]
-parameters = { "address" = {}, "options" = { "default" = "None" }, name = { default = "None" } }
+parameters = { "address" = {}, "options" = { "default" = "None" }, name = { default = "None" }, batching = { default = "None" } }
 
 ["rlmesh:Model.serve".rust]
 status = "present"
 path = "rlmesh::Model::serve"
-params = { "address" = "rlmesh::Model::serve#address", "options" = "rlmesh::Model::serve#options", name = "rlmesh::ModelServeOptions#name" }
+params = { "address" = "rlmesh::Model::serve#address", "options" = "rlmesh::Model::serve#options", name = "rlmesh::ModelServeOptions#name", batching = "rlmesh::ModelServeOptions#batching" }
 also = [
   "rlmesh::ModelServeOptions",
   "rlmesh::ModelServeOptions::Clone",
@@ -2892,6 +3007,7 @@ also_rules = { "rlmesh::ModelServeOptions::options" = ["R-12"] }
 status = "present"
 path = "rlmesh_model_serve"
 params = { "address" = "rlmesh_model_serve#address", "options" = "rlmesh_model_serve#options", name = "RLMeshModelServeOptions#name" }
+refused = { batching = ["D-46"] }
 also = [
   "RLMESH_MODEL_SERVE_OPTIONS_INIT",
   "RLMESH_MODEL_SERVE_OPTIONS_MIN_SIZE",
@@ -2908,6 +3024,7 @@ also_rules = { "RLMeshModelServeOptions::options" = ["R-12"] }
 status = "present"
 path = "rlmesh::Model::serve"
 params = { "address" = "rlmesh::Model::serve#address", "options" = "rlmesh::Model::serve#options", name = "rlmesh::ModelServeOptions#name" }
+refused = { batching = ["D-46"] }
 also = [
   "rlmesh::ModelServeOptions",
   "rlmesh::ModelServeOptions::options",
@@ -14738,7 +14855,7 @@ status = "bridge"
 ["rlmesh.numpy:Model.serve"]
 area = "model"
 rule = ["R-24"]
-parameters = { "address" = {}, "options" = { "default" = "None" }, name = { default = "None" } }
+parameters = { "address" = {}, "options" = { "default" = "None" }, name = { default = "None" }, batching = { default = "None" } }
 
 ["rlmesh.numpy:Model.serve".rust]
 status = "bridge"

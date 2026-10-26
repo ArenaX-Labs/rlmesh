@@ -6,6 +6,7 @@
       "ENV_RESET_OPTIONS_KEY",
       "NO_ADAPTER",
       "RANDOM_SAMPLE",
+      "BatchOptions",
       "Binding",
       "BuildInfo",
       "EnvFactory",
@@ -62,6 +63,33 @@
       "types"
     ],
     "objects": {
+      "BatchOptions": {
+        "kind": "class",
+        "members": {
+          "batch_byte_budget": {
+            "kind": "attribute",
+            "signature": "batch_byte_budget: int"
+          },
+          "batch_records": {
+            "kind": "attribute",
+            "signature": "batch_records: str | os.PathLike[str] | None"
+          },
+          "batch_window_ms": {
+            "kind": "attribute",
+            "signature": "batch_window_ms: int"
+          },
+          "max_batch_size": {
+            "kind": "attribute",
+            "signature": "max_batch_size: int"
+          },
+          "max_in_flight_batches": {
+            "kind": "attribute",
+            "signature": "max_in_flight_batches: int"
+          }
+        },
+        "signature": "BatchOptions(max_batch_size: int = 32, batch_window_ms: int = 5, batch_byte_budget: int = 256 * 1024 * 1024 - 4 * 1024, max_in_flight_batches: int = 2, batch_records: str | os.PathLike[str] | None = None)",
+        "stability": "Stable"
+      },
       "Binding": {
         "kind": "class",
         "members": {
@@ -450,7 +478,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
+            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None, batching: BatchOptions | None = None) -> None"
           },
           "session": {
             "kind": "attribute",
@@ -2761,7 +2789,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
+            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None, batching: BatchOptions | None = None) -> None"
           },
           "session": {
             "kind": "attribute",
@@ -3409,7 +3437,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
+            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None, batching: BatchOptions | None = None) -> None"
           },
           "session": {
             "kind": "attribute",
@@ -4963,7 +4991,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None) -> None"
+            "signature": "serve(address: str, *, name: str | None = None, options: ServeOptions | None = None, batching: BatchOptions | None = None) -> None"
           },
           "session": {
             "kind": "attribute",

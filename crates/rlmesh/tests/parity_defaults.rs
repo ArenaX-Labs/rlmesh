@@ -2,6 +2,27 @@
 // Input: docs/specs/language-parity/manifest.toml.
 #[test]
 fn defaults_match_python_literals() {
+    let value = rlmesh::serve_options::BatchOptions::default();
+    assert_eq!(
+        value.max_batch_size, 32,
+        "rlmesh:BatchOptions.max_batch_size"
+    );
+    assert_eq!(
+        value.batch_window_ms, 5,
+        "rlmesh:BatchOptions.batch_window_ms"
+    );
+    assert_eq!(
+        value.batch_byte_budget, 268431360,
+        "rlmesh:BatchOptions.batch_byte_budget"
+    );
+    assert_eq!(
+        value.max_in_flight_batches, 2,
+        "rlmesh:BatchOptions.max_in_flight_batches"
+    );
+    assert!(
+        value.batch_records.is_none(),
+        "rlmesh:BatchOptions.batch_records"
+    );
     let value = rlmesh::env::EnvFactoryServeOptions::default();
     assert_eq!(value.num_envs, 1, "rlmesh:EnvFactory.serve.num_envs");
     assert!(
@@ -84,6 +105,7 @@ fn defaults_match_python_literals() {
     let value = rlmesh::ModelServeOptions::default();
     assert!(value.options.is_none(), "rlmesh:Model.serve.options");
     assert!(value.name.is_none(), "rlmesh:Model.serve.name");
+    assert!(value.batching.is_none(), "rlmesh:Model.serve.batching");
     let value = rlmesh::recorder::RecorderOptions::default();
     assert!(
         value.result_set_id.is_none(),

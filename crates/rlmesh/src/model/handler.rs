@@ -204,6 +204,14 @@ pub trait ModelHandler: Send {
         results
     }
 
+    /// Whether [`predict_grouped`](Self::predict_grouped) fuses its groups
+    /// into one forward, so a served model gains from coalescing requests
+    /// into one call. Defaults to `false`: the default runs the groups one
+    /// at a time.
+    fn fuses_groups(&self) -> bool {
+        false
+    }
+
     /// Engine-held per-episode adapter state (frame-stack windows) at this
     /// endpoint, summed across routes — the state that grows with concurrent
     /// episodes and shrinks on episode-end GC. `None` for a handler that keeps
@@ -316,6 +324,10 @@ impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
         observations: Vec<ModelObservation>,
     ) -> Vec<Result<PredictFrames>> {
         (**self).predict_grouped(observations).await
+    }
+
+    fn fuses_groups(&self) -> bool {
+        (**self).fuses_groups()
     }
 
     fn held_state(&self) -> Option<HeldState> {

@@ -399,8 +399,9 @@ class TestServeOptionsDeclaring:
                 name: str,
                 options: ServeOptions | None,
                 envelope: str,
+                **batching: object,
             ) -> None:
-                _ = address, name, envelope
+                _ = address, name, envelope, batching
                 served.append(options)
 
             def stop_serving(self) -> None:

@@ -111,6 +111,52 @@ impl ServeOptions {
     }
 }
 
+/// How a session-served model coalesces the predicts it receives, from every
+/// session it answers in, into one handler call (one fused forward for a
+/// model that fuses). The model still runs one forward at a time: batching
+/// raises fill, not concurrency.
+///
+/// A batch closes at `max_batch_size` groups or `batch_byte_budget`
+/// observation bytes. While the model is idle it also closes
+/// `batch_window_ms` after its first request; while a forward runs, it stays
+/// open until that forward ends, so under load the window costs nothing.
+/// A model that cannot fuse (`allow_fusion = false`, or no batched corner)
+/// is not batched.
+///
+/// The defaults are the platform's: `max_batch_size` and `batch_window_ms`
+/// as its request compiler sets them, the byte budget and in-flight cap as
+/// its runner reads them. Build one with `..Default::default()`.
+#[derive(Debug, Clone)]
+pub struct BatchOptions {
+    /// The most predict groups (one route's rows each) one handler call
+    /// carries; 1 answers each request on its own, at once. A request with
+    /// more groups runs as a batch of its own.
+    pub max_batch_size: usize,
+    /// How long an idle model holds a batch open for more requests.
+    pub batch_window_ms: u64,
+    /// The most observation bytes one handler call carries. A request over
+    /// it runs as a batch of its own.
+    pub batch_byte_budget: usize,
+    /// Batches past assembly at once: one on the model and the next
+    /// assembling behind it at 2; 1 assembles only while the model is idle.
+    pub max_in_flight_batches: usize,
+    /// Append one JSON line per batch here, in the platform's
+    /// `telemetry/batches.jsonl` shape. `None` records nothing.
+    pub batch_records: Option<std::path::PathBuf>,
+}
+
+impl Default for BatchOptions {
+    fn default() -> Self {
+        Self {
+            max_batch_size: 32,
+            batch_window_ms: 5,
+            batch_byte_budget: 256 * 1024 * 1024 - 4 * 1024,
+            max_in_flight_batches: 2,
+            batch_records: None,
+        }
+    }
+}
+
 /// Refuses an endpoint token on a session (`configured`, or set in `var`,
 /// `RLMESH_ENV_ENDPOINT_TOKEN` or `RLMESH_MODEL_ENDPOINT_TOKEN`): 0.2
 /// sessions cannot check one yet.

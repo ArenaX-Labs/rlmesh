@@ -63,6 +63,10 @@ pub struct ModelServeOptions {
     pub cancel: Option<crate::ext::CancelToken>,
     /// The Rust- and C-only extras.
     pub ext: Option<crate::ext::ModelServeOptions>,
+    /// How a session-served model coalesces predicts; `None` is
+    /// [`BatchOptions::default`](crate::BatchOptions). Only a session
+    /// address batches.
+    pub batching: Option<crate::BatchOptions>,
 }
 
 /// A loaded model built from a [`Policy`] or predict closure. A shared
@@ -1243,6 +1247,7 @@ fn serve_blocking(
         options,
         cancel,
         ext,
+        batching,
     } = options;
     if cancel.as_ref().is_some_and(crate::ext::CancelToken::take) {
         return Err(Error::Cancelled);
@@ -1271,7 +1276,7 @@ fn serve_blocking(
     let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
     #[cfg(not(feature = "lockstep"))]
     {
-        let _ = (serve, ext, foreground, tokens);
+        let _ = (serve, ext, batching, foreground, tokens);
         Err(Error::invalid_argument(
             "serve: a session model needs rlmesh's `lockstep` feature",
         ))
@@ -1300,7 +1305,8 @@ fn serve_blocking(
             true,
         )?;
         let join = serve.close_timeout.unwrap_or(SESSION_JOIN);
-        serve_session(shared, address, edition, join, foreground, tokens)
+        let batching = batching.unwrap_or_default();
+        serve_session(shared, address, edition, batching, join, foreground, tokens)
     }
 }
 
@@ -1316,6 +1322,7 @@ fn serve_session(
     shared: &Arc<Shared>,
     address: &str,
     edition: Option<String>,
+    batching: crate::BatchOptions,
     join: Duration,
     foreground: bool,
     tokens: Vec<crate::ext::CancelToken>,
@@ -1330,7 +1337,9 @@ fn serve_session(
         },
     )?;
     let service = Arc::new(
-        crate::lockstep::ModelService::new(handler, describe).declaring(edition.as_deref()),
+        crate::lockstep::ModelService::new(handler, describe)
+            .declaring(edition.as_deref())
+            .batching(batching)?,
     );
     let binding = crate::run::drive::block_on_library(crate::lockstep::ModelBinding::bind(address))
         .map_err(crate::env::client::lockstep_error)?;

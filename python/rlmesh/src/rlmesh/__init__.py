@@ -33,6 +33,7 @@ from ._metadata import sanitize_metadata
 from ._models import (
     NO_ADAPTER,
     RANDOM_SAMPLE,
+    BatchOptions,
     Binding,
     EpisodeResult,
     EvalReport,
@@ -131,6 +132,7 @@ __all__ = [
     "ENV_RESET_OPTIONS_KEY",
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
+    "BatchOptions",
     "Binding",
     "BuildInfo",
     "EnvFactory",

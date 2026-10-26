@@ -859,12 +859,14 @@ impl PyModel {
     /// Serves the model as the participant `name` in the session at
     /// `address`, declaring `workflow_edition`, until a signal or
     /// [`stop_serving`](Self::stop_serving).
+    #[allow(clippy::too_many_arguments)] // the serve call's settings, passed through
     fn serve_on_session(
         &self,
         py: Python<'_>,
         address: &str,
         name: &str,
         workflow_edition: Option<&str>,
+        batching: rlmesh::BatchOptions,
         close: Duration,
         envelope: Option<&str>,
     ) -> PyResult<()> {
@@ -881,7 +883,9 @@ impl PyModel {
         });
         let service = Arc::new(
             rlmesh::lockstep::ModelService::new(self.build_handler(), describe)
-                .declaring(workflow_edition),
+                .declaring(workflow_edition)
+                .batching(batching)
+                .map_err(to_py_err)?,
         );
         let serving = Arc::clone(&self.serving);
         let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
@@ -1377,7 +1381,11 @@ impl PyModel {
 
     /// Serves the model as the participant `name` in the session at
     /// `address`, until a signal or [`stop_serving`](Self::stop_serving).
-    #[pyo3(signature = (address, name, options=None, envelope=None))]
+    ///
+    /// The batch settings are `rlmesh.BatchOptions`' fields; `None` takes
+    /// that field's default.
+    #[pyo3(signature = (address, name, options=None, envelope=None, max_batch_size=None, batch_window_ms=None, batch_byte_budget=None, max_in_flight_batches=None, batch_records=None))]
+    #[allow(clippy::too_many_arguments)] // each batch setting is a Python kwarg
     fn serve(
         &self,
         py: Python<'_>,
@@ -1385,7 +1393,20 @@ impl PyModel {
         name: &str,
         options: Option<PyServeOptions>,
         envelope: Option<&str>,
+        max_batch_size: Option<usize>,
+        batch_window_ms: Option<u64>,
+        batch_byte_budget: Option<usize>,
+        max_in_flight_batches: Option<usize>,
+        batch_records: Option<std::path::PathBuf>,
     ) -> PyResult<()> {
+        let defaults = rlmesh::BatchOptions::default();
+        let batching = rlmesh::BatchOptions {
+            max_batch_size: max_batch_size.unwrap_or(defaults.max_batch_size),
+            batch_window_ms: batch_window_ms.unwrap_or(defaults.batch_window_ms),
+            batch_byte_budget: batch_byte_budget.unwrap_or(defaults.batch_byte_budget),
+            max_in_flight_batches: max_in_flight_batches.unwrap_or(defaults.max_in_flight_batches),
+            batch_records,
+        };
         let run_span = tracing::info_span!("rlmesh.model.serve", address = address);
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.serve.total");
@@ -1397,6 +1418,7 @@ impl PyModel {
             address,
             name,
             options.workflow_edition.as_deref(),
+            batching,
             close,
             envelope,
         )?;
@@ -1410,6 +1432,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 import collections.abc
+import os
 import typing
 
 class PyModel:
@@ -1426,7 +1449,7 @@ class PyModel:
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
-    def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None) -> None: ...
+    def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None, max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None) -> None: ...
 "#
     }
 }

@@ -927,6 +927,8 @@ pub unsafe extern "C" fn rlmesh_model_serve(
                 options: unsafe { crate::env_server::serve_options(o.options) }?,
                 cancel: unsafe { o.cancel.as_ref() }.map(|t| t.0.clone()),
                 ext,
+                // TODO: the C ABI takes the batch defaults; expose BatchOptions with the 0.2 C ABI rev.
+                batching: None,
             }
         } else {
             rlmesh::ModelServeOptions::default()

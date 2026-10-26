@@ -5,8 +5,10 @@ from __future__ import annotations
 import atexit
 import contextlib
 import contextvars
+import dataclasses
 import functools
 import inspect
+import os
 import uuid
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -474,6 +476,32 @@ def _close_serving_models() -> None:
 
 
 _ = atexit.register(_close_serving_models)
+
+
+@dataclasses.dataclass(frozen=True)
+class BatchOptions:
+    """How a served model coalesces predicts from every session it answers in.
+
+    Requests that arrive close together go to the model as one grouped predict,
+    one fused forward for a model that fuses. The model still runs one forward
+    at a time: batching raises fill, not concurrency. A batch closes at
+    ``max_batch_size`` groups (one route's rows each) or ``batch_byte_budget``
+    observation bytes; while the model is idle it also closes
+    ``batch_window_ms`` after its first request, and while a forward runs it
+    stays open until that forward ends. A model that cannot fuse
+    (``allow_fusion = False``, or no batched corner) is never batched.
+
+    ``max_batch_size=1`` turns batching off. ``max_in_flight_batches=2`` lets
+    the next batch assemble while one runs; 1 assembles only while the model is
+    idle. ``batch_records`` appends one JSON line per batch, in the managed
+    platform's ``telemetry/batches.jsonl`` shape.
+    """
+
+    max_batch_size: int = 32
+    batch_window_ms: int = 5
+    batch_byte_budget: int = 256 * 1024 * 1024 - 4 * 1024
+    max_in_flight_batches: int = 2
+    batch_records: str | os.PathLike[str] | None = None
 
 
 class ModelBase(Generic[ObsT, ActT]):
@@ -1607,6 +1635,7 @@ class ModelBase(Generic[ObsT, ActT]):
         *,
         name: str | None = None,
         options: ServeOptions | None = None,
+        batching: BatchOptions | None = None,
     ) -> None:
         """Serve this model on a session (blocking).
 
@@ -1614,6 +1643,10 @@ class ModelBase(Generic[ObsT, ActT]):
         ``"bench"``) as the participant ``name`` and answers whoever drives
         it, until closed or interrupted: ``Model("lab:7447/openpi")`` reaches
         it. A run invites it into the session its env is in.
+
+        Predicts from every session it answers in are coalesced into one
+        grouped predict as ``batching`` says (:class:`BatchOptions`' defaults
+        when ``None``).
 
         A spec'd model resolves its adapter per env from the env contract each
         route's resolve delivers, then applies it around predict; a spec-less /
@@ -1662,7 +1695,18 @@ class ModelBase(Generic[ObsT, ActT]):
                 None,
                 (declared.workflow_edition if declared is not None else None) or "",
             )
-            worker.serve(address, name, declared, envelope)
+            batch = batching if batching is not None else BatchOptions()
+            worker.serve(
+                address,
+                name,
+                declared,
+                envelope,
+                max_batch_size=batch.max_batch_size,
+                batch_window_ms=batch.batch_window_ms,
+                batch_byte_budget=batch.batch_byte_budget,
+                max_in_flight_batches=batch.max_in_flight_batches,
+                batch_records=batch.batch_records,
+            )
         except BaseException:
             self._calls.deregister_serve(token)
             with contextlib.suppress(Exception):

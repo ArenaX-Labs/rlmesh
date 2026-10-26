@@ -1216,9 +1216,7 @@ impl ModelHandler for AdaptedModelHandler {
         &mut self,
         observations: Vec<ModelObservation>,
     ) -> Vec<Result<PredictFrames>> {
-        let fusable = self.predict.allow_fusion()
-            && (self.predict.has_chunk_batch() || self.predict.has_batch());
-        if observations.len() <= 1 || !fusable {
+        if observations.len() <= 1 || !self.fuses_groups() {
             let mut results = Vec::with_capacity(observations.len());
             for observation in observations {
                 results.push(self.predict_chunked(observation).await);
@@ -1249,6 +1247,10 @@ impl ModelHandler for AdaptedModelHandler {
         })
         .await
         .unwrap_or_else(|err| (0..group_count).map(|_| Err(err.clone())).collect())
+    }
+
+    fn fuses_groups(&self) -> bool {
+        self.predict.allow_fusion() && (self.predict.has_chunk_batch() || self.predict.has_batch())
     }
 
     fn take_adapter_ns(&mut self) -> u64 {

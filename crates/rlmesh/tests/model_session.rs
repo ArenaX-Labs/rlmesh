@@ -374,3 +374,320 @@ async fn a_driver_waits_for_a_model_not_up_yet_and_never_hosts_its_session() {
     cancel.cancel();
     served.await.unwrap().unwrap();
 }
+
+/// Fuses: one handler call answers every group, each with its own lanes.
+/// Records the groups of each call and refuses an observation of `-1`.
+#[derive(Clone, Default)]
+struct Fused(Arc<std::sync::Mutex<Vec<usize>>>);
+
+impl Fused {
+    fn calls(&self) -> Vec<usize> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[rlmesh::binding::async_trait]
+impl ModelHandler for Fused {
+    async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        observation.decoded_lanes()
+    }
+
+    async fn predict_grouped(
+        &mut self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<rlmesh::Result<PredictFrames>> {
+        self.0.lock().unwrap().push(observations.len());
+        observations
+            .into_iter()
+            .map(|observation| {
+                let lanes = observation.decoded_lanes()?;
+                if lanes.contains(&value(-1.0)) {
+                    return Err(rlmesh::Error::model_recoverable("refused -1"));
+                }
+                Ok(PredictFrames {
+                    actions: lanes,
+                    replay: Vec::new(),
+                })
+            })
+            .collect()
+    }
+
+    fn fuses_groups(&self) -> bool {
+        true
+    }
+}
+
+fn batched<H: ModelHandler + 'static>(
+    handler: H,
+    options: rlmesh::BatchOptions,
+) -> Arc<ModelService<H>> {
+    Arc::new(
+        ModelService::new(handler, String::new())
+            .batching(options)
+            .unwrap(),
+    )
+}
+
+/// Predicts one group each, all at once, and returns each reply.
+async fn predict_together<H: ModelHandler + 'static>(
+    service: &Arc<ModelService<H>>,
+    groups: Vec<ModelGroup>,
+) -> Vec<ModelReply> {
+    let calls = groups.into_iter().map(|group| {
+        let service = Arc::clone(service);
+        tokio::spawn(async move { service.answer(ModelRequest::Predict(vec![group])).await.0 })
+    });
+    let mut replies = Vec::new();
+    for call in calls.collect::<Vec<_>>() {
+        replies.push(call.await.unwrap());
+    }
+    replies
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn predicts_from_several_sessions_coalesce_into_one_handler_call() {
+    use rlmesh::binding::model::{EpisodeInfo, ModelRouteContext, ResolveOptions};
+    use rlmesh::lockstep::ServedModel;
+
+    let records = tempfile::tempdir().unwrap();
+    let path = records.path().join("batches.jsonl");
+    let binding = ModelBinding::bind(":0/fused").await.unwrap();
+    let address = binding.address();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let fused = Fused::default();
+    let service = batched(
+        fused.clone(),
+        rlmesh::BatchOptions {
+            batch_window_ms: 500,
+            batch_records: Some(path.clone()),
+            ..Default::default()
+        },
+    );
+    let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
+
+    // Two drivers, each in a session of its own that it invites the model
+    // into, each predicting its own route.
+    let mut hosts = Vec::new();
+    let mut drivers = Vec::new();
+    for (i, route) in ["a", "b"].into_iter().enumerate() {
+        let host = rlmesh_session::address::host_at(
+            "127.0.0.1:0".parse().unwrap(),
+            &format!("run{i}"),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let mut model = ServedModel::new(address.clone(), Duration::from_secs(10));
+        model.join(&host.address.to_string()).await.unwrap();
+        model
+            .route_setup()
+            .unwrap()
+            .resolve_adapter(
+                route,
+                &contract(),
+                ResolveOptions {
+                    execution_horizon: 1,
+                    delivers_history: false,
+                    workflow_edition: None,
+                },
+            )
+            .await
+            .unwrap();
+        hosts.push(host);
+        drivers.push((route, model));
+    }
+    let predicts = drivers.into_iter().map(|(route, mut model)| {
+        tokio::spawn(async move {
+            let observation = ModelObservation {
+                observation: Some(group(route, &[1.0]).observation),
+                route: ModelRouteContext {
+                    env_id: route.into(),
+                    episodes: vec![EpisodeInfo::default()],
+                    ..ModelRouteContext::default()
+                },
+                num_envs: 1,
+                ..ModelObservation::default()
+            };
+            let actions = model.predict(observation).await;
+            model.on_close().await.unwrap();
+            actions
+        })
+    });
+    for predict in predicts.collect::<Vec<_>>() {
+        assert_eq!(predict.await.unwrap().unwrap(), vec![value(1.0)]);
+    }
+    assert_eq!(fused.calls(), vec![2], "one handler call for both sessions");
+
+    cancel.cancel();
+    served.await.unwrap().unwrap();
+    for mut host in hosts {
+        host.close().await.unwrap();
+    }
+    // One record, in the platform's batches.jsonl shape.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1, "{text}");
+    let record = records[0].as_object().unwrap();
+    let mut keys: Vec<&str> = record.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "at",
+            "componentId",
+            "endpoint",
+            "endpointTotalMs",
+            "fill",
+            "forwardWallMs",
+            "inFlightAtDispatch",
+            "maxSize",
+            "ok",
+            "queueWaitMs",
+            "size"
+        ]
+    );
+    assert_eq!(record["size"], 2);
+    assert_eq!(record["componentId"], "fused");
+    assert_eq!(record["ok"], true);
+    assert!(record["queueWaitMs"]["max"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn max_batch_size_and_the_byte_budget_split_batches() {
+    // Each group carries 8 observation bytes.
+    for (options, want) in [
+        (
+            rlmesh::BatchOptions {
+                max_batch_size: 2,
+                batch_window_ms: 300,
+                ..Default::default()
+            },
+            vec![1, 2],
+        ),
+        (
+            rlmesh::BatchOptions {
+                batch_window_ms: 300,
+                batch_byte_budget: 20,
+                ..Default::default()
+            },
+            vec![1, 2],
+        ),
+    ] {
+        let fused = Fused::default();
+        let service = batched(fused.clone(), options);
+        for route in ["a", "b", "c"] {
+            assert!(matches!(
+                service.answer(resolve(route, 1)).await.0,
+                ModelReply::Resolved(_)
+            ));
+        }
+        let replies = predict_together(
+            &service,
+            vec![group("a", &[1.0]), group("b", &[2.0]), group("c", &[3.0])],
+        )
+        .await;
+        assert!(
+            replies
+                .iter()
+                .all(|reply| matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()))
+        );
+        let mut calls = fused.calls();
+        calls.sort_unstable();
+        assert_eq!(calls, want);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_window_bounds_how_long_a_lone_request_waits() {
+    let service = batched(
+        Fused::default(),
+        rlmesh::BatchOptions {
+            batch_window_ms: 200,
+            ..Default::default()
+        },
+    );
+    service.answer(resolve("a", 1)).await;
+    let started = std::time::Instant::now();
+    let (reply, timing) = service
+        .answer(ModelRequest::Predict(vec![group("a", &[1.0])]))
+        .await;
+    let waited = started.elapsed();
+    assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
+    assert!(
+        waited >= Duration::from_millis(200) && waited < Duration::from_secs(2),
+        "{waited:?}"
+    );
+    assert!(timing.queue_ns.unwrap() >= 200_000_000, "{timing:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_model_that_does_not_fuse_is_not_batched() {
+    // Echo runs a grouped predict one route at a time.
+    let service = batched(
+        Echo,
+        rlmesh::BatchOptions {
+            batch_window_ms: 5_000,
+            ..Default::default()
+        },
+    );
+    service.answer(resolve("a", 1)).await;
+    service.answer(resolve("b", 1)).await;
+    let started = std::time::Instant::now();
+    let replies = predict_together(&service, vec![group("a", &[1.0]), group("b", &[2.0])]).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it waited a window"
+    );
+    let space = contract().action_space.unwrap();
+    for (reply, want) in replies.iter().zip([1.0, 2.0]) {
+        let ModelReply::Predicted(outcomes) = reply else {
+            panic!("a predict reply")
+        };
+        let frames = outcomes[0].as_ref().unwrap();
+        assert_eq!(
+            decode_leaf_slab(&frames[0], &space, 1).unwrap(),
+            vec![value(want)]
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_requests_error_does_not_fail_the_others_in_its_batch() {
+    let fused = Fused::default();
+    let service = batched(
+        fused.clone(),
+        rlmesh::BatchOptions {
+            batch_window_ms: 300,
+            ..Default::default()
+        },
+    );
+    service.answer(resolve("a", 1)).await;
+    service.answer(resolve("b", 1)).await;
+    // b's rows are refused by the model and c was never resolved; a's
+    // stand.
+    let replies = predict_together(
+        &service,
+        vec![group("a", &[1.0]), group("b", &[-1.0]), group("c", &[3.0])],
+    )
+    .await;
+    assert_eq!(fused.calls(), vec![2], "one call, for the resolved routes");
+    let outcome = |i: usize| match &replies[i] {
+        ModelReply::Predicted(outcomes) => outcomes[0].clone(),
+        other => panic!("a predict reply, not {other:?}"),
+    };
+    assert!(outcome(0).is_ok());
+    let refused = outcome(1).unwrap_err();
+    assert!(
+        refused.recoverable && refused.message.contains("refused -1"),
+        "{refused:?}"
+    );
+    assert!(
+        outcome(2)
+            .unwrap_err()
+            .message
+            .contains("\"c\" was not resolved")
+    );
+}
