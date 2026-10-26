@@ -864,6 +864,37 @@ fn steps_server() -> EnvServer {
     server
 }
 
+/// A `base_seed` derives the same reset seeds on every run, in any process on
+/// any machine: these values follow from `(4242, generation, lane 0)` alone.
+#[cfg(feature = "lockstep")]
+#[tokio::test]
+async fn a_base_seed_derives_the_same_reset_seeds_in_every_process() {
+    use crate::model::random::RandomSampleHandler;
+    use crate::model::worker::{ModelWorker, RunLocalOptions};
+
+    let env = Steps::new();
+    let resets = Arc::clone(&env.resets);
+    let server = crate::EnvServer::new(env, quick()).unwrap();
+    server.start().unwrap();
+    let options = RunLocalOptions::parse(server.address())
+        .unwrap()
+        .for_episodes(2)
+        .base_seed(4242);
+    ModelWorker::new(RandomSampleHandler::default())
+        .run_local_async(options)
+        .await
+        .unwrap();
+    server.shutdown_async().await.unwrap();
+    let seeds: Vec<Option<i64>> = resets.lock().unwrap().iter().map(|reset| reset.0).collect();
+    assert_eq!(
+        seeds,
+        [
+            Some(3_230_666_292_628_274_642),
+            Some(2_384_531_154_939_834_245)
+        ]
+    );
+}
+
 #[cfg(feature = "lockstep")]
 #[tokio::test]
 async fn a_v2_handle_connects_and_drops_inside_a_current_thread_runtime() {
