@@ -176,17 +176,6 @@ impl ModelClient {
         )
     }
 
-    /// Whether the server advertised that it answers an unpairable resolve with
-    /// `MODEL_ERROR_CODE_ADAPTER_RESOLUTION`
-    /// (`rlmesh.model.adapter_resolution_code.v1`). The emitter's gate: a
-    /// runtime sets `reads_adapter_resolution_code` only for such a server.
-    pub fn server_types_resolution_errors(&self) -> bool {
-        rlmesh_proto::has_capability(
-            &self.server_capabilities,
-            capabilities::MODEL_ADAPTER_RESOLUTION_CODE_V1,
-        )
-    }
-
     /// The capabilities the server advertised at handshake; empty before it.
     pub fn server_capabilities(&self) -> &HashMap<String, String> {
         &self.server_capabilities

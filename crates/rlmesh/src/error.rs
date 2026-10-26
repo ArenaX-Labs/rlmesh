@@ -479,11 +479,6 @@ impl Error {
             rlmesh_grpc::error::Error::Environment(error) => {
                 Self::Environment(EnvironmentError::from_wire(error))
             }
-            rlmesh_grpc::error::Error::Model(error)
-                if error.code == rlmesh_grpc::error::ModelErrorCode::AdapterResolution =>
-            {
-                Self::adapter_resolution(error.message)
-            }
             rlmesh_grpc::error::Error::Model(error) => Self::Model(ModelError {
                 code: map_model_error_code(error.code),
                 message: error.message,
@@ -611,8 +606,6 @@ fn map_model_error_code(code: rlmesh_grpc::error::ModelErrorCode) -> ModelErrorC
         Wire::NotConfigured => ModelErrorCode::NotConfigured,
         Wire::Busy => ModelErrorCode::Busy,
         Wire::Unsupported => ModelErrorCode::Unsupported,
-        // Raised as the adapter-resolution error before it gets here.
-        Wire::AdapterResolution => ModelErrorCode::InvalidRequest,
         Wire::Internal => ModelErrorCode::Internal,
         Wire::Cancelled => ModelErrorCode::Cancelled,
         Wire::Closed => ModelErrorCode::Closed,

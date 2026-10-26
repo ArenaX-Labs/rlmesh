@@ -40,14 +40,13 @@ max_message_bytes = 268_435_456 # 256 MiB, rlmesh_grpc::MAX_MESSAGE_SIZE
 
 [wire.enums]
 # Value count of every enum under crates/rlmesh-proto/proto. A 0.1.0 peer folds
-# an unknown *ErrorCode to UNSPECIFIED silently, so a new value in those two
-# vocabularies is sent only to a peer that opted in by capability (ModelErrorCode
-# ADAPTER_RESOLUTION); the others are decode errors on an old peer, except
+# an unknown *ErrorCode to UNSPECIFIED silently, so those two vocabularies are
+# frozen for wire-v1; the others are decode errors on an old peer, except
 # RenderFormat, whose unknown value drops the frame.
 "rlmesh.core.v1.AutoresetMode" = 4
 "rlmesh.env.v1.EnvErrorCode" = 10
 "rlmesh.env.v1.RenderFormat" = 2
-"rlmesh.model.v1.ModelErrorCode" = 9
+"rlmesh.model.v1.ModelErrorCode" = 8
 "rlmesh.spaces.v1.DataType" = 13
 
 [wire.oneofs]
