@@ -1,32 +1,40 @@
-//! Apply resolved plans to concrete observation and action values.
+//! Run a binding's plans on host values: the observation and action
+//! [`Value`] trees, Gym spaces, the JPEG codec and the host-language holes.
 //!
-//! The engine operates on a [`Value`] payload model — a `rlmesh_spaces::Tensor`
-//! plus text/scalar/list/map — so dense data shares the repo-wide tensor type;
-//! bridging host tensor types (numpy, the runtime's native values) is
-//! binding-layer work. Custom inputs are host-language holes: provide a
-//! [`CustomTransform`] to fill them, or use [`NoCustoms`] when the specs are
-//! fully declarative.
+//! The binder ([`rlmesh_session_core::spec::role`]) decides and converts;
+//! this module reads each plan's sources out of the raw observation,
+//! hands them over, and places what comes back into the payload tree.
+//! Custom inputs are host-language holes: provide a [`CustomTransform`] to
+//! fill them, or use [`NoCustoms`] when the specs are fully declarative.
 
-mod action;
-pub(crate) mod geometry;
-mod image;
+mod jpeg;
 pub(crate) mod lookup;
 pub(crate) mod obs;
-mod state;
 mod text;
 pub(crate) mod value;
 
 use std::collections::BTreeMap;
 
-use rlmesh_spaces::Tensor;
+use rlmesh_session_core::spec::apply::Tensor as Array;
+use rlmesh_spaces::{DType, Tensor};
 
 pub use crate::error::ApplyError;
-pub use geometry::{convert_rotation, convert_rotation_with};
-pub(crate) use image::crop_cut;
-pub use image::{RESAMPLES, jpeg_roundtrip};
+pub use jpeg::Jpeg;
 pub use value::Value;
 
-use crate::plans::ResolvedAdapter;
+use crate::plans::Binding as ResolvedAdapter;
+
+/// The resample algorithms an `Image` input may name. Un-suffixed names have
+/// cv2/torch semantics, `_aa` names PIL's; bare `bicubic`/`lanczos3` are
+/// deliberately absent, so a spec naming one fails resolution rather than
+/// silently getting the other library's kernel.
+pub const RESAMPLES: [&str; 5] = [
+    "bilinear",
+    "bilinear_aa",
+    "bicubic_aa",
+    "lanczos3_aa",
+    "area",
+];
 
 /// Host-language hook materializing custom-input transforms.
 pub trait CustomTransform {
@@ -72,22 +80,42 @@ impl CustomTransform for SkipCustoms {
     }
 }
 
-impl ResolvedAdapter {
-    /// Convert a raw env observation into the model input payload `Value` tree.
-    ///
-    /// The stateless half: a frame-stacked input yields its single frame and an
-    /// action-source part its `fill`. The per-episode windows live behind
-    /// [`assemble_obs`](crate::stateful::assemble_obs).
-    pub fn transform_obs(
-        &self,
-        raw_obs: &BTreeMap<String, Value>,
-        customs: &dyn CustomTransform,
-    ) -> Result<Value, ApplyError> {
-        obs::transform_obs(&self.obs_plans, raw_obs, customs, None)
-    }
+/// Convert a raw env observation into the model input payload `Value` tree.
+///
+/// The stateless half: a frame-stacked input yields its single frame and an
+/// action-source part its `fill`. The per-episode windows live behind
+/// [`assemble_obs`](crate::stateful::assemble_obs).
+pub fn transform_obs(
+    adapter: &ResolvedAdapter,
+    raw_obs: &BTreeMap<String, Value>,
+    customs: &dyn CustomTransform,
+) -> Result<Value, ApplyError> {
+    obs::transform_obs(&adapter.obs_plans, raw_obs, customs, None)
+}
 
-    /// Convert a model action output into the env action vector (float32).
-    pub fn transform_action(&self, raw_action: &Value) -> Result<Tensor, ApplyError> {
-        action::transform_action(&self.action_plan, raw_action)
-    }
+/// Convert a model action output into the env action vector (float32).
+pub fn transform_action(
+    adapter: &ResolvedAdapter,
+    raw_action: &Value,
+) -> Result<Tensor, ApplyError> {
+    let action = lookup::numeric_vector(raw_action)?;
+    let env = adapter.action_plan.apply(&action).map_err(from_core)?;
+    Ok(value::tensor_from_f32(vec![env.len() as i64], &env))
+}
+
+/// A binder apply failure as the host's.
+pub(crate) fn from_core(error: rlmesh_session_core::spec::apply::ApplyError) -> ApplyError {
+    ApplyError::new(error.0)
+}
+
+/// A host failure as the binder's (a host read inside a plan).
+pub(crate) fn to_core(error: ApplyError) -> rlmesh_session_core::spec::apply::ApplyError {
+    rlmesh_session_core::spec::apply::ApplyError(error.message)
+}
+
+/// A binder array as a host tensor.
+pub(crate) fn from_array(array: Array) -> Result<Tensor, ApplyError> {
+    let dtype = DType::try_from(array.dtype.code() as i32).map_err(ApplyError::new)?;
+    let shape = array.shape.iter().map(|&d| i64::from(d)).collect();
+    Tensor::from_vec(array.data, shape, dtype).map_err(|err| ApplyError::new(err.to_string()))
 }

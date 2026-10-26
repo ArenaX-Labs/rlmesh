@@ -60,7 +60,7 @@ impl RotationLiteral {
                 [value[0], value[2], value[4]],
                 [value[1], value[3], value[5]],
             ),
-            other => rotation::to_matrix(value, crate::apply::geometry::shared(other)),
+            other => rotation::to_matrix(value, crate::lower::rotation(other)),
         }
     }
 }

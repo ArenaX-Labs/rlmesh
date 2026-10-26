@@ -1,6 +1,6 @@
 //! Resolved hole for a custom-transform input.
 
-use crate::path::NodePath;
+use crate::spec::role::path::NodePath;
 
 /// Resolved hole for a custom-transform input.
 ///

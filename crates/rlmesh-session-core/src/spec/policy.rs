@@ -192,6 +192,16 @@ pub enum ImageLayout {
     Chw,
 }
 
+impl ImageLayout {
+    /// Its name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Hwc => "hwc",
+            Self::Chw => "chw",
+        }
+    }
+}
+
 /// Image pixel format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ImageFormat {

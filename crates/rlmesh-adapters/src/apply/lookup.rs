@@ -229,19 +229,3 @@ pub fn numeric_vector(value: &Value) -> Result<Vec<f32>, ApplyError> {
         )),
     }
 }
-
-/// Affinely map values from the `src` range into the `dst` range.
-pub fn map_range(value: &mut [f32], src: (f64, f64), dst: (f64, f64)) -> Result<(), ApplyError> {
-    let (src_low, src_high) = (src.0 as f32, src.1 as f32);
-    let (dst_low, dst_high) = (dst.0 as f32, dst.1 as f32);
-    let span = src_high - src_low;
-    if span == 0.0 {
-        return Err(ApplyError::new(
-            "source range for an affine map has zero width".to_owned(),
-        ));
-    }
-    for entry in value {
-        *entry = (*entry - src_low) / span * (dst_high - dst_low) + dst_low;
-    }
-    Ok(())
-}

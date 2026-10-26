@@ -14,7 +14,6 @@ use super::action::Action;
 use super::leaf_codec::leaf_codec;
 
 pub use custom::Custom;
-pub(crate) use image::MAX_STACK_SPAN;
 pub use image::{CHANNEL_ORDERS, CROP_MODES, Image, Normalize, StackPad};
 pub use state::{ConcatPart, PartSource, State, StateContainer};
 pub use text::{Text, TextContainer};

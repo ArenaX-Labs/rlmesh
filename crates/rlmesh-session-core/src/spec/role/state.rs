@@ -2,19 +2,23 @@
 
 use std::collections::BTreeMap;
 
-use super::action::ModelOutputs;
-use super::{
-    LeafKey, Projection, Projections, Result, bind, check_geometry, check_provenance, err,
+use crate::spec::projection::Projection;
+use crate::spec::role::action::ModelOutputs;
+use crate::spec::role::bind::{
+    LeafKey, Projections, Result, check_geometry, check_provenance, err, seek,
 };
-use crate::advisory::Advisory;
-use crate::error::ErrorCode;
-use crate::fmt::{missing_role_hint, quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys};
-use crate::path::NodePath;
-use crate::plans::{PreviousAction, StatePiece, StatePlan};
-use crate::spec::{AcceptSet, Attr, ConcatPart, EnvState, PartSource, RotationEncoding, State};
+use crate::spec::role::error::{Advisory, ErrorCode};
+use crate::spec::role::fmt::{
+    missing_role_hint, quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys,
+};
+use crate::spec::role::frames::Attr;
+use crate::spec::role::input::{Accept, EnvState, Piece, State};
+use crate::spec::role::path::NodePath;
+use crate::spec::role::plan::{PreviousAction, StatePiece, StatePlan};
+use crate::spec::rotation::Rotation;
 
 /// Width of an optional component's fill when the env lacks it.
-fn fill_width(component: &ConcatPart, role: &str, at: &str) -> Result<u32> {
+fn fill_width(component: &Piece, role: &str, at: &str) -> Result<u32> {
     if component.index.is_some() {
         return Ok(1);
     }
@@ -24,12 +28,8 @@ fn fill_width(component: &ConcatPart, role: &str, at: &str) -> Result<u32> {
     if let Some(dim) = component.dim {
         return Ok(dim);
     }
-    if let Some(native) = component
-        .encoding
-        .as_ref()
-        .and_then(|encoding| encoding.base())
-    {
-        return Ok(native.dims());
+    if let Some(native) = component.encoding.as_ref().and_then(Accept::first_known) {
+        return Ok(native.width());
     }
     Err(err(
         ErrorCode::MissingWidth,
@@ -51,7 +51,7 @@ pub(super) fn part_suffix(part: Option<&str>) -> String {
 
 /// The constant an absent (or role-less) part contributes, with the model-side
 /// affine folded in — so `apply_state` never needs the spec again.
-fn folded_fill(component: &ConcatPart) -> f64 {
+fn folded_fill(component: &Piece) -> f64 {
     component.fill * component.scale.unwrap_or(1.0) + component.offset.unwrap_or(0.0)
 }
 
@@ -63,7 +63,7 @@ fn fill_piece(
     fill: f64,
     absent_role: Option<String>,
     part: Option<String>,
-    component: &ConcatPart,
+    component: &Piece,
 ) -> StatePiece {
     StatePiece {
         source: NodePath::root(),
@@ -98,13 +98,13 @@ fn fill_piece(
 /// previous step, in model order, or `fill` before the episode's first one.
 /// The width is the actuator's; `labels` reorder the actuator's labels.
 fn previous_action_piece(
-    component: &ConcatPart,
+    component: &Piece,
     role: &str,
     at: &str,
     outputs: &ModelOutputs<'_>,
     advisories: &mut Vec<Advisory>,
 ) -> Result<StatePiece> {
-    let bound = bind(
+    let bound = seek(
         &outputs.by_key,
         role,
         component.part.as_deref(),
@@ -308,9 +308,9 @@ fn label_gather(
 /// silent pass.
 fn select_state_encoding(
     role: &str,
-    env: Option<&AcceptSet<RotationEncoding>>,
-    model: Option<&AcceptSet<RotationEncoding>>,
-) -> Result<(Option<RotationEncoding>, Option<RotationEncoding>)> {
+    env: Option<&Accept<Rotation>>,
+    model: Option<&Accept<Rotation>>,
+) -> Result<(Option<Rotation>, Option<Rotation>)> {
     let (env_set, model_set) = match (env, model) {
         (None, None) => return Ok((None, None)),
         (Some(_), None) | (None, Some(_)) => {
@@ -334,7 +334,7 @@ fn select_state_encoding(
                 "state role {}: env declares only unrecognized rotation encoding(s) {:?}; \
              upgrade the runtime to one that recognizes them",
                 quoted(role),
-                env_set.wire_names()
+                env_set.names
             ),
         ));
     };
@@ -345,7 +345,7 @@ fn select_state_encoding(
                 "state role {}: model declares only unrecognized rotation encoding(s) {:?}; \
              upgrade the runtime to one that recognizes them",
                 quoted(role),
-                model_set.wire_names()
+                model_set.names
             ),
         ));
     }
@@ -358,7 +358,7 @@ fn select_state_encoding(
     };
     // The direction law: a sink carries a direction, not a rotation, so an
     // env that publishes one binds only a model that reads that same sink.
-    if native.is_sink() && dst != native {
+    if !native.is_source() && dst != native {
         return Err(err(
             ErrorCode::EncodingMismatch,
             format!(
@@ -384,17 +384,8 @@ pub(super) fn plan_state(
     projections: &mut Projections,
 ) -> Result<StatePlan> {
     let at = quoted(&placement.to_string());
-    if rlmesh_spaces::DType::from_name(&model_input.dtype).is_none() {
-        return Err(err(
-            ErrorCode::Unsupported,
-            format!(
-                "model input {at}: unknown dtype {}",
-                quoted(&model_input.dtype)
-            ),
-        ));
-    }
-    let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.components.len());
-    for component in &model_input.components {
+    let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.pieces.len());
+    for component in &model_input.pieces {
         // A constant part reads nothing: it contributes its declared width of
         // the fill value wherever it sits in the concat.
         let Some(role) = component.role.as_deref() else {
@@ -406,7 +397,7 @@ pub(super) fn plan_state(
         };
         // An action-source part reads the model's own output, never an env
         // leaf: it binds the spec's actuator and consults nothing here.
-        if component.source == PartSource::Action {
+        if component.previous {
             pieces.push(previous_action_piece(
                 component, role, &at, outputs, advisories,
             )?);
@@ -417,11 +408,7 @@ pub(super) fn plan_state(
         // piece widths this plan records — so it may sit at any offset of a
         // multi-part concat. What it can never be is absent: an optional part
         // the env does not declare has no zero form of the custom packing.
-        let is_custom = component
-            .encoding
-            .as_ref()
-            .is_some_and(|encoding| encoding.custom().is_some());
-        if is_custom && component.optional {
+        if component.custom.is_some() && component.optional {
             return Err(err(
                 ErrorCode::Unsupported,
                 format!(
@@ -432,7 +419,7 @@ pub(super) fn plan_state(
             ));
         }
         let locus = format!("model input {at}: state role {}", quoted(role));
-        let bound = bind(
+        let bound = seek(
             states_by_role,
             role,
             component.part.as_deref(),
@@ -446,7 +433,7 @@ pub(super) fn plan_state(
             // The role's data is present but under a kind this core can't read:
             // fail loud before the optional zero-fill silently degrades it. A
             // role the env genuinely lacks falls through to the optional branch.
-            super::reject_referenced_unknown(role, &placement, unknown_roles)?;
+            crate::spec::role::bind::reject_referenced_unknown(role, &placement, unknown_roles)?;
             if component.optional {
                 let width = fill_width(component, role, &at)?;
                 for (name, axis) in [
@@ -490,8 +477,8 @@ pub(super) fn plan_state(
         // platform can check without running the arm.
         let model_set = match component.encoding.as_ref() {
             Some(encoding) => {
-                if let Some(custom) = encoding.custom() {
-                    if custom.from_base.is_none() {
+                if let (Some(custom), Some(base)) = (component.custom, encoding.first_known()) {
+                    if !custom.from_base {
                         return Err(err(
                             ErrorCode::Unsupported,
                             format!(
@@ -504,7 +491,7 @@ pub(super) fn plan_state(
                     // element) never fits; a dim is legal exactly when it
                     // restates that width, which is how a concat part declares
                     // its own slice.
-                    let base_dims = custom.base().dims();
+                    let base_dims = base.width();
                     if component.index.is_some()
                         || component.dim.is_some_and(|dim| dim != base_dims)
                     {
@@ -518,16 +505,16 @@ pub(super) fn plan_state(
                         ));
                     }
                 }
-                Some(encoding.accept_set())
+                Some(encoding)
             }
             None => None,
         };
         let (src_encoding, dst_encoding) =
-            select_state_encoding(role, env_state.encoding.as_ref(), model_set.as_ref())?;
+            select_state_encoding(role, env_state.encoding.as_ref(), model_set)?;
         // A post-rotation decodes the source into a matrix, which a sink has
         // none of (the codec already refuses a sink as the literal itself).
         if let Some(src) = src_encoding
-            && src.is_sink()
+            && !src.is_source()
             && component.post_rotate.is_some()
         {
             return Err(err(
@@ -559,7 +546,7 @@ pub(super) fn plan_state(
         if let (Some(src), Some(dst)) = (src_encoding, dst_encoding)
             && src != dst
             && let Some(env_dim) = env_state.dim
-            && env_dim != src.dims()
+            && env_dim != src.width()
         {
             return Err(err(
                 ErrorCode::DimMismatch,
@@ -569,7 +556,7 @@ pub(super) fn plan_state(
                     quoted(role),
                     quoted(&env_state.source.to_string()),
                     quoted_encoding(Some(src)),
-                    src.dims()
+                    src.width()
                 ),
             ));
         }
@@ -584,7 +571,7 @@ pub(super) fn plan_state(
             (Some(src), Some(dst)) if src != dst || component.post_rotate.is_some()
         );
         let source_width = if converts {
-            dst_encoding.map(|encoding| encoding.dims())
+            dst_encoding.map(Rotation::width)
         } else if let Some(labels) = &component.labels {
             // The same set as the env's labels, so the env width.
             Some(labels.len() as u32)
@@ -670,7 +657,7 @@ pub(super) fn plan_state(
             src_dim: env_state.slice_offset.and(env_state.dim),
             src_encoding,
             dst_encoding,
-            post_rotate: component.post_rotate.clone(),
+            post_rotate: component.post_rotate,
             // Labels fix the width the way a declared `dim` does.
             dim: component
                 .dim
@@ -705,9 +692,9 @@ pub(super) fn plan_state(
         pad_to: model_input.pad_to,
         clip: model_input.clip,
         native_width,
-        dtype: model_input.dtype.clone(),
+        dtype: model_input.dtype,
         reshape: model_input.reshape.clone(),
-        container: model_input.container,
+        list: model_input.list,
     })
 }
 
@@ -719,7 +706,7 @@ fn check_state_polarity(
     role: &str,
     at: &str,
     env_state: &EnvState,
-    component: &ConcatPart,
+    component: &Piece,
     advisories: &mut Vec<Advisory>,
     projections: &mut Projections,
 ) -> Result<Option<f64>> {
@@ -774,8 +761,19 @@ fn check_state_polarity(
 mod encoding_selection_tests {
     use super::*;
 
-    fn set(json: &str) -> AcceptSet<RotationEncoding> {
-        serde_json::from_str(json).expect("parse accept-set")
+    /// An accept set as a spec writes it: one name, or a list.
+    fn set(json: &str) -> Accept<Rotation> {
+        let names: Vec<String> = match serde_json::from_str(json).expect("parse accept-set") {
+            serde_json::Value::String(one) => vec![one],
+            many => serde_json::from_value(many).expect("names"),
+        };
+        Accept {
+            known: names
+                .iter()
+                .filter_map(|n| Rotation::from_name(n))
+                .collect(),
+            names,
+        }
     }
 
     #[test]
@@ -783,8 +781,8 @@ mod encoding_selection_tests {
         let (env, model) = (set(r#""quat_xyzw""#), set(r#""quat_xyzw""#));
         let (src, dst) =
             select_state_encoding("proprio/rot", Some(&env), Some(&model)).expect("ok");
-        assert_eq!(src, Some(RotationEncoding::QuatXyzw));
-        assert_eq!(dst, Some(RotationEncoding::QuatXyzw));
+        assert_eq!(src, Some(Rotation::QuatXyzw));
+        assert_eq!(dst, Some(Rotation::QuatXyzw));
     }
 
     #[test]
@@ -792,8 +790,8 @@ mod encoding_selection_tests {
         let (env, model) = (set(r#""quat_xyzw""#), set(r#""rot6d""#));
         let (src, dst) =
             select_state_encoding("proprio/rot", Some(&env), Some(&model)).expect("ok");
-        assert_eq!(src, Some(RotationEncoding::QuatXyzw)); // env native = source
-        assert_eq!(dst, Some(RotationEncoding::Rot6d)); // model target
+        assert_eq!(src, Some(Rotation::QuatXyzw)); // env native = source
+        assert_eq!(dst, Some(Rotation::Rot6d)); // model target
     }
 
     #[test]
@@ -803,8 +801,8 @@ mod encoding_selection_tests {
         let (env, model) = (set(r#""quat_xyzw""#), set(r#"["rot6d", "quat_xyzw"]"#));
         let (src, dst) =
             select_state_encoding("proprio/rot", Some(&env), Some(&model)).expect("ok");
-        assert_eq!(src, Some(RotationEncoding::QuatXyzw));
-        assert_eq!(dst, Some(RotationEncoding::QuatXyzw));
+        assert_eq!(src, Some(Rotation::QuatXyzw));
+        assert_eq!(dst, Some(Rotation::QuatXyzw));
     }
 
     #[test]
@@ -815,8 +813,8 @@ mod encoding_selection_tests {
         let (env, model) = (set(r#""quat_xyzw""#), set(r#"["rot10d", "quat_xyzw"]"#));
         let (src, dst) =
             select_state_encoding("proprio/rot", Some(&env), Some(&model)).expect("ok");
-        assert_eq!(src, Some(RotationEncoding::QuatXyzw));
-        assert_eq!(dst, Some(RotationEncoding::QuatXyzw));
+        assert_eq!(src, Some(Rotation::QuatXyzw));
+        assert_eq!(dst, Some(Rotation::QuatXyzw));
     }
 
     #[test]
@@ -840,8 +838,8 @@ mod encoding_selection_tests {
         let (env, model) = (set(r#""quat_wxyz""#), set(r#""gravity_xyz""#));
         let (src, dst) =
             select_state_encoding("proprio/base_rot", Some(&env), Some(&model)).expect("ok");
-        assert_eq!(src, Some(RotationEncoding::QuatWxyz));
-        assert_eq!(dst, Some(RotationEncoding::GravityXyz));
+        assert_eq!(src, Some(Rotation::QuatWxyz));
+        assert_eq!(dst, Some(Rotation::GravityXyz));
         // ...gravity reads as itself...
         let (env, model) = (
             set(r#""gravity_xyz""#),
@@ -851,10 +849,7 @@ mod encoding_selection_tests {
             select_state_encoding("proprio/base_rot", Some(&env), Some(&model)).expect("ok");
         assert_eq!(
             (src, dst),
-            (
-                Some(RotationEncoding::GravityXyz),
-                Some(RotationEncoding::GravityXyz)
-            )
+            (Some(Rotation::GravityXyz), Some(Rotation::GravityXyz))
         );
         // ...and never becomes a rotation again.
         let (env, model) = (set(r#""gravity_xyz""#), set(r#""quat_wxyz""#));

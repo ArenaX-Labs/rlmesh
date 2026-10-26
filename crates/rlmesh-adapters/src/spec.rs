@@ -48,7 +48,6 @@ pub use custom_encoding::{ActionEncoding, CustomEncoding, StateEncoding};
 pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText, UnknownFeature};
 pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, StateTag, TextTag};
 pub use layouts::{FitMode, ImageLayout};
-pub(crate) use model::MAX_STACK_SPAN;
 pub use model::{
     CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec,
     Normalize, PartSource, StackPad, State, StateContainer, Text, TextContainer, Timing,

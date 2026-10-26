@@ -1,14 +1,13 @@
 //! Admit a custom input as a host-language hole, gating entrypoint trust.
 
-use super::{Result, err};
-use crate::error::ErrorCode;
-use crate::fmt::quoted;
-use crate::path::NodePath;
-use crate::plans::CustomPlan;
-use crate::spec::Custom;
+use crate::spec::role::bind::{Result, err};
+use crate::spec::role::error::ErrorCode;
+use crate::spec::role::fmt::quoted;
+use crate::spec::role::path::NodePath;
+use crate::spec::role::plan::CustomPlan;
 
 pub(super) fn plan_custom(
-    model_input: &Custom,
+    transform: &str,
     placement: NodePath,
     trust_entrypoints: bool,
 ) -> Result<CustomPlan> {
@@ -19,7 +18,7 @@ pub(super) fn plan_custom(
                 "custom input {} references entrypoint {}; pass \
              resolve(..., trust_entrypoints=True) to allow importing it",
                 quoted(&placement.to_string()),
-                quoted(&model_input.transform)
+                quoted(transform)
             ),
         ));
     }
@@ -27,6 +26,6 @@ pub(super) fn plan_custom(
     Ok(CustomPlan {
         placement,
         placement_key,
-        transform: model_input.transform.clone(),
+        transform: transform.to_owned(),
     })
 }

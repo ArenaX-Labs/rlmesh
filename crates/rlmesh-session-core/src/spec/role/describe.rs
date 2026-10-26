@@ -2,10 +2,13 @@
 
 use std::fmt::Write as _;
 
-use crate::advisory::Advisory;
-use crate::fmt::{number, quoted, quoted_range};
-use crate::plans::{ActionSegment, ImagePlan, ObsPlan, ResolvedAdapter, StatePlan, TextPlan};
-use crate::spec::{Attr, FitMode, FrameRef, ImageLayout, StackPad};
+use crate::spec::plan::Fit;
+use crate::spec::policy::ImageLayout;
+use crate::spec::role::error::Advisory;
+use crate::spec::role::fmt::{number, quoted, quoted_range};
+use crate::spec::role::frames::{Attr, FrameRef};
+use crate::spec::role::input::StackPad;
+use crate::spec::role::plan::{ActionSegment, Binding, ImagePlan, ObsPlan, StatePlan, TextPlan};
 
 /// Summarize how one model input is derived from the observation.
 fn describe_obs_plan(plan: &ObsPlan) -> String {
@@ -27,7 +30,7 @@ fn describe_obs_plan(plan: &ObsPlan) -> String {
 /// camera, an aspect crop/letterbox). Lossless or explicitly-requested steps
 /// (layout, dtype, normalize, stretch) are omitted -- this is the "warn" subset
 /// of [`describe_adapter`], not the full transform list.
-pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
+pub(crate) fn binding_advisories(adapter: &Binding) -> Vec<Advisory> {
     let mut notes: Vec<Advisory> = Vec::new();
     for plan in &adapter.obs_plans {
         match plan {
@@ -38,15 +41,15 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
                 )))
             }
             ObsPlan::Image(image) if image.size.is_some() => match image.fit {
-                FitMode::Crop => notes.push(Advisory::info(format!(
+                Fit::Crop => notes.push(Advisory::info(format!(
                     "image {}: aspect crop drops edge pixels",
                     quoted(&image.placement.to_string())
                 ))),
-                FitMode::Pad => notes.push(Advisory::info(format!(
+                Fit::Pad => notes.push(Advisory::info(format!(
                     "image {}: aspect pad adds letterbox borders",
                     quoted(&image.placement.to_string())
                 ))),
-                FitMode::Stretch => {}
+                Fit::Stretch => {}
             },
             ObsPlan::State(state) => {
                 // A declared constant part is authored data, not fabricated:
@@ -90,7 +93,7 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
     notes
 }
 
-pub(crate) fn describe_adapter(adapter: &ResolvedAdapter) -> String {
+pub(crate) fn describe_binding(adapter: &Binding) -> String {
     let mut lines: Vec<String> = vec!["observation:".to_owned()];
     for plan in &adapter.obs_plans {
         lines.push(format!("  {}", describe_obs_plan(plan)));
@@ -196,7 +199,7 @@ fn describe_segment(segment: &ActionSegment) -> String {
         let dst = segment
             .dst_encoding
             .expect("conversions require both encodings");
-        let _ = write!(note, " ({}->{})", src.as_str(), dst.as_str());
+        let _ = write!(note, " ({}->{})", src.name(), dst.name());
     }
     if let (Some(src_range), Some(dst_range)) = (segment.src_range, segment.dst_range) {
         let _ = write!(
@@ -267,7 +270,7 @@ fn describe_image(plan: &ImagePlan) -> String {
         steps.push(format!("render {height}x{width}"));
     }
     if plan.src_layout != ImageLayout::Hwc {
-        steps.push(format!("{}->hwc", plan.src_layout.as_str()));
+        steps.push(format!("{}->hwc", plan.src_layout.name()));
     }
     if plan.flip {
         steps.push("flip 180".to_owned());
@@ -290,7 +293,10 @@ fn describe_image(plan: &ImagePlan) -> String {
         steps.push(step);
     }
     if let Some((height, width)) = plan.size {
-        steps.push(format!("resize {height}x{width} ({})", plan.resample));
+        steps.push(format!(
+            "resize {height}x{width} ({})",
+            plan.resample.name()
+        ));
     }
     if plan.swap_rb {
         steps.push("bgr".to_owned());
@@ -302,9 +308,9 @@ fn describe_image(plan: &ImagePlan) -> String {
             steps.push(format!("normalize [{low}, {high}]"));
         }
     }
-    steps.push(plan.dtype.clone());
+    steps.push(plan.dtype.name().to_owned());
     if plan.dst_layout != ImageLayout::Hwc {
-        steps.push(format!("hwc->{}", plan.dst_layout.as_str()));
+        steps.push(format!("hwc->{}", plan.dst_layout.name()));
     }
     if plan.lead_dims > 0 {
         steps.push(format!("+{} lead dims", plan.lead_dims));
@@ -392,7 +398,7 @@ fn describe_state(plan: &StatePlan) -> String {
             let dst = piece
                 .dst_encoding
                 .expect("conversions require both encodings");
-            let _ = write!(note, " ({}->{})", src.as_str(), dst.as_str());
+            let _ = write!(note, " ({}->{})", src.name(), dst.name());
         }
         if let Some(index) = piece.index {
             let _ = write!(note, "[{index}]");

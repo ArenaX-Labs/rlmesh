@@ -1,7 +1,9 @@
 //! Resolved instructions for one model state input.
 
-use crate::path::NodePath;
-use crate::spec::{FrameRef, RotationEncoding, RotationLiteral, StateContainer};
+use crate::spec::role::frames::FrameRef;
+use crate::spec::role::path::NodePath;
+use crate::spec::rotation::{Matrix, Rotation};
+use crate::wire::part::DType;
 
 /// The model's own output an action-source piece reads (`source="action"`):
 /// the `[start, stop)` slice of the raw action executed at the previous step,
@@ -10,7 +12,9 @@ use crate::spec::{FrameRef, RotationEncoding, RotationLiteral, StateContainer};
 pub struct PreviousAction {
     /// The actuator's role, for `describe`.
     pub role: String,
+    /// The slice of the previous action it reads, `[start, stop)`.
     pub start: u32,
+    /// The slice's end.
     pub stop: u32,
 }
 
@@ -32,12 +36,16 @@ pub struct StatePiece {
     pub src_offset: Option<u32>,
     /// Width of the env field's slice, used only when `src_offset` is set.
     pub src_dim: Option<u32>,
-    pub src_encoding: Option<RotationEncoding>,
-    pub dst_encoding: Option<RotationEncoding>,
+    /// The env's (native) rotation encoding.
+    pub src_encoding: Option<Rotation>,
+    /// The model's rotation encoding.
+    pub dst_encoding: Option<Rotation>,
     /// Fixed rotation right-multiplied onto the decoded source rotation before
     /// it is re-encoded (`R_out = R_in @ R(post_rotate)`).
-    pub post_rotate: Option<RotationLiteral>,
+    pub post_rotate: Option<Matrix>,
+    /// Elements kept (a leading slice).
     pub dim: Option<u32>,
+    /// The one element kept.
     pub index: Option<u32>,
     /// Source value range (the env feature's), mapped into `dst_range`.
     pub src_range: Option<(f64, f64)>,
@@ -48,10 +56,12 @@ pub struct StatePiece {
     pub flip: Option<f64>,
     /// Model-side affine applied after the range map: `value * scale + offset`.
     pub scale: Option<f64>,
+    /// The model's offset.
     pub offset: Option<f64>,
     /// The per-axis forms, one value per output axis (in `labels` order when
     /// labels exist). Exclusive with the scalar of the same name.
     pub axis_scale: Option<Vec<f64>>,
+    /// The model's offset per axis.
     pub axis_offset: Option<Vec<f64>>,
     /// The permutation into the model's order (source index per output axis),
     /// when both sides carry labels in different orders. `None` reads the
@@ -99,13 +109,18 @@ pub struct StatePiece {
 pub struct StatePlan {
     /// Where this state lands in the assembled payload tree.
     pub placement: NodePath,
+    /// The pieces concatenated, in order.
     pub pieces: Vec<StatePiece>,
+    /// Zero-padded to this width, after the clip.
     pub pad_to: Option<u32>,
     /// Clamp bounds applied to the assembled vector, before `pad_to`.
     pub clip: Option<(f64, f64)>,
     /// Assembled width before `pad_to`, when every piece's width is known.
     pub native_width: Option<u32>,
-    pub dtype: String,
+    /// The delivered dtype.
+    pub dtype: DType,
+    /// The delivered shape (one `-1` inferred).
     pub reshape: Option<Vec<i64>>,
-    pub container: StateContainer,
+    /// Delivered as a list of numbers rather than an array.
+    pub list: bool,
 }

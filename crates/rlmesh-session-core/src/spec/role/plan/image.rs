@@ -1,7 +1,10 @@
 //! Resolved instructions for one model image input.
 
-use crate::path::NodePath;
-use crate::spec::{FitMode, ImageLayout, StackPad};
+use crate::spec::plan::Fit;
+use crate::spec::policy::{ImageLayout, Resample};
+use crate::spec::role::input::StackPad;
+use crate::spec::role::path::NodePath;
+use crate::wire::part::DType;
 
 /// The center box a `crop` / `crop_area` keeps, and how it is taken.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -34,18 +37,25 @@ pub struct ImagePlan {
     /// Where this image is read from in the raw observation tree (empty when
     /// `zero_fill` is set — a synthesized frame has no env source).
     pub source: NodePath,
+    /// The env frame's layout.
     pub src_layout: ImageLayout,
+    /// The model's layout.
     pub dst_layout: ImageLayout,
+    /// Rotate 180° (the two sides' `upside_down` differ).
     pub flip: bool,
+    /// The target `(height, width)`; `None` keeps the frame's size.
     pub size: Option<(u32, u32)>,
     /// How a target with a different aspect ratio than the source is reconciled.
-    pub fit: FitMode,
-    pub resample: String,
-    pub dtype: String,
+    pub fit: Fit,
+    /// The resize kernel.
+    pub resample: Resample,
+    /// The delivered dtype.
+    pub dtype: DType,
     /// Target value range to normalize 8-bit pixels into before the dtype cast,
     /// or `None` to skip normalization. `Some((0.0, 1.0))` is the conventional
     /// `/255`; the model may declare another range (e.g. `(-1.0, 1.0)`).
     pub normalize: Option<(f64, f64)>,
+    /// Unit axes prepended.
     pub lead_dims: u32,
     /// Source pixel value range `(low, high)` from the env image's space, used
     /// to map a float image into 8-bit. `None` when the space is unbounded
@@ -53,7 +63,7 @@ pub struct ImagePlan {
     pub src_range: Option<(f64, f64)>,
     /// Frame-stack depth: the model stacks this many consecutive frames on a new
     /// leading axis (frame history); `1` = no stacking. Buffered per-episode and
-    /// stacked natively in the core (see [`crate::v1::FrameBuffers`]); only the keys with
+    /// stacked by the host (`rlmesh-adapters`' `FrameBuffers`); only the keys with
     /// `stack > 1` carry a per-episode window.
     pub stack: u32,
     /// When `Some((height, width, channels))` this input has no env source: the

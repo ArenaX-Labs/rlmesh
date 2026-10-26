@@ -1,6 +1,6 @@
 //! Semantic role vocabulary for matching env features to model inputs.
 //!
-//! Roles are matched as opaque strings by the resolver, but the framework also
+//! Roles are matched as opaque strings by the binder, but the framework also
 //! keeps a [`registry`] over the vocabulary: each domain module ships a `ROLES`
 //! table and the registry is their union. The registry is the *mechanism* (a
 //! domain-neutral table + a dim law); the domain modules are the *vocabulary*, so

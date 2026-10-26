@@ -662,9 +662,7 @@ impl RouteResolver for SpecResolver {
         )?;
         if let Some(context) = &self.context {
             context.set_advisories(
-                parts
-                    .plan
-                    .advisories()
+                rlmesh_adapters::v1::advisories(&parts.plan)
                     .into_iter()
                     .map(crate::adapters::Advisory::from_core)
                     .collect(),

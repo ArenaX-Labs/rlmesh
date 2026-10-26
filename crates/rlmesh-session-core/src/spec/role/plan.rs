@@ -1,4 +1,5 @@
-//! Plan types: the resolved, already-validated adapter instructions.
+//! What a Gym binding does: the resolved, already-validated plan of every
+//! model input and of the action vector.
 
 mod action;
 mod custom;
@@ -8,23 +9,22 @@ mod text;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rlmesh_session_core::spec::Projection;
-
-use super::advisory::Advisory;
-use super::describe;
-use super::path::{NodePath, PathSeg};
-use super::spec::StackPad;
+use crate::spec::projection::Projection;
+use crate::spec::role::describe;
+use crate::spec::role::error::Advisory;
+use crate::spec::role::input::StackPad;
+use crate::spec::role::path::{NodePath, PathSeg};
 
 pub use action::{ActionPlan, ActionSegment};
 
 /// The reserved raw-obs envelope key for a root/empty or Tuple-rooted source —
 /// the single top-level entry that holds the whole observation `Value`.
-pub(crate) const OBS_ROOT_KEY: &str = "<obs>";
+pub const OBS_ROOT_KEY: &str = "<obs>";
 
 /// The top-level raw-obs envelope entry a `source` path lives under: the first
 /// segment's key for a Dict-rooted source, else the reserved root key (an empty
 /// or Tuple-rooted source whose whole `Value` is the single envelope entry).
-pub(crate) fn envelope_key(source: &NodePath) -> String {
+pub fn envelope_key(source: &NodePath) -> String {
     match source.first() {
         Some(PathSeg::Key(key)) => key.clone(),
         _ => OBS_ROOT_KEY.to_owned(),
@@ -44,9 +44,13 @@ pub use text::TextPlan;
               a few hundred bytes that are allocated a handful of times per route"
 )]
 pub enum ObsPlan {
+    /// A camera input.
     Image(ImagePlan),
+    /// A state vector.
     State(StatePlan),
+    /// A text input.
     Text(TextPlan),
+    /// A host-language hole.
     Custom(CustomPlan),
 }
 
@@ -58,8 +62,10 @@ pub enum ObsPlan {
 /// window on a step that predicts nothing. `key` is `placement.to_string()`,
 /// precomputed so the per-step path never re-renders the canonical name.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct StackedPlacement {
+pub struct StackedPlacement {
+    /// Where the stacked tensor lands.
     pub placement: NodePath,
+    /// `placement.to_string()`, the window's key.
     pub key: String,
     /// How many frames the stacked tensor carries (`offsets.len()`, else
     /// `stack`).
@@ -91,15 +97,17 @@ pub struct HistoryWindow {
     pub frame_bytes: u64,
 }
 
-/// A resolved env-to-model adapter: build instances with [`resolve`](crate::resolver::resolve).
+/// A model bound to a Gym env by role: build one with [`bind`](super::bind).
 #[derive(Debug, Clone, PartialEq)]
-pub struct ResolvedAdapter {
+pub struct Binding {
+    /// One plan per model input leaf, in tree order.
     pub obs_plans: Vec<ObsPlan>,
+    /// The action vector's plan.
     pub action_plan: ActionPlan,
     /// Frame-stacked placements (depth `> 1`), precomputed once from
     /// `obs_plans` so both the stacking presence check and the per-step assemble
     /// path read one canonical list — see [`StackedPlacement`]. Private and only
-    /// ever built by [`ResolvedAdapter::new`] (the resolver), which derives it
+    /// ever built by [`Binding::new`] (the binder), which derives it
     /// from `obs_plans` in the same step; do not mutate `obs_plans` afterward or
     /// this summary goes stale.
     stacked: Vec<StackedPlacement>,
@@ -134,8 +142,8 @@ pub struct AppliedProjection {
     pub target: String,
 }
 
-impl ResolvedAdapter {
-    /// Assemble a resolved adapter, precomputing the frame-stacked placements
+impl Binding {
+    /// Assemble a binding, precomputing the frame-stacked placements
     /// ([`stacked`](Self::stacked_placements)) once from `obs_plans`. The single
     /// entry point so the precomputed stacking list can never drift from the
     /// plans it summarizes. `resolve_advisories` carries notes derived at resolve
@@ -192,7 +200,7 @@ impl ResolvedAdapter {
         }
     }
 
-    /// The same adapter, recording the named projections its resolve applied.
+    /// The same binding, recording the named projections its resolve applied.
     pub(crate) fn with_projections(mut self, projections: Vec<AppliedProjection>) -> Self {
         self.projections = projections;
         self
@@ -212,7 +220,7 @@ impl ResolvedAdapter {
     /// a genuine data-loss event the per-plan transform list cannot show, since a
     /// dropped leaf produces no plan.
     pub fn describe(&self) -> String {
-        let mut summary = describe::describe_adapter(self);
+        let mut summary = describe::describe_binding(self);
         if !self.projections.is_empty() {
             summary.push_str("\nprojections:");
             for applied in &self.projections {
@@ -245,7 +253,7 @@ impl ResolvedAdapter {
             ))
         }));
         all.extend(self.quiet_advisories.iter().cloned());
-        all.extend(describe::adapter_advisories(self));
+        all.extend(describe::binding_advisories(self));
         all
     }
 
@@ -290,7 +298,7 @@ impl ResolvedAdapter {
     ///
     /// Only entries with depth `> 1` (actual stacking) appear — a `stack == 1`
     /// image needs no per-episode buffer and is omitted. The episode-keyed
-    /// frame-stack engine ([`crate::v1::FrameBuffers`]) buffers exactly these
+    /// frame-stack windows (the host's `FrameBuffers`) buffer exactly these
     /// placements. This is the single source of truth for stacking depth
     /// (replacing the old Python `stacks` dict). The key is the placement's
     /// [`Display`](std::fmt::Display) form so a nested/positioned stacked input
@@ -306,7 +314,7 @@ impl ResolvedAdapter {
     /// Canonical placement strings of the inputs that hold per-episode history:
     /// a frame window (`stack > 1`), or a previous-action part (`source="action"`).
     ///
-    /// The set a host binding drives [`observe`](crate::v1::observe_obs) for:
+    /// The set a host drives its observe step for:
     /// empty means an env step that predicts nothing has no state to advance,
     /// so the tick can be skipped entirely. A runtime that replays chunks must
     /// deliver every step to a route with any of these.
@@ -343,23 +351,10 @@ impl ResolvedAdapter {
             .collect()
     }
 
-    /// Apply only the frame-stacked image plans, in `history_keys` order.
-    ///
-    /// The observe half of [`transform_obs`](Self::transform_obs): one processed
-    /// frame per stacked input, with nothing scattered into a payload tree — what
-    /// a step that replays a queued action pushes into its windows so the history
-    /// stays the same whatever the execution horizon is.
-    pub fn history_frames(
-        &self,
-        raw_obs: &BTreeMap<String, crate::apply::Value>,
-    ) -> Result<Vec<rlmesh_spaces::Tensor>, crate::error::ApplyError> {
-        crate::apply::obs::observe_obs(&self.obs_plans, &self.stacked, raw_obs)
-    }
-
     /// The precomputed frame-stacked placements: the single iterator the assemble
     /// path consumes so it never re-derives the `stack > 1` filter (or re-renders
     /// each placement string) on the per-step hot path.
-    pub(crate) fn stacked_placements(&self) -> &[StackedPlacement] {
+    pub fn stacked_placements(&self) -> &[StackedPlacement] {
         &self.stacked
     }
 }

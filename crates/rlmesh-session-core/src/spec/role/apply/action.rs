@@ -1,119 +1,123 @@
-//! Apply a resolved action plan to a model action output.
+//! A model action to the env's action vector.
 
-use rlmesh_session_core::spec::convert;
-use rlmesh_spaces::Tensor;
+use crate::spec::apply::ApplyError;
+use crate::spec::convert;
+use crate::spec::role::apply::err;
+use crate::spec::role::apply::geometry::convert_rotation_with;
+use crate::spec::role::apply::state::{apply_affine, map_range};
+use crate::spec::role::plan::ActionPlan;
 
-use super::geometry::convert_rotation;
-use super::lookup::{map_range, numeric_vector};
-use super::state::apply_affine;
-use super::value::{self, Value};
-use crate::error::ApplyError;
-use crate::plans::ActionPlan;
-
-/// Convert a model action vector into the env action vector (float32).
-pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor, ApplyError> {
-    let action = numeric_vector(raw_action)?;
-    if action.len() != plan.in_dim as usize {
-        return Err(ApplyError::new(format!(
-            "expected {}-dim model action, got shape ({},)",
-            plan.in_dim,
-            action.len()
-        )));
-    }
-    let mut pieces: Vec<f32> = Vec::new();
-    for segment in &plan.segments {
-        if let Some((width, value)) = segment.fill {
-            // Opaque (role-less) actuator, or an optional role no model output
-            // drives: emit the constant for each dim and read nothing from the
-            // model.
-            pieces.extend(std::iter::repeat_n(value as f32, width as usize));
-            continue;
+impl ActionPlan {
+    /// The env action vector for one model action (`f32`, in model order).
+    pub fn apply(&self, action: &[f32]) -> Result<Vec<f32>, ApplyError> {
+        let plan = self;
+        if action.len() != plan.in_dim as usize {
+            return Err(err(format!(
+                "expected {}-dim model action, got shape ({},)",
+                plan.in_dim,
+                action.len()
+            )));
         }
-        let mut piece: Vec<f32> = action[segment.start as usize..segment.stop as usize].to_vec();
-        if let (Some(src), Some(dst)) = (segment.src_encoding, segment.dst_encoding)
-            && src != dst
-        {
-            piece = convert_rotation(&piece, src, dst)?;
-        }
-        if let (Some(src_range), Some(dst_range)) = (segment.src_range, segment.dst_range) {
-            map_range(&mut piece, src_range, dst_range)?;
-        }
-        // Corrections after the declared formats are bridged: model-side first
-        // (the model's own output convention, in the model's own axis order),
-        // then the scatter onto the env's axes, then env-side, each one affine
-        // (scale, offset, invert, threshold); the binary snap follows, at 0.
-        apply_affine(
-            &mut piece,
-            segment.model_scale,
-            segment.model_axis_scale.as_deref(),
-            segment.model_offset,
-            segment.model_axis_offset.as_deref(),
-            segment.model_invert,
-            segment.model_threshold,
-        );
-        if let Some(factor) = segment.unit_factor {
-            for entry in &mut piece {
-                *entry = (f64::from(*entry) * factor) as f32;
+        let mut pieces: Vec<f32> = Vec::new();
+        for segment in &plan.segments {
+            if let Some((width, value)) = segment.fill {
+                // Opaque (role-less) actuator, or an optional role no model output
+                // drives: emit the constant for each dim and read nothing from the
+                // model.
+                pieces.extend(std::iter::repeat_n(value as f32, width as usize));
+                continue;
             }
-        }
-        if let Some(sum) = segment.flip {
-            for entry in &mut piece {
-                *entry = (sum - f64::from(*entry)) as f32;
+            let mut piece: Vec<f32> =
+                action[segment.start as usize..segment.stop as usize].to_vec();
+            if let (Some(src), Some(dst)) = (segment.src_encoding, segment.dst_encoding)
+                && src != dst
+            {
+                piece = convert_rotation_with(&piece, src, dst, None)?;
             }
-        }
-        if let Some(scatter) = &segment.scatter {
-            piece = scatter
-                .iter()
-                .map(|&model_index| piece[model_index as usize])
-                .collect();
-        }
-        apply_affine(
-            &mut piece,
-            segment.scale,
-            segment.axis_scale.as_deref(),
-            segment.offset,
-            segment.axis_offset.as_deref(),
-            segment.invert,
-            segment.threshold,
-        );
-        if segment.binarize {
-            for entry in &mut piece {
-                // TODO: verify intended binary-gripper behavior at raw 0.0.
-                // No threshold on either side keeps a raw 0.0 neutral; a
-                // thresholded boundary opens.
-                if segment.threshold.is_some() || segment.model_threshold.is_some() || *entry != 0.0
-                {
-                    *entry = convert::binary(f64::from(*entry), -1.0, 1.0) as f32;
+            if let (Some(src_range), Some(dst_range)) = (segment.src_range, segment.dst_range) {
+                map_range(&mut piece, src_range, dst_range)?;
+            }
+            // Corrections after the declared formats are bridged: model-side first
+            // (the model's own output convention, in the model's own axis order),
+            // then the scatter onto the env's axes, then env-side, each one affine
+            // (scale, offset, invert, threshold); the binary snap follows, at 0.
+            apply_affine(
+                &mut piece,
+                segment.model_scale,
+                segment.model_axis_scale.as_deref(),
+                segment.model_offset,
+                segment.model_axis_offset.as_deref(),
+                segment.model_invert,
+                segment.model_threshold,
+            );
+            if let Some(factor) = segment.unit_factor {
+                for entry in &mut piece {
+                    *entry = (f64::from(*entry) * factor) as f32;
                 }
             }
+            if let Some(sum) = segment.flip {
+                for entry in &mut piece {
+                    *entry = (sum - f64::from(*entry)) as f32;
+                }
+            }
+            if let Some(scatter) = &segment.scatter {
+                piece = scatter
+                    .iter()
+                    .map(|&model_index| piece[model_index as usize])
+                    .collect();
+            }
+            apply_affine(
+                &mut piece,
+                segment.scale,
+                segment.axis_scale.as_deref(),
+                segment.offset,
+                segment.axis_offset.as_deref(),
+                segment.invert,
+                segment.threshold,
+            );
+            if segment.binarize {
+                for entry in &mut piece {
+                    // TODO: verify intended binary-gripper behavior at raw 0.0.
+                    // No threshold on either side keeps a raw 0.0 neutral; a
+                    // thresholded boundary opens.
+                    if segment.threshold.is_some()
+                        || segment.model_threshold.is_some()
+                        || *entry != 0.0
+                    {
+                        *entry = convert::binary(f64::from(*entry), -1.0, 1.0) as f32;
+                    }
+                }
+            }
+            // Per-actuator safety clamp, last: bound this component to its declared
+            // range so a mixed-range action keeps a clamp the one global clip cannot.
+            if let Some((low, high)) = segment.clip {
+                let (low, high) = (low as f32, high as f32);
+                for entry in &mut piece {
+                    *entry = entry.clamp(low, high);
+                }
+            }
+            pieces.extend(piece);
         }
-        // Per-actuator safety clamp, last: bound this component to its declared
-        // range so a mixed-range action keeps a clamp the one global clip cannot.
-        if let Some((low, high)) = segment.clip {
+        if let Some((low, high)) = plan.clip {
             let (low, high) = (low as f32, high as f32);
-            for entry in &mut piece {
+            for entry in &mut pieces {
                 *entry = entry.clamp(low, high);
             }
         }
-        pieces.extend(piece);
+        Ok(pieces)
     }
-    if let Some((low, high)) = plan.clip {
-        let (low, high) = (low as f32, high as f32);
-        for entry in &mut pieces {
-            *entry = entry.clamp(low, high);
-        }
-    }
-    let len = pieces.len();
-    Ok(value::tensor_from_f32(vec![len as i64], &pieces))
 }
 
 #[cfg(test)]
 mod tests {
     use std::f64;
 
-    use super::super::super::plans::{ActionPlan, ActionSegment};
-    use super::super::value::{Value, to_f32_vec};
-    use super::transform_action;
+    use crate::spec::role::plan::{ActionPlan, ActionSegment};
+
+    /// The model action as the host hands it over.
+    fn numbers(values: &[f64]) -> Vec<f32> {
+        values.iter().map(|&v| v as f32).collect()
+    }
 
     /// A single-component plan carrying the env-side scalar corrections.
     fn one_segment(
@@ -234,12 +238,8 @@ mod tests {
             clip: None,
             in_dim: 2,
         };
-        let out = transform_action(
-            &plan,
-            &Value::List(vec![Value::Number(5.0), Value::Number(5.0)]),
-        )
-        .unwrap();
-        let got = to_f32_vec(&out);
+        let out = ActionPlan::apply(&plan, &numbers(&[5.0, 5.0])).unwrap();
+        let got = out;
         assert_eq!(got[0], 1.0); // clamped to a's range
         assert!((got[1] - (f64::consts::FRAC_PI_2 as f32)).abs() < 1e-6); // clamped to b's wider range
     }
@@ -318,8 +318,8 @@ mod tests {
             clip: None,
             in_dim: 1,
         };
-        let out = transform_action(&plan, &Value::List(vec![Value::Number(0.7)])).unwrap();
-        let got = to_f32_vec(&out);
+        let out = ActionPlan::apply(&plan, &numbers(&[0.7])).unwrap();
+        let got = out;
         assert_eq!(got, vec![0.7, 0.5, 0.5, 0.5]);
     }
 
@@ -363,13 +363,12 @@ mod tests {
             clip: None,
             in_dim: 1,
         };
-        let out = transform_action(&plan, &Value::List(vec![Value::Number(0.3)])).unwrap();
-        assert!((to_f32_vec(&out)[0] - 0.6).abs() < 1e-6);
+        let out = ActionPlan::apply(&plan, &numbers(&[0.3])).unwrap();
+        assert!((out[0] - 0.6).abs() < 1e-6);
     }
 
     fn apply_one(plan: &ActionPlan, value: f32) -> f32 {
-        let out = transform_action(plan, &Value::List(vec![Value::Number(value as f64)])).unwrap();
-        to_f32_vec(&out)[0]
+        ActionPlan::apply(plan, &[value]).unwrap()[0]
     }
 
     #[test]
@@ -419,15 +418,8 @@ mod tests {
         segment.model_scale = Some(2.0);
         segment.offset = Some(1.0);
         segment.scatter = Some(vec![2, 0, 1]);
-        let raw = Value::List(vec![
-            Value::Number(1.0),
-            Value::Number(2.0),
-            Value::Number(3.0),
-        ]);
-        assert_eq!(
-            to_f32_vec(&transform_action(&plan, &raw).unwrap()),
-            vec![7.0, 3.0, 5.0]
-        );
+        let raw = numbers(&[1.0, 2.0, 3.0]);
+        assert_eq!(ActionPlan::apply(&plan, &raw).unwrap(), vec![7.0, 3.0, 5.0]);
     }
 
     #[test]

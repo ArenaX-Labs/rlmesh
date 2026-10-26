@@ -1,10 +1,8 @@
-//! The value model the apply engine operates on.
+//! The host value model a binding's plans are run on.
 //!
 //! Dense arrays are [`rlmesh_spaces::Tensor`], the repo-wide tensor type;
-//! the free functions here give the apply kernels typed (`f32`/`u8`) views,
-//! a dtype-generic element gather, and `astype`-style casts — all through the
-//! shared [`scalar`](rlmesh_spaces::scalar) byte codec, so no parallel array
-//! or dtype representation lives in this crate.
+//! the free functions here give typed (`f32`/`f64`) views and `astype`-style
+//! casts, all through the shared [`scalar`](rlmesh_spaces::scalar) byte codec.
 //!
 //! [`Value`] is a thin model-IO *payload* envelope around a `Tensor`. It is
 //! deliberately NOT [`rlmesh_spaces::SpaceValue`]: a model input can be a
@@ -72,11 +70,6 @@ pub fn tensor_from_f32(shape: Vec<i64>, data: &[f32]) -> Tensor {
     Tensor::from_vec(bytes, shape, DType::Float32).expect("f32 byte length matches shape")
 }
 
-/// Build a uint8 tensor from pixel bytes.
-pub fn tensor_from_u8(shape: Vec<i64>, data: Vec<u8>) -> Tensor {
-    Tensor::from_vec(data, shape, DType::Uint8).expect("u8 byte length matches shape")
-}
-
 /// Whether `dtype` is an integer family.
 fn is_integer(dtype: DType) -> bool {
     matches!(
@@ -91,58 +84,6 @@ fn is_integer(dtype: DType) -> bool {
             | DType::Int64
             | DType::Uint64
     )
-}
-
-/// Convert any tensor to 8-bit pixels without truncation. A float image is
-/// mapped from its declared source range `src_range` into the pipeline's
-/// canonical `[0, 255]`: a unit `[0, 1]` image scales by 255, a byte-range
-/// `[0, 255]` image passes through unchanged. With no declared range (an
-/// unbounded space) a float image is assumed normalized `[0, 1]`. Integer
-/// dtypes carry raw pixel magnitudes and are only rounded and clamped.
-pub fn to_u8_pixels(tensor: &Tensor, src_range: Option<(f64, f64)>) -> Vec<u8> {
-    let dtype = tensor.dtype();
-    if dtype == DType::Uint8 {
-        return tensor.to_contiguous_bytes().into_owned();
-    }
-    let float = !is_integer(dtype);
-    to_f64_vec(tensor)
-        .into_iter()
-        .map(|value| {
-            let value = if float {
-                match src_range {
-                    Some((low, high)) if high > low => (value - low) / (high - low) * 255.0,
-                    _ => value * 255.0,
-                }
-            } else {
-                value
-            };
-            value.round_ties_even().clamp(0.0, 255.0) as u8
-        })
-        .collect()
-}
-
-/// The pixel bytes of a uint8 tensor (the resize kernels operate on these).
-pub fn u8_pixels(tensor: &Tensor) -> Result<Vec<u8>, ApplyError> {
-    if tensor.dtype() != DType::Uint8 {
-        return Err(ApplyError::new(
-            "resize expects uint8 image data".to_owned(),
-        ));
-    }
-    Ok(tensor.to_contiguous_bytes().into_owned())
-}
-
-/// Reorder a tensor's elements so `out[i] = src[indices[i]]`, dtype-generic
-/// (moves whole `itemsize`-byte elements).
-#[cfg(test)]
-pub fn gather(tensor: &Tensor, indices: &[usize], out_shape: Vec<i64>) -> Tensor {
-    let dtype = tensor.dtype();
-    let size = rlmesh_spaces::dtype_size(dtype);
-    let bytes = tensor.to_contiguous_bytes();
-    let mut out = Vec::with_capacity(indices.len() * size);
-    for &index in indices {
-        out.extend_from_slice(&bytes[index * size..(index + 1) * size]);
-    }
-    Tensor::from_vec(out, out_shape, dtype).expect("gather preserves byte length")
 }
 
 /// Cast a tensor to `target` (NumPy `astype` for floats). Integer targets
@@ -185,11 +126,6 @@ pub fn encode_f64_to(
     };
     let bytes = encode_scalars(&scalars, target).map_err(|err| ApplyError::new(err.to_string()))?;
     Tensor::from_vec(bytes, shape, target).map_err(|err| ApplyError::new(err.to_string()))
-}
-
-/// Convert a shape to the tensor `i64` form.
-pub fn shape_i64(shape: &[usize]) -> Vec<i64> {
-    shape.iter().map(|&dim| dim as i64).collect()
 }
 
 /// Convert a tensor's shape to `usize` (for indexing arithmetic).

@@ -1,843 +1,8 @@
-//! Resolve env and model IO specs into a concrete adapter plan.
+//! The binding of v1 declarations, end to end: lowered, bound and applied.
 
-mod action;
-mod custom;
-mod image;
-mod state;
-mod text;
-
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
-
-use super::advisory::Advisory;
-use super::error::{AdapterResolutionError, ErrorCode};
-use super::fmt::quoted;
-use super::join::join;
-use super::path::NodePath;
-use rlmesh_session_core::spec::Projection;
-
-use super::plans::{ActionPlan, AppliedProjection, ObsPlan, ResolvedAdapter};
-use super::space_view::SpaceView;
-use super::spec::{
-    AcceptSet, Action, Attr, EnvFeature, EnvImage, EnvState, EnvTags, EnvText, FrameRef, InputNode,
-    ModelLeaf, ModelSpec, Provenance,
-};
-
-type Result<T> = std::result::Result<T, AdapterResolutionError>;
-
-fn err(code: ErrorCode, message: String) -> AdapterResolutionError {
-    AdapterResolutionError::new(code, message)
-}
-
-/// Upgrade a would-be `MissingRole` to [`ErrorCode::UnsupportedKind`] when the
-/// env declares the referenced `role` only as an *unrecognized observation
-/// kind*. Called at each planner's role-lookup miss *before* any fallback
-/// (optional zero-fill, text default, lone-camera bind): a role whose data the
-/// env actually provides but under a kind this core cannot read is present-but-
-/// unreadable, so we fail loud ("upgrade the runtime") rather than silently
-/// degrading — and rather than misdirecting the operator to "add the role". A
-/// `role` the env understands (not in `unknown_roles`) passes through.
-pub(super) fn reject_referenced_unknown(
-    role: &str,
-    placement: &NodePath,
-    unknown_roles: &BTreeMap<String, String>,
-) -> Result<()> {
-    if let Some(kind) = unknown_roles.get(role) {
-        return Err(err(
-            ErrorCode::UnsupportedKind,
-            format!(
-                "model input {} needs role {} but the env declares it as unrecognized \
-                 observation kind {}; upgrade the runtime",
-                quoted(&placement.to_string()),
-                quoted(role),
-                quoted(kind)
-            ),
-        ));
-    }
-    Ok(())
-}
-
-/// The C14 geometry rules, shared verbatim by `frame` (state parts and action
-/// components) and `reference` (delta action components) -- they differ only in
-/// their vocabulary and wording, carried by [`Attr`].
-///
-/// Returns the *agreed* value to record on the plan, and pushes at most one
-/// advisory. The five cases:
-///
-/// 1. both silent -- nothing to check, nothing said.
-/// 2. env declares, model silent -- the env stated a fact the model has no
-///    requirement against; the value carries through, silently.
-/// 3. model declares, env silent -- the model states a requirement the env
-///    cannot confirm: `caution` (it fires only when a model opts in).
-/// 4. both declare, equal -- agreement, silently.
-/// 5. both declare, differing -- a hard [`ErrorCode::FrameMismatch`]. So is an
-///    unrecognized value on either side: a geometry this core cannot name is a
-///    geometry it cannot verify (the tolerant codec still relays it).
-pub(super) fn check_geometry(
-    attr: Attr,
-    role: &str,
-    env: Option<&FrameRef>,
-    model: Option<&FrameRef>,
-    advisories: &mut Vec<Advisory>,
-) -> Result<Option<FrameRef>> {
-    let name = attr.name();
-    for (side, declared) in [("env", env), ("model", model)] {
-        if let Some(value) = declared
-            && !attr.recognizes(value)
-        {
-            return Err(err(
-                ErrorCode::FrameMismatch,
-                format!(
-                    "role {}: the {side} declares unrecognized {name} {}; this core knows {:?}",
-                    quoted(role),
-                    quoted(value.as_str()),
-                    attr.vocabulary()
-                ),
-            ));
-        }
-    }
-    match (env, model) {
-        (None, None) => Ok(None),
-        (Some(env), None) => Ok(Some(env.clone())),
-        (None, Some(model)) => {
-            advisories.push(Advisory::caution(format!(
-                "role {}: the model declares {name} {} but the env declares none, so the \
-                 {name} it was trained against cannot be verified -- declare it on the env \
-                 to silence this",
-                quoted(role),
-                quoted(model.as_str()),
-            )));
-            Ok(Some(model.clone()))
-        }
-        (Some(env), Some(model)) if env == model => Ok(Some(env.clone())),
-        (Some(env), Some(model)) => Err(err(
-            ErrorCode::FrameMismatch,
-            format!(
-                "role {}: the model expects {name} {} but the env declares {}",
-                quoted(role),
-                quoted(model.as_str()),
-                quoted(env.as_str()),
-            ),
-        )),
-    }
-}
-
-/// The identity a leaf binds by: `(role, part, provenance)` exactly as
-/// declared. The provenance lets a sim publish one role as its truth and as
-/// its estimate; images and actions carry none (`None`).
-pub(super) type LeafKey = (String, Option<String>, Option<String>);
-
-fn leaf_key(role: &str, part: Option<&str>, provenance: Option<&str>) -> LeafKey {
-    (
-        role.to_owned(),
-        part.map(str::to_owned),
-        provenance.map(str::to_owned),
-    )
-}
-
-/// The `provenance` rules, the frame table verbatim with the model side an
-/// accept set: both silent, silent; env only, silent; model only, `caution`;
-/// the env's value in the model's set, silent; anything else, including a
-/// value outside the vocabulary on either side, a hard
-/// [`ErrorCode::ProvenanceMismatch`]. Returns the value to record on the plan.
-pub(super) fn check_provenance(
-    role: &str,
-    env: Option<&FrameRef>,
-    model: Option<&AcceptSet<Provenance>>,
-    advisories: &mut Vec<Advisory>,
-) -> Result<Option<FrameRef>> {
-    let attr = Attr::Provenance;
-    if let Some(value) = env
-        && !attr.recognizes(value)
-    {
-        return Err(err(
-            ErrorCode::ProvenanceMismatch,
-            format!(
-                "role {}: the env declares unrecognized provenance {}; this core knows {:?}",
-                quoted(role),
-                quoted(value.as_str()),
-                attr.vocabulary()
-            ),
-        ));
-    }
-    if let Some(set) = model
-        && set.first_known().is_none()
-    {
-        return Err(err(
-            ErrorCode::ProvenanceMismatch,
-            format!(
-                "role {}: the model declares unrecognized provenance {:?}; this core knows {:?}",
-                quoted(role),
-                set.wire_names(),
-                attr.vocabulary()
-            ),
-        ));
-    }
-    match (env, model) {
-        (None, None) => Ok(None),
-        (Some(env), None) => Ok(Some(env.clone())),
-        (None, Some(set)) => {
-            let declared = set.wire_names().join("|");
-            advisories.push(Advisory::caution(format!(
-                "role {}: the model declares provenance {} but the env declares none, so where \
-                 the values it was trained on came from cannot be verified -- declare it on the \
-                 env to silence this",
-                quoted(role),
-                quoted(&declared),
-            )));
-            Ok(Some(FrameRef::from(declared.as_str())))
-        }
-        (Some(env), Some(set)) if set.wire_names().contains(&env.as_str()) => Ok(Some(env.clone())),
-        (Some(env), Some(set)) => Err(err(
-            ErrorCode::ProvenanceMismatch,
-            format!(
-                "role {}: the model expects provenance {:?} but the env declares {}",
-                quoted(role),
-                set.wire_names(),
-                quoted(env.as_str()),
-            ),
-        )),
-    }
-}
-
-fn index_by_role<'spec, T>(
-    features: impl Iterator<Item = (&'spec String, T)>,
-    label: &str,
-) -> Result<BTreeMap<String, T>> {
-    let mut by_role: BTreeMap<String, T> = BTreeMap::new();
-    for (role, feature) in features {
-        if by_role.contains_key(role) {
-            return Err(err(
-                ErrorCode::Duplicate,
-                format!("duplicate {label} role {}", quoted(role)),
-            ));
-        }
-        by_role.insert(role.clone(), feature);
-    }
-    Ok(by_role)
-}
-
-/// Index leaves by `(role, part, provenance)`: a role may repeat across
-/// parts (one `proprio/eef_pos` per arm) or provenances (a sim's truth beside
-/// its estimate), never within one key.
-pub(super) fn index_by_key<'spec, T>(
-    features: impl Iterator<Item = (&'spec str, Option<&'spec str>, Option<&'spec str>, T)>,
-    label: &str,
-) -> Result<BTreeMap<LeafKey, T>> {
-    let mut by_key: BTreeMap<LeafKey, T> = BTreeMap::new();
-    for (role, part, provenance, feature) in features {
-        let key = leaf_key(role, part, provenance);
-        if by_key.contains_key(&key) {
-            let mut message = format!("duplicate {label} role {}", quoted(&key.0));
-            if let Some(part) = &key.1 {
-                let _ = write!(message, " under part {}", quoted(part));
-            }
-            if let Some(provenance) = &key.2 {
-                let _ = write!(message, " with provenance {}", quoted(provenance));
-            }
-            return Err(err(ErrorCode::Duplicate, message));
-        }
-        by_key.insert(key, feature);
-    }
-    Ok(by_key)
-}
-
-/// Whether any indexed leaf carries `role` (under any part).
-pub(super) fn has_role<T>(by_key: &BTreeMap<LeafKey, T>, role: &str) -> bool {
-    by_key.keys().any(|(indexed, _, _)| indexed == role)
-}
-
-/// What a seeker found for `(role, part)` among the other side's leaves.
-pub(super) struct Bound<'a, T> {
-    pub feature: &'a T,
-    /// The part the leaf was bound under.
-    pub part: Option<String>,
-}
-
-/// The `part` and `provenance` identity rules, shared by every planner.
-/// `seeker` names who is looking (`model input "state"`, `env action`),
-/// `what` the role's kind word (`state role`), `offerer` whose leaves are
-/// searched (`env`, `model`).
-///
-/// The part rule picks the `(role, part)` the seeker binds under:
-///
-/// - A named part binds only that leaf; it never rebinds (`Ok(None)` when the
-///   offerer lacks it, for the caller's optional/fill fallback or error).
-/// - No part binds the offerer's part-less leaf when there is one; else its
-///   *only* leaf of that role under any part, with an `info` naming the bind;
-///   else, several candidates are a [`MissingRole`](ErrorCode::MissingRole)
-///   that names the parts -- ambiguity is never guessed through.
-///
-/// The provenance rule then picks one leaf among those under that key (an
-/// env may publish a role as its truth and as its estimate):
-///
-/// - A seeker that accepts provenances binds the first of them, in its own
-///   order, that the offerer declares; when none matches and the offerer has
-///   one leaf, that leaf binds and [`check_provenance`] reports the
-///   disagreement (or the caution) precisely; with several it is a
-///   [`ProvenanceMismatch`](ErrorCode::ProvenanceMismatch) naming them.
-/// - A seeker that pins none binds the only leaf; several are an
-///   [`Ambiguous`](ErrorCode::Ambiguous) naming their provenances.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the seeker's identity (role, part, provenance) plus the three message words; \
-              a struct for the words would name nothing the call sites do not already say"
-)]
-pub(super) fn bind<'a, T>(
-    by_key: &'a BTreeMap<LeafKey, T>,
-    role: &str,
-    part: Option<&str>,
-    provenance: Option<&AcceptSet<Provenance>>,
-    seeker: &str,
-    what: &str,
-    offerer: &str,
-    advisories: &mut Vec<Advisory>,
-) -> Result<Option<Bound<'a, T>>> {
-    let (role_key, part_key, _) = leaf_key(role, part, None);
-    let under_part = |wanted: Option<&str>| -> Vec<(&LeafKey, &T)> {
-        by_key
-            .iter()
-            .filter(|((indexed_role, indexed_part, _), _)| {
-                *indexed_role == role_key && indexed_part.as_deref() == wanted
-            })
-            .collect()
-    };
-    let mut candidates = under_part(part_key.as_deref());
-    if candidates.is_empty() {
-        if part_key.is_some() {
-            return Ok(None);
-        }
-        let parts: BTreeSet<&str> = by_key
-            .keys()
-            .filter(|(indexed_role, _, _)| *indexed_role == role_key)
-            .filter_map(|(_, indexed_part, _)| indexed_part.as_deref())
-            .collect();
-        match parts.iter().copied().collect::<Vec<_>>().as_slice() {
-            [] => return Ok(None),
-            [only] => {
-                advisories.push(Advisory::info(format!(
-                    "{seeker}: {what} {} declares no part and the {offerer} declares it only \
-                     under part {}; bound to that leaf (declare part= to pin it)",
-                    quoted(role),
-                    quoted(only)
-                )));
-                candidates = under_part(Some(only));
-            }
-            several => {
-                return Err(err(
-                    ErrorCode::MissingRole,
-                    format!(
-                        "{seeker} needs {what} {} but the {offerer} declares it under parts \
-                         {several:?}; declare part=",
-                        quoted(role),
-                    ),
-                ));
-            }
-        }
-    }
-    let chosen = match provenance {
-        Some(set) => set
-            .wire_names()
-            .into_iter()
-            .find_map(|wanted| {
-                candidates
-                    .iter()
-                    .find(|((_, _, indexed), _)| indexed.as_deref() == Some(wanted))
-                    .copied()
-            })
-            .or_else(|| (candidates.len() == 1).then(|| candidates[0])),
-        None => (candidates.len() == 1).then(|| candidates[0]),
-    };
-    let Some(((_, bound_part, _), feature)) = chosen else {
-        let offered: Vec<&str> = candidates
-            .iter()
-            .map(|((_, _, indexed), _)| indexed.as_deref().unwrap_or("none"))
-            .collect();
-        return Err(match provenance {
-            None => err(
-                ErrorCode::Ambiguous,
-                format!(
-                    "{seeker}: {what} {} declares no provenance and the {offerer} declares it \
-                     under provenances {offered:?}; declare provenance= to pin one",
-                    quoted(role),
-                ),
-            ),
-            Some(set) => err(
-                ErrorCode::ProvenanceMismatch,
-                format!(
-                    "{seeker}: {what} {} accepts provenance {:?} but the {offerer} declares it \
-                     under {offered:?}",
-                    quoted(role),
-                    set.wire_names(),
-                ),
-            ),
-        });
-    };
-    Ok(Some(Bound {
-        feature,
-        part: bound_part.clone(),
-    }))
-}
-
-/// Enforce the closed kind set on the model side (the env side runs it at
-/// `join`). A newer peer's kind still parses and relays; it fails here,
-/// named by placement.
-fn check_model_roles(model_spec: &ModelSpec) -> Result<()> {
-    let check = |role: &str, locus: String| {
-        crate::roles::registry::check_role(role).map_err(|reason| {
-            err(
-                ErrorCode::UnsupportedKind,
-                format!("{locus}: {reason}; if a newer peer wrote it, upgrade the runtime"),
-            )
-        })
-    };
-    let mut leaves: Vec<PlacedLeaf> = Vec::new();
-    collect_leaves(&model_spec.input, NodePath::root(), &mut leaves);
-    for PlacedLeaf { leaf, placement } in &leaves {
-        let locus = || format!("model input {}", quoted(&placement.to_string()));
-        match leaf {
-            ModelLeaf::Image(input) => check(&input.role, locus())?,
-            ModelLeaf::State(input) => {
-                for part in &input.components {
-                    if let Some(role) = &part.role {
-                        check(role, locus())?;
-                    }
-                }
-            }
-            ModelLeaf::Text(input) => check(&input.role, locus())?,
-            ModelLeaf::Custom(_) | ModelLeaf::Unknown { .. } => {}
-        }
-    }
-    for actuator in &model_spec.output.components {
-        if let Some(role) = &actuator.role {
-            check(role, "model action".to_owned())?;
-        }
-    }
-    Ok(())
-}
-
-/// One model input leaf paired with its placement (tree position) in the
-/// payload, produced by walking the [`InputNode`] tree.
-struct PlacedLeaf<'spec> {
-    leaf: &'spec ModelLeaf,
-    placement: NodePath,
-}
-
-/// Flatten the model input tree into a list of leaves, each carrying the
-/// [`NodePath`] placement of where its produced tensor lands in the payload. A
-/// `Dict` node recurses each key, a `Tuple` each index, a `Leaf` emits itself.
-fn collect_leaves<'spec>(
-    node: &'spec InputNode,
-    placement: NodePath,
-    out: &mut Vec<PlacedLeaf<'spec>>,
-) {
-    match node {
-        InputNode::Leaf(leaf) => out.push(PlacedLeaf { leaf, placement }),
-        InputNode::Dict(map) => {
-            for (key, child) in map {
-                collect_leaves(child, placement.push_key(key.clone()), out);
-            }
-        }
-        InputNode::Tuple(items) => {
-            for (index, item) in items.iter().enumerate() {
-                collect_leaves(item, placement.push_index(index), out);
-            }
-        }
-    }
-}
-
-/// Derive a [`ResolvedAdapter`] for an env/model pair.
-///
-/// The env side is given as the [`EnvTags`] observation/action tree over its
-/// observation and action spaces; [`join`] derives the keyed env features (with
-/// widths and ranges) those plus the spaces imply, then each model input leaf is
-/// matched to an env feature by role and placed at its tree position. A model
-/// role may be reused across leaves (one camera → several input slots).
-/// The named projections `model_spec` allows, refusing an unknown name.
-fn allowed_projections(model_spec: &ModelSpec) -> Result<Vec<Projection>> {
-    model_spec
-        .allow
-        .iter()
-        .map(|name| {
-            Projection::from_name(name).ok_or_else(|| {
-                let known: Vec<&str> = Projection::ALL.iter().map(|p| p.name()).collect();
-                err(
-                    ErrorCode::Unsupported,
-                    format!(
-                        "model spec allows unknown projection {}; the named projections are {known:?}",
-                        quoted(name)
-                    ),
-                )
-            })
-        })
-        .collect()
-}
-
-/// The named projections a resolve may apply (the model spec's `allow`) and
-/// the ones it has applied so far, each with what it applied to.
-pub(super) struct Projections {
-    allowed: Vec<Projection>,
-    applied: Vec<AppliedProjection>,
-}
-
-impl Projections {
-    /// A ledger allowing `allowed`, for tests that plan one leaf.
-    #[cfg(test)]
-    pub(super) fn allowing(allowed: &[Projection]) -> Self {
-        Self {
-            allowed: allowed.to_vec(),
-            applied: Vec::new(),
-        }
-    }
-
-    /// Records `projection` applied to `target`; refused with `code` and
-    /// `refusal` (plus how to allow it) when the model spec does not allow it.
-    pub(super) fn apply(
-        &mut self,
-        projection: Projection,
-        target: String,
-        code: ErrorCode,
-        refusal: String,
-    ) -> Result<()> {
-        if !self.allowed.contains(&projection) {
-            return Err(err(
-                code,
-                format!(
-                    "{refusal}. Binding anyway is the named projection {}; add it to the \
-                     model spec's allow to bind",
-                    quoted(projection.name())
-                ),
-            ));
-        }
-        self.applied.push(AppliedProjection { projection, target });
-        Ok(())
-    }
-}
-
-/// Model outputs no env actuator reads: refused, unless the model spec allows
-/// `drop_action`, which then records each one it discards.
-fn project(
-    projections: &mut Projections,
-    outputs: &action::ModelOutputs<'_>,
-    plan: &ActionPlan,
-    env: &Action,
-) -> Result<()> {
-    let unconsumed = action::unconsumed(outputs, plan);
-    let Some((role, part, _, dim)) = unconsumed.first().copied() else {
-        return Ok(());
-    };
-    if !projections.allowed.contains(&Projection::DropAction) {
-        let takes: Vec<String> = env
-            .components
-            .iter()
-            .filter_map(|actuator| {
-                actuator.role.as_ref().map(|role| match &actuator.part {
-                    Some(part) => format!("{role}#{part}"),
-                    None => role.clone(),
-                })
-            })
-            .collect();
-        return Err(err(
-            ErrorCode::MissingRole,
-            format!(
-                "model output role {}{} ({dim} dims) drives no env actuator: the env takes {takes:?}. \
-                 Discarding it is the named projection {}; add it to the model spec's allow to \
-                 bind anyway",
-                quoted(role),
-                state::part_suffix(part),
-                quoted(Projection::DropAction.name()),
-            ),
-        ));
-    }
-    projections
-        .applied
-        .extend(
-            unconsumed
-                .into_iter()
-                .map(|(role, part, start, dim)| AppliedProjection {
-                    projection: Projection::DropAction,
-                    target: format!(
-                        "model output {}{} [{start}, {}) is discarded",
-                        quoted(role),
-                        state::part_suffix(part),
-                        start + dim
-                    ),
-                }),
-        );
-    Ok(())
-}
-
-pub fn resolve(
-    env_tags: &EnvTags,
-    observation_space: &SpaceView,
-    action_space: &SpaceView,
-    model_spec: &ModelSpec,
-    trust_entrypoints: bool,
-) -> Result<ResolvedAdapter> {
-    // READ-door taint (§8): a *bare* (non-`x-`) unknown field on a recognized
-    // kind is must-understand — an old core silently applying its own default
-    // for a modifier it never parsed is worse than failing. Fail closed, on both
-    // sides, before any plan is built. Unknown *kinds* are tolerated here (the
-    // loop below ignores or fails them precisely); only fields taint.
-    crate::spec::reject_bare_fields_env(env_tags)
-        .map_err(|message| err(ErrorCode::UnsupportedKind, message))?;
-    crate::spec::reject_bare_fields_model(model_spec)
-        .map_err(|message| err(ErrorCode::UnsupportedKind, message))?;
-    check_model_roles(model_spec)?;
-    let mut projections = Projections {
-        allowed: allowed_projections(model_spec)?,
-        applied: Vec::new(),
-    };
-    // The model's own outputs, keyed once: the action planner binds env
-    // actuators to them, and a state part reading its previous action does too.
-    let outputs = action::index_outputs(&model_spec.output)?;
-
-    let env_spec = join(env_tags, observation_space, action_space).map_err(|error| {
-        let code = match error {
-            crate::join::JoinError::ActionRoleOnObservation { .. } => {
-                ErrorCode::ActionRoleOnObservation
-            }
-            _ => ErrorCode::InvalidTag,
-        };
-        err(code, error.to_string())
-    })?;
-    let images = env_spec
-        .observation
-        .iter()
-        .filter_map(|feature| match feature {
-            EnvFeature::Image(image) => {
-                Some((image.role.as_str(), image.part.as_deref(), None, image))
-            }
-            _ => None,
-        });
-    let states = env_spec
-        .observation
-        .iter()
-        .filter_map(|feature| match feature {
-            EnvFeature::State(state) => Some((
-                state.role.as_str(),
-                state.part.as_deref(),
-                state.provenance.as_ref().map(FrameRef::as_str),
-                state,
-            )),
-            _ => None,
-        });
-    let texts = env_spec
-        .observation
-        .iter()
-        .filter_map(|feature| match feature {
-            EnvFeature::Text(text) => Some((&text.role, text)),
-            _ => None,
-        });
-    let images_by_role: BTreeMap<LeafKey, &EnvImage> = index_by_key(images, "env image")?;
-    let states_by_role: BTreeMap<LeafKey, &EnvState> = index_by_key(states, "env state")?;
-    let texts_by_role: BTreeMap<String, &EnvText> = index_by_role(texts, "env text")?;
-
-    // Side table for referenced-unknown detection: a role the env declares only
-    // as an unrecognized observation kind. A roleless unknown leaf is
-    // unreferenceable, so it never enters here (drop-only).
-    let unknown_roles: BTreeMap<String, String> = env_spec
-        .unknown
-        .iter()
-        .filter_map(|unknown| {
-            unknown
-                .role
-                .clone()
-                .map(|role| (role, unknown.kind.clone()))
-        })
-        .collect();
-
-    let mut leaves: Vec<PlacedLeaf> = Vec::new();
-    collect_leaves(&model_spec.input, NodePath::root(), &mut leaves);
-
-    // The quiet channel: surfaced through `advisories()` but kept out of
-    // `describe()`. The geometry cautions belong here -- nothing was dropped or
-    // fabricated, so they have no business in the `dropped:` section describe()
-    // builds from the other channel.
-    let mut quiet: Vec<Advisory> = env_spec.advisories.clone();
-    let mut obs_plans: Vec<ObsPlan> = Vec::with_capacity(leaves.len());
-    for PlacedLeaf { leaf, placement } in leaves {
-        obs_plans.push(match leaf {
-            ModelLeaf::Image(input) => ObsPlan::Image(image::plan_image(
-                input,
-                placement,
-                &images_by_role,
-                &unknown_roles,
-                &mut quiet,
-                &mut projections,
-            )?),
-            ModelLeaf::State(input) => ObsPlan::State(state::plan_state(
-                input,
-                placement,
-                &states_by_role,
-                &outputs,
-                &unknown_roles,
-                &mut quiet,
-                &mut projections,
-            )?),
-            ModelLeaf::Text(input) => ObsPlan::Text(text::plan_text(
-                input,
-                placement,
-                &texts_by_role,
-                &unknown_roles,
-            )?),
-            ModelLeaf::Custom(input) => {
-                ObsPlan::Custom(custom::plan_custom(input, placement, trust_entrypoints)?)
-            }
-            // A model input of an unrecognized kind has no apply path on an old
-            // core, even if the env offers a matching unknown feature — agreement
-            // is irrelevant. Localized, named by placement.
-            ModelLeaf::Unknown { kind, .. } => {
-                return Err(err(
-                    ErrorCode::UnsupportedKind,
-                    format!(
-                        "model input {} is of unrecognized kind {}; upgrade the runtime",
-                        quoted(&placement.to_string()),
-                        quoted(kind)
-                    ),
-                ));
-            }
-        });
-    }
-
-    // Reaching here means no model input referenced an unknown kind (a reference
-    // hard-errors above), so every recorded unknown leaf was unreferenced: emit
-    // one deterministic advisory per leaf, sorted by tree path. Run proceeds.
-    let mut advisories: Vec<Advisory> = env_spec
-        .unknown
-        .iter()
-        .map(|unknown| {
-            Advisory::info(format!(
-                "env feature {} (role {}): unrecognized kind {}; ignored (no model input requires it)",
-                quoted(&unknown.source.to_string()),
-                quoted(unknown.role.as_deref().unwrap_or("<none>")),
-                quoted(&unknown.kind)
-            ))
-        })
-        .collect();
-
-    let action_plan = action::plan_action(
-        &model_spec.output,
-        &env_spec.action,
-        &outputs,
-        &mut quiet,
-        &mut projections,
-    )?;
-    project(&mut projections, &outputs, &action_plan, &env_spec.action)?;
-
-    // Model-side ad-hoc input roles the env does not answer. An ad-hoc role
-    // matches only on the exact string, so a typo or a private name silently
-    // degrades to a zero fill (an optional input) -- the required cases already
-    // hard-errored above, and an unmatched model output is refused unless
-    // `drop_action` is allowed. One advisory per role, not per placement.
-    let mut leaves: Vec<PlacedLeaf> = Vec::new();
-    collect_leaves(&model_spec.input, NodePath::root(), &mut leaves);
-    let mut ad_hoc: BTreeSet<&str> = BTreeSet::new();
-    for PlacedLeaf { leaf, .. } in &leaves {
-        match leaf {
-            ModelLeaf::Image(input) => {
-                if !has_role(&images_by_role, &input.role) {
-                    ad_hoc.insert(&input.role);
-                }
-            }
-            ModelLeaf::State(input) => {
-                // An action-source part is answered by the model's own
-                // actuator (resolved above), never by an env leaf.
-                ad_hoc.extend(
-                    input
-                        .components
-                        .iter()
-                        .filter(|part| part.source == crate::spec::PartSource::Observation)
-                        .filter_map(|part| part.role.as_deref())
-                        .filter(|role| !has_role(&states_by_role, role)),
-                );
-            }
-            ModelLeaf::Text(input) if !texts_by_role.contains_key(&input.role) => {
-                ad_hoc.insert(&input.role);
-            }
-            _ => {}
-        }
-    }
-    advisories.extend(
-        ad_hoc
-            .into_iter()
-            .filter(|role| !crate::roles::registry::is_sanctioned_role(role))
-            .map(|role| {
-                let mut message = format!(
-                    "model declares ad-hoc role {} that this env does not: an ad-hoc role \
-                     matches only on the exact string, so it resolves to a fill here -- use \
-                     a registered role, or the {} namespace to mark it intentionally \
-                     non-standard",
-                    quoted(role),
-                    quoted("x/"),
-                );
-                if let Some(hint) = crate::roles::registry::kindless_hint(role) {
-                    message.push_str(". ");
-                    message.push_str(&hint);
-                }
-                Advisory::info(message)
-            }),
-    );
-
-    // A model-declared range only fires as an affine map when the *env* side also
-    // declares a range to bridge between; against an unbounded env feature the map
-    // is skipped, so a lone model range silently does nothing (it remaps from/into
-    // an env range, it does not clamp). Surface that so the author learns it will
-    // not take effect. (State: env is the source; action: env is the destination.)
-    for obs_plan in &obs_plans {
-        if let ObsPlan::State(state) = obs_plan
-            && state.pieces.iter().any(|piece| {
-                piece.fill.is_none() && piece.dst_range.is_some() && piece.src_range.is_none()
-            })
-        {
-            advisories.push(Advisory::info(format!(
-                "model input {}: a state range is set but the env feature is \
-                     unbounded, so the range is a no-op (it remaps an env range, it \
-                     does not clamp)",
-                quoted(&state.placement.to_string()),
-            )));
-        }
-        // Two rescalings on one part compose silently: `range` bridges the two
-        // declared scales, then `scale`/`offset` applies on top of the result.
-        if let ObsPlan::State(state) = obs_plan
-            && state.pieces.iter().any(|piece| {
-                piece.dst_range.is_some() && (piece.scale.is_some() || piece.offset.is_some())
-            })
-        {
-            advisories.push(Advisory::info(format!(
-                "model input {}: a state part sets both range and scale/offset; the \
-                     range map runs first and the affine applies to its result",
-                quoted(&state.placement.to_string()),
-            )));
-        }
-    }
-    for segment in &action_plan.segments {
-        if segment.src_range.is_some() && segment.dst_range.is_none() {
-            advisories.push(Advisory::info(format!(
-                "model action (role {}): a range is set but the env actuator is \
-                 unbounded, so the range is a no-op (it remaps into an env range, it \
-                 does not clamp)",
-                quoted(segment.role.as_deref().unwrap_or("?")),
-            )));
-        }
-    }
-    advisories.sort_by(|a, b| a.message.cmp(&b.message));
-    quiet.sort_by(|a, b| a.message.cmp(&b.message));
-
-    let resolved = ResolvedAdapter::new(obs_plans, action_plan, advisories, quiet)
-        .with_projections(projections.applied);
-    // The frame-stacking × action-chunk-replay guard used to live here, but the
-    // execution horizon is no longer part of the spec — it is a runtime decision
-    // (`execution_horizon` on ResolveAdapter). The guard moved to the engine's
-    // configure_route, where the resolved stacks and the runtime horizon are both
-    // known; see `AdaptedRouteSetup::configure_route`.
-    Ok(resolved)
-}
-
-#[cfg(test)]
 mod unknown_kind_tests {
-    use super::resolve;
     use crate::error::ErrorCode;
+    use crate::lower::resolve;
     use crate::space_view::SpaceView;
     use crate::spec::{EnvTags, ModelSpec};
 
@@ -850,7 +15,7 @@ mod unknown_kind_tests {
         obs_space: &str,
         action_space: &str,
         model_spec: &str,
-    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+    ) -> Result<crate::plans::Binding, crate::error::AdapterResolutionError> {
         let tags: EnvTags = serde_json::from_str(env_tags).expect("parse env tags");
         let spec: ModelSpec = serde_json::from_str(model_spec).expect("parse model spec");
         resolve(&tags, &space(obs_space), &space(action_space), &spec, false)
@@ -1082,7 +247,7 @@ mod unknown_kind_tests {
         );
         let adapter = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("resolves");
         let advisories = adapter.advisories();
-        let hits: Vec<&crate::advisory::Advisory> = advisories
+        let hits: Vec<&rlmesh_session_core::spec::role::Advisory> = advisories
             .iter()
             .filter(|a| a.message.contains("ad-hoc role"))
             .collect();
@@ -1142,125 +307,13 @@ mod unknown_kind_tests {
 
 /// The C14 geometry rules, exercised directly on [`check_geometry`] so each of
 /// the five cases is pinned once rather than through a full resolve.
-#[cfg(test)]
-mod geometry_rule_tests {
-    use super::check_geometry;
-    use crate::error::ErrorCode;
-    use crate::spec::{Attr, FrameRef};
-
-    fn check(
-        attr: Attr,
-        env: Option<&str>,
-        model: Option<&str>,
-    ) -> (
-        Result<Option<FrameRef>, crate::error::AdapterResolutionError>,
-        Vec<crate::advisory::Advisory>,
-    ) {
-        let mut notes = Vec::new();
-        let result = check_geometry(
-            attr,
-            "proprio/eef_pos",
-            env.map(FrameRef::from).as_ref(),
-            model.map(FrameRef::from).as_ref(),
-            &mut notes,
-        );
-        (result, notes)
-    }
-
-    #[test]
-    fn agreement_and_env_only_are_silent() {
-        // Cases 1, 2 and 4: nothing declared, only the env declared, both
-        // declaring the same thing. Every one resolves without a word.
-        for (env, model, expected) in [
-            (None, None, None),
-            (Some("robot_base"), None, Some("robot_base")),
-            (Some("world"), Some("world"), Some("world")),
-        ] {
-            let (result, notes) = check(Attr::Frame, env, model);
-            assert_eq!(
-                result.expect("resolves").as_ref().map(FrameRef::as_str),
-                expected
-            );
-            assert!(notes.is_empty(), "expected silence, got {notes:?}");
-        }
-    }
-
-    #[test]
-    fn a_model_only_declaration_is_a_caution() {
-        // Case 6: the model states a requirement the env cannot confirm. It
-        // resolves (the value carries to the plan) with one caution.
-        let (result, notes) = check(Attr::Frame, None, Some("robot_base"));
-        assert_eq!(
-            result.expect("resolves").as_ref().map(FrameRef::as_str),
-            Some("robot_base")
-        );
-        assert_eq!(notes.len(), 1);
-        assert_eq!(
-            notes[0].severity,
-            crate::advisory::AdvisorySeverity::Caution
-        );
-        assert!(
-            notes[0].message.contains("declares frame \"robot_base\"")
-                && notes[0].message.contains("cannot be verified"),
-            "got: {}",
-            notes[0].message
-        );
-    }
-
-    #[test]
-    fn a_disagreement_is_a_hard_frame_mismatch() {
-        // Case 4: the pairing the whole PR exists to catch.
-        let (result, _) = check(Attr::Frame, Some("world"), Some("robot_base"));
-        let error = result.expect_err("mismatch");
-        assert_eq!(error.code, ErrorCode::FrameMismatch);
-        assert_eq!(
-            error.message,
-            "role \"proprio/eef_pos\": the model expects frame \"robot_base\" \
-             but the env declares \"world\""
-        );
-
-        // `reference` runs the same rule against its own vocabulary -- an
-        // absolute-pose head bound to a delta controller, named.
-        let (result, _) = check(Attr::Reference, Some("current"), Some("target"));
-        let error = result.expect_err("mismatch");
-        assert_eq!(error.code, ErrorCode::FrameMismatch);
-        assert_eq!(
-            error.message,
-            "role \"proprio/eef_pos\": the model expects reference \"target\" \
-             but the env declares \"current\""
-        );
-    }
-
-    #[test]
-    fn an_unrecognized_value_is_a_hard_frame_mismatch_on_either_side() {
-        // Case 7. The codec relays an unknown value (a newer peer's vocabulary
-        // survives round-trip); resolve refuses it, because a geometry this core
-        // cannot name is a geometry it cannot verify. Both sides, both attrs.
-        for (attr, env, model) in [
-            (Attr::Frame, Some("gripper"), None),
-            (Attr::Frame, None, Some("base")),
-            (Attr::Reference, None, Some("previous")),
-        ] {
-            let (result, _) = check(attr, env, model);
-            let error = result.expect_err("unrecognized");
-            assert_eq!(error.code, ErrorCode::FrameMismatch);
-            assert!(
-                error.message.contains("unrecognized"),
-                "got: {}",
-                error.message
-            );
-        }
-    }
-}
-
 /// The `part` identity rules (section 3 of the parts design), end to end.
-#[cfg(test)]
 mod part_tests {
-    use super::resolve;
-    use crate::advisory::AdvisorySeverity;
     use crate::error::ErrorCode;
+    use crate::lower::resolve;
     use crate::space_view::SpaceView;
     use crate::spec::{EnvTags, ModelSpec};
+    use rlmesh_session_core::spec::role::Severity as AdvisorySeverity;
 
     fn space(json: &str) -> SpaceView {
         serde_json::from_str(json).expect("parse space")
@@ -1271,7 +324,7 @@ mod part_tests {
         obs_space: &str,
         action_space: &str,
         model_spec: &str,
-    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+    ) -> Result<crate::plans::Binding, crate::error::AdapterResolutionError> {
         let tags: EnvTags = serde_json::from_str(env_tags).expect("parse env tags");
         let spec: ModelSpec = serde_json::from_str(model_spec).expect("parse model spec");
         resolve(&tags, &space(obs_space), &space(action_space), &spec, false)
@@ -1542,13 +595,12 @@ mod part_tests {
 
 /// The `labels` layout rules (section 3 of the design), end to end, on the
 /// Go2: SDK motor order on the env, Isaac order on a model.
-#[cfg(test)]
 mod labels_tests {
     use std::collections::BTreeMap;
 
-    use super::resolve;
     use crate::apply::{NoCustoms, Value};
     use crate::error::ErrorCode;
+    use crate::lower::resolve;
     use crate::space_view::SpaceView;
     use crate::spec::{EnvTags, ModelSpec};
 
@@ -1622,7 +674,7 @@ mod labels_tests {
     fn do_resolve(
         env: &str,
         model: &str,
-    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+    ) -> Result<crate::plans::Binding, crate::error::AdapterResolutionError> {
         let tags: EnvTags = serde_json::from_str(env).expect("parse env tags");
         let spec: ModelSpec = serde_json::from_str(model).expect("parse model spec");
         resolve(&tags, &space(GO2_OBS), &space(GO2_ACT), &spec, false)
@@ -1660,7 +712,9 @@ mod labels_tests {
         let sdk_values: Vec<f32> = (0..12).map(|i| i as f32).collect();
         raw.insert("joint_pos".to_owned(), tensor(&sdk_values));
         raw.insert("joint_vel".to_owned(), tensor(&sdk_values));
-        let Value::Map(payload) = adapter.transform_obs(&raw, &NoCustoms).expect("apply") else {
+        let Value::Map(payload) =
+            crate::apply::transform_obs(&adapter, &raw, &NoCustoms).expect("apply")
+        else {
             panic!("expected a map");
         };
         let Value::Tensor(obs) = &payload["obs"] else {
@@ -1679,9 +733,7 @@ mod labels_tests {
         assert!((obs[12] - 3.0 * 0.05).abs() < 1e-6, "{obs:?}");
         // Action: the model emits ones in Isaac order; each env axis reads its
         // own joint's scale and pose back in SDK order.
-        let action = adapter
-            .transform_action(&tensor(&[1.0; 12]))
-            .expect("apply");
+        let action = crate::apply::transform_action(&adapter, &tensor(&[1.0; 12])).expect("apply");
         let action = crate::apply::value::to_f32_vec(&action);
         let expected_act: Vec<f32> = (0..12)
             .map(|j| [0.125, 0.25, 0.25][j % 3] + [0.0, 0.8, -1.5][j % 3])
@@ -1821,16 +873,17 @@ mod labels_tests {
         );
         let mut raw: BTreeMap<String, Value> = BTreeMap::new();
         raw.insert("q".to_owned(), tensor(&[10.0, 20.0, 30.0]));
-        let Value::Map(payload) = adapter.transform_obs(&raw, &NoCustoms).expect("apply") else {
+        let Value::Map(payload) =
+            crate::apply::transform_obs(&adapter, &raw, &NoCustoms).expect("apply")
+        else {
             panic!("expected a map");
         };
         let Value::Tensor(q) = &payload["q"] else {
             panic!("expected a tensor");
         };
         assert_eq!(crate::apply::value::to_f32_vec(q), vec![20.0, 30.0, 10.0]);
-        let action = adapter
-            .transform_action(&tensor(&[20.0, 30.0, 10.0]))
-            .expect("apply");
+        let action =
+            crate::apply::transform_action(&adapter, &tensor(&[20.0, 30.0, 10.0])).expect("apply");
         assert_eq!(
             crate::apply::value::to_f32_vec(&action),
             vec![10.0, 20.0, 30.0]
@@ -1960,7 +1013,9 @@ mod labels_tests {
         joints[0] = 1.0e6;
         raw.insert("joint_pos".to_owned(), tensor(&joints));
         raw.insert("joint_vel".to_owned(), tensor(&[0.0; 12]));
-        let Value::Map(payload) = adapter.transform_obs(&raw, &NoCustoms).expect("apply") else {
+        let Value::Map(payload) =
+            crate::apply::transform_obs(&adapter, &raw, &NoCustoms).expect("apply")
+        else {
             panic!("expected a map");
         };
         let Value::Tensor(obs) = &payload["obs"] else {
@@ -1991,7 +1046,7 @@ mod labels_tests {
     fn go2_full_resolve(
         env: &str,
         previous: &str,
-    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+    ) -> Result<crate::plans::Binding, crate::error::AdapterResolutionError> {
         let tags: EnvTags = serde_json::from_str(env).unwrap();
         let spec: ModelSpec = serde_json::from_str(&go2_full_model(previous)).unwrap();
         let obs = go2_body_obs(&["ang_vel", "base_quat", "command", "joint_pos", "joint_vel"]);
@@ -2010,7 +1065,7 @@ mod labels_tests {
 
     /// The assembled `obs` vector at `step`, through the stateful seam.
     fn assembled(
-        adapter: &crate::plans::ResolvedAdapter,
+        adapter: &crate::plans::Binding,
         buffers: &mut crate::stateful::FrameBuffers,
         step: i64,
     ) -> Vec<f32> {
@@ -2060,9 +1115,8 @@ mod labels_tests {
         // The stateless transform reads the fill; the stateful seam reads the
         // raw output executed at the previous step, before the actuator's
         // affine, and the fill at the episode's first step.
-        let Value::Map(payload) = adapter
-            .transform_obs(&go2_body_raw(), &NoCustoms)
-            .expect("apply")
+        let Value::Map(payload) =
+            crate::apply::transform_obs(&adapter, &go2_body_raw(), &NoCustoms).expect("apply")
         else {
             panic!("expected a map");
         };
@@ -2217,13 +1271,12 @@ mod labels_tests {
     }
 }
 
-#[cfg(test)]
 mod provenance_tests {
-    use super::resolve;
-    use crate::advisory::AdvisorySeverity;
     use crate::error::ErrorCode;
+    use crate::lower::resolve;
     use crate::space_view::SpaceView;
     use crate::spec::{EnvTags, ModelSpec};
+    use rlmesh_session_core::spec::role::Severity as AdvisorySeverity;
 
     const OBS: &str = r#"{"kind":"dict","dtype":"unspecified","keys":["rot"],"children":[
         {"kind":"box","shape":[4],"dtype":"float32"}]}"#;
@@ -2246,7 +1299,7 @@ mod provenance_tests {
     fn do_resolve(
         env: &str,
         model: &str,
-    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+    ) -> Result<crate::plans::Binding, crate::error::AdapterResolutionError> {
         let tags: EnvTags = serde_json::from_str(env).expect("parse env tags");
         let spec: ModelSpec = serde_json::from_str(model).expect("parse model spec");
         let obs: SpaceView = serde_json::from_str(OBS).unwrap();
@@ -2341,16 +1394,17 @@ mod provenance_tests {
     }
 }
 
-#[cfg(test)]
 mod projection_tests {
-    use super::resolve;
     use crate::error::ErrorCode;
+    use crate::lower::resolve;
     use crate::space_view::SpaceView;
     use crate::spec::{EnvTags, ModelSpec};
 
     /// A LIBERO-style 7-D model on a MetaWorld-style 4-D env: the rotation
     /// delta has no actuator.
-    fn resolve_with(allow: &str) -> super::Result<crate::plans::ResolvedAdapter> {
+    fn resolve_with(
+        allow: &str,
+    ) -> Result<crate::plans::Binding, crate::error::AdapterResolutionError> {
         let tags: EnvTags = serde_json::from_str(
             r#"{"observation": {"t": {"type": "text", "role": "text/instruction"}},
                 "action": {"components": [
@@ -2406,11 +1460,10 @@ mod projection_tests {
 /// The value conventions a gripper and a delta carry: a different `polarity`
 /// or `unit` on the two sides is refused unless the model allows the named
 /// projection that converts it, and converted exactly when it does.
-#[cfg(test)]
 mod convention_tests {
-    use super::resolve;
     use crate::apply::value::{Value, tensor_from_f32, to_f32_vec};
     use crate::error::ErrorCode;
+    use crate::lower::resolve;
     use crate::space_view::SpaceView;
     use crate::spec::{EnvTags, ModelSpec};
 
@@ -2426,7 +1479,7 @@ mod convention_tests {
         model_pos: &str,
         model_state: &str,
         allow: &str,
-    ) -> super::Result<crate::plans::ResolvedAdapter> {
+    ) -> Result<crate::plans::Binding, crate::error::AdapterResolutionError> {
         let tags: EnvTags = serde_json::from_str(&format!(
             r#"{{"observation": {{"g": {{"type": "state", "role": "proprio/gripper_pos"{env_state}}}}},
                 "action": {{"components": [
@@ -2453,9 +1506,9 @@ mod convention_tests {
         resolve(&tags, &obs, &action, &spec, false)
     }
 
-    fn act(adapter: &crate::plans::ResolvedAdapter, values: &[f32]) -> Vec<f32> {
+    fn act(adapter: &crate::plans::Binding, values: &[f32]) -> Vec<f32> {
         let raw = Value::Tensor(tensor_from_f32(vec![values.len() as i64], values));
-        to_f32_vec(&adapter.transform_action(&raw).expect("apply"))
+        to_f32_vec(&crate::apply::transform_action(adapter, &raw).expect("apply"))
     }
 
     #[test]
@@ -2570,9 +1623,8 @@ mod convention_tests {
             "g".to_owned(),
             Value::Tensor(tensor_from_f32(vec![2], &[0.25, 1.0])),
         )]);
-        let Value::Tensor(state) = adapter
-            .transform_obs(&obs, &crate::apply::NoCustoms)
-            .expect("apply")
+        let Value::Tensor(state) =
+            crate::apply::transform_obs(&adapter, &obs, &crate::apply::NoCustoms).expect("apply")
         else {
             panic!("a lone state input is its tensor");
         };
@@ -2583,5 +1635,50 @@ mod convention_tests {
             "{}",
             adapter.describe()
         );
+    }
+}
+
+/// What a declaration alone gets wrong is refused while lowering it.
+mod lowering_tests {
+    use crate::error::ErrorCode;
+    use crate::lower::resolve;
+    use crate::space_view::SpaceView;
+    use crate::spec::{EnvTags, ModelSpec};
+
+    fn resolve_with(image: &str, action: &str) -> crate::error::AdapterResolutionError {
+        let tags: EnvTags = serde_json::from_str(
+            r#"{"observation": {"cam": {"type": "image", "role": "image/primary"}},
+                "action": {"components": [{"dim": 1}]}}"#,
+        )
+        .expect("tags");
+        let spec: ModelSpec = serde_json::from_str(&format!(
+            r#"{{"input": {{"type": "image", "role": "image/primary"{image}}},
+                "output": {{"components": [{{"dim": 1}}]{action}}}}}"#
+        ))
+        .expect("spec");
+        let obs: SpaceView = serde_json::from_str(
+            r#"{"kind": "dict", "dtype": "unspecified", "keys": ["cam"],
+                "children": [{"kind": "box", "shape": [8, 8, 3], "dtype": "uint8"}]}"#,
+        )
+        .expect("obs");
+        let act: SpaceView =
+            serde_json::from_str(r#"{"kind": "box", "shape": [1], "dtype": "float32"}"#)
+                .expect("action");
+        resolve(&tags, &obs, &act, &spec, false).expect_err("refused")
+    }
+
+    #[test]
+    fn a_contradictory_or_unknown_declaration_is_refused() {
+        for (image, action, expect) in [
+            (r#", "crop": 0.5, "crop_area": 0.25"#, "", "not both"),
+            (r#", "crop_mode": "zooom""#, "", "crop_mode"),
+            (r#", "channel_order": "rbg""#, "", "channel_order"),
+            (r#", "dtype": "flat32""#, "", "unknown dtype"),
+            ("", r#", "clip": [-1.0, 1.0]"#, "env-side actuator clamp"),
+        ] {
+            let error = resolve_with(image, action);
+            assert_eq!(error.code, ErrorCode::Unsupported, "{}", error.message);
+            assert!(error.message.contains(expect), "{}", error.message);
+        }
     }
 }

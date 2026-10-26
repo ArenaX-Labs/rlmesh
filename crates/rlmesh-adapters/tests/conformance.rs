@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use rlmesh_adapters::v1::{
     EnvTags, FrameBuffers, ModelSpec, NoCustoms, NoEncodings, RolePolicy, SpaceView, Value,
     assemble_obs, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve,
+    transform_action, transform_obs,
 };
 use rlmesh_spaces::scalar::{Scalar, decode_scalars, encode_scalars};
 use rlmesh_spaces::{DType, Tensor};
@@ -339,11 +340,9 @@ fn updated_case(name: &str, case: &Json) -> Json {
             let Value::Map(raw_obs) = dec(&case["observation"]) else {
                 panic!("{name}: observation must decode to a map");
             };
-            let payload = adapter
-                .transform_obs(&raw_obs, &NoCustoms)
+            let payload = transform_obs(&adapter, &raw_obs, &NoCustoms)
                 .unwrap_or_else(|e| panic!("{name}: transform_obs failed: {e}"));
-            let action = adapter
-                .transform_action(&dec(&case["model_output"]))
+            let action = transform_action(&adapter, &dec(&case["model_output"]))
                 .unwrap_or_else(|e| panic!("{name}: transform_action failed: {e}"));
             let atol = case["expect"]["atol"].clone();
             // The assembled payload is now a Value tree; the conformance schema
@@ -465,15 +464,13 @@ fn verify_case(name: &str, case: &Json) {
             let Value::Map(raw_obs) = dec(&case["observation"]) else {
                 panic!("{name}: observation must decode to a map");
             };
-            let payload = adapter
-                .transform_obs(&raw_obs, &NoCustoms)
+            let payload = transform_obs(&adapter, &raw_obs, &NoCustoms)
                 .unwrap_or_else(|e| panic!("{name}: transform_obs failed: {e}"));
             // The assembled payload is now a Value tree; the conformance schema
             // pins it as a single encoded value compared structurally.
             assert_value(name, "payload", &payload, &case["expect"]["payload"], atol);
 
-            let action = adapter
-                .transform_action(&dec(&case["model_output"]))
+            let action = transform_action(&adapter, &dec(&case["model_output"]))
                 .unwrap_or_else(|e| panic!("{name}: transform_action failed: {e}"));
             assert_value(
                 name,

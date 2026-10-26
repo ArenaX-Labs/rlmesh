@@ -13,46 +13,7 @@
 //! (its own `invert` and `scale` are corrections on top), and the env's
 //! input at its declared range, before the env's own corrections.
 
-use serde::{Deserialize, Serialize};
-
-/// Which way a gripper moves as its value rises: `open` (a higher command
-/// opens it, a higher reading is more open: openness) or `close` (closedness).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Polarity {
-    /// A higher value is more open.
-    Open,
-    /// A higher value is more closed.
-    Close,
-}
-
-impl Polarity {
-    /// Its wire spelling.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Close => "close",
-        }
-    }
-
-    /// The other polarity.
-    pub fn flipped(self) -> Self {
-        match self {
-            Self::Open => Self::Close,
-            Self::Close => Self::Open,
-        }
-    }
-
-    /// The polarity after a side's own sign corrections: `invert` and a
-    /// negative `scale` each reverse it.
-    pub fn through(self, invert: bool, scale: Option<f64>) -> Self {
-        if invert ^ scale.is_some_and(|scale| scale < 0.0) {
-            self.flipped()
-        } else {
-            self
-        }
-    }
-}
+pub use rlmesh_session_core::spec::role::input::Polarity;
 
 /// Validates a declared `unit`: the SI size (metres, or radians for a
 /// rotation) of one unit of a delta command. Finite and positive.
@@ -62,20 +23,5 @@ pub(crate) fn check_unit(unit: Option<f64>, locus: &str) -> Result<(), String> {
             "{locus}: unit must be a positive number (the SI size of one command unit), got {unit}"
         )),
         _ => Ok(()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Polarity;
-
-    #[test]
-    fn polarity_is_open_or_close_and_reverses_through_a_sign_correction() {
-        let open: Polarity = serde_json::from_str(r#""open""#).unwrap();
-        assert_eq!(open, Polarity::Open);
-        assert!(serde_json::from_str::<Polarity>(r#""opened""#).is_err());
-        assert_eq!(open.through(true, None), Polarity::Close);
-        assert_eq!(open.through(true, Some(-2.0)), Polarity::Open);
-        assert_eq!(open.through(false, Some(0.5)), Polarity::Open);
     }
 }

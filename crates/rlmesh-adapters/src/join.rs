@@ -8,13 +8,16 @@
 //! disagreed — the tag or the space.
 
 use crate::advisory::Advisory;
-use crate::fmt::quoted;
 use crate::path::NodePath;
 use crate::space_view::{SpaceView, SpaceViewKind};
 use crate::spec::{
     Action, Actuator, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, ImageLayout,
     ObsLeaf, ObsNode, SplitLayout, UnknownFeature,
 };
+
+fn quoted(value: &str) -> String {
+    format!("{value:?}")
+}
 
 /// A validation failure while joining tags against a space.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

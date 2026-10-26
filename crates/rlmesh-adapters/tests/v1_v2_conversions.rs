@@ -1,16 +1,15 @@
-//! Golden: each conversion gives the same values through a v1 adapter (env
-//! tags and a model spec, resolved and applied) and a v2 binding (a robot map
-//! and a policy map, bound and applied), including the inputs where the two
-//! used to differ: a quaternion with w < 0, gimbal lock, the input affine and
-//! the binary snap.
+//! Golden: each conversion gives the same values through the binder's two
+//! doors, a Gym binding (env tags and a model spec, lowered, bound and
+//! applied) and a v2 binding (a robot map and a policy map, bound and
+//! applied), including the inputs where they once differed: a quaternion
+//! with w < 0, gimbal lock, the input affine and the binary snap.
 
 use std::collections::BTreeMap;
 
 use rlmesh_adapters::v1::{
-    EnvTags, ModelSpec, NoCustoms, RotationEncoding, SpaceView, Value, convert_rotation, resolve,
+    EnvTags, ModelSpec, NoCustoms, SpaceView, Value, resolve, transform_action, transform_obs,
 };
 use rlmesh_session_core::spec::apply::Value as V2Value;
-use rlmesh_session_core::spec::rotation::{self, Rotation};
 use rlmesh_session_core::spec::{Binding, Policy, RunOptions, bind, convert, normalise};
 use rlmesh_session_core::wire::part::{Layout, PartSpec};
 use rlmesh_session_core::wire::version::SPEC_VERSION;
@@ -229,9 +228,7 @@ fn a_libero_pair_converts_identically_through_v1_and_v2() {
     let (tcp, fingers) = (part(&v2, "eef"), part(&v2, "fingers"));
     for quat in QUATS {
         let finger_values = [0.031_f32, -0.0287];
-        let payload = v1
-            .transform_obs(&v1_obs(quat, finger_values), &NoCustoms)
-            .expect("v1 obs");
+        let payload = transform_obs(&v1, &v1_obs(quat, finger_values), &NoCustoms).expect("v1 obs");
         same(
             &v1_bytes(&payload, "image"),
             &v2_input(&v2, "image", &frame),
@@ -258,37 +255,6 @@ fn a_libero_pair_converts_identically_through_v1_and_v2() {
 }
 
 #[test]
-fn every_rotation_pair_agrees_on_the_inputs_that_used_to_differ() {
-    use RotationEncoding as E;
-    let pairs = [
-        (E::QuatXyzw, Rotation::QuatXyzw),
-        (E::QuatWxyz, Rotation::QuatWxyz),
-        (E::AxisAngle, Rotation::AxisAngle),
-        (E::Rot6d, Rotation::Rot6d),
-        (E::Rot6dRowMajor, Rotation::Rot6dRowMajor),
-        (E::EulerXyz, Rotation::EulerXyz),
-        (E::GravityXyz, Rotation::GravityXyz),
-    ];
-    for quat in QUATS {
-        for &(from, from2) in pairs.iter().filter(|(e, _)| !e.is_sink()) {
-            let source = convert_rotation(&quat, E::QuatXyzw, from).expect("encode");
-            for &(to, to2) in &pairs {
-                let v1 = convert_rotation(&source, from, to).expect("v1");
-                let mut v2 = Vec::new();
-                let wide: Vec<f64> = source.iter().map(|&x| f64::from(x)).collect();
-                rotation::convert(&wide, from2, to2, &mut v2);
-                let v2: Vec<f32> = v2.into_iter().map(|x| x as f32).collect();
-                if from == to {
-                    assert_eq!(v1, source);
-                    continue;
-                }
-                assert_eq!(v1, v2, "{from:?} -> {to:?} of {quat:?}");
-            }
-        }
-    }
-}
-
-#[test]
 fn the_v1_gripper_snap_and_the_edge_snap_are_one_rule() {
     // v1: model [0, 1] mapped onto the env's [-1, 1], then ±1 at 0. The
     // edge: a v2 binary command, 0/1 at 0.5. Both are the midpoint rule.
@@ -302,7 +268,7 @@ fn the_v1_gripper_snap_and_the_edge_snap_are_one_rule() {
     }));
     for g in [0.0_f32, 0.25, 0.4999, 0.5, 0.5001, 0.75, 1.0] {
         let action = f32_tensor(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, g]);
-        let out = v1.transform_action(&action).expect("v1 action");
+        let out = transform_action(&v1, &action).expect("v1 action");
         let got = f32::from_le_bytes(out.to_contiguous_bytes()[24..28].try_into().expect("f32"));
         let edge = convert::binary(f64::from(g), 0.0, 1.0);
         // The neutral raw 0.0 at the exact midpoint is v1's one exception.

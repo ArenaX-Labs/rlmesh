@@ -1,7 +1,6 @@
 //! Resolved instructions for one model text input.
 
-use crate::path::NodePath;
-use crate::spec::TextContainer;
+use crate::spec::role::path::NodePath;
 
 /// Resolved instructions for one model text input.
 #[derive(Debug, Clone, PartialEq)]
@@ -12,6 +11,8 @@ pub struct TextPlan {
     /// fill-only text input that never looks one up (the env had no matching
     /// text role but the model declared a `fill`).
     pub source: Option<NodePath>,
-    pub container: TextContainer,
+    /// Delivered as a one-item list rather than a string.
+    pub list: bool,
+    /// Delivered when the env has no such text.
     pub fill: Option<String>,
 }

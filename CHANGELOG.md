@@ -243,6 +243,7 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 
 #### All languages
 
+- Model specs bind to Gym envs in the binder: `rlmesh_session_core::spec::role`, the binder's Gym door beside the v2 policy binder, matches a model's leaves and actuators to an env's tagged features by role, decides every conversion and runs it. `rlmesh-adapters` keeps the v1 declarations (`EnvTags`, `ModelSpec`), joins tags against spaces and lowers both into the binder's input; results are unchanged, byte for byte. A model input's `resample`, `crop_mode`, `channel_order` and `dtype` are now checked on every input, an optional camera the env lacks included (before, a misspelt value there went unnoticed).
 - A lane endpoint served from Rust, C or C++ reports each range warning (`rlmesh.conformance.warning`) once per lane for the server's life, as a Python server does, instead of once for all lanes; a vector env still reports once for all its lanes.
 - The Rust `run_model` quickstart uses `Model::run` with a `Policy` and public `RunOptions` instead of the internal binding runner, and reports the episode and step totals. It still connects to the paired `serve_env` example.
 - The Rust crates are consolidated, and the workspace is versioned `0.2.0-alpha.0` because it no longer matches the published `0.1.0` crates. The v2 session is one crate, `rlmesh-session`, with `wire`, `spec`, `edge`, `record` (feature `record`), `gateway` (feature `gateway`, still the `rlmesh-gateway` binary), `lease` and `sdk` modules; `rlmesh-session-core` keeps the sans-IO core the browser build runs, and `rlmesh_session::{wire, spec}` re-export it. The facade gains `rlmesh::lockstep` (feature `lockstep`, formerly `rlmesh-gym`) and the live viewer as `rlmesh::viewer` (feature `viewer`, on by default); the recorder's AV1 writer is `rlmesh::recorder::video`. `rlmesh-sandbox` is part of the Python extension and no longer published. The hidden `rlmesh viewtest` command is gone.
@@ -302,6 +303,7 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 
 #### All languages
 
+- A v2 binding's cast to `float16` rounds once, through an `f32` rounded to odd, as the Gym path always did; before, a value just above a binary16 midpoint could round down.
 - Back-to-back environment sessions and runs no longer fail spuriously with an active-session refusal after the previous client closes, detaches, or is dropped. The server releases its Join slot before sending the Close reply, including for older clients. A new Join from the same process waits up to five seconds, bounded by its request timeout, for a dropped or detached client's stream to finish; a stream still draining after that and genuinely concurrent clients receive the active-session refusal.
 - C callbacks reporting `TimeoutError` preserve their authored message through model and session calls instead of returning a fabricated zero-duration timeout.
 - DLPack 1.0 exports requested with `copy=True` set the standard `IS_COPIED` flag as well as exposing writable, independent storage, and DLPack imports reject overflowing sizes and strides before accessing producer data.

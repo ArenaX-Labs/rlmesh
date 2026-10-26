@@ -1435,7 +1435,8 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         // aspect crop/letterbox. The route runs regardless, so without this the
         // signal stays buried on the adapter handle and the degradation is silent
         // in practice.
-        for note in config.adapter.advisories() {
+        let advisories = rlmesh_adapters::v1::advisories(&config.adapter);
+        for note in &advisories {
             tracing::warn!(
                 env_id = %env_id,
                 severity = note.severity.as_str(),
@@ -1443,7 +1444,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
             );
         }
         // And hand them to the run's driver, which carries them into its result.
-        needs.advisories = config.adapter.advisories();
+        needs.advisories = advisories;
         // Stamp the runtime-chosen execution horizon onto the resolved config (1 = no
         // chunking). Warn once here when the runtime asks for chunking but the model
         // has no chunk corner: the route still runs, re-planning every step.

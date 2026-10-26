@@ -2,16 +2,23 @@
 
 use std::collections::BTreeMap;
 
-use super::state::part_suffix;
-use super::{LeafKey, Projections, Result, bind, err};
-use crate::advisory::Advisory;
-use crate::error::ErrorCode;
-use crate::fmt::{quoted, quoted_leaf_keys};
-use crate::path::NodePath;
-use crate::plans::{CropPlan, ImagePlan};
-use crate::spec::{
-    CHANNEL_ORDERS, CROP_MODES, EnvImage, FitMode, Image, ImageLayout, MAX_STACK_SPAN, StackPad,
-};
+use crate::spec::image::crop_cut;
+use crate::spec::plan::Fit;
+use crate::spec::policy::ImageLayout;
+use crate::spec::projection::Projection;
+use crate::spec::role::bind::{LeafKey, Projections, Result, err, seek};
+use crate::spec::role::error::{Advisory, ErrorCode};
+use crate::spec::role::fmt::{quoted, quoted_leaf_keys};
+use crate::spec::role::input::{Crop, EnvImage, Image, StackPad};
+use crate::spec::role::path::NodePath;
+use crate::spec::role::plan::{CropPlan, ImagePlan};
+use crate::spec::role::roles::registry;
+use crate::spec::role::state::part_suffix;
+use crate::wire::part::DType;
+
+/// The most consecutive frames a frame window may span (the window is held
+/// per live episode).
+const MAX_STACK_SPAN: i32 = 128;
 
 pub(super) fn plan_image(
     model_input: &Image,
@@ -34,7 +41,7 @@ pub(super) fn plan_image(
             ),
         ));
     }
-    let bound = bind(
+    let bound = seek(
         images_by_role,
         &model_input.role,
         model_input.part.as_deref(),
@@ -52,7 +59,11 @@ pub(super) fn plan_image(
         // The role's data is present but under a kind this core can't read: fail
         // loud before any fallback (lone-camera bind, optional zero-fill) papers
         // over it. A role the env genuinely lacks passes through to the fallbacks.
-        super::reject_referenced_unknown(&model_input.role, &placement, unknown_roles)?;
+        crate::spec::role::bind::reject_referenced_unknown(
+            &model_input.role,
+            &placement,
+            unknown_roles,
+        )?;
     }
     // The lone-camera fallback binds a role-mismatched input to the env's
     // single camera -- but only for a sanctioned (registered or `x/`) role, so
@@ -66,11 +77,11 @@ pub(super) fn plan_image(
         && !model_input.optional
         && images_by_role.len() == 1
         && model_input.part.is_none()
-        && crate::roles::registry::is_sanctioned_role(&model_input.role)
+        && registry::is_sanctioned_role(&model_input.role)
     {
         let ((_, only_part, _), only) = images_by_role.iter().next().expect("one camera");
         projections.apply(
-            super::Projection::RebindCamera,
+            Projection::RebindCamera,
             format!(
                 "model input {at} (role {}) reads the env's only camera (role {})",
                 quoted(&model_input.role),
@@ -104,45 +115,6 @@ pub(super) fn plan_image(
             ),
         ));
     };
-    if !crate::apply::RESAMPLES.contains(&model_input.resample.as_str()) {
-        return Err(err(
-            ErrorCode::Unsupported,
-            format!(
-                "model input {at}: unsupported resample {}; expected one of {:?}",
-                quoted(&model_input.resample),
-                crate::apply::RESAMPLES
-            ),
-        ));
-    }
-    // The two other constrained-string vocabularies, checked here for the same
-    // reason as `resample`: they are strings on the wire so a future additive
-    // value degrades to this typed error instead of a parse failure, which only
-    // pays off if a typo is caught at resolve rather than ignored as inert.
-    for (field, value, vocabulary) in [
-        ("crop_mode", &model_input.crop_mode, CROP_MODES),
-        ("channel_order", &model_input.channel_order, CHANNEL_ORDERS),
-    ] {
-        if !vocabulary.contains(&value.as_str()) {
-            return Err(err(
-                ErrorCode::Unsupported,
-                format!(
-                    "model input {at}: unsupported {field} {}; expected one of {vocabulary:?}",
-                    quoted(value)
-                ),
-            ));
-        }
-    }
-    // Validate dtype at resolve (like resample above) so a typo'd name fails
-    // resolution once, not per-step in apply (finalize_dtype) at serve time.
-    if rlmesh_spaces::DType::from_name(&model_input.dtype).is_none() {
-        return Err(err(
-            ErrorCode::Unsupported,
-            format!(
-                "model input {at}: unknown dtype {}",
-                quoted(&model_input.dtype)
-            ),
-        ));
-    }
     // A channel-count mismatch (e.g. RGB vs grayscale) is not converted; left
     // unchecked it silently feeds the model a wrong-shaped tensor, so reject it.
     // Only checked when the model declares its expected channels and the env's
@@ -190,7 +162,7 @@ pub(super) fn plan_image(
         (None, Some(width)) => Some((env_image.height, width)),
         (None, None) => None,
     };
-    let swap_rb = model_input.channel_order == "bgr";
+    let swap_rb = model_input.bgr;
     // Both are 3-channel ops -- there is no red/blue pair, and no YCbCr to
     // subsample, in a grayscale or RGBA frame. A wrong-shaped feed would
     // silently get its bytes reordered (or fail per-step in apply), so reject
@@ -216,7 +188,7 @@ pub(super) fn plan_image(
             }
         }
     }
-    let crop = crop_plan(model_input, &at, env_image)?;
+    let crop = crop_plan(model_input, env_image);
     let fit = resolve_fit(model_input, &at, env_image, size, crop.as_ref())?;
     let offsets = stack_window(model_input, &at)?;
     // The frame the model actually gets: its declared target, else the integer
@@ -241,9 +213,9 @@ pub(super) fn plan_image(
         flip: env_image.upside_down != model_input.upside_down,
         size,
         fit,
-        resample: model_input.resample.clone(),
-        dtype: model_input.dtype.clone(),
-        normalize: model_input.normalize.range(),
+        resample: model_input.resample,
+        dtype: model_input.dtype,
+        normalize: model_input.normalize,
         lead_dims: model_input.lead_dims,
         src_range: env_image.value_range,
         stack: model_input.stack,
@@ -255,7 +227,7 @@ pub(super) fn plan_image(
         render,
         offsets,
         stack_pad: model_input.stack_pad,
-        frame_bytes: frame_bytes(&model_input.dtype, processed, channels),
+        frame_bytes: frame_bytes(model_input.dtype, processed, channels),
         role_rebound,
         part,
     })
@@ -273,37 +245,26 @@ fn known_size(env_image: &EnvImage) -> bool {
 /// fraction — so declaring both is a spec error rather than a silent
 /// precedence rule. The plan carries the side fraction; `area` rides along only
 /// so describe can echo the form the author wrote.
-fn crop_plan(model_input: &Image, at: &str, env_image: &EnvImage) -> Result<Option<CropPlan>> {
-    if model_input.crop.is_some() && model_input.crop_area.is_some() {
-        return Err(err(
-            ErrorCode::Unsupported,
-            format!(
-                "model input {at}: pass crop (a side fraction) or crop_area (an area \
-                 fraction), not both"
-            ),
-        ));
-    }
-    let Some(fraction) = model_input
-        .crop
-        .or_else(|| model_input.crop_area.map(f64::sqrt))
-    else {
-        return Ok(None);
-    };
-    let slice = model_input.crop_mode == "slice";
+fn crop_plan(model_input: &Image, env_image: &EnvImage) -> Option<CropPlan> {
+    let Crop {
+        fraction,
+        area,
+        slice,
+    } = model_input.crop?;
     // The integer cut at the env's declared resolution, for the describe text;
     // apply recomputes it from the frame it is handed, through the same helper.
     let cut = (slice && env_image.height != 0 && env_image.width != 0).then(|| {
         (
-            crate::apply::crop_cut(env_image.height as usize, fraction) as u32,
-            crate::apply::crop_cut(env_image.width as usize, fraction) as u32,
+            crop_cut(env_image.height as usize, fraction) as u32,
+            crop_cut(env_image.width as usize, fraction) as u32,
         )
     });
-    Ok(Some(CropPlan {
+    Some(CropPlan {
         fraction,
-        area: model_input.crop_area,
+        area,
         slice,
         cut,
-    }))
+    })
 }
 
 /// Build a zero-fill (black-frame) plan for an optional image the env lacks.
@@ -332,10 +293,10 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         dst_layout: model_input.layout,
         flip: false,
         size: None,
-        fit: FitMode::Stretch,
-        resample: model_input.resample.clone(),
-        dtype: model_input.dtype.clone(),
-        normalize: model_input.normalize.range(),
+        fit: Fit::Stretch,
+        resample: model_input.resample,
+        dtype: model_input.dtype,
+        normalize: model_input.normalize,
         lead_dims: model_input.lead_dims,
         src_range: None,
         stack: model_input.stack,
@@ -352,7 +313,7 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         render: None,
         offsets,
         stack_pad: model_input.stack_pad,
-        frame_bytes: frame_bytes(&model_input.dtype, Some((height, width)), Some(channels)),
+        frame_bytes: frame_bytes(model_input.dtype, Some((height, width)), Some(channels)),
         role_rebound: None,
         part: model_input.part.clone(),
     })
@@ -360,18 +321,13 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
 
 /// Bytes of one *processed* frame: `height x width x channels x dtype`.
 ///
-/// `0` when either the frame's shape or its dtype was not derivable — a caller
+/// `0` when the frame's shape was not derivable — a caller
 /// budgeting a frame window reads that as "unknown", never as "free".
-fn frame_bytes(dtype: &str, size: Option<(u32, u32)>, channels: Option<u32>) -> u64 {
-    let (Some((height, width)), Some(channels), Some(dtype)) =
-        (size, channels, rlmesh_spaces::DType::from_name(dtype))
-    else {
+fn frame_bytes(dtype: DType, size: Option<(u32, u32)>, channels: Option<u32>) -> u64 {
+    let (Some((height, width)), Some(channels)) = (size, channels) else {
         return 0;
     };
-    u64::from(height)
-        * u64::from(width)
-        * u64::from(channels)
-        * rlmesh_spaces::dtype_size(dtype) as u64
+    u64::from(height) * u64::from(width) * u64::from(channels) * dtype.size()
 }
 
 /// Validate the declared frame window and return its offsets.
@@ -447,9 +403,9 @@ fn resolve_fit(
     env_image: &EnvImage,
     size: Option<(u32, u32)>,
     crop: Option<&CropPlan>,
-) -> Result<FitMode> {
+) -> Result<Fit> {
     let Some((target_height, target_width)) = size else {
-        return Ok(FitMode::Stretch); // no resize
+        return Ok(Fit::Stretch); // no resize
     };
     // A crop is what the resize actually reads, so the upscale guard measures
     // against the box, not the whole camera -- otherwise a spec could crop a
@@ -458,8 +414,8 @@ fn resolve_fit(
     // unaffected.
     let (env_height, env_width) = match crop {
         Some(crop) => (
-            crate::apply::crop_cut(env_image.height as usize, crop.fraction) as u32,
-            crate::apply::crop_cut(env_image.width as usize, crop.fraction) as u32,
+            crop_cut(env_image.height as usize, crop.fraction) as u32,
+            crop_cut(env_image.width as usize, crop.fraction) as u32,
         ),
         None => (env_image.height, env_image.width),
     };
@@ -470,15 +426,13 @@ fn resolve_fit(
     // Whether `mode` must scale the env image *up* to reach the target. Crop
     // covers, so any axis short of the target upscales; pad only contains, so it
     // upscales only when both axes are short; stretch scales each axis directly.
-    let upscales = |mode: FitMode| -> bool {
+    let upscales = |mode: Fit| -> bool {
         if !known {
             return false;
         }
         match mode {
-            FitMode::Stretch | FitMode::Crop => {
-                target_height > env_height || target_width > env_width
-            }
-            FitMode::Pad => target_height > env_height && target_width > env_width,
+            Fit::Stretch | Fit::Crop => target_height > env_height || target_width > env_width,
+            Fit::Pad => target_height > env_height && target_width > env_width,
         }
     };
 
@@ -488,10 +442,10 @@ fn resolve_fit(
 
     // Permitted modes in preference order; unrecognized (future) modes are
     // skipped so an old core degrades gracefully. `None` = no fit declared.
-    let permitted: Vec<FitMode> = model_input
+    let permitted: Vec<Fit> = model_input
         .fit
         .as_ref()
-        .map(|set| set.known().collect())
+        .map(|set| set.known.clone())
         .unwrap_or_default();
 
     if aspect_differs {
@@ -513,7 +467,7 @@ fn resolve_fit(
                 "model input {at}: target {target_height}x{target_width} changes the env's \
              {env_height}x{env_width} aspect ratio and the declared fit {:?} names no mode this \
              build recognizes; expected 'stretch', 'crop', or 'pad'",
-                set.wire_names()
+                set.names
             ),
             Some(_) => format!(
                 "model input {at}: every declared fit would upscale {} to \
@@ -538,11 +492,11 @@ fn resolve_fit(
             format!(
                 "model input {at}: the declared fit {:?} names no mode this build \
              recognizes; expected 'stretch', 'crop', or 'pad'",
-                set.wire_names()
+                set.names
             ),
         ));
     }
-    let mode = permitted.first().copied().unwrap_or(FitMode::Stretch);
+    let mode = permitted.first().copied().unwrap_or(Fit::Stretch);
     if !model_input.allow_upscale && upscales(mode) {
         return Err(err(
             ErrorCode::Unsupported,
@@ -558,7 +512,7 @@ fn resolve_fit(
     // borders, and the describe advisory for either would report a step that
     // never happens. An unknown camera size keeps the declared mode, since the
     // aspect (and so the step) is decided per frame.
-    Ok(if known { FitMode::Stretch } else { mode })
+    Ok(if known { Fit::Stretch } else { mode })
 }
 
 /// What the upscale guard measured, for its error: the env camera, or -- when
@@ -600,25 +554,43 @@ fn upscale_remedy(crop: Option<&CropPlan>) -> String {
 mod image_resolve_tests {
     use std::collections::BTreeMap;
 
-    use super::super::LeafKey;
     use super::plan_image;
-    use crate::error::ErrorCode;
-    use crate::path::NodePath;
-    use crate::spec::{AcceptSet, EnvImage, FitMode, Image, ImageLayout, Normalize, StackPad};
+    use crate::spec::plan::Fit;
+    use crate::spec::policy::{ImageLayout, Resample};
+    use crate::spec::projection::Projection;
+    use crate::spec::role::bind::{LeafKey, Projections};
+    use crate::spec::role::input::{Accept, Crop, EnvImage, Image, StackPad};
+    use crate::spec::role::path::NodePath;
+    use crate::spec::role::{Error, ErrorCode};
+    use crate::wire::part::DType;
 
     /// Resolve at the root placement (the common single-leaf-payload case).
     fn plan(
         model: &Image,
         images: &BTreeMap<LeafKey, &EnvImage>,
-    ) -> Result<crate::plans::ImagePlan, crate::error::AdapterResolutionError> {
+    ) -> Result<crate::spec::role::plan::ImagePlan, Error> {
         plan_image(
             model,
             NodePath::root(),
             images,
             &BTreeMap::new(),
             &mut Vec::new(),
-            &mut super::super::Projections::allowing(&[super::super::Projection::RebindCamera]),
+            &mut Projections::allowing(&[Projection::RebindCamera]),
         )
+    }
+
+    /// A declared `fit` list.
+    fn fits(names: &[&str]) -> Accept<Fit> {
+        let known = |name: &str| match name {
+            "stretch" => Some(Fit::Stretch),
+            "crop" => Some(Fit::Crop),
+            "pad" => Some(Fit::Pad),
+            _ => None,
+        };
+        Accept {
+            names: names.iter().map(|name| (*name).to_owned()).collect(),
+            known: names.iter().filter_map(|name| known(name)).collect(),
+        }
     }
 
     fn env_image(height: u32, width: u32) -> EnvImage {
@@ -645,23 +617,20 @@ mod image_resolve_tests {
             width: Some(width),
             layout: ImageLayout::Hwc,
             channels: None,
-            dtype: "uint8".to_owned(),
-            normalize: Normalize::Off,
+            dtype: DType::U8,
+            normalize: None,
             lead_dims: 0,
             upside_down: false,
-            resample: "bilinear".to_owned(),
+            resample: Resample::Bilinear,
             allow_upscale,
             fit: None,
             optional: false,
             fill: None,
             stack: 1,
             crop: None,
-            crop_area: None,
-            crop_mode: "zoom".to_owned(),
             jpeg_quality: None,
-            channel_order: "rgb".to_owned(),
+            bgr: false,
             render: None,
-            unknown: Default::default(),
         }
     }
 
@@ -729,18 +698,12 @@ mod image_resolve_tests {
         // can fire for a step that never happens.
         let env = env_image(256, 256);
         let mut model = model_image(256, 256, false);
-        model.fit = Some(AcceptSet::single(FitMode::Pad));
-        assert_eq!(
-            plan(&model, &images(&env)).expect("ok").fit,
-            FitMode::Stretch
-        );
+        model.fit = Some(fits(&["pad"]));
+        assert_eq!(plan(&model, &images(&env)).expect("ok").fit, Fit::Stretch);
         // An unknown camera size keeps the declared mode: the aspect is only
         // known per frame, so the step (and its advisory) still apply.
         let unknown = env_image(0, 0);
-        assert_eq!(
-            plan(&model, &images(&unknown)).expect("ok").fit,
-            FitMode::Pad
-        );
+        assert_eq!(plan(&model, &images(&unknown)).expect("ok").fit, Fit::Pad);
     }
 
     #[test]
@@ -760,9 +723,9 @@ mod image_resolve_tests {
     fn aspect_mismatch_with_fit_resolves() {
         let env = env_image(8, 8);
         let mut model = model_image(3, 4, false);
-        model.fit = Some(AcceptSet::single(FitMode::Crop));
+        model.fit = Some(fits(&["crop"]));
         let plan = plan(&model, &images(&env)).expect("ok");
-        assert_eq!(plan.fit, FitMode::Crop);
+        assert_eq!(plan.fit, Fit::Crop);
     }
 
     #[test]
@@ -770,7 +733,7 @@ mod image_resolve_tests {
         let env = env_image(8, 8);
         // 4x4 preserves the 1:1 aspect -> no fit required, defaults to stretch.
         let plan = plan(&model_image(4, 4, false), &images(&env)).expect("ok");
-        assert_eq!(plan.fit, FitMode::Stretch);
+        assert_eq!(plan.fit, Fit::Stretch);
     }
 
     #[test]
@@ -779,19 +742,19 @@ mod image_resolve_tests {
         // contains. The same spec therefore crops a large camera and letterboxes
         // a small one -- chosen per env, not pre-committed.
         let mut model = model_image(100, 100, false);
-        model.fit = Some(serde_json::from_str(r#"["crop", "pad"]"#).expect("parse"));
+        model.fit = Some(fits(&["crop", "pad"]));
         // Large enough to crop-cover by downscaling -> crop (first preference).
         let big = env_image(200, 150);
-        assert_eq!(plan(&model, &images(&big)).expect("ok").fit, FitMode::Crop);
+        assert_eq!(plan(&model, &images(&big)).expect("ok").fit, Fit::Crop);
         // Too short to crop-cover without upscaling -> falls back to pad.
         let small = env_image(50, 150);
-        assert_eq!(plan(&model, &images(&small)).expect("ok").fit, FitMode::Pad);
+        assert_eq!(plan(&model, &images(&small)).expect("ok").fit, Fit::Pad);
     }
 
     #[test]
     fn every_fit_upscaling_names_the_model_knob_and_the_env_camera() {
         let mut model = model_image(100, 100, false);
-        model.fit = Some(AcceptSet::single(FitMode::Crop));
+        model.fit = Some(fits(&["crop"]));
         let error = plan(&model, &images(&env_image(50, 150))).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         let message = &error.message;
@@ -811,7 +774,7 @@ mod image_resolve_tests {
         let env = env_image(8, 8);
         let mut model = model_image(3, 4, false);
         // A future/typo'd mode parses (tolerated) but resolves to no usable fit.
-        model.fit = Some(serde_json::from_str(r#""squish""#).expect("parse"));
+        model.fit = Some(fits(&["squish"]));
         let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
@@ -827,7 +790,7 @@ mod image_resolve_tests {
         // this used to silently degrade to stretch; now it is rejected too.
         let env = env_image(8, 8);
         let mut model = model_image(4, 4, false);
-        model.fit = Some(serde_json::from_str(r#""squish""#).expect("parse"));
+        model.fit = Some(fits(&["squish"]));
         let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
@@ -842,7 +805,7 @@ mod image_resolve_tests {
         // A `[min, max]` normalize maps pixels into that range.
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
-        model.normalize = Normalize::Range(-1.0, 1.0);
+        model.normalize = Some((-1.0, 1.0));
         let plan = plan(&model, &images(&env)).expect("ok");
         assert_eq!(plan.normalize, Some((-1.0, 1.0)));
     }
@@ -851,7 +814,7 @@ mod image_resolve_tests {
     fn normalize_true_uses_the_unit_interval() {
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
-        model.normalize = Normalize::Unit;
+        model.normalize = Some((0.0, 1.0));
         let plan = plan(&model, &images(&env)).expect("ok");
         assert_eq!(plan.normalize, Some((0.0, 1.0)));
     }
@@ -1066,7 +1029,11 @@ mod image_resolve_tests {
         // square of the side fraction the plan carries.
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
-        model.crop_area = Some(0.9);
+        model.crop = Some(Crop {
+            fraction: 0.9f64.sqrt(),
+            area: Some(0.9),
+            slice: false,
+        });
         let crop = plan(&model, &images(&env)).expect("ok").crop.expect("crop");
         assert!((crop.fraction - 0.9f64.sqrt()).abs() < 1e-12);
         assert_eq!(crop.area, Some(0.9));
@@ -1078,8 +1045,11 @@ mod image_resolve_tests {
     fn slice_crop_precomputes_the_integer_cut() {
         let env = env_image(480, 480);
         let mut model = model_image(448, 448, true);
-        model.crop = Some(2.0 / 3.0);
-        model.crop_mode = "slice".to_owned();
+        model.crop = Some(Crop {
+            fraction: 2.0 / 3.0,
+            area: None,
+            slice: true,
+        });
         let crop = plan(&model, &images(&env)).expect("ok").crop.expect("crop");
         assert!(crop.slice);
         assert_eq!(crop.cut, Some((320, 320)));
@@ -1092,7 +1062,11 @@ mod image_resolve_tests {
         // own resolution says.
         let env = env_image(12, 12);
         let mut model = model_image(8, 8, false);
-        model.crop = Some(0.5);
+        model.crop = Some(Crop {
+            fraction: 0.5,
+            area: None,
+            slice: false,
+        });
         let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         let message = &error.message;
@@ -1111,40 +1085,11 @@ mod image_resolve_tests {
     }
 
     #[test]
-    fn crop_and_crop_area_together_are_a_resolve_error() {
-        let env = env_image(8, 8);
-        let mut model = model_image(8, 8, false);
-        model.crop = Some(0.5);
-        model.crop_area = Some(0.25);
-        let error = plan(&model, &images(&env)).expect_err("err");
-        assert_eq!(error.code, ErrorCode::Unsupported);
-        assert!(error.message.contains("not both"), "got: {}", error.message);
-    }
-
-    #[test]
-    fn typo_crop_mode_and_channel_order_are_resolve_errors() {
-        // Constrained strings, like `resample`: a typo fails resolution instead
-        // of silently defaulting to zoom/rgb.
-        let env = env_image(8, 8);
-        for (field, value) in [("crop_mode", "zooom"), ("channel_order", "rbg")] {
-            let mut model = model_image(8, 8, false);
-            if field == "crop_mode" {
-                model.crop_mode = value.to_owned();
-            } else {
-                model.channel_order = value.to_owned();
-            }
-            let error = plan(&model, &images(&env)).expect_err("err");
-            assert_eq!(error.code, ErrorCode::Unsupported);
-            assert!(error.message.contains(field), "got: {}", error.message);
-        }
-    }
-
-    #[test]
     fn bgr_needs_three_channels() {
         let mut env = env_image(8, 8);
         env.channels = 1;
         let mut model = model_image(8, 8, false);
-        model.channel_order = "bgr".to_owned();
+        model.bgr = true;
         let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
@@ -1155,20 +1100,5 @@ mod image_resolve_tests {
 
         let rgb = env_image(8, 8); // 3 channels
         assert!(plan(&model, &images(&rgb)).expect("ok").swap_rb);
-    }
-
-    #[test]
-    fn unknown_dtype_is_a_resolve_error() {
-        // dtype is checked at resolve (like resample), not deferred to apply.
-        let env = env_image(8, 8);
-        let mut model = model_image(8, 8, false);
-        model.dtype = "flat32".to_owned(); // typo of float32
-        let error = plan(&model, &images(&env)).expect_err("err");
-        assert_eq!(error.code, ErrorCode::Unsupported);
-        assert!(
-            error.message.contains("unknown dtype"),
-            "got: {}",
-            error.message
-        );
     }
 }

@@ -3,7 +3,10 @@
 Part of the [language parity spec](../language-parity.md). Status: Draft —
 reviewed round 4. Draft: C# column pending review. Rules: [rules.md](rules.md). Paths use the prefixes defined
 there, plus `pyad/` = `python/rlmesh/src/rlmesh/adapters/` and `core/` =
-`crates/rlmesh-adapters/src/`.
+`crates/rlmesh-adapters/src/`. The resolver, plans, apply and describe
+references (`core/resolver/`, `core/plans/`, `core/apply/{image,state,action}`)
+predate their move into the binder's Gym door,
+`crates/rlmesh-session-core/src/spec/role/` (`bind.rs`, `plan/`, `apply/`).
 
 `rlmesh.adapters` is Stable. Its counterpart is `rlmesh::adapters` in Rust and
 C++, the `RLMesh*` / `rlmesh_*` / `RLMESH_ADAPTERS_*` names of D-6 in C, and

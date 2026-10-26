@@ -94,9 +94,18 @@ fn f16_to_f64(bits: u16) -> f64 {
     }
 }
 
-/// Round to nearest even, through `f32` (exact for every `f16`).
+/// Round to nearest even, through `f32` rounded to odd: an inexact cast to
+/// `f32` sets its low mantissa bit, so the `f32` is never an exact `f16`
+/// midpoint and the second rounding equals a direct one ("When double
+/// rounding is odd", Boldo and Melquiond).
 fn f64_to_f16(value: f64) -> u16 {
-    let bits = (value as f32).to_bits();
+    let nearest = value as f32;
+    let odd = if f64::from(nearest) == value || value.is_nan() {
+        nearest
+    } else {
+        f32::from_bits(nearest.to_bits() | 1)
+    };
+    let bits = odd.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
     let exp = ((bits >> 23) & 0xff) as i32;
     let mant = bits & 0x7f_ffff;
@@ -128,7 +137,7 @@ fn f64_to_f16(value: f64) -> u16 {
 }
 
 /// Little-endian elements as `f64`.
-fn decode(dtype: DType, bytes: &[u8]) -> Vec<f64> {
+pub(crate) fn decode(dtype: DType, bytes: &[u8]) -> Vec<f64> {
     macro_rules! each {
         ($n:literal, $f:expr) => {
             bytes
@@ -163,7 +172,7 @@ fn int(value: f64, low: f64, high: f64) -> f64 {
 }
 
 /// `values` as little-endian `dtype` elements.
-fn encode(dtype: DType, values: &[f64]) -> Vec<u8> {
+pub(crate) fn encode(dtype: DType, values: &[f64]) -> Vec<u8> {
     let mut out = Vec::with_capacity(values.len() * dtype.size() as usize);
     for &v in values {
         match dtype {
@@ -823,6 +832,10 @@ mod tests {
             assert_eq!(f16_to_f64(f64_to_f16(x)), x, "{x}");
         }
         assert!(f16_to_f64(f64_to_f16(1e6)).is_infinite());
+        // 1 + 2^-11 + 2^-25 rounds up to 0x3C01 only when rounded once: an
+        // f32 rounded to nearest first lands on the 1 + 2^-11 midpoint.
+        let above = 1.0 + 2f64.powi(-11) + 2f64.powi(-25);
+        assert_eq!(f64_to_f16(above), 0x3C01);
         assert_eq!(decode(DType::I16, &(-7_i16).to_le_bytes()), [-7.0]);
     }
 }

@@ -561,8 +561,7 @@ impl PyAdapterPlan {
     /// the "warn" subset of `describe`, empty when nothing noteworthy happened.
     /// Each note carries a severity tier (`"info"` / `"caution"`).
     fn advisories(&self) -> Vec<PyAdvisory> {
-        self.adapter
-            .advisories()
+        rlmesh_adapters::v1::advisories(&self.adapter)
             .into_iter()
             .map(PyAdvisory::from)
             .collect()
@@ -734,9 +733,7 @@ impl PyAdapterPlan {
         raw_action: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let raw_action = decode_value(raw_action)?;
-        let action = self
-            .adapter
-            .transform_action(&raw_action)
+        let action = rlmesh_adapters::v1::transform_action(&self.adapter, &raw_action)
             .map_err(|err| PyValueError::new_err(err.message))?;
         if self.adapter.reads_previous_action() {
             let mut windows = self.windows.lock().expect("frame windows");

@@ -1,15 +1,16 @@
-//! Human-readable formatting shared by resolver errors and `describe()`.
+//! Human-readable formatting shared by binding errors and `describe()`.
 //!
 //! These strings are *reference snapshots*: the conformance vectors pin them
 //! so every implementation renders the same text, but they are NOT a stable
-//! cross-language contract. Structural callers should match on typed errors
-//! (e.g. [`JoinError`](crate::join::JoinError)) rather than parse this text, and a
-//! C++ or other binding is free to render its own wording.
+//! cross-language contract. Structural callers should match on the error
+//! [`code`](super::Error::code) rather than parse this text, and a C++ or
+//! other binding is free to render its own wording.
 
 use std::collections::BTreeMap;
 
-use crate::roles::registry::is_known_role;
-use crate::spec::{AcceptSet, RotationEncoding};
+use crate::spec::role::input::Accept;
+use crate::spec::role::roles::registry::is_known_role;
+use crate::spec::rotation::Rotation;
 
 /// A quoted string, for keys and roles in messages.
 pub(crate) fn quoted(value: &str) -> String {
@@ -17,9 +18,9 @@ pub(crate) fn quoted(value: &str) -> String {
 }
 
 /// A quoted optional rotation encoding, or `None`.
-pub(crate) fn quoted_encoding(value: Option<RotationEncoding>) -> String {
+pub(crate) fn quoted_encoding(value: Option<Rotation>) -> String {
     match value {
-        Some(encoding) => format!("{:?}", encoding.as_str()),
+        Some(encoding) => format!("{:?}", encoding.name()),
         None => "None".to_owned(),
     }
 }
@@ -27,10 +28,10 @@ pub(crate) fn quoted_encoding(value: Option<RotationEncoding>) -> String {
 /// A quoted optional rotation-encoding accept-set, or `None`. A single-entry set
 /// renders exactly like [`quoted_encoding`] (`"quat_xyzw"`) so the common case
 /// reads the same; a multi-entry set renders as a list (`["rot6d", "quat_xyzw"]`).
-pub(crate) fn quoted_accept_set(value: Option<&AcceptSet<RotationEncoding>>) -> String {
+pub(crate) fn quoted_accept_set(value: Option<&Accept<Rotation>>) -> String {
     match value {
         None => "None".to_owned(),
-        Some(set) => match set.wire_names().as_slice() {
+        Some(set) => match set.names.as_slice() {
             [only] => format!("{only:?}"),
             names => format!("{names:?}"),
         },
@@ -77,7 +78,7 @@ pub(crate) fn quoted_leaf_keys<V>(
 /// roles, and, when either side is an `x/` role, the reminder that roles bind
 /// only on the identical string. Empty when there is nothing to add.
 ///
-/// A suggestion is a hint for a human, never a binding: the resolver does not
+/// A suggestion is a hint for a human, never a binding: the binder does not
 /// act on it. A candidate is an offered role of the same kind (an `x/` role
 /// counts as any kind, so `x/base_rot` points at `proprio/base_rot`) whose name
 /// shares a `_`-separated word with the missing one, starts with it or is its

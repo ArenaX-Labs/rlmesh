@@ -2,19 +2,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::state::{check_axis_width, label_permutation, part_suffix};
-use super::{LeafKey, Projection, Projections, Result, bind, check_geometry, err, index_by_key};
-use crate::advisory::Advisory;
-use crate::error::ErrorCode;
-use crate::fmt::{missing_role_hint, quoted, quoted_encoding, quoted_leaf_keys};
-use crate::plans::{ActionPlan, ActionSegment};
-use crate::spec::{Action, Actuator, Attr};
+use crate::spec::projection::Projection;
+use crate::spec::role::bind::{
+    LeafKey, Projections, Result, check_geometry, err, index_by_key, seek,
+};
+use crate::spec::role::error::{Advisory, ErrorCode};
+use crate::spec::role::fmt::{missing_role_hint, quoted, quoted_encoding, quoted_leaf_keys};
+use crate::spec::role::frames::Attr;
+use crate::spec::role::input::Actuator;
+use crate::spec::role::plan::{ActionPlan, ActionSegment};
+use crate::spec::role::roles::registry;
+use crate::spec::role::state::{check_axis_width, label_permutation, part_suffix};
 
 /// Enforce a registered role's `Fixed` dim law on a model actuator (the env side
 /// is checked at `join`). An ad-hoc/`Variable`/`ByEncoding` role is left alone.
 fn check_role_dim_law(role: &str, dim: u32) -> Result<()> {
-    if let Some(def) = crate::roles::registry::role_def(role)
-        && let crate::roles::registry::DimLaw::Fixed(expected) = def.dim
+    if let Some(def) = registry::role_def(role)
+        && let registry::DimLaw::Fixed(expected) = def.dim
         && dim != expected
     {
         return Err(err(
@@ -67,12 +71,8 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()>
     // A custom action encoding shadows to its `base` for the structural checks;
     // the host-side arm (`to_base`) is never imported or run here. Validate that
     // a model-side custom carries the action arm it needs.
-    if let Some(custom) = model
-        .encoding
-        .as_ref()
-        .and_then(|encoding| encoding.custom())
-    {
-        if custom.to_base.is_none() {
+    if let (Some(custom), Some(base)) = (model.custom, model.encoding) {
+        if !custom.to_base {
             return Err(err(
                 ErrorCode::Unsupported,
                 format!(
@@ -81,20 +81,20 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()>
                 ),
             ));
         }
-        if model.dim != custom.base().dims() {
+        if model.dim != base.width() {
             return Err(err(
                 ErrorCode::DimMismatch,
                 format!(
                     "action role {}: a custom encoding preserves its base width {} but the actuator declares dim {}",
                     quoted(role),
-                    custom.base().dims(),
+                    base.width(),
                     model.dim
                 ),
             ));
         }
     }
-    let model_encoding = model.encoding.as_ref().map(|encoding| encoding.base());
-    let env_encoding = env.encoding.as_ref().map(|encoding| encoding.base());
+    let model_encoding = model.encoding;
+    let env_encoding = env.encoding;
     let converting = match (model_encoding, env_encoding) {
         (Some(model_encoding), Some(env_encoding)) => model_encoding != env_encoding,
         _ => false,
@@ -102,7 +102,7 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()>
     if converting {
         let model_encoding = model_encoding.expect("checked above");
         let env_encoding = env_encoding.expect("checked above");
-        if model.dim != model_encoding.dims() || env.dim != env_encoding.dims() {
+        if model.dim != model_encoding.width() || env.dim != env_encoding.width() {
             return Err(err(
                 ErrorCode::DimMismatch,
                 format!(
@@ -175,13 +175,13 @@ pub(super) struct ModelOutputs<'a> {
     pub in_dim: u32,
 }
 
-pub(super) fn index_outputs(model: &Action) -> Result<ModelOutputs<'_>> {
+pub(super) fn index_outputs(model: &[Actuator]) -> Result<ModelOutputs<'_>> {
     // A role-less (opaque) model actuator emits dims the env ignores: it
     // advances the cursor but is matched by nothing, so only roled components
     // are keyed.
     let mut placed: Vec<PlacedOutput<'_>> = Vec::new();
     let mut cursor: u32 = 0;
-    for component in &model.components {
+    for component in model {
         if let Some(role) = &component.role {
             placed.push((role, component.part.as_deref(), None, (cursor, component)));
         }
@@ -228,29 +228,18 @@ pub(super) fn unconsumed<'a>(
 }
 
 pub(super) fn plan_action(
-    model: &Action,
-    env: &Action,
+    env: &[Actuator],
+    clip: Option<(f64, f64)>,
     outputs: &ModelOutputs<'_>,
     advisories: &mut Vec<Advisory>,
     projections: &mut Projections,
 ) -> Result<ActionPlan> {
-    // `clip` is an env-side actuator clamp on the assembled action vector (read
-    // as `env.clip` below); a clip declared on the *model* action layout is
-    // silently dropped. Reject it, mirroring the per-component scale/invert/
-    // threshold guard that likewise rejects an env-side knob on the model.
-    if model.clip.is_some() {
-        return Err(err(
-            ErrorCode::Unsupported,
-            "clip is an env-side actuator clamp; the model action declaration must leave it unset"
-                .to_owned(),
-        ));
-    }
     let in_dim = outputs.in_dim;
     let offsets = &outputs.by_key;
 
-    let mut segments: Vec<ActionSegment> = Vec::with_capacity(env.components.len());
+    let mut segments: Vec<ActionSegment> = Vec::with_capacity(env.len());
     let mut seen_env: BTreeMap<LeafKey, ()> = BTreeMap::new();
-    for env_component in &env.components {
+    for env_component in env {
         // A role-less (opaque) env actuator occupies its dims with a constant
         // fill, matched by no model output (the action-side mirror of a role-less
         // Field). It reads nothing from the model.
@@ -309,7 +298,7 @@ pub(super) fn plan_action(
         }
         // The env actuator is the seeker here: it looks for the model output
         // that drives it, under the same part rules a model input follows.
-        let bound = bind(
+        let bound = seek(
             offsets,
             role,
             env_component.part.as_deref(),
@@ -476,14 +465,8 @@ pub(super) fn plan_action(
             role: Some(role.clone()),
             start,
             stop: start + model_component.dim,
-            src_encoding: model_component
-                .encoding
-                .as_ref()
-                .map(|encoding| encoding.base()),
-            dst_encoding: env_component
-                .encoding
-                .as_ref()
-                .map(|encoding| encoding.base()),
+            src_encoding: model_component.encoding,
+            dst_encoding: env_component.encoding,
             src_range: if same_range {
                 None
             } else {
@@ -530,7 +513,7 @@ pub(super) fn plan_action(
     }
     Ok(ActionPlan {
         segments,
-        clip: env.clip,
+        clip,
         in_dim,
     })
 }
@@ -642,22 +625,23 @@ fn check_unit(
 #[cfg(test)]
 mod tests {
     use super::{index_outputs, plan_action};
-    use crate::advisory::Advisory;
-    use crate::error::ErrorCode;
-    use crate::plans::ActionPlan;
-    use crate::spec::{Action, Actuator};
+    use crate::spec::role::bind::{Projections, Result};
+    use crate::spec::role::input::{Actuator, CustomArms};
+    use crate::spec::role::plan::ActionPlan;
+    use crate::spec::role::{Advisory, ErrorCode};
+    use crate::spec::rotation::Rotation;
 
     fn plan(
-        model: &Action,
-        env: &Action,
+        model: &[Actuator],
+        env: &[Actuator],
         advisories: &mut Vec<Advisory>,
-    ) -> super::Result<ActionPlan> {
+    ) -> Result<ActionPlan> {
         plan_action(
-            model,
             env,
+            None,
             &index_outputs(model)?,
             advisories,
-            &mut super::super::Projections::allowing(&[]),
+            &mut Projections::allowing(&[]),
         )
     }
 
@@ -666,6 +650,7 @@ mod tests {
             role: Some(role.to_owned()),
             dim: 1,
             encoding: None,
+            custom: None,
             range: None,
             binary: false,
             scale: None,
@@ -677,7 +662,6 @@ mod tests {
             clip: false,
             fill: 0.0,
             optional: false,
-            unknown: Default::default(),
             frame: None,
             part: None,
             labels: None,
@@ -692,6 +676,7 @@ mod tests {
             role: None,
             dim,
             encoding: None,
+            custom: None,
             range: None,
             binary: false,
             scale: None,
@@ -703,7 +688,6 @@ mod tests {
             clip: false,
             fill,
             optional: false,
-            unknown: Default::default(),
             frame: None,
             part: None,
             labels: None,
@@ -713,11 +697,8 @@ mod tests {
         }
     }
 
-    fn layout(components: Vec<Actuator>) -> Action {
-        Action {
-            components,
-            clip: None,
-        }
+    fn layout(components: Vec<Actuator>) -> Vec<Actuator> {
+        components
     }
 
     #[test]
@@ -733,19 +714,16 @@ mod tests {
 
     #[test]
     fn rejects_custom_action_encoding_with_a_non_base_width() {
-        use crate::spec::{ActionEncoding, CustomEncoding, RotationEncoding};
-
         let mut model_rot = component("custom/rot");
         model_rot.dim = 3;
-        model_rot.encoding = Some(ActionEncoding::Custom(CustomEncoding {
-            base: RotationEncoding::Rot6d,
-            name: "packed".to_owned(),
-            from_base: None,
-            to_base: Some("m:g".to_owned()),
-        }));
+        model_rot.encoding = Some(Rotation::Rot6d);
+        model_rot.custom = Some(CustomArms {
+            from_base: false,
+            to_base: true,
+        });
         let mut env_rot = component("custom/rot");
         env_rot.dim = 6;
-        env_rot.encoding = Some(ActionEncoding::Native(RotationEncoding::Rot6d));
+        env_rot.encoding = Some(Rotation::Rot6d);
         let error = plan(
             &layout(vec![model_rot]),
             &layout(vec![env_rot]),
@@ -762,17 +740,15 @@ mod tests {
 
     #[test]
     fn rejects_model_axis_corrections_across_a_rotation_conversion() {
-        use crate::spec::{ActionEncoding, RotationEncoding};
-
         let rotation = |dim, encoding| {
             let mut rot = component("custom/rot");
             rot.dim = dim;
-            rot.encoding = Some(ActionEncoding::Native(encoding));
+            rot.encoding = Some(encoding);
             rot
         };
-        let mut model_rot = rotation(4, RotationEncoding::QuatXyzw);
+        let mut model_rot = rotation(4, Rotation::QuatXyzw);
         model_rot.axis_scale = Some(vec![1.0, 1.0, 1.0, 10.0]);
-        let env_rot = rotation(3, RotationEncoding::EulerXyz);
+        let env_rot = rotation(3, Rotation::EulerXyz);
         let error = plan(
             &layout(vec![model_rot.clone()]),
             &layout(vec![env_rot]),
@@ -788,7 +764,7 @@ mod tests {
             error.message
         );
         // The same encoding on both sides keeps the model's axes meaningful.
-        let same = rotation(4, RotationEncoding::QuatXyzw);
+        let same = rotation(4, Rotation::QuatXyzw);
         assert!(
             plan(
                 &layout(vec![model_rot]),
@@ -864,23 +840,6 @@ mod tests {
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
             error.message.contains("env-side clamp"),
-            "{}",
-            error.message
-        );
-    }
-
-    #[test]
-    fn rejects_clip_declared_on_the_model_action() {
-        // clip is an env-side clamp applied to the assembled vector; a clip on
-        // the model layout is read from the env side only, so reject it loudly
-        // rather than silently dropping it.
-        let mut model = layout(vec![component("action/gripper")]);
-        model.clip = Some((-1.0, 1.0));
-        let env = layout(vec![component("action/gripper")]);
-        let error = plan(&model, &env, &mut Vec::new()).unwrap_err();
-        assert_eq!(error.code, ErrorCode::Unsupported);
-        assert!(
-            error.message.contains("env-side actuator clamp"),
             "{}",
             error.message
         );

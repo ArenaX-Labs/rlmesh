@@ -21,8 +21,8 @@
 //! - [`contract`]: delivery contracts, freshness bounds, admission and the
 //!   publication plan per stream (§8.2, §8.7), shared by the binder and the
 //!   host.
-//! - [`role`]: the binder's Gym door: the role vocabulary a Gym env's tags
-//!   and a model spec bind by.
+//! - [`role`]: the binder's Gym door, which binds a v1 `ModelSpec` to a
+//!   Gym env's tagged leaves by role, with the same conversions.
 //!
 //! The generic core ([`wire`](crate::wire), `rlmesh-session` and its edge)
 //! works on streams and never interprets kinds; only this module does.
