@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import socket
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -39,6 +40,9 @@ SESSION_PORTS = 4
 #: The longest one readiness attempt waits, so an image that will never
 #: answer is told apart between attempts.
 _READY_ATTEMPT_SECONDS = 1.0
+#: Held from picking a container's free ports until ``docker run`` binds
+#: them, so sandboxes started from several threads never pick the same ones.
+_PORTS_LOCK = threading.Lock()
 
 #: An HTTP/2 client preface and an empty SETTINGS frame: what a v1 (gRPC)
 #: server answers with a SETTINGS frame of its own.
@@ -555,36 +559,37 @@ def start_prebuilt_container(
         if not pulled:
             detail = f":\n{pull_stderr}" if pull_stderr else ""
             raise RuntimeError(f"could not pull prebuilt image {image!r}{detail}")
-    host_port = _sandbox_session_ports()
-    # The container hosts its session on the host's own port numbers, so a
-    # session address means the same inside it and out, and its participants
-    # join as clients, which its host routes for (see JOIN_AS_CLIENT_VAR).
-    env_vars = {
-        "RLMESH_ADDRESS": f"0.0.0.0:{host_port}",
-        "RLMESH_NAME": name,
-        "RLMESH_JOIN_AS_CLIENT": "1",
-    }
-    if binding:
-        env_vars["RLMESH_MAKE_KWARGS"] = binding_json(binding)
-    if num_envs and num_envs != 1:
-        env_vars["RLMESH_NUM_ENVS"] = str(num_envs)
-    if vectorization_mode:
-        env_vars["RLMESH_VECTORIZATION_MODE"] = vectorization_mode
-    if render_size is not None:
-        env_vars["RLMESH_RENDER_SIZE"] = f"{render_size[0]}x{render_size[1]}"
+    with _PORTS_LOCK:
+        host_port = _sandbox_session_ports()
+        # The container hosts its session on the host's own port numbers, so a
+        # session address means the same inside it and out, and its participants
+        # join as clients, which its host routes for (see JOIN_AS_CLIENT_VAR).
+        env_vars = {
+            "RLMESH_ADDRESS": f"0.0.0.0:{host_port}",
+            "RLMESH_NAME": name,
+            "RLMESH_JOIN_AS_CLIENT": "1",
+        }
+        if binding:
+            env_vars["RLMESH_MAKE_KWARGS"] = binding_json(binding)
+        if num_envs and num_envs != 1:
+            env_vars["RLMESH_NUM_ENVS"] = str(num_envs)
+        if vectorization_mode:
+            env_vars["RLMESH_VECTORIZATION_MODE"] = vectorization_mode
+        if render_size is not None:
+            env_vars["RLMESH_RENDER_SIZE"] = f"{render_size[0]}x{render_size[1]}"
 
-    cmd = prebuilt_run_cmd(
-        image,
-        env_vars=env_vars,
-        gpus=gpus,
-        devices=devices,
-        volumes=volumes,
-        user=user,
-        host_port=host_port,
-        owner_pid=os.getpid(),
-        owner_pid_ns=pid_namespace_id(),
-    )
-    proc = run_docker(cmd)
+        cmd = prebuilt_run_cmd(
+            image,
+            env_vars=env_vars,
+            gpus=gpus,
+            devices=devices,
+            volumes=volumes,
+            user=user,
+            host_port=host_port,
+            owner_pid=os.getpid(),
+            owner_pid_ns=pid_namespace_id(),
+        )
+        proc = run_docker(cmd)
     if proc.returncode != 0:
         raise RuntimeError(
             f"failed to start prebuilt container ({proc.returncode}):\n{proc.stderr}"
