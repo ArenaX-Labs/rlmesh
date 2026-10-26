@@ -18,7 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .constants import DEFAULT_FPS, DEFAULT_QUALITY, DEFAULT_VIDEO_INFO_KEYS
+from .constants import (
+    DEFAULT_CODEC,
+    DEFAULT_FPS,
+    DEFAULT_QUALITY,
+    DEFAULT_VIDEO_INFO_KEYS,
+)
 from .export import write_bundle
 from .frames import sanitize_part
 from .hooks import CaptureHooks
@@ -66,12 +71,18 @@ class Recorder:
         result_set_id: str | None = None,
         fps: int = DEFAULT_FPS,
         quality: int = DEFAULT_QUALITY,
+        codec: str = DEFAULT_CODEC,
+        ffmpeg: str | None = None,
     ) -> None:
         """Create a recorder.
 
-        Captured frames are encoded to AV1 mp4 in process (pure
-        Rust, no ffmpeg); ``fps`` sets the recorded playback rate and ``quality``
-        (1..=100, higher is better/larger) trades file size against fidelity.
+        Captured frames are encoded to mp4. ``codec="av1"`` (the default)
+        encodes in process (pure Rust, no ffmpeg); ``codec="h264"`` plays in
+        every browser and runs the ``ffmpeg`` you installed (``ffmpeg`` on
+        ``PATH``, or this path), which must have libx264: rlmesh ships no
+        H.264 encoder. A missing one raises :class:`RuntimeError` here. ``fps``
+        sets the recorded playback rate and ``quality`` (1..=100, higher is
+        better/larger, AV1 only) trades file size against fidelity.
         """
         if (
             not isinstance(fps, int)  # pyright: ignore[reportUnnecessaryIsInstance]
@@ -85,8 +96,11 @@ class Recorder:
             raise ValueError(
                 f"Recorder.quality must be an integer in 1..=100; got {quality!r}"
             )
+        from .._rlmesh import PyVideoWriter
+
+        PyVideoWriter.check_codec(codec, ffmpeg)
         self._result_set = ResultSet(result_set_id=result_set_id or uuid.uuid4().hex)
-        self._stager = MediaStager(fps=fps, quality=quality)
+        self._stager = MediaStager(fps=fps, quality=quality, codec=codec, ffmpeg=ffmpeg)
         #: Each workload's telemetry rows (keyed by ``id(workload)``), one
         #: batch per recorded run, written beside the workload.
         self._telemetry: dict[int, list[TelemetryRow]] = {}
@@ -221,7 +235,7 @@ class Recorder:
         Writes the managed platform's per-episode layout under
         ``workloads/cNNNN/attempts/a001/`` in the bundle: ``episode.json``
         (seed, trial, verdict, timing, invariant flags), ``trajectory.parquet``
-        and AV1 videos per camera and stream, with the machine's hardware
+        and videos per camera and stream, with the machine's hardware
         stamp and the run's telemetry windows. ``spec`` is the platform's
         ``record`` block (``{"video": {...}, "trajectory": {...}}``); the
         default records nothing beyond ``episode.json``. Raw and perturbed
@@ -242,6 +256,8 @@ class Recorder:
             workload.task,
             workload_id,
             self._stager.quality,
+            self._stager.codec,
+            self._stager.ffmpeg,
         )
         self._trees[id(workload)] = (tap, prefix)
         if self._stamp is None:

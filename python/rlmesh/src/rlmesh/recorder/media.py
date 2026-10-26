@@ -1,7 +1,7 @@
-"""Media staging: hold recorded AV1 videos / carried env videos until export.
+"""Media staging: hold recorded videos / carried env videos until export.
 
 Frames are encoded straight into a per-episode ``.mp4`` in a temp staging dir as
-they arrive (via the native AV1 writer -- bounding memory to one frame), and
+they arrive (via the native video writer -- bounding memory to one frame), and
 remembered as an ``(source, bundle_relative_path)`` asset. Env-produced videos
 already exist on disk, so they are copied into staging at episode end (a fixed env
 path that gets overwritten next episode can't clobber an earlier capture). ``export``
@@ -15,7 +15,7 @@ import shutil
 import tempfile
 from typing import TYPE_CHECKING
 
-from .constants import DEFAULT_FPS, DEFAULT_QUALITY, MEDIA_DIR
+from .constants import DEFAULT_CODEC, DEFAULT_FPS, DEFAULT_QUALITY, MEDIA_DIR
 from .frames import sanitize_part
 from .schema import MediaRef
 
@@ -26,12 +26,18 @@ if TYPE_CHECKING:
 class MediaStager:
     """Owns one temp staging dir and the list of assets to copy into the bundle.
 
-    Recorded frames are encoded to AV1 mp4 in process (pure Rust, no ffmpeg); the
-    playback ``fps`` is stamped onto each recorded video's manifest row.
+    Recorded frames are encoded to mp4 (AV1 in process, or H.264 through the
+    user's ffmpeg); the playback ``fps`` is stamped onto each recorded video's
+    manifest row.
     """
 
     def __init__(
-        self, *, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY
+        self,
+        *,
+        fps: int = DEFAULT_FPS,
+        quality: int = DEFAULT_QUALITY,
+        codec: str = DEFAULT_CODEC,
+        ffmpeg: str | None = None,
     ) -> None:
         self._dir: str | None = None
         self._closed = False
@@ -39,6 +45,9 @@ class MediaStager:
         self.fps = fps
         #: AV1 record quality, 1..=100 (higher is better/larger).
         self.quality = quality
+        #: ``"av1"`` or ``"h264"``; H.264 runs ``ffmpeg`` (``PATH`` when None).
+        self.codec = codec
+        self.ffmpeg = ffmpeg
         #: ``(absolute source path, bundle-relative destination)`` pairs.
         self.assets: list[tuple[str, str]] = []
         #: Bundle-relative paths already handed out, to keep them unique.
@@ -76,7 +85,7 @@ class MediaStager:
     def open_video(
         self, *, prefix: str, episode_index: int, camera: str, width: int, height: int
     ) -> tuple[PyVideoWriter, str, str]:
-        """Open a native AV1 writer for a camera; returns ``(writer, staged, rel)``.
+        """Open a native video writer for a camera; returns ``(writer, staged, rel)``.
 
         The staged file is registered as an asset only once the caller commits it via
         :meth:`commit` (a failed encode leaves no dangling manifest row).
@@ -86,7 +95,9 @@ class MediaStager:
         rel = self._unique_rel(prefix, episode_index, f"{sanitize_part(camera)}.mp4")
         handle, staged = tempfile.mkstemp(suffix=".mp4", dir=self._staging_dir())
         os.close(handle)
-        writer = PyVideoWriter(staged, width, height, self.fps, self.quality)
+        writer = PyVideoWriter(
+            staged, width, height, self.fps, self.quality, self.codec, self.ffmpeg
+        )
         return writer, staged, rel
 
     def commit(self, staged: str, rel: str) -> None:
@@ -124,7 +135,7 @@ class MediaStager:
     def video_ref(
         self, *, camera: str, path: str, meta: tuple[int, int, int]
     ) -> MediaRef:
-        """Manifest row for a recorded AV1 video from its ``(frames, width, height)``."""
+        """Manifest row for a recorded video from its ``(frames, width, height)``."""
         frames, width, height = meta
         return MediaRef(
             camera=camera,

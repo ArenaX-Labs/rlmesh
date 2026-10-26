@@ -798,8 +798,9 @@ def test_context_manager_cleans_staging(tmp_path: Path) -> None:
     assert staging is None or not Path(staging).exists()
 
 
-def test_recorder_validates_quality_and_integer_fps() -> None:
-    """Bad fps/quality fail at construction, not as a swallowed first-frame error."""
+def test_recorder_validates_video_options_at_construction(tmp_path: Path) -> None:
+    """Bad fps/quality/codec and a missing ffmpeg fail at construction, not as a
+    swallowed first-frame error."""
     with pytest.raises(ValueError, match="quality"):
         _ = Recorder(quality=300)
     with pytest.raises(ValueError, match="quality"):
@@ -808,6 +809,13 @@ def test_recorder_validates_quality_and_integer_fps() -> None:
         _ = Recorder(fps=29.97)  # pyright: ignore[reportArgumentType]
     _ = Recorder(quality=1)
     _ = Recorder(quality=100)
+    with pytest.raises(ValueError, match="codec"):
+        _ = Recorder(codec="vp9")
+    missing = tmp_path / "no-ffmpeg"
+    with pytest.raises(
+        RuntimeError, match=r"needs ffmpeg.*install ffmpeg with libx264"
+    ):
+        _ = Recorder(codec="h264", ffmpeg=str(missing))
 
 
 def test_export_rejects_unknown_archive_string(tmp_path: Path) -> None:

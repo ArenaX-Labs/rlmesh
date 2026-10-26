@@ -1,4 +1,5 @@
-//! In-process AV1 recording: encode HWC frames to an `.mp4` with no ffmpeg.
+//! Recording: encode HWC frames to an `.mp4`, AV1 in process by default or
+//! H.264 through the user's ffmpeg (`h264`).
 //!
 //! `VideoWriter` is the recording sink dual of the display sinks: it takes the
 //! same RGB frames the viewer already normalizes (via `rgb_from_hwc`),
@@ -13,12 +14,16 @@
 
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rav1e::config::SpeedSettings;
 use rav1e::prelude::*;
 
 use image::RgbImage;
+
+use super::VideoCodec;
+
+mod h264;
 
 /// Fixed MP4 offset where sample data begins: `ftyp` (32) + `mdat` header (16).
 const MDAT_DATA_OFFSET: u64 = 32 + 16;
@@ -40,12 +45,138 @@ struct Sample {
     sync: bool,
 }
 
-/// Streaming AV1-to-MP4 recorder for a single camera's frames.
+/// How a recording is encoded: the recorder's `codec`, `quality` and
+/// `ffmpeg` options, checked once at construction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Encoding {
+    /// In-process rav1e; `quality` is 1..=100 (higher is better/larger).
+    Av1 { quality: u8 },
+    /// libx264 in this ffmpeg; `quality` does not apply.
+    H264 { ffmpeg: PathBuf },
+}
+
+impl Default for Encoding {
+    fn default() -> Self {
+        Self::Av1 { quality: 60 }
+    }
+}
+
+impl Encoding {
+    /// `ffmpeg` (default `ffmpeg` on `PATH`) is checked for libx264 only for
+    /// [`VideoCodec::H264`]: a missing or encoder-less ffmpeg is an error
+    /// naming what to install, never a fallback to AV1.
+    pub fn resolve(codec: VideoCodec, quality: u8, ffmpeg: Option<&Path>) -> io::Result<Self> {
+        match codec {
+            VideoCodec::Av1 => Ok(Self::Av1 { quality }),
+            VideoCodec::H264 => {
+                let ffmpeg = ffmpeg.map_or_else(|| PathBuf::from("ffmpeg"), Path::to_path_buf);
+                h264::require(&ffmpeg)?;
+                Ok(Self::H264 { ffmpeg })
+            }
+        }
+    }
+}
+
+/// Streaming MP4 recorder for a single camera's frames.
+pub struct VideoWriter {
+    encoder: Encoder,
+    width: u32,
+    height: u32,
+}
+
+enum Encoder {
+    Av1(Box<Av1Writer>),
+    H264(h264::H264Writer),
+}
+
+impl VideoWriter {
+    /// Open `path` for `width` x `height` frames at `fps`.
+    ///
+    /// AV1 4:2:0 crops an odd side by one pixel; H.264 pads it by one, as the
+    /// managed runner does. Every [`push`](Self::push) must then hand the same
+    /// original `width`/`height`.
+    pub fn create(
+        path: &Path,
+        width: u32,
+        height: u32,
+        fps: u32,
+        encoding: &Encoding,
+    ) -> io::Result<Self> {
+        let encoder = match encoding {
+            Encoding::Av1 { quality } => Encoder::Av1(Box::new(Av1Writer::create(
+                path, width, height, fps, *quality,
+            )?)),
+            Encoding::H264 { ffmpeg } => {
+                if width == 0 || height == 0 {
+                    return Err(io::Error::other(format!(
+                        "frame too small to record: {width}x{height}"
+                    )));
+                }
+                Encoder::H264(h264::H264Writer::create(
+                    ffmpeg,
+                    path,
+                    width,
+                    height,
+                    fps.max(1),
+                )?)
+            }
+        };
+        Ok(Self {
+            encoder,
+            width,
+            height,
+        })
+    }
+
+    /// Encode one HWC uint8 frame (`channels` = 1/3/4).
+    ///
+    /// Rejects a frame whose dimensions differ from the ones [`create`](Self::create)
+    /// fixed -- a camera must not change resolution mid-episode.
+    pub fn push(&mut self, buf: &[u8], width: u32, height: u32, channels: u32) -> io::Result<()> {
+        if width != self.width || height != self.height {
+            return Err(io::Error::other(format!(
+                "frame size changed mid-recording: expected {}x{}, got {width}x{height}",
+                self.width, self.height
+            )));
+        }
+        match &mut self.encoder {
+            Encoder::Av1(writer) => writer.push(buf, width, height, channels),
+            Encoder::H264(writer) => {
+                let not_hwc = || io::Error::other("frame is not a 1/3/4-channel HWC image");
+                match channels {
+                    3 => {
+                        let needed = (width as usize)
+                            .checked_mul(height as usize)
+                            .and_then(|n| n.checked_mul(3))
+                            .ok_or_else(not_hwc)?;
+                        writer.push(buf.get(..needed).ok_or_else(not_hwc)?)
+                    }
+                    1 | 4 => writer.push(
+                        rgb_from_hwc(buf, width, height, channels)
+                            .ok_or_else(not_hwc)?
+                            .as_raw(),
+                    ),
+                    _ => Err(not_hwc()),
+                }
+            }
+        }
+    }
+
+    /// Finalize the file.
+    pub fn finish(self) -> io::Result<Stats> {
+        match self.encoder {
+            Encoder::Av1(writer) => writer.finish(),
+            Encoder::H264(writer) => writer.finish(),
+        }
+    }
+}
+
+/// Streaming AV1-to-MP4 encoder.
 ///
 /// The `y`/`u`/`v` fields are per-frame conversion scratch, allocated once at
 /// [`create`](Self::create) and overwritten each [`push`](Self::push) so the
 /// hot path performs no per-frame heap allocation.
-pub struct VideoWriter {
+struct Av1Writer {
     ctx: Context<u8>,
     out: BufWriter<File>,
     width: u32,
@@ -58,13 +189,13 @@ pub struct VideoWriter {
     v: Vec<u8>,
 }
 
-impl VideoWriter {
+impl Av1Writer {
     /// Open `path` and prepare to record even-cropped `width` x `height` frames.
     ///
     /// AV1 4:2:0 needs even dimensions, so odd inputs are cropped by one pixel;
     /// every [`push`](Self::push) must then hand the same original `width`/`height`.
     /// `quality` is 1..=100 (higher is better/larger), mapped to the AV1 quantizer.
-    pub fn create(path: &Path, width: u32, height: u32, fps: u32, quality: u8) -> io::Result<Self> {
+    fn create(path: &Path, width: u32, height: u32, fps: u32, quality: u8) -> io::Result<Self> {
         let (ew, eh) = (width & !1, height & !1);
         if ew == 0 || eh == 0 {
             return Err(io::Error::other(format!(
@@ -113,16 +244,7 @@ impl VideoWriter {
     }
 
     /// Encode one HWC uint8 frame (`channels` = 1/3/4) and mux any ready packets.
-    ///
-    /// Rejects a frame whose dimensions differ from the ones [`create`](Self::create)
-    /// fixed -- a camera must not change resolution mid-episode.
-    pub fn push(&mut self, buf: &[u8], width: u32, height: u32, channels: u32) -> io::Result<()> {
-        if width != self.width || height != self.height {
-            return Err(io::Error::other(format!(
-                "frame size changed mid-recording: expected {}x{}, got {width}x{height}",
-                self.width, self.height
-            )));
-        }
+    fn push(&mut self, buf: &[u8], width: u32, height: u32, channels: u32) -> io::Result<()> {
         let (w, h, c) = (width as usize, height as usize, channels as usize);
         let needed = w
             .checked_mul(h)
@@ -185,7 +307,7 @@ impl VideoWriter {
     }
 
     /// Flush the encoder, write the `moov`, and finalize the file.
-    pub fn finish(mut self) -> io::Result<Stats> {
+    fn finish(mut self) -> io::Result<Stats> {
         self.ctx.flush();
         self.drain(true)?;
         if self.samples.is_empty() {
@@ -231,7 +353,7 @@ struct FrameMsg {
 /// A `VideoWriter` running on its own encoder thread.
 ///
 /// `push` hands the frame to a bounded queue and returns immediately, so the
-/// caller (the eval loop) overlaps env stepping and model inference with AV1
+/// caller (the eval loop) overlaps env stepping and model inference with
 /// encoding instead of stalling on it; the queue bound keeps at most a few
 /// frames in flight. An encode error surfaces on the next `push` (or at
 /// `finish`), which is also when a dimension change is rejected.
@@ -242,11 +364,17 @@ pub struct ThreadedVideoWriter {
 
 impl ThreadedVideoWriter {
     /// Open the file and start the encoder thread (see [`VideoWriter::create`]).
-    pub fn create(path: &Path, width: u32, height: u32, fps: u32, quality: u8) -> io::Result<Self> {
-        let mut writer = VideoWriter::create(path, width, height, fps, quality)?;
+    pub fn create(
+        path: &Path,
+        width: u32,
+        height: u32,
+        fps: u32,
+        encoding: &Encoding,
+    ) -> io::Result<Self> {
+        let mut writer = VideoWriter::create(path, width, height, fps, encoding)?;
         let (sender, receiver) = std::sync::mpsc::sync_channel::<FrameMsg>(3);
         let worker = std::thread::Builder::new()
-            .name("rlmesh-av1-encode".to_string())
+            .name("rlmesh-video-encode".to_string())
             .spawn(move || {
                 let mut failed: Option<io::Error> = None;
                 while let Ok(msg) = receiver.recv() {
@@ -560,6 +688,8 @@ pub fn rgb_from_hwc(buf: &[u8], width: u32, height: u32, channels: u32) -> Optio
 mod tests {
     use super::*;
 
+    const AV1: Encoding = Encoding::Av1 { quality: 60 };
+
     /// One synthetic RGB gradient frame, HWC.
     fn frame(w: u32, h: u32, t: usize) -> Vec<u8> {
         let mut rgb = vec![0u8; (w * h * 3) as usize];
@@ -575,11 +705,71 @@ mod tests {
     }
 
     fn record(path: &Path, w: u32, h: u32, n: usize) -> Stats {
-        let mut vw = VideoWriter::create(path, w, h, 30, 60).expect("create");
+        let mut vw = VideoWriter::create(path, w, h, 30, &AV1).expect("create");
         for t in 0..n {
             vw.push(&frame(w, h, t), w, h, 3).expect("push");
         }
         vw.finish().expect("finish")
+    }
+
+    /// ffprobe's codec, decoded frame count and size of the file's video
+    /// stream; `None` when ffprobe is not installed.
+    fn ffprobe(path: &Path) -> Option<(String, u32, u32, u32)> {
+        let output = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-count_frames", "-select_streams", "v:0"])
+            .args([
+                "-show_entries",
+                "stream=codec_name,nb_read_frames,width,height",
+            ])
+            .args(["-of", "default=noprint_wrappers=1"])
+            .arg(path)
+            .output()
+            .ok()?;
+        assert!(output.status.success(), "ffprobe {}", path.display());
+        let text = String::from_utf8(output.stdout).expect("utf-8");
+        let field = |key: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+                .unwrap_or_else(|| panic!("ffprobe reported no {key}: {text}"))
+                .to_string()
+        };
+        let number = |key: &str| field(key).parse::<u32>().expect("number");
+        Some((
+            field("codec_name"),
+            number("nb_read_frames"),
+            number("width"),
+            number("height"),
+        ))
+    }
+
+    #[test]
+    fn each_codec_writes_an_mp4_ffprobe_decodes() {
+        // An odd width: AV1 crops it, H.264 pads it as the managed runner does.
+        for (codec, expected) in [
+            (VideoCodec::Av1, ("av1", 64)),
+            (VideoCodec::H264, ("h264", 66)),
+        ] {
+            let encoding = match Encoding::resolve(codec, 60, None) {
+                Ok(encoding) => encoding,
+                Err(err) => {
+                    eprintln!("skipping {codec}: {err}");
+                    continue;
+                }
+            };
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("camera.mp4");
+            let mut vw = ThreadedVideoWriter::create(&path, 65, 48, 30, &encoding).expect("create");
+            for t in 0..5 {
+                vw.push(frame(65, 48, t), 65, 48, 3).expect("push");
+            }
+            let stats = vw.finish().expect("finish");
+            assert_eq!((stats.frame_count, stats.width), (5, expected.1), "{codec}");
+            let Some(probed) = ffprobe(&path) else {
+                eprintln!("skipping {codec} playback: ffprobe is not installed");
+                continue;
+            };
+            assert_eq!(probed, (expected.0.into(), 5, expected.1, 48), "{codec}");
+        }
     }
 
     #[test]
@@ -587,7 +777,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rlmesh-threaded-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("threaded.mp4");
-        let mut vw = ThreadedVideoWriter::create(&path, 64, 48, 30, 60).expect("create");
+        let mut vw = ThreadedVideoWriter::create(&path, 64, 48, 30, &AV1).expect("create");
         for t in 0..12 {
             vw.push(frame(64, 48, t), 64, 48, 3).expect("push");
         }
@@ -608,7 +798,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rlmesh-threaded-err-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("bad.mp4");
-        let mut vw = ThreadedVideoWriter::create(&path, 64, 48, 30, 60).expect("create");
+        let mut vw = ThreadedVideoWriter::create(&path, 64, 48, 30, &AV1).expect("create");
         vw.push(frame(64, 48, 0), 64, 48, 3).expect("push");
         vw.push(frame(32, 32, 1), 32, 32, 3)
             .expect("queued; error surfaces later");
@@ -657,7 +847,7 @@ mod tests {
     fn finish_with_no_frames_errors() {
         let dir = tempfile::tempdir().expect("tempdir");
         let vw =
-            VideoWriter::create(&dir.path().join("empty.mp4"), 64, 64, 30, 60).expect("create");
+            VideoWriter::create(&dir.path().join("empty.mp4"), 64, 64, 30, &AV1).expect("create");
         assert!(vw.finish().is_err());
     }
 
@@ -665,7 +855,7 @@ mod tests {
     fn size_change_mid_recording_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut vw =
-            VideoWriter::create(&dir.path().join("x.mp4"), 64, 64, 30, 60).expect("create");
+            VideoWriter::create(&dir.path().join("x.mp4"), 64, 64, 30, &AV1).expect("create");
         vw.push(&frame(64, 64, 0), 64, 64, 3).expect("push");
         assert!(vw.push(&frame(48, 48, 1), 48, 48, 3).is_err());
     }
@@ -673,7 +863,7 @@ mod tests {
     #[test]
     fn rejects_out_of_range_dimensions() {
         let dir = tempfile::tempdir().expect("tempdir");
-        assert!(VideoWriter::create(&dir.path().join("z.mp4"), 1, 64, 30, 60).is_err());
-        assert!(VideoWriter::create(&dir.path().join("z.mp4"), 70000, 64, 30, 60).is_err());
+        assert!(VideoWriter::create(&dir.path().join("z.mp4"), 1, 64, 30, &AV1).is_err());
+        assert!(VideoWriter::create(&dir.path().join("z.mp4"), 70000, 64, 30, &AV1).is_err());
     }
 }

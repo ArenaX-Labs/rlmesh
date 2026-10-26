@@ -118,6 +118,7 @@ pub unsafe extern "C" fn rlmesh_recorder_new(
                 result_set_id: unsafe { ffi::text(o.result_set_id) }?,
                 fps: o.fps,
                 quality: o.quality,
+                ..RecorderOptions::default()
             };
         }
         unsafe {

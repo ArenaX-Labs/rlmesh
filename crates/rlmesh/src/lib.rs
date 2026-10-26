@@ -195,7 +195,7 @@ pub use model::{
 };
 pub use recorder::{
     EpisodeRecord, MediaRef, Recorder, RecorderAddOptions, RecorderCaptureOptions,
-    RecorderExportOptions, RecorderOptions, RecorderToDictOptions, WorkloadRecord,
+    RecorderExportOptions, RecorderOptions, RecorderToDictOptions, VideoCodec, WorkloadRecord,
 };
 pub use run::{
     BindOptions, EnvTarget, EpisodeResult, FrameSources, ModelTarget, RANDOM_SAMPLE, RandomSample,

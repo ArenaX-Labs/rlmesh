@@ -624,7 +624,7 @@
             "signature": "property workloads: tuple[WorkloadRecord, ...]"
           }
         },
-        "signature": "Recorder(*, result_set_id: str | None = None, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY)",
+        "signature": "Recorder(*, result_set_id: str | None = None, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY, codec: str = DEFAULT_CODEC, ffmpeg: str | None = None)",
         "stability": "Stable"
       },
       "RecoverableEnvironmentException": {
@@ -4298,7 +4298,7 @@
             "signature": "property workloads: tuple[WorkloadRecord, ...]"
           }
         },
-        "signature": "Recorder(*, result_set_id: str | None = None, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY)",
+        "signature": "Recorder(*, result_set_id: str | None = None, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY, codec: str = DEFAULT_CODEC, ffmpeg: str | None = None)",
         "stability": "Stable"
       },
       "ResultSet": {

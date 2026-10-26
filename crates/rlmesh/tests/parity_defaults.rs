@@ -113,6 +113,8 @@ fn defaults_match_python_literals() {
     );
     assert_eq!(value.fps, 30, "rlmesh:Recorder.fps");
     assert_eq!(value.quality, 60, "rlmesh:Recorder.quality");
+    assert_eq!(value.codec.to_string(), "av1", "rlmesh:Recorder.codec");
+    assert!(value.ffmpeg.is_none(), "rlmesh:Recorder.ffmpeg");
     let value = rlmesh::recorder::RecorderAddOptions::default();
     assert!(value.task.is_none(), "rlmesh:Recorder.add.task");
     assert!(value.config.is_none(), "rlmesh:Recorder.add.config");

@@ -122,7 +122,7 @@ impl Capture {
                 frame.width,
                 frame.height,
                 state.fps.min(u32::MAX as u64) as u32,
-                state.quality,
+                &state.encoding,
             )
             .map_err(os)?;
             self.writers.insert(

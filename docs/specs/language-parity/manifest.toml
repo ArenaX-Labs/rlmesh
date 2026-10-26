@@ -3586,14 +3586,29 @@ params = {}
 ["rlmesh:Recorder"]
 area = "running"
 rule = ["R-4"]
-parameters = { "result_set_id" = { "default" = "None" }, "fps" = { "default" = "30", "expression" = "DEFAULT_FPS" }, "quality" = { "default" = "60", "expression" = "DEFAULT_QUALITY" } }
+parameters = { "result_set_id" = { "default" = "None" }, "fps" = { "default" = "30", "expression" = "DEFAULT_FPS" }, "quality" = { "default" = "60", "expression" = "DEFAULT_QUALITY" }, "codec" = { "default" = "'av1'", "expression" = "DEFAULT_CODEC" }, "ffmpeg" = { "default" = "None" } }
 
 ["rlmesh:Recorder".rust]
 status = "present"
 path = "rlmesh::recorder::Recorder"
-params = { "result_set_id" = "rlmesh::recorder::RecorderOptions#result_set_id", "fps" = "rlmesh::recorder::RecorderOptions#fps", "quality" = "rlmesh::recorder::RecorderOptions#quality" }
+params = { "result_set_id" = "rlmesh::recorder::RecorderOptions#result_set_id", "fps" = "rlmesh::recorder::RecorderOptions#fps", "quality" = "rlmesh::recorder::RecorderOptions#quality", "codec" = "rlmesh::recorder::RecorderOptions#codec", "ffmpeg" = "rlmesh::recorder::RecorderOptions#ffmpeg" }
 also = [
   "rlmesh::Recorder",
+  "rlmesh::VideoCodec",
+  "rlmesh::recorder::VideoCodec",
+  "rlmesh::recorder::VideoCodec::Av1",
+  "rlmesh::recorder::VideoCodec::Clone",
+  "rlmesh::recorder::VideoCodec::Copy",
+  "rlmesh::recorder::VideoCodec::Debug",
+  "rlmesh::recorder::VideoCodec::Default",
+  "rlmesh::recorder::VideoCodec::Display",
+  "rlmesh::recorder::VideoCodec::Eq",
+  "rlmesh::recorder::VideoCodec::H264",
+  "rlmesh::recorder::VideoCodec::Hash",
+  "rlmesh::recorder::VideoCodec::PartialEq",
+  "rlmesh::recorder::VideoCodec::StructuralPartialEq",
+  "rlmesh::recorder::VideoCodec::TrivialClone",
+  "rlmesh::recorder::VideoCodec::as_str",
   "rlmesh::RecorderOptions",
   "rlmesh::recorder::RecorderOptions",
   "rlmesh::recorder::RecorderOptions::Clone",
@@ -3606,6 +3621,7 @@ rule = ["R-3"]
 status = "present"
 path = "RLMeshRecorder"
 params = { "result_set_id" = "RLMeshRecorderOptions#result_set_id", "fps" = "RLMeshRecorderOptions#fps", "quality" = "RLMeshRecorderOptions#quality" }
+refused = { codec = ["D-47"], ffmpeg = ["D-47"] }
 also = [
   "RLMESH_RECORDER_OPTIONS_INIT",
   "RLMESH_RECORDER_OPTIONS_MIN_SIZE",
@@ -3619,6 +3635,7 @@ rule = ["R-3"]
 status = "present"
 path = "rlmesh::Recorder"
 params = { "result_set_id" = "rlmesh::RecorderOptions#result_set_id", "fps" = "rlmesh::RecorderOptions#fps", "quality" = "rlmesh::RecorderOptions#quality" }
+refused = { codec = ["D-47"], ffmpeg = ["D-47"] }
 also = [
   "rlmesh::RecorderOptions",
   "rlmesh::RecorderOptions::with_fps",
@@ -16027,12 +16044,12 @@ params = {}
 ["rlmesh.recorder:Recorder"]
 area = "running"
 rule = ["R-4"]
-parameters = { "result_set_id" = { "default" = "None" }, "fps" = { "default" = "30", "expression" = "DEFAULT_FPS" }, "quality" = { "default" = "60", "expression" = "DEFAULT_QUALITY" } }
+parameters = { "result_set_id" = { "default" = "None" }, "fps" = { "default" = "30", "expression" = "DEFAULT_FPS" }, "quality" = { "default" = "60", "expression" = "DEFAULT_QUALITY" }, "codec" = { "default" = "'av1'", "expression" = "DEFAULT_CODEC" }, "ffmpeg" = { "default" = "None" } }
 
 ["rlmesh.recorder:Recorder".rust]
 status = "present"
 path = "rlmesh::recorder::Recorder"
-params = { "result_set_id" = "rlmesh::recorder::RecorderOptions#result_set_id", "fps" = "rlmesh::recorder::RecorderOptions#fps", "quality" = "rlmesh::recorder::RecorderOptions#quality" }
+params = { "result_set_id" = "rlmesh::recorder::RecorderOptions#result_set_id", "fps" = "rlmesh::recorder::RecorderOptions#fps", "quality" = "rlmesh::recorder::RecorderOptions#quality", "codec" = "rlmesh::recorder::RecorderOptions#codec", "ffmpeg" = "rlmesh::recorder::RecorderOptions#ffmpeg" }
 also = [
   "rlmesh::recorder::Recorder::Debug",
   "rlmesh::recorder::Recorder::close_async",
@@ -16057,6 +16074,7 @@ also_rules = { "rlmesh::recorder::Recorder::close_async" = [
 status = "present"
 path = "RLMeshRecorder"
 params = { "result_set_id" = "RLMeshRecorderOptions#result_set_id", "fps" = "RLMeshRecorderOptions#fps", "quality" = "RLMeshRecorderOptions#quality" }
+refused = { codec = ["D-47"], ffmpeg = ["D-47"] }
 also = [
   "RLMeshRecorderOptions::fps",
   "RLMeshRecorderOptions::quality",
@@ -16080,6 +16098,7 @@ also_rules = { "rlmesh_recorder_free" = [
 status = "present"
 path = "rlmesh::Recorder"
 params = { "result_set_id" = "rlmesh::RecorderOptions#result_set_id", "fps" = "rlmesh::RecorderOptions#fps", "quality" = "rlmesh::RecorderOptions#quality" }
+refused = { codec = ["D-47"], ffmpeg = ["D-47"] }
 also = [
   "rlmesh::Recorder::Recorder",
   "rlmesh::RecorderOptions::fps",

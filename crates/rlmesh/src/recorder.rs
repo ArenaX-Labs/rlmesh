@@ -5,7 +5,7 @@ mod export;
 mod records;
 #[cfg(test)]
 mod tests;
-/// The in-process AV1 writer behind capture (R-25 binding plumbing: the
+/// The video writer behind capture (R-25 binding plumbing: the
 /// recorder and the Python binding drive it).
 #[doc(hidden)]
 pub mod video;
@@ -18,6 +18,30 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// Recorded video codec.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum VideoCodec {
+    /// AV1, encoded in process (rav1e); needs nothing installed.
+    #[default]
+    Av1,
+    /// H.264 (libx264), encoded by the user's own ffmpeg; rlmesh ships no
+    /// H.264 encoder.
+    H264,
+}
+impl VideoCodec {
+    /// The codec name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Av1 => "av1",
+            Self::H264 => "h264",
+        }
+    }
+}
+impl std::fmt::Display for VideoCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 /// The portable result bundle schema tag.
 pub const SCHEMA: &str = "rlmesh.result.v1";
 /// Recorder construction keywords.
@@ -29,6 +53,10 @@ pub struct RecorderOptions {
     pub fps: u64,
     /// AV1 quality in 1..100.
     pub quality: u8,
+    /// Video codec; H.264 runs `ffmpeg`.
+    pub codec: VideoCodec,
+    /// The ffmpeg H.264 runs; `ffmpeg` on `PATH` when absent.
+    pub ffmpeg: Option<PathBuf>,
 }
 impl Default for RecorderOptions {
     fn default() -> Self {
@@ -36,6 +64,8 @@ impl Default for RecorderOptions {
             result_set_id: None,
             fps: 30,
             quality: 60,
+            codec: VideoCodec::Av1,
+            ffmpeg: None,
         }
     }
 }
@@ -132,7 +162,7 @@ struct State {
     used: std::collections::HashSet<String>,
     closed: bool,
     fps: u64,
-    quality: u8,
+    encoding: video::Encoding,
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -335,6 +365,9 @@ impl Recorder {
                 options.quality
             )));
         }
+        let encoding =
+            video::Encoding::resolve(options.codec, options.quality, options.ffmpeg.as_deref())
+                .map_err(|err| Error::Runtime(err.to_string()))?;
         Ok(Self {
             id: options
                 .result_set_id
@@ -350,7 +383,7 @@ impl Recorder {
                 used: Default::default(),
                 closed: false,
                 fps: options.fps,
-                quality: options.quality,
+                encoding,
             })),
         })
     }
@@ -416,7 +449,7 @@ impl Recorder {
                         task_id: state.workloads[index].task.clone(),
                         workload_id: workload.clone(),
                         workload_artifact_id: workload.clone(),
-                        quality: state.quality,
+                        encoding: state.encoding.clone(),
                         ..ArtifactOptions::default()
                     },
                 )));

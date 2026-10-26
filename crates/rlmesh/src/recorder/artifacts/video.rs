@@ -1,4 +1,4 @@
-//! Episode videos: cameras resolved from the env's tags, one AV1 mp4 per
+//! Episode videos: cameras resolved from the env's tags, one mp4 per
 //! `(camera, stream)` under `episodes/epNNNNNN/video/`.
 
 use std::borrow::Cow;
@@ -13,7 +13,7 @@ use super::schema::{
 };
 use super::{is_image_space, os, warn};
 use crate::Result;
-use crate::recorder::video::ThreadedVideoWriter;
+use crate::recorder::video::{Encoding, ThreadedVideoWriter};
 
 /// The scene-facing camera; an env that tags nothing falls back to its first
 /// image leaf.
@@ -85,7 +85,7 @@ pub(super) struct EpisodeVideo {
 #[derive(Default)]
 pub(super) struct Video {
     pub(super) fps: u32,
-    pub(super) quality: u8,
+    pub(super) encoding: Encoding,
     stride: u32,
     cameras: Vec<(RecordStream, Camera)>,
     pub(super) primary: Option<PrimaryLeaf>,
@@ -97,12 +97,12 @@ impl Video {
     /// episode invariants watch whether or not it is recorded.
     pub(super) fn resolve(
         spec: &VideoRecordSpec,
-        quality: u8,
+        encoding: Encoding,
         contract: &rlmesh_proto::core::v1::EnvContract,
     ) -> Result<Self> {
         let mut video = Self {
             fps: spec.fps.max(1),
-            quality,
+            encoding,
             stride: spec.stride.max(1),
             ..Self::default()
         };
@@ -263,7 +263,7 @@ impl Video {
                 frame.width as u32,
                 frame.height as u32,
                 self.fps,
-                self.quality,
+                &self.encoding,
             )
             .map_err(os)?;
             episode.active.insert(

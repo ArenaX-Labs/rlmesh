@@ -35,6 +35,7 @@ use rlmesh_spaces::{DType, MetaValue, SpaceKind, SpaceSpec, SpaceValue};
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 
+use crate::recorder::video::Encoding;
 use crate::run::runtime::telemetry::{Horizon, Kind};
 use crate::run::runtime::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, ObservationEmittedEvent,
@@ -63,8 +64,8 @@ pub struct ArtifactOptions {
     pub workload_id: String,
     pub workload_artifact_id: String,
     pub attempt: i32,
-    /// AV1 quality in 1..=100.
-    pub quality: u8,
+    /// How videos are encoded (AV1 quality 60 by default).
+    pub encoding: Encoding,
     /// The runtime's `telemetry_window`: the seconds a window row covers.
     pub telemetry_window: Duration,
 }
@@ -77,7 +78,7 @@ impl Default for ArtifactOptions {
             workload_id: String::new(),
             workload_artifact_id: String::new(),
             attempt: 1,
-            quality: 60,
+            encoding: Encoding::default(),
             telemetry_window: crate::run::runtime::RuntimeLimits::default().telemetry_window,
         }
     }
@@ -181,7 +182,7 @@ impl EpisodeArtifacts {
         self.warmup = Some((Utc::now(), event.route.env_id.clone()));
         self.video = Video::resolve(
             &self.options.record.video,
-            self.options.quality,
+            self.options.encoding.clone(),
             &event.env_contract,
         )?;
         Ok(())

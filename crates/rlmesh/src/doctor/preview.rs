@@ -12,7 +12,7 @@ use rlmesh_spaces::{DType, SpaceSpec, SpaceValue};
 
 use super::compare::image_leaves;
 use super::report::ProbePreview;
-use crate::recorder::video::{VideoWriter, rgb_from_hwc};
+use crate::recorder::video::{Encoding, VideoWriter, rgb_from_hwc};
 
 pub(super) const PREVIEW_FRAMES: usize = 60;
 pub(super) const PREVIEW_MIN_FRAMES: usize = 10;
@@ -186,8 +186,15 @@ impl PreviewCapture {
         let (width, height) = (self.width, self.height);
         let video_path = output_dir.join(PREVIEW_VIDEO);
         let encoded = (|| {
-            let mut writer =
-                VideoWriter::create(&video_path, width, height, PREVIEW_FPS, PREVIEW_QUALITY)?;
+            let mut writer = VideoWriter::create(
+                &video_path,
+                width,
+                height,
+                PREVIEW_FPS,
+                &Encoding::Av1 {
+                    quality: PREVIEW_QUALITY,
+                },
+            )?;
             for frame in &self.frames {
                 writer.push(frame, width, height, 3)?;
             }

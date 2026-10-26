@@ -505,7 +505,7 @@ class PyEpisodeArtifacts:
     feeds it the native loop's events; the recorder reads back each closed
     episode's record to bundle its files.
     """
-    def __new__(cls, root: builtins.str, record: builtins.str, task_id: builtins.str, workload_id: builtins.str, quality: builtins.int = ...) -> PyEpisodeArtifacts:
+    def __new__(cls, root: builtins.str, record: builtins.str, task_id: builtins.str, workload_id: builtins.str, quality: builtins.int = ..., codec: builtins.str = ..., ffmpeg: typing.Optional[builtins.str] = None) -> PyEpisodeArtifacts:
         r"""
         `record` is the `record` block as JSON; the ids land in each
         `episode.json`.
@@ -585,12 +585,19 @@ class PyVectorEnvServer:
 @typing.final
 class PyVideoWriter:
     r"""
-    Native AV1 recorder: encodes HWC uint8 frames to an `.mp4` on a dedicated
-    encoder thread (no ffmpeg), built by the Python recorder and fed one
-    camera's frames per step. `write_frame` only copies the frame and queues
-    it, so the eval loop overlaps env stepping with encoding.
+    Native video recorder: encodes HWC uint8 frames to an `.mp4` on a
+    dedicated encoder thread (AV1 in process, or H.264 through the user's
+    ffmpeg), built by the Python recorder and fed one camera's frames per
+    step. `write_frame` only copies the frame and queues it, so the eval loop
+    overlaps env stepping with encoding.
     """
-    def __new__(cls, path: builtins.str, width: builtins.int, height: builtins.int, fps: builtins.int = ..., quality: builtins.int = ...) -> PyVideoWriter: ...
+    def __new__(cls, path: builtins.str, width: builtins.int, height: builtins.int, fps: builtins.int = ..., quality: builtins.int = ..., codec: builtins.str = ..., ffmpeg: typing.Optional[builtins.str] = None) -> PyVideoWriter: ...
+    @staticmethod
+    def check_codec(codec: builtins.str, ffmpeg: typing.Optional[builtins.str] = None) -> None:
+        r"""
+        Raise unless `codec` can record here: H.264 needs an `ffmpeg` with
+        libx264 (checked once per process).
+        """
     def write_frame(self, buf: builtins.bytes | builtins.bytearray | builtins.memoryview, width: builtins.int, height: builtins.int, channels: builtins.int) -> None:
         r"""
         Queue one contiguous HWC uint8 frame (`channels` = 1/3/4) for encoding.

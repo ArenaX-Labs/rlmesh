@@ -8,7 +8,8 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh::recorder::video::ThreadedVideoWriter;
+use rlmesh::recorder::VideoCodec;
+use rlmesh::recorder::video::{Encoding, ThreadedVideoWriter};
 use rlmesh::viewer::{Backend, FrameFormat, Hud, Viewer};
 
 /// Native debug viewer, built by the Python `Session` when `view=` is set and fed
@@ -153,10 +154,11 @@ impl PyViewer {
     }
 }
 
-/// Native AV1 recorder: encodes HWC uint8 frames to an `.mp4` on a dedicated
-/// encoder thread (no ffmpeg), built by the Python recorder and fed one
-/// camera's frames per step. `write_frame` only copies the frame and queues
-/// it, so the eval loop overlaps env stepping with encoding.
+/// Native video recorder: encodes HWC uint8 frames to an `.mp4` on a
+/// dedicated encoder thread (AV1 in process, or H.264 through the user's
+/// ffmpeg), built by the Python recorder and fed one camera's frames per
+/// step. `write_frame` only copies the frame and queues it, so the eval loop
+/// overlaps env stepping with encoding.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "PyVideoWriter")]
 pub struct PyVideoWriter {
@@ -168,13 +170,30 @@ pub struct PyVideoWriter {
 #[pymethods]
 impl PyVideoWriter {
     #[new]
-    #[pyo3(signature = (path, width, height, fps=30, quality=60))]
-    fn new(path: String, width: u32, height: u32, fps: u32, quality: u8) -> PyResult<Self> {
-        let writer = ThreadedVideoWriter::create(Path::new(&path), width, height, fps, quality)
+    #[pyo3(signature = (path, width, height, fps=30, quality=60, codec="av1", ffmpeg=None))]
+    fn new(
+        path: String,
+        width: u32,
+        height: u32,
+        fps: u32,
+        quality: u8,
+        codec: &str,
+        ffmpeg: Option<String>,
+    ) -> PyResult<Self> {
+        let encoding = encoding(codec, quality, ffmpeg)?;
+        let writer = ThreadedVideoWriter::create(Path::new(&path), width, height, fps, &encoding)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(Self {
             inner: Mutex::new(Some(writer)),
         })
+    }
+
+    /// Raise unless `codec` can record here: H.264 needs an `ffmpeg` with
+    /// libx264 (checked once per process).
+    #[staticmethod]
+    #[pyo3(signature = (codec, ffmpeg=None))]
+    fn check_codec(codec: &str, ffmpeg: Option<String>) -> PyResult<()> {
+        encoding(codec, 60, ffmpeg).map(drop)
     }
 
     /// Queue one contiguous HWC uint8 frame (`channels` = 1/3/4) for encoding.
@@ -222,6 +241,21 @@ impl PyVideoWriter {
     }
 }
 
+fn codec(codec: &str) -> PyResult<VideoCodec> {
+    match codec {
+        "av1" => Ok(VideoCodec::Av1),
+        "h264" => Ok(VideoCodec::H264),
+        other => Err(PyValueError::new_err(format!(
+            "codec must be 'av1' or 'h264'; got {other:?}"
+        ))),
+    }
+}
+
+fn encoding(name: &str, quality: u8, ffmpeg: Option<String>) -> PyResult<Encoding> {
+    Encoding::resolve(codec(name)?, quality, ffmpeg.as_deref().map(Path::new))
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
 impl PyVideoWriter {
     fn lock(&self) -> MutexGuard<'_, Option<ThreadedVideoWriter>> {
         self.inner.lock().unwrap_or_else(|err| err.into_inner())
@@ -244,13 +278,15 @@ impl PyEpisodeArtifacts {
     /// `record` is the `record` block as JSON; the ids land in each
     /// `episode.json`.
     #[new]
-    #[pyo3(signature = (root, record, task_id, workload_id, quality=60))]
+    #[pyo3(signature = (root, record, task_id, workload_id, quality=60, codec="av1", ffmpeg=None))]
     fn new(
         root: String,
         record: &str,
         task_id: String,
         workload_id: String,
         quality: u8,
+        codec: &str,
+        ffmpeg: Option<String>,
     ) -> PyResult<Self> {
         use rlmesh::binding::artifacts::{ArtifactOptions, EpisodeArtifacts};
         let record = serde_json::from_str(record)
@@ -260,7 +296,7 @@ impl PyEpisodeArtifacts {
             task_id,
             workload_artifact_id: workload_id.clone(),
             workload_id,
-            quality,
+            encoding: encoding(codec, quality, ffmpeg)?,
             ..ArtifactOptions::default()
         };
         Ok(Self {

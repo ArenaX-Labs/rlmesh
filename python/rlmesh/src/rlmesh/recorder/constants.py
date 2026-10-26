@@ -37,6 +37,10 @@ RENDER_CAMERA = RENDER_SOURCE
 #: so uploaded and locally-recorded videos play at the same speed.
 DEFAULT_FPS = 30
 
+#: Default video codec: AV1, encoded in process with nothing installed. ``"h264"``
+#: runs the user's own ffmpeg.
+DEFAULT_CODEC = "av1"
+
 #: Default AV1 record quality, 1..=100 (higher is better/larger). 60 is a size/quality
 #: balance for eval footage; raise toward 100 for near-lossless inspection.
 DEFAULT_QUALITY = 60
