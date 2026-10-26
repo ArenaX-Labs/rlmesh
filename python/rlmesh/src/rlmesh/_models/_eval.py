@@ -10,8 +10,8 @@ import contextlib
 import numbers
 import os
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
@@ -315,6 +315,30 @@ class RunResult:
         from ._facade import result_from_native
 
         return result_from_native(load_run_result(_bundle_paths(path)))
+
+    @classmethod
+    def merge(cls, results: Iterable[RunResult]) -> RunResult:
+        """Several results as one.
+
+        Experimental. The episodes in order, indexed afresh from 0 (each keeps
+        its seed and trial ordinal), the telemetry merged per series as
+        :meth:`load` merges workloads, and each advisory once. Joins the
+        per-route results of :meth:`Model.run_routes <rlmesh.Model.run_routes>`.
+        """
+        from .._rlmesh import merge_telemetry
+
+        results = list(results)
+        episodes = [e for result in results for e in result.episodes]
+        advisories: list[Advisory] = []
+        for advisory in (a for result in results for a in result.advisories):
+            if advisory not in advisories:
+                advisories.append(advisory)
+        rows = [asdict(row) for result in results for row in result.telemetry]
+        return cls(
+            episodes=tuple(replace(e, index=i) for i, e in enumerate(episodes)),
+            telemetry=tuple(TelemetryRow(**row) for row in merge_telemetry(rows)),
+            advisories=tuple(advisories),
+        )
 
     def __repr__(self) -> str:
         return (

@@ -1521,6 +1521,109 @@ class ModelBase(Generic[ObsT, ActT]):
             if viewer is not None:
                 viewer.close(hold=not failed)
 
+    def run_routes(
+        self,
+        envs: Sequence[LocalEnvTarget],
+        *,
+        episodes: int | None = None,
+        seeds: Sequence[int] | None = None,
+        base_seed: int | None = None,
+        seed_key: str | None = None,
+        max_episode_steps: int | None = None,
+        max_episode_seconds: float | None = None,
+        execution_horizon: int | None = None,
+        prefetch_lead: int = 0,
+        trial_index_base: int = 0,
+        workflow_edition: str | None = None,
+        close_env: bool = False,
+    ) -> list[RunResult | Exception]:
+        """Drive this model against every env in ``envs`` at once, one route each.
+
+        Experimental. Each env target is what :meth:`run` takes (an address,
+        an :class:`~rlmesh.EnvServer`, a :class:`~rlmesh.SandboxEnv` or
+        :class:`~rlmesh.SandboxVectorEnv`, a local env), and each route runs
+        as :meth:`run` would. The routes start together once all of them have
+        connected (or 180 s after the first did), an env that is still coming
+        up is dialed again for up to 60 s, and a route that fails holds its
+        exception in its place while the others run to completion. The list
+        is in ``envs`` order: a :class:`RunResult` per route that finished, or
+        the exception of one that failed; :meth:`RunResult.merge` joins them.
+
+        ``episodes`` (one per route by default) or ``seeds`` is the run's
+        total, split over the routes in order as evenly as it goes; each route
+        walks the next block of trial ordinals from ``trial_index_base``, so
+        the routes together run the episodes one route would. ``base_seed``
+        derives each episode's reset seed from the base, ``seed_key`` (the
+        env's id by default) and its trial ordinal, so the same base pairs
+        across models and route counts. The other keywords apply to every
+        route, as on :meth:`run`.
+
+        A served model (``Model(address)``, :class:`~rlmesh.SandboxModel`)
+        answers every route from one process and batches across them on its
+        own side. A model running in this process drives one route at a time:
+        serve it to share it.
+        """
+        from ._eval import NativeRunContext
+        from ._facade import EnvTarget, result_from_native
+
+        self._calls.check_open("run_routes()")
+        self._require_device_support()
+        targets = list(envs)
+        if episodes is not None and seeds is not None and len(seeds) != episodes:
+            raise ValueError(
+                f"episodes={episodes} does not match len(seeds)={len(seeds)}: pass one "
+                "seed per episode, or only one of the two"
+            )
+        total = (
+            episodes
+            if episodes is not None
+            else len(seeds)
+            if seeds is not None
+            else len(targets)
+        )
+        share, extra = divmod(total, max(len(targets), 1))
+        horizon = self._execution_horizon(execution_horizon)
+        edition = self._declared_workflow_edition(workflow_edition)
+        routes: list[tuple[object, dict[str, object]]] = []
+        first = 0
+        for index, env in enumerate(targets):
+            count = share + (index < extra)
+            context = NativeRunContext(trust=bool(self._trust_entrypoints))
+            routes.append(
+                (
+                    EnvTarget(self, env, context),
+                    dict(
+                        episodes=count,
+                        seeds=list(seeds[first : first + count])
+                        if seeds is not None
+                        else None,
+                        base_seed=base_seed,
+                        seed_key=seed_key,
+                        max_episode_steps=max_episode_steps,
+                        max_episode_seconds=max_episode_seconds,
+                        execution_horizon=horizon,
+                        prefetch_lead=prefetch_lead,
+                        trial_index_base=trial_index_base + first,
+                        close_env=close_env,
+                        workflow_edition=edition,
+                    ),
+                )
+            )
+            first += count
+        # Each route's target swaps the model's run state in and out on its
+        # own thread; the state from before the call is the one that stays.
+        previous = self._trust_entrypoints, self._instruction, self._native_run
+        try:
+            reports = self._install_worker().run_routes_facade(routes)
+        finally:
+            self._trust_entrypoints, self._instruction, self._native_run = previous
+        return [
+            report
+            if isinstance(report, Exception)
+            else result_from_native(cast("dict[str, Any]", report))
+            for report in reports
+        ]
+
     def _serve_here(self, env_obj: object, workflow_edition: str | None) -> EnvServer:
         """Serve the local env ``env_obj`` in this process for one run or binding.
 

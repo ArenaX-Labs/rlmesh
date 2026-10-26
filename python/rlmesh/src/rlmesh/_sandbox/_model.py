@@ -26,6 +26,8 @@ from .session import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from .._models import Binding, RunResult
     from .._models.base import ModelBase
     from ..types import LocalEnvTarget
@@ -174,6 +176,16 @@ class SandboxModel:
         a :class:`~rlmesh.SandboxEnv`'s session is joined from the container.
         """
         return self._served().run(env, **options)
+
+    def run_routes(
+        self, envs: Sequence[LocalEnvTarget], **options: Any
+    ) -> list[RunResult | Exception]:
+        """Drive the containerized model against every env in ``envs`` at once.
+
+        Experimental. Serves the container first; see
+        :meth:`Model.run_routes <rlmesh.Model.run_routes>`.
+        """
+        return self._served().run_routes(envs, **options)
 
     def bind(self, env: LocalEnvTarget, **options: Any) -> Binding[Any, Any]:
         """Bind the served model to ``env``, as :meth:`rlmesh.Model.bind` does.

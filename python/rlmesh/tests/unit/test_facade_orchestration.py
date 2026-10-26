@@ -380,3 +380,34 @@ def test_a_raising_transform_aborts_the_run_with_its_own_exception() -> None:
 
     with pytest.raises(ZeroDivisionError, match="perturbation failed"):
         rlmesh.Model(lambda obs: 0).run(Counter(), episodes=1, hooks=Broken())
+
+
+def test_run_routes_split_the_trials_and_a_failed_route_fails_alone() -> None:
+    class Dies(Counter):
+        def step(
+            self, action: object
+        ) -> tuple[int, float, bool, bool, dict[str, object]]:
+            raise RuntimeError("env gone")
+
+    envs = [Counter(), Dies(), Counter()]
+    servers = [rlmesh.EnvServer(env, f":0/route-{i}") for i, env in enumerate(envs)]
+    for server in servers:
+        server.start()
+    try:
+        results = rlmesh.Model(rlmesh.RANDOM_SAMPLE).run_routes(
+            servers, episodes=5, base_seed=3
+        )
+        with pytest.raises(ValueError, match="one route at a time"):
+            rlmesh.Model(lambda obs: 0).run_routes(servers)
+    finally:
+        for server in servers:
+            server.shutdown()
+
+    assert isinstance(results[1], Exception) and "env gone" in str(results[1])
+    merged = rlmesh.RunResult.merge(
+        r for r in results if isinstance(r, rlmesh.RunResult)
+    )
+    # Five episodes over three routes: trials 0-1, 2-3 (failed) and 4.
+    assert [e.trial for e in merged.episodes] == [0, 1, 4]
+    assert [e.index for e in merged.episodes] == [0, 1, 2]
+    assert all(e.seed is not None for e in merged.episodes)

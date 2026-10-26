@@ -178,6 +178,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(facade::load_run_result, m)?)?;
+    m.add_function(wrap_pyfunction!(facade::merge_telemetry, m)?)?;
     m.add_function(wrap_pyfunction!(facade::eval_report, m)?)?;
     m.add_function(wrap_pyfunction!(model::predict_seed, m)?)?;
     m.add_function(wrap_pyfunction!(model::episode_seed, m)?)?;

@@ -98,6 +98,52 @@ pub(crate) fn load_run_result(
     result_to_py(py, &result)
 }
 
+/// `RunResult.merge`: telemetry rows of several results merged per series.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def merge_telemetry(rows: list[dict[str, typing.Any]]) -> list[dict[str, typing.Any]]: ...
+"#
+    )
+)]
+#[pyfunction]
+pub(crate) fn merge_telemetry<'py>(
+    py: Python<'py>,
+    rows: Vec<Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+    fn field<'py>(row: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
+        row.get_item(key)?
+            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.to_owned()))
+    }
+    let rows = rows
+        .iter()
+        .map(|row| {
+            Ok(rlmesh::TelemetryRow {
+                op: field(row, "op")?.extract()?,
+                component: field(row, "component")?.extract()?,
+                metric: field(row, "metric")?.extract()?,
+                unit: field(row, "unit")?.extract()?,
+                count: field(row, "count")?.extract()?,
+                avg: field(row, "avg")?.extract()?,
+                p50: field(row, "p50")?.extract()?,
+                p95: field(row, "p95")?.extract()?,
+                p99: field(row, "p99")?.extract()?,
+            })
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    let merged = rlmesh::binding::report::merge_telemetry(&rows);
+    let result = RunResult {
+        telemetry: merged,
+        ..Default::default()
+    };
+    Ok(result_to_py(py, &result)?
+        .get_item("telemetry")?
+        .expect("telemetry")
+        .cast_into()?)
+}
+
 /// `EvalReport.load`: the report of the bundles at `paths`, as its JSON
 /// document and its table.
 #[cfg_attr(

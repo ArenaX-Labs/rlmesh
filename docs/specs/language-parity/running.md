@@ -1039,7 +1039,20 @@ so `_equals` is R-10's handle form. Equality and repr are the dataclasses'
   progress, from any thread, fails at once with RuntimeError. Predicts from
   runs and sessions serialize on the model; another session on the same model
   may predict from a hook mid-run. A hook cannot drive its own running
-  session (RUN-28).
+  session (RUN-28). A served model (`Model(address)`, a `SandboxModel`) and
+  `RANDOM_SAMPLE` are not held: each run joins the served model from a
+  session of its own, which is how one served model answers many runs.
+- **Many routes (Experimental).** Python's `Model.run_routes(envs, ...)`
+  drives one route per env target at once, each as `run` would, and returns
+  per route its `RunResult` or the exception it failed with;
+  `RunResult.merge` joins them. Routes start together once all have
+  connected (or 180 s after the first did), an env connect that fails
+  transiently is retried for up to 60 s, and a failed route never stops the
+  others. The episode total splits over the routes in order, each walking
+  the next block of trial ordinals, so with a `base_seed` the routes draw the
+  episodes one route would. An in-process `Model` drives one route. Rust
+  reaches it as `rlmesh::binding::routes` (R-25); C, C++ and C# have no
+  counterpart in v0.2.
 - **Hook dispatch (RUN-8).** The sync entry points (`rlmesh::run`,
   `Model::run`, `Session::run`, every C and C++ run, and Python's `Model.run`
   through the facade, RUN-P12) call hooks outside

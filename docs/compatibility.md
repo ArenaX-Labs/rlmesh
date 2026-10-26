@@ -37,6 +37,11 @@ is Experimental. Rust reaches it as `rlmesh::binding::report` (binding
 plumbing, semver-exempt) and the CLI as `rlmesh eval report`; C and C++ are
 deferred.
 
+`Model.run_routes` (many env targets against one model in one process) and
+`RunResult.merge` are Experimental. Rust reaches them as
+`rlmesh::binding::routes` (binding plumbing, semver-exempt); C and C++ are
+deferred.
+
 > [!WARNING]
 > The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an earlier release fails with a decode error naming the unknown dtype when it meets an environment that uses them: a clean refusal at the decoding peer, not a conversion. A per-leg dtype ceiling that refuses on the sending side instead is on the roadmap below.
 

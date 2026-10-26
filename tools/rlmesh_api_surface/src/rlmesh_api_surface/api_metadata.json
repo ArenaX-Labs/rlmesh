@@ -176,6 +176,9 @@
       "members": {
         "params": {
           "stability": "Experimental"
+        },
+        "run_routes": {
+          "stability": "Experimental"
         }
       }
     },
@@ -611,6 +614,13 @@
         }
       }
     },
+    "rlmesh.RunResult": {
+      "members": {
+        "merge": {
+          "stability": "Experimental"
+        }
+      }
+    },
     "rlmesh.EnvFactory": {
       "members": {
         "params": {
@@ -627,6 +637,9 @@
     "rlmesh.numpy.Model": {
       "members": {
         "params": {
+          "stability": "Experimental"
+        },
+        "run_routes": {
           "stability": "Experimental"
         }
       }
