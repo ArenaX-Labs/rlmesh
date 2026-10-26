@@ -1508,13 +1508,14 @@ where
         // budget are stepped, never counted). The one exception is a lane group
         // whose resets the DRIVER owns: that budget is the slot counter, checked
         // at reset by `claim_slots`. A group left holding only surplus lanes
-        // (a lane group rolled past the budget under NEXT_STEP) stops now.
-        let budget_spent = directive == RunDirective::Stop
-            || self
-                .spec
-                .max_episodes
-                .is_some_and(|limit| state.total_episodes() >= limit as i64);
-        if ((!lane_group || !self.driver_owns_resets()) && budget_spent)
+        // (a lane group rolled past the budget under NEXT_STEP) stops now, and
+        // every group stops once an observer quits.
+        let budget_spent = self
+            .spec
+            .max_episodes
+            .is_some_and(|limit| state.total_episodes() >= limit as i64);
+        if directive == RunDirective::Stop
+            || ((!lane_group || !self.driver_owns_resets()) && budget_spent)
             || state.all_surplus_at(&positions)
         {
             // The group never steps again, so the ended lanes' deferred

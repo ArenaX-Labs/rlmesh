@@ -516,6 +516,29 @@ def test_a_viewer_quit_returns_the_partial_result(
     assert viewer.held == [True]
 
 
+def test_a_viewer_quit_ends_every_lane_of_a_driver_reset_lane_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Quit truncates both live lane episodes and starts no more, however much
+    # of the budget is left.
+    viewer = _ScriptedViewer(quit_after=4)
+    _watch(monkeypatch, viewer)
+    lanes = [CountEnv(episode_len=0), CountEnv(episode_len=0)]
+    server = rlmesh.EnvServer(cast("Any", lanes), ":0/env")
+    try:
+        server.start()
+    except (OSError, ConnectionError) as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+    try:
+        result = _model().run(server.address, episodes=6, view="terminal")
+    finally:
+        server.shutdown()
+    assert result.num_episodes == 2
+    assert all(e.truncated and e.steps > 1 for e in result.episodes)
+
+
 # ---------------------------------------------------------------------------
 # hooks: the same contract on both loops
 
