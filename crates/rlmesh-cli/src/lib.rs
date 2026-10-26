@@ -187,6 +187,7 @@ pub async fn run_cli_in(
         Command::Describe(args) => check::describe(&args, stdout, stderr),
         Command::Host(args) => host::host(&args, stdout).await.map(|()| 0),
         Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
+        Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),
     };
 
     match result {
@@ -325,6 +326,7 @@ mod tests {
         assert!(stdout.contains("check-image"));
         assert!(stdout.contains("describe"));
         assert!(stdout.contains("doctor"));
+        assert!(stdout.contains("bench"));
         assert!(!stdout.contains("viewer"));
 
         let mut command = cli::Cli::command();

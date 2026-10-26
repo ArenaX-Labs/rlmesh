@@ -1,4 +1,4 @@
-//! `rlmesh doctor`: run an image on this machine and probe
+//! `rlmesh doctor` and `rlmesh bench`: run an image on this machine and probe
 //! it with `rlmesh::binding::doctor`, the platform probe's checks.
 
 use std::io::Write;
@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rlmesh::binding::doctor::{
-    self, CheckStatus, EnvProbeOptions, ModelProbeOptions, PROBE_REPORT, ProbeCheck, ProbeReport,
-    ProbeSubject,
+    self, BenchOptions, CheckStatus, EnvProbeOptions, ModelProbeOptions, PROBE_REPORT, ProbeCheck,
+    ProbeReport, ProbeSubject,
 };
 
 use crate::check::docker_inspect;
-use crate::cli::{DoctorArgs, ProbeImageArgs, ProbeKind};
+use crate::cli::{BenchArgs, DoctorArgs, ProbeImageArgs, ProbeKind};
 use crate::container::Container;
 use crate::image_check::{self, DESCRIBE_LABEL, ImageConfig, Kind};
 use crate::render::Style;
@@ -56,6 +56,81 @@ pub(crate) fn doctor(args: &DoctorArgs, stdout: &mut impl Write, style: Style) -
         }
     }
     Ok(i32::from(failed(&report)))
+}
+
+pub(crate) fn bench(args: &BenchArgs, stdout: &mut impl Write, style: Style) -> Result<i32> {
+    let config = docker_inspect(&args.image.image)?;
+    let describe = describe_label(&config);
+    let image = &args.image;
+    let result = off_runtime(|| -> Result<doctor::BenchResult> {
+        let (model, reference) = start_model(image)?;
+        let model = match model {
+            Ok(model) => model,
+            Err(error) => {
+                return Ok(doctor::BenchResult {
+                    report: doctor::failed_handshake(ProbeSubject::Model, &error),
+                    single: Vec::new(),
+                });
+            }
+        };
+        let options = BenchOptions {
+            probe: ModelProbeOptions {
+                describe,
+                reference_env: reference.as_ref().map(|env| env.address.clone()),
+                connect_timeout: Duration::from_secs(image.timeout),
+            },
+            sizes: args.sizes.clone(),
+            iterations: args.iterations,
+            ..BenchOptions::default()
+        };
+        Ok(doctor::bench_model(&model.address, &options))
+    })?;
+    let report = &result.report;
+    if image.json {
+        writeln!(stdout, "{}", serde_json::to_string_pretty(report)?)?;
+        return Ok(i32::from(failed(report)));
+    }
+    render_checks(report, &image.image, stdout, style)?;
+    if !report.baseline.is_empty() {
+        writeln!(
+            stdout,
+            "\n{}",
+            style.bold("sessions   p50 ms   p95 ms   predicts/s")
+        )?;
+        for point in &report.baseline {
+            writeln!(
+                stdout,
+                "{:>8} {:>8.2} {:>8.2} {:>12.1}",
+                point.batch_size, point.p50_ms, point.p95_ms, point.predicts_per_s
+            )?;
+        }
+    }
+    let timing: Vec<_> = result
+        .single
+        .iter()
+        .filter(|row| row.metric == "rpc.total" && row.unit == "ms")
+        .collect();
+    if !timing.is_empty() {
+        writeln!(stdout, "\n{}", style.bold("one session, per call"))?;
+        for row in timing {
+            writeln!(
+                stdout,
+                "{:<22} p50 {:>8.2} ms  p95 {:>8.2} ms  ({} calls)",
+                row.op, row.p50, row.p95, row.count
+            )?;
+        }
+    }
+    if let Some(size) = report.recommendation.max_batch_size {
+        writeln!(
+            stdout,
+            "\n{}",
+            style.success(&format!(
+                "recommended max_batch_size={size} (batch_window_ms={})",
+                report.recommendation.batch_window_ms.unwrap_or_default()
+            ))
+        )?;
+    }
+    Ok(i32::from(failed(report)))
 }
 
 /// The probe of an env image, served in a container of its own.

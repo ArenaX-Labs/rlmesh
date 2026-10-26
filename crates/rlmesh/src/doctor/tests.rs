@@ -225,6 +225,23 @@ fn a_model_is_checked_against_its_spec_or_its_reference_env() {
         }
     }
 
+    let bench = bench_model(
+        &address,
+        &BenchOptions {
+            probe: ModelProbeOptions {
+                describe: Some(json!({"model_spec": null})),
+                reference_env: Some(server.address().to_string()),
+                connect_timeout: Duration::from_secs(10),
+            },
+            sizes: vec![1, 2],
+            iterations: 3,
+            warmup: 1,
+        },
+    );
+    let sizes: Vec<u32> = bench.report.baseline.iter().map(|p| p.batch_size).collect();
+    assert_eq!(sizes, [1, 2], "{:#?}", bench.report.checks);
+    assert_eq!(bench.report.observed.max_ok_batch, Some(2));
+    assert!(bench.report.recommendation.max_batch_size.is_some());
     stop.cancel();
     server.shutdown().unwrap();
 }

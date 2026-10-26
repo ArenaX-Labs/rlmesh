@@ -1,4 +1,4 @@
-//! `rlmesh doctor`: the managed platform's probe, run on
+//! `rlmesh doctor` and `rlmesh bench`: the managed platform's probe, run on
 //! one machine against a served env or model.
 //!
 //! Ported from the managed runner's probe (`probe.rs` and `probe/` in
@@ -15,6 +15,7 @@
 // docs live on the platform side.
 #![allow(missing_docs)]
 
+mod bench;
 mod compare;
 mod env;
 mod model;
@@ -28,6 +29,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 
+pub use bench::{BenchOptions, BenchResult, bench_model};
 pub use env::{EnvProbeOptions, probe_env};
 pub use model::{ModelProbeOptions, probe_model};
 pub use report::{

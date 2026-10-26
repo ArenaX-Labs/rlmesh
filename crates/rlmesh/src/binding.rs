@@ -206,7 +206,7 @@ pub mod artifacts {
     pub use crate::recorder::artifacts::*;
 }
 
-/// `rlmesh doctor`: the platform's probe on one machine,
+/// `rlmesh doctor` and `rlmesh bench`: the platform's probe on one machine,
 /// against a served env or model, reporting in the platform's
 /// `probe-report.json` shape. Drives the CLI (R-25); no language binding
 /// reaches it in 0.2.

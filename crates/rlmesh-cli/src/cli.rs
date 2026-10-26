@@ -50,6 +50,9 @@ pub enum Command {
     /// does: handshake, describe, conformance, reproducibility, and an env's
     /// preview clip (exits 1 on a failed check).
     Doctor(DoctorArgs),
+    /// Run a model image and sweep how many concurrent sessions it serves,
+    /// recommending `max_batch_size` (exits 1 when no size runs).
+    Bench(BenchArgs),
 }
 
 /// Shared flag selecting which named profile to act on.
@@ -370,7 +373,7 @@ pub struct CheckImageArgs {
     pub json: bool,
 }
 
-/// Flags for the image `doctor` probes and how it runs.
+/// Flags `doctor` and `bench` share: the image and how it runs.
 #[derive(Args, Debug)]
 pub struct ProbeImageArgs {
     /// A local image reference (`name:tag` or id).
@@ -408,6 +411,24 @@ pub struct DoctorArgs {
 pub enum ProbeKind {
     Env,
     Model,
+}
+
+/// Flags for `rlmesh bench`.
+#[derive(Args, Debug)]
+pub struct BenchArgs {
+    #[command(flatten)]
+    pub image: ProbeImageArgs,
+    /// Concurrent sessions per sweep point, comma-separated and ascending.
+    #[arg(
+        long,
+        value_name = "LIST",
+        value_delimiter = ',',
+        default_value = "1,2,4,8,16,32"
+    )]
+    pub sizes: Vec<u32>,
+    /// Predicts each session times per point, after 3 untimed ones.
+    #[arg(long, value_name = "N", default_value_t = 20)]
+    pub iterations: u32,
 }
 
 /// Flags for `rlmesh host`.
