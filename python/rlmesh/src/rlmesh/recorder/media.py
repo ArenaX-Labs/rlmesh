@@ -93,6 +93,16 @@ class MediaStager:
         """Register a finished staged file to be copied into the bundle at export."""
         self.assets.append((staged, rel))
 
+    def tree_dir(self) -> str:
+        """A fresh staging directory an artifact tree is written into."""
+        return tempfile.mkdtemp(dir=self._staging_dir())
+
+    def adopt(self, staged: str, rel: str) -> None:
+        """Register a file a writer staged at ``staged`` as ``rel``, once."""
+        if rel not in self._used:
+            self._used.add(rel)
+            self.assets.append((staged, rel))
+
     def carry_file(
         self, *, prefix: str, episode_index: int, camera: str, source: str
     ) -> MediaRef | None:

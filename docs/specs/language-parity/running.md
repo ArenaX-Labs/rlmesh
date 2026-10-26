@@ -743,6 +743,25 @@ returned hooks handle holds for its life, as Python's hooks keep the session
 (`py/recorder/hooks.py:107`), and releases at `rlmesh_run_hooks_free`; a
 `config` that is not a DICT fails with `RLMESH_ERR_TYPE`.
 
+Python's Experimental `record(*, model, env, spec=None, task=None,
+config=None, included_in_metrics=True) -> RunHooks` writes the managed
+platform's per-episode artifact tree (its `docs/evaluation-artifacts.md`)
+into the bundle under `workloads/cNNNN/attempts/a001/` (`artifactRoot` on
+the workload): `episodes/epNNNNNN/episode.json` (`rlmesh.episode.v1`: seed,
+trial index, verdict, timing, invariant flags, first-frame hash),
+`trajectory.parquet` (one row per step, a memory-budgeted row group at a
+time) and `video/{camera}.{raw|perturbed|extra}.mp4`, plus
+`telemetry/windows.jsonl`, the run's `warmup` phase mark (`phases`) and the
+machine's hardware `stamp` on the document. `spec` is the platform's
+`record` block (video `raw` / `perturbed` / `extra` cameras, `fps`, `when`,
+`every`, `stride`; trajectory `obs`, `obsImages`, `action`, `reward`, `info`,
+`stepTiming`, `when`, `every`). Raw and perturbed come from the runtime's
+`raw_observation` / `raw_action`, so they differ only under a transform.
+Videos are the recorder's AV1. Rust carries it as `#[doc(hidden)]`
+`RecorderCaptureOptions::record` and `RunHooks::artifacts` (R-25), over
+`rlmesh::binding::artifacts`, which a runner with its own `RuntimeHooks`
+drives directly; C, C++ and C# have no counterpart in v0.2.
+
 `export` fails with builtin `OSError` in every language when it refuses its
 target or a mkdir, write or copy fails (Python raises the subclass
 `FileExistsError` for a refused target, `py/recorder/export.py:62-74`; Rust

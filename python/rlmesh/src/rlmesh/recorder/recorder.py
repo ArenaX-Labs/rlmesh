@@ -12,6 +12,7 @@ Python-driven paths. Either way, :meth:`Recorder.export` writes an
 from __future__ import annotations
 
 import dataclasses
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,7 @@ from .schema import EpisodeRecord, ResultSet, WorkloadRecord
 
 if TYPE_CHECKING:
     from .._models import RunContext, RunHooks, RunResult, TelemetryRow
+    from .._rlmesh import PyEpisodeArtifacts
 
 
 def _now_iso() -> str:
@@ -88,6 +90,10 @@ class Recorder:
         #: Each workload's telemetry rows (keyed by ``id(workload)``), one
         #: batch per recorded run, written beside the workload.
         self._telemetry: dict[int, list[TelemetryRow]] = {}
+        #: Each recorded workload's artifact tree: its writer and bundle prefix.
+        self._trees: dict[int, tuple[PyEpisodeArtifacts, str]] = {}
+        #: This machine's hardware stamp, taken with the first tree.
+        self._stamp: dict[str, Any] | None = None
 
     @property
     def result_set_id(self) -> str:
@@ -200,6 +206,58 @@ class Recorder:
             telemetry=self._telemetry.setdefault(id(workload), []),
         )
 
+    def record(
+        self,
+        *,
+        model: str,
+        env: str,
+        spec: dict[str, Any] | None = None,
+        task: str | None = None,
+        config: dict[str, Any] | None = None,
+        included_in_metrics: bool = True,
+    ) -> RunHooks:
+        """A :class:`~rlmesh.RunHooks` that records a run's artifact tree (Experimental).
+
+        Writes the managed platform's per-episode layout under
+        ``workloads/cNNNN/attempts/a001/`` in the bundle: ``episode.json``
+        (seed, trial, verdict, timing, invariant flags), ``trajectory.parquet``
+        and AV1 videos per camera and stream, with the machine's hardware
+        stamp and the run's telemetry windows. ``spec`` is the platform's
+        ``record`` block (``{"video": {...}, "trajectory": {...}}``); the
+        default records nothing beyond ``episode.json``. Raw and perturbed
+        streams differ only under a ``transform_observation`` /
+        ``transform_action`` hook. Runs only, not a manual
+        :meth:`Model.bind <rlmesh.Model.bind>`.
+        """
+        from .._rlmesh import PyEpisodeArtifacts
+
+        workload = self._new_workload(model, env, task, config)
+        ordinal = len(self._result_set.workloads)
+        workload_id = f"c{ordinal:04d}"
+        prefix = f"workloads/{workload_id}/attempts/a001"
+        root = self._stager.tree_dir()
+        tap = PyEpisodeArtifacts(
+            root,
+            json.dumps(spec or {}),
+            workload.task,
+            workload_id,
+            self._stager.quality,
+        )
+        self._trees[id(workload)] = (tap, prefix)
+        if self._stamp is None:
+            self._stamp = json.loads(PyEpisodeArtifacts.stamp())
+        return CaptureHooks(
+            workload=workload,
+            stager=self._stager,
+            prefix=f"w{ordinal - 1:03d}-{sanitize_part(model)}/{sanitize_part(workload.task)}",
+            cameras=[],
+            binding=None,
+            video_keys=DEFAULT_VIDEO_INFO_KEYS,
+            included_in_metrics=included_in_metrics,
+            telemetry=self._telemetry.setdefault(id(workload), []),
+            tree=(tap, root, prefix),
+        )
+
     def to_dict(self, *, recorded_at: str | None = None) -> dict[str, Any]:
         """The ``rlmesh.result.v1`` document as a JSON-native dict."""
         document = self._result_set.to_dict(recorded_at=recorded_at or _now_iso())
@@ -208,6 +266,12 @@ class Recorder:
         ):
             if rows := self._telemetry.get(id(workload)):
                 out["telemetry"] = [dataclasses.asdict(row) for row in rows]
+            if tree := self._trees.get(id(workload)):
+                out["artifactRoot"] = tree[1]
+                if phases := json.loads(tree[0].phases()):
+                    out["phases"] = phases
+        if self._stamp is not None:
+            document["stamp"] = self._stamp
         return document
 
     def export(

@@ -16,6 +16,7 @@ dropped, and the episode's outcome is still recorded -- capture never aborts the
 
 from __future__ import annotations
 
+import json
 import os
 import warnings
 from dataclasses import dataclass
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from .._models import EpisodeResult, RunResult, StepEvent, TelemetryRow
-    from .._rlmesh import PyVideoWriter
+    from .._rlmesh import PyEpisodeArtifacts, PyVideoWriter
     from .media import MediaStager
     from .schema import WorkloadRecord
 
@@ -100,7 +101,12 @@ class CaptureHooks(RunHooks):
         video_keys: tuple[str, ...],
         included_in_metrics: bool,
         telemetry: list[TelemetryRow],
+        tree: tuple[PyEpisodeArtifacts, str, str] | None = None,
     ) -> None:
+        #: ``Recorder.record``'s artifact tree: its writer (fed by the run),
+        #: staging root and bundle prefix.
+        self._tree = tree
+        self._artifact_tap = tree[0] if tree is not None else None
         self._workload = workload
         self._telemetry = telemetry
         self._stager = stager
@@ -134,6 +140,9 @@ class CaptureHooks(RunHooks):
         """
         if self._binding is None:
             self._binding = context
+        if self._tree is not None:
+            # Several runs into one workload continue its episode numbering.
+            self._tree[0].set_episode_offset(len(self._workload.episodes))
 
     def on_episode_start(self, *, episode: int, seed: int | None) -> None:
         """Reset the per-episode writers and env-video path."""
@@ -247,7 +256,7 @@ class CaptureHooks(RunHooks):
     def on_episode_end(self, result: EpisodeResult) -> None:
         """Finalize this episode's media and append its record to the workload."""
         index = len(self._workload.episodes)
-        media: list[MediaRef] = []
+        media = self._adopt_episode()
         for camera, cam in self._writers.items():
             try:
                 meta = cam.writer.finish()
@@ -291,9 +300,45 @@ class CaptureHooks(RunHooks):
         self._writers = {}
         self._video_path = None
 
+    def _adopt_episode(self) -> list[MediaRef]:
+        """Bundle the tree's record of the episode that just ended.
+
+        Its files join the bundle and its videos the episode's media.
+        """
+        if self._tree is None:
+            return []
+        tap, root, prefix = self._tree
+        raw = tap.take_finished()
+        if raw is None:
+            return []
+        record = json.loads(raw)
+        episode_dir = f"episodes/ep{record['episodeIndex']:06d}"
+        for path in [f["path"] for f in record["files"]] + [
+            f"{episode_dir}/episode.json"
+        ]:
+            self._stager.adopt(os.path.join(root, path), f"{prefix}/{path}")
+        return [
+            MediaRef(
+                camera=f"{r['camera']}.{r['stream']}",
+                kind="video",
+                path=f"{prefix}/{r['path']}",
+                format="mp4",
+                frame_count=r["frames"],
+                width=r["width"],
+                height=r["height"],
+                fps=float(r["fps"]),
+            )
+            for r in record["recordings"]
+        ]
+
     def on_run_end(self, result: RunResult) -> None:
         """Keep the run's telemetry; flag cameras that never yielded a frame."""
         self._telemetry.extend(result.telemetry)
+        if self._tree is not None:
+            _, root, prefix = self._tree
+            windows = os.path.join(root, "telemetry", "windows.jsonl")
+            if os.path.isfile(windows):
+                self._stager.adopt(windows, f"{prefix}/telemetry/windows.jsonl")
         for cam in self._writers.values():
             try:
                 cam.writer.finish()

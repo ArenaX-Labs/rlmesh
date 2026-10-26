@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
@@ -225,5 +225,79 @@ impl PyVideoWriter {
 impl PyVideoWriter {
     fn lock(&self) -> MutexGuard<'_, Option<ThreadedVideoWriter>> {
         self.inner.lock().unwrap_or_else(|err| err.into_inner())
+    }
+}
+
+/// The Python recorder's handle on a workload's per-episode artifact tree
+/// (`episodes/epNNNNNN/`, the managed evaluation-artifacts layout). A run
+/// feeds it the native loop's events; the recorder reads back each closed
+/// episode's record to bundle its files.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "PyEpisodeArtifacts")]
+pub struct PyEpisodeArtifacts {
+    pub(crate) tap: rlmesh::binding::artifacts::ArtifactTap,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[pymethods]
+impl PyEpisodeArtifacts {
+    /// `record` is the `record` block as JSON; the ids land in each
+    /// `episode.json`.
+    #[new]
+    #[pyo3(signature = (root, record, task_id, workload_id, quality=60))]
+    fn new(
+        root: String,
+        record: &str,
+        task_id: String,
+        workload_id: String,
+        quality: u8,
+    ) -> PyResult<Self> {
+        use rlmesh::binding::artifacts::{ArtifactOptions, EpisodeArtifacts};
+        let record = serde_json::from_str(record)
+            .map_err(|e| PyValueError::new_err(format!("record: {e}")))?;
+        let options = ArtifactOptions {
+            record,
+            task_id,
+            workload_artifact_id: workload_id.clone(),
+            workload_id,
+            quality,
+            ..ArtifactOptions::default()
+        };
+        Ok(Self {
+            tap: std::sync::Arc::new(Mutex::new(EpisodeArtifacts::new(root, options))),
+        })
+    }
+
+    /// Number the next run's episodes after `offset`.
+    fn set_episode_offset(&self, offset: u32) {
+        self.lock().set_episode_offset(offset);
+    }
+
+    /// The oldest closed episode's `episode.json` not yet taken, or `None`.
+    fn take_finished(&self) -> PyResult<Option<String>> {
+        self.lock()
+            .take_finished()
+            .map(|record| serde_json::to_string(&record))
+            .transpose()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// The run's phase marks (`warmup`) as a JSON list.
+    fn phases(&self) -> PyResult<String> {
+        serde_json::to_string(self.lock().phases())
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// This machine's hardware stamp as JSON (shells out to nvidia-smi).
+    #[staticmethod]
+    fn stamp(py: Python<'_>) -> PyResult<String> {
+        py.detach(|| serde_json::to_string(&rlmesh::binding::artifacts::collect_stamp()))
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+}
+
+impl PyEpisodeArtifacts {
+    fn lock(&self) -> MutexGuard<'_, rlmesh::binding::artifacts::EpisodeArtifacts> {
+        self.tap.lock().unwrap_or_else(|err| err.into_inner())
     }
 }

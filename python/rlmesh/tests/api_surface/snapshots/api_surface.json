@@ -606,6 +606,11 @@
             "kind": "function",
             "signature": "export(path: str | Path, *, archive: bool | str | None = None, recorded_at: str | None = None)"
           },
+          "record": {
+            "kind": "function",
+            "signature": "record(*, model: str, env: str, spec: dict[str, Any] | None = None, task: str | None = None, config: dict[str, Any] | None = None, included_in_metrics: bool = True)",
+            "stability": "Experimental"
+          },
           "result_set_id": {
             "kind": "property",
             "signature": "property result_set_id: str"
@@ -4274,6 +4279,11 @@
           "export": {
             "kind": "function",
             "signature": "export(path: str | Path, *, archive: bool | str | None = None, recorded_at: str | None = None) -> Path"
+          },
+          "record": {
+            "kind": "function",
+            "signature": "record(*, model: str, env: str, spec: dict[str, Any] | None = None, task: str | None = None, config: dict[str, Any] | None = None, included_in_metrics: bool = True) -> RunHooks",
+            "stability": "Experimental"
           },
           "result_set_id": {
             "kind": "property",

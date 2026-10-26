@@ -322,6 +322,23 @@ impl RunHooks for PyFacadeHooks {
     ) -> rlmesh::Result<Option<Value>> {
         self.transform("transform_action", episode, step, action)
     }
+    fn artifacts(&mut self) -> Option<rlmesh::binding::artifacts::ArtifactTap> {
+        let mut tap = None;
+        let _ = self.call(|_, relay| {
+            let handle = relay.call_method0("artifacts")?;
+            if !handle.is_none() {
+                tap = Some(
+                    handle
+                        .cast::<crate::viewer::PyEpisodeArtifacts>()?
+                        .borrow()
+                        .tap
+                        .clone(),
+                );
+            }
+            Ok(())
+        });
+        tap
+    }
 }
 
 impl rlmesh::binding::model::Presentation for PyFacadeHooks {

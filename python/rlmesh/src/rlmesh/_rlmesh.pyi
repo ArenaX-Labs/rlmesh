@@ -61,6 +61,7 @@ __all__ = [
     "PyEditionCell",
     "PyEnvClient",
     "PyEnvServer",
+    "PyEpisodeArtifacts",
     "PyModel",
     "PyVectorEnvClient",
     "PyVectorEnvServer",
@@ -494,6 +495,37 @@ class PyEnvServer:
     def shutdown(self) -> None:
         r"""
         Shutdown the server.
+        """
+
+@typing.final
+class PyEpisodeArtifacts:
+    r"""
+    The Python recorder's handle on a workload's per-episode artifact tree
+    (`episodes/epNNNNNN/`, the managed evaluation-artifacts layout). A run
+    feeds it the native loop's events; the recorder reads back each closed
+    episode's record to bundle its files.
+    """
+    def __new__(cls, root: builtins.str, record: builtins.str, task_id: builtins.str, workload_id: builtins.str, quality: builtins.int = ...) -> PyEpisodeArtifacts:
+        r"""
+        `record` is the `record` block as JSON; the ids land in each
+        `episode.json`.
+        """
+    def set_episode_offset(self, offset: builtins.int) -> None:
+        r"""
+        Number the next run's episodes after `offset`.
+        """
+    def take_finished(self) -> typing.Optional[builtins.str]:
+        r"""
+        The oldest closed episode's `episode.json` not yet taken, or `None`.
+        """
+    def phases(self) -> builtins.str:
+        r"""
+        The run's phase marks (`warmup`) as a JSON list.
+        """
+    @staticmethod
+    def stamp() -> builtins.str:
+        r"""
+        This machine's hardware stamp as JSON (shells out to nvidia-smi).
         """
 
 @typing.final

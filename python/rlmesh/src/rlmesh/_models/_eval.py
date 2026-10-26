@@ -562,6 +562,19 @@ def overrides_transforms(hooks: RunHooks) -> bool:
     )
 
 
+def artifact_tap(hooks: RunHooks | None) -> Any:
+    """The first hook's artifact-tree writer (``Recorder.record``), if any."""
+    listed = hooks.hooks if isinstance(hooks, _HookList) else (hooks,)
+    return next(
+        (
+            tap
+            for hook in listed
+            if (tap := getattr(hook, "_artifact_tap", None)) is not None
+        ),
+        None,
+    )
+
+
 HooksArg = RunHooks | Sequence[RunHooks] | None
 
 

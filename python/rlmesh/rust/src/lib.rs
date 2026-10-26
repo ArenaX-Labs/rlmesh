@@ -175,6 +175,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<client::PyEditionCell>()?;
     m.add_class::<viewer::PyViewer>()?;
     m.add_class::<viewer::PyVideoWriter>()?;
+    m.add_class::<viewer::PyEpisodeArtifacts>()?;
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(facade::load_run_result, m)?)?;

@@ -13,6 +13,7 @@ from ._eval import (
     RunResult,
     StepEvent,
     TelemetryRow,
+    artifact_tap,
     episode_outcome,
     overrides_transforms,
 )
@@ -74,6 +75,9 @@ class FacadeHookRelay:
 
     def wants_transforms(self) -> bool:
         return self.hooks is not None and overrides_transforms(self.hooks)
+
+    def artifacts(self) -> Any:
+        return artifact_tap(self.hooks)
 
     def transform_observation(
         self, observation: object, episode: int, step: int

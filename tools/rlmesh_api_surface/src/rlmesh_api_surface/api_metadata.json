@@ -604,6 +604,20 @@
     "rlmesh.params": {
       "stability": "Experimental"
     },
+    "rlmesh.Recorder": {
+      "members": {
+        "record": {
+          "stability": "Experimental"
+        }
+      }
+    },
+    "rlmesh.recorder.Recorder": {
+      "members": {
+        "record": {
+          "stability": "Experimental"
+        }
+      }
+    },
     "rlmesh.RunHooks": {
       "members": {
         "transform_action": {

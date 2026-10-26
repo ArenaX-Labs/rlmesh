@@ -404,6 +404,79 @@ def test_native_capture_records_render_of_a_local_env(tmp_path: Path) -> None:
     assert media[0].frame_count == 2 and (media[0].width, media[0].height) == (64, 48)
 
 
+def test_record_writes_the_episode_artifact_tree_of_a_run(tmp_path: Path) -> None:
+    """Recorder.record writes the managed per-episode layout into the bundle;
+    with no transform the perturbed stream is the raw file."""
+    np = pytest.importorskip("numpy")
+    gym = pytest.importorskip("gymnasium")
+    from rlmesh.numpy import Model
+
+    class _ImageEnv:
+        def __init__(self) -> None:
+            self.metadata: dict[str, object] = {}
+            self.observation_space = gym.spaces.Dict(
+                {"cam": gym.spaces.Box(0, 255, shape=(16, 16, 3), dtype=np.uint8)}
+            )
+            self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
+            self._step = 0
+
+        def reset(self, *, seed: object = None, options: object = None) -> Any:
+            self._step = 0
+            return {"cam": np.zeros((16, 16, 3), np.uint8)}, {}
+
+        def step(self, action: object) -> Any:
+            self._step += 1
+            done = self._step >= 3
+            return (
+                {"cam": np.zeros((16, 16, 3), np.uint8)},
+                1.0,
+                done,
+                False,
+                ({"is_success": True} if done else {}),
+            )
+
+        def close(self) -> None:
+            pass
+
+    tags = adapt.EnvTags(
+        observation={"cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    rec = Recorder()
+    hooks = rec.record(
+        model="zeros",
+        env="image-env",
+        spec={
+            "video": {"raw": ["primary"], "perturbed": ["primary"]},
+            "trajectory": {"obs": "both"},
+        },
+    )
+    Model(lambda obs: np.zeros(1, np.float32), spec=rlmesh.NO_ADAPTER).run(
+        adapt.tag(_ImageEnv(), tags), seeds=[5, 6], hooks=hooks
+    )
+    out = rec.export(tmp_path / "bundle")
+    document = json.loads((out / "result.json").read_text())
+    workload = document["workloads"][0]
+    assert workload["artifactRoot"] == "workloads/c0001/attempts/a001"
+    stamp = document["stamp"]
+    assert stamp["runnerVersion"] == stamp["ossCrateVersions"]["rlmesh"]
+    root = out / workload["artifactRoot"]
+    assert sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()) == [
+        f"episodes/ep00000{i}/{name}"
+        for i in (1, 2)
+        for name in ("episode.json", "trajectory.parquet", "video/primary.raw.mp4")
+    ] + ["telemetry/windows.jsonl"]
+    episode = json.loads((root / "episodes/ep000002/episode.json").read_text())
+    assert (episode["seed"], episode["verdict"], episode["steps"]) == (6, "success", 3)
+    assert sorted((r["stream"], r["path"]) for r in episode["recordings"]) == [
+        ("perturbed", "episodes/ep000002/video/primary.raw.mp4"),
+        ("raw", "episodes/ep000002/video/primary.raw.mp4"),
+    ]
+    media = rec.workloads[0].episodes[1].media
+    assert {m.camera for m in media} == {"primary.raw", "primary.perturbed"}
+    assert all((out / m.path).read_bytes()[4:8] == b"ftyp" for m in media)
+
+
 def test_capture_refuses_frames_from_a_vector_env() -> None:
     np = pytest.importorskip("numpy")
     from rlmesh import spaces
