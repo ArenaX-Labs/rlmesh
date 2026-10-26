@@ -226,6 +226,15 @@ status = "provisional"
     assert _dropped_sealed_editions(previous, ["2026.09"]) == ["2026.06"]
     # A provisional cohort may be retired; only sealed editions are sticky.
     assert not _dropped_sealed_editions(previous, ["2026.06"])
+    # A major break drops a sealed edition only by naming it with a reason, and
+    # keeps its sealed record.
+    assert not _dropped_sealed_editions(previous, ["2026.09"], {"2026.06"})
+    sealed = tomllib.loads(previous)["workflow"]["editions"]
+    reason = {"2026.06": "0.2 is a major break"}
+    assert not _check_dropped_editions(reason, sealed, ["2026.09"])
+    assert _check_dropped_editions({"2026.06": " "}, sealed, ["2026.09"])
+    assert _check_dropped_editions({"2026.07": "typo"}, sealed, ["2026.09"])
+    assert _check_dropped_editions(reason, sealed, ["2026.09", "2026.06"])
 
     # build.rs scans the manifest without a TOML parser: its reading of the
     # retained list must equal tomllib's for both array spellings, or the build
@@ -788,7 +797,9 @@ def _validate_workflow_editions(
                     f"{prefix}.sealed_in must be the stable (non-prerelease) version "
                     "that sealed the edition"
                 )
-            if edition not in (supported if isinstance(supported, list) else []):
+            if edition not in (
+                supported if isinstance(supported, list) else []
+            ) and edition not in _dropped_editions(workflow):
                 errors.append(
                     f"{prefix}: a sealed edition must stay in [workflow].supported_editions "
                     "(retained forever, never pruned)"
@@ -825,6 +836,10 @@ def _validate_workflow_editions(
             errors.append(
                 f"{prefix}.spec_sha256 is only recorded once the edition is sealed"
             )
+
+    errors.extend(
+        _check_dropped_editions(workflow.get("dropped_editions"), editions, supported)
+    )
 
     seen_provisional_by_base: dict[str, str] = {}
     for edition in supported:
@@ -1024,9 +1039,46 @@ def _sealed_editions(manifest_text: str) -> set[str]:
 
 
 def _dropped_sealed_editions(
-    previous_manifest_text: str, supported: list[str]
+    previous_manifest_text: str,
+    supported: list[str],
+    dropped: set[str] | frozenset[str] = frozenset(),
 ) -> list[str]:
-    return sorted(_sealed_editions(previous_manifest_text) - set(supported))
+    return sorted(_sealed_editions(previous_manifest_text) - set(supported) - dropped)
+
+
+def _dropped_editions(workflow: dict[str, Any]) -> set[str]:
+    """Sealed editions ``[workflow.dropped_editions]`` deliberately stops offering."""
+    dropped = workflow.get("dropped_editions")
+    return set(dropped) if isinstance(dropped, dict) else set()
+
+
+def _check_dropped_editions(
+    dropped: Any, editions: dict[str, Any], supported: list[str]
+) -> list[str]:
+    """``[workflow.dropped_editions]`` is the one exception to sealed retention.
+
+    A deliberate major break may stop offering a sealed edition, but only by
+    naming it with its reason; the edition keeps its sealed record (and checked
+    spec hash), and it is not also offered.
+    """
+    if dropped is None:
+        return []
+    if not isinstance(dropped, dict):
+        return ["[workflow.dropped_editions] must be a table of edition = reason"]
+    errors: list[str] = []
+    for edition, reason in dropped.items():
+        prefix = f'[workflow.dropped_editions]."{edition}"'
+        if not isinstance(reason, str) or not reason.strip():
+            errors.append(f"{prefix} must give the reason the edition is dropped")
+        entry = editions.get(edition)
+        if not isinstance(entry, dict) or entry.get("status") != "sealed":
+            errors.append(
+                f"{prefix} names no sealed edition; keep the dropped edition's "
+                "sealed [workflow.editions] record"
+            )
+        if edition in supported:
+            errors.append(f"{prefix} is still in [workflow].supported_editions")
+    return errors
 
 
 def _validate_sealed_edition_retention(
@@ -1059,7 +1111,9 @@ def _validate_sealed_edition_retention(
     return [
         f"[workflow].supported_editions dropped sealed edition {edition!r}, retained in "
         f"{tag}; sealed editions are kept forever"
-        for edition in _dropped_sealed_editions(previous, supported)
+        for edition in _dropped_sealed_editions(
+            previous, supported, _dropped_editions(workflow)
+        )
     ]
 
 

@@ -90,6 +90,10 @@ The experimental C API moves to **ABI generation 6** (`RLMESH_ABI_VERSION` 6, SO
 - `rlmesh.hpp` keeps its C++17 minimum and now requires exceptions (`#error` otherwise); `-fno-exceptions` builds are no longer supported. `Result<T>`, `Error`, `RLMESH_TRY`, the aborting `value()` / `unwrap()` accessors, `ValueRef`, `SpaceRef`, the worker `Batch` / `Request`, `RunReport` and the ABI-4 wrapper types are removed. Fallible calls return their value and throw the corresponding exception class instead (see Added); write `try` / `catch` where you checked a `Result`. A `Model` is built from a policy or callable whose `predict` takes and returns `rlmesh::Value`, and options are aggregates with named fields and `std::chrono::duration<double>` durations that drop the `_seconds` suffix (`max_episode_seconds` becomes `max_episode`).
 - `RecorderCaptureOptions::session` (`with_session`) is `binding` (`with_binding`), as in C and Rust.
 
+#### All languages
+
+- 0.2 runs workflow edition `2026.10` ([spec](docs/editions/2026.10.md)), provisional until 0.2.0 seals it, and no longer offers `2026.06`: a declaration of `2026.06` (`workflow_edition=`, `RLMESH_WORKFLOW_EDITION`, a class or `pyproject.toml`) is refused; declare `2026.10`, what `rlmesh.current_workflow_edition()` reports. `2026.10` records the 0.2 behaviour changes listed here: the refused lossy adapter fits and their `allow` names, rotation conversions in f64 with sign-keeping quaternion reorders, the execution-horizon precedence, Gymnasium-identical client results and the typed adapter-resolution error. The managed platform keeps `2026.06` through its 0.1 stack.
+
 ### Added
 
 #### Python

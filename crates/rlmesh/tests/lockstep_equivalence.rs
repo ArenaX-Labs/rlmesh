@@ -197,7 +197,7 @@ fn run_once(shape: &Shape) -> Traces {
                 execution_horizon: Some(shape.horizon),
                 prefetch_lead: shape.prefetch,
                 hooks: Some(&mut hooks),
-                workflow_edition: Some("2026.06".into()),
+                workflow_edition: Some("2026.10".into()),
                 ..Default::default()
             },
         )
@@ -353,7 +353,7 @@ async fn drive_managed(
         env_id: "catalog".into(),
         env_component_id: "catalog-env".into(),
         model_component_id: "served-model".into(),
-        workflow_edition: rlmesh_proto::parse_retained_edition("2026.06").unwrap(),
+        workflow_edition: rlmesh_proto::parse_retained_edition("2026.10").unwrap(),
         env_contract: rlmesh_grpc::wire::env_contract_to_proto(&contract),
         num_envs: contract.num_envs as usize,
         base_seed: Some(5),

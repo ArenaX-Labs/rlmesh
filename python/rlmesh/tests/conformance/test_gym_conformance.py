@@ -39,7 +39,7 @@ import rlmesh.numpy  # noqa: E402
 spaces = gym.spaces
 
 ADDRESS = ":0/gym"
-EDITION = rlmesh.ServeOptions(workflow_edition="2026.06")
+EDITION = rlmesh.ServeOptions(workflow_edition="2026.10")
 
 
 def digest(value: Any) -> int:
@@ -147,7 +147,7 @@ def served(env: Any) -> Iterator[Any]:
     server.start()
     vector = hasattr(env, "num_envs") and env.num_envs > 1
     cls = rlmesh.numpy.RemoteVectorEnv if vector else rlmesh.numpy.RemoteEnv
-    remote = cls(server.address, workflow_edition="2026.06")
+    remote = cls(server.address, workflow_edition="2026.10")
     try:
         yield remote
     finally:
@@ -575,13 +575,13 @@ def test_the_env_s_spec_is_forwarded_and_close_detaches() -> None:
     server = rlmesh.EnvServer(env, ADDRESS, options=EDITION)
     server.start()
     try:
-        remote = rlmesh.numpy.RemoteEnv(server.address, workflow_edition="2026.06")
+        remote = rlmesh.numpy.RemoteEnv(server.address, workflow_edition="2026.10")
         assert remote.spec is not None and reference.spec is not None
         assert remote.spec.id == reference.spec.id == "CartPole-v1"
         assert remote.spec.max_episode_steps == reference.spec.max_episode_steps
         remote.close()
         assert not closed, "close() detaches; the server owns the env"
-        again = rlmesh.numpy.RemoteEnv(server.address, workflow_edition="2026.06")
+        again = rlmesh.numpy.RemoteEnv(server.address, workflow_edition="2026.10")
         again.reset(seed=0)
         again.close()
     finally:
@@ -599,7 +599,7 @@ def test_every_backend_s_remote_env_is_a_gymnasium_env(backend: str) -> None:
     )
     server.start()
     try:
-        remote = module.RemoteEnv(server.address, workflow_edition="2026.06")
+        remote = module.RemoteEnv(server.address, workflow_edition="2026.10")
         try:
             assert isinstance(remote, gym.Env)
             assert remote.unwrapped is remote

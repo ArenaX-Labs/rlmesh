@@ -1,9 +1,9 @@
-//! Behavioral fingerprint for workflow edition 2026.06: these lifecycle
+//! Behavioral fingerprint for workflow edition 2026.10: these lifecycle
 //! assertions are the edition contract (episode accounting, per-lane autoreset,
 //! request/response ordering). Changing observable behavior here changes the
-//! edition; see docs/editions/2026.06.md. The fakes they drive live in
+//! edition; see docs/editions/2026.10.md. The fakes they drive live in
 //! `common/mod.rs`, shared with the byte-exact golden records in
-//! `edition_2026_06.rs`.
+//! `runtime_edition_2026_10.rs`.
 
 use std::sync::Arc;
 use std::sync::Mutex;

@@ -1,13 +1,15 @@
-//! Golden behavior fingerprint for workflow edition 2026.06.
+//! Golden behavior fingerprint for workflow edition 2026.10.
 //!
 //! Each scenario drives the runtime through one paragraph of
-//! `docs/editions/2026.06.md` with the shared fake harness and serializes what
+//! `docs/editions/2026.10.md` with the shared fake harness and serializes what
 //! the edition promises an observer -- the episode ledger, the hook-event order
 //! under each episode id, the model lifecycle, the seeds a reset threads, the
 //! refusals -- into a deterministic JSON record compared byte for byte against a
-//! committed fixture. 2026.06 is sealed: if a test here fails you are BREAKING
-//! THE BEHAVIOR CONTRACT of an edition already in the field, and the fix is to
-//! seal a NEW edition, never to update the fixture. Nothing time-dependent
+//! committed fixture. Every record here is unchanged from 2026.06, whose
+//! contract 2026.10 keeps for these scenarios. 2026.10 seals at v0.2.0; from
+//! then, if a test here fails you are BREAKING THE BEHAVIOR CONTRACT of an
+//! edition in the field, and the fix is to seal a NEW edition, never to update
+//! the fixture. Nothing time-dependent
 //! (wall-clock durations, telemetry latencies, lane interleavings a sleep
 //! decides) is recorded, and runtime-minted UUIDv7 episode ids appear as
 //! first-seen placeholders, so the record is a pure function of the edition's
@@ -36,7 +38,7 @@ const REFUSAL_PREFIX_CHARS: usize = 100;
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/runtime/2026.06")
+        .join("tests/fixtures/runtime/2026.10")
         .join(format!("{name}.json"))
 }
 
@@ -60,7 +62,7 @@ fn assert_frozen(name: &str, record: &Value) {
     assert_eq!(
         got,
         want,
-        "{name}: workflow edition 2026.06 behavior changed (this is a sealed-edition break, not a \
+        "{name}: workflow edition 2026.10 behavior changed (this is a sealed-edition break, not a \
          golden to update); the fix is a new edition, never an edit of {}",
         path.display()
     );
@@ -309,7 +311,7 @@ fn every_edition_defaults_field_is_pinned_by_a_scenario() {
         // (`rlmesh::env::wire`) report under it at the session's pinned edition.
         // No driver scenario observes it, so its value is pinned here.
         conformance_warning_info_key,
-    } = *rlmesh_proto::defaults(Edition::E2026_06);
+    } = *rlmesh_proto::defaults(Edition::E2026_10);
 
     assert_eq!(default_max_episode_steps, 100_000);
     assert_eq!(trial_index_option_key, "trial_index");
@@ -915,7 +917,7 @@ async fn scenario_09_episode_id_and_trial_authority() {
 }
 
 // ---------------------------------------------------------------------------
-// 10. The refusal set: what a 2026.06 runtime declines to drive at all.
+// 10. The refusal set: what a 2026.10 runtime declines to drive at all.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

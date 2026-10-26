@@ -28,7 +28,7 @@ UNKNOWN_EDITION = "2099.01"
 EDITION = current_workflow_edition()
 
 #: The exact spelling this build offers: the sealed base on a release, the
-#: cohort (`2026.06-dev.<sha>`) on a prerelease or source build.
+#: cohort (`2026.10-dev.<sha>`) on a prerelease or source build.
 COHORT = rlmesh.build_info().workflow_edition
 
 

@@ -1389,7 +1389,7 @@ mod tests {
             warned: Default::default(),
             edition: std::sync::Mutex::new(Edition::current()),
         };
-        conformance.pin(Edition::E2026_06);
+        conformance.pin(Edition::E2026_10);
         let env = DummyEnv::new();
         let out_of_range = spaces::SpaceValue::Box(
             spaces::Tensor::from_vec(
@@ -1413,7 +1413,7 @@ mod tests {
         inject_conformance_warnings(conformance.edition(), &mut info, warnings);
         assert!(
             info.unwrap().contains_key("rlmesh.conformance.warning"),
-            "2026.06 reports conformance warnings under its reserved key"
+            "2026.10 reports conformance warnings under its reserved key"
         );
     }
 

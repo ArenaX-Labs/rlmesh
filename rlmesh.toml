@@ -3,9 +3,17 @@ status = "alpha"
 package_family = "0.2"
 
 [workflow]
-base_edition = "2026.06"
-current_edition = "2026.06-0.2.0-alpha.0"
-supported_editions = ["2026.06-0.2.0-alpha.0", "2026.06"]
+# TODO: 2026.10 is provisional; the 0.2.0 release seals the bare `2026.10`
+# (sealed_in, spec_sha256) and freezes docs/editions/2026.10.md.
+base_edition = "2026.10"
+current_edition = "2026.10-0.2.0-alpha.0"
+supported_editions = ["2026.10-0.2.0-alpha.0"]
+
+[workflow.dropped_editions]
+# Sealed editions this release deliberately stops offering, each with its
+# reason; policy:check exempts only these from the retention rule
+# (docs/editions/index.md, "Support Window").
+"2026.06" = "0.2 is a major break; the managed platform keeps 2026.06 through its 0.1 stack"
 
 [workflow.editions."2026.06"]
 status = "sealed"
@@ -13,9 +21,9 @@ spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
 spec_sha256 = "f05f788382a5b4cfaa482811d52a24ade9ee5d9ed9f9544bc39b291d84b2c8c5"
 
-[workflow.editions."2026.06-0.2.0-alpha.0"]
+[workflow.editions."2026.10-0.2.0-alpha.0"]
 status = "provisional"
-spec = "docs/editions/2026.06.md"
+spec = "docs/editions/2026.10.md"
 
 [protocol]
 # Single generation, equality-only: there is no support window, so no
@@ -32,13 +40,14 @@ max_message_bytes = 268_435_456 # 256 MiB, rlmesh_grpc::MAX_MESSAGE_SIZE
 
 [wire.enums]
 # Value count of every enum under crates/rlmesh-proto/proto. A 0.1.0 peer folds
-# an unknown *ErrorCode to UNSPECIFIED silently, so those two vocabularies are
-# frozen for wire-v1; the others are decode errors on an old peer, except
+# an unknown *ErrorCode to UNSPECIFIED silently, so a new value in those two
+# vocabularies is sent only to a peer that opted in by capability (ModelErrorCode
+# ADAPTER_RESOLUTION); the others are decode errors on an old peer, except
 # RenderFormat, whose unknown value drops the frame.
 "rlmesh.core.v1.AutoresetMode" = 4
 "rlmesh.env.v1.EnvErrorCode" = 10
 "rlmesh.env.v1.RenderFormat" = 2
-"rlmesh.model.v1.ModelErrorCode" = 8
+"rlmesh.model.v1.ModelErrorCode" = 9
 "rlmesh.spaces.v1.DataType" = 13
 
 [wire.oneofs]

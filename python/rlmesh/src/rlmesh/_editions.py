@@ -81,11 +81,11 @@ _warned = False
 def current_workflow_edition() -> str:
     """The bare ``YYYY.MM`` edition this build runs at -- what to paste into a declaration.
 
-    The same value on every build of that edition (``"2026.06"``): a declaration
+    The same value on every build of that edition (``"2026.10"``): a declaration
     names the contract a participant was authored against, and a bare base
     selects whichever spelling of it both sides offer -- the sealed name on a
-    release, this build's cohort (``"2026.06-0.1.0-rc.12"``,
-    ``"2026.06-dev.<sha>"``, what ``rlmesh.build_info().workflow_edition``
+    release, this build's cohort (``"2026.10-0.2.0-alpha.0"``,
+    ``"2026.10-dev.<sha>"``, what ``rlmesh.build_info().workflow_edition``
     reports) on a
     prerelease or local build. That cohort spelling is also accepted as a
     declaration, and pins to that exact moving build.

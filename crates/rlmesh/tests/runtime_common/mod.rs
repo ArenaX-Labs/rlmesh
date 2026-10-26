@@ -542,7 +542,7 @@ pub fn one_episode_spec() -> RuntimeSessionSpec {
         env_id: "TestEnv-v0".to_string(),
         env_component_id: "env-1".to_string(),
         model_component_id: "model-1".to_string(),
-        workflow_edition: rlmesh_proto::Edition::E2026_06,
+        workflow_edition: rlmesh_proto::Edition::E2026_10,
         env_contract: EnvContract {
             spec: Some(EnvSpec {
                 observation_space: Some(SpaceSpec::default()),
@@ -704,7 +704,7 @@ pub fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
         env_id: "VectorTestEnv-v0".to_string(),
         env_component_id: "env-vec".to_string(),
         model_component_id: "model-vec".to_string(),
-        workflow_edition: rlmesh_proto::Edition::E2026_06,
+        workflow_edition: rlmesh_proto::Edition::E2026_10,
         env_contract: EnvContract {
             spec: Some(EnvSpec {
                 observation_space: Some(SpaceSpec::default()),

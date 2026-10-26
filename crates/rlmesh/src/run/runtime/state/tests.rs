@@ -141,7 +141,7 @@ fn test_session_spec() -> RuntimeSessionSpec {
         env_id: "test-env".to_string(),
         env_component_id: "env".to_string(),
         model_component_id: "model".to_string(),
-        workflow_edition: rlmesh_proto::Edition::E2026_06,
+        workflow_edition: rlmesh_proto::Edition::E2026_10,
         env_contract: Default::default(),
         num_envs: 1,
         episode_seeds: Vec::new(),

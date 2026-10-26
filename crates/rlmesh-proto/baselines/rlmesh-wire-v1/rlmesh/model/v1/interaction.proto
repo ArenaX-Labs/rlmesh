@@ -68,6 +68,12 @@ message ResolveAdapterRequest {
   // stacked adapter at h > 1 (the model cannot keep a correct window without
   // the frames). Answered by `ResolveAdapterResponse.history`.
   bool delivers_history = 5;
+
+  // The runtime reads MODEL_ERROR_CODE_ADAPTER_RESOLUTION: a resolve that
+  // cannot pair the model's spec with this env is answered with that code
+  // instead of INTERNAL. Set only for a model that advertised
+  // `rlmesh.model.adapter_resolution_code.v1`.
+  bool reads_adapter_resolution_code = 6;
 }
 
 // What a resolved route's adapter keeps a frame window for, answered when the
@@ -231,6 +237,11 @@ enum ModelErrorCode {
   // The request is well-formed but names a feature this peer does not
   // support yet.
   MODEL_ERROR_CODE_UNSUPPORTED = 5;
+  // ResolveAdapter could not pair the model's spec with the env's contract
+  // (`AdapterResolutionError`). Sent only when the request set
+  // `ResolveAdapterRequest.reads_adapter_resolution_code`; otherwise the same
+  // failure is INTERNAL.
+  MODEL_ERROR_CODE_ADAPTER_RESOLUTION = 6;
   MODEL_ERROR_CODE_INTERNAL = 10;
   MODEL_ERROR_CODE_CANCELLED = 12;
   MODEL_ERROR_CODE_CLOSED = 13;
