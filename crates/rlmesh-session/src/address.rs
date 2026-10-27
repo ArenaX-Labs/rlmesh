@@ -524,6 +524,26 @@ impl Placed {
     }
 }
 
+impl Drop for Placed {
+    /// A placed session dropped unclosed (its owner cancelled or unwound)
+    /// still stops the host it runs, on the runtime it is dropped on.
+    fn drop(&mut self) {
+        let Some((host, transport)) = self.hosted.take() else {
+            return;
+        };
+        local_hosts()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.address.base);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                host.shutdown().await;
+                let _ = transport.close().await;
+            });
+        }
+    }
+}
+
 /// The transports of the session hosts this process runs, by the address
 /// participants join them at. A participant joining one rides its sessions
 /// instead of a loopback link: a link has a lease, which a starved process

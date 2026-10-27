@@ -28,6 +28,7 @@ use rlmesh_session::wire::{
 };
 use rlmesh_session::{Participant, SessionError, Transport};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::{info, warn};
 
 use crate::lockstep::client::{Keep, LockstepClient};
@@ -341,7 +342,13 @@ impl LockstepBinding {
         shutdown: CancellationToken,
     ) -> Result<(), GymError> {
         let info = env_info(env.as_ref(), options.workflow_edition.as_deref());
-        let map = GymMap::new(info, GYM_HZ)?;
+        let map = match GymMap::new(info, GYM_HZ) {
+            Ok(map) => map,
+            Err(err) => {
+                self.close().await;
+                return Err(err);
+            }
+        };
         let robot_json = map.robot_json.clone();
         self.serve_robot(&robot_json, options, shutdown, move |declared| {
             let mut map = map;
@@ -404,10 +411,12 @@ async fn serve_robot(
     };
     let gate = Gate::closed();
     gate.observe(&snapshot, &address.robot, &commands);
+    // Aborted however this ends, so it never outlives the serve holding
+    // the participant.
     let watcher = {
         let (gate, participant, robot) = (gate.clone(), participant.clone(), address.robot.clone());
         let commands = commands.clone();
-        tokio::spawn(async move {
+        AbortOnDropHandle::new(tokio::spawn(async move {
             let mut watch = participant.watch();
             let mut rearmed = None;
             while watch.changed().await.is_ok() {
@@ -433,7 +442,7 @@ async fn serve_robot(
                     }
                 }
             }
-        })
+        }))
     };
 
     let mut recorder = None;
