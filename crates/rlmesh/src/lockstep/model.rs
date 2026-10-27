@@ -1295,7 +1295,9 @@ impl ModelBinding {
     }
 
     /// Joins the session as the model and answers `service` until
-    /// `shutdown` fires, then closes it.
+    /// `shutdown` fires, then closes it, waiting up to `timeout` (also the
+    /// join's) for its accepted requests; the session's host stops either
+    /// way.
     pub async fn serve<H: ModelHandler + 'static>(
         self,
         service: Arc<ModelService<H>>,
