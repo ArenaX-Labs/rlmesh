@@ -202,8 +202,9 @@ impl RunResult {
 
     /// The result the `rlmesh.result.v1` bundle at `path` holds: a bundle
     /// (folder or zip) of one or several workloads, or a folder of bundles
-    /// read in name order. The workloads' episodes come back in order with
-    /// the fields the bundle keeps, indexed afresh from 0, and their
+    /// read in name order. The workloads' counted episodes come back in
+    /// order with the fields the bundle keeps, indexed afresh from 0 (one
+    /// left out of the metrics, `includedInMetrics: false`, is dropped), and their
     /// telemetry merged per series (counts add; `avg` and percentiles are
     /// count-weighted means). Workloads of several models are refused.
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<RunResult> {

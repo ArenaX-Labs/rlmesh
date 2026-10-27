@@ -151,9 +151,11 @@ fn read_bundle(bundle: &Path) -> Result<Vec<BundleWorkload>> {
         .collect()
 }
 
-/// The workloads as one [`RunResult`]: their episodes in order, indexed
-/// afresh from 0, and their telemetry merged. Workloads of several models
-/// are refused: their outcomes are not one model's result.
+/// The workloads as one [`RunResult`]: their counted episodes in order,
+/// indexed afresh from 0, and their telemetry merged. An episode left out of
+/// the metrics (`includedInMetrics: false`) is dropped, so the result's
+/// aggregates read as the workload's and the report's. Workloads of several
+/// models are refused: their outcomes are not one model's result.
 pub fn merge(workloads: &[BundleWorkload]) -> Result<RunResult> {
     let models = distinct(workloads.iter().map(|w| w.model.as_str()));
     if models.len() > 1 {
@@ -167,6 +169,7 @@ pub fn merge(workloads: &[BundleWorkload]) -> Result<RunResult> {
     let episodes = workloads
         .iter()
         .flat_map(|w| &w.episodes)
+        .filter(|e| e.included_in_metrics)
         .enumerate()
         .map(|(index, e)| EpisodeResult {
             index: index as i64,
@@ -633,6 +636,14 @@ mod tests {
             "t1",
             &run(&[None, Some(true)], (0, 99.0)),
         );
+        // An errored episode the platform does not count.
+        let excluded = RecorderAddOptions {
+            task: Some("t1".into()),
+            included_in_metrics: false,
+            ..Default::default()
+        };
+        one.add(&run(&[None], (0, 0.0)), "a", "env", excluded)
+            .unwrap();
         export(one, "2-one.zip");
 
         let loaded = RunResult::load(dir.path()).unwrap();
@@ -650,6 +661,7 @@ mod tests {
                 (4, Some(true))
             ]
         );
+        assert_eq!(loaded.success_rate(), Some(0.6));
         // Counts add; avg and percentiles are count-weighted; empty rows drop.
         let row = &loaded.telemetry[..];
         assert_eq!(row.len(), 1);
@@ -695,6 +707,7 @@ mod tests {
             (5, 50, 2.5)
         );
         assert_eq!(model.overall.ci95(), wilson95(3, 5));
+        assert_eq!(model.overall.success_rate(), loaded.success_rate());
 
         // A second model is reported beside the first, and refused by load.
         let mut other = Recorder::new(Default::default()).unwrap();

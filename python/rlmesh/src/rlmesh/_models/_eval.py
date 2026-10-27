@@ -316,9 +316,11 @@ class RunResult:
 
         ``path`` is a bundle (folder or zip) of one or several workloads, a
         folder of bundles (read in name order), or a list of these. The
-        workloads' episodes come back in order with the fields the bundle
-        keeps, indexed afresh from 0, and their telemetry merged per series
-        (counts add; ``avg`` and percentiles are count-weighted means).
+        workloads' counted episodes come back in order with the fields the
+        bundle keeps, indexed afresh from 0 (one left out of the metrics,
+        ``included_in_metrics=False``, is dropped), and their telemetry
+        merged per series (counts add; ``avg`` and percentiles are
+        count-weighted means).
         Workloads of several models raise ``ValueError``; report them with
         :class:`EvalReport` instead.
         """
