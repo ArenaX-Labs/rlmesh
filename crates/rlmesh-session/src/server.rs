@@ -19,7 +19,7 @@ use zenoh::Wait;
 use zenoh::sample::SampleKind;
 
 use crate::error::SessionError;
-use crate::host::{HostConfig, SessionHost};
+use crate::host::{HostConfig, SessionHost, token_declared};
 use crate::transport::Transport;
 use crate::wire::SessionId;
 use crate::wire::keys::{session_of, session_server, tenant_participants};
@@ -53,6 +53,7 @@ impl SessionServer {
         let (presence, mut changes) = tokio::sync::mpsc::unbounded_channel::<Presence>();
         tokio::spawn({
             let hosts = hosts.clone();
+            let control = control.clone();
             async move {
                 let mut present: HashMap<SessionId, HashSet<String>> = HashMap::new();
                 while let Some((joined, session, key)) = changes.recv().await {
@@ -60,6 +61,16 @@ impl SessionServer {
                     if joined {
                         members.insert(key);
                     } else {
+                        // The session's last token left, unless its
+                        // participant rejoined and its new token is declared
+                        // ahead of the old one's late delete.
+                        if members.len() == 1
+                            && members.contains(&key)
+                            && let Ok(expr) = zenoh::key_expr::KeyExpr::try_from(key.as_str())
+                            && token_declared(&control, &expr).await
+                        {
+                            continue;
+                        }
                         members.remove(&key);
                     }
                     let empty = members.is_empty();
