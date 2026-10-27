@@ -20,7 +20,9 @@ e-stop and the `HELLO` loop) comes in the next release, on top of this API.
 - **One receive buffer**, sized by the caller: the board's `rx_max` (16 to
   256 decoded bytes).
 - **Values may live in flash.** `Bytes::progmem(p, n)` reads with
-  `pgm_read_byte` on AVR, so the map is sent from `PROGMEM`.
+  `pgm_read_byte` where the platform needs it (AVR, and ESP8266, whose flash
+  takes word loads only), so the map is sent from `PROGMEM`. On ARM, ESP32
+  and RISC-V boards flash is ordinary memory and reads directly.
 - **No Arduino header in the codec.** A sink is anything with
   `write(uint8_t)`: `sinkTo(Serial)` on Arduino, or your own UART driver.
 
@@ -73,7 +75,10 @@ only ever sees dense values.
 The host runner compiles the codec as a board would (`-nostdinc++`, no
 exceptions or RTTI, no symbols beyond `memcpy`/`memset`), then runs every
 vector in `crates/rlmesh-tether/tests/vectors.json` against it, under GCC and
-zig's clang:
+zig's clang. The runner is built with whichever sanitizers the toolchain can
+prove work (ASan and UBSan, else UBSan in trap mode), and the task prints
+which ran. With zig available it also compiles the codec for an ATmega328P,
+where `int` is 16 bits.
 
 ```bash
 mise run test:tether:cpp

@@ -375,6 +375,7 @@ fn decode_stream(wire: &[u8], rx_max: usize) -> Vec<Decoded> {
     match rx_max {
         16 => decode_stream_n::<16>(wire),
         64 => decode_stream_n::<64>(wire),
+        254 => decode_stream_n::<254>(wire),
         256 => decode_stream_n::<256>(wire),
         512 => decode_stream_n::<512>(wire),
         _ => panic!("no decoder for rx_max {rx_max}"),
@@ -428,6 +429,16 @@ fn cobs_decode_cases() -> Vec<Value> {
             cat(&[&block, &[0x01, 0]]),
         ),
         (
+            "a 254 block, pinned form, at exactly rx_max 254",
+            254,
+            cat(&[&block, &[0]]),
+        ),
+        (
+            "a 254 block, trailing 0x01 variant, at exactly rx_max 254",
+            254,
+            cat(&[&block, &[0x01, 0]]),
+        ),
+        (
             "two 254 blocks, trailing 0x01 variant",
             512,
             cat(&[&two, &[0x01, 0]]),
@@ -437,7 +448,11 @@ fn cobs_decode_cases() -> Vec<Value> {
             256,
             vec![0, 0, 0x03, 0x11, 0x22, 0, 0],
         ),
-        ("a lone code byte decodes to nothing", 256, vec![0x01, 0]),
+        (
+            "a lone code byte decodes to an empty frame",
+            256,
+            vec![0x01, 0],
+        ),
         ("all zeros", 256, cat(&[&encode(&[0; 5]), &[0]])),
         (
             "a truncated block, then a good frame",
@@ -463,6 +478,11 @@ fn cobs_decode_cases() -> Vec<Value> {
             "257 decoded bytes overflow a 256 buffer, then a good frame",
             256,
             cat(&[&encode(&nonzero(257)), &[0, 0x02, 0x09, 0]]),
+        ),
+        (
+            "overflow and truncation in one frame: overflow wins",
+            16,
+            cat(&[&[0x20], &nonzero(20), &[0, 0x02, 0x09, 0]]),
         ),
         (
             "an unterminated frame yields nothing yet",
@@ -704,6 +724,16 @@ fn message_cases() -> Vec<Value> {
                 text: &note_full,
             },
             12,
+            vec![],
+        ),
+        (
+            "NOTE, text that isn't UTF-8 (accepted: only HELLO.name is checked)",
+            Msg::Note {
+                level: 1,
+                code: 3,
+                text: &[0xFF, 0xFE, 0x41, 0xC0, 0x80],
+            },
+            13,
             vec![],
         ),
         (
@@ -1146,6 +1176,22 @@ fn rejection_cases() -> Vec<Value> {
             E::UnknownPart,
         ),
         (
+            "STATE, 1 byte with an unknown part",
+            Bridge,
+            ty::STATE,
+            vec![9],
+            vec![(0, 4)],
+            E::UnknownPart,
+        ),
+        (
+            "STATE, 4 bytes with an unknown part",
+            Bridge,
+            ty::STATE,
+            vec![9, 0, 0, 0],
+            vec![(0, 4)],
+            E::UnknownPart,
+        ),
+        (
             "STATUS, 12 bytes",
             Bridge,
             ty::STATUS,
@@ -1275,6 +1321,14 @@ fn rejection_cases() -> Vec<Value> {
             E::Reserved,
         ),
         (
+            "COMMAND, an unknown part is reported before a reserved bit",
+            Board,
+            ty::COMMAND,
+            vec![1, 5, 0x02, 60, 0, 1, 2, 3, 4],
+            vec![(0, 4)],
+            E::UnknownPart,
+        ),
+        (
             "COMMAND, a length is reported before a reserved bit",
             Board,
             ty::COMMAND,
@@ -1297,6 +1351,14 @@ fn rejection_cases() -> Vec<Value> {
             Board,
             ty::PING,
             vec![1, 0],
+            vec![],
+            E::Length,
+        ),
+        (
+            "DETACH, empty",
+            Board,
+            ty::DETACH,
+            vec![],
             vec![],
             E::Length,
         ),
@@ -1388,6 +1450,23 @@ fn write_rejection_cases() -> Vec<Value> {
             Msg::Hello(Hello {
                 flags: 0x02,
                 ..hello(b"n")
+            }),
+            E::Reserved,
+        ),
+        (
+            "HELLO, a reserved bit is reported before a range",
+            Msg::Hello(Hello {
+                flags: 0x02,
+                rx_max: 8,
+                ..hello(b"n")
+            }),
+            E::Reserved,
+        ),
+        (
+            "HELLO, a reserved bit is reported before UTF-8",
+            Msg::Hello(Hello {
+                flags: 0x02,
+                ..hello(&[0xFF])
             }),
             E::Reserved,
         ),
@@ -1734,4 +1813,52 @@ fn pack_vectors() {
         pack::to_aligned(&dense, &offsets, &lens, &mut got).expect("aligned");
         assert_eq!(got, aligned, "{}", v["name"]);
     }
+}
+
+/// Values written out by hand, not taken from this crate, so a bug shared
+/// by the crate and its generated vectors still shows.
+#[test]
+fn literal_values_not_from_the_crate() {
+    // The zlib CRC-32 of the pangram, and the CRC catalogue's CRC-16 check.
+    assert_eq!(
+        crc::crc32(b"The quick brown fox jumps over the lazy dog"),
+        0x414F_A339
+    );
+    assert_eq!(crc::crc16(b"123456789"), 0x29B1);
+    // The COBS reference example: a zero inside the data.
+    assert_eq!(
+        encode(&[0x11, 0x22, 0x00, 0x33]),
+        [0x03, 0x11, 0x22, 0x02, 0x33]
+    );
+    // One whole HELLO frame, field by field (spec §4.1), CRC and COBS
+    // computed by a separate implementation.
+    let decoded: &[u8] = &[
+        0x01, 0x00, // type HELLO, seq 0
+        b'R', b'L', b'M', b'T', 0x01, // magic, version
+        0x00, 0x01, 0x01, // lib_version 0x0100, arch AVR
+        0xB0, 0xB1, 0x00, 0xB3, 0xB4, 0x00, 0x00, 0xB7, // board_id
+        0x01, 0x02, 0x00, 0x00, // boot 0x0201, gen 0, flags 0
+        0x58, 0x02, 0xEF, 0xBE, 0xAD, 0xDE, // map_len 600, map_crc
+        0xFA, 0x00, 0x40, 0x00, // watchdog_ms 250, rx_max 64
+        0x05, b'e', b'y', b'e', b'-', b'1', // name
+        0x06, 0xC9, // CRC-16 0xC906, little-endian
+    ];
+    let wire: &[u8] = &[
+        0x02, 0x01, 0x06, b'R', b'L', b'M', b'T', 0x01, 0x05, 0x01, 0x01, 0xB0, 0xB1, 0x03, 0xB3,
+        0xB4, 0x01, 0x04, 0xB7, 0x01, 0x02, 0x01, 0x08, 0x58, 0x02, 0xEF, 0xBE, 0xAD, 0xDE, 0xFA,
+        0x02, 0x40, 0x09, 0x05, b'e', b'y', b'e', b'-', b'1', 0x06, 0xC9, 0x00,
+    ];
+    assert_eq!(crc::crc16(&decoded[..decoded.len() - 2]), 0xC906);
+    assert_eq!(cat(&[&encode(decoded), &[0]]), wire);
+    assert_eq!(
+        crate::wire(&Msg::Hello(hello(b"eye-1")), 0),
+        wire,
+        "the crate writes it"
+    );
+    let all = load();
+    let hello = cases(&all, "messages")
+        .iter()
+        .find(|v| v["name"] == "HELLO")
+        .expect("the HELLO vector");
+    assert_eq!(unhex(&hello["wire"]), wire);
 }

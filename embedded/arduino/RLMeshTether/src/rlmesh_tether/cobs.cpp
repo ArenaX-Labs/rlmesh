@@ -73,9 +73,11 @@ CobsResult CobsDecoder::push(uint8_t byte) {
     const bool started = started_;
     const bool overflow = overflow_;
     reset();
-    if (overflow) return CobsResult::Overflow;
+    if (overflow || (started && left != 0)) {
+      done_ = 0;
+      return overflow ? CobsResult::Overflow : CobsResult::Truncated;
+    }
     if (!started) return CobsResult::None;
-    if (left != 0) return CobsResult::Truncated;
     done_ = len;
     return CobsResult::Frame;
   }

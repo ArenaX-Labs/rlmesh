@@ -52,7 +52,8 @@ class CobsDecoder {
   // Drops any partial frame.
   void reset();
 
-  // The last frame (after `CobsResult::Frame`).
+  // The last frame (after `CobsResult::Frame`); empty after an overflow or
+  // a truncated frame.
   const uint8_t* data() const { return buf_; }
   uint16_t length() const { return done_; }
 
@@ -79,6 +80,9 @@ template <uint16_t N>
 class CobsDecoderBuffer : public CobsDecoder {
  public:
   CobsDecoderBuffer() : CobsDecoder(storage_, N) {}
+  // A copy would keep pointing at the original's storage.
+  CobsDecoderBuffer(const CobsDecoderBuffer&) = delete;
+  CobsDecoderBuffer& operator=(const CobsDecoderBuffer&) = delete;
 
  private:
   uint8_t storage_[N];

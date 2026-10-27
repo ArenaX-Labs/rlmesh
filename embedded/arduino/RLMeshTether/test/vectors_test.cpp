@@ -50,12 +50,24 @@ std::string hex(const Bytes& b) {
   return hex(copy);
 }
 
-int nibble(char c) { return c <= '9' ? c - '0' : c - 'a' + 10; }
+[[noreturn]] void bad(const char* what, const std::string& text) {
+  fprintf(stderr, "vectors.json: %s: \"%s\"\n", what, text.c_str());
+  exit(2);
+}
+
+int nibble(char c, const std::string& text) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  bad("not lowercase hex", text);
+}
 
 Buf unhex(const json::Value& v) {
+  const std::string& s = v.string;
+  if (v.kind != json::Value::kString) bad("bytes are not a hex string", s);
+  if (s.size() % 2 != 0) bad("odd-length hex", s);
   Buf out;
-  for (size_t i = 0; i + 1 < v.string.size(); i += 2)
-    out.push_back(static_cast<uint8_t>(nibble(v.string[i]) << 4 | nibble(v.string[i + 1])));
+  for (size_t i = 0; i < s.size(); i += 2)
+    out.push_back(static_cast<uint8_t>(nibble(s[i], s) << 4 | nibble(s[i + 1], s)));
   return out;
 }
 
@@ -130,8 +142,14 @@ int16_t lookupLen(const void* ctx, uint8_t part) {
 Lens lensOf(const json::Value& v) {
   Lens l;
   for (int16_t& x : l.len) x = -1;
-  for (const auto& m : v["dense_len"].members)
-    l.len[atoi(m.first.c_str())] = static_cast<int16_t>(num(m.second));
+  for (const auto& m : v["dense_len"].members) {
+    char* end = nullptr;
+    const long part = strtol(m.first.c_str(), &end, 10);
+    if (m.first.empty() || *end != '\0' || part < 0 || part > 255) bad("bad part index", m.first);
+    if (m.second.kind != json::Value::kInt || num(m.second) > kMaxPayload)
+      bad("bad dense length for part", m.first);
+    l.len[part] = static_cast<int16_t>(num(m.second));
+  }
   return l;
 }
 

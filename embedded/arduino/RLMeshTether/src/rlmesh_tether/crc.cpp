@@ -4,7 +4,7 @@ namespace rlmesh {
 namespace tether {
 
 uint16_t crc16Update(uint16_t crc, uint8_t byte) {
-  crc = static_cast<uint16_t>(crc ^ (byte << 8));
+  crc = static_cast<uint16_t>(crc ^ static_cast<uint16_t>(static_cast<uint16_t>(byte) << 8));
   for (uint8_t i = 0; i < 8; ++i) {
     crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021)
                          : static_cast<uint16_t>(crc << 1);

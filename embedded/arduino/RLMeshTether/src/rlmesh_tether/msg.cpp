@@ -8,7 +8,7 @@ namespace {
 const uint8_t kMagic[4] = {'R', 'L', 'M', 'T'};
 
 uint16_t u16At(const uint8_t* p, uint16_t i) {
-  return static_cast<uint16_t>(p[i] | (p[i + 1] << 8));
+  return static_cast<uint16_t>(p[i] | static_cast<uint16_t>(static_cast<uint16_t>(p[i + 1]) << 8));
 }
 
 uint32_t u32At(const uint8_t* p, uint16_t i) {
@@ -231,12 +231,13 @@ Error decode(const Frame& frame, Receiver receiver, DenseLen lens, Msg& out) {
 }
 
 Error writeHello(const Hello& m, uint8_t seq, Sink out) {
+  // The order decode reports them in: reserved bits, ranges, UTF-8.
+  if (reserved(m.flags, hello_flags::kAll)) return Error::Reserved;
   if (m.name.len > kMaxName || m.watchdogMs < kWatchdogMsMin || m.watchdogMs > kWatchdogMsMax ||
       m.rxMax < kRxMaxMin || m.rxMax > kRxMaxMax) {
     return Error::Range;
   }
   if (!validUtf8(m.name)) return Error::Utf8;
-  if (reserved(m.flags, hello_flags::kAll)) return Error::Reserved;
   uint8_t head[31];
   for (uint8_t i = 0; i < 4; ++i) head[i] = kMagic[i];
   head[4] = kVersion;

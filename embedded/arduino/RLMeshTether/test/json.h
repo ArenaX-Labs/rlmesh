@@ -119,7 +119,16 @@ class Parser {
       do {
         std::string key = str();
         expect(':');
-        v.members.emplace_back(key, value());
+        Value item = value();
+        // A repeated key keeps its last value, as serde_json does.
+        bool replaced = false;
+        for (auto& m : v.members) {
+          if (m.first == key) {
+            m.second = item;
+            replaced = true;
+          }
+        }
+        if (!replaced) v.members.emplace_back(key, item);
       } while (eat(','));
       expect('}');
     } else if (c == '[') {

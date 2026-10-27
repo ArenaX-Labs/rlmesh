@@ -21,6 +21,26 @@
       "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe0100"
     },
     {
+      "name": "a 254 block, pinned form, at exactly rx_max 254",
+      "results": [
+        {
+          "ok": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe"
+        }
+      ],
+      "rx_max": 254,
+      "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe00"
+    },
+    {
+      "name": "a 254 block, trailing 0x01 variant, at exactly rx_max 254",
+      "results": [
+        {
+          "ok": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe"
+        }
+      ],
+      "rx_max": 254,
+      "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe0100"
+    },
+    {
       "name": "two 254 blocks, trailing 0x01 variant",
       "results": [
         {
@@ -41,7 +61,7 @@
       "wire": "00000311220000"
     },
     {
-      "name": "a lone code byte decodes to nothing",
+      "name": "a lone code byte decodes to an empty frame",
       "results": [
         {
           "ok": ""
@@ -121,6 +141,19 @@
       ],
       "rx_max": 256,
       "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe04ff010200020900"
+    },
+    {
+      "name": "overflow and truncation in one frame: overflow wins",
+      "results": [
+        {
+          "error": "overflow"
+        },
+        {
+          "ok": "09"
+        }
+      ],
+      "rx_max": 16,
+      "wire": "200102030405060708090a0b0c0d0e0f101112131400020900"
     },
     {
       "name": "an unterminated frame yields nothing yet",
@@ -606,6 +639,17 @@
     },
     {
       "msg": {
+        "code": 3,
+        "level": 1,
+        "text": "fffe41c080",
+        "type": "NOTE"
+      },
+      "name": "NOTE, text that isn't UTF-8 (accepted: only HELLO.name is checked)",
+      "seq": 13,
+      "wire": "0c050d0103fffe41c080a28500"
+    },
+    {
+      "msg": {
         "boot": 513,
         "max": 1,
         "offset": 0,
@@ -1065,6 +1109,26 @@
       "type": 3
     },
     {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "unknown_part",
+      "name": "STATE, 1 byte with an unknown part",
+      "payload": "09",
+      "receiver": "bridge",
+      "type": 3
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "unknown_part",
+      "name": "STATE, 4 bytes with an unknown part",
+      "payload": "09000000",
+      "receiver": "bridge",
+      "type": 3
+    },
+    {
       "error": "length",
       "name": "STATUS, 12 bytes",
       "payload": "000000000000000000000000",
@@ -1202,6 +1266,16 @@
       "dense_len": {
         "0": 4
       },
+      "error": "unknown_part",
+      "name": "COMMAND, an unknown part is reported before a reserved bit",
+      "payload": "0105023c0001020304",
+      "receiver": "board",
+      "type": 131
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
       "error": "length",
       "name": "COMMAND, a length is reported before a reserved bit",
       "payload": "0100023c00010203",
@@ -1235,6 +1309,13 @@
       "payload": "0100",
       "receiver": "board",
       "type": 133
+    },
+    {
+      "error": "length",
+      "name": "DETACH, empty",
+      "payload": "",
+      "receiver": "board",
+      "type": 134
     },
     {
       "error": "length",
@@ -1371,6 +1452,42 @@
         "watchdog_ms": 250
       },
       "name": "HELLO, a reserved flag"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 2,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6e",
+        "rx_max": 8,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, a reserved bit is reported before a range"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 2,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "ff",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, a reserved bit is reported before UTF-8"
     },
     {
       "error": "range",

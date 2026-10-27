@@ -2,7 +2,7 @@
 //
 // No Arduino header here: a sink is any `write(uint8_t)` (an Arduino
 // `Stream` or `Print`, or your own UART driver), and a run of bytes may sit
-// in program memory, which AVR reads with `pgm_read_byte`.
+// in program memory, which AVR and ESP8266 read with `pgm_read_byte`.
 
 #ifndef RLMESH_TETHER_BYTES_H_
 #define RLMESH_TETHER_BYTES_H_
@@ -12,13 +12,18 @@
 
 #if defined(__AVR__)
 #include <avr/pgmspace.h>
+#elif defined(ARDUINO_ARCH_ESP8266) || defined(ESP8266)
+#include <pgmspace.h>
 #endif
 
 namespace rlmesh {
 namespace tether {
 
-// A run of bytes in RAM or, with `flash`, in program memory (`PROGMEM`). Off
-// AVR, program memory is addressable and both read alike.
+// A run of bytes in RAM or, with `flash`, in program memory (`PROGMEM`).
+// Flash is read with `pgm_read_byte` wherever the platform defines it: AVR
+// has a separate address space, and ESP8266 maps flash for word loads only,
+// so a plain byte load faults there. Elsewhere (ARM, ESP32, RISC-V, the
+// host) flash is ordinary addressable memory and both read alike.
 struct Bytes {
   const uint8_t* data;
   uint16_t len;
@@ -35,7 +40,7 @@ struct Bytes {
   }
 
   uint8_t at(uint16_t i) const {
-#if defined(__AVR__)
+#if defined(pgm_read_byte)
     if (flash) return pgm_read_byte(data + i);
 #endif
     return data[i];
