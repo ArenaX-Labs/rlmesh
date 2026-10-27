@@ -14,7 +14,7 @@
 //! only they carry (published and produced rates, controller starts and
 //! skips, clock offsets) stay empty.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rlmesh_session::record::{self, RecordError, Recorded, RecordedMessage};
@@ -48,13 +48,35 @@ pub struct Replay {
 }
 
 impl Replay {
-    /// Reads the recording at `path`, positioned at its start.
+    /// Reads the recording at `path`, positioned at its start: one MCAP
+    /// file, or a directory of them played back to back (a session's
+    /// rolling segments, `rolling/{session}/`).
     pub fn open(
         path: impl AsRef<Path>,
         me: ParticipantId,
         config: ModelConfig,
     ) -> Result<Self, RecordError> {
-        let inputs = record::read(path)?.into_iter().map(input).collect();
+        let path = path.as_ref();
+        let files = if path.is_dir() {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+                .map_err(|source| RecordError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?
+                .filter_map(|entry| entry.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|e| e == "mcap"))
+                .collect();
+            files.sort();
+            files
+        } else {
+            vec![path.to_path_buf()]
+        };
+        let mut messages = Vec::new();
+        for file in files {
+            messages.extend(record::read(file)?);
+        }
+        messages.sort_by_key(|m| m.log_ns);
+        let inputs = messages.into_iter().map(input).collect();
         Ok(Self::new(inputs, me, config))
     }
 

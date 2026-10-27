@@ -36,16 +36,17 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crate::transport::{TrafficClass, payload_bytes};
 use crate::wire::codec::{self, schema};
 use crate::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, Fingerprint, PartSpec, ParticipantId, Sample,
-    StreamSpec,
+    SessionId, StreamSpec,
 };
 use crate::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use bytes::Bytes;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// What can go wrong recording or reading a recording.
 #[derive(Debug, thiserror::Error)]
@@ -72,8 +73,13 @@ pub enum RecordError {
 /// What a finished recording holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordStats {
-    /// The file.
+    /// The file (rolling: the last segment).
     pub path: PathBuf,
+    /// Files written (rolling: segments).
+    pub segments: u32,
+    /// Messages not written while rolling capture was paused for disk
+    /// space.
+    pub paused_drops: u64,
     /// MCAP messages written.
     pub messages: u64,
     /// MCAP channels opened.
@@ -160,25 +166,45 @@ impl Recorder {
         participant: Arc<Participant>,
         path: impl AsRef<Path>,
     ) -> Result<Self, RecordError> {
-        let path = path.as_ref().to_path_buf();
-        let file = File::create(&path).map_err(|source| RecordError::Io {
-            path: path.clone(),
+        let segment = Segment::create(path.as_ref(), 0)?;
+        Self::start_with(participant, Sink::File(segment)).await
+    }
+
+    /// Starts always-on recording of the session `participant` is attached
+    /// to (an observer): segments of [`Rolling::segment`] under
+    /// `{dir}/rolling/{session}/`, each opening with the newest authority
+    /// snapshot so it replays on its own; the oldest segments of every
+    /// session go when the budgets are exceeded. Below the free-space floor
+    /// it stops writing (counted in [`RecordStats::paused_drops`]) and
+    /// retries every segment period.
+    pub async fn start_rolling(
+        participant: Arc<Participant>,
+        rolling: Rolling,
+        session: SessionId,
+    ) -> Result<Self, RecordError> {
+        let dir = rolling.dir.join("rolling").join(session.to_string());
+        std::fs::create_dir_all(&dir).map_err(|source| RecordError::Io {
+            path: dir.clone(),
             source,
         })?;
-        let writer = mcap::WriteOptions::new()
-            .compression(None)
-            .profile("rlmesh")
-            .library(concat!("rlmesh-session ", env!("CARGO_PKG_VERSION")))
-            .create(BufWriter::new(file))?;
+        let sink = RollingSink {
+            rolling,
+            dir,
+            current: None,
+            retry_at: i64::MIN,
+            authority: None,
+            paused: false,
+        };
+        Self::start_with(participant, Sink::Rolling(sink)).await
+    }
+
+    async fn start_with(participant: Arc<Participant>, sink: Sink) -> Result<Self, RecordError> {
         let (tx, rx) = mpsc::channel();
         let writer = std::thread::Builder::new()
             .name("rlmesh-record".into())
-            .spawn({
-                let path = path.clone();
-                move || write_loop(writer, &rx, path)
-            })
+            .spawn(move || write_loop(sink, &rx))
             .map_err(|source| RecordError::Io {
-                path: path.clone(),
+                path: PathBuf::new(),
                 source,
             })?;
         let stamp = Stamp {
@@ -582,18 +608,9 @@ fn ns(t: i64) -> u64 {
     u64::try_from(t).unwrap_or(0)
 }
 
-fn write_loop(
-    mut writer: mcap::Writer<BufWriter<File>>,
-    rx: &mpsc::Receiver<Entry>,
-    path: PathBuf,
-) -> Result<RecordStats, RecordError> {
-    let mut schemas: BTreeMap<&'static str, u16> = BTreeMap::new();
-    let mut channels: BTreeMap<TopicKey, (u16, u64)> = BTreeMap::new();
-    let mut stats = RecordStats {
-        path,
-        ..RecordStats::default()
-    };
-    let mut finish_metadata = Metadata::new();
+fn write_loop(mut sink: Sink, rx: &mpsc::Receiver<Entry>) -> Result<RecordStats, RecordError> {
+    let mut stats = RecordStats::default();
+    let mut metadata = Metadata::new();
     while let Ok(entry) = rx.recv() {
         match entry {
             Entry::Message {
@@ -603,61 +620,319 @@ fn write_loop(
                 sequence,
                 data,
             } => {
-                let (channel_id, last_log) = match channels.get(&topic.key) {
-                    Some(c) => *c,
-                    None => {
-                        let schema_id = match schemas.get(topic.schema) {
-                            Some(id) => *id,
-                            None => {
-                                let id = writer.add_schema(
-                                    topic.schema,
-                                    "protobuf",
-                                    codec::FILE_DESCRIPTOR_SET,
-                                )?;
-                                schemas.insert(topic.schema, id);
-                                id
-                            }
-                        };
-                        let id = writer.add_channel(
-                            schema_id,
-                            &topic.name,
-                            "protobuf",
-                            &topic.metadata,
-                        )?;
-                        stats.channels += 1;
-                        (id, 0)
-                    }
+                let message = Message {
+                    topic,
+                    log_time,
+                    publish_time,
+                    sequence,
+                    data,
                 };
-                let mut log_time = ns(log_time);
-                if log_time < last_log {
-                    log_time = last_log;
-                    stats.log_time_clamped += 1;
+                match &mut sink {
+                    Sink::File(segment) => segment.write(&message, &mut stats)?,
+                    Sink::Rolling(rolling) => rolling.write(message, &mut stats)?,
                 }
-                channels.insert(topic.key, (channel_id, log_time));
-                writer.write_to_known_channel(
-                    &mcap::records::MessageHeader {
-                        channel_id,
-                        // The low 32 bits; the envelope keeps the full seq.
-                        sequence: u32::try_from(sequence & u64::from(u32::MAX)).unwrap_or(0),
-                        log_time,
-                        publish_time: ns(publish_time),
-                    },
-                    &data,
-                )?;
-                stats.messages += 1;
-                stats.bytes += data.len() as u64;
             }
-            Entry::Finish { metadata } => {
-                finish_metadata = metadata;
+            Entry::Finish { metadata: m } => {
+                metadata = m;
                 break;
             }
         }
     }
-    for (name, metadata) in finish_metadata {
-        writer.write_metadata(&mcap::records::Metadata { name, metadata })?;
+    match sink {
+        Sink::File(segment) => segment.finish(&metadata, &mut stats)?,
+        Sink::Rolling(rolling) => {
+            if let Some(segment) = rolling.current {
+                segment.finish(&metadata, &mut stats)?;
+            }
+        }
     }
-    writer.finish()?;
     Ok(stats)
+}
+
+/// Where the writer thread puts messages.
+enum Sink {
+    File(Segment),
+    Rolling(RollingSink),
+}
+
+/// A queued message.
+struct Message {
+    topic: Arc<Topic>,
+    log_time: i64,
+    publish_time: i64,
+    sequence: u64,
+    data: Vec<u8>,
+}
+
+/// One MCAP file being written.
+struct Segment {
+    writer: mcap::Writer<BufWriter<File>>,
+    path: PathBuf,
+    /// The log time it was opened at.
+    started: i64,
+    schemas: BTreeMap<&'static str, u16>,
+    /// MCAP channel and its newest log time, by topic.
+    channels: BTreeMap<TopicKey, (u16, u64)>,
+}
+
+impl Segment {
+    fn create(path: &Path, started: i64) -> Result<Self, RecordError> {
+        let file = File::create(path).map_err(|source| RecordError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let writer = mcap::WriteOptions::new()
+            .compression(None)
+            .profile("rlmesh")
+            .library(concat!("rlmesh-session ", env!("CARGO_PKG_VERSION")))
+            .create(BufWriter::new(file))?;
+        Ok(Self {
+            writer,
+            path: path.to_path_buf(),
+            started,
+            schemas: BTreeMap::new(),
+            channels: BTreeMap::new(),
+        })
+    }
+
+    fn write(&mut self, m: &Message, stats: &mut RecordStats) -> Result<(), RecordError> {
+        let (channel_id, last_log) = match self.channels.get(&m.topic.key) {
+            Some(c) => *c,
+            None => {
+                let schema_id = match self.schemas.get(m.topic.schema) {
+                    Some(id) => *id,
+                    None => {
+                        let id = self.writer.add_schema(
+                            m.topic.schema,
+                            "protobuf",
+                            codec::FILE_DESCRIPTOR_SET,
+                        )?;
+                        self.schemas.insert(m.topic.schema, id);
+                        id
+                    }
+                };
+                let id = self.writer.add_channel(
+                    schema_id,
+                    &m.topic.name,
+                    "protobuf",
+                    &m.topic.metadata,
+                )?;
+                stats.channels += 1;
+                (id, 0)
+            }
+        };
+        let mut log_time = ns(m.log_time);
+        if log_time < last_log {
+            log_time = last_log;
+            stats.log_time_clamped += 1;
+        }
+        self.channels.insert(m.topic.key, (channel_id, log_time));
+        self.writer.write_to_known_channel(
+            &mcap::records::MessageHeader {
+                channel_id,
+                // The low 32 bits; the envelope keeps the full seq.
+                sequence: u32::try_from(m.sequence & u64::from(u32::MAX)).unwrap_or(0),
+                log_time,
+                publish_time: ns(m.publish_time),
+            },
+            &m.data,
+        )?;
+        stats.messages += 1;
+        stats.bytes += m.data.len() as u64;
+        Ok(())
+    }
+
+    fn finish(mut self, metadata: &Metadata, stats: &mut RecordStats) -> Result<(), RecordError> {
+        for (name, metadata) in metadata {
+            self.writer.write_metadata(&mcap::records::Metadata {
+                name: name.clone(),
+                metadata: metadata.clone(),
+            })?;
+        }
+        self.writer.finish()?;
+        stats.segments += 1;
+        stats.path = self.path;
+        Ok(())
+    }
+}
+
+/// Budgets for always-on recording ([`Recorder::start_rolling`]).
+#[derive(Clone, Debug)]
+pub struct Rolling {
+    /// The recordings root; segments go under `rolling/{session}/`.
+    pub dir: PathBuf,
+    /// How much session time one segment covers.
+    pub segment: Duration,
+    /// Segments older than this go.
+    pub max_age: Duration,
+    /// The oldest segments go while all of them together exceed this.
+    pub max_bytes: u64,
+    /// Below this much free space on the disk, capture pauses.
+    pub min_free_bytes: u64,
+}
+
+impl Rolling {
+    /// The defaults (newest 30 min or 20 GB, one-minute segments, pause
+    /// below 2 GB free) under `dir`.
+    // TODO: fixed budgets; add per-host profiles (smaller budgets, lower
+    // camera rate) when a low-storage host needs them.
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            dir: dir.into(),
+            segment: Duration::from_secs(60),
+            max_age: Duration::from_secs(30 * 60),
+            max_bytes: 20_000_000_000,
+            min_free_bytes: 2_000_000_000,
+        }
+    }
+}
+
+/// Rolling capture's writer side.
+struct RollingSink {
+    rolling: Rolling,
+    /// This session's segments.
+    dir: PathBuf,
+    current: Option<Segment>,
+    /// While paused, the log time to try opening a segment again.
+    retry_at: i64,
+    /// The newest authority snapshot, written first into every segment.
+    authority: Option<Message>,
+    paused: bool,
+}
+
+impl RollingSink {
+    fn write(&mut self, m: Message, stats: &mut RecordStats) -> Result<(), RecordError> {
+        let segment = i64::try_from(self.rolling.segment.as_nanos()).unwrap_or(i64::MAX);
+        let due = match &self.current {
+            Some(current) => m.log_time >= current.started.saturating_add(segment),
+            None => m.log_time >= self.retry_at,
+        };
+        if due {
+            self.rotate(m.log_time, stats)?;
+            if self.current.is_none() {
+                self.retry_at = m.log_time.saturating_add(segment);
+            }
+        }
+        match &mut self.current {
+            Some(current) => current.write(&m, stats)?,
+            None => stats.paused_drops += 1,
+        }
+        if m.topic.key == TopicKey::Authority {
+            self.authority = Some(m);
+        }
+        Ok(())
+    }
+
+    /// Closes the current segment, applies the budgets and opens the next
+    /// one, unless the disk is below the floor.
+    fn rotate(&mut self, log_time: i64, stats: &mut RecordStats) -> Result<(), RecordError> {
+        if let Some(current) = self.current.take() {
+            current.finish(&Metadata::new(), stats)?;
+        }
+        purge(&self.rolling);
+        if free_bytes(&self.dir).is_some_and(|free| free < self.rolling.min_free_bytes) {
+            if !self.paused {
+                warn!(dir = %self.dir.display(), "recording paused: less than {} bytes free", self.rolling.min_free_bytes);
+            }
+            self.paused = true;
+            return Ok(());
+        }
+        if self.paused {
+            info!(dir = %self.dir.display(), "recording resumed");
+            self.paused = false;
+        }
+        let wall_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let path = self.dir.join(format!("{wall_ms}.mcap"));
+        // The purge removes a session directory it empties, this one too.
+        let created = std::fs::create_dir_all(&self.dir)
+            .map_err(|source| RecordError::Io {
+                path: self.dir.clone(),
+                source,
+            })
+            .and_then(|()| Segment::create(&path, log_time));
+        let mut segment = match created {
+            Ok(segment) => segment,
+            Err(err) => {
+                warn!(%err, "recording paused: cannot open a segment");
+                self.paused = true;
+                return Ok(());
+            }
+        };
+        if let Some(authority) = &self.authority {
+            segment.write(authority, stats)?;
+        }
+        self.current = Some(segment);
+        Ok(())
+    }
+}
+
+/// Removes the oldest rolling segments, of every session under the root,
+/// past the age and size budgets. Racing purgers (one per session) are
+/// fine: a segment already gone is skipped.
+fn purge(rolling: &Rolling) {
+    let mut segments: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let sessions = std::fs::read_dir(rolling.dir.join("rolling"))
+        .into_iter()
+        .flatten();
+    for session in sessions.flatten() {
+        for file in std::fs::read_dir(session.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let path = file.path();
+            if path.extension().is_some_and(|e| e == "mcap")
+                && let Ok(meta) = file.metadata()
+                && let Ok(modified) = meta.modified()
+            {
+                segments.push((modified, meta.len(), path));
+            }
+        }
+    }
+    segments.sort();
+    let mut total: u64 = segments.iter().map(|(_, len, _)| len).sum();
+    let now = std::time::SystemTime::now();
+    for (modified, len, path) in segments {
+        let old = now
+            .duration_since(modified)
+            .is_ok_and(|age| age > rolling.max_age);
+        if !old && total <= rolling.max_bytes {
+            break;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => total = total.saturating_sub(len),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => warn!(%err, path = %path.display(), "could not remove an old segment"),
+        }
+        if let Some(dir) = path.parent() {
+            // Only succeeds once the session's last segment is gone.
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
+/// Free bytes on the disk holding `dir`, for an unprivileged user.
+#[cfg(unix)]
+#[allow(unsafe_code, clippy::useless_conversion)]
+fn free_bytes(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: an all-zero statvfs is a valid value to be overwritten.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `path` is NUL-terminated and `stat` is valid and writable.
+    if unsafe { libc::statvfs(path.as_ptr(), &raw mut stat) } != 0 {
+        return None;
+    }
+    Some(u64::from(stat.f_bavail).saturating_mul(u64::from(stat.f_frsize)))
+}
+
+// TODO: no free-space floor off unix; add GetDiskFreeSpaceExW when the
+// recorder runs on Windows hosts.
+#[cfg(not(unix))]
+fn free_bytes(_: &Path) -> Option<u64> {
+    None
 }
 
 // --- reading ------------------------------------------------------------------
@@ -805,7 +1080,8 @@ pub struct RecordedMessage {
 /// Every sample, chunk and authority snapshot of a recording, ordered by
 /// log time (stable, so each channel keeps its recorded order). Binding
 /// records are skipped (the snapshots carry them), as are envelopes that do
-/// not decode ([`summarize`] counts those).
+/// not decode ([`summarize`] counts those). A file cut short (the recorder
+/// crashed or lost power) yields what was written before the cut.
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordedMessage>, RecordError> {
     let path = path.as_ref();
     // TODO: reads the whole file into memory; stream it chunk by chunk when
@@ -816,7 +1092,14 @@ pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordedMessage>, RecordError>
     })?;
     let mut out = Vec::new();
     for message in mcap::MessageStream::new(&bytes)? {
-        let message = message?;
+        let message = match message {
+            Ok(message) => message,
+            Err(err) if !out.is_empty() => {
+                warn!(%err, path = %path.display(), "recording cut short; reading what was written");
+                break;
+            }
+            Err(err) => return Err(err.into()),
+        };
         let data = Bytes::copy_from_slice(&message.data);
         let schema = message.channel.schema.as_ref().map(|s| s.name.as_str());
         let decoded = match schema {

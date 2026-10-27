@@ -7,14 +7,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rlmesh_session::edge::{EdgeConfig, Robot};
-use rlmesh_session::record::{Recorded, Recorder, read, summarize};
+use rlmesh_session::record::{Recorded, Recorder, Rolling, read, summarize};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::{DType, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
-    Predictor, SessionHost, SystemMonotonicClock, Transport, TransportConfig,
+    Predictor, SessionHost, SessionServer, SystemMonotonicClock, Transport, TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -36,7 +36,8 @@ struct World {
     base: std::net::SocketAddr,
     tenant: TenantId,
     session: SessionId,
-    _host: SessionHost,
+    /// `None` when a recording server hosts the session.
+    _host: Option<SessionHost>,
 }
 
 impl World {
@@ -55,7 +56,7 @@ impl World {
             base,
             tenant,
             session,
-            _host: host,
+            _host: Some(host),
         }
     }
 
@@ -113,6 +114,14 @@ impl Predictor for Constant {
             "arm".into(),
             Value::Tensor(Tensor::from_f64(DType::F32, vec![5, 6], &[self.0; 30])),
         )])
+    }
+}
+
+async fn wait_until_async<F: Future<Output = bool>>(what: &str, mut done: impl FnMut() -> F) {
+    let started = Instant::now();
+    while !done().await {
+        assert!(started.elapsed() < WAIT, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -254,4 +263,118 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
             .iter()
             .any(|m| matches!(m.message, Recorded::Chunk(_)))
     );
+}
+
+/// The segment files of one session's rolling recording, oldest first.
+fn segments(root: &std::path::Path, session: SessionId) -> Vec<std::path::PathBuf> {
+    let dir = root.join("rolling").join(session.to_string());
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .map(|d| d.map(|e| e.expect("entry").path()).collect())
+        .unwrap_or_default();
+    files.sort();
+    files
+}
+
+/// A robot publishing `ft` every 10 ms for `ms`.
+async fn publish_ft(robot: &Participant, ms: u64) {
+    let ft = robot.publisher("ft").await.expect("publisher");
+    for _ in 0..ms / 10 {
+        ft.publish(robot.clock().now_ns(), bytes::Bytes::from(vec![0_u8; 32]))
+            .expect("publish");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+const FT: &str = r#"{"ft": {"kind": "wrench", "frame": "tool0", "hz": 100}}"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recording_server_rolls_self_contained_segments_and_still_ends_sessions() {
+    let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        .await
+        .expect("transport");
+    let tenant = TenantId::new("rolling").expect("tenant");
+    let mut config = HostConfig::new(tenant.clone(), SessionId::new());
+    config.clock = SystemMonotonicClock.shared();
+    config.health_log = None;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut rolling = Rolling::new(dir.path());
+    rolling.segment = Duration::from_millis(150);
+    rolling.min_free_bytes = 0;
+    let server = SessionServer::start_recording(transport, config, rolling)
+        .await
+        .expect("server");
+
+    // A session the server starts for its first participant.
+    let session = SessionId::new();
+    let world = World {
+        base,
+        tenant,
+        session,
+        _host: None,
+    };
+    let robot = world
+        .join("robot", Role::Embodiment, PriorityClass::Scripted)
+        .await;
+    robot.declare_parts(FT).await.expect("declare");
+    publish_ft(&robot, 700).await;
+    robot.detach().await.expect("detach");
+    wait_until_async("the session to stop", || async {
+        !server.sessions().await.contains(&session)
+    })
+    .await;
+
+    let files = segments(dir.path(), session);
+    assert!(files.len() >= 3, "{files:?}");
+    for file in &files {
+        let messages = read(file).expect("a complete segment");
+        assert!(
+            matches!(messages[0].message, Recorded::Authority(_)),
+            "{file:?} opens with the authority snapshot"
+        );
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rolling_capture_keeps_to_its_budget_and_pauses_below_the_free_space_floor() {
+    let world = World::start().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut rolling = Rolling::new(dir.path());
+    rolling.segment = Duration::from_millis(100);
+    rolling.max_bytes = 1;
+    rolling.min_free_bytes = 0;
+    let observer = world
+        .join("recorder", Role::Observer, PriorityClass::Scripted)
+        .await;
+    let recorder = Recorder::start_rolling(Arc::new(observer), rolling, world.session)
+        .await
+        .expect("recorder");
+    let robot = world
+        .join("robot", Role::Embodiment, PriorityClass::Scripted)
+        .await;
+    robot.declare_parts(FT).await.expect("declare");
+    publish_ft(&robot, 500).await;
+    let stats = recorder.finish().await.expect("finish");
+    assert!(stats.segments >= 3, "{stats:?}");
+    assert_eq!(
+        segments(dir.path(), world.session),
+        [stats.path],
+        "only the newest is kept"
+    );
+
+    // A disk below the floor gets nothing written.
+    let full = tempfile::tempdir().expect("tempdir");
+    let mut rolling = Rolling::new(full.path());
+    rolling.min_free_bytes = u64::MAX;
+    let observer = world
+        .join("recorder-2", Role::Observer, PriorityClass::Scripted)
+        .await;
+    let recorder = Recorder::start_rolling(Arc::new(observer), rolling, world.session)
+        .await
+        .expect("recorder");
+    publish_ft(&robot, 200).await;
+    let stats = recorder.finish().await.expect("finish");
+    assert_eq!((stats.segments, stats.messages), (0, 0), "{stats:?}");
+    assert!(stats.paused_drops > 0, "{stats:?}");
+    assert!(segments(full.path(), world.session).is_empty());
 }

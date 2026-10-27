@@ -7,6 +7,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 
 use anyhow::{Context, Result};
 use rlmesh_session::address::{self, DEFAULT_SESSION, LEASE_GRACE};
+use rlmesh_session::record::Rolling;
 
 use crate::cli::HostArgs;
 
@@ -15,10 +16,32 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write) -> Result<()> {
         Some(base) => base,
         None => SocketAddr::from((Ipv4Addr::LOCALHOST, address::well_known_port()?)),
     };
-    let mut placed = address::host_at(base, DEFAULT_SESSION, LEASE_GRACE)
-        .await
-        .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
+    let recordings = if args.no_record {
+        None
+    } else {
+        let dir = match &args.record_dir {
+            Some(dir) => dir.clone(),
+            None => dirs::data_dir()
+                .context(
+                    "no user data directory to record into (pass --record-dir or --no-record)",
+                )?
+                .join("rlmesh")
+                .join("recordings"),
+        };
+        Some(dir)
+    };
+    let placed = match &recordings {
+        Some(dir) => {
+            address::host_recording_at(base, DEFAULT_SESSION, LEASE_GRACE, Rolling::new(dir)).await
+        }
+        None => address::host_at(base, DEFAULT_SESSION, LEASE_GRACE).await,
+    };
+    let mut placed =
+        placed.with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
     writeln!(stdout, "{}", placed.address.base)?;
+    if let Some(dir) = &recordings {
+        writeln!(stdout, "recording to {}", dir.display())?;
+    }
     stdout.flush()?;
     shutdown_signal().await?;
     placed.close().await?;

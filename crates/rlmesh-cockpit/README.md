@@ -27,6 +27,7 @@ mise run cockpit -- 127.0.0.1:41000/local/01a15b0a-...
 
 ```sh
 mise run cockpit -- --replay session.mcap   # the demo's --record file, or any rlmesh Recorder output
+mise run cockpit -- --replay ~/.local/share/rlmesh/recordings/rolling/SESSION   # what `rlmesh host` recorded
 ```
 
 The same views over a recorded session, with play/pause, speed, previous/next message and a scrub bar instead of the verbs. Scrubbing shows exactly what playing straight through shows (checkpoints every 10 s of session time). A recording has no heartbeats or observer reports, so the counters only they carry (produced and published rates, controller starts and skips) stay empty.

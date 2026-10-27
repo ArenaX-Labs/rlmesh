@@ -20,7 +20,8 @@ struct Args {
     /// `rlmesh.v2.Host.address` prints).
     #[arg(required_unless_present = "replay")]
     address: Option<SessionAddress>,
-    /// Replay a recording (MCAP) instead of joining a session.
+    /// Replay a recording instead of joining a session: an MCAP file, or a
+    /// directory of a session's rolling segments.
     #[arg(long, value_name = "FILE", conflicts_with = "address")]
     replay: Option<PathBuf>,
     /// This observer's participant id.

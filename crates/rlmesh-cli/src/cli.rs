@@ -442,6 +442,14 @@ pub struct HostArgs {
     /// the well-known port (`RLMESH_PORT`, else 7447). Port 0: OS-assigned.
     #[arg(long, value_name = "ADDR")]
     pub listen: Option<std::net::SocketAddr>,
+    /// Record every session here, always on: the newest 30 minutes or
+    /// 20 GB, in one-minute MCAP segments under `rolling/{session}/`.
+    /// Default: `rlmesh/recordings` in the user data directory.
+    #[arg(long, value_name = "DIR")]
+    pub record_dir: Option<std::path::PathBuf>,
+    /// Do not record.
+    #[arg(long, conflicts_with = "record_dir")]
+    pub no_record: bool,
 }
 
 /// Flags for `rlmesh describe`.
