@@ -1111,7 +1111,8 @@ fn part(robot: &ParticipantId, path: &str, mut decl: PartDecl) -> Result<PartSpe
 }
 
 /// The authored map's top-level paths, in authored order. Duplicate keys
-/// are refused, as [`normalise`] refuses them.
+/// are refused, as [`normalise`] refuses them. Keys are not validated as
+/// part paths, nor values as parts: [`normalise`] does that.
 pub fn authored_paths(robot_json: &str) -> Result<Vec<String>, CtlError> {
     let mut de = serde_json::Deserializer::from_str(robot_json);
     let map: Ordered<serde::de::IgnoredAny> = serde_path_to_error::deserialize(&mut de)
