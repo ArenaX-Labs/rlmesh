@@ -37,6 +37,20 @@ pub struct SessionServer {
     _watch: zenoh::pubsub::Subscriber<()>,
 }
 
+/// Removes `key` from `members` when its token left: not when its
+/// participant rejoined and its new token is declared ahead of the old one's
+/// late delete, however many other members the session has.
+async fn member_left(members: &mut HashSet<String>, key: &str, control: &zenoh::Session) -> bool {
+    if members.contains(key)
+        && let Ok(expr) = zenoh::key_expr::KeyExpr::try_from(key)
+        && token_declared(control, &expr).await
+    {
+        return false;
+    }
+    members.remove(key);
+    true
+}
+
 impl SessionServer {
     /// Serves every session of `config.tenant` on `transport`, each with
     /// `config` (its `session` replaced), starting `config.session` at once.
@@ -60,18 +74,8 @@ impl SessionServer {
                     let members = present.entry(session).or_default();
                     if joined {
                         members.insert(key);
-                    } else {
-                        // The session's last token left, unless its
-                        // participant rejoined and its new token is declared
-                        // ahead of the old one's late delete.
-                        if members.len() == 1
-                            && members.contains(&key)
-                            && let Ok(expr) = zenoh::key_expr::KeyExpr::try_from(key.as_str())
-                            && token_declared(&control, &expr).await
-                        {
-                            continue;
-                        }
-                        members.remove(&key);
+                    } else if !member_left(members, &key, &control).await {
+                        continue;
                     }
                     let empty = members.is_empty();
                     if empty {
@@ -141,5 +145,31 @@ impl SessionServer {
         for host in hosts {
             host.shutdown().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use super::*;
+    use crate::transport::open_local_listeners;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_late_delete_of_a_rejoined_members_old_token_keeps_it_beside_others() {
+        let (transport, _) = open_local_listeners(IpAddr::from(Ipv4Addr::LOCALHOST))
+            .await
+            .expect("transport");
+        let control = transport.control();
+        let (a, b) = ("rlmesh/test/members/a", "rlmesh/test/members/b");
+        // A rejoined: its new token is declared when its old one's delete lands.
+        let _token = control.liveliness().declare_token(a).await.expect("token");
+        let mut members: HashSet<String> = [a.to_string(), b.to_string()].into();
+        assert!(!member_left(&mut members, a, control).await);
+        assert!(members.contains(a), "a rejoined member stays tracked");
+        // B left for good: no token of its own.
+        assert!(member_left(&mut members, b, control).await);
+        assert_eq!(members, HashSet::from([a.to_string()]));
+        transport.close().await.expect("close");
     }
 }
