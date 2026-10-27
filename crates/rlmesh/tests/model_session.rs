@@ -766,38 +766,89 @@ async fn a_batchs_inference_time_is_split_across_its_requests() {
 }
 
 /// Proxies a model served elsewhere: its call takes 100 ms on the wire, of
-/// which the backend reports 3 ms of its own work.
-struct Proxy;
+/// which the backend reports `v` ms of decode, 3`v` of its own work, 2`v` of
+/// encode and `v` of queue for a request whose observation is `v` (nothing
+/// for `v = 0`), read once.
+#[derive(Default)]
+struct Proxy(Option<rlmesh_proto::EndpointPhases>);
 
 #[rlmesh::binding::async_trait]
 impl ModelHandler for Proxy {
     async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        observation.decoded_lanes()
+        let lanes = observation.decoded_lanes()?;
+        let SpaceValue::Box(t) = &lanes[0] else {
+            panic!("a box")
+        };
+        let v = f32::from_le_bytes(t.to_contiguous_bytes()[..4].try_into().unwrap()) as u64;
+        let ms = 1_000_000 * v;
+        self.0 = (v > 0).then(|| rlmesh_proto::EndpointPhases {
+            decode_ns: ms,
+            user_ns: 3 * ms,
+            encode_ns: 2 * ms,
+            queue_ns: ms,
+            ..Default::default()
+        });
+        Ok(lanes)
     }
 
     fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
-        Some((
-            Some(4_000_000),
-            rlmesh_proto::EndpointPhases {
-                user_ns: 3_000_000,
-                queue_ns: 1_000_000,
-                ..Default::default()
-            },
-        ))
+        self.0.take().map(|phases| (Some(4_000_000), phases))
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_proxied_model_reports_its_backends_phases_not_the_hop() {
-    let service = Arc::new(ModelService::new(Proxy, String::new()));
-    service.answer(resolve("a", 1)).await;
-    let (reply, timing) = service
-        .answer(ModelRequest::Predict(vec![group("a", &[1.0])]))
-        .await;
-    assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
-    assert_eq!(timing.user_ns, Some(3_000_000), "{timing:?}");
-    assert!(timing.queue_ns >= Some(1_000_000), "{timing:?}");
+    let binding = ModelBinding::bind(":0/proxy").await.unwrap();
+    let address = binding.address();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let service = Arc::new(ModelService::new(Proxy::default(), String::new()));
+    let served = tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
+    let model = ModelConnection::connect(&address, "driver", Duration::from_secs(10))
+        .await
+        .unwrap();
+    for route in ["a", "b", "c"] {
+        model.link.call(&resolve(route, 1), None).await.unwrap();
+    }
+    let predict = |route: &'static str, v: f32| {
+        let link = &model.link;
+        async move {
+            link.call(&ModelRequest::Predict(vec![group(route, &[v])]), None)
+                .await
+                .unwrap()
+        }
+    };
+    // At once, each reply carries its own request's backend phases; c's
+    // backend reports none, so it is timed here.
+    let (a, b, c) = tokio::join!(predict("a", 1.0), predict("b", 2.0), predict("c", 0.0));
+    const MS: u64 = 1_000_000;
+    for (v, (reply, timing)) in [(1, a), (2, b), (0, c)] {
+        assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
+        let timing = timing.expect("a predict is timed");
+        // The proxy's own total holds the hop, not the backend's 4 ms.
+        assert!(timing.total_ns >= Some(100 * MS), "{v}: {timing:?}");
+        if v == 0 {
+            assert!(timing.user_ns >= Some(100 * MS), "{v}: {timing:?}");
+            continue;
+        }
+        assert_eq!(timing.user_ns, Some(3 * v * MS), "{v}: {timing:?}");
+        // Decode, encode and queue add the backend's to this side's.
+        let adds = |got: Option<u64>, backend: u64| got.is_some_and(|got| got >= backend);
+        assert!(
+            adds(timing.decode_ns, v * MS)
+                && adds(timing.encode_ns, 2 * v * MS)
+                && adds(timing.queue_ns, v * MS),
+            "{v}: {timing:?}"
+        );
+        assert!(
+            timing.decode_ns < Some(v * MS + 50 * MS)
+                && timing.encode_ns < Some(2 * v * MS + 50 * MS),
+            "{v}: {timing:?}"
+        );
+    }
+    model.close().await;
+    cancel.cancel();
+    served.await.unwrap().unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
