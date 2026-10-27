@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#MISE description="Build the Arduino tether codec (embedded/arduino/RLMeshTether) on the host as a board would (C++11, no exceptions, RTTI, heap or C++ library), and run the conformance vectors against it"
+#MISE dir="{{ config_root }}"
+
+# avr-gcc ships no C++ standard library, so the codec is compiled with
+# -nostdinc++ and its objects may reference nothing outside themselves but
+# libc's memcpy/memset. The runner itself is host C++ and reads the same
+# vectors.json the Rust crate checks against.
+set -euo pipefail
+
+lib=embedded/arduino/RLMeshTether
+vectors=crates/rlmesh-tether/tests/vectors.json
+out=target/tether-cpp
+mkdir -p "$out"
+# Keep compiler scratch off the shared /tmp filesystem.
+export TMPDIR="${TMPDIR:-$PWD/target/cxx-tmp}"
+mkdir -p "$TMPDIR"
+
+if grep -rn 'Arduino\.h' "$lib/src"; then
+  echo "the codec headers must not include Arduino.h" >&2
+  exit 1
+fi
+
+# An explicit CXX selects one compiler; the local default runs GCC and, when
+# available, zig's bundled clang. $CXX may carry args ("zig c++"), so it is
+# left unquoted below.
+compilers=("${CXX:-g++}")
+if [ -z "${CXX:-}" ] && command -v zig >/dev/null; then compilers+=("zig c++"); fi
+
+warn=(-Wall -Wextra -Werror -pedantic -Wshadow -Wconversion)
+sources=("$lib"/src/rlmesh_tether/*.cpp)
+
+for cxx in "${compilers[@]}"; do
+  tag="${cxx%% *}"
+  quiet=()
+  case "$cxx" in *zig*) quiet=(-Wno-unused-command-line-argument) ;; esac
+  echo "==> $cxx: the codec as a board builds it"
+  objs=()
+  for src in "${sources[@]}"; do
+    obj="$out/$tag-$(basename "${src%.cpp}").o"
+    $cxx -std=gnu++11 -Os -fno-exceptions -fno-rtti -nostdinc++ "${warn[@]}" "${quiet[@]}" \
+      -c "$src" -o "$obj"
+    objs+=("$obj")
+  done
+  undefined=$(nm -u "${objs[@]}" | awk 'NF == 2 {print $2}' | sort -u)
+  defined=$(nm --defined-only "${objs[@]}" | awk 'NF == 3 {print $3}' | sort -u)
+  external=$(comm -23 <(echo "$undefined") <(echo "$defined") | grep -Ev '^(memcpy|memset)$' || true)
+  if [ -n "$external" ]; then
+    echo "the codec references symbols outside itself: $(echo "$external" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+  echo "==> $cxx: conformance vectors"
+  # The sanitizers this compiler can link here (libasan is not always installed).
+  sanitize=()
+  for s in address,undefined undefined; do
+    if echo 'int main() { return 0; }' |
+      $cxx -x c++ -fsanitize="$s" - -o "$out/probe" 2>/dev/null; then
+      sanitize=(-fsanitize="$s" -fno-sanitize-recover=all)
+      break
+    fi
+  done
+  echo "    sanitizers: ${sanitize[0]:-none}"
+  $cxx -std=c++11 -g -fno-exceptions -fno-rtti "${warn[@]}" "${quiet[@]}" "${sanitize[@]}" \
+    "$lib/test/vectors_test.cpp" "${sources[@]}" -o "$out/$tag-vectors_test"
+  "$out/$tag-vectors_test" "$vectors"
+done
