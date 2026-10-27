@@ -27,10 +27,10 @@
 //!
 //! A served model serves, then closes once: the first
 //! [`ModelService::close`] refuses new requests and starts the one closer,
-//! which waits for every accepted request to land (each holds a flight
-//! until its work ends, however it ends; a forwarded predict's batch holds
-//! one until its forward does), then releases the routes and runs
-//! `on_close`. Every close waits for that closer, up to its deadline.
+//! which waits for every accepted request to land (each runs to its end
+//! holding a flight, even once its caller stops waiting), then releases
+//! the routes and runs `on_close`. Every close waits for that closer, up
+//! to its deadline.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
@@ -69,12 +69,6 @@ use crate::serve_options::BatchOptions;
 
 /// The selector parameter of a probe.
 const PROBE: &str = "probe";
-
-tokio::task_local! {
-    /// Set while one of the model's requests runs, or its `on_close`: a
-    /// close from there would wait on itself.
-    static ANSWERING: ();
-}
 
 /// A fault with `code`.
 fn fault(code: &str, message: impl Into<String>, recoverable: bool) -> ModelFault {
@@ -209,11 +203,9 @@ impl Drop for Flight {
     }
 }
 
-/// A predict waiting in the batcher, holding its flight until its batch's
-/// forward ends.
+/// A predict waiting in the batcher.
 struct Queued {
     groups: Vec<ModelGroup>,
-    flight: Flight,
     bytes: usize,
     arrived: Instant,
     reply: oneshot::Sender<(Vec<ModelOutcome>, EndpointTiming)>,
@@ -296,20 +288,33 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         self
     }
 
-    /// Answers one request, with what answering it measured. Its flight
-    /// lands when this returns or is dropped.
+    /// Answers one request, with what answering it measured. An accepted
+    /// request runs to its end, holding its flight, even when this is
+    /// dropped: its forward may run on where a cancel can't reach it.
     pub async fn answer(self: &Arc<Self>, request: ModelRequest) -> (ModelReply, EndpointTiming) {
         // Taken before the check, so a close either sees it or refuses it.
-        let (_flight, in_flight) = self.flights.take();
-        let timing = EndpointTiming {
+        let (flight, in_flight) = self.flights.take();
+        let timing = move || EndpointTiming {
             in_flight: Some(in_flight),
             ..EndpointTiming::default()
         };
         if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
             let closing = fault("UNAVAILABLE", "the model is closing", false);
-            return (ModelReply::Fault(closing), timing);
+            return (ModelReply::Fault(closing), timing());
         }
-        ANSWERING.scope((), self.accepted(request, timing)).await
+        let service = Arc::clone(self);
+        let accepted = tokio::spawn(async move {
+            let _flight = flight;
+            service.accepted(request, timing()).await
+        });
+        match accepted.await {
+            Ok(answered) => answered,
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(e) => {
+                let stopped = fault("UNAVAILABLE", format!("the request stopped: {e}"), false);
+                (ModelReply::Fault(stopped), timing())
+            }
+        }
     }
 
     async fn accepted(
@@ -575,7 +580,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         let queued = Queued {
             bytes: observation_bytes(&groups),
             groups,
-            flight: self.flights.take().0,
             arrived: Instant::now(),
             reply,
         };
@@ -696,7 +700,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         let mut waits = Vec::new();
         let mut groups = Vec::new();
         let mut members = Vec::with_capacity(batch.len());
-        let mut flights = Vec::with_capacity(batch.len());
         for queued in batch {
             let waited = dispatched.duration_since(queued.arrived);
             waits.extend(std::iter::repeat_n(
@@ -705,13 +708,10 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             ));
             members.push((queued.reply, queued.groups.len(), waited));
             groups.extend(queued.groups);
-            flights.push(queued.flight);
         }
         let size = groups.len();
         let mut timing = EndpointTiming::default();
-        let outcomes = ANSWERING.scope((), self.predict(groups, &mut timing)).await;
-        // The forward is over, whether or not its requests still wait.
-        drop(flights);
+        let outcomes = self.predict(groups, &mut timing).await;
         let forward_wall = dispatched.elapsed();
         drop(permit);
         let ok = outcomes.iter().any(Result::is_ok);
@@ -789,16 +789,10 @@ impl<H: ModelHandler + 'static> ModelService<H> {
     /// accepted requests to land (a forwarded batch's forward included),
     /// then drops every route and closes the handler; every close returns
     /// its outcome. Past `timeout` this fails and the closer carries on, so
-    /// `on_close` still never runs beside a request. Refused from one of
-    /// the model's own requests or its `on_close`, which it would wait on.
+    /// `on_close` still never runs beside a request. A close from one of
+    /// the model's own requests or its `on_close` waits on itself, so it
+    /// fails with [`Error::Timeout`] at its deadline.
     pub async fn close(self: &Arc<Self>, timeout: Duration) -> Result<(), Error> {
-        if ANSWERING.try_with(|()| ()).is_ok() {
-            return Err(Error::Runtime(
-                "a model can't close from its own request or on_close, which the close waits \
-                 for; stop its serve instead"
-                    .into(),
-            ));
-        }
         let mut closed = self.closed.subscribe();
         if !self.closing.swap(true, std::sync::atomic::Ordering::SeqCst) {
             tokio::spawn(Arc::clone(self).closer());
@@ -829,22 +823,24 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 .take();
         }
         let service = Arc::clone(&self);
-        let shut = tokio::spawn(ANSWERING.scope((), async move { service.shut().await }));
+        let shut = tokio::spawn(async move { service.shut().await });
         let outcome = shut
             .await
             .unwrap_or_else(|e| Err(Error::model(format!("closing the model failed: {e}"))));
         self.closed.send_replace(Some(outcome));
     }
 
-    /// Drops every route and closes the handler.
+    /// Drops every route and closes the handler, all of it whatever fails,
+    /// and fails as the first failure did.
     async fn shut(&self) -> Result<(), Error> {
         let routes: Vec<String> = self.routes.lock().await.drain().map(|(r, _)| r).collect();
+        let mut shut = Ok(());
         if let Some(setup) = &self.setup {
             for route in &routes {
-                setup.release_adapter(route).await?;
+                shut = shut.and(setup.release_adapter(route).await);
             }
         }
-        self.handler.lock().await.on_close().await
+        shut.and(self.handler.lock().await.on_close().await)
     }
 }
 
@@ -1029,7 +1025,11 @@ impl<H: ModelHandler + 'static> Joins<H> {
                 }
             };
             match invited {
-                Invited::Wait(left) => left.cancelled().await,
+                Invited::Wait(left) => {
+                    #[cfg(test)]
+                    leaving::waits(&self.name);
+                    left.cancelled().await;
+                }
                 Invited::Follow(mut outcome) => {
                     return match outcome.wait_for(Option::is_some).await {
                         Ok(outcome) => outcome.clone().unwrap_or(Ok(())),
@@ -1087,7 +1087,8 @@ impl<H: ModelHandler + 'static> Joins<H> {
         // alone only once someone else was there, or when nobody came
         // within the join timeout.
         let mut roster = participant.watch();
-        let (alone, me, wait) = (cancel.clone(), self.name.clone(), self.timeout);
+        let (alone, me) = (cancel.clone(), self.name.clone());
+        let deadline = tokio::time::Instant::now() + self.timeout;
         tokio::spawn(async move {
             let mut seen = false;
             loop {
@@ -1103,7 +1104,7 @@ impl<H: ModelHandler + 'static> Joins<H> {
                 let changed = if seen {
                     roster.changed().await
                 } else {
-                    match tokio::time::timeout(wait, roster.changed()).await {
+                    match tokio::time::timeout_at(deadline, roster.changed()).await {
                         Ok(changed) => changed,
                         Err(_) => break,
                     }
@@ -1119,6 +1120,8 @@ impl<H: ModelHandler + 'static> Joins<H> {
             if let Err(err) = answer_in(joins.clone(), participant, address.base, cancel).await {
                 warn!(%err, session = %address, "model left an invited session");
             }
+            #[cfg(test)]
+            leaving::left(&joins.name).await;
             joins.forget(&key);
         });
         Ok(())
@@ -1980,5 +1983,97 @@ mod horizon_envelope_tests {
             assert!(read(&format!(r#"{{"execution_horizon":{bad}}}"#)).is_err());
         }
         assert!(read("broken").is_err());
+    }
+}
+
+/// Holds a model's leaving of an invited session, once, until an invitation
+/// waits on it, so a test can make the two meet.
+#[cfg(test)]
+mod leaving {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use rlmesh_session::wire::ParticipantId;
+    use tokio::sync::Notify;
+
+    /// Notified as the model leaves, and as an invitation waits on that.
+    #[derive(Default)]
+    pub(super) struct Hold {
+        pub(super) leaving: Notify,
+        waits: Notify,
+    }
+
+    fn holds() -> std::sync::MutexGuard<'static, HashMap<String, Arc<Hold>>> {
+        static HOLDS: OnceLock<Mutex<HashMap<String, Arc<Hold>>>> = OnceLock::new();
+        HOLDS
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Holds the next leaving of the model named `model`.
+    pub(super) fn hold(model: &str) -> Arc<Hold> {
+        Arc::clone(holds().entry(model.to_string()).or_default())
+    }
+
+    pub(super) async fn left(model: &ParticipantId) {
+        let hold = holds().get(model.as_str()).cloned();
+        if let Some(hold) = hold {
+            hold.leaving.notify_one();
+            hold.waits.notified().await;
+            holds().remove(model.as_str());
+        }
+    }
+
+    pub(super) fn waits(model: &ParticipantId) {
+        if let Some(hold) = holds().get(model.as_str()) {
+            hold.waits.notify_one();
+        }
+    }
+}
+
+#[cfg(test)]
+mod rejoin_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_invitation_while_the_model_leaves_joins_once_it_has_left() {
+        let binding = ModelBinding::bind(":0/rejoin").await.unwrap();
+        let address = binding.address();
+        let cancel = CancellationToken::new();
+        let service = Arc::new(ModelService::new(
+            crate::model::random::RandomSampleHandler::default(),
+            String::new(),
+        ));
+        let served = tokio::spawn(binding.serve(service, Duration::from_secs(2), cancel.clone()));
+        let mut target = rlmesh_session::address::host_at(
+            "127.0.0.1:0".parse().unwrap(),
+            "bench",
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let session = target.address.to_string();
+        let invite = |id: &'static str| {
+            let (address, session) = (address.clone(), session.clone());
+            async move {
+                ModelConnection::connect(&address, id, Duration::from_secs(5))
+                    .await
+                    .unwrap()
+                    .invite(&session, id, Duration::from_secs(5))
+                    .await
+            }
+        };
+
+        let driver = invite("driver").await.unwrap();
+        let hold = leaving::hold("rejoin");
+        driver.close().await;
+        hold.leaving.notified().await;
+        // The model is still leaving: the invitation waits for that, then
+        // joins again and answers.
+        invite("driver-again").await.unwrap().close().await;
+        cancel.cancel();
+        served.await.unwrap().unwrap();
+        target.close().await.unwrap();
     }
 }
