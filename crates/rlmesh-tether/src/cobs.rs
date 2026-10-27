@@ -9,6 +9,10 @@
 /// Calls `out` with the COBS encoding of `src` (the slices read as one
 /// sequence), without the trailing `0x00` delimiter. At most
 /// `len + len / 254 + 1` bytes.
+///
+/// The form is pinned (spec §3.1): no code byte follows a final 254-byte
+/// block. [`Decoder`] also accepts the common variant that appends `0x01`
+/// there, so a board using another COBS library still interoperates.
 pub fn encode(src: &[&[u8]], mut out: impl FnMut(u8)) {
     let total: usize = src.iter().map(|s| s.len()).sum();
     let at = |mut i: usize| {
@@ -64,8 +68,8 @@ pub struct Decoder<const N: usize> {
     /// The current block was shorter than 254 bytes, so a zero follows it
     /// unless the frame ends first.
     zero: bool,
-    /// Bytes of this frame seen, encoded.
-    seen: usize,
+    /// A byte of this frame has arrived.
+    started: bool,
     overflow: bool,
 }
 
@@ -83,7 +87,7 @@ impl<const N: usize> Decoder<N> {
             len: 0,
             left: 0,
             zero: false,
-            seen: 0,
+            started: false,
             overflow: false,
         }
     }
@@ -93,11 +97,11 @@ impl<const N: usize> Decoder<N> {
     /// delimiters in a row).
     pub fn push(&mut self, byte: u8) -> Option<Result<&[u8], DecodeError>> {
         if byte == 0 {
-            let (len, left, seen, overflow) = (self.len, self.left, self.seen, self.overflow);
+            let (len, left, started, overflow) = (self.len, self.left, self.started, self.overflow);
             self.reset();
             return if overflow {
                 Some(Err(DecodeError::Overflow))
-            } else if seen == 0 {
+            } else if !started {
                 None
             } else if left != 0 {
                 Some(Err(DecodeError::Truncated))
@@ -108,7 +112,7 @@ impl<const N: usize> Decoder<N> {
         if self.overflow {
             return None;
         }
-        self.seen += 1;
+        self.started = true;
         if self.left == 0 {
             // A code byte: emit the zero the previous block stood for.
             if self.zero && !self.put(0) {
@@ -130,7 +134,7 @@ impl<const N: usize> Decoder<N> {
         self.len = 0;
         self.left = 0;
         self.zero = false;
-        self.seen = 0;
+        self.started = false;
         self.overflow = false;
     }
 
@@ -246,6 +250,21 @@ mod tests {
                 assert_eq!(&got[..m], &src[..len], "len {len}");
             }
         }
+    }
+
+    #[test]
+    fn the_trailing_code_variant_decodes_the_same() {
+        // 254 non-zero bytes: this encoder gives `FF ‹254›`; PacketSerial and
+        // the Wikipedia reference give `FF ‹254› 01`. Both decode alike.
+        let run: [u8; 254] = core::array::from_fn(|i| (i % 255 + 1) as u8);
+        let (wire, n) = enc(&run);
+        assert_eq!(n, 255, "no trailing code byte");
+        let mut variant = [0_u8; 256];
+        variant[..255].copy_from_slice(&wire[..255]);
+        variant[255] = 0x01;
+        let (a, la) = dec(&wire[..n]).expect("canonical");
+        let (b, lb) = dec(&variant).expect("variant");
+        assert_eq!((&a[..la], &b[..lb]), (&run[..], &run[..]));
     }
 
     #[test]

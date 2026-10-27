@@ -57,14 +57,13 @@ impl<'a> Frame<'a> {
 ///
 /// # Panics
 ///
-/// When the payload is empty or longer than [`MAX_PAYLOAD`]: callers build
-/// payloads from fixed message layouts.
+/// When the payload is empty, longer than [`MAX_PAYLOAD`], or in more than
+/// 4 pieces. [`crate::msg::write`] checks lengths and returns an error
+/// first, so only a direct caller can hit this.
 pub fn write(ty: u8, seq: u8, payload: &[&[u8]], mut out: impl FnMut(u8)) {
     let len: usize = payload.iter().map(|p| p.len()).sum();
-    assert!(
-        (1..=MAX_PAYLOAD).contains(&len),
-        "payload of {len} bytes (1..={MAX_PAYLOAD})"
-    );
+    // No formatted message: a board build shouldn't link `core::fmt` for it.
+    assert!((1..=MAX_PAYLOAD).contains(&len));
     let head = [ty, seq];
     let crc = payload
         .iter()
@@ -74,7 +73,7 @@ pub fn write(ty: u8, seq: u8, payload: &[&[u8]], mut out: impl FnMut(u8)) {
     parts[0] = &head;
     let mut n = 1;
     for p in payload {
-        assert!(n < parts.len() - 1, "at most 4 payload pieces");
+        assert!(n < parts.len() - 1);
         parts[n] = p;
         n += 1;
     }
@@ -147,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "payload of 0 bytes")]
+    #[should_panic]
     fn an_empty_payload_is_a_caller_bug() {
         let _ = wire(0x85, 0, &[]);
     }

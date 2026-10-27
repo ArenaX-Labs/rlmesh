@@ -232,7 +232,29 @@ pub enum MsgError {
     Range,
     /// `STATE` or `COMMAND` for a part the receiver doesn't know.
     UnknownPart,
+    /// A message type that travels the other way (§3.2): a bridge hearing a
+    /// bridge message (an echoing adapter), or a board hearing a board one.
+    Direction,
+    /// `HELLO.name` isn't UTF-8.
+    Utf8,
 }
+
+/// Which end is receiving: it decides which message types are valid, and
+/// what `dense_len` looks up (sample lengths on the bridge, command lengths
+/// on the board).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Receiver {
+    /// The computer: accepts board → bridge types (below 0x80).
+    Bridge,
+    /// The board: accepts bridge → board types (0x80 and up).
+    Board,
+}
+
+/// `HELLO.rx_max` bounds: room for `ATTACH` (16 bytes decoded), at most a
+/// whole frame.
+pub const RX_MAX: core::ops::RangeInclusive<u16> = 16..=256;
+/// `HELLO.watchdog_ms` bounds (§6.2).
+pub const WATCHDOG_MS: core::ops::RangeInclusive<u16> = 20..=5000;
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
     u16::from_le_bytes([b[i], b[i + 1]])
@@ -250,6 +272,16 @@ fn exact(p: &[u8], n: usize) -> Result<(), MsgError> {
     }
 }
 
+/// `head` fixed bytes followed by exactly `len` value bytes, without
+/// overflow however large `len` is.
+fn head_and(p: &[u8], head: usize, len: usize) -> Result<(), MsgError> {
+    if p.len().checked_sub(head) == Some(len) {
+        Ok(())
+    } else {
+        Err(MsgError::Length)
+    }
+}
+
 fn no_reserved(flags: u8, all: u8) -> Result<(), MsgError> {
     if flags & !all == 0 {
         Ok(())
@@ -258,18 +290,26 @@ fn no_reserved(flags: u8, all: u8) -> Result<(), MsgError> {
     }
 }
 
-/// Decodes `frame`'s payload. `dense_len(part)` gives a part's dense sample
-/// length (for `STATE`) or dense command length (for `COMMAND`): the caller
-/// knows which direction it receives.
+/// Decodes `frame`'s payload as received by `receiver`. `dense_len(part)`
+/// gives a part's dense sample length on the bridge (`STATE`) and its dense
+/// command length on the board (`COMMAND`).
 pub fn decode<'a>(
     frame: &Frame<'a>,
+    receiver: Receiver,
     dense_len: impl Fn(u8) -> Option<usize>,
 ) -> Result<Msg<'a>, MsgError> {
+    let to_board = frame.ty & 0x80 != 0;
+    if to_board != (receiver == Receiver::Board) {
+        return Err(MsgError::Direction);
+    }
     let p = frame.payload;
     match frame.ty {
         ty::HELLO => {
-            if p.len() < 5 || p[..4] != MAGIC {
+            if p.len() < 4 || p[..4] != MAGIC {
                 return Err(MsgError::Magic);
+            }
+            if p.len() < 5 {
+                return Err(MsgError::Length);
             }
             if p[4] != VERSION {
                 return Err(MsgError::Version(p[4]));
@@ -284,6 +324,14 @@ pub fn decode<'a>(
             exact(p, 31 + name_len)?;
             let flags = p[19];
             no_reserved(flags, hello_flags::ALL)?;
+            let (watchdog_ms, rx_max) = (u16_at(p, 26), u16_at(p, 28));
+            if !WATCHDOG_MS.contains(&watchdog_ms) || !RX_MAX.contains(&rx_max) {
+                return Err(MsgError::Range);
+            }
+            let name = &p[31..];
+            if core::str::from_utf8(name).is_err() {
+                return Err(MsgError::Utf8);
+            }
             let mut board_id = [0; 8];
             board_id.copy_from_slice(&p[8..16]);
             Ok(Msg::Hello(Hello {
@@ -295,9 +343,9 @@ pub fn decode<'a>(
                 flags,
                 map_len: u16_at(p, 20),
                 map_crc: u32_at(p, 22),
-                watchdog_ms: u16_at(p, 26),
-                rx_max: u16_at(p, 28),
-                name: &p[31..],
+                watchdog_ms,
+                rx_max,
+                name,
             }))
         }
         ty::MAP => {
@@ -313,7 +361,7 @@ pub fn decode<'a>(
         ty::STATE => {
             let part = *p.first().ok_or(MsgError::Length)?;
             let len = dense_len(part).ok_or(MsgError::UnknownPart)?;
-            exact(p, 5 + len)?;
+            head_and(p, 5, len)?;
             Ok(Msg::State {
                 part,
                 t_us: u32_at(p, 1),
@@ -373,7 +421,7 @@ pub fn decode<'a>(
             }
             let part = p[1];
             let len = dense_len(part).ok_or(MsgError::UnknownPart)?;
-            exact(p, 5 + len)?;
+            head_and(p, 5, len)?;
             no_reserved(p[2], command_flags::ALL)?;
             Ok(Msg::Command {
                 gen_: p[0],
@@ -403,19 +451,19 @@ pub fn decode<'a>(
 }
 
 /// Writes `msg` as one frame with `seq` to `out` (COBS-encoded, with its
-/// delimiter).
-///
-/// # Panics
-///
-/// When a field is out of range (a name, note or slice too long, `max` 0,
-/// a reserved bit set): the sender builds messages from its own state, so
-/// that's a caller bug.
-pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) {
+/// delimiter). Nothing is written when a field is out of range or the
+/// payload doesn't fit a frame; that's the error.
+pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) -> Result<(), MsgError> {
     let mut head = [0_u8; 31];
     let (t, n, tail): (u8, usize, &[u8]) = match *msg {
         Msg::Hello(ref h) => {
-            assert!(h.name.len() <= MAX_NAME, "name over {MAX_NAME} bytes");
-            assert_eq!(h.flags & !hello_flags::ALL, 0, "reserved HELLO flag");
+            if h.name.len() > MAX_NAME
+                || !WATCHDOG_MS.contains(&h.watchdog_ms)
+                || !RX_MAX.contains(&h.rx_max)
+            {
+                return Err(MsgError::Range);
+            }
+            no_reserved(h.flags, hello_flags::ALL)?;
             head[..4].copy_from_slice(&MAGIC);
             head[4] = VERSION;
             head[5..7].copy_from_slice(&h.lib_version.to_le_bytes());
@@ -433,10 +481,9 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) {
             (ty::HELLO, 31, h.name)
         }
         Msg::Map { boot, offset, data } => {
-            assert!(
-                data.len() <= MAX_MAP_SLICE,
-                "map slice over {MAX_MAP_SLICE}"
-            );
+            if data.len() > MAX_MAP_SLICE {
+                return Err(MsgError::Length);
+            }
             head[..2].copy_from_slice(&boot.to_le_bytes());
             head[2..4].copy_from_slice(&offset.to_le_bytes());
             (ty::MAP, 4, data)
@@ -447,7 +494,7 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) {
             (ty::STATE, 5, value)
         }
         Msg::Status(ref s) => {
-            assert_eq!(s.flags & !status_flags::ALL, 0, "reserved STATUS flag");
+            no_reserved(s.flags, status_flags::ALL)?;
             head[..2].copy_from_slice(&s.boot.to_le_bytes());
             head[2] = s.gen_;
             head[3] = s.flags;
@@ -458,16 +505,17 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) {
             (ty::STATUS, 13, &[])
         }
         Msg::Note { level, code, text } => {
-            assert!(text.len() <= MAX_NOTE, "note over {MAX_NOTE} bytes");
+            if text.len() > MAX_NOTE {
+                return Err(MsgError::Length);
+            }
             head[0] = level;
             head[1] = code;
             (ty::NOTE, 2, text)
         }
         Msg::GetMap { boot, offset, max } => {
-            assert!(
-                (1..=MAX_MAP_SLICE).contains(&usize::from(max)),
-                "GET_MAP max {max}"
-            );
+            if max == 0 || usize::from(max) > MAX_MAP_SLICE {
+                return Err(MsgError::Range);
+            }
             head[..2].copy_from_slice(&boot.to_le_bytes());
             head[2..4].copy_from_slice(&offset.to_le_bytes());
             head[4] = max;
@@ -479,7 +527,7 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) {
             gen_,
             flags,
         } => {
-            assert_eq!(flags & !attach_flags::ALL, 0, "reserved ATTACH flag");
+            no_reserved(flags, attach_flags::ALL)?;
             head[..8].copy_from_slice(&board_id);
             head[8..10].copy_from_slice(&boot.to_le_bytes());
             head[10] = gen_;
@@ -493,7 +541,7 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) {
             ttl_ms,
             value,
         } => {
-            assert_eq!(flags & !command_flags::ALL, 0, "reserved COMMAND flag");
+            no_reserved(flags, command_flags::ALL)?;
             head[0] = gen_;
             head[1] = part;
             head[2] = flags;
@@ -514,7 +562,11 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) {
             (ty::DETACH, 1, &[])
         }
     };
+    if n + tail.len() > frame::MAX_PAYLOAD {
+        return Err(MsgError::Length);
+    }
     frame::write(t, seq, &[&head[..n], tail], out);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -529,14 +581,20 @@ mod tests {
         write(&msg, 9, |b| {
             wire[n] = b;
             n += 1;
-        });
+        })
+        .expect("writes");
         let mut d = Decoder::<MAX_DECODED>::new();
         let mut seen = false;
         for &b in &wire[..n] {
             if let Some(decoded) = d.push(b) {
                 let f = Frame::parse(decoded.expect("decodes")).expect("frame");
                 assert_eq!(f.seq, 9);
-                assert_eq!(decode(&f, |_| dense), Ok(msg));
+                let to = if f.ty & 0x80 == 0 {
+                    Receiver::Bridge
+                } else {
+                    Receiver::Board
+                };
+                assert_eq!(decode(&f, to, |_| dense), Ok(msg));
                 seen = true;
             }
         }
@@ -655,7 +713,8 @@ mod tests {
                 if let Some(Ok(f)) = dec.push(b) {
                     payload = f.len() - 4;
                 }
-            });
+            })
+            .expect("writes");
             payload
         };
         let hello = Hello {
@@ -734,8 +793,8 @@ mod tests {
             flags: hello_flags::ESTOP,
             map_len: 0x2120,
             map_crc: 0x2524_2322,
-            watchdog_ms: 0x2726,
-            rx_max: 0x2928,
+            watchdog_ms: 0x1327,
+            rx_max: 0x0100,
             name: b"n",
         };
         let mut dec = Decoder::<MAX_DECODED>::new();
@@ -744,13 +803,123 @@ mod tests {
             if let Some(Ok(f)) = dec.push(b) {
                 payload.copy_from_slice(&f[2..f.len() - 2]);
             }
-        });
+        })
+        .expect("writes");
         let want: [u8; 32] = [
             b'R', b'L', b'M', b'T', 1, 0x01, 0x02, 3, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6,
-            0xB7, 0x16, 0x17, 0x18, 1, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
+            0xB7, 0x16, 0x17, 0x18, 1, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x27, 0x13, 0x00, 0x01,
             1, b'n',
         ];
         assert_eq!(payload, want);
+    }
+
+    /// Decodes as the end a frame of this type is meant for.
+    fn decode_any<'a>(
+        f: &Frame<'a>,
+        dense: impl Fn(u8) -> Option<usize>,
+    ) -> Result<Msg<'a>, MsgError> {
+        let to = if f.ty & 0x80 == 0 {
+            Receiver::Bridge
+        } else {
+            Receiver::Board
+        };
+        decode(f, to, dense)
+    }
+
+    #[test]
+    fn a_frame_for_the_other_end_is_refused() {
+        // An echoing adapter: the bridge hears its own COMMAND.
+        let cmd = [1_u8, 0, 0, 60, 0, 0, 0, 0, 0];
+        let f = frame(ty::COMMAND, &cmd);
+        assert_eq!(
+            decode(&f, Receiver::Bridge, |_| Some(4)),
+            Err(MsgError::Direction)
+        );
+        assert_eq!(
+            decode(&frame(ty::STATUS, &[0; 13]), Receiver::Board, |_| None),
+            Err(MsgError::Direction)
+        );
+    }
+
+    #[test]
+    fn hello_ranges_and_name_are_checked() {
+        let mut hello = [0_u8; 32];
+        hello[..5].copy_from_slice(b"RLMT\x01");
+        hello[26..28].copy_from_slice(&250_u16.to_le_bytes());
+        hello[28..30].copy_from_slice(&64_u16.to_le_bytes());
+        hello[30] = 1;
+        hello[31] = b'a';
+        let none = |_| None;
+        assert!(decode_any(&frame(ty::HELLO, &hello), none).is_ok());
+        hello[28..30].copy_from_slice(&8_u16.to_le_bytes()); // rx_max under 16
+        assert_eq!(
+            decode_any(&frame(ty::HELLO, &hello), none),
+            Err(MsgError::Range)
+        );
+        hello[28..30].copy_from_slice(&64_u16.to_le_bytes());
+        hello[26..28].copy_from_slice(&0_u16.to_le_bytes()); // watchdog 0
+        assert_eq!(
+            decode_any(&frame(ty::HELLO, &hello), none),
+            Err(MsgError::Range)
+        );
+        hello[26..28].copy_from_slice(&250_u16.to_le_bytes());
+        hello[31] = 0xFF; // not UTF-8
+        assert_eq!(
+            decode_any(&frame(ty::HELLO, &hello), none),
+            Err(MsgError::Utf8)
+        );
+        // The magic alone is a short HELLO, not a bad magic.
+        assert_eq!(
+            decode_any(&frame(ty::HELLO, b"RLMT"), none),
+            Err(MsgError::Length)
+        );
+    }
+
+    #[test]
+    fn a_huge_dense_length_is_a_length_error_not_a_panic() {
+        let huge = |_| Some(usize::MAX - 2);
+        assert_eq!(
+            decode_any(&frame(ty::STATE, &[0; 7]), huge),
+            Err(MsgError::Length)
+        );
+        assert_eq!(
+            decode_any(&frame(ty::COMMAND, &[0; 7]), huge),
+            Err(MsgError::Length)
+        );
+    }
+
+    #[test]
+    fn write_refuses_what_decode_would() {
+        let mut wrote = false;
+        let sink = |_| wrote = true;
+        let big = [0_u8; 248];
+        assert_eq!(
+            write(
+                &Msg::State {
+                    part: 0,
+                    t_us: 0,
+                    value: &big
+                },
+                0,
+                sink
+            ),
+            Err(MsgError::Length),
+            "5 + 248 is over a frame"
+        );
+        let mut wrote2 = false;
+        assert_eq!(
+            write(
+                &Msg::GetMap {
+                    boot: 0,
+                    offset: 0,
+                    max: 0
+                },
+                0,
+                |_| wrote2 = true
+            ),
+            Err(MsgError::Range)
+        );
+        assert!(!wrote && !wrote2, "nothing is written on an error");
     }
 
     fn frame(ty: u8, payload: &[u8]) -> Frame<'_> {
@@ -765,94 +934,103 @@ mod tests {
     fn malformed_payloads_are_refused() {
         let none = |_| None;
         let eight = |_| Some(8);
-        assert_eq!(decode(&frame(0x07, &[0]), none), Err(MsgError::UnknownType));
         assert_eq!(
-            decode(&frame(ty::HELLO, b"RLMX\x01"), none),
+            decode_any(&frame(0x07, &[0]), none),
+            Err(MsgError::UnknownType)
+        );
+        assert_eq!(
+            decode_any(&frame(ty::HELLO, b"RLMX\x01"), none),
             Err(MsgError::Magic)
         );
         // A future version is reported as such, whatever its length.
         assert_eq!(
-            decode(&frame(ty::HELLO, b"RLMT\x02xyz"), none),
+            decode_any(&frame(ty::HELLO, b"RLMT\x02xyz"), none),
             Err(MsgError::Version(2))
         );
         assert_eq!(
-            decode(&frame(ty::HELLO, b"RLMT\x01"), none),
+            decode_any(&frame(ty::HELLO, b"RLMT\x01"), none),
             Err(MsgError::Length)
         );
         let mut hello = [0_u8; 31];
         hello[..5].copy_from_slice(b"RLMT\x01");
         hello[19] = 0b10; // reserved flag
         assert_eq!(
-            decode(&frame(ty::HELLO, &hello), none),
+            decode_any(&frame(ty::HELLO, &hello), none),
             Err(MsgError::Reserved)
         );
         hello[19] = 0;
         hello[30] = 33; // name too long
         assert_eq!(
-            decode(&frame(ty::HELLO, &hello), none),
+            decode_any(&frame(ty::HELLO, &hello), none),
             Err(MsgError::Range)
         );
         hello[30] = 1; // claims a name, has none
         assert_eq!(
-            decode(&frame(ty::HELLO, &hello), none),
+            decode_any(&frame(ty::HELLO, &hello), none),
             Err(MsgError::Length)
         );
         assert_eq!(
-            decode(&frame(ty::STATUS, &[0; 12]), none),
+            decode_any(&frame(ty::STATUS, &[0; 12]), none),
             Err(MsgError::Length)
         );
         let mut status = [0_u8; 13];
         status[3] = 0b1000;
         assert_eq!(
-            decode(&frame(ty::STATUS, &status), none),
+            decode_any(&frame(ty::STATUS, &status), none),
             Err(MsgError::Reserved)
         );
         assert_eq!(
-            decode(&frame(ty::GET_MAP, &[0, 0, 0, 0, 0]), none),
+            decode_any(&frame(ty::GET_MAP, &[0, 0, 0, 0, 0]), none),
             Err(MsgError::Range)
         );
         assert_eq!(
-            decode(&frame(ty::GET_MAP, &[0, 0, 0, 0, 249]), none),
+            decode_any(&frame(ty::GET_MAP, &[0, 0, 0, 0, 249]), none),
             Err(MsgError::Range)
         );
         assert_eq!(
-            decode(&frame(ty::MAP, &[0; 253]), none),
+            decode_any(&frame(ty::MAP, &[0; 253]), none),
             Err(MsgError::Length)
         );
         assert_eq!(
-            decode(&frame(ty::NOTE, &[0; 51]), none),
+            decode_any(&frame(ty::NOTE, &[0; 51]), none),
             Err(MsgError::Length)
         );
         // COMMAND: the exact dense length, a known part, no reserved flags.
         assert_eq!(
-            decode(&frame(ty::COMMAND, &[1, 0, 0, 60, 0]), none),
+            decode_any(&frame(ty::COMMAND, &[1, 0, 0, 60, 0]), none),
             Err(MsgError::UnknownPart)
         );
         assert_eq!(
-            decode(&frame(ty::COMMAND, &[1, 0, 0, 60, 0, 1, 2]), eight),
+            decode_any(&frame(ty::COMMAND, &[1, 0, 0, 60, 0, 1, 2]), eight),
             Err(MsgError::Length)
         );
         let mut cmd = [0_u8; 13];
         cmd[2] = 0b10;
         assert_eq!(
-            decode(&frame(ty::COMMAND, &cmd), eight),
+            decode_any(&frame(ty::COMMAND, &cmd), eight),
             Err(MsgError::Reserved)
         );
         assert_eq!(
-            decode(&frame(ty::STATE, &[0; 12]), eight),
+            decode_any(&frame(ty::STATE, &[0; 12]), eight),
             Err(MsgError::Length)
         );
         assert_eq!(
-            decode(&frame(ty::ATTACH, &[0; 11]), none),
+            decode_any(&frame(ty::ATTACH, &[0; 11]), none),
             Err(MsgError::Length)
         );
         let mut attach = [0_u8; 12];
         attach[11] = 0b10;
         assert_eq!(
-            decode(&frame(ty::ATTACH, &attach), none),
+            decode_any(&frame(ty::ATTACH, &attach), none),
             Err(MsgError::Reserved)
         );
-        assert_eq!(decode(&frame(ty::SAFE, &[1]), none), Err(MsgError::Length));
-        assert_eq!(decode(&frame(ty::PING, &[]), none), Err(MsgError::Length));
+        assert_eq!(
+            decode_any(&frame(ty::SAFE, &[1]), none),
+            Err(MsgError::Length)
+        );
+        assert_eq!(
+            decode_any(&frame(ty::PING, &[]), none),
+            Err(MsgError::Length)
+        );
     }
 }

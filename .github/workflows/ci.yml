@@ -146,7 +146,7 @@ jobs:
           if [ "$EVENT" = workflow_dispatch ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           base="${PR_BASE:-${PUSH_BASE:-origin/main}}"
           if [[ "$base" =~ ^0+$ ]]; then base="$(git rev-parse HEAD^)"; fi
-          paths='^(crates/rlmesh-session(-core)?/|javascript/|examples/web/|scripts/check-wasm\.mjs$|Cargo\.(toml|lock)$|mise\.(toml|lock)$|clippy\.toml$|\.mise/tasks/(setup/js|build/js|check/sans-io|test/js/)|\.github/(workflows/ci\.yml|actions/setup/))'
+          paths='^(crates/rlmesh-(session(-core)?|tether)/|javascript/|examples/web/|scripts/check-wasm\.mjs$|Cargo\.(toml|lock)$|mise\.(toml|lock)$|clippy\.toml$|\.mise/tasks/(setup/js|build/js|check/sans-io|test/js/)|\.github/(workflows/ci\.yml|actions/setup/))'
           if git diff --name-only "$base"...HEAD | grep -qE "$paths"; then run=true; else run=false; fi
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
 
@@ -162,8 +162,8 @@ jobs:
         if: steps.changes.outputs.run == 'true'
         run: mise run --skip-tools setup:js
 
-      # rlmesh-session-core builds for wasm32-unknown-unknown and, without
-      # std, for riscv32imac-unknown-none-elf; clippy denies clock reads,
+      # rlmesh-session-core and rlmesh-tether build for wasm32-unknown-unknown
+      # and, without std, for riscv32imac-unknown-none-elf; clippy denies clock reads,
       # threads and sleeps (its clippy.toml), and no IO crate is a normal
       # dependency on the wasm target.
       - name: Sans-IO guard

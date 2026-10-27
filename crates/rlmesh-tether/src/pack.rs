@@ -19,21 +19,30 @@ pub enum PackError {
     Layout,
 }
 
-/// The dense size of fields of `lens` bytes.
-pub fn dense_len(lens: &[usize]) -> usize {
-    lens.iter().sum()
+/// The dense size of fields of `lens` bytes, or `None` on overflow.
+pub fn dense_len(lens: &[usize]) -> Option<usize> {
+    lens.iter().try_fold(0_usize, |acc, l| acc.checked_add(*l))
 }
 
-fn check(offsets: &[usize], lens: &[usize], stride: usize) -> Result<(), PackError> {
-    if offsets.len() != lens.len()
-        || offsets
-            .iter()
-            .zip(lens)
-            .any(|(o, l)| o.checked_add(*l).is_none_or(|end| end > stride))
-    {
+/// The offsets and lengths must describe a session layout
+/// (`wire::Layout::Packed`): as many offsets as lengths, each offset
+/// 8-aligned and past the previous field's end, and the last field inside
+/// the stride.
+fn check(offsets: &[usize], lens: &[usize], stride: usize) -> Result<usize, PackError> {
+    if offsets.len() != lens.len() {
         return Err(PackError::Layout);
     }
-    Ok(())
+    let mut end = 0_usize;
+    for (&o, &l) in offsets.iter().zip(lens) {
+        if o % 8 != 0 || o < end {
+            return Err(PackError::Layout);
+        }
+        end = o.checked_add(l).ok_or(PackError::Layout)?;
+    }
+    if end > stride {
+        return Err(PackError::Layout);
+    }
+    dense_len(lens).ok_or(PackError::Layout)
 }
 
 fn exact(want: usize, got: usize) -> Result<(), PackError> {
@@ -52,8 +61,8 @@ pub fn to_dense(
     lens: &[usize],
     dense: &mut [u8],
 ) -> Result<(), PackError> {
-    check(offsets, lens, aligned.len())?;
-    exact(dense_len(lens), dense.len())?;
+    let want = check(offsets, lens, aligned.len())?;
+    exact(want, dense.len())?;
     let mut at = 0;
     for (&o, &l) in offsets.iter().zip(lens) {
         dense[at..at + l].copy_from_slice(&aligned[o..o + l]);
@@ -70,8 +79,8 @@ pub fn to_aligned(
     lens: &[usize],
     aligned: &mut [u8],
 ) -> Result<(), PackError> {
-    check(offsets, lens, aligned.len())?;
-    exact(dense_len(lens), dense.len())?;
+    let want = check(offsets, lens, aligned.len())?;
+    exact(want, dense.len())?;
     aligned.fill(0);
     let mut at = 0;
     for (&o, &l) in offsets.iter().zip(lens) {
@@ -136,5 +145,14 @@ mod tests {
             to_aligned(&[0; 8], &[0], &[4, 4], &mut aligned),
             Err(PackError::Layout)
         );
+        // Overlapping, out of order or unaligned fields aren't a layout.
+        for offsets in [[0, 0], [8, 0], [0, 4]] {
+            assert_eq!(
+                to_aligned(&[0; 8], &offsets, &[4, 4], &mut aligned),
+                Err(PackError::Layout),
+                "{offsets:?}"
+            );
+        }
+        assert_eq!(dense_len(&[usize::MAX, 1]), None);
     }
 }
