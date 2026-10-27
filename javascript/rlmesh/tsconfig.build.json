@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "emitDeclarationOnly": true, "outDir": "dist", "rootDir": "src" },
-  "include": ["src/browser.ts", "src/node.ts"]
+  "include": ["src/browser.ts", "src/node.ts", "src/managed/index.ts", "src/managed/node.ts"]
 }

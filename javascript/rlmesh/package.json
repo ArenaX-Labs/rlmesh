@@ -8,7 +8,10 @@
     "dist"
   ],
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/managed.js",
+    "./dist/managed.node.js"
+  ],
   "exports": {
     ".": {
       "browser": {
@@ -18,6 +21,16 @@
       "default": {
         "types": "./dist/node.d.ts",
         "default": "./dist/node.js"
+      }
+    },
+    "./managed": {
+      "node": {
+        "types": "./dist/managed/node.d.ts",
+        "default": "./dist/managed.node.js"
+      },
+      "default": {
+        "types": "./dist/managed/index.d.ts",
+        "default": "./dist/managed.js"
       }
     },
     "./package.json": "./package.json"
