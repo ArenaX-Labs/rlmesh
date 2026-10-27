@@ -128,6 +128,10 @@ pub struct ModelService<H> {
     /// in the roster of each session it answers in.
     editions: (String, Vec<String>),
     in_flight: std::sync::atomic::AtomicU32,
+    /// Set by `close`: requests from then on are refused.
+    closing: std::sync::atomic::AtomicBool,
+    /// Notified when the last request in flight settles.
+    idle: tokio::sync::Notify,
     /// Whether the handler fuses a grouped predict, which batching needs.
     fuses: bool,
     batching: Option<Batching>,
@@ -181,6 +185,8 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             describe,
             editions: crate::editions::offer(None),
             in_flight: std::sync::atomic::AtomicU32::new(0),
+            closing: std::sync::atomic::AtomicBool::new(false),
+            idle: tokio::sync::Notify::new(),
             fuses,
             batching: fuses.then(|| Batching::new(BatchOptions::default(), None)),
         }
@@ -223,11 +229,16 @@ impl<H: ModelHandler + 'static> ModelService<H> {
     /// Answers one request, with what answering it measured.
     pub async fn answer(self: &Arc<Self>, request: ModelRequest) -> (ModelReply, EndpointTiming) {
         use std::sync::atomic::Ordering;
-        let in_flight = self.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+        let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         let mut timing = EndpointTiming {
             in_flight: Some(in_flight),
             ..EndpointTiming::default()
         };
+        if self.closing.load(Ordering::SeqCst) {
+            self.settle();
+            let closing = fault("UNAVAILABLE", "the model is closing", false);
+            return (ModelReply::Fault(closing), timing);
+        }
         let result = match request {
             ModelRequest::Resolve(resolve) => self.resolve(resolve).await.map(ModelReply::Resolved),
             ModelRequest::Predict(groups) => Ok(ModelReply::Predicted(
@@ -254,7 +265,7 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 "an invitation reaches a model through its session",
             )),
         };
-        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.settle();
         let reply = result.unwrap_or_else(|error| ModelReply::Fault(fault_of(&error)));
         (reply, timing)
     }
@@ -338,6 +349,17 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         Ok(crate::lockstep::meta_json::optional_to_json(
             options.as_ref(),
         ))
+    }
+
+    /// Ends one request's flight, waking `close` after the last.
+    fn settle(&self) {
+        if self
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+            == 1
+        {
+            self.idle.notify_waiters();
+        }
     }
 
     async fn route(&self, name: &str) -> Result<Arc<Route>, Error> {
@@ -669,8 +691,21 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         Ok(())
     }
 
-    /// Drops every route and closes the handler.
+    /// Refuses new requests, waits for the accepted ones to be answered
+    /// (their batches forwarded), then drops every route and closes the
+    /// handler.
     pub async fn close(&self) -> Result<(), Error> {
+        use std::sync::atomic::Ordering;
+        self.closing.store(true, Ordering::SeqCst);
+        loop {
+            let idle = self.idle.notified();
+            tokio::pin!(idle);
+            idle.as_mut().enable();
+            if self.in_flight.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            idle.await;
+        }
         // The batcher loop ends once the queue is gone.
         if let Some(batching) = &self.batching {
             batching

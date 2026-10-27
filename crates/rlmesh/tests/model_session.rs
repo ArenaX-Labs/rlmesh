@@ -844,3 +844,50 @@ async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_pr
     served.await.unwrap().unwrap();
     target.close().await.unwrap();
 }
+
+/// Logs its predicts and its close; each predict takes 200 ms.
+#[derive(Clone, Default)]
+struct Closing(Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+#[rlmesh::binding::async_trait]
+impl ModelHandler for Closing {
+    async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        self.0.lock().unwrap().push("predict");
+        observation.decoded_lanes()
+    }
+
+    async fn on_close(&mut self) -> rlmesh::Result<()> {
+        self.0.lock().unwrap().push("on_close");
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_settles_accepted_predicts_and_refuses_later_ones() {
+    let handler = Closing::default();
+    let service = Arc::new(ModelService::new(handler.clone(), String::new()));
+    service.answer(resolve("a", 1)).await;
+    let predict = || {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move {
+            service
+                .answer(ModelRequest::Predict(vec![group("a", &[1.0])]))
+                .await
+                .0
+        })
+    };
+    let accepted = predict();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let closed = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.close().await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let late = predict().await.unwrap();
+    closed.await.unwrap().unwrap();
+    let accepted = accepted.await.unwrap();
+    assert!(matches!(accepted, ModelReply::Predicted(_)), "{accepted:?}");
+    assert!(matches!(late, ModelReply::Fault(_)), "{late:?}");
+    assert_eq!(*handler.0.lock().unwrap(), ["predict", "on_close"]);
+}
