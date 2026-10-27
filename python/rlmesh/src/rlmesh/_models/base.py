@@ -1608,14 +1608,13 @@ class ModelBase(Generic[ObsT, ActT]):
                 )
             )
             first += count
-        results = self._run_routes(
+        results, interrupt = self._run_routes(
             routes,
             execution_horizon=execution_horizon,
             workflow_edition=workflow_edition,
         )
-        for result in results:
-            if isinstance(result, KeyboardInterrupt):
-                raise result
+        if interrupt is not None:
+            raise interrupt
         return cast("list[RunResult | Exception]", results)
 
     def _run_routes(
@@ -1624,15 +1623,16 @@ class ModelBase(Generic[ObsT, ActT]):
         *,
         execution_horizon: int | None = None,
         workflow_edition: str | None = None,
-    ) -> list[RunResult | BaseException]:
+    ) -> tuple[list[RunResult | BaseException], BaseException | None]:
         """:meth:`run_routes` with each route's own options.
 
         Each option dict holds ``episodes``, ``seeds``, ``base_seed``,
         ``seed_key``, ``max_episode_steps``, ``max_episode_seconds``,
         ``prefetch_lead``, ``trial_index_base`` and ``close_env`` for its env;
         ``rlmesh eval run`` drives a plan's workloads through it. On Ctrl-C a
-        route cut short holds the ``KeyboardInterrupt`` in its place rather
-        than raising it, so the caller can keep the routes that finished.
+        route cut short holds the ``KeyboardInterrupt`` in its place, and the
+        interrupt comes back beside the results rather than raised, so the
+        caller can keep the routes that finished before raising it.
         """
         from ._eval import NativeRunContext
         from ._facade import EnvTarget, result_from_native
@@ -1654,7 +1654,7 @@ class ModelBase(Generic[ObsT, ActT]):
         # own thread; the state from before the call is the one that stays.
         previous = self._trust_entrypoints, self._instruction, self._native_run
         try:
-            reports = self._install_worker().run_routes_facade(native_routes)
+            reports, interrupt = self._install_worker().run_routes_facade(native_routes)
         finally:
             self._trust_entrypoints, self._instruction, self._native_run = previous
         return [
@@ -1662,7 +1662,7 @@ class ModelBase(Generic[ObsT, ActT]):
             if isinstance(report, BaseException)
             else result_from_native(cast("dict[str, Any]", report))
             for report in reports
-        ]
+        ], interrupt
 
     def _serve_here(self, env_obj: object, workflow_edition: str | None) -> EnvServer:
         """Serve the local env ``env_obj`` in this process for one run or binding.

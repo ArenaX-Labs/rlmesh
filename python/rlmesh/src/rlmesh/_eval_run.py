@@ -123,6 +123,7 @@ def _run_wave(
 
     envs: list[tuple[dict[str, Any], Any]] = []
     results: list[rlmesh.RunResult | BaseException] = []
+    interrupt: BaseException | None = None
     try:
 
         def start(workload: dict[str, Any]) -> object:
@@ -146,7 +147,7 @@ def _run_wave(
                 )
         if not envs:
             return
-        results = served._served()._run_routes(  # pyright: ignore[reportPrivateUsage]
+        results, interrupt = served._served()._run_routes(  # pyright: ignore[reportPrivateUsage]
             [
                 (
                     env,
@@ -178,11 +179,9 @@ def _run_wave(
             # A killed env has nothing left to close.
             with contextlib.suppress(Exception):
                 env.close()
-    interrupt = None
     for (workload, _), result in zip(envs, results, strict=True):
         if isinstance(result, KeyboardInterrupt):
             # Ctrl-C cut it short; the workloads that finished are still recorded.
-            interrupt = result
             report(workload, status="failed", error="interrupted")
             continue
         if isinstance(result, BaseException):

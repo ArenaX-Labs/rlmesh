@@ -73,7 +73,7 @@ def test_ctrl_c_in_run_routes_keeps_the_routes_that_finished() -> None:
         server.start()
     model = rlmesh.Model(rlmesh.RANDOM_SAMPLE)
     try:
-        finished, cut = model._run_routes(  # pyright: ignore[reportPrivateUsage]
+        (finished, cut), interrupt = model._run_routes(  # pyright: ignore[reportPrivateUsage]
             [(server, {"episodes": 1}) for server in servers]
         )
         interrupts.calls = 0
@@ -84,5 +84,5 @@ def test_ctrl_c_in_run_routes_keeps_the_routes_that_finished() -> None:
             server.shutdown()
 
     assert isinstance(finished, rlmesh.RunResult) and finished.num_episodes == 1
-    assert type(cut) is KeyboardInterrupt
+    assert type(cut) is KeyboardInterrupt and type(interrupt) is KeyboardInterrupt
     assert type(caught.value) is KeyboardInterrupt

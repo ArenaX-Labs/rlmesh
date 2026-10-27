@@ -16,7 +16,7 @@ from rlmesh._models._eval import EpisodeResult
 def test_eval_run_keeps_at_most_max_envs_containers_alive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    live, peak = [0], [0]
+    live, peak, waves = [0], [0], [0]
 
     class Env:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -27,11 +27,14 @@ def test_eval_run_keeps_at_most_max_envs_containers_alive(
             live[0] -= 1
 
     class Served:
-        def _run_routes(self, routes: list[Any], **_: object) -> list[Any]:
+        def _run_routes(self, routes: list[Any], **_: object) -> tuple[list, Any]:
+            waves[0] += 1
             episode = EpisodeResult(
                 0, None, 5, 1.0, terminated=True, truncated=False, success=True
             )
-            return [rlmesh.RunResult((episode,)) for _ in routes]
+            results = [rlmesh.RunResult((episode,)) for _ in routes]
+            # Ctrl-C caught as the second wave's last route finished.
+            return results, KeyboardInterrupt() if waves[0] == 2 else None
 
     class Model:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -99,7 +102,11 @@ def test_eval_run_keeps_at_most_max_envs_containers_alive(
     }
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(job)))
 
-    assert _eval_run.main() == 0
+    with pytest.raises(KeyboardInterrupt):
+        _eval_run.main()
     assert peak[0] == 2 and live[0] == 0
+    # The interrupted wave's finished workloads are kept; the third never starts.
+    assert waves[0] == 2
     lines = [json.loads(line) for line in status.read_text().splitlines()]
-    assert [line["status"] for line in lines] == ["done"] * 5
+    assert [line["status"] for line in lines] == ["done"] * 4
+    assert all((tmp_path / "workloads" / f"w{i}").is_dir() for i in range(4))

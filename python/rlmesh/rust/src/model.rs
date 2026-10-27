@@ -88,6 +88,9 @@ struct PyPredict {
 
 pub(crate) type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
 
+/// Each route's result dict or exception, and the interrupt a signal raised.
+type RouteOutcomes = (Vec<Py<PyAny>>, Option<Py<PyAny>>);
+
 /// A facade call's parsed run options, and what a route adds to them.
 struct ParsedRunOptions {
     options: rlmesh::RunOptions<'static>,
@@ -1194,12 +1197,12 @@ impl PyModel {
 
     /// `Model.run_routes`: drives every `(target, options)` route at once
     /// and returns, per route, its result dict or the exception it failed
-    /// with. A signal interrupts every route and raises.
+    /// with, and the interrupt a signal raised, if one did.
     fn run_routes_facade(
         &self,
         py: Python<'_>,
         routes: Vec<(Py<PyAny>, Bound<'_, pyo3::types::PyDict>)>,
-    ) -> PyResult<Vec<Py<PyAny>>> {
+    ) -> PyResult<RouteOutcomes> {
         let exclusive = self.served.is_none() && !self.random;
         if exclusive && routes.len() > 1 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -1245,9 +1248,11 @@ impl PyModel {
             })
         });
         // Ctrl-C cancels every route: those it cut short hold the interrupt,
-        // so the caller keeps the ones that finished before raising it.
+        // so the caller keeps the ones that finished before raising it. It is
+        // returned on its own too: the last route may have finished past its
+        // last cancellation check after the signal was caught.
         let interrupt = interrupted.lock().unwrap_or_else(|e| e.into_inner()).take();
-        results
+        let outcomes = results
             .into_iter()
             .zip(errors)
             .map(|(result, error)| match (result, &interrupt) {
@@ -1265,7 +1270,11 @@ impl PyModel {
                     .into_value(py)
                     .into_any()),
             })
-            .collect()
+            .collect::<PyResult<_>>()?;
+        Ok((
+            outcomes,
+            interrupt.map(|interrupt| interrupt.into_value(py).into_any()),
+        ))
     }
 
     #[pyo3(signature = (target, execution_horizon=1, workflow_edition=None, close_env=false))]
@@ -1553,7 +1562,7 @@ class PyModel:
     def random_sample() -> PyModel: ...
     def bind(self, env_address: str, execution_horizon: int = 1, workflow_edition: str | None = None) -> PyBinding: ...
     def run_facade(self, target: object, relay: object, options: dict[str, typing.Any]) -> dict[str, typing.Any]: ...
-    def run_routes_facade(self, routes: list[tuple[object, dict[str, typing.Any]]]) -> list[typing.Any]: ...
+    def run_routes_facade(self, routes: list[tuple[object, dict[str, typing.Any]]]) -> tuple[list[typing.Any], BaseException | None]: ...
     def bind_facade(self, target: object, execution_horizon: int = 1, workflow_edition: str | None = None, close_env: bool = False) -> PyBinding: ...
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
