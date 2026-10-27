@@ -143,7 +143,7 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE: ${{ github.event.before }}
         run: |
-          if [ "$EVENT" = workflow_dispatch ]; then printf 'run=true\nsansio=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$EVENT" = workflow_dispatch ]; then printf 'run=true\nsansio=true\ntether=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
           base="${PR_BASE:-${PUSH_BASE:-origin/main}}"
           if [[ "$base" =~ ^0+$ ]]; then base="$(git rev-parse HEAD^)"; fi
           paths='^(crates/rlmesh-session(-core)?/|javascript/|examples/web/|scripts/check-wasm\.mjs$|Cargo\.(toml|lock)$|mise\.(toml|lock)$|clippy\.toml$|\.mise/tasks/(setup/js|build/js|check/sans-io|test/js/)|\.github/(workflows/ci\.yml|actions/setup/))'
@@ -151,10 +151,12 @@ jobs:
           if grep -qE "$paths" <<<"$changed"; then run=true; else run=false; fi
           # The tether crate needs only the sans-IO guard, not the browser build.
           if [ "$run" = true ] || grep -qE '^crates/rlmesh-tether/' <<<"$changed"; then sansio=true; else sansio=false; fi
-          printf 'run=%s\nsansio=%s\n' "$run" "$sansio" | tee -a "$GITHUB_OUTPUT"
+          # The Arduino codec runs the tether's conformance vectors (g++ only).
+          if grep -qE '^(crates/rlmesh-tether/|embedded/arduino/|\.mise/tasks/test/tether/)' <<<"$changed"; then tether=true; else tether=false; fi
+          printf 'run=%s\nsansio=%s\ntether=%s\n' "$run" "$sansio" "$tether" | tee -a "$GITHUB_OUTPUT"
 
       - name: Setup toolchain
-        if: steps.changes.outputs.sansio == 'true'
+        if: steps.changes.outputs.sansio == 'true' || steps.changes.outputs.tether == 'true'
         uses: ./.github/actions/setup
         with:
           rust-components: "true"
@@ -172,6 +174,13 @@ jobs:
       - name: Sans-IO guard
         if: steps.changes.outputs.sansio == 'true'
         run: mise run --skip-tools check:sans-io
+
+      # The Arduino tether codec, built on the host as a board would build it
+      # (C++11, no exceptions, RTTI or heap), against the same vectors.json
+      # the Rust crate checks: the two implementations can't drift apart.
+      - name: Arduino tether codec against the vectors
+        if: steps.changes.outputs.tether == 'true'
+        run: mise run --skip-tools test:tether:cpp
 
       # wasm-bindgen-test under Node (no browser): decode, receive rules,
       # leases, garbage input as an error, and the std::time::Instant canary.
