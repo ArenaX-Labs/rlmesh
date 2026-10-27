@@ -211,21 +211,15 @@ impl WorkloadRecord {
             counted.iter().map(|e| e.reward).sum::<f64>() / counted.len() as f64
         }
     }
-    /// Success fraction; absent if no counted episode or any lacks success.
+    /// Success fraction of metric-counted episodes, by
+    /// [`RunResult::success_rate`](crate::RunResult::success_rate)'s rule.
     pub fn success_rate(&self) -> Option<f64> {
-        let counted: Vec<_> = self
-            .episodes
-            .iter()
-            .filter(|e| e.included_in_metrics)
-            .collect();
-        if counted.is_empty() || counted.iter().any(|e| e.success.is_none()) {
-            None
-        } else {
-            Some(
-                counted.iter().filter(|e| e.success == Some(true)).count() as f64
-                    / counted.len() as f64,
-            )
-        }
+        crate::run::success_rate_of(
+            self.episodes
+                .iter()
+                .filter(|e| e.included_in_metrics)
+                .map(|e| e.success),
+        )
     }
     /// Steps over all episodes, including discarded ones.
     pub fn total_steps(&self) -> i64 {

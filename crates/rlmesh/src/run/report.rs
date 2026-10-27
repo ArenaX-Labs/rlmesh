@@ -257,9 +257,10 @@ impl Outcomes {
         self.reward += episode.reward;
     }
 
-    /// The success share, or `None` when no episode reported an outcome.
+    /// The success share by [`RunResult::success_rate`]'s rule, or `None`
+    /// when no episode reported an outcome.
     pub fn success_rate(&self) -> Option<f64> {
-        (self.unknown < self.episodes).then(|| self.successes as f64 / self.episodes as f64)
+        crate::run::success_rate(self.successes, self.unknown, self.episodes)
     }
 
     /// The Wilson 95% interval of [`Self::success_rate`].

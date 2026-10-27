@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from .._models._eval import success_rate
 from .constants import SCHEMA
 
 if TYPE_CHECKING:
@@ -158,14 +159,11 @@ class WorkloadRecord:
     def success_rate(self) -> float | None:
         """Fraction of metric-counted episodes the env reported as a success.
 
-        ``None`` when no episode counts or any counted episode lacks the
-        env-reported outcome, the same rule as :attr:`rlmesh.RunResult.success_rate`,
-        so an SDK metric and an uploaded ``successRate`` cannot drift apart.
+        The same rule as :attr:`rlmesh.RunResult.success_rate` (an unknown
+        outcome counts as a failure; ``None`` when no counted episode reported
+        one), so an SDK metric and an uploaded ``successRate`` cannot drift apart.
         """
-        counted = self._metric_episodes()
-        if not counted or any(e.success is None for e in counted):
-            return None
-        return sum(1 for e in counted if e.success) / len(counted)
+        return success_rate(e.success for e in self._metric_episodes())
 
     @property
     def total_steps(self) -> int:

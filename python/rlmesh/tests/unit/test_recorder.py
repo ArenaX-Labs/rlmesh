@@ -140,8 +140,8 @@ def test_included_in_metrics_excludes_from_aggregates() -> None:
     assert wl.episodes[0].included_in_metrics is False
 
 
-def test_success_rate_is_none_when_an_episode_has_no_reported_outcome() -> None:
-    """success=None is unknown, not a failure: the exported successRate is null."""
+def test_success_rate_counts_an_episode_with_no_reported_outcome_as_a_failure() -> None:
+    """success=None counts as a failure beside a reported outcome, as on the platform."""
     rec = Recorder()
     rec.add(
         _run(
@@ -150,8 +150,8 @@ def test_success_rate_is_none_when_an_episode_has_no_reported_outcome() -> None:
         model="m",
         env="e",
     )
-    assert rec.workloads[0].success_rate is None
-    assert rec.workloads[0].to_dict()["metrics"]["successRate"] is None
+    assert rec.workloads[0].success_rate == 0.5
+    assert rec.workloads[0].to_dict()["metrics"]["successRate"] == 0.5
 
 
 def test_export_folder(tmp_path: Path) -> None:

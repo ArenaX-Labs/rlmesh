@@ -85,6 +85,18 @@ def episode_success(info: Mapping[str, Any]) -> bool | None:
     return None
 
 
+def success_rate(outcomes: Iterable[bool | None]) -> float | None:
+    """Successes over episodes, an unknown outcome counting as a failure.
+
+    ``None`` when no episode reported an outcome. The same rule as the Rust
+    ``RunResult::success_rate`` and the managed platform's ``successRate``.
+    """
+    flags = list(outcomes)
+    if all(flag is None for flag in flags):
+        return None
+    return sum(1 for flag in flags if flag) / len(flags)
+
+
 def episode_outcome(terminated: bool, truncated: bool, info: Mapping[str, Any]) -> str:
     """The viewer's word for how a step ended its episode ("" while it runs)."""
     if not (terminated or truncated):
@@ -227,15 +239,14 @@ class RunResult:
 
         Counts the env-reported task outcome only (the final step's
         ``info["is_success"]`` / ``["success"]`` / ``["task_success"]``,
-        captured per episode in :attr:`EpisodeResult.success`).
-        ``None`` when the run is empty or any episode lacks that signal: an
-        unknown outcome is never inferred from ``terminated``. Read
-        :attr:`EpisodeResult.terminated` yourself if a terminal state is the
-        metric you want.
+        captured per episode in :attr:`EpisodeResult.success`), by the
+        managed platform's rule that ``rlmesh eval report`` shares: an episode
+        without that signal counts as a failure, and the rate is ``None`` when
+        no episode reported one. An outcome is never inferred from
+        ``terminated``; read :attr:`EpisodeResult.terminated` yourself if a
+        terminal state is the metric you want.
         """
-        if not self.episodes or any(e.success is None for e in self.episodes):
-            return None
-        return sum(1 for e in self.episodes if e.success) / len(self.episodes)
+        return success_rate(e.success for e in self.episodes)
 
     def format_telemetry(self) -> str:
         """The :attr:`telemetry` rows as an aligned text table.

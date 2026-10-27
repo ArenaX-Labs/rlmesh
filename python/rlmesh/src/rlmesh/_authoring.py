@@ -59,7 +59,8 @@ class EnvFactory(ABC):
     The first key holding a bool, integer, or float decides -- a number counts as
     success when non-zero -- and keys holding any other kind (a string such as
     ``"False"``, ``None``, a list) are skipped. With none of them the outcome is
-    unknown, never inferred from ``terminated``, and ``success_rate`` is ``None``.
+    unknown, never inferred from ``terminated``: ``success_rate`` counts it as a
+    failure, and is ``None`` when no episode reported an outcome.
     """
 
     tags: ClassVar[EnvTags | None] = None

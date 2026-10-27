@@ -29,6 +29,7 @@ pub use hooks::{RunContext, RunFrame, RunHooks};
 pub(crate) use options::check_horizon;
 pub use options::{BindOptions, RunOptions, resolve_execution_horizon};
 pub use results::{EpisodeResult, RunResult, RunResultSaveOptions, StepEvent, TelemetryRow};
+pub(crate) use results::{success_rate, success_rate_of};
 pub use targets::{EnvTarget, ModelTarget, RANDOM_SAMPLE, RandomSample};
 
 pub(crate) use native::Mode;

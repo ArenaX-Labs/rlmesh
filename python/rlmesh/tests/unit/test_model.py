@@ -27,7 +27,7 @@ def test_success_rate_counts_only_the_env_reported_outcome() -> None:
     assert RunResult(episodes).success_rate == pytest.approx(0.5)
 
 
-def test_success_rate_is_none_when_any_episode_lacks_a_signal() -> None:
+def test_success_rate_counts_a_missing_signal_as_a_failure() -> None:
     from rlmesh import RunResult
     from rlmesh._models._eval import EpisodeResult
 
@@ -36,7 +36,7 @@ def test_success_rate_is_none_when_any_episode_lacks_a_signal() -> None:
     )
     # terminated, but the env never said whether that was a success
     unknown = EpisodeResult(1, None, 5, 1.0, terminated=True, truncated=False)
-    assert RunResult((reported, unknown)).success_rate is None
+    assert RunResult((reported, unknown)).success_rate == pytest.approx(0.5)
     assert RunResult((unknown,)).success_rate is None
     assert RunResult(()).success_rate is None
     assert RunResult((reported,)).success_rate == 1.0

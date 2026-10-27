@@ -153,6 +153,27 @@ impl Default for RunResultSaveOptions {
     }
 }
 
+/// The success rate, by the managed platform's rule: successes over counted
+/// episodes, an episode whose env reported no outcome (`unknown`) counting as
+/// a failure. `None` when no episode reported an outcome, so an env without
+/// the signal reads as unknown rather than 0%. Errored episodes are not
+/// counted at all (`includedInMetrics: false`); truncated ones are, as
+/// failures unless the env reported a success.
+pub(crate) fn success_rate(successes: u64, unknown: u64, episodes: u64) -> Option<f64> {
+    (unknown < episodes).then(|| successes as f64 / episodes as f64)
+}
+
+/// [`success_rate`] over per-episode outcomes.
+pub(crate) fn success_rate_of(outcomes: impl IntoIterator<Item = Option<bool>>) -> Option<f64> {
+    let (mut successes, mut unknown, mut episodes) = (0, 0, 0);
+    for outcome in outcomes {
+        episodes += 1;
+        successes += u64::from(outcome == Some(true));
+        unknown += u64::from(outcome.is_none());
+    }
+    success_rate(successes, unknown, episodes)
+}
+
 impl RunResult {
     /// Write this result as an `rlmesh.result.v1` bundle and return its path:
     /// one workload of `options.model` on `options.env`, a folder, or a zip
@@ -211,18 +232,11 @@ impl RunResult {
             / self.episodes.len() as f64
     }
 
-    /// The fraction of episodes the env reported a success, or `None` when
-    /// the run is empty or any episode lacks the signal.
+    /// The fraction of episodes the env reported a success, by the managed
+    /// platform's rule: an episode without the signal counts as a failure,
+    /// and the rate is `None` when no episode reported one.
     pub fn success_rate(&self) -> Option<f64> {
-        if self.episodes.is_empty() || self.episodes.iter().any(|e| e.success.is_none()) {
-            return None;
-        }
-        let successes = self
-            .episodes
-            .iter()
-            .filter(|episode| episode.success == Some(true))
-            .count();
-        Some(successes as f64 / self.episodes.len() as f64)
+        success_rate_of(self.episodes.iter().map(|e| e.success))
     }
 
     /// The telemetry rows as an aligned text table.
