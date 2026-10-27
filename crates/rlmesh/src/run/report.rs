@@ -42,7 +42,8 @@ pub struct BundleWorkload {
 
 /// Every workload the bundles at `paths` hold, in order. A path is a bundle
 /// (a folder holding `result.json`, or a zip), or a folder of bundles, read
-/// in name order.
+/// in name order; `eval run`'s staging folders (`.<id>.partial`, a workload
+/// still being written) in it are skipped.
 pub fn read_bundles<P: AsRef<Path>>(
     paths: impl IntoIterator<Item = P>,
 ) -> Result<Vec<BundleWorkload>> {
@@ -53,6 +54,11 @@ pub fn read_bundles<P: AsRef<Path>>(
             let mut bundles = std::fs::read_dir(path)
                 .map_err(|err| Error::Os(format!("{}: {err}", path.display())))?
                 .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|p| {
+                    !p.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with('.') && name.ends_with(".partial"))
+                })
                 .filter(|p| {
                     p.join("result.json").is_file()
                         || (p.is_file()
@@ -646,6 +652,16 @@ mod tests {
         one.add(&run(&[None], (0, 0.0)), "a", "env", excluded)
             .unwrap();
         export(one, "2-one.zip");
+        // A workload `eval run` is still staging is not a bundle yet.
+        let mut staged = Recorder::new(Default::default()).unwrap();
+        add(
+            &mut staged,
+            "a",
+            Some("s2"),
+            "t1",
+            &run(&[Some(true)], (0, 0.0)),
+        );
+        export(staged, ".a__t1.partial");
 
         let loaded = RunResult::load(dir.path()).unwrap();
         assert_eq!(
