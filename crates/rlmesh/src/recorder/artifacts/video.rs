@@ -292,22 +292,26 @@ impl Video {
     pub(super) fn finish(&self, episode: EpisodeVideo, root: &Path) -> Vec<EpisodeRecording> {
         let mut recordings = Vec::new();
         for ((camera, stream), mut writer) in episode.active {
-            if let Err(err) = writer.writer.finish() {
-                let _ = std::fs::remove_file(&writer.path);
-                warn(format!(
-                    "recorder: dropping video {}: {err}",
-                    writer.path.display()
-                ));
-                continue;
-            }
+            // The encoded dimensions: AV1 crops odd ones, H.264 pads them.
+            let stats = match writer.writer.finish() {
+                Ok(stats) => stats,
+                Err(err) => {
+                    let _ = std::fs::remove_file(&writer.path);
+                    warn(format!(
+                        "recorder: dropping video {}: {err}",
+                        writer.path.display()
+                    ));
+                    continue;
+                }
+            };
             recordings.push(EpisodeRecording {
                 camera,
                 stream,
                 path: relative(&writer.path, root),
                 frames: writer.frames,
                 fps: self.fps,
-                width: writer.width as u32,
-                height: writer.height as u32,
+                width: stats.width,
+                height: stats.height,
             });
         }
         for ((camera, stream), raw) in episode.aliased {

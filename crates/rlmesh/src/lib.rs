@@ -1,7 +1,9 @@
 //! Rust SDK for RLMesh model-environment evaluation workflows.
 //!
-//! RLMesh connects a model to an environment over gRPC. This crate is the
-//! Rust facade over the transport, wire, and runtime crates. RLMesh uses
+//! RLMesh connects a model to an environment over a session: participant
+//! addresses such as `:0/env` (the `lockstep` feature), or `tcp://` and
+//! `unix://` addresses on the v1 gRPC bridge. This crate is the Rust facade
+//! over the transport, wire, and runtime crates. RLMesh uses
 //! the same nouns and constructs in every language, following each
 //! language's conventions. Use this crate to serve or drive environments
 //! and models from Rust.

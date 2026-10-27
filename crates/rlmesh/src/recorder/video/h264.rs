@@ -103,11 +103,22 @@ impl H264Writer {
             .spawn()
             .map_err(|err| io::Error::other(format!("start {}: {err}", program.display())))?;
         let stdin = child.stdin.take();
-        // Drained so a chatty ffmpeg never blocks on a full stderr pipe.
+        // Drained so a chatty ffmpeg never blocks on a full stderr pipe,
+        // keeping only its tail as it goes.
         let stderr = child.stderr.take().map(|mut pipe| {
             std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = pipe.read_to_end(&mut buf);
+                let (mut buf, mut chunk) = (Vec::new(), [0; 8192]);
+                loop {
+                    match pipe.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(read) => buf.extend_from_slice(&chunk[..read]),
+                        Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                    if buf.len() > 2 * STDERR_LIMIT {
+                        buf.drain(..buf.len() - STDERR_LIMIT);
+                    }
+                }
                 buf.drain(..buf.len().saturating_sub(STDERR_LIMIT));
                 buf
             })
