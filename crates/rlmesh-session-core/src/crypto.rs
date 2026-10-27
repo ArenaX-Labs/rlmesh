@@ -119,9 +119,11 @@ impl StaticKeypair {
         &self.public
     }
 
-    /// The private key's bytes, for storage (wiped when dropped).
-    pub fn private_bytes(&self) -> zeroize::Zeroizing<[u8; 32]> {
-        zeroize::Zeroizing::new(self.secret.to_bytes())
+    /// Copies the private key into `out`, for storage. It is copied from
+    /// a reference, so no temporary copy is left behind; wiping `out` is
+    /// the caller's job (e.g. a `Zeroizing` buffer).
+    pub fn write_private(&self, out: &mut [u8; 32]) {
+        out.copy_from_slice(self.secret.as_bytes());
     }
 
     fn private(&self) -> &[u8; 32] {

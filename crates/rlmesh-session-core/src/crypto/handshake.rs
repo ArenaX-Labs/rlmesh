@@ -79,7 +79,7 @@ pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10]);
 /// type ([`HostKeys`]), so neither side can make a second sender for the
 /// other's key.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0599
 /// # fn f(keys: rlmesh_session_core::crypto::handshake::ParticipantKeys) {
 /// let _ = keys.into_host(1, 2); // a participant never sends under `k_down`
 /// # }
@@ -110,7 +110,7 @@ impl ParticipantKeys {
 /// The host's result of an IK handshake ([`IkResponder::accept`]): the
 /// keys leave only as the host's sender (`k_down`) and receiver (`k_up`).
 ///
-/// ```compile_fail
+/// ```compile_fail,E0599
 /// # fn f(keys: rlmesh_session_core::crypto::handshake::HostKeys) {
 /// let _ = keys.into_participant(1, 2); // the host never sends under `k_up`
 /// # }

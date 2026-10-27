@@ -424,7 +424,6 @@ impl LaptopCommit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::Key;
     use crate::crypto::noise::low_order;
     use crate::crypto::sealed::{Kind, OpenError, SealError};
     use crate::crypto::test_rng::TestRng;
@@ -566,19 +565,9 @@ mod tests {
             d.sender.seal(Kind::PairNonce, PAIR, b"x"),
             Err(SealError::WrongKind(Kind::PairNonce))
         );
-        // A daemon-only kind sealed under the laptop's key (as if the
-        // laptop's sender allowed it) is refused by the daemon's receiver.
-        let mut forged = SealSender::new(
-            LAPTOP_KEY_ID,
-            Key::from_bytes([0; 32]),
-            KindSet::PAIRING,
-            Security::Seal,
-        );
-        let mut reveal = forged.seal(Kind::PairReveal, PAIR, b"x").unwrap();
-        assert_eq!(
-            d.receiver.open(PAIR, &mut reveal),
-            Err(OpenError::WrongKind(Kind::PairReveal))
-        );
+        // A daemon-only kind authenticated under the real laptop key is
+        // refused by the daemon's receiver: `tests/crypto_vectors.rs`, which
+        // has that key from the raw split.
         assert!(l.sender.seal(Kind::CtlRequest, PAIR, b"x").is_err());
         let mut wait = l.sender.seal(Kind::PairWait, PAIR, b"").unwrap();
         // The laptop can't open its own message: it's under key 1, not 2.

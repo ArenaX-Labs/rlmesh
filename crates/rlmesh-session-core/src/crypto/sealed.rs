@@ -185,8 +185,10 @@ pub struct KindSet(u32);
 impl KindSet {
     /// Every kind.
     pub const ALL: Self = Self(((1 << KINDS) - 1) << 1);
-    /// The pairing kinds, 16–19.
-    pub const PAIRING: Self = Self::of_const(&[16, 17, 18, 19]);
+    /// The pairing kinds, 16–19, both directions. Tests only: a real link
+    /// splits them by direction (`pairing::LAPTOP_KINDS`, `DAEMON_KINDS`).
+    #[cfg(test)]
+    pub(crate) const PAIRING: Self = Self::of_const(&[16, 17, 18, 19]);
 
     /// Exactly these kinds.
     pub fn of(kinds: &[Kind]) -> Self {

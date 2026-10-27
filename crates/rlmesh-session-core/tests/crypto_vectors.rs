@@ -633,6 +633,21 @@ fn the_pairing_vector_matches_snow_and_blake2_directly() {
     );
     let mut msg = unhex(&v["sealed_pair_nonce"]);
     assert_eq!(up.open(keyexpr, &mut msg).expect("open").body, ni);
+    // A daemon-only kind, authenticated under the real laptop key (key 1),
+    // is refused by the daemon's receiver for that key.
+    let mut forger = SealSender::new(
+        1,
+        Key::from_bytes(k1),
+        KindSet::of_const(&[18]),
+        Security::Seal,
+    );
+    let mut reveal = forger.seal(Kind::PairReveal, keyexpr, b"x").expect("seal");
+    assert_eq!(
+        up.open(keyexpr, &mut reveal),
+        Err(rlmesh_session_core::crypto::sealed::OpenError::WrongKind(
+            Kind::PairReveal
+        ))
+    );
     let mut down = SealReceiver::new(
         2,
         Key::from_bytes(k2),
