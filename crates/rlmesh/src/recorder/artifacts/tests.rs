@@ -404,3 +404,139 @@ fn selection_and_when_rules() {
         "episodes/ep000012/video/wrist_cam.perturbed.mp4"
     );
 }
+
+/// Two lanes under `NEXT_STEP` autoreset: lane 0's episodes end on their
+/// first step, lane 1's on their third, and each restarts on the next.
+struct Staggered {
+    counts: [u32; 2],
+    ended: [bool; 2],
+}
+impl crate::VectorEnv for Staggered {
+    fn num_envs(&self) -> u64 {
+        2
+    }
+    fn single_observation_space(&self) -> Space {
+        BoxSpace::new(-1., 1., vec![1], Default::default())
+            .unwrap()
+            .into()
+    }
+    fn single_action_space(&self) -> Space {
+        BoxSpace::new(-1., 1., vec![1], Default::default())
+            .unwrap()
+            .into()
+    }
+    fn reset(
+        &mut self,
+        _: Option<crate::VectorSeed>,
+        _: Option<&InfoDict>,
+    ) -> Result<(Value, InfoDict)> {
+        *self = Self {
+            counts: [0; 2],
+            ended: [false; 2],
+        };
+        Ok((lanes(2), InfoDict::new()))
+    }
+    fn step(&mut self, _: Value) -> Result<(Value, Vec<f64>, Vec<bool>, Vec<bool>, InfoDict)> {
+        let mut terminated = vec![false; 2];
+        for (lane, length) in [1, 3].into_iter().enumerate() {
+            if self.ended[lane] {
+                (self.counts[lane], self.ended[lane]) = (0, false);
+            } else {
+                self.counts[lane] += 1;
+                self.ended[lane] = self.counts[lane] == length;
+                terminated[lane] = self.ended[lane];
+            }
+        }
+        Ok((
+            lanes(2),
+            vec![1.; 2],
+            terminated,
+            vec![false; 2],
+            InfoDict::new(),
+        ))
+    }
+    fn metadata(&self) -> Option<crate::Metadata> {
+        let mut metadata = crate::Metadata::new();
+        metadata.insert("autoreset_mode", Value::Text("NextStep".into()));
+        Some(metadata)
+    }
+}
+
+/// `count` lanes of a `float32 [1]` zero.
+fn lanes(count: usize) -> Value {
+    Value::Tensor(Tensor::new(&vec![0; 4 * count], &[count, 1], DType::Float32).unwrap())
+}
+
+#[test]
+fn a_next_step_autoreset_roll_is_not_a_trajectory_row() {
+    let mut recorder = Recorder::new(RecorderOptions::default()).unwrap();
+    let record: RecordSpec =
+        serde_json::from_value(json!({"trajectory": {"action": "raw"}})).unwrap();
+    let mut capture = recorder
+        .capture(
+            "policy",
+            "staggered",
+            RecorderCaptureOptions {
+                record: Some(record),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let model = Model::new(
+        |_: Value| Ok(lanes(2)),
+        ModelOptions {
+            spec: Some(crate::NO_ADAPTER),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    model
+        .run(
+            crate::EnvTarget::vector(&mut Staggered {
+                counts: [0; 2],
+                ended: [false; 2],
+            }),
+            RunOptions {
+                episodes: Some(4),
+                hooks: Some(&mut *capture),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let bundle = recorder
+        .export_(out.path().join("bundle"), RecorderExportOptions::default())
+        .unwrap();
+    let root = bundle.join("workloads/c0001/attempts/a001/episodes");
+    let mut rows = BTreeSet::new();
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 4);
+    for dir in std::fs::read_dir(&root).unwrap() {
+        let dir = dir.unwrap().path();
+        let episode = read_json(&dir.join("episode.json"));
+        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+            std::fs::File::open(dir.join("trajectory.parquet")).unwrap(),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        let steps: Vec<i64> = reader
+            .flat_map(|batch| {
+                let batch = batch.unwrap();
+                batch
+                    .column_by_name("step")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        rows.insert((episode["envIndex"].as_i64().unwrap(), steps));
+    }
+    // One row per step, numbered within its episode.
+    assert_eq!(
+        rows,
+        [(0, vec![1]), (1, vec![1, 2, 3])].into_iter().collect()
+    );
+}

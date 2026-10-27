@@ -114,6 +114,9 @@ struct Episode {
     /// Present only for a selected episode of a video-recording spec.
     video: Option<EpisodeVideo>,
     open: Option<StepRow>,
+    /// Steps closed so far: rows number the episode's own steps, where a
+    /// step event's `step` counts its group's first lane.
+    steps: i64,
     observed_at: Option<Instant>,
     action_at: Option<Instant>,
     invariants: EpisodeInvariants,
@@ -217,6 +220,7 @@ impl EpisodeArtifacts {
                 trajectory,
                 video,
                 open: None,
+                steps: 0,
                 observed_at: None,
                 action_at: None,
                 invariants: EpisodeInvariants::default(),
@@ -422,13 +426,20 @@ impl EpisodeArtifacts {
             else {
                 continue;
             };
+            // A NEXT_STEP roll is the next episode's reset, not a step of
+            // this one: the row it opened is dropped with it.
+            if event.autoreset_roll.get(lane).copied().unwrap_or(false) {
+                episode.open = None;
+                continue;
+            }
             if let Some(info) = &info_value {
                 episode.invariants.step_info(info);
             }
             let Some(mut row) = episode.open.take() else {
                 continue;
             };
-            row.step = event.step;
+            episode.steps += 1;
+            row.step = episode.steps;
             row.reward = trajectory
                 .reward
                 .then(|| event.rewards.get(lane).copied())
