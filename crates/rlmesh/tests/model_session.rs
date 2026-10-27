@@ -644,6 +644,58 @@ async fn the_window_bounds_how_long_a_lone_request_waits() {
     assert!(timing.queue_ns.unwrap() >= 200_000_000, "{timing:?}");
 }
 
+/// Fuses as [`Fused`] does, taking 200 ms per call.
+#[derive(Clone, Default)]
+struct Slow(Fused);
+
+#[rlmesh::binding::async_trait]
+impl ModelHandler for Slow {
+    async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        self.0.predict(observation).await
+    }
+
+    async fn predict_grouped(
+        &mut self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<rlmesh::Result<PredictFrames>> {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        self.0.predict_grouped(observations).await
+    }
+
+    fn fuses_groups(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batchs_inference_time_is_split_across_its_requests() {
+    let slow = Slow::default();
+    let service = batched(
+        slow.clone(),
+        rlmesh::BatchOptions {
+            batch_window_ms: 300,
+            ..Default::default()
+        },
+    );
+    service.answer(resolve("a", 1)).await;
+    service.answer(resolve("b", 1)).await;
+    let calls = ["a", "b"].map(|route| {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move {
+            service
+                .answer(ModelRequest::Predict(vec![group(route, &[1.0])]))
+                .await
+                .1
+        })
+    });
+    for call in calls {
+        let user = call.await.unwrap().user_ns.unwrap();
+        // Half of the one 200 ms forward each, not all of it.
+        assert!((100_000_000..200_000_000).contains(&user), "user_ns {user}");
+    }
+    assert_eq!(slow.0.calls(), vec![2], "one handler call for both");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_model_that_does_not_fuse_is_not_batched() {
     // Echo runs a grouped predict one route at a time.

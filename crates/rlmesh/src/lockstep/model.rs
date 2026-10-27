@@ -586,8 +586,19 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         for (reply, count, waited) in members {
             let mine = outcomes.by_ref().take(count).collect();
             let queued = ns(waited).unwrap_or(0) + timing.queue_ns.unwrap_or(0);
+            // The batch's work is shared: each request is charged its groups'
+            // share, as the platform's middleman amortises a grouped reply.
+            // Waits are each request's own and pass through whole.
+            let share = |ns: Option<u64>| {
+                ns.map(|ns| (u128::from(ns) * count as u128 / size.max(1) as u128) as u64)
+                    .filter(|ns| *ns != 0)
+            };
             let timing = EndpointTiming {
                 queue_ns: Some(queued).filter(|ns| *ns != 0),
+                decode_ns: share(timing.decode_ns),
+                user_ns: share(timing.user_ns),
+                encode_ns: share(timing.encode_ns),
+                adapter_ns: share(timing.adapter_ns),
                 ..timing
             };
             let _ = reply.send((mine, timing));
