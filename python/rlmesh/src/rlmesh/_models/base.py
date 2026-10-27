@@ -1570,7 +1570,9 @@ class ModelBase(Generic[ObsT, ActT]):
 
         Ctrl-C (or a route's own ``KeyboardInterrupt``) stops every route and
         raises ``KeyboardInterrupt`` once the routes have wound down. A route's
-        env, model or hooks cannot call ``run_routes`` themselves.
+        env, model or hooks cannot call ``run_routes`` themselves; the refusal
+        sees only the route's own thread, so a model callback run on another
+        thread is not refused and must not call it either.
         """
         targets = list(envs)
         if episodes is not None and seeds is not None and len(seeds) != episodes:
