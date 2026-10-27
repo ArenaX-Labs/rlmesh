@@ -345,9 +345,12 @@ impl RouteState {
             .enumerate()
             .map(|(i, _)| slots.get(i).map(|slot| *slot as i64 + 1))
             .collect();
-        let (record_ids, started) =
-            self.records
-                .ensure_for_slots(&episode_ids, started_from_auto_reset, &indices);
+        let (record_ids, started) = self.records.ensure_for_slots(
+            positions,
+            &episode_ids,
+            started_from_auto_reset,
+            &indices,
+        );
         self.sync_slots(
             positions,
             episode_ids,
@@ -375,7 +378,9 @@ impl RouteState {
             .enumerate()
             .map(|(i, _)| slots.get(i).copied().flatten().map(|slot| slot as i64 + 1))
             .collect();
-        let (record_ids, started) = self.records.ensure_for_slots(&episode_ids, true, &indices);
+        let (record_ids, started) =
+            self.records
+                .ensure_for_slots(positions, &episode_ids, true, &indices);
         self.sync_slots(positions, episode_ids, record_ids, false, true);
         started
             .into_iter()

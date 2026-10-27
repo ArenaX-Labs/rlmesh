@@ -21,19 +21,20 @@ pub(crate) struct EpisodeRecordRegistry {
 }
 
 impl EpisodeRecordRegistry {
-    /// `indices` aligns to `episode_ids`: a `Some` pins that episode's index
-    /// (and record id) to its route-global slot, so ids stay unique and in
-    /// start order across every lane; `None` falls back to the registry's
-    /// running count.
+    /// `positions` (the route lanes) and `indices` align to `episode_ids`: a
+    /// `Some` index pins that episode's index (and record id) to its
+    /// route-global slot, so ids stay unique and in start order across every
+    /// lane; `None` falls back to the registry's running count.
     pub(crate) fn ensure_for_slots(
         &mut self,
+        positions: &[usize],
         episode_ids: &[String],
         started_from_auto_reset: bool,
         indices: &[Option<i64>],
     ) -> (Vec<String>, Vec<(String, EpisodeRecord)>) {
         let mut record_ids = Vec::with_capacity(episode_ids.len());
         let mut started = Vec::new();
-        for (env_index, episode_id) in episode_ids.iter().enumerate() {
+        for (i, episode_id) in episode_ids.iter().enumerate() {
             if episode_id.is_empty() {
                 record_ids.push(String::new());
                 continue;
@@ -44,15 +45,11 @@ impl EpisodeRecordRegistry {
             }
 
             self.next_index += 1;
-            let index = indices
-                .get(env_index)
-                .copied()
-                .flatten()
-                .unwrap_or(self.next_index);
+            let index = indices.get(i).copied().flatten().unwrap_or(self.next_index);
             let record = EpisodeRecord {
                 record_id: format!("ep-{index:06}"),
                 index,
-                env_index: env_index as i32,
+                env_index: positions.get(i).copied().unwrap_or(i) as i32,
                 started_from_auto_reset,
             };
             record_ids.push(record.record_id.clone());
@@ -76,6 +73,7 @@ mod tests {
     fn episode_record_ids_are_global_across_vector_slots() {
         let mut registry = EpisodeRecordRegistry::default();
         let (initial_ids, started) = registry.ensure_for_slots(
+            &[0, 1],
             &["runtime-a".to_string(), "runtime-b".to_string()],
             false,
             &[],
@@ -85,6 +83,7 @@ mod tests {
         assert!(!started[0].1.started_from_auto_reset);
 
         let (next_ids, started) = registry.ensure_for_slots(
+            &[0, 1],
             &["runtime-a".to_string(), "runtime-c".to_string()],
             true,
             &[],

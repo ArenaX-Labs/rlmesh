@@ -540,3 +540,84 @@ fn a_next_step_autoreset_roll_is_not_a_trajectory_row() {
         [(0, vec![1]), (1, vec![1, 2, 3])].into_iter().collect()
     );
 }
+
+/// `(envIndex, trajectory rows)` per recorded episode under `root`.
+fn episode_rows(root: &Path) -> Vec<(i64, usize)> {
+    let mut rows = Vec::new();
+    for dir in std::fs::read_dir(root.join("episodes")).unwrap() {
+        let dir = dir.unwrap().path();
+        let episode = read_json(&dir.join("episode.json"));
+        // An episode that closed no step writes no trajectory.
+        let count = std::fs::File::open(dir.join("trajectory.parquet")).map_or(0, |file| {
+            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+                .unwrap()
+                .build()
+                .unwrap()
+                .map(|batch| batch.unwrap().num_rows())
+                .sum()
+        });
+        rows.push((episode["envIndex"].as_i64().unwrap(), count));
+    }
+    rows.sort_unstable();
+    rows
+}
+
+#[test]
+fn episodes_of_a_lane_endpoint_record_their_own_lane() {
+    let server = crate::EnvServer::lanes(
+        (0..2)
+            .map(|_| Scene {
+                episode: 0,
+                step: 0,
+            })
+            .collect(),
+        crate::EnvServerOptions {
+            address: Some(crate::tests::ENV_ADDRESS.into()),
+            options: Some(crate::tests::env_serve_options()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    server.start().unwrap();
+    let mut recorder = Recorder::new(RecorderOptions::default()).unwrap();
+    let record: RecordSpec =
+        serde_json::from_value(json!({"trajectory": {"action": "raw"}})).unwrap();
+    let mut capture = recorder
+        .capture(
+            "policy",
+            "scene",
+            RecorderCaptureOptions {
+                record: Some(record),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let model = Model::new(
+        |_: Value| Ok(Value::List(vec![Value::Float(0.)])),
+        ModelOptions {
+            spec: Some(crate::NO_ADAPTER),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    model
+        .run(
+            server.address(),
+            RunOptions {
+                episodes: Some(4),
+                hooks: Some(&mut *capture),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    server.shutdown().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let bundle = recorder
+        .export_(out.path().join("bundle"), RecorderExportOptions::default())
+        .unwrap();
+    // Four steps an episode, two episodes a lane.
+    assert_eq!(
+        episode_rows(&bundle.join("workloads/c0001/attempts/a001")),
+        [(0, 4), (0, 4), (1, 4), (1, 4)]
+    );
+}
