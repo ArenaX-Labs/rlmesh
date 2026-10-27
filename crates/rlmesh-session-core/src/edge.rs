@@ -27,6 +27,7 @@ pub use self::core::{
     Rejection,
 };
 pub use crate::wire::EdgeMode;
+pub use command::ActionError;
 pub use fallback::{ModeStats, SafeCause};
 pub use queue::{Delivery, QueueStats, QueuedAction};
 

@@ -26,6 +26,32 @@ const UNIT_TOLERANCE: f64 = 1e-3;
 /// Slack on the rotation-vector bounds, for float rounding.
 const PI_SLACK: f64 = 1e-6;
 
+/// Why a chunk's actions were rejected. Plain data: the message is only
+/// built when something displays it, so a device that just counts
+/// rejections never links float formatting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ActionError {
+    /// The payload is not `count` actions of `stride` bytes.
+    #[error("{bytes} bytes for {count} actions of {stride}")]
+    Length {
+        /// Payload length.
+        bytes: usize,
+        /// Declared action count.
+        count: usize,
+        /// Bytes per action.
+        stride: usize,
+    },
+    /// A bool other than 0 or 1.
+    #[error("a bool other than 0 or 1")]
+    Bool,
+    /// An infinite or NaN value.
+    #[error("a non-finite value")]
+    NonFinite,
+    /// A rotation outside its encoding's tolerance.
+    #[error("an invalid {0} rotation")]
+    Rotation(Rotation),
+}
+
 /// One command field, prepared.
 #[derive(Clone, Debug)]
 struct Field {
@@ -103,13 +129,13 @@ impl CommandCheck {
 
     /// Validates `count` packed actions and applies the limits; `Err` when
     /// any action is invalid (the chunk is rejected whole).
-    pub fn check(&self, actions: &Bytes, count: usize) -> Result<Checked, String> {
+    pub fn check(&self, actions: &Bytes, count: usize) -> Result<Checked, ActionError> {
         if count == 0 || Some(actions.len()) != count.checked_mul(self.stride) {
-            return Err(format!(
-                "{} bytes for {count} actions of {}",
-                actions.len(),
-                self.stride
-            ));
+            return Err(ActionError::Length {
+                bytes: actions.len(),
+                count,
+                stride: self.stride,
+            });
         }
         if !self.rewrites {
             for action in actions.chunks_exact(self.stride) {
@@ -139,12 +165,12 @@ impl CommandCheck {
         })
     }
 
-    fn validate(&self, action: &[u8]) -> Result<(), String> {
+    fn validate(&self, action: &[u8]) -> Result<(), ActionError> {
         for field in &self.fields {
             let bytes = &action[field.range.clone()];
             match field.dtype {
                 DType::Bool if bytes.iter().any(|b| *b > 1) => {
-                    return Err("a bool other than 0 or 1".into());
+                    return Err(ActionError::Bool);
                 }
                 // Exponent all ones is inf or NaN.
                 DType::F16
@@ -154,12 +180,12 @@ impl CommandCheck {
                         .iter()
                         .any(|b| u16::from_le_bytes(*b) & 0x7C00 == 0x7C00) =>
                 {
-                    return Err("a non-finite value".into());
+                    return Err(ActionError::NonFinite);
                 }
                 DType::F32 | DType::F64 => {
                     let values = read(field.dtype, bytes);
                     if values.iter().any(|v| !v.is_finite()) {
-                        return Err("a non-finite value".into());
+                        return Err(ActionError::NonFinite);
                     }
                     if let Some((rotation, width)) = field.rotation {
                         for group in values.chunks_exact(width) {
@@ -303,7 +329,7 @@ fn canonical(rotation: Rotation, v: &mut [f64]) -> bool {
     true
 }
 
-fn check_rotation(rotation: Rotation, v: &[f64]) -> Result<(), String> {
+fn check_rotation(rotation: Rotation, v: &[f64]) -> Result<(), ActionError> {
     let ok = match rotation {
         Rotation::QuatXyzw | Rotation::QuatWxyz => (norm(v) - 1.0).abs() <= UNIT_TOLERANCE,
         Rotation::AxisAngle => norm(v) <= core::f64::consts::TAU + PI_SLACK,
@@ -317,7 +343,7 @@ fn check_rotation(rotation: Rotation, v: &[f64]) -> Result<(), String> {
     if ok {
         Ok(())
     } else {
-        Err(format!("an invalid {rotation} rotation {v:?}"))
+        Err(ActionError::Rotation(rotation))
     }
 }
 
@@ -412,7 +438,15 @@ mod tests {
             &ok[..],
             "the valid action is untouched"
         );
-        assert!(check.check(&both, 3).is_err(), "a length mismatch");
+        assert_eq!(
+            check.check(&both, 3).map(|_| ()),
+            Err(ActionError::Length {
+                bytes: 64,
+                count: 3,
+                stride: 32
+            }),
+            "a length mismatch"
+        );
     }
 
     #[test]
@@ -443,13 +477,25 @@ mod tests {
             (f64::from(r[2]) - (6.083 - core::f64::consts::TAU)).abs() < 1e-5,
             "wrapped to the same rotation: {r:?}"
         );
-        for bad in [
-            action([0.0, 0.0, 0.0, 1.01], [0.0; 3]),
-            action([0.0; 4], [0.0; 3]),
-            action([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 6.3]),
-            action([0.0, 0.0, 0.0, f32::NAN], [0.0; 3]),
+        for (bad, error) in [
+            (
+                action([0.0, 0.0, 0.0, 1.01], [0.0; 3]),
+                ActionError::Rotation(Rotation::QuatXyzw),
+            ),
+            (
+                action([0.0; 4], [0.0; 3]),
+                ActionError::Rotation(Rotation::QuatXyzw),
+            ),
+            (
+                action([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 6.3]),
+                ActionError::Rotation(Rotation::AxisAngle),
+            ),
+            (
+                action([0.0, 0.0, 0.0, f32::NAN], [0.0; 3]),
+                ActionError::NonFinite,
+            ),
         ] {
-            assert!(check.check(&bad, 1).is_err(), "{bad:?}");
+            assert_eq!(check.check(&bad, 1).map(|_| ()), Err(error), "{bad:?}");
         }
         let six = CommandCheck::new(&command(
             vec![rot("m", 6, "rot6d"), rot("n", 6, "rot6d_rowmajor")],
@@ -463,7 +509,10 @@ mod tests {
         assert!(six.check(&Bytes::from(good), 1).is_ok());
         let mut skew = f32s(&[1.0, 0.0, 0.0, 0.5, 1.0, 0.0]);
         skew.extend(f32s(&[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]));
-        assert!(six.check(&Bytes::from(skew), 1).is_err());
+        assert_eq!(
+            six.check(&Bytes::from(skew), 1).map(|_| ()),
+            Err(ActionError::Rotation(Rotation::Rot6d))
+        );
         let matrix = CommandCheck::new(&command(
             vec![{
                 let mut m = FieldSpec::new("m", DType::F64, &[3, 3]);
@@ -502,7 +551,14 @@ mod tests {
         let checked = check.check(&action(0.7, 1), 1).expect("valid");
         assert_eq!(values(&checked.actions[0..4]), vec![1.0]);
         assert_eq!(checked.clamped, 1);
-        assert!(check.check(&action(0.2, 2), 1).is_err());
+        assert_eq!(
+            check.check(&action(0.2, 2), 1).map(|_| ()),
+            Err(ActionError::Bool)
+        );
+        assert_eq!(
+            ActionError::Rotation(Rotation::Rot6d).to_string(),
+            "an invalid rot6d rotation"
+        );
         let plain = CommandCheck::new(&command(
             vec![FieldSpec::new("v", DType::F32, &[6])],
             Vec::new(),
