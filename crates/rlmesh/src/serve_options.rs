@@ -117,9 +117,10 @@ impl ServeOptions {
 /// raises fill, not concurrency.
 ///
 /// A batch closes at `max_batch_size` groups or `batch_byte_budget`
-/// observation bytes. While the model is idle it also closes
-/// `batch_window_ms` after its first request; while a forward runs, it stays
-/// open until that forward ends, so under load the window costs nothing.
+/// observation bytes, or as soon as every route the model has resolved has a
+/// request in it. While the model is idle it also closes `batch_window_ms`
+/// after its first request; while a forward runs, it stays open until that
+/// forward ends, so under load the window costs nothing.
 /// A model that cannot fuse (`allow_fusion = false`, or no batched corner)
 /// is not batched.
 ///
@@ -132,7 +133,7 @@ pub struct BatchOptions {
     /// carries; 1 answers each request on its own, at once. A request with
     /// more groups runs as a batch of its own.
     pub max_batch_size: usize,
-    /// How long an idle model holds a batch open for more requests.
+    /// The longest an idle model holds a batch open for more requests.
     pub batch_window_ms: u64,
     /// The most observation bytes one handler call carries. A request over
     /// it runs as a batch of its own.

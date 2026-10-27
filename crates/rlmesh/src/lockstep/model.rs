@@ -25,7 +25,7 @@
 //! into one handler call ([`BatchOptions`]): a batch assembles while the
 //! forward before it runs and goes to the handler as that one ends.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -413,7 +413,13 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         let mut handler = self.handler.lock().await;
         timing.queue_ns = ns(waited.elapsed());
         let called = Instant::now();
-        let mut frames = handler.predict_grouped(batch).await.into_iter();
+        // A batch of unresolved routes alone has nothing to predict.
+        let mut frames = if batch.is_empty() {
+            Vec::new()
+        } else {
+            handler.predict_grouped(batch).await
+        }
+        .into_iter();
         timing.user_ns = ns(called.elapsed());
         timing.adapter_ns = Some(handler.take_adapter_ns()).filter(|ns| *ns != 0);
         if let Some(held) = handler.held_state() {
@@ -497,6 +503,8 @@ impl<H: ModelHandler + 'static> ModelService<H> {
     /// the batch stays open until that one ends (the handler runs one at a
     /// time) or it fills: closing it on the window instead sent whatever
     /// trickled in behind a big batch as a small one paying a whole forward.
+    /// Either way it closes once every resolved route has a request in it,
+    /// as no other request can come.
     async fn run_batches(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<Queued>) {
         let Some(options) = self.batching.as_ref().map(|b| b.options.clone()) else {
             return;
@@ -518,10 +526,15 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 },
             };
             let (mut size, mut bytes) = (first.groups.len(), first.bytes);
+            let mut waiting: HashSet<String> =
+                first.groups.iter().map(|g| g.route.clone()).collect();
             let mut batch = vec![first];
             let busy = in_flight.available_permits() < cap - 1;
             let deadline = tokio::time::Instant::now() + window;
-            while size < options.max_batch_size && bytes < options.batch_byte_budget {
+            while size < options.max_batch_size
+                && bytes < options.batch_byte_budget
+                && !self.every_route_in(&waiting).await
+            {
                 let next = if busy {
                     tokio::select! {
                         queued = rx.recv() => queued,
@@ -547,11 +560,17 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 }
                 size += queued.groups.len();
                 bytes += queued.bytes;
+                waiting.extend(queued.groups.iter().map(|g| g.route.clone()));
                 batch.push(queued);
             }
             let running = cap - 1 - in_flight.available_permits();
             tokio::spawn(Arc::clone(&self).flush(batch, running, permit));
         }
+    }
+
+    /// Whether every resolved route has a request in `waiting`.
+    async fn every_route_in(&self, waiting: &HashSet<String>) -> bool {
+        self.routes.lock().await.keys().all(|r| waiting.contains(r))
     }
 
     /// Answers a batch with one handler call, each request with its own

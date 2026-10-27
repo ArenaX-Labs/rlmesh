@@ -622,9 +622,11 @@ rules are Python's (`py/_models/base.py:1475-1500`,
   `ModelServeOptions::batching`; the C ABI takes the defaults for now). It
   still runs one forward at a time, so batching raises fill, not
   concurrency. A batch closes at `max_batch_size` groups (32) or
-  `batch_byte_budget` observation bytes (256 MiB less 4 KiB); while the
-  model is idle it also closes `batch_window_ms` (5) after its first
-  request, and while a forward runs it stays open until that forward ends.
+  `batch_byte_budget` observation bytes (256 MiB less 4 KiB), or as soon as
+  every route the model has resolved has a request in it; while the model
+  is idle it also closes at the latest `batch_window_ms` (5) after its
+  first request, and while a forward runs it stays open until that forward
+  ends.
   `max_in_flight_batches` (2) lets the next batch assemble while one runs.
   `max_batch_size = 1` turns it off; a model that does not fuse is never
   batched. The defaults are the managed platform's (its request compiler's

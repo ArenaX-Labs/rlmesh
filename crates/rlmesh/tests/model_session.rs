@@ -622,6 +622,32 @@ async fn max_batch_size_and_the_byte_budget_split_batches() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_closes_once_every_route_has_a_request_in_it() {
+    let fused = Fused::default();
+    let service = batched(
+        fused.clone(),
+        rlmesh::BatchOptions {
+            batch_window_ms: 5_000,
+            ..Default::default()
+        },
+    );
+    service.answer(resolve("a", 1)).await;
+    service.answer(resolve("b", 1)).await;
+    let started = std::time::Instant::now();
+    let replies = predict_together(&service, vec![group("a", &[1.0]), group("b", &[2.0])]).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it waited the window"
+    );
+    assert!(
+        replies
+            .iter()
+            .all(|reply| matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()))
+    );
+    assert_eq!(fused.calls(), vec![2]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_window_bounds_how_long_a_lone_request_waits() {
     let service = batched(
         Fused::default(),
@@ -630,7 +656,9 @@ async fn the_window_bounds_how_long_a_lone_request_waits() {
             ..Default::default()
         },
     );
+    // b never predicts, so a's batch waits the window for it.
     service.answer(resolve("a", 1)).await;
+    service.answer(resolve("b", 1)).await;
     let started = std::time::Instant::now();
     let (reply, timing) = service
         .answer(ModelRequest::Predict(vec![group("a", &[1.0])]))

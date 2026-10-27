@@ -486,7 +486,8 @@ class BatchOptions:
     one fused forward for a model that fuses. The model still runs one forward
     at a time: batching raises fill, not concurrency. A batch closes at
     ``max_batch_size`` groups (one route's rows each) or ``batch_byte_budget``
-    observation bytes; while the model is idle it also closes
+    observation bytes, or as soon as every route the model has resolved has a
+    request in it; while the model is idle it also closes at the latest
     ``batch_window_ms`` after its first request, and while a forward runs it
     stays open until that forward ends. A model that cannot fuse
     (``allow_fusion = False``, or no batched corner) is never batched.
