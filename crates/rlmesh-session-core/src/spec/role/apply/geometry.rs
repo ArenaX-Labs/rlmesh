@@ -1,6 +1,9 @@
 //! Rotation re-encodings on `f32` values, through the shared codec
 //! ([`rotation`]).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::apply::ApplyError;
 use crate::spec::role::apply::err;
 use crate::spec::rotation::{self, Matrix, Rotation};
@@ -83,7 +86,7 @@ mod tests {
             let v: Vec<f64> = v.iter().map(|&x| f64::from(x)).collect();
             rotation::to_matrix(&v, e)
         };
-        let half_pi = std::f32::consts::FRAC_PI_2;
+        let half_pi = core::f32::consts::FRAC_PI_2;
         for pitch in [half_pi, -half_pi, half_pi - 1e-4, -half_pi + 1e-4] {
             for step in 0..64 {
                 let euler = [-3.0 + step as f32 * 0.1, pitch, 3.0 - step as f32 * 0.07];

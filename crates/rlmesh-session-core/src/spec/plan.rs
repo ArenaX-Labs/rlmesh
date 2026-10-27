@@ -8,7 +8,10 @@
 //! the edge then validates and clamps. Automatic steps (§7.1) are marked
 //! `auto`.
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 use crate::wire::part::DType;
 

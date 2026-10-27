@@ -6,6 +6,9 @@
 //! own clock on receipt, conservatively, and never acts on a chunk past its
 //! own age cap, whatever `valid_until_ns` says.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use bytes::Bytes;
 
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};

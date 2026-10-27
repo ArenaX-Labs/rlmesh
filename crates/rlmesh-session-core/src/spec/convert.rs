@@ -1,6 +1,9 @@
 //! The element conversions v1 adapters, v2 bindings and the edge share
 //! (rotations and images have their own modules).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// `values[i]` broadcast: none is `default`, one applies to every element.
 fn pick(values: &[f64], i: usize, default: f64) -> f64 {
     match values {

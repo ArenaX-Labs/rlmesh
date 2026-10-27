@@ -1,6 +1,9 @@
 //! Samples, batches and history queries (§9.4, §10.6, §8.8).
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 use bytes::Bytes;
 

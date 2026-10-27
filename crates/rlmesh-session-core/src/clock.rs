@@ -6,7 +6,10 @@
 //! bound: `session_ns = participant_ns + offset_ns`, within `± error_ns`.
 //! Every exchange and every query is passed in; nothing here reads a clock.
 
-use std::collections::VecDeque;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::VecDeque;
 
 use crate::wire::{ClockMapping, ParticipantId, TimingSample};
 

@@ -10,6 +10,9 @@
 //! re-encode. The only conversions that need explicit consent are the named
 //! [`Projection`]s in [`Spec::allow`].
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 use crate::spec::plan::Fit;

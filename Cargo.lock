@@ -5574,6 +5574,7 @@ version = "0.2.0-alpha.0"
 dependencies = [
  "blake3",
  "bytes",
+ "libm",
  "prost",
  "serde",
  "serde_json",

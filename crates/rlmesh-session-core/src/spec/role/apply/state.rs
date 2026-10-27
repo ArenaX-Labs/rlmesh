@@ -1,5 +1,8 @@
 //! A model state input from its sources.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::apply::{ApplyError, Tensor};
 use crate::spec::convert;
 use crate::spec::role::apply::geometry::convert_rotation_with;

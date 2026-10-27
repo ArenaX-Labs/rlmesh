@@ -23,9 +23,12 @@
 //!
 //! Lease availability is not part of binding.
 
-use std::collections::BTreeMap;
-use std::fmt;
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
+use core::fmt;
+use core::time::Duration;
 
 use crate::wire::part::{DType, Encoding, FieldSpec, MAX_CHUNK_BYTES, PartSpec};
 use crate::wire::{ActionGrid, ChannelId, Fingerprint, ParticipantId, StreamContract};
@@ -204,7 +207,7 @@ impl fmt::Display for BindError {
     }
 }
 
-impl std::error::Error for BindError {}
+impl core::error::Error for BindError {}
 
 /// A bound input.
 #[derive(Clone, Debug, PartialEq)]
@@ -901,7 +904,7 @@ impl<'a> Binder<'a> {
                     // max_by_key keeps the last maximum; prefer the first.
                     (
                         ones,
-                        std::cmp::Reverse(assignments.iter().position(|b| b == *a)),
+                        core::cmp::Reverse(assignments.iter().position(|b| b == *a)),
                     )
                 })
                 .cloned()
@@ -1048,7 +1051,7 @@ impl<'a> Binder<'a> {
                         .collect();
                     let suggest = many
                         .iter()
-                        .find(|c| !taken.iter().any(|t| std::ptr::eq(*t, c.part)))
+                        .find(|c| !taken.iter().any(|t| core::ptr::eq(*t, c.part)))
                         .unwrap_or(&many[0]);
                     let mut body: Vec<String> = two_columns(&rows, 3)
                         .into_iter()
@@ -1154,7 +1157,7 @@ impl<'a> Binder<'a> {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
-            problems: std::mem::take(&mut self.problems),
+            problems: core::mem::take(&mut self.problems),
             run: self.run.clone(),
         }))
     }

@@ -8,6 +8,9 @@
 //! | Features | `Attach.supports/requires`, `AuthorityState.supports`, `PartSpec.requires` | Attach fails with `CtlStatus::Incompatible` if the host lacks a feature the participant requires. |
 //! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | New kinds and optional settings are additive. |
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// The protocol generation: the `v2` of the key prefix.
 pub const GENERATION: u32 = 2;
 

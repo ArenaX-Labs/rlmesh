@@ -1,5 +1,8 @@
 //! Resolved instructions for one model image input.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::plan::Fit;
 use crate::spec::policy::{ImageLayout, Resample};
 use crate::spec::role::input::StackPad;

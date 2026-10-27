@@ -24,6 +24,9 @@
 //! each path segment is one key chunk, so `d/ur10e/wrist/**` subscribes to a
 //! subtree.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::wire::ids::{ParticipantId, SessionId, TenantId};
 use crate::wire::version::GENERATION;
 

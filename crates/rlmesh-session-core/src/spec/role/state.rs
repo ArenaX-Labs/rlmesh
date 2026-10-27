@@ -1,6 +1,9 @@
 //! Pair each model state component with an env feature and derive the plan.
 
-use std::collections::BTreeMap;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
 
 use crate::spec::projection::Projection;
 use crate::spec::role::action::ModelOutputs;
@@ -227,7 +230,7 @@ impl LabelSetDiff {
 pub(super) fn label_permutation(
     wanted: &[String],
     available: &[String],
-) -> std::result::Result<Option<Vec<u32>>, LabelSetDiff> {
+) -> core::result::Result<Option<Vec<u32>>, LabelSetDiff> {
     let not_in = |labels: &[String], other: &[String]| -> Vec<String> {
         labels
             .iter()

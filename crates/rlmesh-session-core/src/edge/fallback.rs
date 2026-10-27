@@ -36,7 +36,10 @@
 //! full process stall cannot be bounded by the edge itself: that needs an
 //! external or device watchdog.
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 use crate::wire::{EdgeMode, Epoch, LeaseToken, Mode};
 
@@ -307,7 +310,7 @@ impl Fallback {
                 self.handover = None;
                 return self.go_safe(view.epoch, SafeCause::HandoverTimeout, queues);
             }
-            let first = !std::mem::replace(announced, true);
+            let first = !core::mem::replace(announced, true);
             let mut decision = self.decision(EdgeMode::Hold, Some(handover.to), None, false);
             decision.handover = first.then_some(handover);
             return decision;
@@ -457,7 +460,7 @@ fn clear(queues: &mut [ActionQueue]) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use crate::wire::{ChannelId, InputRange, ParticipantId};
     use bytes::Bytes;
@@ -560,7 +563,7 @@ mod tests {
             lease: Some(lease(0, 3, i64::MAX)),
         });
         assert_eq!(f.tick(11 * MS, rearmed, &mut q).mode, EdgeMode::Idle);
-        let stats: std::collections::BTreeMap<_, _> = f.stats().into_iter().collect();
+        let stats: alloc::collections::BTreeMap<_, _> = f.stats().into_iter().collect();
         assert_eq!(stats[&EdgeMode::Hold].ticks, 5);
         assert_eq!(stats[&EdgeMode::Hold].time_ns, 5 * MS as u64);
         assert_eq!(stats[&EdgeMode::Safe].entries, 1);

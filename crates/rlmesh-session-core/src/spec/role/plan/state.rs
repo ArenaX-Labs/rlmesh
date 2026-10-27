@@ -1,5 +1,8 @@
 //! Resolved instructions for one model state input.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::role::frames::FrameRef;
 use crate::spec::role::path::NodePath;
 use crate::spec::rotation::{Matrix, Rotation};

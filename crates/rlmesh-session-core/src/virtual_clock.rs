@@ -24,7 +24,10 @@
 //! distributions and recorded traces belong to the managed
 //! timing-robustness suite.
 
-use std::collections::{BTreeMap, BTreeSet};
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::wire::tick::{Step, TickState, VirtualTick};
 use crate::wire::{ChannelId, ChunkRef, CtlError, CtlStatus, Epoch, ParticipantId, Watermark};
@@ -171,7 +174,7 @@ impl VirtualClock {
                 format!("{from} is not due at tick {tick}"),
             ));
         };
-        if std::mem::replace(decided, true) {
+        if core::mem::replace(decided, true) {
             return Ok(Vec::new());
         }
         let at = tick.saturating_add(self.config.latency_ticks);

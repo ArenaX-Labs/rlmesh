@@ -8,8 +8,11 @@
 //! stream ([`APPLIED`]) and the host's `_session/...` streams are never
 //! declared.
 
-use std::fmt;
-use std::str::FromStr;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
+use core::str::FromStr;
 
 use crate::wire::ids::IdError;
 

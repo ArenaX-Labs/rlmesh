@@ -1,5 +1,8 @@
 //! Admit a custom input as a host-language hole, gating entrypoint trust.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::role::bind::{Result, err};
 use crate::spec::role::error::ErrorCode;
 use crate::spec::role::fmt::quoted;

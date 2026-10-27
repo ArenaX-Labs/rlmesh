@@ -28,10 +28,98 @@
 //! `rlmesh-wasm` runs them in the browser.
 
 #![warn(missing_docs)]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
+
+/// What `std`'s prelude gives every module, from `alloc` so the crate builds
+/// without `std`.
+mod prelude {
+    // Unused where `std` is still in the graph (a host target through
+    // `uuid`, or a test harness): its inherent methods win over the trait's.
+    #[cfg(not(feature = "std"))]
+    #[allow(unused_imports)]
+    pub(crate) use crate::float::F64Ext;
+    pub(crate) use alloc::borrow::ToOwned;
+    pub(crate) use alloc::boxed::Box;
+    pub(crate) use alloc::string::{String, ToString};
+    pub(crate) use alloc::vec::Vec;
+    pub(crate) use alloc::{format, vec};
+}
+
+/// Transcendental functions, from `libm` in every build. `std`'s versions
+/// call the platform's maths library, whose last-bit rounding differs from
+/// `libm`'s, and the host and a device must compute the same values
+/// (a resampled pixel, a rotation). clippy.toml bans the `f64` methods.
+pub(crate) mod math {
+    pub(crate) fn sin(x: f64) -> f64 {
+        libm::sin(x)
+    }
+    #[cfg(test)]
+    pub(crate) fn cos(x: f64) -> f64 {
+        libm::cos(x)
+    }
+    pub(crate) fn sin_cos(x: f64) -> (f64, f64) {
+        libm::sincos(x)
+    }
+    pub(crate) fn atan2(y: f64, x: f64) -> f64 {
+        libm::atan2(y, x)
+    }
+    pub(crate) fn hypot(x: f64, y: f64) -> f64 {
+        libm::hypot(x, y)
+    }
+}
+
+/// The exact `f64` methods `core` lacks (correctly rounded, so `libm` and
+/// `std` agree), for builds without `std`.
+#[cfg(not(feature = "std"))]
+#[allow(dead_code)]
+mod float {
+    pub(crate) trait F64Ext: Sized {
+        fn floor(self) -> Self;
+        fn ceil(self) -> Self;
+        fn round(self) -> Self;
+        fn round_ties_even(self) -> Self;
+        fn trunc(self) -> Self;
+        fn fract(self) -> Self;
+        fn sqrt(self) -> Self;
+        fn powi(self, n: i32) -> Self;
+    }
+
+    impl F64Ext for f64 {
+        fn floor(self) -> Self {
+            libm::floor(self)
+        }
+        fn ceil(self) -> Self {
+            libm::ceil(self)
+        }
+        fn round(self) -> Self {
+            libm::round(self)
+        }
+        fn round_ties_even(self) -> Self {
+            libm::rint(self)
+        }
+        fn trunc(self) -> Self {
+            libm::trunc(self)
+        }
+        fn fract(self) -> Self {
+            self - libm::trunc(self)
+        }
+        fn sqrt(self) -> Self {
+            libm::sqrt(self)
+        }
+        fn powi(self, n: i32) -> Self {
+            libm::pow(self, f64::from(n))
+        }
+    }
+}
 
 pub mod authority;
 pub mod cache;
 pub mod clock;
+pub mod edge;
 pub mod lease;
 pub mod schedule;
 pub mod spec;

@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-session-core"
-description = "Internal RLMesh crate (unstable Rust API): the sans-IO state machines of a real-time session (protocol v2): authority, leases, the virtual clock, clock offsets, input caches, start schedules and stream receive rules."
+description = "Internal RLMesh crate (unstable Rust API): the sans-IO state machines of a real-time session (protocol v2): authority, leases, the virtual clock, clock offsets, input caches, start schedules, stream receive rules and the robot edge. Builds without std."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
@@ -17,20 +17,38 @@ publish = true
 ignored = ["tonic-prost-build"]
 
 # Sans-IO: no runtime, sockets, threads, clock reads or RNG. It builds for
-# wasm32-unknown-unknown, and `mise run check:sans-io` keeps it that way
+# wasm32-unknown-unknown, and without std (`--no-default-features`) for bare
+# metal; `mise run check:sans-io` keeps it that way
 # (clippy.toml here bans the clock and thread calls).
 [dependencies]
-blake3 = { workspace = true }
-bytes = { workspace = true }
-prost = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-serde_path_to_error = { workspace = true }
-thiserror = { workspace = true }
-uuid = { workspace = true }
+# Not `workspace = true`: the workspace entries keep their default features
+# (std), and a member can't turn those off. Versions match the workspace.
+blake3 = { version = "1", default-features = false }
+bytes = { version = "1.9", default-features = false }
+prost = { version = "0.14", default-features = false, features = ["derive"] }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+serde_path_to_error = { version = "0.1", default-features = false }
+thiserror = { version = "2", default-features = false }
+uuid = { version = "1", default-features = false }
+libm = "0.2"
 
-[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
-uuid = { workspace = true, features = ["v7"] }
+[features]
+default = ["std"]
+std = [
+  "blake3/std",
+  "bytes/std",
+  "prost/std",
+  "serde/std",
+  "serde_json/std",
+  "thiserror/std",
+  "uuid/std",
+]
+
+# Time-ordered ids need a clock and an RNG: not in the browser (it takes the
+# id it is given) and not on bare metal.
+[target.'cfg(not(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "none")))'.dependencies]
+uuid = { version = "1", default-features = false, features = ["std", "v7"] }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

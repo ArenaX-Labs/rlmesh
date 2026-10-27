@@ -6,7 +6,10 @@
 //! receives; the browser binding applies the same ones in wasm. Missing
 //! samples are explicit: a gap in `seq` is a loss, never a silent freeze.
 
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::time::Duration;
 
 use crate::wire::{Epoch, Sample, StreamSpec};
 

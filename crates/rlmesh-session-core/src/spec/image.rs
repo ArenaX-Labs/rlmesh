@@ -13,9 +13,14 @@
 //! (v1's fractional `crop`) resamples a centered box straight to the
 //! target, PIL's `resize(size, box=...)`.
 
-use std::cell::RefCell;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::rc::Rc;
+#[cfg(feature = "std")]
+use core::cell::RefCell;
+#[cfg(feature = "std")]
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::spec::plan::Fit;
 use crate::spec::policy::Resample;
@@ -208,8 +213,8 @@ impl Kernel {
                     if x == 0.0 {
                         1.0
                     } else {
-                        let x = x * std::f64::consts::PI;
-                        x.sin() / x
+                        let x = x * core::f64::consts::PI;
+                        crate::math::sin(x) / x
                     }
                 };
                 if x < 3.0 {
@@ -259,11 +264,13 @@ impl Kernel {
 /// One axis' weights.
 type AxisWeights = Rc<Vec<(usize, Vec<f64>)>>;
 
+#[cfg(feature = "std")]
 /// What an axis' weights are keyed by: the kernel, both sizes and the span's
 /// bits.
 type WeightKey = (Kernel, usize, usize, u64, u64);
 
-thread_local! {
+#[cfg(feature = "std")]
+std::thread_local! {
     /// Weights depend only on the kernel and the axis, so a camera resized
     /// every step builds them once (a Lanczos-3 row is six `sin` per output
     /// pixel).
@@ -271,6 +278,13 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+#[cfg(not(feature = "std"))]
+fn axis_weights(kernel: Kernel, roi: Roi) -> AxisWeights {
+    // No thread-locals without `std`: build the weights each call.
+    Rc::new(kernel.weights(roi))
+}
+
+#[cfg(feature = "std")]
 fn axis_weights(kernel: Kernel, roi: Roi) -> AxisWeights {
     let key = (
         kernel,
@@ -410,7 +424,7 @@ impl Image<u8> {
 /// normalisation v1 pins for a `u8` image into `[low, high]`.
 pub fn normalise_table(low: f64, high: f64) -> [f32; 256] {
     let (low, high) = (low as f32, high as f32);
-    std::array::from_fn(|v| low + (v as f32 / 255.0) * (high - low))
+    core::array::from_fn(|v| low + (v as f32 / 255.0) * (high - low))
 }
 
 /// The intermediate size a fit resamples a `height × width` box to before
@@ -502,6 +516,23 @@ mod tests {
         }
     }
 
+    /// Pinned bytes: the host (`std`) and a device (no `std`) both take
+    /// `sin` from libm, so they resample to the same pixels. The platform
+    /// `sin` gives 127 for the middle pixel here.
+    #[test]
+    fn lanczos_resamples_to_pinned_bytes() {
+        let stripes = Image {
+            height: 1,
+            width: 14,
+            channels: 1,
+            data: [255_u8, 0].repeat(7),
+        };
+        assert_eq!(
+            stripes.resize(1, 3, Resample::Lanczos3Aa).data,
+            [136, 128, 119]
+        );
+    }
+
     #[test]
     fn identity_resizes_and_downscales_keep_the_mean() {
         let img = gradient(8, 8);
@@ -589,7 +620,10 @@ mod tests {
         }
         let first = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
         let again = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
+        // Without `std` there is no cache: the weights are rebuilt per call.
+        #[cfg(feature = "std")]
         assert!(Rc::ptr_eq(&first, &again), "the second call rebuilt them");
+        assert_eq!(first, again);
         assert_ne!(
             first.len(),
             axis_weights(Kernel::Lanczos3, Roi::full(256, 112)).len()

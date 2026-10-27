@@ -17,7 +17,10 @@
 //! integer round half away from zero and saturate, float narrowing rounds to
 //! nearest (§7.2 `dtype`).
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 use crate::wire::part::{DType, FieldSpec, Layout, PartSpec};
 
@@ -76,7 +79,7 @@ impl fmt::Display for ApplyError {
     }
 }
 
-impl std::error::Error for ApplyError {}
+impl core::error::Error for ApplyError {}
 
 fn err(message: impl Into<String>) -> ApplyError {
     ApplyError(message.into())
@@ -385,7 +388,7 @@ impl InputRow {
             )));
         }
         if let Delivery::Text = self.delivers {
-            let text = std::str::from_utf8(samples[want - 1]).map_err(|e| err(e.to_string()))?;
+            let text = core::str::from_utf8(samples[want - 1]).map_err(|e| err(e.to_string()))?;
             return Ok(Value::Text(text.to_string()));
         }
         let kind = Kind::parse(&part.kind).unwrap_or(Kind::Custom);

@@ -20,9 +20,12 @@
 //! `size` is `[height, width]`. Ranges are `[low, high]`; `scale` and
 //! `offset` are a number or one number per element.
 
-use std::collections::BTreeMap;
-use std::fmt;
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
+use core::fmt;
+use core::time::Duration;
 
 use crate::wire::part::{DType, FieldSpec, MAX_CHUNK_ACTIONS};
 use crate::wire::path::is_identifier;

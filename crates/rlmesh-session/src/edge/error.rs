@@ -30,3 +30,15 @@ pub enum EdgeError {
     #[error("zenoh: {0}")]
     Zenoh(#[from] zenoh::Error),
 }
+
+impl From<rlmesh_session_core::edge::GroupError> for EdgeError {
+    fn from(err: rlmesh_session_core::edge::GroupError) -> Self {
+        use rlmesh_session_core::edge::GroupError;
+        match err {
+            GroupError::NoParts => Self::NoParts,
+            GroupError::NotCommandable(channel) => Self::NotCommandable(channel),
+            GroupError::NotOneGroup(channel) => Self::NotOneGroup(channel),
+            GroupError::NotOwner { channel, me } => Self::NotOwner { channel, me },
+        }
+    }
+}

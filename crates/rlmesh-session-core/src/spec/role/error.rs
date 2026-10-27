@@ -1,6 +1,9 @@
 //! What a Gym binding refuses with, and the notes it binds with.
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 /// A stable category for a resolution failure — the cross-language surface.
 ///

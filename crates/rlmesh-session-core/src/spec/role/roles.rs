@@ -12,6 +12,9 @@
 //! the registry checks it, never supplies it. An unregistered (ad-hoc) role has
 //! no dim law and resolves on string agreement alone.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 pub mod body;
 pub mod core;
 pub mod manipulation;

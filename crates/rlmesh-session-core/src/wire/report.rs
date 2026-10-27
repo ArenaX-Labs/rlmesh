@@ -10,6 +10,9 @@
 //! lost report loses nothing; observers take rates from their deltas on the
 //! sender's clock. Nothing in the session acts on a report.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::wire::ids::{ChannelId, Epoch, ParticipantId};
 
 /// What one participant reports to observers.

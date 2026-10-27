@@ -14,6 +14,9 @@
 //! rejected whole. The clamped value is what the edge dispatches and what
 //! `_applied` shows. Actions are only copied when one of them changes.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::{Rotation, convert};
 use crate::wire::{CommandSpec, DType, Layout};
 use bytes::Bytes;
@@ -27,7 +30,7 @@ const PI_SLACK: f64 = 1e-6;
 #[derive(Clone, Debug)]
 struct Field {
     dtype: DType,
-    range: std::ops::Range<usize>,
+    range: core::ops::Range<usize>,
     /// A validated rotation encoding and its width.
     rotation: Option<(Rotation, usize)>,
     /// Per element `(low, high)`; one pair broadcasts.
@@ -220,7 +223,7 @@ impl CommandCheck {
     }
 }
 
-fn layout_field(layout: &Layout, i: usize) -> std::ops::Range<usize> {
+fn layout_field(layout: &Layout, i: usize) -> core::ops::Range<usize> {
     layout.field(i).unwrap_or(0..0)
 }
 
@@ -293,7 +296,7 @@ fn canonical(rotation: Rotation, v: &mut [f64]) -> bool {
     let n = norm(v);
     let scale = match rotation {
         _ if rotation.is_quaternion() && (n - 1.0).abs() > f64::EPSILON => 1.0 / n,
-        Rotation::AxisAngle if n > std::f64::consts::PI => (n - std::f64::consts::TAU) / n,
+        Rotation::AxisAngle if n > core::f64::consts::PI => (n - core::f64::consts::TAU) / n,
         _ => return false,
     };
     v.iter_mut().for_each(|x| *x *= scale);
@@ -303,7 +306,7 @@ fn canonical(rotation: Rotation, v: &mut [f64]) -> bool {
 fn check_rotation(rotation: Rotation, v: &[f64]) -> Result<(), String> {
     let ok = match rotation {
         Rotation::QuatXyzw | Rotation::QuatWxyz => (norm(v) - 1.0).abs() <= UNIT_TOLERANCE,
-        Rotation::AxisAngle => norm(v) <= std::f64::consts::TAU + PI_SLACK,
+        Rotation::AxisAngle => norm(v) <= core::f64::consts::TAU + PI_SLACK,
         Rotation::Matrix => {
             orthonormal(&[[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]])
         }
@@ -320,7 +323,7 @@ fn check_rotation(rotation: Rotation, v: &[f64]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use core::time::Duration;
 
     use crate::wire::{FieldLimit, FieldSpec, MergePolicy};
 
@@ -437,7 +440,7 @@ mod tests {
             .expect("a rotation vector up to 2π");
         let r = values(&wrapped.actions[16..28]);
         assert!(
-            (f64::from(r[2]) - (6.083 - std::f64::consts::TAU)).abs() < 1e-5,
+            (f64::from(r[2]) - (6.083 - core::f64::consts::TAU)).abs() < 1e-5,
             "wrapped to the same rotation: {r:?}"
         );
         for bad in [

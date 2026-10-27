@@ -1,6 +1,9 @@
 //! What an endpoint measured answering one request: the v1 endpoint phases,
 //! carried on lockstep and served-model replies.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// An endpoint's timing of one request, in nanoseconds. An absent field was
 /// not measured, so a reader can tell silence from zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -28,7 +31,7 @@ pub struct EndpointTiming {
 }
 
 /// `elapsed` in nanoseconds, saturating; zero (unmeasured) as `None`.
-pub fn ns(elapsed: std::time::Duration) -> Option<u64> {
+pub fn ns(elapsed: core::time::Duration) -> Option<u64> {
     let ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
     (ns != 0).then_some(ns)
 }

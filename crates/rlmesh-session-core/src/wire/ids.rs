@@ -1,8 +1,11 @@
 //! Identifiers: sessions, tenants, participants, channels, epochs, lease
 //! tokens and binding fingerprints.
 
-use std::fmt;
-use std::str::FromStr;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
+use core::str::FromStr;
 
 use uuid::Uuid;
 
@@ -36,7 +39,7 @@ pub struct SessionId(Uuid);
 impl SessionId {
     /// A fresh UUIDv7. Not on wasm32-unknown-unknown, which has no clock or
     /// RNG of its own: a browser takes the id it is given.
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "none")))]
     pub fn new() -> Self {
         Self(Uuid::now_v7())
     }
@@ -57,7 +60,7 @@ impl SessionId {
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "none")))]
 impl Default for SessionId {
     fn default() -> Self {
         Self::new()

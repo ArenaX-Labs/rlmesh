@@ -28,8 +28,11 @@
 //! replaces future, undelivered slots), slots that ended before any tick
 //! delivered them are dropped rather than replayed, and nothing is bridged.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 
 use crate::wire::{Epoch, InputRange, LeaseToken, ParticipantId};
 use bytes::Bytes;
@@ -375,7 +378,7 @@ mod tests {
         due.action.value[0]
     }
 
-    fn tags(q: &mut ActionQueue, ticks: std::ops::Range<i64>) -> Vec<u8> {
+    fn tags(q: &mut ActionQueue, ticks: core::ops::Range<i64>) -> Vec<u8> {
         ticks
             .filter_map(|t| q.due(t * MS).map(|d| tag(&d)))
             .collect()

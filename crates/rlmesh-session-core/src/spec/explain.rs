@@ -20,8 +20,11 @@
 //! Numbers read at three significant digits, never exponential, trailing
 //! zeros trimmed (`66.7`, `1000`, `0.25`).
 
-use std::fmt;
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
+use core::time::Duration;
 
 use crate::wire::part::CommandSpec;
 

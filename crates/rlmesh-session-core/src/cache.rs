@@ -8,8 +8,11 @@
 //! applied streams) are documented on `rlmesh_session::cache`, whose
 //! `Inputs` feeds this cache from the network.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::{BTreeMap, VecDeque};
+use core::time::Duration;
 
 use crate::spec::Binding;
 use crate::wire::{Applied, ChannelId, Epoch, InputRange};
@@ -336,7 +339,7 @@ impl InputCache {
                 }
                 padded = (want - window.len()) as u32;
                 let first = window[0].clone();
-                window.splice(0..0, std::iter::repeat_n(first, padded as usize));
+                window.splice(0..0, core::iter::repeat_n(first, padded as usize));
             }
             let (first, last) = (window[padded as usize].seq, newest.seq);
             used.entry(channel)

@@ -9,6 +9,9 @@
 //! matters (a part's fields, which are its payload order) is therefore never
 //! carried in an object: the normalised forms use arrays for it.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::wire::Fingerprint;
 use serde_json::Value;
 

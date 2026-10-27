@@ -18,9 +18,12 @@
 //! payload is the raw UTF-8 and cannot be batched. An encoded (JPEG) image
 //! is the sole payload of its sample, at most raw size + 16 KiB.
 
-use std::collections::BTreeMap;
-use std::fmt;
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
+use core::fmt;
+use core::time::Duration;
 
 use crate::wire::ids::{ChannelId, ParticipantId};
 use crate::wire::path::{APPLIED, PartPath};
@@ -314,7 +317,7 @@ impl Layout {
     }
 
     /// The byte range of field `i` in one packed value.
-    pub fn field(&self, i: usize) -> Option<std::ops::Range<usize>> {
+    pub fn field(&self, i: usize) -> Option<core::ops::Range<usize>> {
         match self {
             Self::Packed { offsets, lens, .. } => {
                 let (offset, len) = (*offsets.get(i)?, *lens.get(i)?);
@@ -686,7 +689,7 @@ impl StreamSpec {
                         payload.len()
                     ));
                 }
-                std::str::from_utf8(payload).map_err(|err| format!("not UTF-8: {err}"))?;
+                core::str::from_utf8(payload).map_err(|err| format!("not UTF-8: {err}"))?;
                 Ok(())
             }
             (Layout::Packed { stride, .. }, Encoding::Jpeg { .. }) => {

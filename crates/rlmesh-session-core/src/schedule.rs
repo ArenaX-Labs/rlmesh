@@ -27,9 +27,12 @@
 //! Nothing here renegotiates: rates, horizons and contracts never change
 //! because something got slow.
 
-use std::collections::VecDeque;
-use std::fmt;
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::VecDeque;
+use core::fmt;
+use core::time::Duration;
 
 use crate::cache::Snapshot;
 use crate::spec::Binding;

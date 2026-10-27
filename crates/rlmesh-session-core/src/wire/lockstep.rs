@@ -11,6 +11,9 @@
 //! an N-lane slab, `lanes × stride`. The Gym view that drives these is wave
 //! 5; the messages live here so it builds on a fixed wire.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use bytes::Bytes;
 
 use crate::wire::ids::{ChannelId, Epoch, LeaseToken};

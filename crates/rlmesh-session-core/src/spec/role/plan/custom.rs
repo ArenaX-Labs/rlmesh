@@ -1,5 +1,8 @@
 //! Resolved hole for a custom-transform input.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::role::path::NodePath;
 
 /// Resolved hole for a custom-transform input.
