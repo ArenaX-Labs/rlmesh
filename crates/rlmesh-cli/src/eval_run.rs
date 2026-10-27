@@ -143,14 +143,40 @@ pub(crate) fn eval_run(
     Ok(runner.unwrap_or(i32::from(!failed.is_empty())))
 }
 
-/// The exit code a runner that did not succeed passes on: 130 for a Ctrl-C,
-/// as the `rlmesh` entrypoint's own.
+/// The exit code a runner that did not succeed passes on: 128 + the signal
+/// that killed it (130 for a Ctrl-C, as the `rlmesh` entrypoint's own).
 fn exit_code(exit: std::process::ExitStatus) -> Option<i32> {
     #[cfg(unix)]
-    if std::os::unix::process::ExitStatusExt::signal(&exit) == Some(2) {
-        return Some(130);
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&exit) {
+        return Some(128 + signal);
     }
     (!exit.success()).then(|| exit.code().unwrap_or(1))
+}
+
+/// The verdicts in the runner's status file. A runner cut short (a signal, a
+/// full disk) may leave its last record half written: the complete ones
+/// before it still count.
+fn read_verdicts(text: &str, exit: std::process::ExitStatus) -> Result<BTreeMap<String, Value>> {
+    let mut verdicts = BTreeMap::new();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    for (index, line) in lines.iter().enumerate() {
+        let mut verdict: Value = match serde_json::from_str(line) {
+            Ok(verdict) => verdict,
+            Err(_) if !exit.success() && index + 1 == lines.len() => break,
+            Err(err) => return Err(err).context("reading the runner's status"),
+        };
+        if let Some(id) = verdict
+            .as_object_mut()
+            .and_then(|v| v.remove("workload"))
+            .and_then(|id| id.as_str().map(str::to_string))
+        {
+            verdicts.insert(id, verdict);
+        }
+    }
+    Ok(verdicts)
 }
 
 /// What differs between the run in `previous` (an index) and this one, or
@@ -270,22 +296,10 @@ fn run_workloads(
         .context("runner stdin")?
         .write_all(&serde_json::to_vec(&job)?)?;
     let exit = child.wait()?;
-    let mut verdicts = BTreeMap::new();
-    if let Ok(text) = std::fs::read_to_string(&status_path) {
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let mut verdict: Value = serde_json::from_str(line)?;
-            if let Some(id) = verdict
-                .as_object_mut()
-                .and_then(|v| v.remove("workload"))
-                .and_then(|id| id.as_str().map(str::to_string))
-            {
-                verdicts.insert(id, verdict);
-            }
-        }
-    }
-    if !exit.success() && verdicts.is_empty() {
-        bail!("python -m {RUN_MODULE} exited with {exit}");
-    }
+    let verdicts = match std::fs::read_to_string(&status_path) {
+        Ok(text) => read_verdicts(&text, exit)?,
+        Err(_) => BTreeMap::new(),
+    };
     Ok((verdicts, exit))
 }
 
@@ -523,17 +537,24 @@ mod tests {
     #[test]
     fn an_interrupted_or_failed_runner_fails_the_run() {
         use std::os::unix::process::ExitStatusExt;
-        for (raw, want) in [
-            (0, None),
-            (1 << 8, Some(1)),
-            (130 << 8, Some(130)),
-            (2, Some(130)),
+        let complete = "{\"workload\":\"a\",\"status\":\"done\"}\n";
+        let cut = format!("{complete}{{\"workload\":\"b\",\"sta");
+        // (raw wait status, status file, exit code, verdicts read; None =
+        // the status file is refused).
+        for (raw, text, want, read) in [
+            (0, complete, None, Some(1)),
+            (1 << 8, complete, Some(1), Some(1)),
+            (1 << 8, "", Some(1), Some(0)),
+            (130 << 8, complete, Some(130), Some(1)),
+            (2, cut.as_str(), Some(130), Some(1)),
+            (9, cut.as_str(), Some(137), Some(1)),
+            (15, "", Some(143), Some(0)),
+            (0, cut.as_str(), None, None),
         ] {
-            assert_eq!(
-                exit_code(std::process::ExitStatus::from_raw(raw)),
-                want,
-                "{raw}"
-            );
+            let exit = std::process::ExitStatus::from_raw(raw);
+            assert_eq!(exit_code(exit), want, "{raw}");
+            let got = read_verdicts(text, exit).ok().map(|v| v.len());
+            assert_eq!(got, read, "{raw}: {text:?}");
         }
     }
 
