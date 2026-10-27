@@ -154,8 +154,9 @@ fn read_bundle(bundle: &Path) -> Result<Vec<BundleWorkload>> {
 /// The workloads as one [`RunResult`]: their counted episodes in order,
 /// indexed afresh from 0, and their telemetry merged. An episode left out of
 /// the metrics (`includedInMetrics: false`) is dropped, so the result's
-/// aggregates read as the workload's and the report's. Workloads of several
-/// models are refused: their outcomes are not one model's result.
+/// aggregates read as the report's (a bundle's own `numEpisodes` and
+/// `totalSteps` still count it, as `eval run --resume` does). Workloads of
+/// several models are refused: their outcomes are not one model's result.
 pub fn merge(workloads: &[BundleWorkload]) -> Result<RunResult> {
     let models = distinct(workloads.iter().map(|w| w.model.as_str()));
     if models.len() > 1 {
