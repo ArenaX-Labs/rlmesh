@@ -40,6 +40,11 @@ pub const SAS_LABEL: &[u8] = b"rlmesh/v2 pair sas";
 pub const LAPTOP_KEY_ID: u32 = 1;
 /// The key id of rlmeshd → laptop messages.
 pub const DAEMON_KEY_ID: u32 = 2;
+/// The kinds the laptop sends: `PairNonce` (17) and `PairWait` (19).
+pub const LAPTOP_KINDS: KindSet = KindSet::of_const(&[17, 19]);
+/// The kinds rlmeshd sends: `PairCommit` (16), `PairReveal` (18) and
+/// `PairResult` (19).
+pub const DAEMON_KINDS: KindSet = KindSet::of_const(&[16, 18, 19]);
 /// Length of XX msg 1 (`e`).
 pub const XX1_LEN: usize = 32;
 /// Length of XX msg 2 (`e, ee, s, es` and an empty payload's tag).
@@ -109,8 +114,8 @@ pub fn sas(h: &[u8; 32], ni: &[u8; 32], nr: &[u8; 32]) -> Sas {
 }
 
 /// One side of a completed XX handshake: `h`, the other side's static key
-/// and the sealed channel in both directions (pairing kinds only, always
-/// encrypted).
+/// and the sealed channel in both directions (each side's own pairing
+/// kinds only, always encrypted).
 pub struct PairLink {
     handshake_hash: [u8; 32],
     remote_static: [u8; 32],
@@ -136,13 +141,13 @@ impl PairLink {
         let (up, down) = noise::split(hs);
         let (sender, receiver) = if laptop {
             (
-                SealSender::new(LAPTOP_KEY_ID, up, KindSet::PAIRING, Security::Seal),
-                SealReceiver::new(DAEMON_KEY_ID, down, KindSet::PAIRING, Security::Seal),
+                SealSender::new(LAPTOP_KEY_ID, up, LAPTOP_KINDS, Security::Seal),
+                SealReceiver::new(DAEMON_KEY_ID, down, DAEMON_KINDS, Security::Seal),
             )
         } else {
             (
-                SealSender::new(DAEMON_KEY_ID, down, KindSet::PAIRING, Security::Seal),
-                SealReceiver::new(LAPTOP_KEY_ID, up, KindSet::PAIRING, Security::Seal),
+                SealSender::new(DAEMON_KEY_ID, down, DAEMON_KINDS, Security::Seal),
+                SealReceiver::new(LAPTOP_KEY_ID, up, LAPTOP_KINDS, Security::Seal),
             )
         };
         Ok(Self {
@@ -419,8 +424,9 @@ impl LaptopCommit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::Key;
     use crate::crypto::noise::low_order;
-    use crate::crypto::sealed::{Kind, OpenError};
+    use crate::crypto::sealed::{Kind, OpenError, SealError};
     use crate::crypto::test_rng::TestRng;
 
     const PAIR: &str = "rlmeshd/pair";
@@ -428,8 +434,8 @@ mod tests {
 
     fn statics() -> (StaticKeypair, StaticKeypair) {
         (
-            StaticKeypair::from_private([5; 32]),
-            StaticKeypair::from_private([6; 32]),
+            StaticKeypair::from_private(&mut [5; 32]),
+            StaticKeypair::from_private(&mut [6; 32]),
         )
     }
 
@@ -549,6 +555,30 @@ mod tests {
     #[test]
     fn the_link_carries_pairing_kinds_only_one_way_per_key() {
         let (mut l, mut d) = handshake();
+        // The laptop never commits or reveals; rlmeshd never sends a nonce.
+        for kind in [Kind::PairCommit, Kind::PairReveal] {
+            assert_eq!(
+                l.sender.seal(kind, PAIR, b"x"),
+                Err(SealError::WrongKind(kind))
+            );
+        }
+        assert_eq!(
+            d.sender.seal(Kind::PairNonce, PAIR, b"x"),
+            Err(SealError::WrongKind(Kind::PairNonce))
+        );
+        // A daemon-only kind sealed under the laptop's key (as if the
+        // laptop's sender allowed it) is refused by the daemon's receiver.
+        let mut forged = SealSender::new(
+            LAPTOP_KEY_ID,
+            Key::from_bytes([0; 32]),
+            KindSet::PAIRING,
+            Security::Seal,
+        );
+        let mut reveal = forged.seal(Kind::PairReveal, PAIR, b"x").unwrap();
+        assert_eq!(
+            d.receiver.open(PAIR, &mut reveal),
+            Err(OpenError::WrongKind(Kind::PairReveal))
+        );
         assert!(l.sender.seal(Kind::CtlRequest, PAIR, b"x").is_err());
         let mut wait = l.sender.seal(Kind::PairWait, PAIR, b"").unwrap();
         // The laptop can't open its own message: it's under key 1, not 2.

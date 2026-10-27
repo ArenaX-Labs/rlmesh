@@ -97,8 +97,13 @@ pub enum Protection {
     Configured,
 }
 
-/// The level of a key's configured kinds (`Key.security`, §8.5): `sign`
-/// (integrity only) or `seal` (encrypted).
+/// The level of a key's configured kinds (`Key.security`, §8.2, §8.5):
+/// `sign` (integrity only) or `seal` (encrypted). The level is per key: the
+/// host issues `Seal` when any part the key's scope covers is `seal`, and
+/// `Sign` otherwise. So a `k_cmd` or `k_obs` for a lease mixing `sign` and
+/// `seal` parts is `Seal` for all of them, chunks of the `sign` parts
+/// included; `k_estop` is always `Sign`; `k_up`/`k_down` are always `Seal`
+/// (their kinds are always encrypted anyway).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Security {
     /// Integrity only.

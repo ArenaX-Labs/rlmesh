@@ -23,7 +23,7 @@ pub mod replay;
 pub mod sealed;
 pub mod signed;
 
-pub use handshake::{HandshakeError, IkInitiator, IkKeys, IkResponder};
+pub use handshake::{HandshakeError, HostKeys, IkInitiator, IkResponder, ParticipantKeys};
 pub use lp::{LpTooLong, lp};
 pub use pairing::{PairLink, PairingError, Sas};
 pub use replay::ReplayWindow;
@@ -53,7 +53,12 @@ pub struct RngError;
 pub struct Key([u8; 32]);
 
 impl Key {
-    /// The key with these bytes.
+    /// The key with these bytes: a delivered key (§8.5) or a stored one.
+    ///
+    /// The type can't stop bytes from being duplicated: the host holds every
+    /// key it delivers, so keeping one sender per key and never restarting a
+    /// key's counters (by building a second [`SealSender`] from the same
+    /// bytes) is the caller's, and in practice the host's, responsibility.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -89,9 +94,12 @@ pub struct StaticKeypair {
 }
 
 impl StaticKeypair {
-    /// The key pair of this private key.
-    pub fn from_private(private: [u8; 32]) -> Self {
-        let secret = x25519_dalek::StaticSecret::from(private);
+    /// The key pair of this private key, which is wiped in place.
+    pub fn from_private(private: &mut [u8; 32]) -> Self {
+        // x25519-dalek takes the bytes by value: that argument is the one
+        // copy left to the compiler.
+        let secret = x25519_dalek::StaticSecret::from(*private);
+        private.zeroize();
         let public = x25519_dalek::PublicKey::from(&secret).to_bytes();
         Self { secret, public }
     }
@@ -101,11 +109,9 @@ impl StaticKeypair {
     /// # Errors
     /// [`RngError`] if `rng` failed.
     pub fn generate(rng: &mut dyn Rng) -> Result<Self, RngError> {
-        let mut private = [0u8; 32];
-        rng.fill_bytes(&mut private)?;
-        let pair = Self::from_private(private);
-        private.zeroize();
-        Ok(pair)
+        let mut private = zeroize::Zeroizing::new([0u8; 32]);
+        rng.fill_bytes(&mut private[..])?;
+        Ok(Self::from_private(&mut private))
     }
 
     /// The public key.
@@ -113,9 +119,9 @@ impl StaticKeypair {
         &self.public
     }
 
-    /// The private key's bytes, for storage.
-    pub fn private_bytes(&self) -> [u8; 32] {
-        self.secret.to_bytes()
+    /// The private key's bytes, for storage (wiped when dropped).
+    pub fn private_bytes(&self) -> zeroize::Zeroizing<[u8; 32]> {
+        zeroize::Zeroizing::new(self.secret.to_bytes())
     }
 
     fn private(&self) -> &[u8; 32] {

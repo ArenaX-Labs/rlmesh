@@ -66,55 +66,83 @@ pub enum HandshakeError {
     Internal,
 }
 
-/// What a completed IK handshake gives both sides: `k_up`, `k_down` and
-/// `h`. The keys leave only as one side's sender and receiver, so each has
-/// exactly one sender.
+/// The kinds the participant sends under `k_up`: ctl requests,
+/// heartbeats, participant reports and history queries.
+pub const UP: KindSet = KindSet::of_const(&[1, 3, 5, 15]);
+/// The kinds the host sends under `k_down`: ctl replies, heartbeat
+/// echoes, key deliveries and history pages.
+pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10]);
+
+/// The participant's result of an IK handshake ([`IkInitiator::finish`]):
+/// `k_up`, `k_down` and `h`. The keys leave only as the participant's
+/// sender (`k_up`) and receiver (`k_down`); the host's side has its own
+/// type ([`HostKeys`]), so neither side can make a second sender for the
+/// other's key.
+///
+/// ```compile_fail
+/// # fn f(keys: rlmesh_session_core::crypto::handshake::ParticipantKeys) {
+/// let _ = keys.into_host(1, 2); // a participant never sends under `k_down`
+/// # }
+/// ```
 #[derive(Debug)]
-pub struct IkKeys {
+pub struct ParticipantKeys {
     up: Key,
     down: Key,
     handshake_hash: [u8; 32],
 }
 
-impl IkKeys {
-    /// The kinds the participant sends under `k_up`: ctl requests,
-    /// heartbeats, participant reports and history queries.
-    pub const UP: KindSet = KindSet::of_const(&[1, 3, 5, 15]);
-    /// The kinds the host sends under `k_down`: ctl replies, heartbeat
-    /// echoes, key deliveries and history pages.
-    pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10]);
-
+impl ParticipantKeys {
     /// The handshake hash `h`.
     pub fn handshake_hash(&self) -> &[u8; 32] {
         &self.handshake_hash
     }
 
-    /// The participant's side: a sender under `k_up` and a receiver under
-    /// `k_down`, with the ids from `HandshakeAccept`.
+    /// A sender under `k_up` and a receiver under `k_down`, with the ids
+    /// from `HandshakeAccept`.
     pub fn into_participant(self, up_key_id: u32, down_key_id: u32) -> (SealSender, SealReceiver) {
         (
-            SealSender::new(up_key_id, self.up, Self::UP, Security::Seal),
-            SealReceiver::new(down_key_id, self.down, Self::DOWN, Security::Seal),
-        )
-    }
-
-    /// The host's side: a sender under `k_down` and a receiver under `k_up`.
-    pub fn into_host(self, up_key_id: u32, down_key_id: u32) -> (SealSender, SealReceiver) {
-        (
-            SealSender::new(down_key_id, self.down, Self::DOWN, Security::Seal),
-            SealReceiver::new(up_key_id, self.up, Self::UP, Security::Seal),
+            SealSender::new(up_key_id, self.up, UP, Security::Seal),
+            SealReceiver::new(down_key_id, self.down, DOWN, Security::Seal),
         )
     }
 }
 
-fn split(hs: &mut snow::HandshakeState) -> Result<IkKeys, HandshakeError> {
+/// The host's result of an IK handshake ([`IkResponder::accept`]): the
+/// keys leave only as the host's sender (`k_down`) and receiver (`k_up`).
+///
+/// ```compile_fail
+/// # fn f(keys: rlmesh_session_core::crypto::handshake::HostKeys) {
+/// let _ = keys.into_participant(1, 2); // the host never sends under `k_up`
+/// # }
+/// ```
+#[derive(Debug)]
+pub struct HostKeys {
+    up: Key,
+    down: Key,
+    handshake_hash: [u8; 32],
+}
+
+impl HostKeys {
+    /// The handshake hash `h`.
+    pub fn handshake_hash(&self) -> &[u8; 32] {
+        &self.handshake_hash
+    }
+
+    /// A sender under `k_down` and a receiver under `k_up`, with the ids
+    /// the host put in `HandshakeAccept`.
+    pub fn into_host(self, up_key_id: u32, down_key_id: u32) -> (SealSender, SealReceiver) {
+        (
+            SealSender::new(down_key_id, self.down, DOWN, Security::Seal),
+            SealReceiver::new(up_key_id, self.up, UP, Security::Seal),
+        )
+    }
+}
+
+/// (`h`, `k_up`, `k_down`) after the last message.
+fn split(hs: &mut snow::HandshakeState) -> Result<([u8; 32], Key, Key), HandshakeError> {
     let handshake_hash = noise::hash(hs)?;
     let (up, down) = noise::split(hs);
-    Ok(IkKeys {
-        up,
-        down,
-        handshake_hash,
-    })
+    Ok((handshake_hash, up, down))
 }
 
 /// The participant's side, after sending msg 1.
@@ -159,10 +187,17 @@ impl IkInitiator {
     ///
     /// # Errors
     /// [`HandshakeError`].
-    pub fn finish(mut self, msg2: &[u8]) -> Result<(Vec<u8>, IkKeys), HandshakeError> {
+    pub fn finish(mut self, msg2: &[u8]) -> Result<(Vec<u8>, ParticipantKeys), HandshakeError> {
         let accept = noise::read(&mut self.hs, msg2)?;
-        let keys = split(&mut self.hs)?;
-        Ok((accept, keys))
+        let (handshake_hash, up, down) = split(&mut self.hs)?;
+        Ok((
+            accept,
+            ParticipantKeys {
+                up,
+                down,
+                handshake_hash,
+            },
+        ))
     }
 }
 
@@ -218,10 +253,17 @@ impl IkResponder {
     ///
     /// # Errors
     /// [`HandshakeError`].
-    pub fn accept(mut self, accept: &[u8]) -> Result<(Vec<u8>, IkKeys), HandshakeError> {
+    pub fn accept(mut self, accept: &[u8]) -> Result<(Vec<u8>, HostKeys), HandshakeError> {
         let msg2 = noise::write(&mut self.hs, accept, MSG2_OVERHEAD)?;
-        let keys = split(&mut self.hs)?;
-        Ok((msg2, keys))
+        let (handshake_hash, up, down) = split(&mut self.hs)?;
+        Ok((
+            msg2,
+            HostKeys {
+                up,
+                down,
+                handshake_hash,
+            },
+        ))
     }
 }
 
@@ -233,8 +275,8 @@ mod tests {
 
     fn keys() -> (StaticKeypair, StaticKeypair) {
         (
-            StaticKeypair::from_private([1; 32]),
-            StaticKeypair::from_private([2; 32]),
+            StaticKeypair::from_private(&mut [1; 32]),
+            StaticKeypair::from_private(&mut [2; 32]),
         )
     }
 
@@ -309,7 +351,7 @@ mod tests {
     #[test]
     fn the_wrong_responder_static_fails() {
         let (participant, host) = keys();
-        let impostor = StaticKeypair::from_private([3; 32]);
+        let impostor = StaticKeypair::from_private(&mut [3; 32]);
         let p = prologue_for("arm");
         // The participant expects `host`; `impostor` can't read msg 1.
         let (_, msg1) =
@@ -343,7 +385,7 @@ mod tests {
         let msg1 = noise::write(&mut attacker, &[], MSG1_LEN).unwrap();
         assert_eq!(
             &msg1[..32],
-            &crate::crypto::StaticKeypair::from_private([4; 32]).public()[..]
+            &crate::crypto::StaticKeypair::from_private(&mut [4; 32]).public()[..]
         );
         assert_eq!(
             IkResponder::read_request(&mut TestRng::new(2), &host, &p, &msg1).unwrap_err(),

@@ -95,8 +95,11 @@ struct X25519 {
 }
 
 impl X25519 {
-    fn install(&mut self, mut private: [u8; 32]) {
-        let secret = StaticSecret::from(private);
+    /// Take the private key, wiping `private` in place. (x25519-dalek takes
+    /// the bytes by value: that argument is the one copy left to the
+    /// compiler.)
+    fn install(&mut self, private: &mut [u8; 32]) {
+        let secret = StaticSecret::from(*private);
         private.zeroize();
         self.public = PublicKey::from(&secret).to_bytes();
         self.secret = Some(secret);
@@ -114,15 +117,15 @@ impl Dh for X25519 {
         32
     }
     fn set(&mut self, privkey: &[u8]) {
-        let mut private = [0u8; 32];
+        let mut private = Zeroizing::new([0u8; 32]);
         let n = privkey.len().min(32);
         private[..n].copy_from_slice(&privkey[..n]);
-        self.install(private);
+        self.install(&mut private);
     }
     fn generate(&mut self, rng: &mut dyn Random) -> Result<(), snow::Error> {
-        let mut private = [0u8; 32];
-        rng.try_fill_bytes(&mut private)?;
-        self.install(private);
+        let mut private = Zeroizing::new([0u8; 32]);
+        rng.try_fill_bytes(&mut private[..])?;
+        self.install(&mut private);
         Ok(())
     }
     fn pubkey(&self) -> &[u8] {

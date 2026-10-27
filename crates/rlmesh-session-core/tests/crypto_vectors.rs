@@ -12,7 +12,7 @@ use blake2::{Blake2s256, Digest};
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
-use rlmesh_session_core::crypto::handshake::{self, IkInitiator, IkKeys, IkResponder};
+use rlmesh_session_core::crypto::handshake::{self, IkInitiator, IkResponder};
 use rlmesh_session_core::crypto::pairing::{
     self, DaemonCommit, LaptopCommit, PairInitiator, PairResponder, commitment, sas,
 };
@@ -261,8 +261,8 @@ fn ik_vector() -> Value {
         "ik host ephemeral",
     ];
     let [ps, hs, pe, he] = names.map(fixed);
-    let participant = StaticKeypair::from_private(ps);
-    let host = StaticKeypair::from_private(hs);
+    let participant = StaticKeypair::from_private(&mut { ps });
+    let host = StaticKeypair::from_private(&mut { hs });
     let (tenant, session, host_instance, name) =
         ("acme", "demo", 0x0102_0304_0506_0708u64, "arm-1");
     let prologue = handshake::prologue(tenant, session, host_instance, name).expect("prologue");
@@ -333,8 +333,8 @@ fn pairing_vector() -> Value {
     ];
     let [ls, ds, le, de, nr, ni] = names.map(fixed);
     let exchange = exchange_id();
-    let laptop = StaticKeypair::from_private(ls);
-    let daemon = StaticKeypair::from_private(ds);
+    let laptop = StaticKeypair::from_private(&mut { ls });
+    let daemon = StaticKeypair::from_private(&mut { ds });
     let (init, xx1) =
         PairInitiator::start(&mut FixedRng(vec![le]), &laptop, &exchange).expect("xx1");
     let (resp, xx2) =
@@ -537,13 +537,18 @@ fn the_ik_vector_matches_snow_directly() {
     let keyexpr = text(&v["keyexpr"]);
     let up_id = u32::try_from(int(&v["up_key_id"])).expect("u32");
     let down_id = u32::try_from(int(&v["down_key_id"])).expect("u32");
-    let mut host_rx = SealReceiver::new(up_id, Key::from_bytes(up), IkKeys::UP, Security::Seal);
+    let mut host_rx = SealReceiver::new(up_id, Key::from_bytes(up), handshake::UP, Security::Seal);
     let mut msg = unhex(&v["sealed_up"]);
     assert_eq!(
         host_rx.open(keyexpr, &mut msg).expect("up").body,
         b"\x0a\x06attach"
     );
-    let mut p_rx = SealReceiver::new(down_id, Key::from_bytes(down), IkKeys::DOWN, Security::Seal);
+    let mut p_rx = SealReceiver::new(
+        down_id,
+        Key::from_bytes(down),
+        handshake::DOWN,
+        Security::Seal,
+    );
     let mut msg = unhex(&v["sealed_down"]);
     assert_eq!(
         p_rx.open(keyexpr, &mut msg).expect("down").body,
@@ -551,7 +556,7 @@ fn the_ik_vector_matches_snow_directly() {
     );
 
     // And the crate's responder reads msg 1 from the vector alone.
-    let host = StaticKeypair::from_private(hs);
+    let host = StaticKeypair::from_private(&mut { hs });
     let r =
         IkResponder::read_request(&mut FixedRng(vec![he]), &host, &prologue, &msg1).expect("read");
     assert_eq!(
@@ -620,10 +625,20 @@ fn the_pairing_vector_matches_snow_and_blake2_directly() {
     // Key 1 is the first split output (laptop → daemon), key 2 the second.
     let (k1, k2) = init.dangerously_get_raw_split();
     let keyexpr = text(&v["keyexpr"]);
-    let mut up = SealReceiver::new(1, Key::from_bytes(k1), KindSet::PAIRING, Security::Seal);
+    let mut up = SealReceiver::new(
+        1,
+        Key::from_bytes(k1),
+        pairing::LAPTOP_KINDS,
+        Security::Seal,
+    );
     let mut msg = unhex(&v["sealed_pair_nonce"]);
     assert_eq!(up.open(keyexpr, &mut msg).expect("open").body, ni);
-    let mut down = SealReceiver::new(2, Key::from_bytes(k2), KindSet::PAIRING, Security::Seal);
+    let mut down = SealReceiver::new(
+        2,
+        Key::from_bytes(k2),
+        pairing::DAEMON_KINDS,
+        Security::Seal,
+    );
     let mut msg = unhex(&v["sealed_pair_commit"]);
     assert_eq!(down.open(keyexpr, &mut msg).expect("open").body, c);
 }
