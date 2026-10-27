@@ -535,11 +535,15 @@ pub fn compile(request: &EvalRequest, images: &Images) -> Result<Plan> {
                 .any(|option| option == TRIAL_INDEX_OPTION);
             let (offset, trial) = match shard.metadata.get("episodeShardIndex") {
                 None => (0, Some(0)),
-                Some(index) => match shard.metadata["episodeShardOffset"].parse::<u64>() {
-                    Ok(offset) => (offset, Some(offset)),
+                Some(index) => match shard
+                    .metadata
+                    .get("episodeShardOffset")
+                    .and_then(|offset| offset.parse::<u64>().ok())
+                {
+                    Some(offset) => (offset, Some(offset)),
                     // A shard with no offset keys on its index (routeSeedKey's
                     // legacy branch) and has no global ordinal to offer.
-                    Err(_) => {
+                    None => {
                         seed_env = format!("{seed_env}#{index}");
                         (0, None)
                     }
@@ -1225,6 +1229,28 @@ mod tests {
                 assert!(same_json(got, want), "{name}:\n got {got}\nwant {want}");
             }
         }
+    }
+
+    #[test]
+    fn legacy_shard_metadata_without_an_offset_keys_on_the_shard_index() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../conformance/eval_plans.v1.json")).unwrap();
+        let images: Images = serde_json::from_value(fixture["images"].clone()).unwrap();
+        let request = EvalRequest::parse(&serde_json::json!({
+            "models": [{"model": "prebuilt/noop/base"}],
+            "tasks": [{
+                "taskId": "libero_spatial/0",
+                "env": "prebuilt/libero",
+                "episodes": 1,
+                "metadata": {"episodeShardIndex": "1", "episodeShardCount": "2"},
+            }],
+        }))
+        .unwrap();
+        let plan = compile(&request, &images).unwrap();
+        let workload = &plan.workloads[0];
+        assert!(workload.seed_key.ends_with("#1"), "{}", workload.seed_key);
+        assert_eq!(workload.seed_slot_offset, 0);
+        assert_eq!(workload.trial_index_base, None);
     }
 
     #[test]
