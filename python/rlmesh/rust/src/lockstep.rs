@@ -319,6 +319,14 @@ impl PyLockstepRobot {
                 Ok(())
             })?;
         }
+        // A robot that never served still holds its binding.
+        let binding = self.binding.lock().ok().and_then(|mut b| b.take());
+        if let Some(binding) = binding {
+            block_on(py, async move {
+                binding.close().await;
+                Ok(())
+            })?;
+        }
         Ok(())
     }
 }

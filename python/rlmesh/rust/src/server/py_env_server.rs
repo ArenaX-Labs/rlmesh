@@ -834,7 +834,7 @@ fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
         BoundListener::Tcp(listener) => {
             drop(listener);
         }
-        BoundListener::Lockstep(binding) => drop(binding),
+        BoundListener::Lockstep(binding) => runtime.block_on(binding.close()),
         #[cfg(unix)]
         BoundListener::Unix { listener, path } => {
             drop(listener);

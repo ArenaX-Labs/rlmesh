@@ -319,6 +319,18 @@ impl LockstepBinding {
         self.address.to_string()
     }
 
+    /// Leaves the session and stops its host, for a binding that never
+    /// served (dropping it would leave a host it runs listening).
+    pub async fn close(self) {
+        let LockstepBinding {
+            mut placed,
+            participant,
+            ..
+        } = self;
+        participant.close().await;
+        let _ = placed.close().await;
+    }
+
     /// Attaches as the robot, declares the env's robot map (§12.5), arms
     /// and serves the env over the lockstep exchange until `shutdown`
     /// fires.

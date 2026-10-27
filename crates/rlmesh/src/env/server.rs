@@ -197,11 +197,15 @@ impl Listener {
         Ok((Self::Grpc(listener), bound))
     }
 
-    fn release(self) {
+    fn release(self, runtime: &tokio::runtime::Runtime) {
         match self {
             Self::Grpc(listener) => listener.release(),
             #[cfg(feature = "lockstep")]
-            Self::Lockstep(_) => {}
+            // Off this thread: a failed serve_async start releases from
+            // inside an executor.
+            Self::Lockstep(binding) => std::thread::scope(|scope| {
+                scope.spawn(|| runtime.block_on(binding.close()));
+            }),
         }
     }
 }
@@ -1671,7 +1675,7 @@ fn serve_failure(serve: Result<()>, close: Result<()>) -> Result<()> {
     }
 }
 
-/// Release a never-served server: drop the listener and close the envs (when
+/// Release a never-served server: release the listener (stopping a session host it runs) and close the envs (when
 /// `close_env_on_shutdown`), bounded by `close_timeout`.
 fn cleanup_ready(resources: Resources, shared: &Arc<Shared>) -> Result<()> {
     let Resources {
@@ -1682,7 +1686,7 @@ fn cleanup_ready(resources: Resources, shared: &Arc<Shared>) -> Result<()> {
         close_env_on_shutdown,
         ..
     } = resources;
-    listener.release();
+    listener.release(&runtime);
     drop(runtime);
     let id = shared.id;
     if !close_env_on_shutdown {

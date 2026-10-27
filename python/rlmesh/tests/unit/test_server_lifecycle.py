@@ -14,6 +14,7 @@ and a non-finite serve timeout raises instead of panicking.
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -315,3 +316,12 @@ def test_serve_cli_reports_a_clean_stop_on_ctrl_c(
     # Ctrl-C is how an operator stops a served container: the conventional
     # interrupted status, not a traceback.
     assert serve_cli.main(["--env", "pkg.module:make_env"]) == 130
+
+
+def test_shutting_down_an_unstarted_lockstep_server_stops_its_session_host() -> None:
+    server = rlmesh.EnvServer(TinyEnv(), ":0/env")
+    host, port = server.address.split("/")[0].rsplit(":", 1)
+    socket.create_connection((host, int(port)), timeout=5).close()
+    server.shutdown()
+    with pytest.raises(OSError):
+        socket.create_connection((host, int(port)), timeout=5).close()
