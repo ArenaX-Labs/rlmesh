@@ -1,7 +1,8 @@
 name: Release
 
-# Tags build Linux/Windows/macOS wheels, C/C++ tarballs and NuGet/Unity packages.
-# Publish crates.io, PyPI and configured nuget.org via OIDC, plus GitHub assets.
+# Tags build Linux/Windows/macOS wheels, C/C++ tarballs, NuGet/Unity packages
+# and the npm package with its per-platform Node addons. Publish crates.io, PyPI,
+# configured nuget.org and npm via OIDC, plus GitHub assets.
 # workflow_dispatch only runs on tags; re-run failed jobs to preserve built bytes.
 
 on:
@@ -75,6 +76,24 @@ jobs:
           path: |
             target/capi-pkg/*.tar.gz
             target/capi-pkg/*.tar.gz.sha256
+          if-no-files-found: error
+
+      # The wasm and the bundles, and the Node addons for Linux and Windows,
+      # cross-built here like the wheels. macOS builds its own two.
+      - name: Build the npm package and its Linux and Windows addons
+        run: |
+          mise run --skip-tools build:js
+          for platform in linux-x64 linux-arm64 win32-x64; do
+            mise run --skip-tools release:js:native "$platform"
+          done
+
+      - name: Upload the npm build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-linux
+          path: |
+            javascript/rlmesh/dist/
+            target/npm-native/*.node
           if-no-files-found: error
 
       - name: Minimize uv cache
@@ -185,19 +204,35 @@ jobs:
             target/capi-pkg/*.tar.gz.sha256
           if-no-files-found: error
 
+      - name: Build the macOS Node addons
+        timeout-minutes: 40
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          mise run --skip-tools release:js:native darwin-arm64
+          mise run --skip-tools release:js:native darwin-x64
+
+      - name: Upload the macOS Node addons
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-macos
+          path: target/npm-native/*.node
+          if-no-files-found: error
+
       - name: Minimize uv cache
         if: always()
         run: uv cache prune --ci
 
   publish:
-    name: Publish crates.io + PyPI + NuGet + GitHub Release
+    name: Publish crates.io + PyPI + NuGet + npm + GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: depot-ubuntu-24.04-4
     needs: [wheels-linux, wheels-macos]
     environment: release
     permissions:
       contents: write # GitHub Release
-      id-token: write # OIDC trusted publishing (crates.io + PyPI)
+      id-token: write # OIDC trusted publishing (crates.io, PyPI, nuget.org, npm)
 
     steps:
       - name: Checkout repository
@@ -230,6 +265,23 @@ jobs:
         run: |
           mise run --skip-tools csharp:pack --require-all
           mise run --skip-tools csharp:upm --require-all
+
+      # Linux uploads two roots, so its artifact keeps repository paths; macOS
+      # uploads only its addons, which land flat.
+      - name: Download the npm build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-linux
+          path: .
+
+      - name: Download the macOS Node addons
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-macos
+          path: target/npm-native
+
+      - name: Pack the npm packages
+        run: mise run --skip-tools release:js:package --require-all
 
       - name: Package crates
         run: mise run --skip-tools release:rust:package
@@ -274,6 +326,10 @@ jobs:
         if: vars.NUGET_USER == ''
         timeout-minutes: 1
         run: echo '::notice::nuget.org publishing skipped; configure the trusted publishing policy and NUGET_USER repository variable to enable it.'
+
+      - name: Publish to npm
+        timeout-minutes: 10
+        run: mise run --skip-tools release:js:publish "${GITHUB_REF_NAME#v}"
 
       - name: Create GitHub Release
         env:

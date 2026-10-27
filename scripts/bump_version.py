@@ -273,6 +273,10 @@ def bump(old: str, new: str) -> None:
     for py in ("pyproject.toml", "python/rlmesh/pyproject.toml"):
         sub_file(ROOT / py, [(rf'version = "{op}"', f'version = "{new_pep}"')])
 
+    # The npm package (release:js:package also stamps the workspace version at pack time).
+    for npm in ("javascript/rlmesh/package.json", "javascript/rlmesh/package-lock.json"):
+        sub_file(ROOT / npm, [(rf'"version": "{o}"', f'"version": "{new}"')])
+
     # Policy manifest: cargo artifacts use SemVer; the pypi artifact uses PEP 440.
     rlmesh_toml = ROOT / "rlmesh.toml"
     sub_file(rlmesh_toml, [(rf'version = "{o}"', f'version = "{new}"')])

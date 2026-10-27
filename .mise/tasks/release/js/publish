@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#MISE description="Publish target/npm-pkg to npm (release CI, trusted publishing): the @rlmesh/{platform}-{arch} addons first, then rlmesh; skips versions already published"
+#MISE dir="{{ config_root }}"
+#USAGE arg "<version>" help="The release version, e.g. 0.2.0"
+
+# A prerelease goes to the `next` dist-tag so `npm install rlmesh` keeps the
+# last stable release. The platform packages go first: rlmesh pins them exactly.
+set -euo pipefail
+version="${usage_version:?usage: release:js:publish <version>}"
+tag=latest
+[[ "$version" == *-* ]] && tag=next
+
+shopt -s nullglob
+platforms=(target/npm-pkg/rlmesh-*-"$version".tgz)
+main=target/npm-pkg/rlmesh-"$version".tgz
+[ -f "$main" ] && [ "${#platforms[@]}" -eq 5 ] || {
+  echo "error: expected rlmesh and 5 platform packages for $version in target/npm-pkg" >&2
+  exit 1
+}
+for tgz in "${platforms[@]}" "$main"; do
+  name="$(tar -xOzf "$tgz" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).name')"
+  if npm view "$name@$version" version >/dev/null 2>&1; then
+    echo "skip: $name@$version is already published"
+    continue
+  fi
+  npm publish "$tgz" --access public --tag "$tag"
+done
