@@ -1066,20 +1066,36 @@ impl<H: ModelHandler + 'static> Joins<H> {
             }
         };
         // Alone in the session: every inviter is gone, whether or not it
-        // said so.
+        // said so. Its inviters join after this answers, so it counts as
+        // alone only once someone else was there, or when nobody came
+        // within the join timeout.
         let mut roster = participant.watch();
-        let (alone, me) = (cancel.clone(), self.name.clone());
+        let (alone, me, wait) = (cancel.clone(), self.name.clone(), self.timeout);
         tokio::spawn(async move {
-            while roster.changed().await.is_ok() {
+            let mut seen = false;
+            loop {
                 let only_me = roster
-                    .borrow()
+                    .borrow_and_update()
                     .as_ref()
-                    .is_some_and(|s| s.roster.iter().all(|p| p.id == me));
-                if only_me {
-                    alone.cancel();
-                    break;
+                    .map(|s| s.roster.iter().all(|p| p.id == me));
+                match only_me {
+                    Some(true) if seen => break,
+                    Some(false) => seen = true,
+                    _ => {}
+                }
+                let changed = if seen {
+                    roster.changed().await
+                } else {
+                    match tokio::time::timeout(wait, roster.changed()).await {
+                        Ok(changed) => changed,
+                        Err(_) => break,
+                    }
+                };
+                if changed.is_err() {
+                    return;
                 }
             }
+            alone.cancel();
         });
         let joins = Arc::clone(self);
         tokio::spawn(async move {
