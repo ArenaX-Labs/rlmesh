@@ -88,15 +88,43 @@ def test_ctrl_c_in_run_routes_keeps_the_routes_that_finished() -> None:
     assert type(caught.value) is KeyboardInterrupt
 
 
-def test_a_routes_own_ctrl_c_is_raised_as_the_runs() -> None:
-    class Raises(_TwoStepEnv):
-        def reset(
-            self, *, seed: object = None, options: Any = None
-        ) -> tuple[int, dict]:
-            raise KeyboardInterrupt
+class _RaisesOnReset(_TwoStepEnv):
+    def reset(self, *, seed: object = None, options: Any = None) -> tuple[int, dict]:
+        raise KeyboardInterrupt
 
-    model = rlmesh.Model(rlmesh.RANDOM_SAMPLE)
-    (cut,), interrupt = model._run_routes([(Raises(), {"episodes": 1})])  # pyright: ignore[reportPrivateUsage]
+
+def _raising_predict(obs: object) -> int:
+    raise KeyboardInterrupt
+
+
+@pytest.mark.parametrize(
+    ("model", "env"),
+    [
+        (lambda: rlmesh.Model(rlmesh.RANDOM_SAMPLE), _RaisesOnReset),
+        (lambda: rlmesh.Model(_raising_predict), _TwoStepEnv),
+    ],
+    ids=["env", "in-process-model"],
+)
+def test_a_routes_own_ctrl_c_is_raised_as_the_runs(model: Any, env: Any) -> None:
+    model = model()
+    (cut,), interrupt = model._run_routes([(env(), {"episodes": 1})])  # pyright: ignore[reportPrivateUsage]
     assert type(cut) is KeyboardInterrupt and interrupt is cut
     with pytest.raises(KeyboardInterrupt):
-        model.run_routes([Raises()])
+        model.run_routes([env()])
+
+
+def test_a_routes_own_ctrl_c_stops_its_siblings() -> None:
+    class Endless(_TwoStepEnv):
+        def step(self, action: object) -> tuple[int, float, bool, bool, dict]:
+            time.sleep(0.001)
+            # Ends only past the test's bound, so a regression fails, not hangs.
+            return 0, 1.0, time.monotonic() > deadline, False, {}
+
+    deadline = time.monotonic() + 30
+    model = rlmesh.Model(rlmesh.RANDOM_SAMPLE)
+    (cut, stopped), interrupt = model._run_routes(  # pyright: ignore[reportPrivateUsage]
+        [(_RaisesOnReset(), {"episodes": 1}), (Endless(), {"episodes": 1})]
+    )
+    assert time.monotonic() < deadline
+    assert type(cut) is KeyboardInterrupt and interrupt is cut
+    assert stopped is cut

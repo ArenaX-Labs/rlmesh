@@ -1226,7 +1226,14 @@ impl PyModel {
         let mut prepared = Vec::with_capacity(routes.len());
         for (target, options) in routes {
             let parsed = self.run_options(&options)?;
-            let error = LastPyError::default();
+            // An in-process model (the one route) stores its own raise in
+            // its `last_error`, so that is the route's error slot.
+            let error = if exclusive {
+                self.last_error.clone()
+            } else {
+                LastPyError::default()
+            };
+            error.lock().unwrap_or_else(|e| e.into_inner()).take();
             let target = crate::facade::PyEnvTarget::new(py, target, error.clone())?;
             let mut model = self.prepared(exclusive);
             model.run_lease = lease.clone();
@@ -1247,7 +1254,32 @@ impl PyModel {
         }
         let interrupted = LastPyError::default();
         let signal_cancel = cancel.clone();
-        let poll = crate::facade::signal_poll(interrupted.clone(), move || signal_cancel.cancel());
+        let signal =
+            crate::facade::signal_poll(interrupted.clone(), move || signal_cancel.cancel());
+        // A route's own KeyboardInterrupt (its env or model raised one) is a
+        // Ctrl-C too: it stops the other routes as a signal would.
+        let (slots, route_interrupt) = (errors.clone(), interrupted.clone());
+        let poll: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            signal();
+            Python::attach(|py| {
+                let mut interrupt = route_interrupt.lock().unwrap_or_else(|e| e.into_inner());
+                if interrupt.is_some() {
+                    return;
+                }
+                let raised = slots.iter().find_map(|slot| {
+                    let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    slot.as_ref()
+                        .filter(|err| {
+                            err.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+                        })
+                        .map(|err| err.clone_ref(py))
+                });
+                if let Some(raised) = raised {
+                    *interrupt = Some(raised);
+                    cancel.cancel();
+                }
+            });
+        });
         let results = py.detach(|| {
             rlmesh::binding::model::with_caller_poll(poll, || {
                 rlmesh::binding::routes::run_routes_prepared(prepared)
@@ -1277,8 +1309,8 @@ impl PyModel {
                     .into_any()),
             })
             .collect::<PyResult<_>>()?;
-        // A route's own KeyboardInterrupt (its env raised one) is a Ctrl-C
-        // too, though no signal reached the poll.
+        // A route's own KeyboardInterrupt the poll missed (raised as the
+        // last route finished) is the run's too.
         let interrupt = interrupt
             .map(|interrupt| interrupt.into_value(py).into_any())
             .or_else(|| {
