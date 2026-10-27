@@ -185,11 +185,12 @@ status = "bridge"
 ["rlmesh:BatchOptions"]
 area = "model"
 rule = ["R-4"]
-parameters = { "max_batch_size" = { "default" = "32" }, "batch_window_ms" = { "default" = "5" }, "batch_byte_budget" = { "default" = "268431360", "expression" = "256 * 1024 * 1024 - 4 * 1024" }, "max_in_flight_batches" = { "default" = "2" }, "batch_records" = { "default" = "None" } }
+parameters = { "max_batch_size" = { "default" = "None" }, "batch_window_ms" = { "default" = "None" }, "batch_byte_budget" = { "default" = "None" }, "max_in_flight_batches" = { "default" = "None" }, "batch_records" = { "default" = "None" } }
 
 ["rlmesh:BatchOptions".rust]
 status = "present"
 path = "rlmesh::serve_options::BatchOptions"
+default_skip = { "max_batch_size" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only.", "batch_window_ms" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only.", "batch_byte_budget" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only.", "max_in_flight_batches" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only." }
 params = { "max_batch_size" = "rlmesh::serve_options::BatchOptions#max_batch_size", "batch_window_ms" = "rlmesh::serve_options::BatchOptions#batch_window_ms", "batch_byte_budget" = "rlmesh::serve_options::BatchOptions#batch_byte_budget", "max_in_flight_batches" = "rlmesh::serve_options::BatchOptions#max_in_flight_batches", "batch_records" = "rlmesh::serve_options::BatchOptions#batch_records" }
 also = [
   "rlmesh::BatchOptions",
