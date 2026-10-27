@@ -210,6 +210,7 @@ fn run_workloads(
         "out": args.out,
         "gpus": args.gpus,
         "volumes": args.volumes,
+        "maxEnvs": args.max_envs,
         "status": status_path,
     });
     let mut child = python_command()?

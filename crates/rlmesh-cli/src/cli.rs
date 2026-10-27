@@ -269,6 +269,10 @@ pub struct EvalRunArgs {
     /// at the path its package label names; repeatable.
     #[arg(long = "volume", value_name = "HOST:CONTAINER")]
     pub volumes: Vec<String>,
+    /// The most env containers alive at once: a model's workloads run in
+    /// waves of this many.
+    #[arg(long, value_name = "N", default_value_t = 16, value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_envs: u32,
     /// The folder for the run index and one result bundle per workload.
     #[arg(long, default_value = "rlmesh-eval")]
     pub out: std::path::PathBuf,

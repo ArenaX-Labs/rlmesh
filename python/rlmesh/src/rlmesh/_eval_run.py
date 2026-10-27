@@ -5,14 +5,15 @@ skips what ``--resume`` finds recorded, and reports on the bundles written
 here. It reads one job on stdin::
 
     {"plan": {...}, "pending": [workload ids], "out": dir,
-     "gpus": "all" | null, "volumes": ["host:ctr", ...], "status": path}
+     "gpus": "all" | null, "volumes": ["host:ctr", ...], "maxEnvs": n,
+     "status": path}
 
 Models run one at a time, each as one :class:`~rlmesh.SandboxModel` that
-every workload of it reaches as a route of one
-:meth:`~rlmesh.Model.run_routes` call, its env a :class:`~rlmesh.SandboxEnv`
-of its own. Each finished workload is written as an ``rlmesh.result.v1``
-bundle under ``<out>/workloads/<id>`` and gets one JSON line in the status
-file; a failed one gets its error there instead.
+its workloads reach in waves of at most ``maxEnvs``, each wave one
+:meth:`~rlmesh.Model.run_routes` call with a route per workload, its env a
+:class:`~rlmesh.SandboxEnv` of its own. Each finished workload is written as
+an ``rlmesh.result.v1`` bundle under ``<out>/workloads/<id>`` and gets one
+JSON line in the status file; a failed one gets its error there instead.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ MODEL_CONNECT_TIMEOUT_SECONDS = 900.0
 ENV_CONNECT_TIMEOUT_SECONDS = 300.0
 #: Env containers started at once.
 ENV_STARTS = 8
+#: Env containers alive at once, when the job does not say (``--max-envs``).
+MAX_ENVS = 16
 
 
 def main() -> int:
@@ -39,7 +42,10 @@ def main() -> int:
     out = Path(job["out"])
     status_path = Path(job["status"])
 
+    settled: set[str] = set()
+
     def report(workload: dict[str, Any], **fields: object) -> None:
+        settled.add(workload["id"])
         with status_path.open("a") as status:
             status.write(json.dumps({"workload": workload["id"], **fields}) + "\n")
 
@@ -59,6 +65,8 @@ def main() -> int:
         except Exception as error:
             # The model failed every workload it had left.
             for workload in mine:
+                if workload["id"] in settled:
+                    continue
                 report(
                     workload, status="failed", error=f"{type(error).__name__}: {error}"
                 )
@@ -74,15 +82,12 @@ def _run_model(
     report: Any,
 ) -> None:
     import rlmesh
-    from rlmesh.recorder import Recorder
 
     def runtime(gpu: bool) -> rlmesh.SandboxRuntime:
         return rlmesh.SandboxRuntime(
             gpus=job["gpus"] if gpu else None, volumes=job["volumes"] or None
         )
 
-    envs: list[tuple[dict[str, Any], Any]] = []
-    results: list[rlmesh.RunResult | BaseException] = []
     with rlmesh.SandboxModel(
         model["image"],
         runtime=runtime(model["gpu"]),
@@ -90,6 +95,35 @@ def _run_model(
         **model["params"],
     ) as served:
         served.serve()
+        cap = max(1, job.get("maxEnvs") or MAX_ENVS)
+        for first in range(0, len(workloads), cap):
+            _run_wave(
+                plan,
+                model,
+                workloads[first : first + cap],
+                served,
+                runtime,
+                out,
+                report,
+            )
+
+
+def _run_wave(
+    plan: dict[str, Any],
+    model: dict[str, Any],
+    workloads: list[dict[str, Any]],
+    served: Any,
+    runtime: Any,
+    out: Path,
+    report: Any,
+) -> None:
+    """Run ``workloads`` as routes of one ``run_routes`` call, an env each."""
+    import rlmesh
+    from rlmesh.recorder import Recorder
+
+    envs: list[tuple[dict[str, Any], Any]] = []
+    results: list[rlmesh.RunResult | BaseException] = []
+    try:
 
         def start(workload: dict[str, Any]) -> object:
             return rlmesh.SandboxEnv(
@@ -112,32 +146,31 @@ def _run_model(
                 )
         if not envs:
             return
-        try:
-            results = served._served()._run_routes(  # pyright: ignore[reportPrivateUsage]
-                [
-                    (
-                        env,
-                        dict(
-                            episodes=w["episodes"],
-                            seeds=w["seeds"] or None,
-                            base_seed=w["seed"],
-                            seed_key=w["seedKey"],
-                            max_episode_steps=w["maxEpisodeSteps"],
-                            max_episode_seconds=None,
-                            prefetch_lead=plan["prefetchLead"] or 0,
-                            trial_index_base=w["seedSlotOffset"],
-                            close_env=False,
-                        ),
-                    )
-                    for w, env in envs
-                ],
-                execution_horizon=plan["executionHorizon"],
-            )
-        finally:
-            for _, env in envs:
-                # A killed env has nothing left to close.
-                with contextlib.suppress(Exception):
-                    env.close()
+        results = served._served()._run_routes(  # pyright: ignore[reportPrivateUsage]
+            [
+                (
+                    env,
+                    dict(
+                        episodes=w["episodes"],
+                        seeds=w["seeds"] or None,
+                        base_seed=w["seed"],
+                        seed_key=w["seedKey"],
+                        max_episode_steps=w["maxEpisodeSteps"],
+                        max_episode_seconds=None,
+                        prefetch_lead=plan["prefetchLead"] or 0,
+                        trial_index_base=w["seedSlotOffset"],
+                        close_env=False,
+                    ),
+                )
+                for w, env in envs
+            ],
+            execution_horizon=plan["executionHorizon"],
+        )
+    finally:
+        for _, env in envs:
+            # A killed env has nothing left to close.
+            with contextlib.suppress(Exception):
+                env.close()
     interrupt = None
     for (workload, _), result in zip(envs, results, strict=True):
         if isinstance(result, KeyboardInterrupt):
