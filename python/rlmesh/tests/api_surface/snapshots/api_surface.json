@@ -68,7 +68,7 @@
         "members": {
           "batch_byte_budget": {
             "kind": "attribute",
-            "signature": "batch_byte_budget: int"
+            "signature": "batch_byte_budget: int | None"
           },
           "batch_records": {
             "kind": "attribute",
@@ -76,18 +76,18 @@
           },
           "batch_window_ms": {
             "kind": "attribute",
-            "signature": "batch_window_ms: int"
+            "signature": "batch_window_ms: int | None"
           },
           "max_batch_size": {
             "kind": "attribute",
-            "signature": "max_batch_size: int"
+            "signature": "max_batch_size: int | None"
           },
           "max_in_flight_batches": {
             "kind": "attribute",
-            "signature": "max_in_flight_batches: int"
+            "signature": "max_in_flight_batches: int | None"
           }
         },
-        "signature": "BatchOptions(max_batch_size: int = 32, batch_window_ms: int = 5, batch_byte_budget: int = 256 * 1024 * 1024 - 4 * 1024, max_in_flight_batches: int = 2, batch_records: str | os.PathLike[str] | None = None)",
+        "signature": "BatchOptions(max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None)",
         "stability": "Experimental"
       },
       "Binding": {

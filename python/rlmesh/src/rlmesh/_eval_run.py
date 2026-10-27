@@ -158,6 +158,13 @@ def _run_wave(
                         max_episode_steps=w["maxEpisodeSteps"],
                         max_episode_seconds=None,
                         prefetch_lead=plan["prefetchLead"] or 0,
+                        # run_routes derives each reset seed from base_seed,
+                        # seed_key and the episode's trial ordinal, so walking
+                        # ordinals from the workload's first global slot draws
+                        # the plan's seeds (Workload::episode_seeds), paired
+                        # across models and splits. trialIndexBase equals it
+                        # whenever the plan has a global ordinal, and is
+                        # absent otherwise, so it cannot stand in here.
                         trial_index_base=w["seedSlotOffset"],
                         close_env=False,
                     ),

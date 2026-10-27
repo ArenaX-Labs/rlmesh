@@ -482,26 +482,30 @@ _ = atexit.register(_close_serving_models)
 class BatchOptions:
     """How a served model coalesces predicts from every session it answers in.
 
-    Experimental. Requests that arrive close together go to the model as one grouped predict,
-    one fused forward for a model that fuses. The model still runs one forward
-    at a time: batching raises fill, not concurrency. A batch closes at
-    ``max_batch_size`` groups (one route's rows each) or ``batch_byte_budget``
-    observation bytes, or as soon as every route the model has resolved has a
-    request in it; while the model is idle it also closes at the latest
-    ``batch_window_ms`` after its first request, and while a forward runs it
-    stays open until that forward ends. A model that cannot fuse
-    (``allow_fusion = False``, or no batched corner) is never batched.
+    Experimental. Requests that arrive close together go to the model as one
+    grouped predict, one fused forward for a model that fuses. The model still
+    runs one forward at a time: batching raises fill, not concurrency. A batch
+    closes at ``max_batch_size`` groups (one route's rows each) or
+    ``batch_byte_budget`` observation bytes, or as soon as every route the
+    model has resolved has a request in it; while the model is idle it also
+    closes at the latest ``batch_window_ms`` after its first request, and while
+    a forward runs it stays open until that forward ends. A model that cannot
+    fuse (``allow_fusion = False``, or no batched corner) is never batched.
 
     ``max_batch_size=1`` turns batching off. ``max_in_flight_batches=2`` lets
     the next batch assemble while one runs; 1 assembles only while the model is
     idle. ``batch_records`` appends one JSON line per batch, in the managed
     platform's ``telemetry/batches.jsonl`` shape.
+
+    A field left ``None`` takes the native default, Rust's
+    ``BatchOptions::default()``: the managed platform's values, kept there
+    only.
     """
 
-    max_batch_size: int = 32
-    batch_window_ms: int = 5
-    batch_byte_budget: int = 256 * 1024 * 1024 - 4 * 1024
-    max_in_flight_batches: int = 2
+    max_batch_size: int | None = None
+    batch_window_ms: int | None = None
+    batch_byte_budget: int | None = None
+    max_in_flight_batches: int | None = None
     batch_records: str | os.PathLike[str] | None = None
 
 

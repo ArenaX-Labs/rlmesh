@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
-pub const BATCH_WINDOW_MS: u64 = 5;
 const KNEE_GAIN: f64 = 1.10;
 const KNEE_LATENCY_CEILING_MS: f64 = 250.0;
 const KNEE_LATENCY_OVER_SINGLE: f64 = 2.0;
@@ -233,7 +232,7 @@ impl Recommendation {
             native_chunk_elastic: observed.native_chunk_elastic.filter(|elastic| *elastic),
             render_requests: observed.render_requests.clone(),
             max_batch_size: knee_batch_size(baseline, observed.max_ok_batch),
-            batch_window_ms: Some(BATCH_WINDOW_MS),
+            batch_window_ms: Some(crate::BatchOptions::default().batch_window_ms),
         }
     }
 }

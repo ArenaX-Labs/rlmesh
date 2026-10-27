@@ -232,16 +232,18 @@ class Recorder:
     ) -> RunHooks:
         """A :class:`~rlmesh.RunHooks` that records a run's artifact tree (Experimental).
 
-        Writes the managed platform's per-episode layout under
-        ``workloads/cNNNN/attempts/a001/`` in the bundle: ``episode.json``
-        (seed, trial, verdict, timing, invariant flags), ``trajectory.parquet``
-        and videos per camera and stream, with the machine's hardware
-        stamp and the run's telemetry windows. ``spec`` is the platform's
-        ``record`` block (``{"video": {...}, "trajectory": {...}}``); the
-        default records nothing beyond ``episode.json``. Raw and perturbed
-        streams differ only under a ``transform_observation`` /
-        ``transform_action`` hook. Runs only, not a manual
-        :meth:`Model.bind <rlmesh.Model.bind>`.
+        Writes the managed platform's layout under
+        ``workloads/cNNNN/attempts/a001/`` in the bundle: per episode
+        ``episodes/epNNNNNN/episode.json`` (seed, trial, verdict, timing,
+        invariant flags), ``trajectory.parquet`` and
+        ``video/{camera}.{stream}.mp4``, and the run's
+        ``telemetry/windows.jsonl``; the document carries the machine's
+        hardware stamp. ``spec`` is the platform's ``record`` block
+        (``{"video": {...}, "trajectory": {...}}``); the default records no
+        video, and a trajectory of reward, info and step timing (no
+        observations or actions) for every episode. Raw and perturbed streams
+        differ only under a ``transform_observation`` / ``transform_action``
+        hook. Runs only, not a manual :meth:`Model.bind <rlmesh.Model.bind>`.
         """
         from .._rlmesh import PyEpisodeArtifacts
 
