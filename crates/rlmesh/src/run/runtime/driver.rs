@@ -2397,8 +2397,13 @@ async fn predict_grouped<M: ModelHandler>(
             });
             Ok(Prediction {
                 frames,
-                endpoint_total_ns: endpoint_total_ns
-                    .or_else(|| Some(rlmesh_proto::elapsed_ns(started))),
+                // Timed here only when the model reported nothing: a total
+                // it left out stays absent beside the phases it reported.
+                endpoint_total_ns: if endpoint.is_some() {
+                    endpoint_total_ns
+                } else {
+                    Some(rlmesh_proto::elapsed_ns(started))
+                },
                 phases: EndpointPhases {
                     adapter_ns,
                     held_episodes: held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32),

@@ -747,6 +747,36 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
     // Held state gauges: an episode count and raw bytes, not durations.
     assert_eq!(avg("model.predict", "held.episodes"), 5.0);
     assert_eq!(avg("model.predict", "held.bytes"), 6_000_000.0);
+
+    // A model that reports its phases but no total gets none made up here.
+    let model = TestModel {
+        endpoint: Some((
+            None,
+            EndpointPhases {
+                user_ns: 3_000_000,
+                ..EndpointPhases::default()
+            },
+        )),
+        ..TestModel::default()
+    };
+    let report = new_driver(
+        one_episode_spec(),
+        TestEnv::default(),
+        model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+    let recorded = |metric: &str| {
+        report
+            .telemetry
+            .rows
+            .iter()
+            .any(|row| row.source.op == "model.predict" && row.metric.name == metric)
+    };
+    assert!(recorded("endpoint.user"));
+    assert!(!recorded("endpoint.total"));
 }
 
 #[tokio::test]
