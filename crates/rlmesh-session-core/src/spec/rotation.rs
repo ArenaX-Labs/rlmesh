@@ -6,7 +6,10 @@
 //! `gravity_xyz` is a target only: it discards yaw, so nothing converts
 //! from it. [`convert`] states the sign conventions.
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 /// A rotation encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -414,7 +417,7 @@ pub fn convert_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+    use core::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
     fn close(a: &[f64], b: &[f64]) -> bool {
         a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9)

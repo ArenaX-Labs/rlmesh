@@ -1,6 +1,9 @@
 //! Pair one model image input with an env camera and derive its plan.
 
-use std::collections::BTreeMap;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
 
 use crate::spec::image::crop_cut;
 use crate::spec::plan::Fit;
@@ -552,7 +555,7 @@ fn upscale_remedy(crop: Option<&CropPlan>) -> String {
 
 #[cfg(test)]
 mod image_resolve_tests {
-    use std::collections::BTreeMap;
+    use alloc::collections::BTreeMap;
 
     use super::plan_image;
     use crate::spec::plan::Fit;

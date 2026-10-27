@@ -1,5 +1,8 @@
 //! Domain-agnostic roles shared across environment/model domains.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use super::registry::{DimLaw, RoleDef};
 use crate::spec::role::frames::{FrameLaw, ReferenceLaw};
 

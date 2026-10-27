@@ -2,8 +2,11 @@
 //! to bindings, clock mappings, the host's snapshot, and the `ctl`
 //! request/reply pair (§10.5).
 
-use std::collections::BTreeMap;
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
+use core::fmt;
 
 use crate::wire::action::ChunkRef;
 use crate::wire::contract::{ActionGrid, Demand, StreamContract};
@@ -187,7 +190,7 @@ pub struct BindingRecord {
 
 impl BindingRecord {
     /// The action period it declared for `channel`.
-    pub fn grid(&self, channel: ChannelId) -> Option<std::time::Duration> {
+    pub fn grid(&self, channel: ChannelId) -> Option<core::time::Duration> {
         self.grids
             .iter()
             .find(|g| g.channel == channel)

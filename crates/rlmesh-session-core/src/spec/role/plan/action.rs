@@ -1,5 +1,8 @@
 //! Resolved instructions for the action vector.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::role::frames::FrameRef;
 use crate::spec::rotation::Rotation;
 

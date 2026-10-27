@@ -10,6 +10,9 @@
 //! wrist-mounted sensor reads it in `tool`, a controller's estimate is usually
 //! in `robot_base`, and the two are different numbers for the same contact.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use super::registry::{DimLaw, RoleDef};
 use crate::spec::role::frames::{FrameLaw, ReferenceLaw};
 

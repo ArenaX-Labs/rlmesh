@@ -30,6 +30,9 @@
 //! at *resolve*, where a frame this core cannot reason about is a geometry it
 //! cannot verify. Same shape as an unrecognized rotation encoding.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 /// The recognized reference frames: the `Frame` vocabulary
@@ -97,8 +100,8 @@ impl From<&str> for FrameRef {
     }
 }
 
-impl std::fmt::Display for FrameRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for FrameRef {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&self.0)
     }
 }

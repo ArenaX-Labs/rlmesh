@@ -29,8 +29,11 @@
 //!
 //! [`StreamSpec::check_payload`]: crate::wire::part::StreamSpec::check_payload
 
-use std::collections::BTreeMap;
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
+use core::time::Duration;
 
 use bytes::Bytes;
 use prost::Message as _;
@@ -840,7 +843,7 @@ pub fn encode_model_request(request: &ModelRequest) -> Vec<u8> {
             trial_index,
         } => Kind::ResetOptions(pb::ModelResetOptions {
             route: route.clone(),
-            episode: episodes_to_pb(std::slice::from_ref(episode)).pop(),
+            episode: episodes_to_pb(core::slice::from_ref(episode)).pop(),
             trial_index: *trial_index,
         }),
         ModelRequest::Join { session } => Kind::Join(pb::ModelJoin {

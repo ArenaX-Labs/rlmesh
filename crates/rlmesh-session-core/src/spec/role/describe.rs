@@ -1,6 +1,9 @@
 //! Render resolved plans as human-readable summaries.
 
-use std::fmt::Write as _;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt::Write as _;
 
 use crate::spec::plan::Fit;
 use crate::spec::policy::ImageLayout;

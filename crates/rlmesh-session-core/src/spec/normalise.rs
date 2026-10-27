@@ -34,9 +34,12 @@
 //! sorts object members, so nothing whose order matters is an object.
 //! [`fingerprint`] is BLAKE3 over its RFC 8785 bytes, first 8 bytes.
 
-use std::collections::BTreeMap;
-use std::fmt;
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
+use core::fmt;
+use core::time::Duration;
 
 use crate::wire::part::{
     ChannelPriority, CommandSpec, DType, Encoding, FieldLimit, FieldSpec, Layout, MAX_PARTS,
@@ -111,7 +114,7 @@ pub(crate) struct Ordered<T>(pub(crate) Vec<(String, T)>);
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Ordered<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct OrderedVisitor<T>(std::marker::PhantomData<T>);
+        struct OrderedVisitor<T>(core::marker::PhantomData<T>);
 
         impl<'de, T: Deserialize<'de>> Visitor<'de> for OrderedVisitor<T> {
             type Value = Ordered<T>;
@@ -132,7 +135,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Ordered<T> {
             }
         }
 
-        deserializer.deserialize_map(OrderedVisitor(std::marker::PhantomData))
+        deserializer.deserialize_map(OrderedVisitor(core::marker::PhantomData))
     }
 }
 

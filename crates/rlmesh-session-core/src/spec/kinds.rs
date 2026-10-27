@@ -17,7 +17,10 @@
 //! Float fields are `float32` unless the part declares `float64`. Shapes
 //! have no batch or time axis.
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 use crate::wire::path::is_identifier;
 

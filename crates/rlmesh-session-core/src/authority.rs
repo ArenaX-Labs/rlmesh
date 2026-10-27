@@ -44,8 +44,11 @@
 //!   ([`crate::virtual_clock`]); the ticks it emits are drained with
 //!   [`Authority::take_ticks`].
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::{BTreeMap, BTreeSet};
+use core::fmt;
 
 use crate::spec::contract;
 use crate::wire::authority::fence;
@@ -63,7 +66,7 @@ use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
 /// The highest replan rate a binding declares.
 const MAX_REPLAN_HZ: f64 = 10_000.0;
 /// The longest action period a binding declares.
-const MAX_ACTION_DT: std::time::Duration = std::time::Duration::from_secs(60);
+const MAX_ACTION_DT: core::time::Duration = core::time::Duration::from_secs(60);
 
 /// Why a participant left the roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -427,7 +430,7 @@ impl Authority {
 
     /// The virtual ticks emitted since the last call, in order.
     pub fn take_ticks(&mut self) -> Vec<VirtualTick> {
-        std::mem::take(&mut self.ticks)
+        core::mem::take(&mut self.ticks)
     }
 
     /// The host-side fence, expiry included.
@@ -1125,7 +1128,7 @@ impl Authority {
                 wanted.entry(c.channel).or_default().push(c);
             }
         }
-        let mut next: BTreeMap<ChannelId, (crate::wire::Plan, std::time::Duration)> =
+        let mut next: BTreeMap<ChannelId, (crate::wire::Plan, core::time::Duration)> =
             BTreeMap::new();
         for (channel, contracts) in wanted {
             if let Some((part, applied)) = self.stream_part(channel)
@@ -1600,7 +1603,7 @@ impl Authority {
     }
 
     fn revoke_all(&mut self, why: &'static str, events: &mut Vec<AuthorityEvent>) {
-        for (_, lease) in std::mem::take(&mut self.leases) {
+        for (_, lease) in core::mem::take(&mut self.leases) {
             events.push(AuthorityEvent::LeaseEnded {
                 lease,
                 reason: LeaseEnd::Revoked(why),
@@ -2074,7 +2077,7 @@ mod tests {
             mode,
             delivery_hz,
             history,
-            max_age: Some(std::time::Duration::from_millis(max_age_ms.unwrap_or(150))),
+            max_age: Some(core::time::Duration::from_millis(max_age_ms.unwrap_or(150))),
             max_age_explicit: max_age_ms.is_some(),
         }
     }
@@ -2092,7 +2095,7 @@ mod tests {
                 .iter()
                 .map(|c| crate::wire::ActionGrid {
                     channel: *c,
-                    dt: std::time::Duration::from_millis(10),
+                    dt: core::time::Duration::from_millis(10),
                 })
                 .collect();
             self.run(
@@ -2257,7 +2260,7 @@ mod tests {
             contracts: Vec::new(),
             grids: vec![crate::wire::ActionGrid {
                 channel: f.ch("cmd2"),
-                dt: std::time::Duration::from_millis(10),
+                dt: core::time::Duration::from_millis(10),
             }],
         };
         assert_eq!(
@@ -2266,7 +2269,7 @@ mod tests {
         );
         assert_eq!(
             f.auth.binding(&pid("policy")).and_then(|b| b.grid(cmd1)),
-            Some(std::time::Duration::from_millis(10))
+            Some(core::time::Duration::from_millis(10))
         );
     }
 

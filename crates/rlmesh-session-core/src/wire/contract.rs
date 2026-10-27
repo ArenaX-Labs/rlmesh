@@ -9,7 +9,10 @@
 //! acknowledged a revision that includes its contract (`NOT_READY`
 //! otherwise). Nothing renegotiates a contract later.
 
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::time::Duration;
 
 use crate::wire::ids::ChannelId;
 

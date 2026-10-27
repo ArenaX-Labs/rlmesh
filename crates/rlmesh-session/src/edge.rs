@@ -27,11 +27,8 @@
 //! pair the edge with an external or device watchdog. The `blend` and
 //! `rtc_prefix` merge policies are Later (§19) and refused at declaration.
 
-pub mod command;
-pub mod core;
+pub use rlmesh_session_core::edge::{command, core, fallback, queue};
 pub mod error;
-pub mod fallback;
-pub mod queue;
 pub mod robot;
 pub mod runtime;
 

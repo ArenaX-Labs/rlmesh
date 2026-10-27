@@ -28,7 +28,10 @@
 //! Times are nanoseconds: `now_ns` in the holder's clock, `expires_ns` in
 //! session time.
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 use crate::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, Command, CtlError, CtlReply, Epoch, Fingerprint,
@@ -96,7 +99,7 @@ impl fmt::Display for LeaseError {
     }
 }
 
-impl std::error::Error for LeaseError {}
+impl core::error::Error for LeaseError {}
 
 /// What a snapshot did to a held lease.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -563,7 +566,7 @@ impl LeaseGroup {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use alloc::collections::BTreeMap;
 
     use crate::wire::{ClockMode, CtlStatus, PriorityClass, SessionId};
 

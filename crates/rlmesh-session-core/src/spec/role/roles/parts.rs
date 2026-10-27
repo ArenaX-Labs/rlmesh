@@ -4,6 +4,9 @@
 //! no registry and nothing here validates one. These constants are
 //! conventions for the common places a role repeats, nothing more.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// The left arm.
 pub const LEFT_ARM: &str = "left_arm";
 /// The right arm.

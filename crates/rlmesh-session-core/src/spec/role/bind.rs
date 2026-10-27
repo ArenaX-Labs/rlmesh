@@ -2,8 +2,11 @@
 //! each model leaf and each env actuator to its counterpart, then planning
 //! them (`image`, `state`, `text`, `custom`, `action`).
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::{BTreeMap, BTreeSet};
+use core::fmt::Write as _;
 
 use crate::spec::projection::Projection;
 use crate::spec::role::error::{Advisory, Error, ErrorCode};
@@ -17,7 +20,7 @@ use crate::spec::role::plan::{ActionPlan, AppliedProjection, Binding, ObsPlan};
 use crate::spec::role::roles::registry;
 use crate::spec::role::{action, custom, image, state, text};
 
-pub(super) type Result<T> = std::result::Result<T, Error>;
+pub(super) type Result<T> = core::result::Result<T, Error>;
 
 pub(super) fn err(code: ErrorCode, message: String) -> Error {
     Error::new(code, message)

@@ -43,9 +43,12 @@
 //! mapping is needed: the host times leases, and the edge's clock is the
 //! tick time it is driven at.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use crate::wire::{
     ActionChunk, Applied, AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, EdgeMode, Epoch,
@@ -53,8 +56,8 @@ use crate::wire::{
 };
 use bytes::Bytes;
 
+use crate::edge::GroupError;
 use crate::edge::command::CommandCheck;
-use crate::edge::error::EdgeError;
 use crate::edge::fallback::{Fallback, LeaseView, MemberLadder, ModeStats, SafeCause, TickView};
 use crate::edge::queue::{
     ActionQueue, ChunkMeta, Delivery, QueueStats, QueuedAction, Splice, SpliceOutcome,
@@ -329,13 +332,13 @@ impl EdgeCore {
         parts: Vec<PartSpec>,
         me: ParticipantId,
         config: EdgeConfig,
-    ) -> Result<Self, EdgeError> {
-        let first = parts.first().ok_or(EdgeError::NoParts)?;
+    ) -> Result<Self, GroupError> {
+        let first = parts.first().ok_or(GroupError::NoParts)?;
         let group = first.command.as_ref().and_then(|c| c.group.clone());
         let first_command = first
             .command
             .clone()
-            .ok_or(EdgeError::NotCommandable(first.channel))?;
+            .ok_or(GroupError::NotCommandable(first.channel))?;
         let mut members = Vec::with_capacity(parts.len());
         let mut ladders = Vec::with_capacity(parts.len());
         let mut queues = Vec::with_capacity(parts.len());
@@ -343,9 +346,9 @@ impl EdgeCore {
             let command = part
                 .command
                 .clone()
-                .ok_or(EdgeError::NotCommandable(part.channel))?;
+                .ok_or(GroupError::NotCommandable(part.channel))?;
             if part.owner != me {
-                return Err(EdgeError::NotOwner {
+                return Err(GroupError::NotOwner {
                     channel: part.channel,
                     me,
                 });
@@ -355,10 +358,10 @@ impl EdgeCore {
                 || command.safe_behavior != first_command.safe_behavior
                 || command.hold_max != first_command.hold_max
             {
-                return Err(EdgeError::NotOneGroup(part.channel));
+                return Err(GroupError::NotOneGroup(part.channel));
             }
             let check =
-                CommandCheck::new(&command).ok_or(EdgeError::NotCommandable(part.channel))?;
+                CommandCheck::new(&command).ok_or(GroupError::NotCommandable(part.channel))?;
             let delivery = if command.is_delta() {
                 Delivery::Once
             } else {
@@ -372,7 +375,7 @@ impl EdgeCore {
             members.push(Member {
                 applied: part
                     .applied_channel
-                    .ok_or(EdgeError::NotCommandable(part.channel))?,
+                    .ok_or(GroupError::NotCommandable(part.channel))?,
                 check,
                 period_ns: duration_i64(part.control_period()).max(1),
                 max_action_age_ns: duration_i64(command.max_action_age),
@@ -992,7 +995,7 @@ mod tests {
                 .iter()
                 .map(|f| f.elements().unwrap_or(0) as usize)
                 .sum();
-            let mut action: Vec<u8> = std::iter::repeat_n(fill.to_le_bytes(), elements)
+            let mut action: Vec<u8> = core::iter::repeat_n(fill.to_le_bytes(), elements)
                 .flatten()
                 .collect();
             action.resize(stride, 0);
@@ -1483,11 +1486,11 @@ mod tests {
         sense.command = None;
         assert!(matches!(
             EdgeCore::new(vec![sense], pid("robot"), EdgeConfig::default()),
-            Err(EdgeError::NotCommandable(_))
+            Err(GroupError::NotCommandable(_))
         ));
         assert!(matches!(
             EdgeCore::new(vec![part("cmd")], pid("other"), EdgeConfig::default()),
-            Err(EdgeError::NotOwner { .. })
+            Err(GroupError::NotOwner { .. })
         ));
         assert!(matches!(
             EdgeCore::new(
@@ -1495,11 +1498,11 @@ mod tests {
                 pid("robot"),
                 EdgeConfig::default()
             ),
-            Err(EdgeError::NotOneGroup(_))
+            Err(GroupError::NotOneGroup(_))
         ));
         assert!(matches!(
             EdgeCore::new(Vec::new(), pid("robot"), EdgeConfig::default()),
-            Err(EdgeError::NoParts)
+            Err(GroupError::NoParts)
         ));
     }
 }

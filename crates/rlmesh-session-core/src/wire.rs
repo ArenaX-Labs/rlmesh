@@ -49,6 +49,9 @@
 //! protocol minor talks to any other, and features added in a minor are
 //! feature strings checked at attach.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 pub mod action;
 pub mod authority;
 pub mod codec;

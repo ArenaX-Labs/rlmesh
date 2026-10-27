@@ -1,6 +1,9 @@
 //! Pair one model text input with an env text feature or its fill.
 
-use std::collections::BTreeMap;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
 
 use crate::spec::role::bind::{Result, err, reject_referenced_unknown};
 use crate::spec::role::error::ErrorCode;

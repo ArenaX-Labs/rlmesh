@@ -1,13 +1,16 @@
 //! What a Gym binding does: the resolved, already-validated plan of every
 //! model input and of the action vector.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 mod action;
 mod custom;
 mod image;
 mod state;
 mod text;
 
-use std::collections::{BTreeMap, BTreeSet};
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::spec::projection::Projection;
 use crate::spec::role::describe;
@@ -301,7 +304,7 @@ impl Binding {
     /// frame-stack windows (the host's `FrameBuffers`) buffer exactly these
     /// placements. This is the single source of truth for stacking depth
     /// (replacing the old Python `stacks` dict). The key is the placement's
-    /// [`Display`](std::fmt::Display) form so a nested/positioned stacked input
+    /// [`Display`](core::fmt::Display) form so a nested/positioned stacked input
     /// has a stable canonical name. Built from the precomputed per-episode
     /// `stacked_placements` list.
     pub fn stacks(&self) -> BTreeMap<String, u32> {

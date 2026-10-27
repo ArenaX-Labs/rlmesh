@@ -5,6 +5,9 @@
 //! [`Command::Ready`]: crate::wire::authority::Command::Ready
 //! [`Command::Decided`]: crate::wire::authority::Command::Decided
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::wire::action::ChunkRef;
 use crate::wire::authority::Watermark;
 use crate::wire::ids::{Epoch, ParticipantId};

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Sans-IO guard: rlmesh-session-core builds for wasm32-unknown-unknown with no clock reads, threads, sleeps or IO dependencies"
+#MISE description="Sans-IO guard: rlmesh-session-core builds for wasm32-unknown-unknown and, without std, for a bare-metal target, with no clock reads, threads, sleeps or IO dependencies"
 #MISE dir="{{ config_root }}"
 #MISE depends=["setup:js"]
 
@@ -10,6 +10,12 @@
 set -euo pipefail
 
 crates=(rlmesh-session-core)
+# A bare-metal target with atomics (ESP32-C6 class), for the no_std build an
+# embedded robot uses. Xtensa needs the esp toolchain, so it stays local.
+bare=riscv32imac-unknown-none-elf
+toolchain="$(mise current rust)"
+rustup target list --installed --toolchain "$toolchain" | grep -qx "$bare" ||
+  rustup target add --toolchain "$toolchain" "$bare"
 deny='^(tokio|mio|socket2|zenoh.*|tonic|hyper|async-std|getrandom|wasm-bindgen|js-sys|web-sys|libc)$'
 
 for crate in "${crates[@]}"; do
@@ -18,6 +24,8 @@ for crate in "${crates[@]}"; do
   echo "==> $crate: no clock reads, threads or sleeps"
   cargo clippy -q -p "$crate" --all-targets -- -D warnings -D clippy::disallowed_methods
   cargo clippy -q -p "$crate" --target wasm32-unknown-unknown -- -D warnings -D clippy::disallowed_methods
+  echo "==> $crate builds without std for $bare"
+  cargo clippy -q -p "$crate" --no-default-features --target "$bare" -- -D warnings -D clippy::disallowed_methods
   echo "==> $crate: dependency deny-list (normal deps, wasm target)"
   found=$(cargo tree -q -p "$crate" -e normal --target wasm32-unknown-unknown --prefix none |
     awk '{print $1}' | sort -u | grep -E "$deny" || true)

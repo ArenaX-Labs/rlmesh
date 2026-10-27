@@ -27,6 +27,9 @@
 //! The generic core ([`wire`](crate::wire), `rlmesh-session` and its edge)
 //! works on streams and never interprets kinds; only this module does.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 pub mod apply;
 pub mod bind;
 pub mod canonical;

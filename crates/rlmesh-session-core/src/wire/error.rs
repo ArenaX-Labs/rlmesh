@@ -1,5 +1,8 @@
 //! Decoding errors.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::wire::ids::IdError;
 
 /// Why a message could not be decoded. Receivers drop such a message (and

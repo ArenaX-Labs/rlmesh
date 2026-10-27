@@ -26,6 +26,9 @@
 //! - [`path`]: where a feature is read from and a model value lands.
 //! - [`plan`]: the binding and its plans; [`apply`] runs them.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 mod action;
 pub mod apply;
 mod bind;

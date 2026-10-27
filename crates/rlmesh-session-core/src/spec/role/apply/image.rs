@@ -6,6 +6,9 @@
 //! module adds the 8-bit decode of a non-`u8` frame, the JPEG round trip,
 //! layouts and lead axes.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::apply::{ApplyError, Tensor, decode};
 use crate::spec::image::{Image, crop_cut, fit_resize, normalise_table};
 use crate::spec::policy::ImageLayout;

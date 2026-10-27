@@ -12,6 +12,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(false)
         // `bytes` fields decode as `Bytes` slices of the received buffer.
         .bytes(".")
+        // Map fields as `BTreeMap`: `HashMap` needs `std`.
+        .btree_map(".")
         // The descriptors recordings carry as their MCAP schemas (§13).
         .file_descriptor_set_path(out.join("session_descriptor.bin"))
         .compile_protos(&[proto.join("rlmesh/session/v2/session.proto")], &[proto])?;

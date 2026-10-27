@@ -6,8 +6,11 @@
 //! floating point); the other alternatives convert only under `allow:
 //! units`; tactile and custom units compare by equality only.
 
-use std::f64::consts::PI;
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::f64::consts::PI;
+use core::fmt;
 
 /// What a field measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

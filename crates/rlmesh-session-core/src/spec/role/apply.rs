@@ -11,6 +11,9 @@
 //! The one codec step, the JPEG round trip, is the host's
 //! ([`Codec`]): this crate carries no image codec.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 mod action;
 mod geometry;
 mod image;

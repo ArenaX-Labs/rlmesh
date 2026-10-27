@@ -11,7 +11,10 @@
 //!
 //! A run-time `at=` override is a literal path from the robot root.
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 use crate::wire::ParticipantId;
 use crate::wire::path::{MAX_DEPTH, MAX_SEGMENT_LEN, is_identifier};

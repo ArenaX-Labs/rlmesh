@@ -1,5 +1,8 @@
 //! A model action to the env's action vector.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::spec::apply::ApplyError;
 use crate::spec::convert;
 use crate::spec::role::apply::err;
@@ -24,7 +27,7 @@ impl ActionPlan {
                 // Opaque (role-less) actuator, or an optional role no model output
                 // drives: emit the constant for each dim and read nothing from the
                 // model.
-                pieces.extend(std::iter::repeat_n(value as f32, width as usize));
+                pieces.extend(core::iter::repeat_n(value as f32, width as usize));
                 continue;
             }
             let mut piece: Vec<f32> =
@@ -110,7 +113,7 @@ impl ActionPlan {
 
 #[cfg(test)]
 mod tests {
-    use std::f64;
+    use core::f64;
 
     use crate::spec::role::plan::{ActionPlan, ActionSegment};
 

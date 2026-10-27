@@ -18,7 +18,10 @@
 //!   cache builds the window); else the newest sample at `max D`. The plan
 //!   never exceeds the `send` ceiling.
 
-use std::time::Duration;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::time::Duration;
 
 use crate::wire::part::{PartSpec, SendPolicy};
 use crate::wire::{ContractMode, Plan, StreamContract};

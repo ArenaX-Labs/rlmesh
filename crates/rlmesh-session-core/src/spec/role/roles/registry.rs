@@ -24,6 +24,9 @@
 //! **Parts, not suffixes.** A repeated role carries a `part` on the leaf
 //! ([`parts`](super::parts)); the role name itself never repeats.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use super::{body, core, manipulation};
 use crate::spec::role::frames::{FrameLaw, ReferenceLaw};
 

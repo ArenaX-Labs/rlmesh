@@ -6,7 +6,10 @@
 //! [`code`](super::Error::code) rather than parse this text, and a C++ or
 //! other binding is free to render its own wording.
 
-use std::collections::BTreeMap;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
 
 use crate::spec::role::input::Accept;
 use crate::spec::role::roles::registry::is_known_role;

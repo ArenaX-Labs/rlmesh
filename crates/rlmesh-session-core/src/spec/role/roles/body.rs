@@ -8,6 +8,9 @@
 //! deliberately unregistered: a real robot has only an estimate of it, so a
 //! role would silently mean two different things in sim and on hardware.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use super::registry::{DimLaw, RoleDef};
 use crate::spec::role::frames::{FrameLaw, ReferenceLaw};
 

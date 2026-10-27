@@ -13,9 +13,14 @@
 //! (v1's fractional `crop`) resamples a centered box straight to the
 //! target, PIL's `resize(size, box=...)`.
 
-use std::cell::RefCell;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::rc::Rc;
+#[cfg(feature = "std")]
+use core::cell::RefCell;
+#[cfg(feature = "std")]
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::spec::plan::Fit;
 use crate::spec::policy::Resample;
@@ -208,7 +213,7 @@ impl Kernel {
                     if x == 0.0 {
                         1.0
                     } else {
-                        let x = x * std::f64::consts::PI;
+                        let x = x * core::f64::consts::PI;
                         x.sin() / x
                     }
                 };
@@ -259,11 +264,13 @@ impl Kernel {
 /// One axis' weights.
 type AxisWeights = Rc<Vec<(usize, Vec<f64>)>>;
 
+#[cfg(feature = "std")]
 /// What an axis' weights are keyed by: the kernel, both sizes and the span's
 /// bits.
 type WeightKey = (Kernel, usize, usize, u64, u64);
 
-thread_local! {
+#[cfg(feature = "std")]
+std::thread_local! {
     /// Weights depend only on the kernel and the axis, so a camera resized
     /// every step builds them once (a Lanczos-3 row is six `sin` per output
     /// pixel).
@@ -271,6 +278,13 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+#[cfg(not(feature = "std"))]
+fn axis_weights(kernel: Kernel, roi: Roi) -> AxisWeights {
+    // No thread-locals without `std`: build the weights each call.
+    Rc::new(kernel.weights(roi))
+}
+
+#[cfg(feature = "std")]
 fn axis_weights(kernel: Kernel, roi: Roi) -> AxisWeights {
     let key = (
         kernel,
@@ -410,7 +424,7 @@ impl Image<u8> {
 /// normalisation v1 pins for a `u8` image into `[low, high]`.
 pub fn normalise_table(low: f64, high: f64) -> [f32; 256] {
     let (low, high) = (low as f32, high as f32);
-    std::array::from_fn(|v| low + (v as f32 / 255.0) * (high - low))
+    core::array::from_fn(|v| low + (v as f32 / 255.0) * (high - low))
 }
 
 /// The intermediate size a fit resamples a `height × width` box to before

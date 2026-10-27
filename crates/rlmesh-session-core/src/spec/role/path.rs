@@ -12,7 +12,10 @@
 //! observation) and a *placement* (model side — where a produced tensor lands
 //! in the payload). They are never mixed within one value.
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 /// One step into a nested tree: a `Dict` key or a `Tuple` index.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

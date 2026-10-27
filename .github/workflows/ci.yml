@@ -162,9 +162,10 @@ jobs:
         if: steps.changes.outputs.run == 'true'
         run: mise run --skip-tools setup:js
 
-      # rlmesh-session-core builds for wasm32-unknown-unknown, clippy denies
-      # clock reads, threads and sleeps (its clippy.toml), and
-      # no IO crate is a normal dependency on the wasm target.
+      # rlmesh-session-core builds for wasm32-unknown-unknown and, without
+      # std, for riscv32imac-unknown-none-elf; clippy denies clock reads,
+      # threads and sleeps (its clippy.toml), and no IO crate is a normal
+      # dependency on the wasm target.
       - name: Sans-IO guard
         if: steps.changes.outputs.run == 'true'
         run: mise run --skip-tools check:sans-io

@@ -15,6 +15,9 @@
 //! its own outcome. Values are leaf slabs (`rlmesh-spaces`' leaf codec:
 //! one buffer per leaf of the route's space, rows row-major).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use bytes::Bytes;
 
 /// Leaf slabs of some number of rows (the count travels beside them).

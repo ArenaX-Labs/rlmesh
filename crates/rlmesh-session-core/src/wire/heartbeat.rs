@@ -6,6 +6,9 @@
 //! ([`TimingSample`]), so the host learns all four timestamps without a third
 //! message.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::wire::authority::Mode;
 use crate::wire::ids::{ChannelId, Epoch, ParticipantId};
 

@@ -1,7 +1,10 @@
 //! Named projections: lossy fits a binding applies only when allowed, and
 //! records by name (in a v2 binding's table, on a v1 resolved adapter).
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 
 use crate::spec::policy::Allow;
 
