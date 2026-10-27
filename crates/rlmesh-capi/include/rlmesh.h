@@ -386,7 +386,8 @@ extern "C" {
  * repr(C) layout/enum-discriminant change, an extern "C" signature retype, or a
  * symbol removal). Decoupled from the package semver below, which can't express
  * an ABI break. Appending a struct_size-guarded vtable/config field is NOT a
- * break. */
+ * break. ABI 6 grew after it was cut without a bump; the C ABI does not ship in
+ * 0.2, and the first release that ships it publishes that surface as ABI 7. */
 #define RLMESH_ABI_VERSION 6
 
 RLMESH_API uint32_t rlmesh_abi_version(void);
