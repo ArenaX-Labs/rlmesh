@@ -163,13 +163,17 @@ mod tests {
         let control = transport.control();
         let (a, b) = ("rlmesh/test/members/a", "rlmesh/test/members/b");
         // A rejoined: its new token is declared when its old one's delete lands.
-        let _token = control.liveliness().declare_token(a).await.expect("token");
+        let token = control.liveliness().declare_token(a).await.expect("token");
         let mut members: HashSet<String> = [a.to_string(), b.to_string()].into();
         assert!(!member_left(&mut members, a, control).await);
         assert!(members.contains(a), "a rejoined member stays tracked");
         // B left for good: no token of its own.
         assert!(member_left(&mut members, b, control).await);
         assert_eq!(members, HashSet::from([a.to_string()]));
+        // Then A leaves for good: its replacement token's delete removes it.
+        token.undeclare().await.expect("undeclare");
+        assert!(member_left(&mut members, a, control).await);
+        assert!(members.is_empty(), "{members:?}");
         transport.close().await.expect("close");
     }
 }
