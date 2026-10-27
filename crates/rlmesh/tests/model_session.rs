@@ -645,6 +645,29 @@ async fn a_batch_closes_once_every_route_has_a_request_in_it() {
             .all(|reply| matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()))
     );
     assert_eq!(fused.calls(), vec![2]);
+
+    // A queued alone; b's release leaves it holding every route.
+    let lone = tokio::spawn({
+        let service = Arc::clone(&service);
+        async move {
+            service
+                .answer(ModelRequest::Predict(vec![group("a", &[3.0])]))
+                .await
+                .0
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let started = std::time::Instant::now();
+    service
+        .answer(ModelRequest::Release { route: "b".into() })
+        .await;
+    let reply = lone.await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it waited the window after b left"
+    );
+    assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
+    assert_eq!(fused.calls(), vec![2, 1]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -123,6 +123,9 @@ pub struct ModelService<H> {
     setup: Option<Arc<dyn ModelRouteSetup>>,
     reset_options: Option<Arc<dyn ModelResetOptions>>,
     routes: Mutex<HashMap<String, Arc<Route>>>,
+    /// Notified when a route is released: a batch waiting for every route
+    /// may now hold them all.
+    released: tokio::sync::Notify,
     describe: String,
     /// The workflow edition the model declares and every one it runs, shown
     /// in the roster of each session it answers in.
@@ -182,6 +185,7 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             setup,
             reset_options,
             routes: Mutex::default(),
+            released: tokio::sync::Notify::new(),
             describe,
             editions: crate::editions::offer(None),
             in_flight: std::sync::atomic::AtomicU32::new(0),
@@ -553,10 +557,15 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             let mut batch = vec![first];
             let busy = in_flight.available_permits() < cap - 1;
             let deadline = tokio::time::Instant::now() + window;
-            while size < options.max_batch_size
-                && bytes < options.batch_byte_budget
-                && !self.every_route_in(&waiting).await
-            {
+            while size < options.max_batch_size && bytes < options.batch_byte_budget {
+                // Registered before the check, so a release in between still
+                // wakes this batch to check again.
+                let released = self.released.notified();
+                tokio::pin!(released);
+                released.as_mut().enable();
+                if self.every_route_in(&waiting).await {
+                    break;
+                }
                 let next = if busy {
                     tokio::select! {
                         queued = rx.recv() => queued,
@@ -566,11 +575,15 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                             drop(freed);
                             break;
                         }
+                        () = &mut released => continue,
                     }
                 } else {
-                    match tokio::time::timeout_at(deadline, rx.recv()).await {
-                        Ok(queued) => queued,
-                        Err(_) => break,
+                    tokio::select! {
+                        queued = tokio::time::timeout_at(deadline, rx.recv()) => match queued {
+                            Ok(queued) => queued,
+                            Err(_) => break,
+                        },
+                        () = &mut released => continue,
                     }
                 };
                 let Some(queued) = next else { break };
@@ -685,6 +698,7 @@ impl<H: ModelHandler + 'static> ModelService<H> {
 
     async fn release(&self, route: &str) -> Result<(), Error> {
         self.routes.lock().await.remove(route);
+        self.released.notify_waiters();
         if let Some(setup) = &self.setup {
             setup.release_adapter(route).await?;
         }
