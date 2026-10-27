@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rlmesh_session::edge::{EdgeConfig, Robot};
-use rlmesh_session::record::{Recorder, summarize};
+use rlmesh_session::record::{Recorded, Recorder, read, summarize};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
@@ -240,4 +240,18 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     assert_eq!(holders[0], "model");
     assert_eq!(holders.last().copied(), Some("model"));
     assert!(arm.last().expect("last").token > arm[first_operator].token);
+
+    // Read back for replay: everything but the binding records, in log-time order.
+    let messages = read(&path).expect("read");
+    assert_eq!(
+        messages.len() as u64,
+        summary.messages - topic("/_session/bindings").messages
+    );
+    assert!(messages.windows(2).all(|w| w[0].log_ns <= w[1].log_ns));
+    assert!(matches!(messages[0].message, Recorded::Authority(_)));
+    assert!(
+        messages
+            .iter()
+            .any(|m| matches!(m.message, Recorded::Chunk(_)))
+    );
 }

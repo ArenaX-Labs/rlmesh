@@ -12,6 +12,7 @@ use egui::{
 use rlmesh_session::wire::{ChannelId, EdgeMode, Mode};
 
 use crate::model::Verb;
+use crate::replay::{Replay, SPEEDS};
 use crate::timeline::Tone;
 use crate::values::Value;
 use crate::view::{View, clocks};
@@ -35,6 +36,8 @@ pub struct UiState {
     pub tab: Tab,
     /// The arm confirmation is open.
     pub confirm_arm: bool,
+    /// A recorded session: no verbs.
+    pub replay: bool,
     textures: BTreeMap<ChannelId, (u64, TextureHandle)>,
 }
 
@@ -43,6 +46,7 @@ impl std::fmt::Debug for UiState {
         f.debug_struct("UiState")
             .field("tab", &self.tab)
             .field("confirm_arm", &self.confirm_arm)
+            .field("replay", &self.replay)
             .finish_non_exhaustive()
     }
 }
@@ -129,6 +133,60 @@ pub fn show(ui: &mut egui::Ui, view: &View, state: &mut UiState) -> Vec<Verb> {
     verbs
 }
 
+/// The replay transport: play or pause, step, speed, and a scrub bar over
+/// the recording, in seconds from its start.
+pub fn replay_bar(ui: &mut egui::Ui, replay: &mut Replay) {
+    let (first, last) = replay.bounds();
+    let secs = |t: i64| (t - first) as f64 / 1e9;
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("REPLAY")
+                .strong()
+                .color(tone_color(Tone::Neutral)),
+        );
+        if ui
+            .button("Prev")
+            .on_hover_text("Previous message")
+            .clicked()
+        {
+            replay.playing = false;
+            replay.step(false);
+        }
+        let play = if replay.playing { "Pause" } else { "Play" };
+        if ui.button(play).clicked() {
+            if !replay.playing && replay.at_ns() >= last {
+                replay.seek(first);
+            }
+            replay.playing = !replay.playing;
+        }
+        if ui.button("Next").on_hover_text("Next message").clicked() {
+            replay.playing = false;
+            replay.step(true);
+        }
+        egui::ComboBox::from_label("speed")
+            .selected_text(format!("{}×", replay.speed))
+            .width(60.0)
+            .show_ui(ui, |ui| {
+                for speed in SPEEDS {
+                    ui.selectable_value(&mut replay.speed, speed, format!("{speed}×"));
+                }
+            });
+        let mut at = secs(replay.at_ns());
+        ui.spacing_mut().slider_width = (ui.available_width() - 220.0).max(100.0);
+        let slider = ui.add(
+            egui::Slider::new(&mut at, 0.0..=secs(last))
+                .suffix(" s")
+                .fixed_decimals(3)
+                .text(format!("of {:.3} s", secs(last))),
+        );
+        if slider.changed() {
+            replay.seek(first + (at * 1e9) as i64);
+        }
+    });
+    ui.add_space(4.0);
+}
+
 fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<Verb>) {
     let h = &view.header;
     ui.add_space(4.0);
@@ -163,6 +221,9 @@ fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<V
                 ui.label(RichText::new(&h.clock).weak());
             });
         });
+        if state.replay {
+            return;
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let estop = ui
                 .add(

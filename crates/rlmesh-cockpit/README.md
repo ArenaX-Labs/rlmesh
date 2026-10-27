@@ -23,6 +23,14 @@ mise run cockpit -- 127.0.0.1:41000/local/01a15b0a-...
 
 `RUST_LOG=rlmesh_cockpit=debug` logs the feed.
 
+## Replay a recording
+
+```sh
+mise run cockpit -- --replay session.mcap   # the demo's --record file, or any rlmesh Recorder output
+```
+
+The same views over a recorded session, with play/pause, speed, previous/next message and a scrub bar instead of the verbs. Scrubbing shows exactly what playing straight through shows (checkpoints every 10 s of session time). A recording has no heartbeats or observer reports, so the counters only they carry (produced and published rates, controller starts and skips) stay empty.
+
 ## What it shows
 
 - **Live channels** (left): the robot path tree, each part's kind, latest value (numbers with a 10 s plot, or a camera thumbnail), age since capture and seq gaps. Commandable parts list their `_applied` stream: what the edge dispatched on each tick.

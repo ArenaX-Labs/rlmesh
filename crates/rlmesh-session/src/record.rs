@@ -24,8 +24,10 @@
 //! contract, so a stream a policy reads at `latest@R` is recorded at R
 //! (§8.2), while `_applied` and chunks are recorded in full.
 //!
-//! [`summarize`] reads a recording back: message counts per topic, time
-//! ordering, envelopes that do not decode, and the lease timeline.
+//! [`read`] decodes a recording back into its messages in log-time order
+//! (the cockpit's replay). [`summarize`] checks one: message counts per
+//! topic, time ordering, envelopes that do not decode, and the lease
+//! timeline.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -38,7 +40,8 @@ use std::thread::JoinHandle;
 use crate::transport::{TrafficClass, payload_bytes};
 use crate::wire::codec::{self, schema};
 use crate::wire::{
-    AuthoritySnapshot, ChannelId, Fingerprint, PartSpec, ParticipantId, Sample, StreamSpec,
+    ActionChunk, AuthoritySnapshot, ChannelId, Fingerprint, PartSpec, ParticipantId, Sample,
+    StreamSpec,
 };
 use crate::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use bytes::Bytes;
@@ -775,6 +778,65 @@ pub fn summarize(path: impl AsRef<Path>) -> Result<Summary, RecordError> {
         }
     }
     Ok(summary)
+}
+
+/// A decoded recorded envelope.
+#[derive(Clone, Debug)]
+pub enum Recorded {
+    /// A sample of a part's stream or of an `_applied` stream.
+    Sample(Sample),
+    /// An action chunk on its way to an edge.
+    Chunk(ActionChunk),
+    /// An authority snapshot (it carries the bindings too).
+    Authority(AuthoritySnapshot),
+}
+
+/// One recorded message with its MCAP times, both session time.
+#[derive(Clone, Debug)]
+pub struct RecordedMessage {
+    /// When the recorder received it.
+    pub log_ns: i64,
+    /// Its capture (or send) time.
+    pub publish_ns: i64,
+    /// The envelope.
+    pub message: Recorded,
+}
+
+/// Every sample, chunk and authority snapshot of a recording, ordered by
+/// log time (stable, so each channel keeps its recorded order). Binding
+/// records are skipped (the snapshots carry them), as are envelopes that do
+/// not decode ([`summarize`] counts those).
+pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordedMessage>, RecordError> {
+    let path = path.as_ref();
+    // TODO: reads the whole file into memory; stream it chunk by chunk when
+    // recordings outgrow RAM (long camera sessions, rolling segments).
+    let bytes = std::fs::read(path).map_err(|source| RecordError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut out = Vec::new();
+    for message in mcap::MessageStream::new(&bytes)? {
+        let message = message?;
+        let data = Bytes::copy_from_slice(&message.data);
+        let schema = message.channel.schema.as_ref().map(|s| s.name.as_str());
+        let decoded = match schema {
+            Some(schema::SAMPLE) => codec::decode_sample(data).ok().map(Recorded::Sample),
+            Some(schema::ACTION_CHUNK) => codec::decode_chunk(data).ok().map(Recorded::Chunk),
+            Some(schema::AUTHORITY_STATE) => {
+                codec::decode_state(&data).ok().map(Recorded::Authority)
+            }
+            _ => None,
+        };
+        if let Some(decoded) = decoded {
+            out.push(RecordedMessage {
+                log_ns: i64::try_from(message.log_time).unwrap_or(i64::MAX),
+                publish_ns: i64::try_from(message.publish_time).unwrap_or(i64::MAX),
+                message: decoded,
+            });
+        }
+    }
+    out.sort_by_key(|m| m.log_ns);
+    Ok(out)
 }
 
 fn lease_changes(
