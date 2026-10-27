@@ -32,20 +32,25 @@ warn=(-Wall -Wextra -Werror -pedantic -Wshadow -Wconversion)
 board=(-std=gnu++11 -Os -fno-exceptions -fno-rtti -nostdinc++)
 sources=("$lib"/src/rlmesh_tether/*.cpp)
 
-# Succeeds only when `$cxx "$@"` builds the probe `$1` and running it fails,
-# so a sanitizer the toolchain accepts but drops (zig ignores
-# -fsanitize=address) never counts as running.
+# Succeeds only when `$cxx "$@"` builds the probe `$2` and running it fails
+# the way the sanitizer reports: its stderr matches `$1` (a trap has no
+# report, so "" accepts any failure). A sanitizer the toolchain accepts but
+# drops (zig ignores -fsanitize=address) never counts as running, nor does a
+# runtime that crashes or hangs at startup (bounded by `timeout`).
 catches() {
-  local probe="$1"
-  shift
+  local want="$1" probe="$2" err
+  shift 2
   $cxx "$@" "$probe" -o "$out/probe" 2>/dev/null || return 1
   # In a subshell that outlives the probe, so the shell's own report of a
-  # trap ("Illegal instruction") goes to /dev/null with the rest.
-  ! (
+  # trap ("Illegal instruction") is captured with the rest.
+  if err=$( (
     ulimit -c 0
-    "$out/probe"
+    timeout 20 "$out/probe"
     exit $?
-  ) >/dev/null 2>&1
+  ) 2>&1 >/dev/null); then
+    return 1
+  fi
+  [ -z "$want" ] || grep -q "$want" <<<"$err"
 }
 # An overflow through a pointer: ASan sees it, UBSan's bounds check can't.
 printf '%s\n' 'int main(int argc, char**) { char a[4] = {0}; char* volatile p = a; p[argc + 3] = 1; return p[0]; }' \
@@ -77,12 +82,15 @@ for cxx in "${compilers[@]}"; do
   echo "==> $cxx: conformance vectors"
   checks=()
   ran="none"
-  if catches "$out/probe-asan.cpp" -fsanitize=address && nm "$out/probe" | grep -q __asan_init &&
-    catches "$out/probe-ubsan.cpp" -fsanitize=address,undefined -fno-sanitize-recover=all; then
+  # grep reads all of nm's output: with pipefail, `nm | grep -q` fails when
+  # grep exits early and nm dies of SIGPIPE (a static ASan runtime).
+  if catches 'AddressSanitizer' "$out/probe-asan.cpp" -fsanitize=address &&
+    grep -q __asan_init <(nm "$out/probe") &&
+    catches 'runtime error' "$out/probe-ubsan.cpp" -fsanitize=address,undefined -fno-sanitize-recover=all; then
     # shellcheck disable=SC2054 # one flag, not a list
     checks=(-fsanitize=address,undefined -fno-sanitize-recover=all)
     ran="ASan + UBSan"
-  elif catches "$out/probe-ubsan.cpp" -fsanitize=undefined -fsanitize-trap=all; then
+  elif catches '' "$out/probe-ubsan.cpp" -fsanitize=undefined -fsanitize-trap=all; then
     # UBSan in trap mode needs no runtime library.
     checks=(-fsanitize=undefined -fsanitize-trap=all)
     ran="UBSan (trap)"
@@ -94,15 +102,20 @@ for cxx in "${compilers[@]}"; do
     ;;
   esac
   echo "    checks: $ran"
+  # CI sets this so an image change can't quietly drop ASan.
+  if [ -n "${TETHER_CPP_REQUIRE_ASAN:-}" ] && [ "${ran#ASan}" = "$ran" ]; then
+    echo "ASan is required (TETHER_CPP_REQUIRE_ASAN) but didn't run" >&2
+    exit 1
+  fi
   $cxx -std=c++11 -g -fno-exceptions -fno-rtti "${warn[@]}" ${quiet[@]+"${quiet[@]}"} \
     ${checks[@]+"${checks[@]}"} "$lib/test/vectors_test.cpp" "${sources[@]}" -o "$out/$tag-vectors_test"
   "$out/$tag-vectors_test" "$vectors"
 done
 
 # AVR, where int is 16 bits: compile only, with a stub <avr/pgmspace.h> (zig
-# ships no avr-libc). Skipped without zig; a real avr-gcc build is the
-# sketch's job.
-if command -v zig >/dev/null; then
+# ships no avr-libc). Local default only: skipped without zig or when CXX
+# picks one compiler (CI); a real avr-gcc build is the sketch's job.
+if [ -z "${CXX:-}" ] && command -v zig >/dev/null; then
   echo "==> zig c++: the codec for AVR (atmega328p), compile only"
   stub="$out/avr-stub"
   mkdir -p "$stub/avr"
@@ -113,5 +126,5 @@ if command -v zig >/dev/null; then
       -c "$src" -o "$out/avr-$(basename "${src%.cpp}").o"
   done
 else
-  echo "==> AVR compile check skipped: zig not found"
+  echo "==> AVR compile check skipped (CXX set, or zig not found)"
 fi

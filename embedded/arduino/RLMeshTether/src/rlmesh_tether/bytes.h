@@ -23,7 +23,10 @@ namespace tether {
 // Flash is read with `pgm_read_byte` wherever the platform defines it: AVR
 // has a separate address space, and ESP8266 maps flash for word loads only,
 // so a plain byte load faults there. Elsewhere (ARM, ESP32, RISC-V, the
-// host) flash is ordinary addressable memory and both read alike.
+// host) flash is ordinary addressable memory and both read alike. On those
+// cores a sketch may see `pgm_read_byte` (from the core header) where the library's
+// own files don't, so `at` compiles differently per file; both versions are
+// the same plain load there.
 struct Bytes {
   const uint8_t* data;
   uint16_t len;

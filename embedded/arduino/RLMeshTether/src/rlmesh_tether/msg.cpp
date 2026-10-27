@@ -231,7 +231,8 @@ Error decode(const Frame& frame, Receiver receiver, DenseLen lens, Msg& out) {
 }
 
 Error writeHello(const Hello& m, uint8_t seq, Sink out) {
-  // The order decode reports them in: reserved bits, ranges, UTF-8.
+  // Decode's order after the name length (which frames the payload, so
+  // decode checks it first): reserved bits, ranges, UTF-8.
   if (reserved(m.flags, hello_flags::kAll)) return Error::Reserved;
   if (m.name.len > kMaxName || m.watchdogMs < kWatchdogMsMin || m.watchdogMs > kWatchdogMsMax ||
       m.rxMax < kRxMaxMin || m.rxMax > kRxMaxMax) {

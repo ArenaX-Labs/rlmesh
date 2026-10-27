@@ -502,6 +502,24 @@ int main(int argc, char** argv) {
     fprintf(stderr, "unknown vectors schema\n");
     return 2;
   }
+  // Every section must be present and non-empty, and nothing unknown: a
+  // section renamed on the Rust side must fail here, not drop coverage.
+  static const char* const sections[] = {"crc",      "cobs_encode", "cobs_decode",      "frames",
+                                         "messages", "rejections",  "write_rejections", "pack"};
+  for (const char* name : sections) {
+    if (all[name].kind != json::Value::kArray || all[name].items.empty()) {
+      fprintf(stderr, "vectors section %s is missing or empty\n", name);
+      return 2;
+    }
+  }
+  for (const auto& member : all.members) {
+    bool known = member.first == "schema";
+    for (const char* name : sections) known = known || member.first == name;
+    if (!known) {
+      fprintf(stderr, "unknown vectors section %s\n", member.first.c_str());
+      return 2;
+    }
+  }
   crcVectors(all);
   cobsVectors(all);
   frameVectors(all);

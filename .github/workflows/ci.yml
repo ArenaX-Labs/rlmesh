@@ -120,8 +120,9 @@ jobs:
   # matrix of its own: it rides this workflow's triggers and concurrency
   # group, on the smallest Depot runner. The first step diffs against the
   # base (as the C# selection above does); every later step is skipped unless
-  # a browser input changed, so an unaffected run costs a checkout and a
-  # `git diff`. The tools come from javascript/mise.toml (`setup:js`), so no
+  # a browser input changed (a tether-only change runs just the sans-IO guard
+  # and the Arduino codec's vectors), so an unaffected run costs a checkout
+  # and a `git diff`. The tools come from javascript/mise.toml (`setup:js`), so no
   # other job installs them.
   browser:
     name: Browser (wasm + JS)
@@ -136,7 +137,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Skip unless browser inputs changed
+      - name: Skip unless browser, sans-IO or tether inputs changed
         id: changes
         env:
           EVENT: ${{ github.event_name }}
@@ -152,7 +153,7 @@ jobs:
           # The tether crate needs only the sans-IO guard, not the browser build.
           if [ "$run" = true ] || grep -qE '^crates/rlmesh-tether/' <<<"$changed"; then sansio=true; else sansio=false; fi
           # The Arduino codec runs the tether's conformance vectors (g++ only).
-          if grep -qE '^(crates/rlmesh-tether/|embedded/arduino/|\.mise/tasks/test/tether/)' <<<"$changed"; then tether=true; else tether=false; fi
+          if grep -qE '^(crates/rlmesh-tether/|embedded/arduino/|\.mise/tasks/test/tether/|mise\.(toml|lock)$|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then tether=true; else tether=false; fi
           printf 'run=%s\nsansio=%s\ntether=%s\n' "$run" "$sansio" "$tether" | tee -a "$GITHUB_OUTPUT"
 
       - name: Setup toolchain
@@ -180,6 +181,9 @@ jobs:
       # the Rust crate checks: the two implementations can't drift apart.
       - name: Arduino tether codec against the vectors
         if: steps.changes.outputs.tether == 'true'
+        env:
+          # g++ only: Setup also installs zig, whose run the local default adds.
+          CXX: g++
         run: mise run --skip-tools test:tether:cpp
 
       # wasm-bindgen-test under Node (no browser): decode, receive rules,

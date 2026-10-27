@@ -457,7 +457,8 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) -> Result<(), MsgError
     let mut head = [0_u8; 31];
     let (t, n, tail): (u8, usize, &[u8]) = match *msg {
         Msg::Hello(ref h) => {
-            // The order decode reports them in: reserved bits, ranges, UTF-8.
+            // Decode's order after the name length (which frames the payload, so
+            // decode checks it first): reserved bits, ranges, UTF-8.
             no_reserved(h.flags, hello_flags::ALL)?;
             if h.name.len() > MAX_NAME
                 || !WATCHDOG_MS.contains(&h.watchdog_ms)
