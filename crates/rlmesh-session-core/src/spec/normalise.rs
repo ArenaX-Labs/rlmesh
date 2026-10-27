@@ -1110,6 +1110,17 @@ fn part(robot: &ParticipantId, path: &str, mut decl: PartDecl) -> Result<PartSpe
     })
 }
 
+/// The authored map's top-level paths, in authored order. Duplicate keys
+/// are refused, as [`normalise`] refuses them.
+pub fn authored_paths(robot_json: &str) -> Result<Vec<String>, CtlError> {
+    let mut de = serde_json::Deserializer::from_str(robot_json);
+    let map: Ordered<serde::de::IgnoredAny> = serde_path_to_error::deserialize(&mut de)
+        .map_err(|err| CtlError::new(CtlStatus::InvalidRequest, format!("robot map: {err}")))?;
+    de.end()
+        .map_err(|err| CtlError::new(CtlStatus::InvalidRequest, format!("robot map: {err}")))?;
+    Ok(map.0.into_iter().map(|(path, _)| path).collect())
+}
+
 /// Normalises `robot`'s authored map. Every part comes back with channel id
 /// zero, in authored order.
 pub fn normalise(
@@ -1257,6 +1268,15 @@ mod tests {
 
     fn refused(json: &str) -> CtlError {
         normalise(&robot(), SPEC_VERSION, json).expect_err("refused")
+    }
+
+    #[test]
+    fn authored_paths_keep_the_maps_order_and_refuse_duplicates() {
+        let json = r#"{"z": {"kind": "text"}, "a/b": {"kind": "text"}, "m": {}}"#;
+        assert_eq!(authored_paths(json).expect("paths"), ["z", "a/b", "m"]);
+        let twice = r#"{"z": {"kind": "text"}, "z": {"kind": "text"}}"#;
+        assert!(authored_paths(twice).is_err());
+        assert!(authored_paths("[1]").is_err());
     }
 
     fn shapes(part: &PartSpec) -> Vec<(String, DType, Vec<u32>, String)> {

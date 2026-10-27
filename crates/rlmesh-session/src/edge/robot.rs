@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::spec::normalise::authored_paths;
 use crate::wire::{ChannelId, PartSpec};
 use crate::{ImagePublisher, Offer, Participant, SamplePublisher, SessionError};
 use bytes::Bytes;
@@ -85,12 +86,22 @@ impl Robot {
     ) -> Result<Self, EdgeError> {
         let view = participant.declare_parts(robot_json).await?;
         let me = participant.id().clone();
-        let parts: Vec<PartSpec> = view
+        let mut parts: Vec<PartSpec> = view
             .parts
             .iter()
             .filter(|p| p.owner == me)
             .cloned()
             .collect();
+        // The host lists parts by channel id, and a re-declared part gets a
+        // new, higher one: put them back in authored order. The host
+        // accepted the map, so it parses.
+        let authored = authored_paths(robot_json).unwrap_or_default();
+        parts.sort_by_key(|p| {
+            authored
+                .iter()
+                .position(|a| a == p.path.as_str())
+                .unwrap_or(usize::MAX)
+        });
         let mut outlets = BTreeMap::new();
         for part in &parts {
             let path = part.path.to_string();
