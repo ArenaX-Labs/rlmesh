@@ -1622,6 +1622,28 @@ impl ModelHandler for ServedModel {
             .unwrap_or(0)
     }
 
+    /// The model's own timing of the last predict, as it reported it.
+    fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
+        let timing = std::mem::take(
+            &mut *self
+                .remote
+                .last
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        Some((
+            timing.total_ns,
+            rlmesh_proto::EndpointPhases {
+                decode_ns: timing.decode_ns.unwrap_or(0),
+                user_ns: timing.user_ns.unwrap_or(0),
+                encode_ns: timing.encode_ns.unwrap_or(0),
+                queue_ns: timing.queue_ns.unwrap_or(0),
+                in_flight: timing.in_flight.unwrap_or(0),
+                ..rlmesh_proto::EndpointPhases::default()
+            },
+        ))
+    }
+
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
         Some(Arc::new(ServedRoutes(self.remote.clone())))
     }

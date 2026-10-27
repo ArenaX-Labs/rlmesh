@@ -694,9 +694,21 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
         },
         ..TestEnv::default()
     };
+    // A model served elsewhere, which fused this predict with another
+    // route's and charged it its share of the forward.
     let model = TestModel {
         adapter_ns: 2_000_000,
         held: Some((5, 6_000_000)),
+        predict_delay: Some(Duration::from_millis(20)),
+        endpoint: Some((
+            Some(4_000_000),
+            EndpointPhases {
+                user_ns: 3_000_000,
+                queue_ns: 1_000_000,
+                in_flight: 2,
+                ..EndpointPhases::default()
+            },
+        )),
         ..TestModel::default()
     };
 
@@ -724,9 +736,12 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
     assert_eq!(avg("env.step", "endpoint.decode"), 1.0);
     assert_eq!(avg("env.step", "endpoint.user"), 6.0);
     assert_eq!(avg("env.step", "endpoint.encode"), 2.0);
-    // The model is timed around its own call; the adapter's share and the
-    // held state are what the model reports.
-    assert!(avg("model.predict", "endpoint.total") > 0.0);
+    // The model's own timing, not the call's wall time, which stays the RPC.
+    assert_eq!(avg("model.predict", "endpoint.total"), 4.0);
+    assert_eq!(avg("model.predict", "endpoint.user"), 3.0);
+    assert_eq!(avg("model.predict", "endpoint.queue"), 1.0);
+    assert_eq!(avg("model.predict", "predict.in_flight"), 2.0);
+    assert!(avg("model.predict", "rpc.total") >= 20.0);
     // The adapter's share of the handler's own work: forward = user - adapter.
     assert_eq!(avg("model.predict", "predict.adapter"), 2.0);
     // Held state gauges: an episode count and raw bytes, not durations.

@@ -227,6 +227,10 @@ impl ModelHandler for NestedHandler {
         self.outer.take_adapter_ns()
     }
 
+    fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
+        self.outer.take_endpoint_timing()
+    }
+
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
         Some(Arc::new(NestedSetup {
             outer: self.outer.route_setup(),

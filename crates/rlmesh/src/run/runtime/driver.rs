@@ -2355,6 +2355,13 @@ async fn predict_grouped<M: ModelHandler>(
     // into the next predict's.
     let adapter_ns = handler.take_adapter_ns();
     let held = handler.held_state();
+    // A served model's own timing replaces this call's: its user time is its
+    // share of a forward it may have fused with other routes' requests, and
+    // the call's wall time is the op's RPC.
+    let (endpoint_total_ns, endpoint) = match handler.take_endpoint_timing() {
+        Some((total, phases)) => (total, Some(phases)),
+        None => (None, None),
+    };
     drop(handler);
     let encode_started = Instant::now();
     let mut results = results.into_iter();
@@ -2383,16 +2390,20 @@ async fn predict_grouped<M: ModelHandler>(
                         .map_err(|err| model_error(crate::Error::model(err.to_string())))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let phases = endpoint.unwrap_or(EndpointPhases {
+                user_ns,
+                encode_ns: rlmesh_proto::elapsed_ns(encode_started),
+                ..EndpointPhases::default()
+            });
             Ok(Prediction {
                 frames,
-                endpoint_total_ns: Some(rlmesh_proto::elapsed_ns(started)),
+                endpoint_total_ns: endpoint_total_ns
+                    .or_else(|| Some(rlmesh_proto::elapsed_ns(started))),
                 phases: EndpointPhases {
-                    user_ns,
-                    encode_ns: rlmesh_proto::elapsed_ns(encode_started),
                     adapter_ns,
                     held_episodes: held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32),
                     held_state_bytes: held.map(|held| held.bytes),
-                    ..EndpointPhases::default()
+                    ..phases
                 },
             })
         })

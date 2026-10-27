@@ -229,6 +229,16 @@ pub trait ModelHandler: Send {
         0
     }
 
+    /// What a model served elsewhere measured answering the last
+    /// predict-family call: its own total and phases (decode, user, encode,
+    /// queue, in flight), each its request's share of a batch it fused.
+    /// Read-and-clear, drained after [`take_adapter_ns`](Self::take_adapter_ns)
+    /// and [`held_state`](Self::held_state). `None` (the default) for a
+    /// handler answering here, which the caller times around its own call.
+    fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
+        None
+    }
+
     /// Per-route setup invoked at `ResolveAdapter`, before any `predict` on the
     /// route. Returns a cheaply-cloned, independently-synchronized handle (or
     /// `None` for no per-route setup), obtained once when serving begins so the
@@ -336,6 +346,10 @@ impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
 
     fn take_adapter_ns(&mut self) -> u64 {
         (**self).take_adapter_ns()
+    }
+
+    fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
+        (**self).take_endpoint_timing()
     }
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {

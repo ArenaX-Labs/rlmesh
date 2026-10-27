@@ -150,6 +150,8 @@ pub struct TestModel {
     // What this model reports holding, and the adapter share of each predict.
     pub held: Option<(u64, u64)>,
     pub adapter_ns: u64,
+    // What a model served elsewhere reports measuring for each predict.
+    pub endpoint: Option<(Option<u64>, EndpointPhases)>,
     // Holds the `gate_at`th predict to arrive (0-based) until the gate opens;
     // every other predict returns at once.
     pub gate: Option<Shared<oneshot::Receiver<()>>>,
@@ -258,6 +260,10 @@ impl ModelHandler for TestModel {
 
     fn take_adapter_ns(&mut self) -> u64 {
         self.adapter_ns
+    }
+
+    fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, EndpointPhases)> {
+        self.endpoint
     }
 
     fn route_setup(&self) -> Option<Arc<dyn rlmesh::binding::model::ModelRouteSetup>> {
