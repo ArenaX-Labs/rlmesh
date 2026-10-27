@@ -1203,6 +1203,12 @@ impl PyModel {
         py: Python<'_>,
         routes: Vec<(Py<PyAny>, Bound<'_, pyo3::types::PyDict>)>,
     ) -> PyResult<RouteOutcomes> {
+        if rlmesh::binding::routes::in_route() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "run_routes: called from inside a running route (its env, model or hooks); \
+                 run the routes from the caller of the outer run_routes instead",
+            ));
+        }
         let exclusive = self.served.is_none() && !self.random;
         if exclusive && routes.len() > 1 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -1252,7 +1258,7 @@ impl PyModel {
         // returned on its own too: the last route may have finished past its
         // last cancellation check after the signal was caught.
         let interrupt = interrupted.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let outcomes = results
+        let outcomes: Vec<Py<PyAny>> = results
             .into_iter()
             .zip(errors)
             .map(|(result, error)| match (result, &interrupt) {
@@ -1271,10 +1277,21 @@ impl PyModel {
                     .into_any()),
             })
             .collect::<PyResult<_>>()?;
-        Ok((
-            outcomes,
-            interrupt.map(|interrupt| interrupt.into_value(py).into_any()),
-        ))
+        // A route's own KeyboardInterrupt (its env raised one) is a Ctrl-C
+        // too, though no signal reached the poll.
+        let interrupt = interrupt
+            .map(|interrupt| interrupt.into_value(py).into_any())
+            .or_else(|| {
+                outcomes
+                    .iter()
+                    .find(|outcome| {
+                        outcome
+                            .bind(py)
+                            .is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>()
+                    })
+                    .map(|outcome| outcome.clone_ref(py))
+            });
+        Ok((outcomes, interrupt))
     }
 
     #[pyo3(signature = (target, execution_horizon=1, workflow_edition=None, close_env=false))]

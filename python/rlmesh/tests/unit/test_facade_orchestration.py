@@ -436,11 +436,20 @@ def test_run_routes_split_the_trials_and_a_failed_route_fails_alone() -> None:
         )
         with pytest.raises(ValueError, match="one route at a time"):
             rlmesh.Model(lambda obs: 0).run_routes(servers)
+
+        class Nests(Counter):
+            def reset(self, **kwargs: Any) -> tuple[int, dict[str, object]]:
+                rlmesh.Model(rlmesh.RANDOM_SAMPLE).run_routes(servers[:1])
+                return super().reset(**kwargs)
+
+        (nested,) = rlmesh.Model(rlmesh.RANDOM_SAMPLE).run_routes([Nests()])
     finally:
         for server in servers:
             server.shutdown()
 
     assert isinstance(results[1], Exception) and "env gone" in str(results[1])
+    # A route cannot run routes of its own: the outer Ctrl-C would never reach them.
+    assert isinstance(nested, RuntimeError) and "inside a running route" in str(nested)
     merged = rlmesh.RunResult.merge(
         r for r in results if isinstance(r, rlmesh.RunResult)
     )

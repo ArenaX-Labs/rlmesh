@@ -86,3 +86,17 @@ def test_ctrl_c_in_run_routes_keeps_the_routes_that_finished() -> None:
     assert isinstance(finished, rlmesh.RunResult) and finished.num_episodes == 1
     assert type(cut) is KeyboardInterrupt and type(interrupt) is KeyboardInterrupt
     assert type(caught.value) is KeyboardInterrupt
+
+
+def test_a_routes_own_ctrl_c_is_raised_as_the_runs() -> None:
+    class Raises(_TwoStepEnv):
+        def reset(
+            self, *, seed: object = None, options: Any = None
+        ) -> tuple[int, dict]:
+            raise KeyboardInterrupt
+
+    model = rlmesh.Model(rlmesh.RANDOM_SAMPLE)
+    (cut,), interrupt = model._run_routes([(Raises(), {"episodes": 1})])  # pyright: ignore[reportPrivateUsage]
+    assert type(cut) is KeyboardInterrupt and interrupt is cut
+    with pytest.raises(KeyboardInterrupt):
+        model.run_routes([Raises()])

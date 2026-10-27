@@ -1568,8 +1568,9 @@ class ModelBase(Generic[ObsT, ActT]):
         own side. A model running in this process drives one route at a time:
         serve it to share it.
 
-        Ctrl-C stops every route and raises ``KeyboardInterrupt`` once the
-        routes have wound down.
+        Ctrl-C (or a route's own ``KeyboardInterrupt``) stops every route and
+        raises ``KeyboardInterrupt`` once the routes have wound down. A route's
+        env, model or hooks cannot call ``run_routes`` themselves.
         """
         targets = list(envs)
         if episodes is not None and seeds is not None and len(seeds) != episodes:

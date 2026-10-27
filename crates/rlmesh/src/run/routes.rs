@@ -66,6 +66,29 @@ impl<'a> Route<'a> {
     }
 }
 
+thread_local! {
+    /// Set on a route's own thread, where its hooks and local env run.
+    static IN_ROUTE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread is running a route of a [`run_routes`] call. Routes
+/// started there would never see the outer call's cancellation or signals,
+/// so the outer call could not finish: they are refused.
+pub fn in_route() -> bool {
+    IN_ROUTE.with(std::cell::Cell::get)
+}
+
+fn refuse_in_route() -> Result<()> {
+    if in_route() {
+        return Err(Error::Runtime(
+            "run_routes: called from inside a running route (its env, model or hooks); \
+             run the routes from the caller of the outer run_routes instead"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Drive `model` against every route at once and return each route's own
 /// result, in route order: a route that fails holds its error while the
 /// others run to completion. The outer error is one refused before any
@@ -78,6 +101,7 @@ pub fn run_routes<'a>(
     routes: Vec<Route<'a>>,
 ) -> Result<Vec<Result<RunResult>>> {
     drive::refuse_in_async_context("run_routes")?;
+    refuse_in_route()?;
     let driven = fan_out(super::driven(model.into())?, routes.len())?;
     Ok(run_sync(driven.into_iter().zip(routes).collect()))
 }
@@ -184,6 +208,7 @@ fn run_sync(routes: Vec<(Driven<'_>, Route<'_>)>) -> Vec<Result<RunResult>> {
                     .name(format!("rlmesh-route-{index}"))
                     .spawn_scoped(scope, move || {
                         let _finished = finished;
+                        IN_ROUTE.with(|cell| cell.set(true));
                         drive::run_sync(run_one(model, route, Mode::Sync, arrival))
                     })
             })

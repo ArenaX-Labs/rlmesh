@@ -194,7 +194,7 @@ pub mod plan {
 /// `Model.run_routes` and `RunResult.merge` (R-25); C and C++ are deferred.
 pub mod routes {
     pub use crate::run::routes::{
-        Route, merge_results, run_routes, run_routes_async, run_routes_prepared,
+        Route, in_route, merge_results, run_routes, run_routes_async, run_routes_prepared,
     };
 }
 
