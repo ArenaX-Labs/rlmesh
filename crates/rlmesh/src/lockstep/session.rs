@@ -425,30 +425,54 @@ async fn serve_robot(
     };
 
     let mut recorder = None;
-    let mut tee = None;
-    if let Some(path) = &options.record {
-        let observer = join(
-            &address.session,
-            ParticipantId::new(format!("{}.recorder", address.robot))
-                .map_err(|e| GymError::Config(e.to_string()))?,
-            vec![Role::Observer],
-            PriorityClass::Scripted,
-            Duration::from_secs(10),
-        )
-        .await?;
-        let started = rlmesh_session::record::Recorder::start(Arc::new(observer), path)
-            .await
-            .map_err(|e| GymError::Config(e.to_string()))?;
-        tee = Some(started.tee());
-        recorder = Some(started);
-    }
-    let handler: Arc<dyn LockstepHandler> = Gated::new(gate, build(Declared { parts, tee })?);
     let local_key = address.key();
-    local()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(local_key.clone(), Arc::downgrade(&handler));
-    let lockstep = lockstep_session(participant.transport(), address.session.base).await?;
+    let started = async {
+        let mut tee = None;
+        if let Some(path) = &options.record {
+            let observer = join(
+                &address.session,
+                ParticipantId::new(format!("{}.recorder", address.robot))
+                    .map_err(|e| GymError::Config(e.to_string()))?,
+                vec![Role::Observer],
+                PriorityClass::Scripted,
+                Duration::from_secs(10),
+            )
+            .await?;
+            let started = rlmesh_session::record::Recorder::start(Arc::new(observer), path)
+                .await
+                .map_err(|e| GymError::Config(e.to_string()))?;
+            tee = Some(started.tee());
+            recorder = Some(started);
+        }
+        let handler: Arc<dyn LockstepHandler> = Gated::new(gate, build(Declared { parts, tee })?);
+        local()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(local_key.clone(), Arc::downgrade(&handler));
+        let lockstep = lockstep_session(participant.transport(), address.session.base).await?;
+        Ok((handler, lockstep))
+    }
+    .await;
+    let (handler, lockstep) = match started {
+        Ok(started) => started,
+        // A robot that never served leaves as one that did, so its name
+        // is free to bind again.
+        Err(err) => {
+            local()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&local_key);
+            watcher.abort();
+            let _ = watcher.await;
+            if let Some(recorder) = recorder {
+                let _ = recorder.finish().await;
+            }
+            if let Ok(participant) = Arc::try_unwrap(participant) {
+                participant.close().await;
+            }
+            return Err(err);
+        }
+    };
     let key = participant.keys().lockstep(&address.robot);
     info!(robot = %address.robot, %key, "lockstep robot serving");
     let served = serve_zenoh(lockstep.clone(), key, handler.clone(), shutdown).await;

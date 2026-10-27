@@ -229,3 +229,22 @@ async fn through_a_policy_one_view_step_plays_the_whole_chunk() {
     assert!(last.truncated);
     cancel.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_robot_whose_startup_fails_leaves_its_name_free_to_rebind() {
+    // Another binding hosts the session, so the failed robot's host
+    // closing does not take its participant with it.
+    let host = rlmesh::lockstep::bind(":0/host").await.unwrap();
+    let address = format!("{}/ur10e", host.address().rsplit_once('/').unwrap().0);
+    let binding = rlmesh::lockstep::bind(&address).await.unwrap();
+    let failed = binding
+        .serve_robot(
+            UR10E,
+            rlmesh::lockstep::ServeOptions::default(),
+            tokio_util::sync::CancellationToken::new(),
+            |_| Err(GymError::Config("no handler".into())),
+        )
+        .await;
+    assert!(failed.is_err());
+    rlmesh::lockstep::bind(&address).await.unwrap();
+}
