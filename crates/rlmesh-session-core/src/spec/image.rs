@@ -214,7 +214,7 @@ impl Kernel {
                         1.0
                     } else {
                         let x = x * core::f64::consts::PI;
-                        x.sin() / x
+                        crate::math::sin(x) / x
                     }
                 };
                 if x < 3.0 {
@@ -514,6 +514,23 @@ mod tests {
             channels: 3,
             data: (0..height * width * 3).map(|i| (i % 251) as u8).collect(),
         }
+    }
+
+    /// Pinned bytes: the host (`std`) and a device (no `std`) both take
+    /// `sin` from libm, so they resample to the same pixels. The platform
+    /// `sin` gives 127 for the middle pixel here.
+    #[test]
+    fn lanczos_resamples_to_pinned_bytes() {
+        let stripes = Image {
+            height: 1,
+            width: 14,
+            channels: 1,
+            data: [255_u8, 0].repeat(7),
+        };
+        assert_eq!(
+            stripes.resize(1, 3, Resample::Lanczos3Aa).data,
+            [136, 128, 119]
+        );
     }
 
     #[test]

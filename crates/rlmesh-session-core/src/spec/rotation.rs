@@ -11,6 +11,8 @@ use crate::prelude::*;
 
 use core::fmt;
 
+use crate::math;
+
 /// A rotation encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Rotation {
@@ -154,7 +156,7 @@ fn quat_to_axis_angle(q: [f64; 4]) -> [f64; 3] {
     if s <= EPS {
         return [0.0; 3];
     }
-    let k = 2.0 * s.atan2(w) / s;
+    let k = 2.0 * math::atan2(s, w) / s;
     [x * k, y * k, z * k]
 }
 
@@ -197,7 +199,7 @@ pub fn to_matrix(value: &[f64], from: Rotation) -> Matrix {
                 return identity();
             }
             let (x, y, z) = (rx / angle, ry / angle, rz / angle);
-            let (s, c) = angle.sin_cos();
+            let (s, c) = math::sin_cos(angle);
             let t = 1.0 - c;
             [
                 [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
@@ -227,9 +229,9 @@ pub fn to_matrix(value: &[f64], from: Rotation) -> Matrix {
             [value[6], value[7], value[8]],
         ],
         Rotation::EulerXyz => {
-            let (sr, cr) = value[0].sin_cos();
-            let (sp, cp) = value[1].sin_cos();
-            let (sy, cy) = value[2].sin_cos();
+            let (sr, cr) = math::sin_cos(value[0]);
+            let (sp, cp) = math::sin_cos(value[1]);
+            let (sy, cy) = math::sin_cos(value[2]);
             // Extrinsic XYZ: R = Rz(yaw) · Ry(pitch) · Rx(roll).
             [
                 [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
@@ -343,15 +345,15 @@ fn from_matrix(m: &Matrix, to: Rotation, out: &mut Vec<f64>) {
             // and yaw are read from, not sqrt(1 - sin²): at an f32 gimbal
             // lock those entries are already zero while the latter is ~3e-4.
             let sin_pitch = (-m[2][0]).clamp(-1.0, 1.0);
-            let cos_pitch = m[2][1].hypot(m[2][2]);
-            let pitch = sin_pitch.atan2(cos_pitch);
+            let cos_pitch = math::hypot(m[2][1], m[2][2]);
+            let pitch = math::atan2(sin_pitch, cos_pitch);
             let (roll, yaw) = if cos_pitch > GIMBAL_EPS {
-                (m[2][1].atan2(m[2][2]), m[1][0].atan2(m[0][0]))
+                (math::atan2(m[2][1], m[2][2]), math::atan2(m[1][0], m[0][0]))
             } else {
                 // Gimbal lock: yaw is 0 (scipy's and transforms3d's choice)
                 // and roll carries the coupled angle, read off the top-left
                 // 2×2 with the sign of sin(pitch).
-                ((sin_pitch * m[0][1]).atan2(m[1][1]), 0.0)
+                (math::atan2(sin_pitch * m[0][1], m[1][1]), 0.0)
             };
             out.extend([roll, pitch, yaw]);
         }
@@ -462,6 +464,15 @@ mod tests {
         assert_eq!(out, [0.0, 0.0, 0.0, -1.0], "sign kept");
     }
 
+    /// Pinned bits: `sin_cos` comes from libm in every build, so the host
+    /// and a device agree to the last bit (the platform `sin` rounds this
+    /// entry up by one ulp).
+    #[test]
+    fn euler_to_matrix_is_pinned_to_the_bit() {
+        let m = to_matrix(&[2.5, 0.0, 0.0], Rotation::EulerXyz);
+        assert_eq!(m[2][1].to_bits(), 0x3fe3_26af_0dcf_cab0);
+    }
+
     #[test]
     fn a_quaternion_from_another_encoding_has_the_largest_diagonal_sign() {
         use Rotation::{EulerXyz, QuatXyzw};
@@ -469,13 +480,16 @@ mod tests {
         let angle = -170_f64.to_radians();
         let q = one(&[angle, 0.0, 0.0], EulerXyz, QuatXyzw);
         let h = angle / 2.0;
-        assert!(close(&q, &[-h.sin(), 0.0, 0.0, -h.cos()]), "{q:?}");
+        assert!(
+            close(&q, &[-math::sin(h), 0.0, 0.0, -math::cos(h)]),
+            "{q:?}"
+        );
         assert!(q[3] < 0.0, "{q:?}");
     }
 
     #[test]
     fn every_encoding_round_trips_through_quat_xyzw() {
-        let q = [0.0, 0.0, FRAC_PI_4.sin(), FRAC_PI_4.cos()];
+        let q = [0.0, 0.0, math::sin(FRAC_PI_4), math::cos(FRAC_PI_4)];
         for to in Rotation::ALL.into_iter().filter(|r| r.is_source()) {
             let encoded = one(&q, Rotation::QuatXyzw, to);
             assert_eq!(encoded.len(), to.width() as usize);
@@ -493,7 +507,7 @@ mod tests {
         );
         assert!(close(&down, &[0.0, 0.0, -1.0]));
         let rolled = one(
-            &[FRAC_PI_4.sin(), 0.0, 0.0, FRAC_PI_4.cos()],
+            &[math::sin(FRAC_PI_4), 0.0, 0.0, math::cos(FRAC_PI_4)],
             Rotation::QuatXyzw,
             Rotation::GravityXyz,
         );
@@ -585,13 +599,16 @@ mod tests {
             &mut out,
         );
         let h = FRAC_PI_4;
-        assert!(close(&out, &[0.0, 0.0, -h.sin(), h.cos()]), "{out:?}");
+        assert!(
+            close(&out, &[0.0, 0.0, -math::sin(h), math::cos(h)]),
+            "{out:?}"
+        );
     }
 
     #[test]
     fn rot6d_layouts_are_the_column_block_and_its_row_major_flatten() {
         use Rotation::{QuatXyzw, Rot6d, Rot6dRowMajor};
-        let q = [0.0, 0.0, FRAC_PI_4.sin(), FRAC_PI_4.cos()]; // 90° about z
+        let q = [0.0, 0.0, math::sin(FRAC_PI_4), math::cos(FRAC_PI_4)]; // 90° about z
         assert!(close(
             &one(&q, QuatXyzw, Rot6d),
             &[0.0, 1.0, 0.0, -1.0, 0.0, 0.0]

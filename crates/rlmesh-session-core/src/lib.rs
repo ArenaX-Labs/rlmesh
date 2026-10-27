@@ -46,7 +46,31 @@ mod prelude {
     pub(crate) use alloc::{format, vec};
 }
 
-/// The `f64` methods `core` lacks, from `libm`, for builds without `std`.
+/// Transcendental functions, from `libm` in every build. `std`'s versions
+/// call the platform's maths library, whose last-bit rounding differs from
+/// `libm`'s, and the host and a device must compute the same values
+/// (a resampled pixel, a rotation). clippy.toml bans the `f64` methods.
+pub(crate) mod math {
+    pub(crate) fn sin(x: f64) -> f64 {
+        libm::sin(x)
+    }
+    #[cfg(test)]
+    pub(crate) fn cos(x: f64) -> f64 {
+        libm::cos(x)
+    }
+    pub(crate) fn sin_cos(x: f64) -> (f64, f64) {
+        libm::sincos(x)
+    }
+    pub(crate) fn atan2(y: f64, x: f64) -> f64 {
+        libm::atan2(y, x)
+    }
+    pub(crate) fn hypot(x: f64, y: f64) -> f64 {
+        libm::hypot(x, y)
+    }
+}
+
+/// The exact `f64` methods `core` lacks (correctly rounded, so `libm` and
+/// `std` agree), for builds without `std`.
 #[cfg(not(feature = "std"))]
 mod float {
     pub(crate) trait F64Ext: Sized {
@@ -58,10 +82,6 @@ mod float {
         fn fract(self) -> Self;
         fn sqrt(self) -> Self;
         fn powi(self, n: i32) -> Self;
-        fn sin(self) -> Self;
-        fn sin_cos(self) -> (Self, Self);
-        fn atan2(self, other: Self) -> Self;
-        fn hypot(self, other: Self) -> Self;
     }
 
     impl F64Ext for f64 {
@@ -88,18 +108,6 @@ mod float {
         }
         fn powi(self, n: i32) -> Self {
             libm::pow(self, f64::from(n))
-        }
-        fn sin(self) -> Self {
-            libm::sin(self)
-        }
-        fn sin_cos(self) -> (Self, Self) {
-            libm::sincos(self)
-        }
-        fn atan2(self, other: Self) -> Self {
-            libm::atan2(self, other)
-        }
-        fn hypot(self, other: Self) -> Self {
-            libm::hypot(self, other)
         }
     }
 }
