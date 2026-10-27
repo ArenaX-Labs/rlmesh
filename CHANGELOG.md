@@ -38,6 +38,7 @@ This release gives the Rust facade crate (`rlmesh`), the C API (`rlmesh.h`, now 
 
 #### Python
 
+- The managed-platform client module `rlmesh.platform` is now `rlmesh.managed`, and its `PlatformError` is `ManagedError`; there is no alias for the old names.
 - Two lossy fits the resolver made silently are now refused unless the model spec allows them by name: reading the leading `dim` elements of a wider env state field (`allow=("select_state",)`; before, one finger joint of a two-finger gripper reading bound silently) and feeding a camera input from the env's only camera under another role (`allow=("rebind_camera",)`; before, a wrist input bound a third-person view with a caution). An allowed fit is recorded in `describe()` under `projections:` and in the run's advisories. The Rust facade's `ModelSpec` gains `with_allow` and `allow()` so Rust specs can allow them too.
 - Trusted custom-input entrypoints that cannot be imported or whose attribute path cannot be resolved raise `AdapterResolutionError`, chained from the original `ImportError` / `AttributeError`, through `resolve`, `Model`, `run` and `session` (before: those lookup errors escaped). Malformed entrypoint strings still raise `ValueError`; non-callable targets still raise `TypeError`. Native unregistered entrypoints already use `AdapterResolutionError`.
 

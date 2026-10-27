@@ -5,11 +5,11 @@ import json
 import urllib.request
 
 import pytest
-from rlmesh import platform
+from rlmesh import managed
 
 
 def test_scenario_tasks_expand_a_group_and_ask_for_workers() -> None:
-    tasks = platform.scenario_tasks(
+    tasks = managed.scenario_tasks(
         "prebuilt/libero-mujoco330", "libero_90", tasks=2, episodes=7, workers=2
     )
 
@@ -25,9 +25,7 @@ def test_scenario_tasks_expand_a_group_and_ask_for_workers() -> None:
         for i in range(2)
     ]
 
-    (single,) = platform.scenario_tasks(
-        "env", "g", task_ids=["g/7"], episodes=2, seed=5
-    )
+    (single,) = managed.scenario_tasks("env", "g", task_ids=["g/7"], episodes=2, seed=5)
     assert single == {
         "env": "env",
         "taskId": "g/7",
@@ -60,7 +58,7 @@ def test_client_sends_bearer_and_repeatable_query(
         return Response(json.dumps(next(pages)).encode())
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    client = platform.Client(url="https://example.test/", token="secret")
+    client = managed.Client(url="https://example.test/", token="secret")
 
     ids = [e["id"] for e in client.evaluations(tags={"experiment": "x"}, limit=1)]
 

@@ -90,7 +90,7 @@
     "rlmesh.spaces",
     "rlmesh.types",
     "rlmesh.specs",
-    "rlmesh.platform",
+    "rlmesh.managed",
     "rlmesh.recorder"
   ],
   "modules": {
@@ -148,11 +148,11 @@
       "status": "Experimental.",
       "title": "rlmesh.jax"
     },
-    "rlmesh.platform": {
+    "rlmesh.managed": {
       "description": "Submit and read evaluations on a managed RLMesh platform through the signed-in CLI.",
       "stability": "Experimental",
       "status": "Experimental.",
-      "title": "rlmesh.platform"
+      "title": "rlmesh.managed"
     },
     "rlmesh.recorder": {
       "title": "rlmesh.recorder",
