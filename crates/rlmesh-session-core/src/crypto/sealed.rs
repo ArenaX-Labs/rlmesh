@@ -14,6 +14,14 @@
 //! Nonce = `kind` ‖ 3 zero bytes ‖ `seq` (u64 LE). Encrypted: AAD =
 //! `header ‖ lp(key expression)`, plaintext = body. Integrity only: AAD =
 //! `header ‖ lp(key expression) ‖ body`, plaintext empty.
+//!
+//! Whether a message is encrypted is never the sender's choice per message:
+//! it is the kind's level, or for kinds 7–9, 11, 12 and 14 the key's
+//! [`Security`]. A message whose flag doesn't match is rejected.
+//!
+//! Keys go into one [`SealSender`] or [`SealReceiver`] by value, and a
+//! sender's counters start at 1 and never restart, so a (key, kind, seq)
+//! nonce is never reused.
 
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce, Tag};
@@ -78,16 +86,25 @@ pub enum Kind {
     PairWait = 19,
 }
 
-/// Whether a kind's body is encrypted.
+/// A kind's level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protection {
     /// Always encrypted.
     Encrypted,
     /// Always integrity only.
     IntegrityOnly,
-    /// Set by the part's, stream's or lease's `security`: the sender picks,
-    /// the receiver checks it against the key's ([`Opened::encrypted`]).
+    /// The key's [`Security`]: the part's, stream's or lease's level.
     Configured,
+}
+
+/// The level of a key's configured kinds (`Key.security`, §8.5): `sign`
+/// (integrity only) or `seal` (encrypted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Security {
+    /// Integrity only.
+    Sign,
+    /// Encrypted.
+    Seal,
 }
 
 impl Kind {
@@ -123,10 +140,9 @@ impl Kind {
         self as u8
     }
 
-    /// Whether this kind is always encrypted, never, or configured: kinds
-    /// under `k_up`/`k_down` (1–6, 10, 15) and pairing (16–19) always are,
-    /// e-stop signals (13) never, and 7, 8, 9, 11, 12 and 14 follow their
-    /// `security`.
+    /// The kind's level: kinds under `k_up`/`k_down` (1–6, 10, 15) and
+    /// pairing (16–19) are always encrypted, e-stop signals (13) never, and
+    /// 7, 8, 9, 11, 12 and 14 follow their key's [`Security`].
     pub fn protection(self) -> Protection {
         use Kind::*;
         match self {
@@ -137,6 +153,15 @@ impl Kind {
             EstopSignal => Protection::IntegrityOnly,
             ActionChunk | Sample | Applied | LockstepRequest | LockstepReply
             | HostSessionStream => Protection::Configured,
+        }
+    }
+
+    /// Whether this kind is encrypted under a key of `security`.
+    pub fn encrypted(self, security: Security) -> bool {
+        match self.protection() {
+            Protection::Encrypted => true,
+            Protection::IntegrityOnly => false,
+            Protection::Configured => security == Security::Seal,
         }
     }
 
@@ -156,11 +181,25 @@ impl KindSet {
     /// Every kind.
     pub const ALL: Self = Self(((1 << KINDS) - 1) << 1);
     /// The pairing kinds, 16–19.
-    pub const PAIRING: Self = Self(0b1111 << 16);
+    pub const PAIRING: Self = Self::of_const(&[16, 17, 18, 19]);
 
     /// Exactly these kinds.
     pub fn of(kinds: &[Kind]) -> Self {
         Self(kinds.iter().fold(0, |set, k| set | 1 << k.as_u8()))
+    }
+
+    /// Exactly the kinds with these bytes (bytes that name no kind are
+    /// ignored).
+    pub const fn of_const(kinds: &[u8]) -> Self {
+        let mut set = 0u32;
+        let mut i = 0;
+        while i < kinds.len() {
+            if kinds[i] >= 1 && kinds[i] as usize <= KINDS {
+                set |= 1 << kinds[i];
+            }
+            i += 1;
+        }
+        Self(set)
     }
 
     /// Whether `kind` is in the set.
@@ -199,7 +238,7 @@ impl Header {
     ///
     /// # Errors
     /// [`OpenError`] for a short message, a version other than 1, an unknown
-    /// flag bit or kind, or a protection the kind forbids.
+    /// flag bit or kind, or a flag a fixed-level kind forbids.
     pub fn parse(msg: &[u8]) -> Result<Self, OpenError> {
         if msg.len() < OVERHEAD {
             return Err(OpenError::Truncated);
@@ -212,7 +251,12 @@ impl Header {
         }
         let kind = Kind::from_u8(msg[2]).ok_or(OpenError::UnknownKind(msg[2]))?;
         let encrypted = msg[1] & FLAG_ENCRYPTED != 0;
-        if !protection_allows(kind, encrypted) {
+        let fixed = match kind.protection() {
+            Protection::Encrypted => Some(true),
+            Protection::IntegrityOnly => Some(false),
+            Protection::Configured => None,
+        };
+        if fixed.is_some_and(|want| want != encrypted) {
             return Err(OpenError::Protection(kind));
         }
         let key_id = u32::from_le_bytes([msg[3], msg[4], msg[5], msg[6]]);
@@ -227,14 +271,6 @@ impl Header {
     }
 }
 
-fn protection_allows(kind: Kind, encrypted: bool) -> bool {
-    match kind.protection() {
-        Protection::Encrypted => encrypted,
-        Protection::IntegrityOnly => !encrypted,
-        Protection::Configured => true,
-    }
-}
-
 /// The nonce of (kind, seq): `kind` ‖ 3 zero bytes ‖ `seq` (u64 LE).
 pub fn nonce(kind: Kind, seq: u64) -> [u8; 12] {
     let mut out = [0u8; 12];
@@ -243,9 +279,11 @@ pub fn nonce(kind: Kind, seq: u64) -> [u8; 12] {
     out
 }
 
-/// AADs up to this size are built on the stack; larger ones (a long key
-/// expression, or a long integrity-only body) take one allocation.
-const INLINE_AAD: usize = 256;
+/// AADs up to this size are built on the stack. A larger one (a key
+/// expression over about 240 bytes, or an integrity-only body that with
+/// the header and key expression passes 256 bytes) is built in one heap
+/// allocation per seal or open.
+pub const INLINE_AAD: usize = 256;
 
 /// Build the AAD (`header ‖ lp(keyexpr) [‖ body]`) and hand it to `f`.
 fn with_aad<R>(
@@ -280,10 +318,6 @@ pub enum SealError {
     /// The kind is not one this key carries.
     #[error("kind {0:?} is not carried by this key")]
     WrongKind(Kind),
-    /// The kind forbids this protection (an always-encrypted kind sent in
-    /// clear, or an encrypted e-stop signal).
-    #[error("kind {0:?} forbids this protection")]
-    Protection(Kind),
     /// Every `seq` of this (key, kind) is used: the key must be replaced.
     #[error("the seq counter of kind {0:?} is exhausted")]
     SeqExhausted(Kind),
@@ -307,8 +341,9 @@ pub enum OpenError {
     /// The kind byte names no kind.
     #[error("unknown kind {0}")]
     UnknownKind(u8),
-    /// The kind forbids this protection.
-    #[error("kind {0:?} forbids this protection")]
+    /// The encrypted flag doesn't match the kind's level (or, for a
+    /// configured kind, the key's security).
+    #[error("kind {0:?} at the wrong protection")]
     Protection(Kind),
     /// The kind is not one this key carries.
     #[error("kind {0:?} is not carried by this key")]
@@ -335,6 +370,7 @@ pub struct SealSender {
     aead: ChaCha20Poly1305,
     key_id: u32,
     kinds: KindSet,
+    security: Security,
     /// The next `seq` per kind; 0 once `u64::MAX` is used.
     next: [u64; KINDS],
 }
@@ -348,12 +384,14 @@ impl core::fmt::Debug for SealSender {
 }
 
 impl SealSender {
-    /// A sender under `key` (id `key_id`) for `kinds`.
-    pub fn new(key_id: u32, key: &Key, kinds: KindSet) -> Self {
+    /// The sender under `key` (id `key_id`) for `kinds`, at `security` for
+    /// the configured kinds. Takes the key: one sender per key.
+    pub fn new(key_id: u32, key: Key, kinds: KindSet, security: Security) -> Self {
         Self {
             aead: ChaCha20Poly1305::new(key.as_bytes().into()),
             key_id,
             kinds,
+            security,
             next: [1; KINDS],
         }
     }
@@ -363,19 +401,14 @@ impl SealSender {
         self.key_id
     }
 
-    /// Seal `body` as the next message of `kind` on `keyexpr`.
+    /// Seal `body` as the next message of `kind` on `keyexpr`, encrypted
+    /// as the kind and the key's security say.
     ///
     /// # Errors
     /// [`SealError`]; the counter is unchanged then.
-    pub fn seal(
-        &mut self,
-        kind: Kind,
-        encrypted: bool,
-        keyexpr: &str,
-        body: &[u8],
-    ) -> Result<Vec<u8>, SealError> {
+    pub fn seal(&mut self, kind: Kind, keyexpr: &str, body: &[u8]) -> Result<Vec<u8>, SealError> {
         let mut out = Vec::with_capacity(OVERHEAD + body.len());
-        self.seal_to(kind, encrypted, keyexpr, body, &mut out)?;
+        self.seal_to(kind, keyexpr, body, &mut out)?;
         Ok(out)
     }
 
@@ -387,7 +420,6 @@ impl SealSender {
     pub fn seal_to(
         &mut self,
         kind: Kind,
-        encrypted: bool,
         keyexpr: &str,
         body: &[u8],
         out: &mut Vec<u8>,
@@ -395,13 +427,11 @@ impl SealSender {
         if !self.kinds.contains(kind) {
             return Err(SealError::WrongKind(kind));
         }
-        if !protection_allows(kind, encrypted) {
-            return Err(SealError::Protection(kind));
-        }
         let seq = self.next[kind.index()];
         if seq == 0 {
             return Err(SealError::SeqExhausted(kind));
         }
+        let encrypted = kind.encrypted(self.security);
         let header = Header {
             encrypted,
             kind,
@@ -449,8 +479,7 @@ impl SealSender {
 /// An opened message: its header and its body (decrypted in place).
 #[derive(Debug, PartialEq, Eq)]
 pub struct Opened<'m> {
-    /// The header. `encrypted` tells the receiver the protection actually
-    /// used, to check against the key's `security`.
+    /// The header.
     pub header: Header,
     /// The body.
     pub body: &'m [u8],
@@ -468,6 +497,7 @@ pub struct SealReceiver {
     aead: ChaCha20Poly1305,
     key_id: u32,
     kinds: KindSet,
+    security: Security,
     windows: [ReplayWindow; KINDS],
 }
 
@@ -480,12 +510,14 @@ impl core::fmt::Debug for SealReceiver {
 }
 
 impl SealReceiver {
-    /// A receiver of `key` (id `key_id`) for `kinds`.
-    pub fn new(key_id: u32, key: &Key, kinds: KindSet) -> Self {
+    /// A receiver of `key` (id `key_id`) for `kinds`, expecting `security`
+    /// for the configured kinds.
+    pub fn new(key_id: u32, key: Key, kinds: KindSet, security: Security) -> Self {
         Self {
             aead: ChaCha20Poly1305::new(key.as_bytes().into()),
             key_id,
             kinds,
+            security,
             windows: [ReplayWindow::new(); KINDS],
         }
     }
@@ -495,9 +527,10 @@ impl SealReceiver {
         self.key_id
     }
 
-    /// Open `msg`, received on `keyexpr`, in place: check the header, the
-    /// replay window and the tag, decrypt, then record the `seq`. The body
-    /// borrows `msg`. Allocates only for an AAD over 256 bytes.
+    /// Open `msg`, received on `keyexpr`, in place: check the header and
+    /// its protection, the replay window and the tag, decrypt, then record
+    /// the `seq`. The body borrows `msg`. Allocates only when the AAD is
+    /// over [`INLINE_AAD`] bytes.
     ///
     /// # Errors
     /// [`OpenError`]; the window is unchanged then. `msg` may hold
@@ -509,6 +542,9 @@ impl SealReceiver {
         }
         if !self.kinds.contains(header.kind) {
             return Err(OpenError::WrongKind(header.kind));
+        }
+        if header.encrypted != header.kind.encrypted(self.security) {
+            return Err(OpenError::Protection(header.kind));
         }
         let window = &mut self.windows[header.kind.index()];
         window.check(header.seq)?;
@@ -544,23 +580,22 @@ mod tests {
 
     const KEYEXPR: &str = "rlmesh/v2/acme/s/demo/p/arm/ctl";
 
-    fn pair(kinds: KindSet) -> (SealSender, SealReceiver) {
-        let key = Key::from_bytes([7; 32]);
+    fn pair(security: Security) -> (SealSender, SealReceiver) {
         (
-            SealSender::new(42, &key, kinds),
-            SealReceiver::new(42, &key, kinds),
+            SealSender::new(42, Key::from_bytes([7; 32]), KindSet::ALL, security),
+            SealReceiver::new(42, Key::from_bytes([7; 32]), KindSet::ALL, security),
         )
     }
 
     #[test]
-    fn round_trips_in_both_modes() {
-        let (mut tx, mut rx) = pair(KindSet::ALL);
-        let mut msg = tx.seal(Kind::CtlRequest, true, KEYEXPR, b"attach").unwrap();
+    fn round_trips_at_each_level() {
+        let (mut tx, mut rx) = pair(Security::Sign);
+        let mut msg = tx.seal(Kind::CtlRequest, KEYEXPR, b"attach").unwrap();
         assert_eq!(msg.len(), OVERHEAD + 6);
         assert_ne!(
             &msg[HEADER_LEN..HEADER_LEN + 6],
             b"attach",
-            "encrypted on the wire"
+            "always encrypted"
         );
         let opened = rx.open(KEYEXPR, &mut msg).unwrap();
         assert_eq!(opened.body, b"attach");
@@ -574,29 +609,40 @@ mod tests {
             }
         );
 
-        let mut msg = tx.seal(Kind::EstopSignal, false, KEYEXPR, b"stop").unwrap();
+        let mut msg = tx.seal(Kind::EstopSignal, KEYEXPR, b"stop").unwrap();
         assert_eq!(&msg[HEADER_LEN..HEADER_LEN + 4], b"stop", "in clear");
         let opened = rx.open(KEYEXPR, &mut msg).unwrap();
         assert_eq!(opened.body, b"stop");
         assert!(!opened.encrypted());
         assert_eq!(opened.header.seq, 1, "one counter per kind");
 
-        // An empty body, and a body that doesn't fit the inline AAD.
+        // A configured kind follows the key: sign here, seal below. An empty
+        // body, and a body that doesn't fit the inline AAD.
         for body in [&[][..], &[5u8; 1000][..]] {
-            for encrypted in [false, true] {
-                let mut msg = tx.seal(Kind::Sample, encrypted, KEYEXPR, body).unwrap();
-                assert_eq!(rx.open(KEYEXPR, &mut msg).unwrap().body, body);
-            }
+            let mut msg = tx.seal(Kind::Sample, KEYEXPR, body).unwrap();
+            assert!(!Header::parse(&msg).unwrap().encrypted);
+            assert_eq!(rx.open(KEYEXPR, &mut msg).unwrap().body, body);
         }
+        let (mut tx, mut rx) = pair(Security::Seal);
+        for body in [&[][..], &[5u8; 1000][..]] {
+            let mut msg = tx.seal(Kind::Sample, KEYEXPR, body).unwrap();
+            assert!(Header::parse(&msg).unwrap().encrypted);
+            assert_eq!(rx.open(KEYEXPR, &mut msg).unwrap().body, body);
+        }
+        let mut msg = tx.seal(Kind::EstopSignal, KEYEXPR, b"stop").unwrap();
+        assert!(
+            !rx.open(KEYEXPR, &mut msg).unwrap().encrypted(),
+            "13 stays integrity only"
+        );
     }
 
     #[test]
     fn counters_are_dense_per_kind() {
-        let (mut tx, _) = pair(KindSet::ALL);
+        let (mut tx, _) = pair(Security::Sign);
         let seqs: Vec<u64> = [Kind::Sample, Kind::Sample, Kind::Applied, Kind::Sample]
             .into_iter()
             .map(|k| {
-                Header::parse(&tx.seal(k, false, KEYEXPR, b"").unwrap())
+                Header::parse(&tx.seal(k, KEYEXPR, b"").unwrap())
                     .unwrap()
                     .seq
             })
@@ -606,8 +652,8 @@ mod tests {
 
     #[test]
     fn rejects_bad_headers() {
-        let (mut tx, mut rx) = pair(KindSet::ALL);
-        let good = tx.seal(Kind::Sample, true, KEYEXPR, b"x").unwrap();
+        let (mut tx, mut rx) = pair(Security::Seal);
+        let good = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
 
         let mut msg = good.clone();
         msg[0] = 2;
@@ -634,62 +680,101 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_protection_the_kind_forbids() {
-        let (mut tx, mut rx) = pair(KindSet::ALL);
-        assert_eq!(
-            tx.seal(Kind::CtlRequest, false, KEYEXPR, b"x"),
-            Err(SealError::Protection(Kind::CtlRequest))
-        );
-        assert_eq!(
-            tx.seal(Kind::EstopSignal, true, KEYEXPR, b"x"),
-            Err(SealError::Protection(Kind::EstopSignal))
-        );
-        // A downgraded flag on the wire is refused before the tag.
-        let mut msg = tx.seal(Kind::KeyDelivery, true, KEYEXPR, b"x").unwrap();
+    fn rejects_a_flag_that_does_not_match_the_kinds_level() {
+        let (mut tx, mut rx) = pair(Security::Seal);
+        // A downgraded always-encrypted kind is refused before the tag.
+        let mut msg = tx.seal(Kind::KeyDelivery, KEYEXPR, b"x").unwrap();
         msg[1] = 0;
         assert_eq!(
             rx.open(KEYEXPR, &mut msg),
             Err(OpenError::Protection(Kind::KeyDelivery))
         );
+        // And an "encrypted" e-stop signal.
+        let mut msg = tx.seal(Kind::EstopSignal, KEYEXPR, b"x").unwrap();
+        msg[1] = FLAG_ENCRYPTED;
+        assert_eq!(
+            rx.open(KEYEXPR, &mut msg),
+            Err(OpenError::Protection(Kind::EstopSignal))
+        );
+    }
+
+    #[test]
+    fn rejects_a_configured_kind_at_the_wrong_security() {
+        // A sender holding the key at `sign` while receivers expect `seal`
+        // (or a flag flipped on the wire): never lowered silently.
+        let key = || Key::from_bytes([7; 32]);
+        let mut sign = SealSender::new(1, key(), KindSet::ALL, Security::Sign);
+        let mut seal = SealSender::new(1, key(), KindSet::ALL, Security::Seal);
+        let mut want_seal = SealReceiver::new(1, key(), KindSet::ALL, Security::Seal);
+        let mut want_sign = SealReceiver::new(1, key(), KindSet::ALL, Security::Sign);
+        for kind in [
+            Kind::ActionChunk,
+            Kind::Sample,
+            Kind::Applied,
+            Kind::LockstepRequest,
+            Kind::LockstepReply,
+            Kind::HostSessionStream,
+        ] {
+            let mut clear = sign.seal(kind, KEYEXPR, b"x").unwrap();
+            assert_eq!(
+                want_seal.open(KEYEXPR, &mut clear),
+                Err(OpenError::Protection(kind))
+            );
+            let mut sealed = seal.seal(kind, KEYEXPR, b"x").unwrap();
+            assert_eq!(
+                want_sign.open(KEYEXPR, &mut sealed),
+                Err(OpenError::Protection(kind))
+            );
+        }
     }
 
     #[test]
     fn rejects_a_kind_outside_the_keys_scope() {
-        let key = Key::from_bytes([7; 32]);
-        let mut tx = SealSender::new(1, &key, KindSet::PAIRING);
+        let key = || Key::from_bytes([7; 32]);
+        let mut tx = SealSender::new(1, key(), KindSet::PAIRING, Security::Seal);
         assert_eq!(
-            tx.seal(Kind::CtlRequest, true, KEYEXPR, b"x"),
+            tx.seal(Kind::CtlRequest, KEYEXPR, b"x"),
             Err(SealError::WrongKind(Kind::CtlRequest))
         );
-        let mut any = SealSender::new(1, &key, KindSet::ALL);
-        let mut rx = SealReceiver::new(1, &key, KindSet::of(&[Kind::Sample, Kind::Applied]));
-        let mut msg = any.seal(Kind::ActionChunk, false, KEYEXPR, b"x").unwrap();
+        let mut any = SealSender::new(1, key(), KindSet::ALL, Security::Sign);
+        let mut rx = SealReceiver::new(
+            1,
+            key(),
+            KindSet::of(&[Kind::Sample, Kind::Applied]),
+            Security::Sign,
+        );
+        let mut msg = any.seal(Kind::ActionChunk, KEYEXPR, b"x").unwrap();
         assert_eq!(
             rx.open(KEYEXPR, &mut msg),
             Err(OpenError::WrongKind(Kind::ActionChunk))
         );
-        let mut msg = any.seal(Kind::Applied, false, KEYEXPR, b"x").unwrap();
+        let mut msg = any.seal(Kind::Applied, KEYEXPR, b"x").unwrap();
         assert!(rx.open(KEYEXPR, &mut msg).is_ok());
+        assert_eq!(
+            KindSet::of_const(&[8, 9]),
+            KindSet::of(&[Kind::Sample, Kind::Applied])
+        );
+        assert_eq!(KindSet::of_const(&[0, 20, 8]), KindSet::of(&[Kind::Sample]));
     }
 
     #[test]
     fn rejects_the_wrong_key() {
-        let mut tx = SealSender::new(42, &Key::from_bytes([7; 32]), KindSet::ALL);
-        let mut rx = SealReceiver::new(42, &Key::from_bytes([8; 32]), KindSet::ALL);
-        for encrypted in [false, true] {
-            let mut msg = tx.seal(Kind::Sample, encrypted, KEYEXPR, b"x").unwrap();
+        for security in [Security::Sign, Security::Seal] {
+            let mut tx = SealSender::new(42, Key::from_bytes([7; 32]), KindSet::ALL, security);
+            let mut rx = SealReceiver::new(42, Key::from_bytes([8; 32]), KindSet::ALL, security);
+            let mut msg = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
             assert_eq!(rx.open(KEYEXPR, &mut msg), Err(OpenError::Auth));
+            let mut other = SealReceiver::new(43, Key::from_bytes([7; 32]), KindSet::ALL, security);
+            let mut msg = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
+            assert_eq!(other.open(KEYEXPR, &mut msg), Err(OpenError::WrongKey(42)));
         }
-        let mut other = SealReceiver::new(43, &Key::from_bytes([7; 32]), KindSet::ALL);
-        let mut msg = tx.seal(Kind::Sample, true, KEYEXPR, b"x").unwrap();
-        assert_eq!(other.open(KEYEXPR, &mut msg), Err(OpenError::WrongKey(42)));
     }
 
     #[test]
     fn rejects_the_wrong_key_expression() {
-        let (mut tx, mut rx) = pair(KindSet::ALL);
-        for encrypted in [false, true] {
-            let msg = tx.seal(Kind::Sample, encrypted, KEYEXPR, b"x").unwrap();
+        for security in [Security::Sign, Security::Seal] {
+            let (mut tx, mut rx) = pair(security);
+            let msg = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
             for other in [
                 "rlmesh/v2/acme/s/demo/p/arm/ctX",
                 "",
@@ -708,13 +793,13 @@ mod tests {
 
     #[test]
     fn rejects_any_tampered_byte() {
-        let (mut tx, mut rx) = pair(KindSet::ALL);
-        for (kind, encrypted) in [
-            (Kind::Sample, false),
-            (Kind::Sample, true),
-            (Kind::CtlReply, true),
+        for (kind, security) in [
+            (Kind::Sample, Security::Sign),
+            (Kind::Sample, Security::Seal),
+            (Kind::CtlReply, Security::Sign),
         ] {
-            let msg = tx.seal(kind, encrypted, KEYEXPR, b"body!").unwrap();
+            let (mut tx, mut rx) = pair(security);
+            let msg = tx.seal(kind, KEYEXPR, b"body!").unwrap();
             // The seq, the body and the tag reach the tag check (0x10 keeps
             // seq 1 a fresh seq rather than 0).
             for at in 7..msg.len() {
@@ -726,15 +811,16 @@ mod tests {
                     "byte {at}"
                 );
             }
-            // So does another valid kind or flag: both are in the nonce or AAD.
+            // So does another kind at the same level: the kind is in the
+            // nonce and the AAD.
             let mut bad = msg.clone();
-            bad[2] = Kind::Applied.as_u8();
-            assert_eq!(rx.open(KEYEXPR, &mut bad), Err(OpenError::Auth));
-            if kind == Kind::Sample {
-                let mut bad = msg.clone();
-                bad[1] ^= FLAG_ENCRYPTED;
-                assert_eq!(rx.open(KEYEXPR, &mut bad), Err(OpenError::Auth));
+            bad[2] = if kind == Kind::Sample {
+                Kind::Applied
+            } else {
+                Kind::KeyDelivery
             }
+            .as_u8();
+            assert_eq!(rx.open(KEYEXPR, &mut bad), Err(OpenError::Auth));
             // A changed key_id names another key.
             let mut bad = msg.clone();
             bad[3] ^= 1;
@@ -745,9 +831,9 @@ mod tests {
 
     #[test]
     fn rejects_replays() {
-        let (mut tx, mut rx) = pair(KindSet::ALL);
+        let (mut tx, mut rx) = pair(Security::Sign);
         let msgs: Vec<Vec<u8>> = (0..70)
-            .map(|_| tx.seal(Kind::Sample, false, KEYEXPR, b"s").unwrap())
+            .map(|_| tx.seal(Kind::Sample, KEYEXPR, b"s").unwrap())
             .collect();
         // Out of order inside the window: fine once each.
         assert!(rx.open(KEYEXPR, &mut msgs[3].clone()).is_ok());
@@ -764,50 +850,47 @@ mod tests {
             Err(Replayed(5).into())
         );
         // Windows are per kind: another kind's seq 1 is new.
-        let mut applied = tx.seal(Kind::Applied, false, KEYEXPR, b"a").unwrap();
+        let mut applied = tx.seal(Kind::Applied, KEYEXPR, b"a").unwrap();
         assert!(rx.open(KEYEXPR, &mut applied).is_ok());
     }
 
     #[test]
     fn a_forgery_does_not_move_the_window() {
-        let (mut tx, mut rx) = pair(KindSet::ALL);
-        let mut far = tx.seal(Kind::Sample, false, KEYEXPR, b"x").unwrap();
+        let (mut tx, mut rx) = pair(Security::Sign);
+        let mut far = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
         far[7..15].copy_from_slice(&1000u64.to_le_bytes());
         assert_eq!(rx.open(KEYEXPR, &mut far), Err(OpenError::Auth));
-        let mut next = tx.seal(Kind::Sample, false, KEYEXPR, b"y").unwrap();
+        let mut next = tx.seal(Kind::Sample, KEYEXPR, b"y").unwrap();
         assert!(rx.open(KEYEXPR, &mut next).is_ok());
     }
 
     #[test]
     fn seq_exhaustion_stops_the_flow() {
-        let (mut tx, mut rx) = pair(KindSet::ALL);
+        let (mut tx, mut rx) = pair(Security::Sign);
         tx.set_next(Kind::Sample, u64::MAX);
-        let mut last = tx.seal(Kind::Sample, false, KEYEXPR, b"x").unwrap();
+        let mut last = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
         assert_eq!(Header::parse(&last).unwrap().seq, u64::MAX);
         assert!(rx.open(KEYEXPR, &mut last).is_ok());
         assert_eq!(
-            tx.seal(Kind::Sample, false, KEYEXPR, b"x"),
+            tx.seal(Kind::Sample, KEYEXPR, b"x"),
             Err(SealError::SeqExhausted(Kind::Sample))
         );
         let mut out = vec![9];
-        assert!(
-            tx.seal_to(Kind::Sample, false, KEYEXPR, b"x", &mut out)
-                .is_err()
-        );
+        assert!(tx.seal_to(Kind::Sample, KEYEXPR, b"x", &mut out).is_err());
         assert_eq!(out, [9], "unchanged on error");
         // Other kinds keep going.
-        assert!(tx.seal(Kind::Applied, false, KEYEXPR, b"x").is_ok());
+        assert!(tx.seal(Kind::Applied, KEYEXPR, b"x").is_ok());
     }
 
     #[test]
     fn rejects_a_key_expression_over_lp_max() {
-        let (mut tx, mut rx) = pair(KindSet::ALL);
+        let (mut tx, mut rx) = pair(Security::Seal);
         let long = "k".repeat(super::super::lp::LP_MAX + 1);
         assert_eq!(
-            tx.seal(Kind::Sample, true, &long, b"x"),
+            tx.seal(Kind::Sample, &long, b"x"),
             Err(SealError::KeyExprTooLong)
         );
-        let mut msg = tx.seal(Kind::Sample, true, KEYEXPR, b"x").unwrap();
+        let mut msg = tx.seal(Kind::Sample, KEYEXPR, b"x").unwrap();
         assert_eq!(rx.open(&long, &mut msg), Err(OpenError::KeyExprTooLong));
         // The failed seal used no seq.
         assert_eq!(Header::parse(&msg).unwrap().seq, 1);

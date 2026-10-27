@@ -1,6 +1,5 @@
-//! Length-prefixed bytes and the keyed hash (§8.1).
-
-use blake2::digest::{KeyInit, Mac};
+//! Length-prefixed bytes (§8.1). (`kdf` lands with the host wiring that
+//! uses it: the embedded `local` key and the loopback password.)
 
 use crate::prelude::*;
 
@@ -42,22 +41,6 @@ pub fn push_lp(out: &mut Vec<u8>, x: &[u8]) -> Result<(), LpTooLong> {
     Ok(())
 }
 
-/// `kdf(key, label, fields…)` = BLAKE2s-256 keyed with `key`, over
-/// `lp(label) ‖ fields`.
-///
-/// # Errors
-/// [`LpTooLong`] if `label` is over 65,535 bytes.
-pub fn kdf(key: &[u8; 32], label: &[u8], fields: &[&[u8]]) -> Result<[u8; 32], LpTooLong> {
-    let prefix = lp_prefix(label)?;
-    let mut mac = <blake2::Blake2sMac256 as KeyInit>::new(key.into());
-    Mac::update(&mut mac, &prefix);
-    Mac::update(&mut mac, label);
-    for field in fields {
-        Mac::update(&mut mac, field);
-    }
-    Ok(mac.finalize().into_bytes().into())
-}
-
 /// BLAKE2s-256 (unkeyed) over `lp(label) ‖ fields`: the pairing commitment
 /// and SAS (§3).
 pub(crate) fn hash_labelled(label: &[u8], fields: &[&[u8]]) -> Result<[u8; 32], LpTooLong> {
@@ -93,16 +76,5 @@ mod tests {
         let mut out = vec![1];
         assert_eq!(push_lp(&mut out, &over), Err(LpTooLong));
         assert_eq!(out, [1], "never truncates or writes a partial field");
-        assert_eq!(kdf(&[0; 32], &over, &[]), Err(LpTooLong));
-    }
-
-    #[test]
-    fn kdf_is_keyed_blake2s_over_the_labelled_fields() {
-        let key = [9u8; 32];
-        let a = kdf(&key, b"label", &[b"x", b"y"]).unwrap();
-        // Fields are concatenated: the split doesn't matter, the key does.
-        assert_eq!(a, kdf(&key, b"label", &[b"xy"]).unwrap());
-        assert_ne!(a, kdf(&[8u8; 32], b"label", &[b"xy"]).unwrap());
-        assert_ne!(a, kdf(&key, b"labelx", &[b"y"]).unwrap());
     }
 }

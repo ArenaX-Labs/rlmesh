@@ -126,7 +126,8 @@ pub enum SignedError {
     /// The signature doesn't verify.
     #[error("bad signature")]
     BadSignature,
-    /// The host signing key is not a valid Ed25519 public key.
+    /// The host signing key is not a valid Ed25519 public key, or is a
+    /// weak (small-order) one.
     #[error("invalid host signing key")]
     BadKey,
 }
@@ -220,9 +221,13 @@ impl SignedReceiver {
     /// A receiver of `host_instance`'s broadcasts, signed by `host_sign_key`.
     ///
     /// # Errors
-    /// [`SignedError::BadKey`] if the key is not a valid Ed25519 point.
+    /// [`SignedError::BadKey`] if the key is not a valid Ed25519 point or
+    /// is weak (small-order).
     pub fn new(host_sign_key: &[u8; 32], host_instance: u64) -> Result<Self, SignedError> {
         let key = VerifyingKey::from_bytes(host_sign_key).map_err(|_| SignedError::BadKey)?;
+        if key.is_weak() {
+            return Err(SignedError::BadKey);
+        }
         Ok(Self {
             key,
             host_instance,
@@ -389,6 +394,30 @@ mod tests {
         assert_eq!(
             rx.verify(STATE, &msg[..msg.len() - 1]),
             Err(SignedError::Truncated)
+        );
+    }
+
+    #[test]
+    fn rejects_a_weak_or_invalid_host_key() {
+        // The identity point (small-order) and a non-point.
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        assert_eq!(
+            SignedReceiver::new(&identity, 1).unwrap_err(),
+            SignedError::BadKey
+        );
+        // About half of all encodings decompress to no point: find one.
+        let bad = (2u8..=255)
+            .map(|y| {
+                let mut b = [0u8; 32];
+                b[0] = y;
+                b
+            })
+            .find(|b| VerifyingKey::from_bytes(b).is_err())
+            .unwrap();
+        assert_eq!(
+            SignedReceiver::new(&bad, 1).unwrap_err(),
+            SignedError::BadKey
         );
     }
 

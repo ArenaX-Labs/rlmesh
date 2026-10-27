@@ -3,10 +3,10 @@
 //! msg 2 carries the `HandshakeAccept` bytes. `k_up` and `k_down` are the
 //! raw split: the first half is initiator → responder (`k_up`).
 
-use zeroize::Zeroize;
-
 use super::lp::{LpTooLong, push_lp};
-use super::{Key, Rng, StaticKeypair, noise};
+use super::noise::{self, Ephemeral};
+use super::sealed::{KindSet, SealReceiver, SealSender, Security};
+use super::{Key, Rng, StaticKeypair};
 use crate::prelude::*;
 
 /// The Noise protocol name.
@@ -38,7 +38,7 @@ pub fn prologue(
     Ok(out)
 }
 
-/// Why a handshake (IK or pairing XX) failed. Every failure ends it.
+/// Why a handshake (IK or pairing XX) failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HandshakeError {
     /// The caller's RNG failed.
@@ -48,6 +48,10 @@ pub enum HandshakeError {
     /// static key, or changed bytes.
     #[error("the handshake message failed to authenticate")]
     Rejected,
+    /// A key exchange gave the all-zero result: the other side sent a
+    /// low-order (non-contributory) static or ephemeral key.
+    #[error("a low-order key in the handshake")]
+    LowOrder,
     /// A message of the wrong length.
     #[error("malformed handshake message")]
     Malformed,
@@ -62,28 +66,55 @@ pub enum HandshakeError {
     Internal,
 }
 
-/// What a completed IK handshake gives both sides.
+/// What a completed IK handshake gives both sides: `k_up`, `k_down` and
+/// `h`. The keys leave only as one side's sender and receiver, so each has
+/// exactly one sender.
 #[derive(Debug)]
 pub struct IkKeys {
-    /// Participant → host.
-    pub k_up: Key,
-    /// Host → participant.
-    pub k_down: Key,
+    up: Key,
+    down: Key,
+    handshake_hash: [u8; 32],
+}
+
+impl IkKeys {
+    /// The kinds the participant sends under `k_up`: ctl requests,
+    /// heartbeats, participant reports and history queries.
+    pub const UP: KindSet = KindSet::of_const(&[1, 3, 5, 15]);
+    /// The kinds the host sends under `k_down`: ctl replies, heartbeat
+    /// echoes, key deliveries and history pages.
+    pub const DOWN: KindSet = KindSet::of_const(&[2, 4, 6, 10]);
+
     /// The handshake hash `h`.
-    pub handshake_hash: [u8; 32],
+    pub fn handshake_hash(&self) -> &[u8; 32] {
+        &self.handshake_hash
+    }
+
+    /// The participant's side: a sender under `k_up` and a receiver under
+    /// `k_down`, with the ids from `HandshakeAccept`.
+    pub fn into_participant(self, up_key_id: u32, down_key_id: u32) -> (SealSender, SealReceiver) {
+        (
+            SealSender::new(up_key_id, self.up, Self::UP, Security::Seal),
+            SealReceiver::new(down_key_id, self.down, Self::DOWN, Security::Seal),
+        )
+    }
+
+    /// The host's side: a sender under `k_down` and a receiver under `k_up`.
+    pub fn into_host(self, up_key_id: u32, down_key_id: u32) -> (SealSender, SealReceiver) {
+        (
+            SealSender::new(down_key_id, self.down, Self::DOWN, Security::Seal),
+            SealReceiver::new(up_key_id, self.up, Self::UP, Security::Seal),
+        )
+    }
 }
 
 fn split(hs: &mut snow::HandshakeState) -> Result<IkKeys, HandshakeError> {
     let handshake_hash = noise::hash(hs)?;
-    let (mut up, mut down) = hs.dangerously_get_raw_split();
-    let keys = IkKeys {
-        k_up: Key::from_bytes(up),
-        k_down: Key::from_bytes(down),
+    let (up, down) = noise::split(hs);
+    Ok(IkKeys {
+        up,
+        down,
         handshake_hash,
-    };
-    up.zeroize();
-    down.zeroize();
-    Ok(keys)
+    })
 }
 
 /// The participant's side, after sending msg 1.
@@ -109,7 +140,8 @@ impl IkInitiator {
         host_static: &[u8; 32],
         prologue: &[u8],
     ) -> Result<(Self, Vec<u8>), HandshakeError> {
-        let mut hs = noise::builder(PATTERN, rng)?
+        let ephemeral = Ephemeral::draw(rng)?;
+        let mut hs = noise::builder(PATTERN, &ephemeral)?
             .local_private_key(local.private())
             .and_then(|b| b.remote_public_key(host_static))
             .and_then(|b| b.prologue(prologue))
@@ -120,6 +152,10 @@ impl IkInitiator {
     }
 
     /// Read msg 2: the `HandshakeAccept` bytes and the keys.
+    ///
+    /// Consumes the state: a forged or corrupted msg 2 ends this attempt,
+    /// and the participant starts a new handshake (§8.3 doesn't ask for
+    /// more; the host's reply is a single query reply).
     ///
     /// # Errors
     /// [`HandshakeError`].
@@ -148,7 +184,8 @@ impl core::fmt::Debug for IkResponder {
 impl IkResponder {
     /// Read msg 1 under `prologue` (built from the request's participant
     /// name and the host's own tenant, session and instance). `rng` gives
-    /// msg 2's ephemeral key.
+    /// msg 2's ephemeral key. A low-order static or ephemeral key is
+    /// refused ([`HandshakeError::LowOrder`]).
     ///
     /// # Errors
     /// [`HandshakeError`]; `UnexpectedPayload` if msg 1 has a payload.
@@ -158,14 +195,13 @@ impl IkResponder {
         prologue: &[u8],
         msg1: &[u8],
     ) -> Result<Self, HandshakeError> {
-        let mut hs = noise::builder(PATTERN, rng)?
+        let ephemeral = Ephemeral::draw(rng)?;
+        let mut hs = noise::builder(PATTERN, &ephemeral)?
             .local_private_key(local.private())
             .and_then(|b| b.prologue(prologue))
             .and_then(|b| b.build_responder())
             .map_err(|_| HandshakeError::Internal)?;
-        if !noise::read(&mut hs, msg1)?.is_empty() {
-            return Err(HandshakeError::UnexpectedPayload);
-        }
+        noise::read_empty(&mut hs, msg1)?;
         let initiator_static = noise::remote_static(&hs)?;
         Ok(Self {
             hs,
@@ -192,6 +228,7 @@ impl IkResponder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::sealed::Kind;
     use crate::crypto::test_rng::{Broken, TestRng};
 
     fn keys() -> (StaticKeypair, StaticKeypair) {
@@ -218,28 +255,34 @@ mod tests {
     }
 
     #[test]
-    fn completes_and_both_sides_agree() {
+    fn completes_and_both_sides_talk() {
         let (participant, host) = keys();
-        let (init, msg1) = IkInitiator::start(
-            &mut TestRng::new(1),
-            &participant,
-            host.public(),
-            &prologue_for("arm"),
-        )
-        .unwrap();
+        let p = prologue_for("arm");
+        let (init, msg1) =
+            IkInitiator::start(&mut TestRng::new(1), &participant, host.public(), &p).unwrap();
         assert_eq!(msg1.len(), MSG1_LEN);
-        let resp =
-            IkResponder::read_request(&mut TestRng::new(2), &host, &prologue_for("arm"), &msg1)
-                .unwrap();
+        let resp = IkResponder::read_request(&mut TestRng::new(2), &host, &p, &msg1).unwrap();
         assert_eq!(resp.initiator_static(), participant.public());
         let (msg2, host_keys) = resp.accept(b"accept").unwrap();
         assert_eq!(msg2.len(), MSG2_OVERHEAD + 6);
         let (accept, keys) = init.finish(&msg2).unwrap();
         assert_eq!(accept, b"accept");
-        assert_eq!(keys.k_up, host_keys.k_up);
-        assert_eq!(keys.k_down, host_keys.k_down);
-        assert_ne!(keys.k_up, keys.k_down);
-        assert_eq!(keys.handshake_hash, host_keys.handshake_hash);
+        assert_eq!(keys.handshake_hash(), host_keys.handshake_hash());
+        assert!(keys.up.ct_eq(&host_keys.up) && keys.down.ct_eq(&host_keys.down));
+        assert!(!keys.up.ct_eq(&keys.down));
+
+        let (mut p_tx, mut p_rx) = keys.into_participant(10, 11);
+        let (mut h_tx, mut h_rx) = host_keys.into_host(10, 11);
+        let ctl = "rlmesh/v2/acme/s/demo/ctl";
+        let mut up = p_tx.seal(Kind::CtlRequest, ctl, b"attach").unwrap();
+        assert_eq!(h_rx.open(ctl, &mut up).unwrap().body, b"attach");
+        let mut down = h_tx.seal(Kind::CtlReply, ctl, b"ok").unwrap();
+        assert_eq!(p_rx.open(ctl, &mut down).unwrap().body, b"ok");
+        // Each direction carries only its own kinds.
+        assert!(p_tx.seal(Kind::CtlReply, ctl, b"").is_err());
+        assert!(h_tx.seal(Kind::CtlRequest, ctl, b"").is_err());
+        assert!(p_tx.seal(Kind::Heartbeat, ctl, b"").is_ok());
+        assert!(h_tx.seal(Kind::HeartbeatEcho, ctl, b"").is_ok());
     }
 
     #[test]
@@ -287,6 +330,41 @@ mod tests {
     }
 
     #[test]
+    fn a_low_order_participant_static_is_refused() {
+        use crate::crypto::noise::low_order;
+        let (_, host) = keys();
+        let p = prologue_for("arm");
+        let mut attacker = low_order::builder(PATTERN, [4; 32])
+            .local_private_key(&low_order::MARKER)
+            .and_then(|b| b.remote_public_key(host.public()))
+            .and_then(|b| b.prologue(&p))
+            .and_then(|b| b.build_initiator())
+            .unwrap();
+        let msg1 = noise::write(&mut attacker, &[], MSG1_LEN).unwrap();
+        assert_eq!(
+            &msg1[..32],
+            &crate::crypto::StaticKeypair::from_private([4; 32]).public()[..]
+        );
+        assert_eq!(
+            IkResponder::read_request(&mut TestRng::new(2), &host, &p, &msg1).unwrap_err(),
+            HandshakeError::LowOrder
+        );
+    }
+
+    #[test]
+    fn a_low_order_ephemeral_is_refused() {
+        let (participant, host) = keys();
+        let p = prologue_for("arm");
+        let (_, mut msg1) =
+            IkInitiator::start(&mut TestRng::new(1), &participant, host.public(), &p).unwrap();
+        msg1[..32].fill(0);
+        assert_eq!(
+            IkResponder::read_request(&mut TestRng::new(2), &host, &p, &msg1).unwrap_err(),
+            HandshakeError::LowOrder
+        );
+    }
+
+    #[test]
     fn tampered_messages_fail() {
         let (participant, host) = keys();
         let p = prologue_for("arm");
@@ -312,7 +390,8 @@ mod tests {
     fn rejects_a_payload_in_msg1() {
         let (participant, host) = keys();
         let p = prologue_for("arm");
-        let mut hs = noise::builder(PATTERN, &mut TestRng::new(1))
+        let ephemeral = Ephemeral::draw(&mut TestRng::new(1)).unwrap();
+        let mut hs = noise::builder(PATTERN, &ephemeral)
             .unwrap()
             .local_private_key(participant.private())
             .and_then(|b| b.remote_public_key(host.public()))

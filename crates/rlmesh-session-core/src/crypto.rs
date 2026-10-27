@@ -4,7 +4,7 @@
 //! crate: randomness comes from the caller ([`Rng`]), and nothing here knows
 //! about Zenoh, protobuf or a clock. Payloads are opaque bytes.
 //!
-//! - [`mod@lp`]: `lp` and `kdf` (§8.1).
+//! - [`mod@lp`]: `lp` (§8.1).
 //! - [`sealed`]: the `Sealed` envelope (§8.2), with a sender's per-kind `seq`
 //!   counters and a receiver's replay windows ([`replay`]).
 //! - [`signed`]: the host's `Signed` broadcasts (§8.7).
@@ -24,10 +24,10 @@ pub mod sealed;
 pub mod signed;
 
 pub use handshake::{HandshakeError, IkInitiator, IkKeys, IkResponder};
-pub use lp::{LpTooLong, kdf, lp};
+pub use lp::{LpTooLong, lp};
 pub use pairing::{PairLink, PairingError, Sas};
 pub use replay::ReplayWindow;
-pub use sealed::{Kind, KindSet, OpenError, Opened, SealError, SealReceiver, SealSender};
+pub use sealed::{Kind, KindSet, OpenError, Opened, SealError, SealReceiver, SealSender, Security};
 pub use signed::{SignError, SignedError, SignedKind, SignedReceiver, SignedSender};
 
 /// A source of cryptographic randomness, implemented by the caller: the OS
@@ -45,8 +45,11 @@ pub trait Rng {
 #[error("the random number generator failed")]
 pub struct RngError;
 
-/// A 32-byte symmetric key (a `Sealed` key, a raw-split half), wiped on drop.
-#[derive(Clone, PartialEq, Eq)]
+/// A 32-byte symmetric key (a `Sealed` key, a raw-split half), wiped on
+/// drop. Not `Clone`: a key goes into exactly one [`SealSender`] (or
+/// [`SealReceiver`]) by value, so one process can't run two `seq` counters
+/// from 1 under the same key and reuse a nonce. Bytes leave only through
+/// [`as_bytes`](Self::as_bytes), for the host's key delivery.
 pub struct Key([u8; 32]);
 
 impl Key {
@@ -55,9 +58,14 @@ impl Key {
         Self(bytes)
     }
 
-    /// The key's bytes.
+    /// The key's bytes, to deliver it (§8.5).
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    /// Whether two keys are equal, in constant time.
+    pub fn ct_eq(&self, other: &Self) -> bool {
+        subtle::ConstantTimeEq::ct_eq(&self.0[..], &other.0[..]).into()
     }
 }
 
