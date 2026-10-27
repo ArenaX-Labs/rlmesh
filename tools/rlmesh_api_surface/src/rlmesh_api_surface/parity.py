@@ -936,8 +936,10 @@ def check(
                         language == "rust"
                         and (
                             target.startswith("rlmesh::binding::")
+                            or target.startswith("rlmesh::serve_options::BatchOptions")
                             or target
                             in {
+                                "rlmesh::BatchOptions",
                                 "rlmesh::Error::Attached",
                                 "rlmesh::RunHooks::artifacts",
                                 "rlmesh::RunHooks::transform_action",

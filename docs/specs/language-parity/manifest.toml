@@ -20388,6 +20388,16 @@ cpp = [
 
 [binding]
 rust = [
+  { path = "rlmesh::BatchOptions", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::Clone", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::Debug", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::Default", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::batch_byte_budget", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::batch_records", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::batch_window_ms", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::max_batch_size", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::max_in_flight_batches", rule = "R-25" },
   { path = "rlmesh::Error::Attached", rule = "R-12" },
   { path = "rlmesh::RunHooks::artifacts", rule = "R-25" },
   { path = "rlmesh::RunHooks::transform_action", rule = "R-25" },

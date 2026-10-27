@@ -198,6 +198,9 @@
       "stability": "Experimental",
       "description": "KeyboardInterrupt raised by Model.run on Ctrl-C, carrying the RunResult of the episodes that completed."
     },
+    "rlmesh.BatchOptions": {
+      "stability": "Experimental"
+    },
     "rlmesh.EvalReport": {
       "stability": "Experimental",
       "description": "Per-task, per-suite and overall success with Wilson 95% intervals and merged telemetry of saved result bundles; native counterparts deferred."

@@ -37,6 +37,9 @@ is Experimental. Rust reaches it as `rlmesh::binding::report` (binding
 plumbing, semver-exempt) and the CLI as `rlmesh eval report`; C and C++ are
 deferred.
 
+`BatchOptions` (a served model's batcher) and the `RunHooks`
+`transform_observation` and `transform_action` hooks are Experimental.
+
 `Model.run_routes` (many env targets against one model in one process) and
 `RunResult.merge` are Experimental. Rust reaches them as
 `rlmesh::binding::routes` (binding plumbing, semver-exempt); C and C++ are

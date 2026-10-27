@@ -111,8 +111,9 @@ impl ServeOptions {
     }
 }
 
-/// How a session-served model coalesces the predicts it receives, from every
-/// session it answers in, into one handler call (one fused forward for a
+/// Experimental (Python's `BatchOptions`). How a session-served model
+/// coalesces the predicts it receives, from every session it answers in, into
+/// one handler call (one fused forward for a
 /// model that fuses). The model still runs one forward at a time: batching
 /// raises fill, not concurrency.
 ///

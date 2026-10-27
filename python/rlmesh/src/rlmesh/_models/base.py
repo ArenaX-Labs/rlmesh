@@ -482,7 +482,7 @@ _ = atexit.register(_close_serving_models)
 class BatchOptions:
     """How a served model coalesces predicts from every session it answers in.
 
-    Requests that arrive close together go to the model as one grouped predict,
+    Experimental. Requests that arrive close together go to the model as one grouped predict,
     one fused forward for a model that fuses. The model still runs one forward
     at a time: batching raises fill, not concurrency. A batch closes at
     ``max_batch_size`` groups (one route's rows each) or ``batch_byte_budget``

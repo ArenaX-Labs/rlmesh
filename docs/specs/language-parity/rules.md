@@ -1463,7 +1463,10 @@ spans (Spaces SPC-31); an engine-specific bridge belongs to its integration
   Experimental `RunHooks` pair to the run, and `RunHooks::artifacts` with
   `RecorderCaptureOptions::record`, which carry Python's Experimental
   `Recorder.record` artifact tree; C, C++ and C# have no counterpart in
-  v0.2. The ABI
+  v0.2. Python's `BatchOptions` is Experimental too: Rust's
+  `BatchOptions` (`ModelServeOptions::batching`) is recorded under
+  `binding`, semver-exempt, and its `rlmesh:BatchOptions` rows stay only to
+  pin the defaults the two share (`parity_defaults`). The ABI
   identification items `RLMESH_ABI_VERSION`, `rlmesh_abi_version` and
   `rlmesh_abi_check` keep their names, because a consumer must call them
   against any ABI generation.

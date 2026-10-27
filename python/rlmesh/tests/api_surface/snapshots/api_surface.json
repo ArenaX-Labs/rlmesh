@@ -88,7 +88,7 @@
           }
         },
         "signature": "BatchOptions(max_batch_size: int = 32, batch_window_ms: int = 5, batch_byte_budget: int = 256 * 1024 * 1024 - 4 * 1024, max_in_flight_batches: int = 2, batch_records: str | os.PathLike[str] | None = None)",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "Binding": {
         "kind": "class",
