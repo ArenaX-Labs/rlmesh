@@ -13,8 +13,9 @@ from rlmesh import _eval_run
 from rlmesh._models._eval import EpisodeResult
 
 
-def test_eval_run_keeps_at_most_max_envs_containers_alive(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("cut", [False, True])
+def test_eval_run_waves_of_max_envs_keep_finished_bundles_past_a_failure_and_ctrl_c(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: bool
 ) -> None:
     live, peak, waves = [0], [0], [0]
 
@@ -32,9 +33,16 @@ def test_eval_run_keeps_at_most_max_envs_containers_alive(
             episode = EpisodeResult(
                 0, None, 5, 1.0, terminated=True, truncated=False, success=True
             )
-            results = [rlmesh.RunResult((episode,)) for _ in routes]
-            # Ctrl-C caught as the second wave's last route finished.
-            return results, KeyboardInterrupt() if waves[0] == 2 else None
+            results: list[Any] = [rlmesh.RunResult((episode,)) for _ in routes]
+            if waves[0] == 1:
+                results[1] = ValueError("the env broke")
+                return results, None
+            # Ctrl-C in the second wave: it cut the last route short, or was
+            # caught as that route finished.
+            interrupt = KeyboardInterrupt()
+            if cut:
+                results[1] = interrupt
+            return results, interrupt
 
     class Model:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -105,8 +113,18 @@ def test_eval_run_keeps_at_most_max_envs_containers_alive(
     with pytest.raises(KeyboardInterrupt):
         _eval_run.main()
     assert peak[0] == 2 and live[0] == 0
-    # The interrupted wave's finished workloads are kept; the third never starts.
+    # Finished workloads keep their bundles, a failed or cut one fails alone,
+    # and the wave after the interrupt never starts.
     assert waves[0] == 2
-    lines = [json.loads(line) for line in status.read_text().splitlines()]
-    assert [line["status"] for line in lines] == ["done"] * 4
-    assert all((tmp_path / "workloads" / f"w{i}").is_dir() for i in range(4))
+    verdicts = {
+        line["workload"]: (line["status"], line.get("error"))
+        for line in map(json.loads, status.read_text().splitlines())
+    }
+    assert verdicts == {
+        "w0": ("done", None),
+        "w1": ("failed", "ValueError: the env broke"),
+        "w2": ("done", None),
+        "w3": ("failed", "interrupted") if cut else ("done", None),
+    }
+    bundles = {p.name for p in (tmp_path / "workloads").iterdir()}
+    assert bundles == ({"w0", "w2"} if cut else {"w0", "w2", "w3"})
