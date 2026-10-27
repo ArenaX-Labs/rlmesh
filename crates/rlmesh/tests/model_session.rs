@@ -964,7 +964,7 @@ fn held(handler: &Held) -> Arc<ModelService<Held>> {
     let service = batched(
         handler.clone(),
         rlmesh::BatchOptions {
-            batch_window_ms: 0,
+            batch_window_ms: 200,
             ..Default::default()
         },
     );
@@ -982,7 +982,10 @@ async fn a_close_waits_for_accepted_work_however_its_request_ends_and_closes_onc
     #[derive(Debug, Clone, Copy, PartialEq)]
     enum Ends {
         Answered,
+        /// Cancelled once its forward started.
         Cancelled,
+        /// Cancelled while its batch still assembles.
+        TimedOut,
         Panicked,
     }
     for (fuses, ends, want) in [
@@ -992,6 +995,7 @@ async fn a_close_waits_for_accepted_work_however_its_request_ends_and_closes_onc
         (false, Ends::Cancelled, &["start", "on_close"]),
         // Its batch forwards on: the close waits for that.
         (true, Ends::Cancelled, &["start", "end", "on_close"]),
+        (true, Ends::TimedOut, &["start", "end", "on_close"]),
         (false, Ends::Panicked, &["on_close"]),
         (true, Ends::Panicked, &["on_close"]),
     ] {
@@ -1001,18 +1005,18 @@ async fn a_close_waits_for_accepted_work_however_its_request_ends_and_closes_onc
         service.answer(resolve("a", 1)).await;
         let observation = if ends == Ends::Panicked { -1.0 } else { 1.0 };
         let started = handler.started.notified();
-        let accepted = tokio::spawn({
+        let accept = || {
             let service = Arc::clone(&service);
-            async move {
+            tokio::spawn(async move {
                 service
                     .answer(ModelRequest::Predict(vec![group("a", &[observation])]))
                     .await
                     .0
-            }
-        });
+            })
+        };
         let answered = match ends {
             Ends::Panicked => {
-                let reply = accepted.await;
+                let reply = accept().await;
                 // Unbatched, the panic is the request's own.
                 assert!(
                     reply.is_err()
@@ -1022,17 +1026,26 @@ async fn a_close_waits_for_accepted_work_however_its_request_ends_and_closes_onc
                 None
             }
             Ends::Cancelled => {
+                let accepted = accept();
                 started.await;
                 accepted.abort();
                 assert!(accepted.await.unwrap_err().is_cancelled(), "{case}");
                 None
             }
+            Ends::TimedOut => {
+                // b never predicts, so a's batch waits its window.
+                service.answer(resolve("b", 1)).await;
+                let predict = service.answer(ModelRequest::Predict(vec![group("a", &[1.0])]));
+                assert!(tokio::time::timeout(Duration::ZERO, predict).await.is_err());
+                None
+            }
             Ends::Answered => {
+                let accepted = accept();
                 started.await;
                 Some(accepted)
             }
         };
-        if answered.is_some() || (ends == Ends::Cancelled && fuses) {
+        if answered.is_some() || (ends != Ends::Panicked && fuses) {
             // The work is still running: the close waits for it, up to its
             // deadline, and refuses anything new meanwhile.
             let early = service.close(Duration::from_millis(100)).await;
