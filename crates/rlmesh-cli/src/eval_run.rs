@@ -5,8 +5,9 @@
 //! describe envelope (its `dev.rlmesh.describe` label, else `python -m
 //! rlmesh._describe` run in the image). `python -m rlmesh._eval_run` then
 //! runs the workloads in sandboxes and writes their bundles, and the report
-//! is read back from them. `<out>/index.json` holds the request, the plan and
-//! each workload's status.
+//! is read back from them. `<out>/index.json` holds the request, the plan,
+//! the id of every image it runs and each workload's status; `--resume`
+//! continues only a run of the same request, plan and images.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -36,6 +37,7 @@ pub(crate) fn eval_run(
     let request = EvalRequest::parse(&document)?;
     let images = resolve_images(&request, args.catalog.as_deref(), stderr)?;
     let plan = plan::compile(&request, &images)?;
+    let ids = image_ids(&images)?;
     for warning in &plan.warnings {
         writeln!(stderr, "warning: {warning}")?;
     }
@@ -61,9 +63,9 @@ pub(crate) fn eval_run(
         }
         let previous: Value = serde_json::from_str(&std::fs::read_to_string(&index_path)?)
             .with_context(|| format!("reading {}", index_path.display()))?;
-        if previous["request"] != document {
+        if let Some(changed) = changed_since(&previous, &document, &plan, &ids)? {
             bail!(
-                "{} holds a run of another request; --resume continues the same one",
+                "{} holds a run of {changed}; --resume continues the same one",
                 args.out.display()
             );
         }
@@ -87,7 +89,7 @@ pub(crate) fn eval_run(
         .map(|w| w.id.as_str())
         .filter(|id| !status.contains_key(*id))
         .collect();
-    write_index(&index_path, &document, &plan, &status)?;
+    write_index(&index_path, &document, &plan, &ids, &status)?;
     if !pending.is_empty() {
         writeln!(
             stderr,
@@ -103,7 +105,7 @@ pub(crate) fn eval_run(
             || json!({"status": "failed", "error": "the runner exited without a verdict"}),
         );
     }
-    write_index(&index_path, &document, &plan, &status)?;
+    write_index(&index_path, &document, &plan, &ids, &status)?;
 
     let done: Vec<PathBuf> = plan
         .workloads
@@ -135,6 +137,47 @@ pub(crate) fn eval_run(
     Ok(i32::from(!failed.is_empty()))
 }
 
+/// What differs between the run in `previous` (an index) and this one, or
+/// `None` when this run continues it: a retagged image or a recompiled plan
+/// would mix two runs in one report.
+fn changed_since(
+    previous: &Value,
+    request: &Value,
+    plan: &Plan,
+    ids: &BTreeMap<String, String>,
+) -> Result<Option<&'static str>> {
+    Ok(if previous["request"] != *request {
+        Some("another request")
+    } else if previous["images"] != serde_json::to_value(ids)? {
+        Some("other images (one was rebuilt or retagged since)")
+    } else if previous["plan"] != serde_json::to_value(plan)? {
+        Some("another plan")
+    } else {
+        None
+    })
+}
+
+/// Each image's id (its config digest), by reference.
+fn image_ids(images: &Images) -> Result<BTreeMap<String, String>> {
+    let mut ids = BTreeMap::new();
+    for entry in images.models.values().chain(images.envs.values()) {
+        if ids.contains_key(&entry.image) {
+            continue;
+        }
+        let output = Command::new("docker")
+            .args(["image", "inspect", "--format", "{{.Id}}", &entry.image])
+            .stdin(Stdio::null())
+            .output()
+            .context("running docker image inspect")?;
+        if !output.status.success() {
+            bail!("docker image inspect {} failed", entry.image);
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        ids.insert(entry.image.clone(), id);
+    }
+    Ok(ids)
+}
+
 fn bundle_dir(out: &Path, workload: &Workload) -> PathBuf {
     out.join("workloads").join(&workload.id)
 }
@@ -164,6 +207,7 @@ fn write_index(
     path: &Path,
     request: &Value,
     plan: &Plan,
+    ids: &BTreeMap<String, String>,
     status: &BTreeMap<String, Value>,
 ) -> Result<()> {
     let workloads: Vec<Value> = plan
@@ -185,6 +229,7 @@ fn write_index(
         "schema": INDEX_SCHEMA,
         "request": request,
         "plan": plan,
+        "images": ids,
         "workloads": workloads,
     });
     let partial = path.with_extension("json.partial");
@@ -401,6 +446,34 @@ mod tests {
             seed_slot_offset: 4,
             trial_index_base: None,
             max_episode_steps: None,
+        }
+    }
+
+    #[test]
+    fn resume_continues_only_the_same_request_plan_and_images() {
+        let request = json!({"models": [{"model": "m"}]});
+        let plan = Plan {
+            models: Vec::new(),
+            workloads: vec![workload(3)],
+            execution_horizon: None,
+            prefetch_lead: None,
+            warnings: Vec::new(),
+        };
+        let ids: BTreeMap<String, String> =
+            [("m:latest".to_string(), "sha256:a".to_string())].into();
+        let index = json!({"request": request, "plan": plan, "images": ids});
+        let mut retagged = ids.clone();
+        retagged.insert("m:latest".into(), "sha256:b".into());
+        let mut replanned = plan.clone();
+        replanned.workloads[0].episodes = 4;
+        for (name, request, plan, ids, changed) in [
+            ("same", &request, &plan, &ids, false),
+            ("request", &json!({}), &plan, &ids, true),
+            ("retagged", &request, &plan, &retagged, true),
+            ("replanned", &request, &replanned, &ids, true),
+        ] {
+            let got = changed_since(&index, request, plan, ids).unwrap();
+            assert_eq!(got.is_some(), changed, "{name}: {got:?}");
         }
     }
 

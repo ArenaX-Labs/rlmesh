@@ -277,7 +277,7 @@ pub struct EvalRunArgs {
     #[arg(long, default_value = "rlmesh-eval")]
     pub out: std::path::PathBuf,
     /// Continue the run in `--out`: skip the workloads whose bundles already
-    /// hold their episodes.
+    /// hold their episodes. Refused when the plan or an image changed.
     #[arg(long)]
     pub resume: bool,
     /// Print the report as JSON.
