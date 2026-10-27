@@ -627,6 +627,9 @@ fn check_unit(
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
+
     use super::{index_outputs, plan_action};
     use crate::spec::role::bind::{Projections, Result};
     use crate::spec::role::input::{Actuator, CustomArms};

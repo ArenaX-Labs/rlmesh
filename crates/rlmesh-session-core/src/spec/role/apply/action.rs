@@ -113,6 +113,9 @@ impl ActionPlan {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
+
     use core::f64;
 
     use crate::spec::role::plan::{ActionPlan, ActionSegment};

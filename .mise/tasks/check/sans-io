@@ -26,6 +26,8 @@ for crate in "${crates[@]}"; do
   cargo clippy -q -p "$crate" --target wasm32-unknown-unknown -- -D warnings -D clippy::disallowed_methods
   echo "==> $crate builds without std for $bare"
   cargo clippy -q -p "$crate" --no-default-features --target "$bare" -- -D warnings -D clippy::disallowed_methods
+  # Its tests too, on the host (a bare target has no test harness).
+  cargo clippy -q -p "$crate" --no-default-features --all-targets -- -D warnings -D clippy::disallowed_methods
   echo "==> $crate: dependency deny-list (normal deps, wasm target)"
   found=$(cargo tree -q -p "$crate" -e normal --target wasm32-unknown-unknown --prefix none |
     awk '{print $1}' | sort -u | grep -E "$deny" || true)

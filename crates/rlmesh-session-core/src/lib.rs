@@ -37,7 +37,10 @@ extern crate std;
 /// What `std`'s prelude gives every module, from `alloc` so the crate builds
 /// without `std`.
 mod prelude {
+    // Unused where `std` is still in the graph (a host target through
+    // `uuid`, or a test harness): its inherent methods win over the trait's.
     #[cfg(not(feature = "std"))]
+    #[allow(unused_imports)]
     pub(crate) use crate::float::F64Ext;
     pub(crate) use alloc::borrow::ToOwned;
     pub(crate) use alloc::boxed::Box;
@@ -72,6 +75,7 @@ pub(crate) mod math {
 /// The exact `f64` methods `core` lacks (correctly rounded, so `libm` and
 /// `std` agree), for builds without `std`.
 #[cfg(not(feature = "std"))]
+#[allow(dead_code)]
 mod float {
     pub(crate) trait F64Ext: Sized {
         fn floor(self) -> Self;

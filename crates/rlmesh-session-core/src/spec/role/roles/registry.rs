@@ -155,6 +155,9 @@ pub fn is_sanctioned_role(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
+
     use super::{DimLaw, KINDS, check_role, is_known_role, kindless_hint, role_def};
 
     /// The raw-quantity law as data: every registered role, each a quantity a

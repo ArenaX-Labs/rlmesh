@@ -685,6 +685,9 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
 
 #[cfg(test)]
 mod geometry_rule_tests {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
+
     use super::check_geometry;
     use crate::spec::role::frames::{Attr, FrameRef};
     use crate::spec::role::{Advisory, Error, ErrorCode, Severity};

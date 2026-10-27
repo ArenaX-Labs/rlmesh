@@ -555,6 +555,9 @@ fn upscale_remedy(crop: Option<&CropPlan>) -> String {
 
 #[cfg(test)]
 mod image_resolve_tests {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
+
     use alloc::collections::BTreeMap;
 
     use super::plan_image;

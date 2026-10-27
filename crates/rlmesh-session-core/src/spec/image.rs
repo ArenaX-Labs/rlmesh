@@ -620,7 +620,10 @@ mod tests {
         }
         let first = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
         let again = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
+        // Without `std` there is no cache: the weights are rebuilt per call.
+        #[cfg(feature = "std")]
         assert!(Rc::ptr_eq(&first, &again), "the second call rebuilt them");
+        assert_eq!(first, again);
         assert_ne!(
             first.len(),
             axis_weights(Kernel::Lanczos3, Roi::full(256, 112)).len()
