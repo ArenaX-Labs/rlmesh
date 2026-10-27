@@ -93,5 +93,11 @@ mod tests {
         assert_eq!(started[0].0, "runtime-c");
         assert_eq!(started[0].1.env_index, 1);
         assert!(started[0].1.started_from_auto_reset);
+
+        // A lone slot keeps its lane, not its place in the call.
+        let (lone_ids, started) =
+            registry.ensure_for_slots(&[3], &["runtime-d".to_string()], true, &[]);
+        assert_eq!(lone_ids, ["ep-000004"]);
+        assert_eq!(started[0].1.env_index, 3);
     }
 }
