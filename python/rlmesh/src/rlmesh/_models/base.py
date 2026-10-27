@@ -1563,6 +1563,9 @@ class ModelBase(Generic[ObsT, ActT]):
         answers every route from one process and batches across them on its
         own side. A model running in this process drives one route at a time:
         serve it to share it.
+
+        Ctrl-C stops every route and raises ``KeyboardInterrupt`` once the
+        routes have wound down.
         """
         targets = list(envs)
         if episodes is not None and seeds is not None and len(seeds) != episodes:
@@ -1601,11 +1604,15 @@ class ModelBase(Generic[ObsT, ActT]):
                 )
             )
             first += count
-        return self._run_routes(
+        results = self._run_routes(
             routes,
             execution_horizon=execution_horizon,
             workflow_edition=workflow_edition,
         )
+        for result in results:
+            if isinstance(result, KeyboardInterrupt):
+                raise result
+        return cast("list[RunResult | Exception]", results)
 
     def _run_routes(
         self,
@@ -1613,13 +1620,15 @@ class ModelBase(Generic[ObsT, ActT]):
         *,
         execution_horizon: int | None = None,
         workflow_edition: str | None = None,
-    ) -> list[RunResult | Exception]:
+    ) -> list[RunResult | BaseException]:
         """:meth:`run_routes` with each route's own options.
 
         Each option dict holds ``episodes``, ``seeds``, ``base_seed``,
         ``seed_key``, ``max_episode_steps``, ``max_episode_seconds``,
         ``prefetch_lead``, ``trial_index_base`` and ``close_env`` for its env;
-        ``rlmesh eval run`` drives a plan's workloads through it.
+        ``rlmesh eval run`` drives a plan's workloads through it. On Ctrl-C a
+        route cut short holds the ``KeyboardInterrupt`` in its place rather
+        than raising it, so the caller can keep the routes that finished.
         """
         from ._eval import NativeRunContext
         from ._facade import EnvTarget, result_from_native
@@ -1646,7 +1655,7 @@ class ModelBase(Generic[ObsT, ActT]):
             self._trust_entrypoints, self._instruction, self._native_run = previous
         return [
             report
-            if isinstance(report, Exception)
+            if isinstance(report, BaseException)
             else result_from_native(cast("dict[str, Any]", report))
             for report in reports
         ]

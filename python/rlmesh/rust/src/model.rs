@@ -1244,17 +1244,20 @@ impl PyModel {
                 rlmesh::binding::routes::run_routes_prepared(prepared)
             })
         });
-        if let Some(err) = interrupted.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            return Err(err);
-        }
+        // Ctrl-C cancels every route: those it cut short hold the interrupt,
+        // so the caller keeps the ones that finished before raising it.
+        let interrupt = interrupted.lock().unwrap_or_else(|e| e.into_inner()).take();
         results
             .into_iter()
             .zip(errors)
-            .map(|(result, error)| match result {
-                Ok(result) => Ok(crate::facade::result_to_py(py, &result)?
+            .map(|(result, error)| match (result, &interrupt) {
+                (Ok(result), _) => Ok(crate::facade::result_to_py(py, &result)?
                     .into_any()
                     .unbind()),
-                Err(failure) => Ok(error
+                (Err(rlmesh::Error::Cancelled), Some(interrupt)) => {
+                    Ok(interrupt.clone_ref(py).into_value(py).into_any())
+                }
+                (Err(failure), _) => Ok(error
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take()

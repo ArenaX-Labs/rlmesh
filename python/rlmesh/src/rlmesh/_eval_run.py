@@ -82,7 +82,7 @@ def _run_model(
         )
 
     envs: list[tuple[dict[str, Any], Any]] = []
-    results: list[rlmesh.RunResult | Exception] = []
+    results: list[rlmesh.RunResult | BaseException] = []
     with rlmesh.SandboxModel(
         model["image"],
         runtime=runtime(model["gpu"]),
@@ -138,8 +138,14 @@ def _run_model(
                 # A killed env has nothing left to close.
                 with contextlib.suppress(Exception):
                     env.close()
+    interrupt = None
     for (workload, _), result in zip(envs, results, strict=True):
-        if isinstance(result, Exception):
+        if isinstance(result, KeyboardInterrupt):
+            # Ctrl-C cut it short; the workloads that finished are still recorded.
+            interrupt = result
+            report(workload, status="failed", error="interrupted")
+            continue
+        if isinstance(result, BaseException):
             report(
                 workload, status="failed", error=f"{type(result).__name__}: {result}"
             )
@@ -172,6 +178,8 @@ def _run_model(
             )
             recorder.export(out / "workloads" / workload["id"])
         report(workload, status="done", episodes=result.num_episodes)
+    if interrupt is not None:
+        raise interrupt
 
 
 if __name__ == "__main__":

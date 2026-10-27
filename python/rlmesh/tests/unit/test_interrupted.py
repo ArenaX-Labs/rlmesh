@@ -48,3 +48,41 @@ def test_ctrl_c_keeps_the_episodes_that_finished() -> None:
     done = caught.value.result.episodes
     assert 3 <= len(done) < 1000
     assert all(e.steps == 2 for e in done)
+
+
+def test_ctrl_c_in_run_routes_keeps_the_routes_that_finished() -> None:
+    class Interrupts(_TwoStepEnv):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def step(self, action: object) -> tuple[int, float, bool, bool, dict]:
+            self.calls += 1
+            if self.calls == 20:
+                _thread.interrupt_main()
+            if self.calls >= 20:
+                time.sleep(0.01)
+            return 0, 1.0, False, False, {}
+
+    interrupts = Interrupts()
+    servers = [
+        rlmesh.EnvServer(env, f":0/interrupted-{i}")
+        for i, env in enumerate([_TwoStepEnv(), interrupts])
+    ]
+    for server in servers:
+        server.start()
+    model = rlmesh.Model(rlmesh.RANDOM_SAMPLE)
+    try:
+        finished, cut = model._run_routes(  # pyright: ignore[reportPrivateUsage]
+            [(server, {"episodes": 1}) for server in servers]
+        )
+        interrupts.calls = 0
+        with pytest.raises(KeyboardInterrupt) as caught:
+            model.run_routes(servers[1:])
+    finally:
+        for server in servers:
+            server.shutdown()
+
+    assert isinstance(finished, rlmesh.RunResult) and finished.num_episodes == 1
+    assert type(cut) is KeyboardInterrupt
+    assert type(caught.value) is KeyboardInterrupt
