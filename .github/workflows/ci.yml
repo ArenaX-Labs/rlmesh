@@ -143,15 +143,18 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE: ${{ github.event.before }}
         run: |
-          if [ "$EVENT" = workflow_dispatch ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$EVENT" = workflow_dispatch ]; then printf 'run=true\nsansio=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
           base="${PR_BASE:-${PUSH_BASE:-origin/main}}"
           if [[ "$base" =~ ^0+$ ]]; then base="$(git rev-parse HEAD^)"; fi
-          paths='^(crates/rlmesh-(session(-core)?|tether)/|javascript/|examples/web/|scripts/check-wasm\.mjs$|Cargo\.(toml|lock)$|mise\.(toml|lock)$|clippy\.toml$|\.mise/tasks/(setup/js|build/js|check/sans-io|test/js/)|\.github/(workflows/ci\.yml|actions/setup/))'
-          if git diff --name-only "$base"...HEAD | grep -qE "$paths"; then run=true; else run=false; fi
-          echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+          paths='^(crates/rlmesh-session(-core)?/|javascript/|examples/web/|scripts/check-wasm\.mjs$|Cargo\.(toml|lock)$|mise\.(toml|lock)$|clippy\.toml$|\.mise/tasks/(setup/js|build/js|check/sans-io|test/js/)|\.github/(workflows/ci\.yml|actions/setup/))'
+          changed="$(git diff --name-only "$base"...HEAD)"
+          if grep -qE "$paths" <<<"$changed"; then run=true; else run=false; fi
+          # The tether crate needs only the sans-IO guard, not the browser build.
+          if [ "$run" = true ] || grep -qE '^crates/rlmesh-tether/' <<<"$changed"; then sansio=true; else sansio=false; fi
+          printf 'run=%s\nsansio=%s\n' "$run" "$sansio" | tee -a "$GITHUB_OUTPUT"
 
       - name: Setup toolchain
-        if: steps.changes.outputs.run == 'true'
+        if: steps.changes.outputs.sansio == 'true'
         uses: ./.github/actions/setup
         with:
           rust-components: "true"
@@ -159,15 +162,15 @@ jobs:
       # wasm-bindgen and wasm-opt (javascript/mise.toml, locked), the
       # wasm32-unknown-unknown target and the npm dev dependencies.
       - name: Browser toolchain
-        if: steps.changes.outputs.run == 'true'
+        if: steps.changes.outputs.sansio == 'true'
         run: mise run --skip-tools setup:js
 
       # rlmesh-session-core and rlmesh-tether build for wasm32-unknown-unknown
-      # and, without std, for riscv32imac-unknown-none-elf; clippy denies clock reads,
-      # threads and sleeps (its clippy.toml), and no IO crate is a normal
-      # dependency on the wasm target.
+      # and, without std, for riscv32imac-unknown-none-elf; clippy denies
+      # clock reads, threads and sleeps (their clippy.toml), and no IO crate
+      # is a normal dependency on the wasm target.
       - name: Sans-IO guard
-        if: steps.changes.outputs.run == 'true'
+        if: steps.changes.outputs.sansio == 'true'
         run: mise run --skip-tools check:sans-io
 
       # wasm-bindgen-test under Node (no browser): decode, receive rules,

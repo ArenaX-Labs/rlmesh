@@ -463,6 +463,9 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) -> Result<(), MsgError
             {
                 return Err(MsgError::Range);
             }
+            if core::str::from_utf8(h.name).is_err() {
+                return Err(MsgError::Utf8);
+            }
             no_reserved(h.flags, hello_flags::ALL)?;
             head[..4].copy_from_slice(&MAGIC);
             head[4] = VERSION;
@@ -919,7 +922,28 @@ mod tests {
             ),
             Err(MsgError::Range)
         );
-        assert!(!wrote && !wrote2, "nothing is written on an error");
+        let mut wrote3 = false;
+        let hello = Hello {
+            lib_version: 1,
+            arch: 0,
+            board_id: [0; 8],
+            boot: 0,
+            gen_: 0,
+            flags: 0,
+            map_len: 0,
+            map_crc: 0,
+            watchdog_ms: 250,
+            rx_max: 64,
+            name: &[0xFF],
+        };
+        assert_eq!(
+            write(&Msg::Hello(hello), 0, |_| wrote3 = true),
+            Err(MsgError::Utf8)
+        );
+        assert!(
+            !wrote && !wrote2 && !wrote3,
+            "nothing is written on an error"
+        );
     }
 
     fn frame(ty: u8, payload: &[u8]) -> Frame<'_> {

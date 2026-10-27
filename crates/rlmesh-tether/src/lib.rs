@@ -1,4 +1,4 @@
-//! The serial tether (draft spec `tether-spec.md`): a board without a
+//! The serial tether (spec `tether-spec.md`, frozen at v6): a board without a
 //! network speaks framed messages over a byte link to a computer, and the
 //! computer is the RLMesh robot for it.
 //!
