@@ -817,7 +817,7 @@ async fn one_requests_error_does_not_fail_the_others_in_its_batch() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_predict() {
+async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_predict_and_rejoin() {
     let binding = ModelBinding::bind(":0/echo").await.unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -833,8 +833,14 @@ async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_pr
     .unwrap();
     let session = target.address.to_string();
 
+    // Two spellings of one session.
     let invites = (0..4).map(|i| {
-        let (address, session) = (address.clone(), session.clone());
+        let address = address.clone();
+        let session = if i % 2 == 0 {
+            session.clone()
+        } else {
+            format!("rlmesh://{session}")
+        };
         tokio::spawn(async move {
             let id = format!("driver-{i}");
             ModelConnection::connect(&address, &id, Duration::from_secs(5))
@@ -863,54 +869,233 @@ async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_pr
     for driver in drivers {
         driver.close().await;
     }
+    // Invited again while it leaves: it joins once it has left.
+    let again = ModelConnection::connect(&address, "driver-again", Duration::from_secs(5))
+        .await
+        .unwrap()
+        .invite(&session, "driver-again", Duration::from_secs(5))
+        .await
+        .unwrap();
+    again.link.call(&resolve("a", 1), None).await.unwrap();
+    let (reply, _) = again
+        .link
+        .call(&ModelRequest::Predict(vec![group("a", &[1.0])]), None)
+        .await
+        .unwrap();
+    assert!(matches!(reply, ModelReply::Predicted(_)), "{reply:?}");
+    again.close().await;
     cancel.cancel();
     served.await.unwrap().unwrap();
     target.close().await.unwrap();
 }
 
-/// Logs its predicts and its close; each predict takes 200 ms.
-#[derive(Clone, Default)]
-struct Closing(Arc<std::sync::Mutex<Vec<&'static str>>>);
+/// Closes the service it serves in, from inside one of its own callbacks.
+type CloseFn = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = rlmesh::Result<()>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Logs its forwards and its close. A forward says it started and waits
+/// for the test to let it end, or panics on an observation of `-1`; it
+/// closes its service from inside when `close_in` names the callback.
+#[derive(Clone)]
+struct Held {
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    started: Arc<tokio::sync::Notify>,
+    go: Arc<tokio::sync::Semaphore>,
+    fuses: bool,
+    close_in: Option<&'static str>,
+    close: Arc<std::sync::OnceLock<CloseFn>>,
+}
+
+impl Held {
+    fn new(fuses: bool, close_in: Option<&'static str>) -> Self {
+        Self {
+            log: Arc::default(),
+            started: Arc::default(),
+            go: Arc::new(tokio::sync::Semaphore::new(0)),
+            fuses,
+            close_in,
+            close: Arc::default(),
+        }
+    }
+
+    fn log(&self) -> Vec<&'static str> {
+        self.log.lock().unwrap().clone()
+    }
+
+    async fn close_from(&self, callback: &str) {
+        if self.close_in == Some(callback) {
+            let refused = (self.close.get().unwrap())().await.is_err();
+            self.log
+                .lock()
+                .unwrap()
+                .push(if refused { "close refused" } else { "closed" });
+        }
+    }
+}
 
 #[rlmesh::binding::async_trait]
-impl ModelHandler for Closing {
+impl ModelHandler for Held {
     async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        self.0.lock().unwrap().push("predict");
-        observation.decoded_lanes()
+        let lanes = observation.decoded_lanes()?;
+        assert!(!lanes.contains(&value(-1.0)), "the handler panicked");
+        self.log.lock().unwrap().push("start");
+        self.started.notify_one();
+        self.close_from("predict").await;
+        self.go.acquire().await.unwrap().forget();
+        self.log.lock().unwrap().push("end");
+        Ok(lanes)
+    }
+
+    fn fuses_groups(&self) -> bool {
+        self.fuses
     }
 
     async fn on_close(&mut self) -> rlmesh::Result<()> {
-        self.0.lock().unwrap().push("on_close");
+        self.log.lock().unwrap().push("on_close");
+        self.close_from("on_close").await;
         Ok(())
     }
 }
 
+fn held(handler: &Held) -> Arc<ModelService<Held>> {
+    let service = batched(
+        handler.clone(),
+        rlmesh::BatchOptions {
+            batch_window_ms: 0,
+            ..Default::default()
+        },
+    );
+    let weak = Arc::downgrade(&service);
+    let close: CloseFn = Arc::new(move || {
+        let service = weak.upgrade().unwrap();
+        Box::pin(async move { service.close(Duration::from_secs(10)).await })
+    });
+    let _ = handler.close.set(close);
+    service
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn close_settles_accepted_predicts_and_refuses_later_ones() {
-    let handler = Closing::default();
-    let service = Arc::new(ModelService::new(handler.clone(), String::new()));
-    service.answer(resolve("a", 1)).await;
-    let predict = || {
-        let service = Arc::clone(&service);
-        tokio::spawn(async move {
-            service
+async fn a_close_waits_for_accepted_work_however_its_request_ends_and_closes_once() {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Ends {
+        Answered,
+        Cancelled,
+        Panicked,
+    }
+    for (fuses, ends, want) in [
+        (false, Ends::Answered, &["start", "end", "on_close"][..]),
+        (true, Ends::Answered, &["start", "end", "on_close"]),
+        // Its forward is dropped with it.
+        (false, Ends::Cancelled, &["start", "on_close"]),
+        // Its batch forwards on: the close waits for that.
+        (true, Ends::Cancelled, &["start", "end", "on_close"]),
+        (false, Ends::Panicked, &["on_close"]),
+        (true, Ends::Panicked, &["on_close"]),
+    ] {
+        let case = format!("fuses {fuses}, {ends:?}");
+        let handler = Held::new(fuses, None);
+        let service = held(&handler);
+        service.answer(resolve("a", 1)).await;
+        let observation = if ends == Ends::Panicked { -1.0 } else { 1.0 };
+        let started = handler.started.notified();
+        let accepted = tokio::spawn({
+            let service = Arc::clone(&service);
+            async move {
+                service
+                    .answer(ModelRequest::Predict(vec![group("a", &[observation])]))
+                    .await
+                    .0
+            }
+        });
+        let answered = match ends {
+            Ends::Panicked => {
+                let reply = accepted.await;
+                // Unbatched, the panic is the request's own.
+                assert!(
+                    reply.is_err()
+                        || matches!(reply, Ok(ModelReply::Predicted(ref o)) if o[0].is_err()),
+                    "{case}: {reply:?}"
+                );
+                None
+            }
+            Ends::Cancelled => {
+                started.await;
+                accepted.abort();
+                assert!(accepted.await.unwrap_err().is_cancelled(), "{case}");
+                None
+            }
+            Ends::Answered => {
+                started.await;
+                Some(accepted)
+            }
+        };
+        if answered.is_some() || (ends == Ends::Cancelled && fuses) {
+            // The work is still running: the close waits for it, up to its
+            // deadline, and refuses anything new meanwhile.
+            let early = service.close(Duration::from_millis(100)).await;
+            assert!(
+                matches!(early, Err(rlmesh::Error::Timeout(_))),
+                "{case}: {early:?}"
+            );
+            let (late, _) = service
                 .answer(ModelRequest::Predict(vec![group("a", &[1.0])]))
-                .await
-                .0
-        })
-    };
-    let accepted = predict();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let closed = {
-        let service = Arc::clone(&service);
-        tokio::spawn(async move { service.close().await })
-    };
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let late = predict().await.unwrap();
-    closed.await.unwrap().unwrap();
-    let accepted = accepted.await.unwrap();
-    assert!(matches!(accepted, ModelReply::Predicted(_)), "{accepted:?}");
-    assert!(matches!(late, ModelReply::Fault(_)), "{late:?}");
-    assert_eq!(*handler.0.lock().unwrap(), ["predict", "on_close"]);
+                .await;
+            assert!(matches!(late, ModelReply::Fault(_)), "{case}: {late:?}");
+            assert!(!handler.log().contains(&"on_close"), "{case}");
+            handler.go.add_permits(1);
+        }
+        let (first, second) = tokio::join!(
+            service.close(Duration::from_secs(10)),
+            service.close(Duration::from_secs(10))
+        );
+        first.unwrap();
+        second.unwrap();
+        service.close(Duration::from_secs(10)).await.unwrap();
+        assert_eq!(handler.log(), want, "{case}");
+        if let Some(answered) = answered {
+            let reply = answered.await.unwrap();
+            assert!(
+                matches!(reply, ModelReply::Predicted(ref o) if o[0].is_ok()),
+                "{case}: {reply:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_close_from_the_models_own_callback_is_refused_rather_than_waiting_on_itself() {
+    for (fuses, close_in, want) in [
+        (
+            false,
+            "predict",
+            &["start", "close refused", "end", "on_close"][..],
+        ),
+        (
+            true,
+            "predict",
+            &["start", "close refused", "end", "on_close"],
+        ),
+        (
+            false,
+            "on_close",
+            &["start", "end", "on_close", "close refused"],
+        ),
+    ] {
+        let handler = Held::new(fuses, Some(close_in));
+        handler.go.add_permits(1);
+        let service = held(&handler);
+        service.answer(resolve("a", 1)).await;
+        let (reply, _) = service
+            .answer(ModelRequest::Predict(vec![group("a", &[1.0])]))
+            .await;
+        assert!(
+            matches!(reply, ModelReply::Predicted(ref o) if o[0].is_ok()),
+            "{reply:?}"
+        );
+        service.close(Duration::from_secs(10)).await.unwrap();
+        assert_eq!(handler.log(), want, "fuses {fuses}, from {close_in}");
+    }
 }

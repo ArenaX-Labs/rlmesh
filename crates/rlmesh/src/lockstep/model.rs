@@ -24,6 +24,13 @@
 //! A model that fuses coalesces predicts from every session it answers in
 //! into one handler call ([`BatchOptions`]): a batch assembles while the
 //! forward before it runs and goes to the handler as that one ends.
+//!
+//! A served model serves, then closes once: the first
+//! [`ModelService::close`] refuses new requests and starts the one closer,
+//! which waits for every accepted request to land (each holds a flight
+//! until its work ends, however it ends; a forwarded predict's batch holds
+//! one until its forward does), then releases the routes and runs
+//! `on_close`. Every close waits for that closer, up to its deadline.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
@@ -39,12 +46,12 @@ use rlmesh_session::wire::codec::{
 use rlmesh_session::wire::timing::ns;
 use rlmesh_session::wire::{
     EndpointTiming, ModelFault, ModelGroup, ModelOutcome, ModelReply, ModelRequest, ModelResolve,
-    ModelResolved, ParticipantId, PriorityClass, Role,
+    ModelResolved, ParticipantId, PriorityClass, Role, SessionId, TenantId,
 };
 use rlmesh_session::{Participant, SessionError};
 use rlmesh_spaces::leaves::encode_leaf_slab;
 use rlmesh_spaces::{EnvContract, SpaceSpec};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zenoh::qos::{CongestionControl, Priority};
@@ -62,6 +69,12 @@ use crate::serve_options::BatchOptions;
 
 /// The selector parameter of a probe.
 const PROBE: &str = "probe";
+
+tokio::task_local! {
+    /// Set while one of the model's requests runs, or its `on_close`: a
+    /// close from there would wait on itself.
+    static ANSWERING: ();
+}
 
 /// A fault with `code`.
 fn fault(code: &str, message: impl Into<String>, recoverable: bool) -> ModelFault {
@@ -130,11 +143,11 @@ pub struct ModelService<H> {
     /// The workflow edition the model declares and every one it runs, shown
     /// in the roster of each session it answers in.
     editions: (String, Vec<String>),
-    in_flight: std::sync::atomic::AtomicU32,
-    /// Set by `close`: requests from then on are refused.
+    flights: Arc<Flights>,
+    /// Set by the first `close`: requests from then on are refused.
     closing: std::sync::atomic::AtomicBool,
-    /// Notified when the last request in flight settles.
-    idle: tokio::sync::Notify,
+    /// The closer's outcome, once it ends.
+    closed: watch::Sender<Option<Result<(), Error>>>,
     /// Whether the handler fuses a grouped predict, which batching needs.
     fuses: bool,
     batching: Option<Batching>,
@@ -150,9 +163,57 @@ struct Batching {
     serving: std::sync::OnceLock<(String, String)>,
 }
 
-/// A predict waiting in the batcher.
+/// The requests a model accepted and has not finished.
+#[derive(Default)]
+struct Flights {
+    count: std::sync::atomic::AtomicU32,
+    /// Notified when the last flight lands.
+    landed: tokio::sync::Notify,
+}
+
+/// One accepted request's hold on the model, landed when dropped: when its
+/// work ends, is cancelled or unwinds.
+struct Flight(Arc<Flights>);
+
+impl Flights {
+    /// A flight, and how many there are with it.
+    fn take(self: &Arc<Self>) -> (Flight, u32) {
+        let count = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        (Flight(Arc::clone(self)), count)
+    }
+
+    /// Waits until no flight is left.
+    async fn landed(&self) {
+        loop {
+            let landed = self.landed.notified();
+            tokio::pin!(landed);
+            landed.as_mut().enable();
+            if self.count.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                return;
+            }
+            landed.await;
+        }
+    }
+}
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        if self
+            .0
+            .count
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+            == 1
+        {
+            self.0.landed.notify_waiters();
+        }
+    }
+}
+
+/// A predict waiting in the batcher, holding its flight until its batch's
+/// forward ends.
 struct Queued {
     groups: Vec<ModelGroup>,
+    flight: Flight,
     bytes: usize,
     arrived: Instant,
     reply: oneshot::Sender<(Vec<ModelOutcome>, EndpointTiming)>,
@@ -188,9 +249,9 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             released: tokio::sync::Notify::new(),
             describe,
             editions: crate::editions::offer(None),
-            in_flight: std::sync::atomic::AtomicU32::new(0),
+            flights: Arc::default(),
             closing: std::sync::atomic::AtomicBool::new(false),
-            idle: tokio::sync::Notify::new(),
+            closed: watch::channel(None).0,
             fuses,
             batching: fuses.then(|| Batching::new(BatchOptions::default(), None)),
         }
@@ -230,19 +291,27 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         self
     }
 
-    /// Answers one request, with what answering it measured.
+    /// Answers one request, with what answering it measured. Its flight
+    /// lands when this returns or is dropped.
     pub async fn answer(self: &Arc<Self>, request: ModelRequest) -> (ModelReply, EndpointTiming) {
-        use std::sync::atomic::Ordering;
-        let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut timing = EndpointTiming {
+        // Taken before the check, so a close either sees it or refuses it.
+        let (_flight, in_flight) = self.flights.take();
+        let timing = EndpointTiming {
             in_flight: Some(in_flight),
             ..EndpointTiming::default()
         };
-        if self.closing.load(Ordering::SeqCst) {
-            self.settle();
+        if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
             let closing = fault("UNAVAILABLE", "the model is closing", false);
             return (ModelReply::Fault(closing), timing);
         }
+        ANSWERING.scope((), self.accepted(request, timing)).await
+    }
+
+    async fn accepted(
+        self: &Arc<Self>,
+        request: ModelRequest,
+        mut timing: EndpointTiming,
+    ) -> (ModelReply, EndpointTiming) {
         let result = match request {
             ModelRequest::Resolve(resolve) => self.resolve(resolve).await.map(ModelReply::Resolved),
             ModelRequest::Predict(groups) => Ok(ModelReply::Predicted(
@@ -269,7 +338,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 "an invitation reaches a model through its session",
             )),
         };
-        self.settle();
         let reply = result.unwrap_or_else(|error| ModelReply::Fault(fault_of(&error)));
         (reply, timing)
     }
@@ -353,17 +421,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         Ok(crate::lockstep::meta_json::optional_to_json(
             options.as_ref(),
         ))
-    }
-
-    /// Ends one request's flight, waking `close` after the last.
-    fn settle(&self) {
-        if self
-            .in_flight
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-            == 1
-        {
-            self.idle.notify_waiters();
-        }
     }
 
     async fn route(&self, name: &str) -> Result<Arc<Route>, Error> {
@@ -501,6 +558,7 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         let queued = Queued {
             bytes: observation_bytes(&groups),
             groups,
+            flight: self.flights.take().0,
             arrived: Instant::now(),
             reply,
         };
@@ -621,6 +679,7 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         let mut waits = Vec::new();
         let mut groups = Vec::new();
         let mut members = Vec::with_capacity(batch.len());
+        let mut flights = Vec::with_capacity(batch.len());
         for queued in batch {
             let waited = dispatched.duration_since(queued.arrived);
             waits.extend(std::iter::repeat_n(
@@ -629,10 +688,13 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             ));
             members.push((queued.reply, queued.groups.len(), waited));
             groups.extend(queued.groups);
+            flights.push(queued.flight);
         }
         let size = groups.len();
         let mut timing = EndpointTiming::default();
-        let outcomes = self.predict(groups, &mut timing).await;
+        let outcomes = ANSWERING.scope((), self.predict(groups, &mut timing)).await;
+        // The forward is over, whether or not its requests still wait.
+        drop(flights);
         let forward_wall = dispatched.elapsed();
         drop(permit);
         let ok = outcomes.iter().any(Result::is_ok);
@@ -705,21 +767,42 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         Ok(())
     }
 
-    /// Refuses new requests, waits for the accepted ones to be answered
-    /// (their batches forwarded), then drops every route and closes the
-    /// handler.
-    pub async fn close(&self) -> Result<(), Error> {
-        use std::sync::atomic::Ordering;
-        self.closing.store(true, Ordering::SeqCst);
-        loop {
-            let idle = self.idle.notified();
-            tokio::pin!(idle);
-            idle.as_mut().enable();
-            if self.in_flight.load(Ordering::SeqCst) == 0 {
-                break;
-            }
-            idle.await;
+    /// Refuses new requests and waits up to `timeout` for the model to
+    /// close: the first close starts the one closer, which waits for the
+    /// accepted requests to land (a forwarded batch's forward included),
+    /// then drops every route and closes the handler; every close returns
+    /// its outcome. Past `timeout` this fails and the closer carries on, so
+    /// `on_close` still never runs beside a request. Refused from one of
+    /// the model's own requests or its `on_close`, which it would wait on.
+    pub async fn close(self: &Arc<Self>, timeout: Duration) -> Result<(), Error> {
+        if ANSWERING.try_with(|()| ()).is_ok() {
+            return Err(Error::Runtime(
+                "a model can't close from its own request or on_close, which the close waits \
+                 for; stop its serve instead"
+                    .into(),
+            ));
         }
+        let mut closed = self.closed.subscribe();
+        if !self.closing.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            tokio::spawn(Arc::clone(self).closer());
+        }
+        match tokio::time::timeout(timeout, closed.wait_for(Option::is_some)).await {
+            Ok(Ok(outcome)) => outcome.clone().unwrap_or(Ok(())),
+            Ok(Err(_)) => Err(Error::Runtime("the model's closer is gone".into())),
+            Err(_) => {
+                warn!(
+                    ?timeout,
+                    "model requests still running at close; the handler closes once they end"
+                );
+                Err(Error::Timeout(timeout))
+            }
+        }
+    }
+
+    /// The one closer: waits for every flight, then closes the handler,
+    /// and publishes how that went (a panic in it as a failure).
+    async fn closer(self: Arc<Self>) {
+        self.flights.landed().await;
         // The batcher loop ends once the queue is gone.
         if let Some(batching) = &self.batching {
             batching
@@ -728,6 +811,16 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
         }
+        let service = Arc::clone(&self);
+        let shut = tokio::spawn(ANSWERING.scope((), async move { service.shut().await }));
+        let outcome = shut
+            .await
+            .unwrap_or_else(|e| Err(Error::model(format!("closing the model failed: {e}"))));
+        self.closed.send_replace(Some(outcome));
+    }
+
+    /// Drops every route and closes the handler.
+    async fn shut(&self) -> Result<(), Error> {
         let routes: Vec<String> = self.routes.lock().await.drain().map(|(r, _)| r).collect();
         if let Some(setup) = &self.setup {
             for route in &routes {
@@ -828,104 +921,126 @@ struct Joins<H> {
     service: Arc<ModelService<H>>,
     timeout: Duration,
     shutdown: CancellationToken,
-    /// The sessions joined or being joined, by address.
-    sessions: std::sync::Mutex<HashMap<String, Joined>>,
-    /// The next [`Joined::generation`].
-    generations: std::sync::atomic::AtomicU64,
+    /// The sessions joined, being joined or being left.
+    sessions: std::sync::Mutex<HashMap<SessionKey, Joined>>,
+}
+
+/// A session as its host knows it, however its address is spelled.
+type SessionKey = (std::net::SocketAddr, TenantId, SessionId);
+
+fn session_key(address: &SessionAddress) -> SessionKey {
+    (address.base, address.tenant.clone(), address.session)
 }
 
 /// One invited session: its inviters still in it, what stops answering
-/// there, and the first inviter's join (`None` while it runs), which the
-/// others wait on rather than joining again under the same name.
+/// there, the first inviter's join (`None` while it runs), which the others
+/// wait on rather than joining again under the same name, and its end. It
+/// stays until the model has left the session, so an invitation while it
+/// leaves waits for that instead of joining beside it.
 struct Joined {
     inviters: usize,
     cancel: CancellationToken,
-    /// Tells this join from a later one of the same session, so a session
-    /// left and joined again is not removed by the first one's end.
-    generation: u64,
-    joined: tokio::sync::watch::Receiver<Option<Result<(), ModelFault>>>,
+    joined: watch::Receiver<Option<Result<(), ModelFault>>>,
+    left: CancellationToken,
+}
+
+/// What an invitation does about the session's entry.
+enum Invited {
+    /// Joins it, the first inviter.
+    Join(
+        CancellationToken,
+        watch::Sender<Option<Result<(), ModelFault>>>,
+    ),
+    /// Waits on the first inviter's join.
+    Follow(watch::Receiver<Option<Result<(), ModelFault>>>),
+    /// Waits for the model to have left it, then joins again.
+    Wait(CancellationToken),
 }
 
 impl<H: ModelHandler + 'static> Joins<H> {
-    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, Joined>> {
+    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<SessionKey, Joined>> {
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Forgets the session at `text` if it is still the `generation` join.
-    fn forget(&self, text: &str, generation: u64) {
-        let mut sessions = self.sessions();
-        if sessions
-            .get(text)
-            .is_some_and(|j| j.generation == generation)
-        {
-            sessions.remove(text);
+    /// Forgets the session at `key`, which the model has left (or never
+    /// joined).
+    fn forget(&self, key: &SessionKey) {
+        if let Some(joined) = self.sessions().remove(key) {
+            joined.left.cancel();
         }
     }
 
     /// Joins the session at `text` (once per session), answering there
     /// until its inviters leave or nobody else is left.
     async fn join(self: &Arc<Self>, text: &str) -> Result<(), ModelFault> {
-        // One lock decides: join here, or wait on the join in progress.
-        let joining = {
-            let mut sessions = self.sessions();
-            match sessions.get_mut(text) {
-                Some(joined) => {
-                    joined.inviters += 1;
-                    Err(joined.joined.clone())
-                }
-                None => {
-                    let generation = self
-                        .generations
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let cancel = self.shutdown.child_token();
-                    let (done, joined) = tokio::sync::watch::channel(None);
-                    sessions.insert(
-                        text.to_string(),
-                        Joined {
-                            inviters: 1,
-                            cancel: cancel.clone(),
-                            generation,
-                            joined,
-                        },
-                    );
-                    Ok((generation, cancel, done))
-                }
-            }
-        };
-        let (generation, cancel, done) = match joining {
-            Ok(joining) => joining,
-            Err(mut outcome) => {
-                return match outcome.wait_for(Option::is_some).await {
-                    Ok(outcome) => outcome.clone().unwrap_or(Ok(())),
-                    Err(_) => Err(fault(
-                        "UNAVAILABLE",
-                        "the model's join was abandoned",
-                        false,
-                    )),
-                };
-            }
-        };
-        let outcome = self.answer_there(text, generation, cancel).await;
-        if outcome.is_err() {
-            self.forget(text, generation);
-        }
-        done.send_replace(Some(outcome.clone()));
-        outcome
-    }
-
-    /// Joins the session at `text` and answers there until `cancel` fires.
-    async fn answer_there(
-        self: &Arc<Self>,
-        text: &str,
-        generation: u64,
-        cancel: CancellationToken,
-    ) -> Result<(), ModelFault> {
         let address: SessionAddress = text
             .parse()
             .map_err(|e: SessionError| fault("INVALID_REQUEST", e.to_string(), false))?;
-        let participant = address
+        let key = session_key(&address);
+        loop {
+            if self.shutdown.is_cancelled() {
+                return Err(fault("UNAVAILABLE", "the model is closing", false));
+            }
+            // One lock decides: join here, wait on the join in progress, or
+            // wait for the last one to have left.
+            let invited = {
+                let mut sessions = self.sessions();
+                match sessions.get_mut(&key) {
+                    Some(joined) if joined.cancel.is_cancelled() => {
+                        Invited::Wait(joined.left.clone())
+                    }
+                    Some(joined) => {
+                        joined.inviters += 1;
+                        Invited::Follow(joined.joined.clone())
+                    }
+                    None => {
+                        let cancel = self.shutdown.child_token();
+                        let (done, joined) = watch::channel(None);
+                        sessions.insert(
+                            key.clone(),
+                            Joined {
+                                inviters: 1,
+                                cancel: cancel.clone(),
+                                joined,
+                                left: CancellationToken::new(),
+                            },
+                        );
+                        Invited::Join(cancel, done)
+                    }
+                }
+            };
+            match invited {
+                Invited::Wait(left) => left.cancelled().await,
+                Invited::Follow(mut outcome) => {
+                    return match outcome.wait_for(Option::is_some).await {
+                        Ok(outcome) => outcome.clone().unwrap_or(Ok(())),
+                        Err(_) => Err(fault(
+                            "UNAVAILABLE",
+                            "the model's join was abandoned",
+                            false,
+                        )),
+                    };
+                }
+                Invited::Join(cancel, done) => {
+                    let outcome = self.answer_there(address, key, cancel).await;
+                    done.send_replace(Some(outcome.clone()));
+                    return outcome;
+                }
+            }
+        }
+    }
+
+    /// Joins the session at `address` and answers there until `cancel`
+    /// fires, forgetting it once the model has left.
+    async fn answer_there(
+        self: &Arc<Self>,
+        address: SessionAddress,
+        key: SessionKey,
+        cancel: CancellationToken,
+    ) -> Result<(), ModelFault> {
+        let joined = address
             .join_declaring(
                 self.name.as_str(),
                 vec![Role::Controller],
@@ -933,19 +1048,23 @@ impl<H: ModelHandler + 'static> Joins<H> {
                 self.timeout,
                 self.service.editions.clone(),
             )
-            .await
-            .map_err(|e| {
-                fault(
+            .await;
+        let participant = match joined {
+            Ok(participant) => participant,
+            Err(e) => {
+                self.forget(&key);
+                return Err(fault(
                     "UNAVAILABLE",
                     format!(
-                        "model {} can't reach the session at {text}: {e}; run `rlmesh host` \
+                        "model {} can't reach the session at {address}: {e}; run `rlmesh host` \
                          somewhere both machines can reach, pass `session=`, or serve the env \
                          at an address its host can reach",
                         self.name
                     ),
                     false,
-                )
-            })?;
+                ));
+            }
+        };
         // Alone in the session: every inviter is gone, whether or not it
         // said so.
         let mut roster = participant.watch();
@@ -962,24 +1081,26 @@ impl<H: ModelHandler + 'static> Joins<H> {
                 }
             }
         });
-        let (joins, text) = (Arc::clone(self), text.to_string());
+        let joins = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(err) = answer_in(joins.clone(), participant, address.base, cancel).await {
-                warn!(%err, session = %text, "model left an invited session");
+                warn!(%err, session = %address, "model left an invited session");
             }
-            joins.forget(&text, generation);
+            joins.forget(&key);
         });
         Ok(())
     }
 
-    /// One inviter of the session at `text` left.
+    /// One inviter of the session at `text` left; the last one's leaving
+    /// stops the model answering there.
     fn leave(&self, text: &str) {
-        let mut sessions = self.sessions();
-        if let Some(joined) = sessions.get_mut(text) {
-            joined.inviters -= 1;
+        let Ok(address) = text.parse::<SessionAddress>() else {
+            return;
+        };
+        if let Some(joined) = self.sessions().get_mut(&session_key(&address)) {
+            joined.inviters = joined.inviters.saturating_sub(1);
             if joined.inviters == 0 {
                 joined.cancel.cancel();
-                sessions.remove(text);
             }
         }
     }
@@ -1182,7 +1303,7 @@ impl ModelBinding {
         shutdown: CancellationToken,
     ) -> Result<(), GymError> {
         let result = self.serve_inner(&service, timeout, shutdown).await;
-        let closed = service.close().await;
+        let closed = service.close(timeout).await;
         let mut placed = self.placed;
         let _ = placed.close().await;
         result?;
@@ -1214,7 +1335,6 @@ impl ModelBinding {
             timeout,
             shutdown: shutdown.clone(),
             sessions: std::sync::Mutex::default(),
-            generations: std::sync::atomic::AtomicU64::new(0),
         });
         answer_in(joins, participant, self.session.base, shutdown).await
     }
