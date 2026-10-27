@@ -1,11 +1,9 @@
 mod auth;
 mod check;
 mod cli;
-mod config;
 mod container;
 mod doctor;
 mod eval_run;
-mod helpers;
 mod host;
 pub mod image_check;
 mod manifest;
@@ -14,8 +12,6 @@ mod profile;
 mod publish;
 mod registry;
 mod render;
-mod session;
-mod settings;
 pub mod variant;
 
 use std::ffi::{OsStr, OsString};
@@ -25,9 +21,9 @@ use anyhow::Result;
 use clap::error::ErrorKind;
 use clap::{ColorChoice, CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
-use config::ProfileStore;
 use render::{Style, write_error, write_heading, write_key_value};
-pub use settings::Settings;
+use rlmesh::binding::managed::ProfileStore;
+pub use rlmesh::binding::managed::Settings;
 
 /// Runs the CLI with settings taken from the environment.
 pub async fn run_cli(

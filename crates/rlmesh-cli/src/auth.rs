@@ -1,90 +1,18 @@
 use crate::cli::{LoginArgs, OrgListArgs, ProfileArgs, WhoamiArgs};
-use crate::config::{
-    CredentialStatus, CredentialStorage, Credentials, Identity, ProfileStore, ResolvedProfile,
-};
-use crate::helpers::{
-    expect_json, get_json, http_client, require_pinned_host, require_trusted_endpoint,
-};
-use crate::platform::Platform;
 use crate::render::{Style, write_heading, write_key_value};
-use crate::session::{Refresh, ensure_fresh_session, switch_organization};
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use rlmesh::binding::managed::{
+    self as store, CredentialStatus, CredentialStorage, Credentials, Identity, ProfileStore,
+    Refresh, ResolvedProfile, SignInEndpoints, TokenDenial, TokenResponse, ensure_fresh_session,
+    expect_json, fetch_auth_config, get_json, http_client, require_trusted_endpoint,
+    switch_organization,
+};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
-
-#[derive(Deserialize)]
-struct PlatformInfo {
-    auth: AuthConfig,
-}
-
-/// The platform /v1/info auth block, RFC 8414 vocabulary. Only the fields the
-/// CLI drives the device flow with; everything else in the document is
-/// ignored. The CLI never falls back to a built-in provider: a platform that
-/// does not advertise its endpoints cannot be signed in to.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AuthConfig {
-    cli: AppAuth,
-    #[serde(default)]
-    device_authorization_endpoint: Option<String>,
-    #[serde(default)]
-    token_endpoint: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AppAuth {
-    client_id: String,
-}
-
-/// The advertised, validated endpoints the device and refresh grants go to.
-#[derive(Debug)]
-pub(crate) struct SignInEndpoints {
-    pub client_id: String,
-    pub device_authorization_endpoint: String,
-    pub token_endpoint: String,
-}
-
-async fn fetch_auth_config(
-    client: &reqwest::Client,
-    platform_url: &str,
-) -> Result<SignInEndpoints> {
-    let info: PlatformInfo = get_json(
-        client,
-        &format!("{platform_url}/v1/info"),
-        None,
-        "fetching sign-in configuration",
-    )
-    .await?;
-    sign_in_endpoints(info, platform_url)
-}
-
-fn sign_in_endpoints(info: PlatformInfo, platform_url: &str) -> Result<SignInEndpoints> {
-    let (Some(device_authorization_endpoint), Some(token_endpoint)) = (
-        info.auth.device_authorization_endpoint,
-        info.auth.token_endpoint,
-    ) else {
-        bail!(
-            "platform {platform_url} does not advertise sign-in endpoints \
-             (auth.deviceAuthorizationEndpoint and auth.tokenEndpoint in /v1/info); \
-             upgrade the platform or check the URL"
-        );
-    };
-    require_trusted_endpoint(
-        &device_authorization_endpoint,
-        "device authorization endpoint",
-    )?;
-    require_trusted_endpoint(&token_endpoint, "token endpoint")?;
-    Ok(SignInEndpoints {
-        client_id: info.auth.cli.client_id,
-        device_authorization_endpoint,
-        token_endpoint,
-    })
-}
 
 #[derive(Deserialize)]
 struct DeviceAuthorization {
@@ -96,67 +24,6 @@ struct DeviceAuthorization {
     expires_in: u64,
     #[serde(default)]
     interval: Option<u64>,
-}
-
-/// The RFC 6749 token response. Only the two standard fields are read;
-/// identity comes from the platform's /v1/me, never from the provider.
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    // A missing refresh token degrades the login to Incomplete instead of
-    // failing after the user already approved in the browser.
-    #[serde(default)]
-    refresh_token: String,
-}
-
-impl TokenResponse {
-    fn into_credentials(self) -> Credentials {
-        Credentials {
-            access_token: self.access_token,
-            refresh_token: self.refresh_token,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct RefreshTokenRequest<'a> {
-    client_id: &'a str,
-    grant_type: &'static str,
-    refresh_token: &'a str,
-    /// The identity provider switches the session's active organization
-    /// when set: the platform's documented extension to the refresh grant.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    organization_id: Option<&'a str>,
-}
-
-impl<'a> RefreshTokenRequest<'a> {
-    fn new(client_id: &'a str, refresh_token: &'a str, organization_id: Option<&'a str>) -> Self {
-        Self {
-            client_id,
-            grant_type: "refresh_token",
-            refresh_token,
-            organization_id,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct TokenDenial {
-    #[serde(default)]
-    error: String,
-    #[serde(default)]
-    error_description: String,
-}
-
-impl TokenDenial {
-    fn detail(&self) -> String {
-        let detail = if self.error_description.trim().is_empty() {
-            self.error.clone()
-        } else {
-            format!("{}: {}", self.error, self.error_description)
-        };
-        detail.chars().take(300).collect()
-    }
 }
 
 #[derive(Deserialize)]
@@ -185,7 +52,7 @@ pub async fn org_list(
     // Always the profile session, never the API key: organizations are an
     // account-level concept and a key is bound to one of them.
     let profile = profiles.resolve(args.profile.profile.as_deref());
-    let mut platform = Platform::connect_profile(profiles, profile).await?;
+    let mut platform = store::connect_profile(profiles.clone(), profile).await?;
     let page = platform.get("/v1/me/organizations", &[]).await?;
     if args.json {
         writeln!(
@@ -398,72 +265,6 @@ pub async fn login(
     }
     writeln!(stdout, "  {}", style.muted("Next: rlmesh registry login"))?;
     Ok(())
-}
-
-/// Discovers the platform's sign-in endpoints for a refresh and enforces
-/// the pin the profile took at sign-in: the stored refresh token only ever
-/// goes to the host that issued it. A profile without a pin predates
-/// pinning and has to sign in once more.
-pub(crate) async fn discover_sign_in_endpoints(
-    client: &reqwest::Client,
-    profile: &ResolvedProfile,
-) -> Result<SignInEndpoints> {
-    let platform = profile
-        .platform_url
-        .as_deref()
-        .with_context(|| format!("profile {:?} has no configured platform", profile.name))?;
-    let endpoints = fetch_auth_config(client, platform).await?;
-    let Some(pinned) = profile.token_endpoint.as_deref() else {
-        bail!(
-            "profile {:?} was signed in before the CLI pinned sign-in endpoints; run `{}` to sign in again",
-            profile.name,
-            profile.login_hint()
-        );
-    };
-    require_pinned_host(pinned, &endpoints.token_endpoint, "token endpoint")
-        .with_context(|| format!("run `{}` to sign in against it", profile.login_hint()))?;
-    Ok(endpoints)
-}
-
-/// The RFC 6749 `refresh_token` grant against the platform's advertised
-/// token endpoint. `organization_id` is the platform's documented extension
-/// that re-issues the session against another organization.
-pub(crate) async fn exchange_refresh_token(
-    client: &reqwest::Client,
-    auth_config: &SignInEndpoints,
-    refresh_token: &str,
-    organization_id: Option<&str>,
-    login_hint: &str,
-) -> Result<Credentials> {
-    let response = client
-        .post(&auth_config.token_endpoint)
-        .form(&RefreshTokenRequest::new(
-            &auth_config.client_id,
-            refresh_token,
-            organization_id,
-        ))
-        .send()
-        .await
-        .context("refreshing session")?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .context("reading session refresh response")?;
-
-    if !status.is_success() {
-        let denial: TokenDenial = serde_json::from_str(&body).with_context(|| {
-            format!("session refresh returned HTTP {status} with an invalid response")
-        })?;
-        bail!(
-            "session refresh was rejected: {}; run `{login_hint}`",
-            denial.detail()
-        );
-    }
-
-    let refreshed: TokenResponse =
-        serde_json::from_str(&body).context("parsing session refresh response")?;
-    Ok(refreshed.into_credentials())
 }
 
 async fn poll_for_token(
@@ -801,7 +602,7 @@ async fn whoami_api_key(
 
 /// Verifies the stored session against /v1/me, updating the cached identity.
 ///
-/// Goes through `Platform` so the stored access token is reused while it is
+/// Goes through `Client` so the stored access token is reused while it is
 /// fresh and rotated only if the platform actually rejects it: refresh
 /// tokens are single-use, and a read-only status command must not burn one.
 async fn verify_session(
@@ -810,7 +611,7 @@ async fn verify_session(
     identity: &mut Option<Identity>,
 ) -> Result<()> {
     let current = {
-        let mut platform = Platform::connect_profile(profiles, profile.clone()).await?;
+        let mut platform = store::connect_profile(profiles.clone(), profile.clone()).await?;
         let response: MeResponse = serde_json::from_value(platform.get("/v1/me", &[]).await?)
             .context("parsing identity")?;
         identity_from_me(response)
@@ -880,76 +681,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn platform_info_requires_advertised_endpoints() {
-        let discovered: PlatformInfo = serde_json::from_str(
-            r#"{"auth":{
-                "cli":{"clientId":"client_cli"},
-                "issuer":"https://auth.example.com",
-                "deviceAuthorizationEndpoint":"https://id.example.com/device",
-                "tokenEndpoint":"https://id.example.com/token"
-            }}"#,
-        )
-        .unwrap();
-        let endpoints = sign_in_endpoints(discovered, "https://platform.example.com").unwrap();
-        assert_eq!(endpoints.client_id, "client_cli");
-        assert_eq!(
-            endpoints.device_authorization_endpoint,
-            "https://id.example.com/device"
-        );
-        assert_eq!(endpoints.token_endpoint, "https://id.example.com/token");
-
-        // No built-in provider: a platform without the fields is refused.
-        let legacy: PlatformInfo =
-            serde_json::from_str(r#"{"auth":{"cli":{"clientId":"client_cli"}}}"#).unwrap();
-        let error = sign_in_endpoints(legacy, "https://platform.example.com").unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("does not advertise sign-in endpoints"),
-            "{error}"
-        );
-
-        // Plaintext endpoints are refused even when advertised.
-        let plain: PlatformInfo = serde_json::from_str(
-            r#"{"auth":{
-                "cli":{"clientId":"client_cli"},
-                "deviceAuthorizationEndpoint":"http://id.example.com/device",
-                "tokenEndpoint":"http://id.example.com/token"
-            }}"#,
-        )
-        .unwrap();
-        assert!(sign_in_endpoints(plain, "https://platform.example.com").is_err());
-    }
-
-    #[test]
-    fn refresh_request_uses_the_refresh_token_grant() {
-        let request =
-            serde_json::to_value(RefreshTokenRequest::new("client_123", "refresh_123", None))
-                .unwrap();
-
-        assert_eq!(request["client_id"], "client_123");
-        assert_eq!(request["grant_type"], "refresh_token");
-        assert_eq!(request["refresh_token"], "refresh_123");
-    }
-
-    #[test]
-    fn token_response_reads_only_the_standard_fields() {
-        let token: TokenResponse = serde_json::from_str(
-            r#"{
-                "access_token":"access_new",
-                "refresh_token":"refresh_new",
-                "organization_id":"org_123",
-                "user":{"id":"user_123","email":"dev@example.com"}
-            }"#,
-        )
-        .unwrap();
-        let credentials = token.into_credentials();
-
-        assert_eq!(credentials.access_token, "access_new");
-        assert_eq!(credentials.refresh_token, "refresh_new");
-    }
-
-    #[test]
     fn identity_comes_from_me_subject_and_provider_id() {
         let response: MeResponse = serde_json::from_str(
             r#"{
@@ -983,16 +714,5 @@ mod tests {
         let identity = identity_from_me(bare);
         assert!(identity.email.is_empty());
         assert!(identity.organization_id.is_empty());
-    }
-
-    #[test]
-    fn oauth_errors_keep_the_human_readable_detail() {
-        let denial: TokenDenial = serde_json::from_str(
-            r#"{"error":"invalid_client","error_description":"Unknown client"}"#,
-        )
-        .unwrap();
-
-        assert_eq!(denial.error, "invalid_client");
-        assert_eq!(denial.error_description, "Unknown client");
     }
 }

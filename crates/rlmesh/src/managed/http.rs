@@ -1,7 +1,32 @@
+//! The HTTP plumbing every platform call shares: the client, JSON
+//! responses, the platform's error body and URL checks.
+
 use anyhow::{Context, Result, bail};
+use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
+use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
+
+/// A non-success response: the request, its status and the server's message.
+#[derive(Debug)]
+pub(crate) struct HttpError {
+    pub(crate) what: String,
+    pub(crate) status: StatusCode,
+    pub(crate) message: String,
+}
+
+impl fmt::Display for HttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} failed with HTTP {}: {}",
+            self.what, self.status, self.message
+        )
+    }
+}
+
+impl std::error::Error for HttpError {}
 
 pub(crate) fn normalize_base_url(raw: &str) -> String {
     let value = raw.trim().trim_end_matches('/');
@@ -22,7 +47,7 @@ pub(crate) fn normalize_base_url(raw: &str) -> String {
 /// Rejects a platform-advertised OAuth endpoint unless it is https (or http
 /// to a loopback host, for dev servers): these URLs come from an unsigned
 /// /v1/info document and receive device codes and refresh tokens.
-pub(crate) fn require_trusted_endpoint(url: &str, what: &str) -> Result<()> {
+pub fn require_trusted_endpoint(url: &str, what: &str) -> Result<()> {
     let value = url.trim();
     let is_https = value
         .get(..8)
@@ -104,7 +129,9 @@ fn extract_host(authority: &str) -> &str {
         .map_or(authority, |(host, _)| host)
 }
 
-pub(crate) fn http_client() -> Result<reqwest::Client> {
+/// The one HTTP client configuration: ring as the TLS provider, 10 s to
+/// connect and 30 s per request.
+pub fn http_client() -> Result<reqwest::Client> {
     // reqwest is built with `rustls-no-provider` to keep aws-lc-rs (and its
     // cmake/C toolchain requirement) out of clean builds; ring must therefore
     // be installed as the process-wide provider before building a client.
@@ -117,7 +144,8 @@ pub(crate) fn http_client() -> Result<reqwest::Client> {
         .context("building HTTP client")
 }
 
-pub(crate) async fn get_json<T: DeserializeOwned>(
+/// `GET url` (with `bearer` when given), parsed as JSON.
+pub async fn get_json<T: DeserializeOwned>(
     client: &reqwest::Client,
     url: &str,
     bearer: Option<&str>,
@@ -135,14 +163,21 @@ pub(crate) async fn get_json<T: DeserializeOwned>(
     expect_json(response, what).await
 }
 
-pub(crate) async fn expect_json<T: DeserializeOwned>(
+/// The response body as JSON, or the server's error message with the
+/// status when the response is not a success.
+pub async fn expect_json<T: DeserializeOwned>(
     response: reqwest::Response,
     what: &str,
 ) -> Result<T> {
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        bail!("{what} failed with HTTP {status}: {}", error_message(&body));
+        return Err(HttpError {
+            what: what.to_owned(),
+            status,
+            message: error_message(&body),
+        }
+        .into());
     }
 
     response

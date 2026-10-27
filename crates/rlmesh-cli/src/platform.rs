@@ -1,184 +1,69 @@
 use crate::cli::{EvalIdArgs, EvalListArgs, EvalSubmitArgs, ProfileArgs, TokenArgs};
-use crate::config::{ProfileStore, ResolvedProfile};
-use crate::helpers::{expect_json, get_json, http_client};
 use crate::render::Style;
-use crate::session::{Refresh, ensure_fresh_session, rfc3339_utc};
 
 use anyhow::{Context, Result, bail};
-use reqwest::{Method, StatusCode};
+use rlmesh::binding::managed::{self as store, ProfileStore, get_json, http_client};
+use rlmesh::managed::Client;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const WAIT_POLL: Duration = Duration::from_secs(10);
 const TERMINAL: [&str; 3] = ["completed", "failed", "cancelled"];
 
-/// A signed-in platform: the profile's base URL plus an access token that
-/// is fresh for at least the next minute. A request the platform rejects as
-/// unauthorized is retried once with a forcibly refreshed token.
-pub(crate) struct Platform<'a> {
-    client: reqwest::Client,
-    url: String,
-    auth: Auth<'a>,
-    token: String,
-    expires_at: Option<SystemTime>,
+/// The platform client for `--profile` (or `RLMESH_API_KEY`), on its own copy
+/// of the store: the session it refreshes is written back to the same store.
+async fn connect(profiles: &ProfileStore, args: &ProfileArgs) -> Result<Client> {
+    Ok(store::connect(profiles.clone(), args.profile.as_deref()).await?)
 }
 
-enum Auth<'a> {
-    Session {
-        profiles: &'a mut ProfileStore,
-        profile: Box<ResolvedProfile>,
-    },
-    /// `RLMESH_API_KEY`: a static bearer credential, nothing to refresh.
-    ApiKey,
-}
-
-impl<'a> Platform<'a> {
-    pub(crate) async fn connect(
-        profiles: &'a mut ProfileStore,
-        args: &ProfileArgs,
-    ) -> Result<Self> {
-        if let Some((api_key, platform_url)) = profiles.api_key() {
-            return Self::with_api_key(api_key, platform_url);
-        }
-        let profile = profiles.resolve(args.profile.as_deref());
-        Self::connect_profile(profiles, profile).await
-    }
-
-    pub(crate) fn with_api_key(api_key: &str, platform_url: &str) -> Result<Self> {
-        Ok(Self {
-            client: http_client()?,
-            url: platform_url.to_owned(),
-            auth: Auth::ApiKey,
-            token: api_key.to_owned(),
-            expires_at: None,
-        })
-    }
-
-    pub(crate) async fn connect_profile(
-        profiles: &'a mut ProfileStore,
-        profile: ResolvedProfile,
-    ) -> Result<Self> {
-        let client = http_client()?;
-        let session = ensure_fresh_session(&client, profiles, &profile, Refresh::IfStale).await?;
-        Ok(Self {
-            client,
-            url: profile.platform_url.clone().unwrap_or_default(),
-            auth: Auth::Session {
-                profiles,
-                profile: Box::new(profile),
-            },
-            token: session.credentials.access_token,
-            expires_at: session.expires_at,
-        })
-    }
-
-    pub(crate) async fn get(&mut self, path: &str, query: &[(&str, String)]) -> Result<Value> {
-        self.request(Method::GET, path, query, None).await
-    }
-
-    pub(crate) async fn post(&mut self, path: &str, body: &Value) -> Result<Value> {
-        self.request(Method::POST, path, &[], Some(body)).await
-    }
-
-    async fn request(
-        &mut self,
-        method: Method,
-        path: &str,
-        query: &[(&str, String)],
-        body: Option<&Value>,
-    ) -> Result<Value> {
-        let mut response = self.send(method.clone(), path, query, body).await?;
-        if response.status() == StatusCode::UNAUTHORIZED && self.refresh_forced().await? {
-            response = self.send(method.clone(), path, query, body).await?;
-        }
-        expect_json(response, &format!("{method} {path}")).await
-    }
-
-    async fn send(
-        &self,
-        method: Method,
-        path: &str,
-        query: &[(&str, String)],
-        body: Option<&Value>,
-    ) -> Result<reqwest::Response> {
-        let mut request = self
-            .client
-            .request(method.clone(), format!("{}{path}", self.url))
-            .query(query)
-            .bearer_auth(&self.token);
-        if let Some(body) = body {
-            request = request.json(body);
-        }
-        request
-            .send()
-            .await
-            .with_context(|| format!("{method} {path}: could not reach {}", self.url))
-    }
-
-    /// Rotates the session after the platform rejected the current token;
-    /// false when the credential cannot be refreshed at all.
-    async fn refresh_forced(&mut self) -> Result<bool> {
-        match &mut self.auth {
-            Auth::Session { profiles, profile } => {
-                let session =
-                    ensure_fresh_session(&self.client, profiles, profile, Refresh::Force).await?;
-                self.token = session.credentials.access_token;
-                self.expires_at = session.expires_at;
-                Ok(true)
-            }
-            Auth::ApiKey => Ok(false),
-        }
-    }
-
-    async fn dashboard_url(&self) -> Option<String> {
-        // Discovery is unauthenticated; never send the bearer where the
-        // contract does not ask for it.
-        let info: Value = get_json(
-            &self.client,
-            &format!("{}/v1/info", self.url),
-            None,
-            "fetching platform info",
-        )
-        .await
-        .ok()?;
-        info["urls"]["dashboard"].as_str().map(str::to_owned)
-    }
+async fn dashboard_url(platform: &Client) -> Option<String> {
+    // Discovery is unauthenticated; never send the bearer where the
+    // contract does not ask for it.
+    let info: Value = get_json(
+        &http_client().ok()?,
+        &format!("{}/v1/info", platform.url()),
+        None,
+        "fetching platform info",
+    )
+    .await
+    .ok()?;
+    info["urls"]["dashboard"].as_str().map(str::to_owned)
 }
 
 pub async fn token(
-    profiles: &mut ProfileStore,
+    profiles: &ProfileStore,
     args: &TokenArgs,
     stdout: &mut impl Write,
 ) -> Result<()> {
-    let platform = Platform::connect(profiles, &args.profile).await?;
+    let platform = connect(profiles, &args.profile).await?;
     if args.json {
         writeln!(
             stdout,
             "{}",
             json!({
-                "platform": platform.url,
-                "token": platform.token,
-                "expiresAt": platform.expires_at.map(rfc3339_utc),
+                "platform": platform.url(),
+                "token": store::access_token(&platform),
+                "expiresAt": store::expires_at(&platform).map(rfc3339_utc),
             })
         )?;
     } else {
-        writeln!(stdout, "{}", platform.token)?;
+        writeln!(stdout, "{}", store::access_token(&platform))?;
     }
     Ok(())
 }
 
 pub async fn submit(
-    profiles: &mut ProfileStore,
+    profiles: &ProfileStore,
     args: &EvalSubmitArgs,
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<i32> {
     let request = read_request(&args.request)?;
-    let mut platform = Platform::connect(profiles, &args.profile).await?;
+    let mut platform = connect(profiles, &args.profile).await?;
 
     if args.preview {
-        let preview = platform.post("/v1/evaluation-previews", &request).await?;
+        let preview = platform.preview(&request).await?;
         if args.json {
             writeln!(stdout, "{}", serde_json::to_string_pretty(&preview)?)?;
         } else {
@@ -194,7 +79,7 @@ pub async fn submit(
         return Ok(0);
     }
 
-    let command = platform.post("/v1/evaluations", &request).await?;
+    let command = platform.submit(&request).await?;
     let id = command["id"]
         .as_str()
         .context("submit response has no id")?;
@@ -206,7 +91,7 @@ pub async fn submit(
             "{}",
             style.success(&format!("Submitted {}", style.bold(id)))
         )?;
-        if let Some(dashboard) = platform.dashboard_url().await {
+        if let Some(dashboard) = dashboard_url(&platform).await {
             writeln!(stdout, "  {dashboard}/evaluations/{id}")?;
         }
         write_warnings(stdout, style, &command)?;
@@ -218,12 +103,12 @@ pub async fn submit(
 }
 
 pub async fn list(
-    profiles: &mut ProfileStore,
+    profiles: &ProfileStore,
     args: &EvalListArgs,
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<()> {
-    let mut platform = Platform::connect(profiles, &args.profile).await?;
+    let mut platform = connect(profiles, &args.profile).await?;
     let mut query = vec![("limit", args.limit.to_string())];
     if let Some(status) = &args.status {
         query.push(("status", status.clone()));
@@ -237,6 +122,10 @@ pub async fn list(
         }
         query.push(("tag", tag.clone()));
     }
+    let query: Vec<(&str, &str)> = query
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect();
     let page = platform.get("/v1/evaluations", &query).await?;
     if args.json {
         writeln!(stdout, "{}", serde_json::to_string_pretty(&page)?)?;
@@ -278,41 +167,34 @@ pub async fn list(
 }
 
 pub async fn get(
-    profiles: &mut ProfileStore,
+    profiles: &ProfileStore,
     args: &EvalIdArgs,
     stdout: &mut impl Write,
 ) -> Result<()> {
-    let mut platform = Platform::connect(profiles, &args.profile).await?;
-    let evaluation = platform
-        .get(&format!("/v1/evaluations/{}", args.id), &[])
-        .await?;
+    let mut platform = connect(profiles, &args.profile).await?;
+    let evaluation = platform.evaluation(&args.id).await?;
     writeln!(stdout, "{}", serde_json::to_string_pretty(&evaluation)?)?;
     Ok(())
 }
 
 pub async fn wait(
-    profiles: &mut ProfileStore,
+    profiles: &ProfileStore,
     args: &EvalIdArgs,
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<i32> {
-    let mut platform = Platform::connect(profiles, &args.profile).await?;
+    let mut platform = connect(profiles, &args.profile).await?;
     wait_for(&mut platform, &args.id, stdout, style).await
 }
 
 pub async fn cancel(
-    profiles: &mut ProfileStore,
+    profiles: &ProfileStore,
     args: &EvalIdArgs,
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<()> {
-    let mut platform = Platform::connect(profiles, &args.profile).await?;
-    let command = platform
-        .post(
-            &format!("/v1/evaluations/{}/cancellations", args.id),
-            &json!({}),
-        )
-        .await?;
+    let mut platform = connect(profiles, &args.profile).await?;
+    let command = platform.cancel(&args.id).await?;
     writeln!(
         stdout,
         "{}",
@@ -326,14 +208,14 @@ pub async fn cancel(
 }
 
 async fn wait_for(
-    platform: &mut Platform<'_>,
+    platform: &mut Client,
     id: &str,
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<i32> {
     let mut last = String::new();
     loop {
-        let evaluation = platform.get(&format!("/v1/evaluations/{id}"), &[]).await?;
+        let evaluation = platform.evaluation(id).await?;
         let status = evaluation["status"].as_str().unwrap_or("?").to_owned();
         let progress = &evaluation["progress"];
         let line = format!(
@@ -350,6 +232,28 @@ async fn wait_for(
         }
         tokio::time::sleep(WAIT_POLL).await;
     }
+}
+
+/// RFC 3339 in UTC with second precision, e.g. `2026-09-22T14:03:00Z`.
+fn rfc3339_utc(time: SystemTime) -> String {
+    let secs = time
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    let (hour, minute, second) = (rem / 3_600, rem % 3_600 / 60, rem % 60);
+
+    // Civil date from days since the epoch (proleptic Gregorian).
+    let z = i64::try_from(days).unwrap_or(i64::MAX / 2) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 pub(crate) fn read_request(path: &str) -> Result<Value> {
@@ -390,5 +294,18 @@ mod tests {
         std::fs::write(&file, "not json").unwrap();
         assert!(read_request(file.to_str().unwrap()).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn formats_rfc3339_utc() {
+        assert_eq!(rfc3339_utc(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            rfc3339_utc(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+            "2023-11-14T22:13:20Z"
+        );
+        assert_eq!(
+            rfc3339_utc(UNIX_EPOCH + Duration::from_secs(951_782_400)),
+            "2000-02-29T00:00:00Z"
+        );
     }
 }

@@ -41,6 +41,10 @@
 //! - `viewer` (default): the live terminal/HTTP [`viewer`] behind
 //!   [`View`]. Without it a run's `view` warns and shows nothing.
 //!
+//! - `managed` (default): the [`managed`] module, an Experimental client for
+//!   the managed RLMesh platform that shares the `rlmesh` CLI's sign-in.
+//!   Pulls in `reqwest`, `rustls` and `keyring`.
+//!
 //! # Errors
 //!
 //! Fallible operations return [`Result`], an alias for `Result<T, Error>`.
@@ -148,6 +152,8 @@ pub mod ext;
 #[cfg(feature = "lockstep")]
 #[doc(hidden)]
 pub mod lockstep;
+#[cfg(feature = "managed")]
+pub mod managed;
 mod model;
 pub mod prelude;
 pub mod recorder;
