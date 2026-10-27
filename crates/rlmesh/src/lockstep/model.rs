@@ -779,24 +779,100 @@ struct Joins<H> {
     service: Arc<ModelService<H>>,
     timeout: Duration,
     shutdown: CancellationToken,
-    /// Each session's inviters still in it, and what stops answering there.
-    sessions: std::sync::Mutex<HashMap<String, (usize, CancellationToken)>>,
+    /// The sessions joined or being joined, by address.
+    sessions: std::sync::Mutex<HashMap<String, Joined>>,
+    /// The next [`Joined::generation`].
+    generations: std::sync::atomic::AtomicU64,
+}
+
+/// One invited session: its inviters still in it, what stops answering
+/// there, and the first inviter's join (`None` while it runs), which the
+/// others wait on rather than joining again under the same name.
+struct Joined {
+    inviters: usize,
+    cancel: CancellationToken,
+    /// Tells this join from a later one of the same session, so a session
+    /// left and joined again is not removed by the first one's end.
+    generation: u64,
+    joined: tokio::sync::watch::Receiver<Option<Result<(), ModelFault>>>,
 }
 
 impl<H: ModelHandler + 'static> Joins<H> {
-    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, (usize, CancellationToken)>> {
+    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, Joined>> {
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Forgets the session at `text` if it is still the `generation` join.
+    fn forget(&self, text: &str, generation: u64) {
+        let mut sessions = self.sessions();
+        if sessions
+            .get(text)
+            .is_some_and(|j| j.generation == generation)
+        {
+            sessions.remove(text);
+        }
+    }
+
     /// Joins the session at `text` (once per session), answering there
     /// until its inviters leave or nobody else is left.
     async fn join(self: &Arc<Self>, text: &str) -> Result<(), ModelFault> {
-        if let Some((inviters, _)) = self.sessions().get_mut(text) {
-            *inviters += 1;
-            return Ok(());
+        // One lock decides: join here, or wait on the join in progress.
+        let joining = {
+            let mut sessions = self.sessions();
+            match sessions.get_mut(text) {
+                Some(joined) => {
+                    joined.inviters += 1;
+                    Err(joined.joined.clone())
+                }
+                None => {
+                    let generation = self
+                        .generations
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let cancel = self.shutdown.child_token();
+                    let (done, joined) = tokio::sync::watch::channel(None);
+                    sessions.insert(
+                        text.to_string(),
+                        Joined {
+                            inviters: 1,
+                            cancel: cancel.clone(),
+                            generation,
+                            joined,
+                        },
+                    );
+                    Ok((generation, cancel, done))
+                }
+            }
+        };
+        let (generation, cancel, done) = match joining {
+            Ok(joining) => joining,
+            Err(mut outcome) => {
+                return match outcome.wait_for(Option::is_some).await {
+                    Ok(outcome) => outcome.clone().unwrap_or(Ok(())),
+                    Err(_) => Err(fault(
+                        "UNAVAILABLE",
+                        "the model's join was abandoned",
+                        false,
+                    )),
+                };
+            }
+        };
+        let outcome = self.answer_there(text, generation, cancel).await;
+        if outcome.is_err() {
+            self.forget(text, generation);
         }
+        done.send_replace(Some(outcome.clone()));
+        outcome
+    }
+
+    /// Joins the session at `text` and answers there until `cancel` fires.
+    async fn answer_there(
+        self: &Arc<Self>,
+        text: &str,
+        generation: u64,
+        cancel: CancellationToken,
+    ) -> Result<(), ModelFault> {
         let address: SessionAddress = text
             .parse()
             .map_err(|e: SessionError| fault("INVALID_REQUEST", e.to_string(), false))?;
@@ -821,9 +897,6 @@ impl<H: ModelHandler + 'static> Joins<H> {
                     false,
                 )
             })?;
-        let cancel = self.shutdown.child_token();
-        self.sessions()
-            .insert(text.to_string(), (1, cancel.clone()));
         // Alone in the session: every inviter is gone, whether or not it
         // said so.
         let mut roster = participant.watch();
@@ -845,7 +918,7 @@ impl<H: ModelHandler + 'static> Joins<H> {
             if let Err(err) = answer_in(joins.clone(), participant, address.base, cancel).await {
                 warn!(%err, session = %text, "model left an invited session");
             }
-            joins.sessions().remove(&text);
+            joins.forget(&text, generation);
         });
         Ok(())
     }
@@ -853,10 +926,10 @@ impl<H: ModelHandler + 'static> Joins<H> {
     /// One inviter of the session at `text` left.
     fn leave(&self, text: &str) {
         let mut sessions = self.sessions();
-        if let Some((inviters, cancel)) = sessions.get_mut(text) {
-            *inviters -= 1;
-            if *inviters == 0 {
-                cancel.cancel();
+        if let Some(joined) = sessions.get_mut(text) {
+            joined.inviters -= 1;
+            if joined.inviters == 0 {
+                joined.cancel.cancel();
                 sessions.remove(text);
             }
         }
@@ -1092,6 +1165,7 @@ impl ModelBinding {
             timeout,
             shutdown: shutdown.clone(),
             sessions: std::sync::Mutex::default(),
+            generations: std::sync::atomic::AtomicU64::new(0),
         });
         answer_in(joins, participant, self.session.base, shutdown).await
     }

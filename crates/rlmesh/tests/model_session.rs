@@ -792,3 +792,55 @@ async fn one_requests_error_does_not_fail_the_others_in_its_batch() {
             .contains("\"c\" was not resolved")
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_predict() {
+    let binding = ModelBinding::bind(":0/echo").await.unwrap();
+    let address = binding.address();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handler = Fused::default();
+    let service = Arc::new(ModelService::new(handler.clone(), String::new()));
+    let served = tokio::spawn(binding.serve(service, Duration::from_secs(2), cancel.clone()));
+    let mut target = rlmesh_session::address::host_at(
+        "127.0.0.1:0".parse().unwrap(),
+        "bench",
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+    let session = target.address.to_string();
+
+    let invites = (0..4).map(|i| {
+        let (address, session) = (address.clone(), session.clone());
+        tokio::spawn(async move {
+            let id = format!("driver-{i}");
+            ModelConnection::connect(&address, &id, Duration::from_secs(5))
+                .await
+                .unwrap()
+                .invite(&session, &id, Duration::from_secs(5))
+                .await
+                .unwrap()
+        })
+    });
+    let mut drivers = Vec::new();
+    for invite in invites.collect::<Vec<_>>() {
+        drivers.push(invite.await.unwrap());
+    }
+    let link = &drivers[0].link;
+    link.call(&resolve("a", 1), None).await.unwrap();
+    let (reply, _) = link
+        .call(&ModelRequest::Predict(vec![group("a", &[1.0])]), None)
+        .await
+        .unwrap();
+    assert!(matches!(reply, ModelReply::Predicted(_)), "{reply:?}");
+    // A second answerer would predict again, after the first reply.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(handler.calls(), [1]);
+
+    for driver in drivers {
+        driver.close().await;
+    }
+    cancel.cancel();
+    served.await.unwrap().unwrap();
+    target.close().await.unwrap();
+}
