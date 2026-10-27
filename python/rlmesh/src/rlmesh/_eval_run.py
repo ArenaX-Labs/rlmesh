@@ -17,12 +17,18 @@ its workloads reach in waves of at most ``maxEnvs``, each wave one
 :class:`~rlmesh.SandboxEnv` of its own. Each finished workload is written as
 an ``rlmesh.result.v1`` bundle under ``<out>/workloads/<id>`` and gets one
 JSON line in the status file; a failed one gets its error there instead.
+
+A workload is done once its bundle is in place: it is written beside it and
+renamed there, then its verdict recorded. A Ctrl-C at any point leaves every
+workload not yet in place undone for ``--resume`` to run again, and is raised
+once the wave's finished routes are written; no model or wave starts after.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -124,7 +130,6 @@ def _run_wave(
 ) -> None:
     """Run ``workloads`` as routes of one ``run_routes`` call, an env each."""
     import rlmesh
-    from rlmesh.recorder import Recorder
 
     envs: list[tuple[dict[str, Any], Any]] = []
     results: list[rlmesh.RunResult | BaseException] = []
@@ -184,6 +189,24 @@ def _run_wave(
             # A killed env has nothing left to close.
             with contextlib.suppress(Exception):
                 env.close()
+    try:
+        _persist(model, envs, results, out, report)
+    finally:
+        # A pending Ctrl-C wins over an export that failed beside it.
+        if interrupt is not None:
+            raise interrupt
+
+
+def _persist(
+    model: dict[str, Any],
+    envs: list[tuple[dict[str, Any], Any]],
+    results: list[Any],
+    out: Path,
+    report: Any,
+) -> None:
+    """Write each finished route's bundle into place, then its verdict."""
+    from rlmesh.recorder import Recorder
+
     for (workload, _), result in zip(envs, results, strict=True):
         if isinstance(result, KeyboardInterrupt):
             # Ctrl-C cut it short; the workloads that finished are still recorded.
@@ -212,6 +235,9 @@ def _run_wave(
             config["checkpoint"] = model["checkpoint"]
         if workload["shard"] is not None:
             config["shard"] = workload["shard"]
+        bundle = out / "workloads" / workload["id"]
+        partial = bundle.with_name(f".{bundle.name}.partial")
+        shutil.rmtree(partial, ignore_errors=True)
         with Recorder() as recorder:
             recorder.add(
                 result,
@@ -220,10 +246,9 @@ def _run_wave(
                 task=workload["task"],
                 config=config,
             )
-            recorder.export(out / "workloads" / workload["id"])
+            recorder.export(partial)
+        partial.rename(bundle)
         report(workload, status="done", episodes=result.num_episodes)
-    if interrupt is not None:
-        raise interrupt
 
 
 def _pinned(images: dict[str, str], image: str) -> str:

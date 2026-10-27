@@ -91,6 +91,7 @@ pub(crate) fn eval_run(
         .filter(|id| !status.contains_key(*id))
         .collect();
     write_index(&index_path, &document, &plan, &ids, &status)?;
+    let mut runner = None;
     if !pending.is_empty() {
         writeln!(
             stderr,
@@ -99,7 +100,9 @@ pub(crate) fn eval_run(
             plan.workloads.len(),
             plan.workloads.len() - pending.len()
         )?;
-        status.extend(run_workloads(args, &plan, &ids, &pending)?);
+        let (verdicts, exit) = run_workloads(args, &plan, &ids, &pending)?;
+        status.extend(verdicts);
+        runner = exit_code(exit);
     }
     for id in pending {
         status.entry(id.to_string()).or_insert_with(
@@ -135,7 +138,19 @@ pub(crate) fn eval_run(
             s["error"].as_str().unwrap_or_default()
         )?;
     }
-    Ok(i32::from(!failed.is_empty()))
+    // An interrupted or failed runner exits the run as it did, once what it
+    // finished is recorded and reported.
+    Ok(runner.unwrap_or(i32::from(!failed.is_empty())))
+}
+
+/// The exit code a runner that did not succeed passes on: 130 for a Ctrl-C,
+/// as the `rlmesh` entrypoint's own.
+fn exit_code(exit: std::process::ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    if std::os::unix::process::ExitStatusExt::signal(&exit) == Some(2) {
+        return Some(130);
+    }
+    (!exit.success()).then(|| exit.code().unwrap_or(1))
 }
 
 /// What differs between the run in `previous` (an index) and this one, or
@@ -222,13 +237,13 @@ fn write_index(
 }
 
 /// Run the pending workloads through `python -m rlmesh._eval_run`, and read
-/// back each one's verdict.
+/// back each one's verdict and how the runner exited.
 fn run_workloads(
     args: &EvalRunArgs,
     plan: &Plan,
     ids: &BTreeMap<String, String>,
     pending: &[&str],
-) -> Result<BTreeMap<String, Value>> {
+) -> Result<(BTreeMap<String, Value>, std::process::ExitStatus)> {
     let status_path = args.out.join("status.jsonl");
     if status_path.exists() {
         std::fs::remove_file(&status_path)?;
@@ -271,7 +286,7 @@ fn run_workloads(
     if !exit.success() && verdicts.is_empty() {
         bail!("python -m {RUN_MODULE} exited with {exit}");
     }
-    Ok(verdicts)
+    Ok((verdicts, exit))
 }
 
 /// The image and labels behind every model and env the request names, and
@@ -502,6 +517,24 @@ mod tests {
             got.is_some_and(|why| why.contains("no image ids")),
             "{got:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupted_or_failed_runner_fails_the_run() {
+        use std::os::unix::process::ExitStatusExt;
+        for (raw, want) in [
+            (0, None),
+            (1 << 8, Some(1)),
+            (130 << 8, Some(130)),
+            (2, Some(130)),
+        ] {
+            assert_eq!(
+                exit_code(std::process::ExitStatus::from_raw(raw)),
+                want,
+                "{raw}"
+            );
+        }
     }
 
     #[test]

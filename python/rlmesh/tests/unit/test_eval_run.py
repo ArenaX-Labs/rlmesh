@@ -13,9 +13,9 @@ from rlmesh import _eval_run
 from rlmesh._models._eval import EpisodeResult
 
 
-@pytest.mark.parametrize("cut", [False, True])
+@pytest.mark.parametrize("ctrl_c", [None, "late", "cut", "all cut", "export fails"])
 def test_eval_run_waves_of_max_envs_keep_finished_bundles_past_a_failure_and_ctrl_c(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ctrl_c: str | None
 ) -> None:
     live, peak, waves = [0], [0], [0]
     launched: set[object] = set()
@@ -38,12 +38,15 @@ def test_eval_run_waves_of_max_envs_keep_finished_bundles_past_a_failure_and_ctr
             results: list[Any] = [rlmesh.RunResult((episode,)) for _ in routes]
             if waves[0] == 1:
                 results[1] = ValueError("the env broke")
+            if waves[0] != 2 or ctrl_c is None:
                 return results, None
-            # Ctrl-C in the second wave: it cut the last route short, or was
-            # caught as that route finished.
+            # Ctrl-C in the second wave: caught as its routes finished, or it
+            # cut the last route or both short.
             interrupt = KeyboardInterrupt()
-            if cut:
+            if ctrl_c in ("cut", "all cut"):
                 results[1] = interrupt
+            if ctrl_c == "all cut":
+                results[0] = interrupt
             return results, interrupt
 
     class Model:
@@ -62,6 +65,17 @@ def test_eval_run_waves_of_max_envs_keep_finished_bundles_past_a_failure_and_ctr
         def _served(self) -> Served:
             return Served()
 
+    if ctrl_c == "export fails":
+        from rlmesh.recorder import Recorder
+
+        export = Recorder.export
+
+        def full_disk(self: Recorder, path: Path, **kwargs: Any) -> Path:
+            if path.name == ".w3.partial":
+                raise OSError("no space left on device")
+            return export(self, path, **kwargs)
+
+        monkeypatch.setattr(Recorder, "export", full_disk)
     monkeypatch.setattr(rlmesh, "SandboxModel", Model)
     monkeypatch.setattr(rlmesh, "SandboxEnv", Env)
     workloads = [
@@ -113,23 +127,36 @@ def test_eval_run_waves_of_max_envs_keep_finished_bundles_past_a_failure_and_ctr
     }
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(job)))
 
-    with pytest.raises(KeyboardInterrupt):
-        _eval_run.main()
+    if ctrl_c is None:
+        assert _eval_run.main() == 0
+    else:
+        with pytest.raises(KeyboardInterrupt):
+            _eval_run.main()
     assert peak[0] == 2 and live[0] == 0
     # Every wave runs the images the CLI resolved, by id.
     assert launched == {"docker://sha256:m", "docker://sha256:e"}
     # Finished workloads keep their bundles, a failed or cut one fails alone,
-    # and the wave after the interrupt never starts.
-    assert waves[0] == 2
+    # and the wave after the interrupt never starts; without one the last,
+    # partial wave runs too.
+    assert waves[0] == (3 if ctrl_c is None else 2)
     verdicts = {
         line["workload"]: (line["status"], line.get("error"))
         for line in map(json.loads, status.read_text().splitlines())
     }
+    cut = ("failed", "interrupted")
+    want = {
+        None: {"w2": ("done", None), "w3": ("done", None), "w4": ("done", None)},
+        "late": {"w2": ("done", None), "w3": ("done", None)},
+        "cut": {"w2": ("done", None), "w3": cut},
+        "all cut": {"w2": cut, "w3": cut},
+        "export fails": {"w2": ("done", None)},
+    }[ctrl_c]
     assert verdicts == {
         "w0": ("done", None),
         "w1": ("failed", "ValueError: the env broke"),
-        "w2": ("done", None),
-        "w3": ("failed", "interrupted") if cut else ("done", None),
+        **want,
     }
+    # A bundle is in place only once written whole.
     bundles = {p.name for p in (tmp_path / "workloads").iterdir()}
-    assert bundles == ({"w0", "w2"} if cut else {"w0", "w2", "w3"})
+    done = {w for w, (state, _) in verdicts.items() if state == "done"}
+    assert bundles == done
