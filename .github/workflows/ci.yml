@@ -2,7 +2,9 @@ name: CI
 
 on:
   workflow_dispatch:
+  # Draft PRs skip CI; marking one ready runs it once.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - main
@@ -17,6 +19,7 @@ concurrency:
 jobs:
   fast:
     name: Fast Checks
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: depot-ubuntu-24.04-8
     env:
       UV_CACHE_DIR: /tmp/.uv-cache
@@ -122,6 +125,7 @@ jobs:
   # other job installs them.
   browser:
     name: Browser (wasm + JS)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 30
 
