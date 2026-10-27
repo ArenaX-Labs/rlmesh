@@ -5,9 +5,11 @@
 //! describe envelope (its `dev.rlmesh.describe` label, else `python -m
 //! rlmesh._describe` run in the image). `python -m rlmesh._eval_run` then
 //! runs the workloads in sandboxes and writes their bundles, and the report
-//! is read back from them. `<out>/index.json` holds the request, the plan,
-//! the id of every image it runs and each workload's status; `--resume`
-//! continues only a run of the same request, plan and images.
+//! is read back from them. Each image reference resolves to its image id
+//! once, here; every container after (the describe, each wave's model and
+//! envs) runs by that id, so a retag mid-run changes nothing. `<out>/index.json`
+//! holds the request, the plan, those ids and each workload's status;
+//! `--resume` continues only a run of the same request, plan and images.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -35,9 +37,8 @@ pub(crate) fn eval_run(
 ) -> Result<i32> {
     let document = crate::platform::read_request(&args.request)?;
     let request = EvalRequest::parse(&document)?;
-    let images = resolve_images(&request, args.catalog.as_deref(), stderr)?;
+    let (images, ids) = resolve_images(&request, args.catalog.as_deref(), stderr)?;
     let plan = plan::compile(&request, &images)?;
-    let ids = image_ids(&images)?;
     for warning in &plan.warnings {
         writeln!(stderr, "warning: {warning}")?;
     }
@@ -65,7 +66,7 @@ pub(crate) fn eval_run(
             .with_context(|| format!("reading {}", index_path.display()))?;
         if let Some(changed) = changed_since(&previous, &document, &plan, &ids)? {
             bail!(
-                "{} holds a run of {changed}; --resume continues the same one",
+                "{} holds {changed}; --resume continues only the same run",
                 args.out.display()
             );
         }
@@ -98,7 +99,7 @@ pub(crate) fn eval_run(
             plan.workloads.len(),
             plan.workloads.len() - pending.len()
         )?;
-        status.extend(run_workloads(args, &plan, &pending)?);
+        status.extend(run_workloads(args, &plan, &ids, &pending)?);
     }
     for id in pending {
         status.entry(id.to_string()).or_insert_with(
@@ -139,7 +140,8 @@ pub(crate) fn eval_run(
 
 /// What differs between the run in `previous` (an index) and this one, or
 /// `None` when this run continues it: a retagged image or a recompiled plan
-/// would mix two runs in one report.
+/// would mix two runs in one report, and an index written before runs
+/// recorded image ids cannot show its images are these.
 fn changed_since(
     previous: &Value,
     request: &Value,
@@ -147,35 +149,16 @@ fn changed_since(
     ids: &BTreeMap<String, String>,
 ) -> Result<Option<&'static str>> {
     Ok(if previous["request"] != *request {
-        Some("another request")
+        Some("a run of another request")
+    } else if previous["images"].is_null() {
+        Some("a run that recorded no image ids, so its images cannot be verified")
     } else if previous["images"] != serde_json::to_value(ids)? {
-        Some("other images (one was rebuilt or retagged since)")
+        Some("a run of other images (one was rebuilt or retagged since)")
     } else if previous["plan"] != serde_json::to_value(plan)? {
-        Some("another plan")
+        Some("a run of another plan")
     } else {
         None
     })
-}
-
-/// Each image's id (its config digest), by reference.
-fn image_ids(images: &Images) -> Result<BTreeMap<String, String>> {
-    let mut ids = BTreeMap::new();
-    for entry in images.models.values().chain(images.envs.values()) {
-        if ids.contains_key(&entry.image) {
-            continue;
-        }
-        let output = Command::new("docker")
-            .args(["image", "inspect", "--format", "{{.Id}}", &entry.image])
-            .stdin(Stdio::null())
-            .output()
-            .context("running docker image inspect")?;
-        if !output.status.success() {
-            bail!("docker image inspect {} failed", entry.image);
-        }
-        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        ids.insert(entry.image.clone(), id);
-    }
-    Ok(ids)
 }
 
 fn bundle_dir(out: &Path, workload: &Workload) -> PathBuf {
@@ -243,6 +226,7 @@ fn write_index(
 fn run_workloads(
     args: &EvalRunArgs,
     plan: &Plan,
+    ids: &BTreeMap<String, String>,
     pending: &[&str],
 ) -> Result<BTreeMap<String, Value>> {
     let status_path = args.out.join("status.jsonl");
@@ -251,6 +235,7 @@ fn run_workloads(
     }
     let job = json!({
         "plan": plan,
+        "images": ids,
         "pending": pending,
         "out": args.out,
         "gpus": args.gpus,
@@ -289,16 +274,19 @@ fn run_workloads(
     Ok(verdicts)
 }
 
-/// The image and labels behind every model and env the request names.
+/// The image and labels behind every model and env the request names, and
+/// each image's id by reference.
 fn resolve_images(
     request: &EvalRequest,
     catalog: Option<&str>,
     stderr: &mut impl Write,
-) -> Result<Images> {
+) -> Result<(Images, BTreeMap<String, String>)> {
     let mut images = Images::default();
+    let mut ids = BTreeMap::new();
     for model in &request.models {
         if !images.models.contains_key(&model.model) {
-            let (image, config) = inspect(&catalog_image(&model.model, catalog), stderr)?;
+            let image = catalog_image(&model.model, catalog);
+            let config = inspect(&image, &mut ids, stderr)?;
             images.models.insert(
                 model.model.clone(),
                 ImageEntry {
@@ -311,18 +299,19 @@ fn resolve_images(
     }
     for task in &request.tasks {
         if !images.envs.contains_key(&task.env) {
-            let (image, config) = inspect(&catalog_image(&task.env, catalog), stderr)?;
+            let image = catalog_image(&task.env, catalog);
+            let config = inspect(&image, &mut ids, stderr)?;
             images.envs.insert(
                 task.env.clone(),
                 ImageEntry {
                     package: package_label(&image, &config)?,
-                    describe: describe(&image, &config, stderr)?,
+                    describe: describe(&image, &ids[&image], &config, stderr)?,
                     image,
                 },
             );
         }
     }
-    Ok(images)
+    Ok((images, ids))
 }
 
 /// A catalog name's image: `prebuilt/<path>[:tag]` is the local build
@@ -353,11 +342,42 @@ fn catalog_image(name: &str, catalog: Option<&str>) -> String {
     )
 }
 
-/// The image's config, pulled first when it is not here.
-fn inspect(image: &str, stderr: &mut impl Write) -> Result<(String, ImageConfig)> {
-    if let Ok(config) = docker_inspect(image) {
-        return Ok((image.to_string(), config));
+/// The config of the image `image` names, pulled first when it is not
+/// here. Its id goes in `ids` the first time, and the config is read by
+/// that id, so both are one image.
+fn inspect(
+    image: &str,
+    ids: &mut BTreeMap<String, String>,
+    stderr: &mut impl Write,
+) -> Result<ImageConfig> {
+    if !ids.contains_key(image) {
+        let id = match image_id(image) {
+            Some(id) => id,
+            None => {
+                pull(image, stderr)?;
+                image_id(image).with_context(|| format!("docker pull {image} left no image"))?
+            }
+        };
+        ids.insert(image.to_string(), id);
     }
+    docker_inspect(&ids[image])
+}
+
+/// The id (config digest) of the local image `image` names.
+fn image_id(image: &str) -> Option<String> {
+    let output = Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", image])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+fn pull(image: &str, stderr: &mut impl Write) -> Result<()> {
     writeln!(stderr, "eval run: pulling {image}")?;
     let pulled = Command::new("docker")
         .args(["pull", image])
@@ -368,7 +388,7 @@ fn inspect(image: &str, stderr: &mut impl Write) -> Result<(String, ImageConfig)
     if !pulled.success() {
         bail!("docker pull {image} failed");
     }
-    Ok((image.to_string(), docker_inspect(image)?))
+    Ok(())
 }
 
 fn package_label(image: &str, config: &ImageConfig) -> Result<Value> {
@@ -382,8 +402,8 @@ fn package_label(image: &str, config: &ImageConfig) -> Result<Value> {
 }
 
 /// An env's describe envelope: its label, else `rlmesh._describe` run in the
-/// image on the target its command serves.
-fn describe(image: &str, config: &ImageConfig, stderr: &mut impl Write) -> Result<Value> {
+/// image (by its `id`) on the target its command serves.
+fn describe(image: &str, id: &str, config: &ImageConfig, stderr: &mut impl Write) -> Result<Value> {
     if let Some(raw) = config.labels.get(DESCRIBE_LABEL) {
         return serde_json::from_str(raw)
             .with_context(|| format!("{image}: {DESCRIBE_LABEL} is not JSON"));
@@ -405,7 +425,7 @@ fn describe(image: &str, config: &ImageConfig, stderr: &mut impl Write) -> Resul
             "none",
             "--entrypoint",
             python,
-            image,
+            id,
         ])
         .args(["-m", "rlmesh._describe", &target])
         .stdin(Stdio::null())
@@ -475,6 +495,13 @@ mod tests {
             let got = changed_since(&index, request, plan, ids).unwrap();
             assert_eq!(got.is_some(), changed, "{name}: {got:?}");
         }
+        // An index from before runs recorded image ids says so.
+        let legacy = json!({"request": request, "plan": plan});
+        let got = changed_since(&legacy, &request, &plan, &ids).unwrap();
+        assert!(
+            got.is_some_and(|why| why.contains("no image ids")),
+            "{got:?}"
+        );
     }
 
     #[test]

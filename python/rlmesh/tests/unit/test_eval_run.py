@@ -18,9 +18,11 @@ def test_eval_run_waves_of_max_envs_keep_finished_bundles_past_a_failure_and_ctr
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: bool
 ) -> None:
     live, peak, waves = [0], [0], [0]
+    launched: set[object] = set()
 
     class Env:
-        def __init__(self, *args: object, **kwargs: object) -> None:
+        def __init__(self, image: object, **kwargs: object) -> None:
+            launched.add(image)
             live[0] += 1
             peak[0] = max(peak[0], live[0])
 
@@ -45,8 +47,8 @@ def test_eval_run_waves_of_max_envs_keep_finished_bundles_past_a_failure_and_ctr
             return results, interrupt
 
     class Model:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
+        def __init__(self, image: object, **kwargs: object) -> None:
+            launched.add(image)
 
         def __enter__(self) -> Model:
             return self
@@ -101,6 +103,7 @@ def test_eval_run_waves_of_max_envs_keep_finished_bundles_past_a_failure_and_ctr
     status = tmp_path / "status.jsonl"
     job = {
         "plan": plan,
+        "images": {"m:latest": "sha256:m", "env:latest": "sha256:e"},
         "pending": [w["id"] for w in workloads],
         "out": str(tmp_path),
         "gpus": None,
@@ -113,6 +116,8 @@ def test_eval_run_waves_of_max_envs_keep_finished_bundles_past_a_failure_and_ctr
     with pytest.raises(KeyboardInterrupt):
         _eval_run.main()
     assert peak[0] == 2 and live[0] == 0
+    # Every wave runs the images the CLI resolved, by id.
+    assert launched == {"docker://sha256:m", "docker://sha256:e"}
     # Finished workloads keep their bundles, a failed or cut one fails alone,
     # and the wave after the interrupt never starts.
     assert waves[0] == 2

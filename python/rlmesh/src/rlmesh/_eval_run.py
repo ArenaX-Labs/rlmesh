@@ -4,9 +4,12 @@ Private glue for the CLI, which compiles the plan (``rlmesh::binding::plan``),
 skips what ``--resume`` finds recorded, and reports on the bundles written
 here. It reads one job on stdin::
 
-    {"plan": {...}, "pending": [workload ids], "out": dir,
-     "gpus": "all" | null, "volumes": ["host:ctr", ...], "maxEnvs": n,
-     "status": path}
+    {"plan": {...}, "images": {reference: image id}, "pending": [workload ids],
+     "out": dir, "gpus": "all" | null, "volumes": ["host:ctr", ...],
+     "maxEnvs": n, "status": path}
+
+Every container runs by the id the CLI resolved its image reference to, so
+a retag while the run goes (between waves too) cannot change what runs.
 
 Models run one at a time, each as one :class:`~rlmesh.SandboxModel` that
 its workloads reach in waves of at most ``maxEnvs``, each wave one
@@ -89,7 +92,7 @@ def _run_model(
         )
 
     with rlmesh.SandboxModel(
-        model["image"],
+        _pinned(job["images"], model["image"]),
         runtime=runtime(model["gpu"]),
         connect_timeout_seconds=MODEL_CONNECT_TIMEOUT_SECONDS,
         **model["params"],
@@ -105,6 +108,7 @@ def _run_model(
                 runtime,
                 out,
                 report,
+                job["images"],
             )
 
 
@@ -116,6 +120,7 @@ def _run_wave(
     runtime: Any,
     out: Path,
     report: Any,
+    images: dict[str, str],
 ) -> None:
     """Run ``workloads`` as routes of one ``run_routes`` call, an env each."""
     import rlmesh
@@ -128,7 +133,7 @@ def _run_wave(
 
         def start(workload: dict[str, Any]) -> object:
             return rlmesh.SandboxEnv(
-                workload["envImage"],
+                _pinned(images, workload["envImage"]),
                 runtime=runtime(workload["envGpu"]),
                 connect_timeout_seconds=ENV_CONNECT_TIMEOUT_SECONDS,
                 model=served,
@@ -219,6 +224,11 @@ def _run_wave(
         report(workload, status="done", episodes=result.num_episodes)
     if interrupt is not None:
         raise interrupt
+
+
+def _pinned(images: dict[str, str], image: str) -> str:
+    """The sandbox source that runs ``image`` by the id the CLI resolved."""
+    return f"docker://{images[image]}"
 
 
 if __name__ == "__main__":
