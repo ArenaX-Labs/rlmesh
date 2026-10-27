@@ -219,6 +219,11 @@ struct Queued {
     reply: oneshot::Sender<(Vec<ModelOutcome>, EndpointTiming)>,
 }
 
+/// A phase measured here plus the backend's share of it; zero as `None`.
+fn sum_ns(here: Option<u64>, backend: u64) -> Option<u64> {
+    Some(here.unwrap_or(0).saturating_add(backend)).filter(|ns| *ns != 0)
+}
+
 /// The observation bytes a predict carries, history included.
 fn observation_bytes(groups: &[ModelGroup]) -> usize {
     let leaves = |leaves: &[Bytes]| leaves.iter().map(Bytes::len).sum::<usize>();
@@ -509,7 +514,16 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             timing.held_episodes = Some(u32::try_from(held.episodes).unwrap_or(u32::MAX));
             timing.held_state_bytes = Some(held.bytes);
         }
+        // A model served elsewhere (this one proxies it) reports its own
+        // phases: its user time replaces the call's wall time, which holds
+        // the hop, and its decode, encode and queue add to this side's.
+        let backend = handler.take_endpoint_timing().map(|(_, phases)| phases);
         drop(handler);
+        if let Some(backend) = &backend {
+            timing.user_ns = Some(backend.user_ns).filter(|ns| *ns != 0);
+            timing.decode_ns = sum_ns(timing.decode_ns, backend.decode_ns);
+            timing.queue_ns = sum_ns(timing.queue_ns, backend.queue_ns);
+        }
         let encoded = Instant::now();
         let outcomes = prepared
             .into_iter()
@@ -527,6 +541,9 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             })
             .collect();
         timing.encode_ns = ns(encoded.elapsed());
+        if let Some(backend) = &backend {
+            timing.encode_ns = sum_ns(timing.encode_ns, backend.encode_ns);
+        }
         outcomes
     }
 

@@ -747,6 +747,41 @@ async fn a_batchs_inference_time_is_split_across_its_requests() {
     assert_eq!(slow.0.calls(), vec![2], "one handler call for both");
 }
 
+/// Proxies a model served elsewhere: its call takes 100 ms on the wire, of
+/// which the backend reports 3 ms of its own work.
+struct Proxy;
+
+#[rlmesh::binding::async_trait]
+impl ModelHandler for Proxy {
+    async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        observation.decoded_lanes()
+    }
+
+    fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
+        Some((
+            Some(4_000_000),
+            rlmesh_proto::EndpointPhases {
+                user_ns: 3_000_000,
+                queue_ns: 1_000_000,
+                ..Default::default()
+            },
+        ))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_proxied_model_reports_its_backends_phases_not_the_hop() {
+    let service = Arc::new(ModelService::new(Proxy, String::new()));
+    service.answer(resolve("a", 1)).await;
+    let (reply, timing) = service
+        .answer(ModelRequest::Predict(vec![group("a", &[1.0])]))
+        .await;
+    assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
+    assert_eq!(timing.user_ns, Some(3_000_000), "{timing:?}");
+    assert!(timing.queue_ns >= Some(1_000_000), "{timing:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_model_that_does_not_fuse_is_not_batched() {
     // Echo runs a grouped predict one route at a time.
