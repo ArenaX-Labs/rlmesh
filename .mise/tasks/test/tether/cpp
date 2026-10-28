@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+#MISE description="Build the Arduino tether codec (embedded/arduino/RLMeshTether) on the host as a board would (C++11, no exceptions, RTTI, heap or C++ library), compile it for AVR when zig is available, and run the conformance vectors against it"
+#MISE dir="{{ config_root }}"
+
+# avr-gcc ships no C++ standard library, so the codec is compiled with
+# -nostdinc++ and its objects may reference nothing outside themselves but
+# libc's memcpy/memset. The runner itself is host C++ and reads the same
+# vectors.json the Rust crate checks against.
+set -euo pipefail
+
+lib=embedded/arduino/RLMeshTether
+vectors=crates/rlmesh-tether/tests/vectors.json
+out=target/tether-cpp
+mkdir -p "$out"
+# Keep compiler scratch off the shared /tmp filesystem.
+export TMPDIR="${TMPDIR:-$PWD/target/cxx-tmp}"
+mkdir -p "$TMPDIR"
+
+if grep -rn 'Arduino\.h' "$lib/src"; then
+  echo "the codec headers must not include Arduino.h" >&2
+  exit 1
+fi
+
+# An explicit CXX selects one compiler; the local default runs GCC and, when
+# available, zig's bundled clang. $CXX may carry args ("zig c++"), so it is
+# left unquoted below. Empty arrays expand as ${a[@]+"${a[@]}"}: bash before
+# 4.4 (macOS) treats a bare "${a[@]}" of an empty array as unset under -u.
+compilers=("${CXX:-g++}")
+if [ -z "${CXX:-}" ] && command -v zig >/dev/null; then compilers+=("zig c++"); fi
+
+warn=(-Wall -Wextra -Werror -pedantic -Wshadow -Wconversion)
+board=(-std=gnu++11 -Os -fno-exceptions -fno-rtti -nostdinc++)
+sources=("$lib"/src/rlmesh_tether/*.cpp)
+
+# Succeeds only when `$cxx "$@"` builds the probe `$2` and running it fails
+# the way the sanitizer reports: its stderr matches `$1` (a trap has no
+# report, so "" accepts any failure). A sanitizer the toolchain accepts but
+# drops (zig ignores -fsanitize=address) never counts as running, nor does a
+# runtime that crashes or hangs at startup (bounded by `timeout`).
+catches() {
+  local want="$1" probe="$2" err
+  shift 2
+  $cxx "$@" "$probe" -o "$out/probe" 2>/dev/null || return 1
+  # In a subshell that outlives the probe, so the shell's own report of a
+  # trap ("Illegal instruction") is captured with the rest.
+  if err=$( (
+    ulimit -c 0
+    timeout 20 "$out/probe"
+    exit $?
+  ) 2>&1 >/dev/null); then
+    return 1
+  fi
+  [ -z "$want" ] || grep -q "$want" <<<"$err"
+}
+# An overflow through a pointer: ASan sees it, UBSan's bounds check can't.
+printf '%s\n' 'int main(int argc, char**) { char a[4] = {0}; char* volatile p = a; p[argc + 3] = 1; return p[0]; }' \
+  >"$out/probe-asan.cpp"
+# Signed overflow: UBSan only.
+printf '%s\n' '#include <limits.h>' 'int main(int argc, char**) { volatile int x = INT_MAX; volatile int y = x + argc; return y == 0; }' \
+  >"$out/probe-ubsan.cpp"
+
+for cxx in "${compilers[@]}"; do
+  tag="$(basename "${cxx%% *}")"
+  quiet=()
+  case "$cxx" in *zig*) quiet=(-Wno-unused-command-line-argument) ;; esac
+  echo "==> $cxx: the codec as a board builds it"
+  objs=()
+  for src in "${sources[@]}"; do
+    obj="$out/$tag-$(basename "${src%.cpp}").o"
+    $cxx "${board[@]}" "${warn[@]}" ${quiet[@]+"${quiet[@]}"} -c "$src" -o "$obj"
+    objs+=("$obj")
+  done
+  # Mach-O prefixes C symbols with an underscore.
+  undefined=$(nm -u "${objs[@]}" | awk 'NF == 2 {print $2}' | sort -u)
+  defined=$(nm --defined-only "${objs[@]}" | awk 'NF == 3 {print $3}' | sort -u)
+  external=$(comm -23 <(echo "$undefined") <(echo "$defined") | grep -Ev '^_?(memcpy|memset)$' || true)
+  if [ -n "$external" ]; then
+    echo "the codec references symbols outside itself: $(echo "$external" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+
+  echo "==> $cxx: conformance vectors"
+  checks=()
+  ran="none"
+  # grep reads all of nm's output: with pipefail, `nm | grep -q` fails when
+  # grep exits early and nm dies of SIGPIPE (a static ASan runtime).
+  if catches 'AddressSanitizer' "$out/probe-asan.cpp" -fsanitize=address &&
+    grep -q __asan_init <(nm "$out/probe") &&
+    catches 'runtime error' "$out/probe-ubsan.cpp" -fsanitize=address,undefined -fno-sanitize-recover=all; then
+    # shellcheck disable=SC2054 # one flag, not a list
+    checks=(-fsanitize=address,undefined -fno-sanitize-recover=all)
+    ran="ASan + UBSan"
+  elif catches '' "$out/probe-ubsan.cpp" -fsanitize=undefined -fsanitize-trap=all; then
+    # UBSan in trap mode needs no runtime library.
+    checks=(-fsanitize=undefined -fsanitize-trap=all)
+    ran="UBSan (trap)"
+  fi
+  case "$tag" in g++* | *-g++*)
+    # libstdc++'s bounds checks on the runner's containers.
+    checks+=(-D_GLIBCXX_ASSERTIONS)
+    ran="$ran, libstdc++ assertions"
+    ;;
+  esac
+  echo "    checks: $ran"
+  # CI sets this so an image change can't quietly drop ASan.
+  if [ -n "${TETHER_CPP_REQUIRE_ASAN:-}" ] && [ "${ran#ASan}" = "$ran" ]; then
+    echo "ASan is required (TETHER_CPP_REQUIRE_ASAN) but didn't run" >&2
+    exit 1
+  fi
+  $cxx -std=c++11 -g -fno-exceptions -fno-rtti "${warn[@]}" ${quiet[@]+"${quiet[@]}"} \
+    ${checks[@]+"${checks[@]}"} "$lib/test/vectors_test.cpp" "${sources[@]}" -o "$out/$tag-vectors_test"
+  "$out/$tag-vectors_test" "$vectors"
+done
+
+# AVR, where int is 16 bits: compile only, with a stub <avr/pgmspace.h> (zig
+# ships no avr-libc). Local default only: skipped without zig or when CXX
+# picks one compiler (CI); a real avr-gcc build is the sketch's job.
+if [ -z "${CXX:-}" ] && command -v zig >/dev/null; then
+  echo "==> zig c++: the codec for AVR (atmega328p), compile only"
+  stub="$out/avr-stub"
+  mkdir -p "$stub/avr"
+  printf '%s\n' '#define pgm_read_byte(addr) (*(const unsigned char*)(addr))' >"$stub/avr/pgmspace.h"
+  for src in "${sources[@]}"; do
+    zig c++ -target avr-freestanding-none -mcpu=atmega328p -ffreestanding -isystem "$stub" \
+      "${board[@]}" "${warn[@]}" -Wno-avr-rtlib-linking-quirks \
+      -c "$src" -o "$out/avr-$(basename "${src%.cpp}").o"
+  done
+else
+  echo "==> AVR compile check skipped (CXX set, or zig not found)"
+fi

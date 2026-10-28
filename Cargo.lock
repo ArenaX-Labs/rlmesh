@@ -5759,6 +5759,9 @@ dependencies = [
 [[package]]
 name = "rlmesh-tether"
 version = "0.2.0-alpha.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "rlmesh-wasm"

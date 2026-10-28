@@ -457,6 +457,9 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) -> Result<(), MsgError
     let mut head = [0_u8; 31];
     let (t, n, tail): (u8, usize, &[u8]) = match *msg {
         Msg::Hello(ref h) => {
+            // Decode's order after the name length (which frames the payload, so
+            // decode checks it first): reserved bits, ranges, UTF-8.
+            no_reserved(h.flags, hello_flags::ALL)?;
             if h.name.len() > MAX_NAME
                 || !WATCHDOG_MS.contains(&h.watchdog_ms)
                 || !RX_MAX.contains(&h.rx_max)
@@ -466,7 +469,6 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) -> Result<(), MsgError
             if core::str::from_utf8(h.name).is_err() {
                 return Err(MsgError::Utf8);
             }
-            no_reserved(h.flags, hello_flags::ALL)?;
             head[..4].copy_from_slice(&MAGIC);
             head[4] = VERSION;
             head[5..7].copy_from_slice(&h.lib_version.to_le_bytes());

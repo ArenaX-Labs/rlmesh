@@ -16,5 +16,8 @@ publish = true
 # no_std and allocation-free: the same code runs on the bridge and on a board.
 [dependencies]
 
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [lints]
 workspace = true
