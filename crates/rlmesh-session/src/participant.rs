@@ -7,7 +7,13 @@
 //! hands out endpoints addressed by robot and path: sample publishers and
 //! subscribers, chunk publishers, history queries, the virtual-mode tick
 //! stream, and the hooks an edge runtime needs ([`AuthorityView`],
-//! [`EdgeReport`], [`Participant::report_safe`]).
+//! [`EdgeReport`], [`Participant::report_safe`], the local e-stop latch).
+//!
+//! A robot process tells the host about its own stops through **one ordered
+//! queue** (DESIGN §6): `EnterSafe`, a local `Estop` and its `Clear` are
+//! sent in the order they happened, each retried until the host answers, so
+//! a host that comes back after a partition sees `Estop` before `Clear` and
+//! ends in ESTOP (unlatched), which still needs disarm and arm.
 //!
 //! An embodiment's publishers follow their streams' publication plans
 //! (§8.2): a background task installs each `Demand` the host publishes on
@@ -230,12 +236,46 @@ impl ManualView {
     }
 }
 
-/// An edge's request that the session go SAFE.
+/// A robot process's local e-stop latch: an atomic flag, and how many
+/// times it was latched, so an edge that missed a latch cleared before its
+/// next look still stops (and fences) for it.
+#[derive(Debug, Default)]
+pub(crate) struct LocalLatch {
+    latched: AtomicBool,
+    latches: AtomicU64,
+}
+
+impl LocalLatch {
+    /// Latches it.
+    fn latch(&self) {
+        self.latches.fetch_add(1, Ordering::SeqCst);
+        self.latched.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether it is latched now.
+    pub(crate) fn is_latched(&self) -> bool {
+        self.latched.load(Ordering::SeqCst)
+    }
+
+    /// How many times it was latched.
+    pub(crate) fn latches(&self) -> u64 {
+        self.latches.load(Ordering::SeqCst)
+    }
+}
+
+/// What a robot process tells the host about its own stops, in order.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SafeReport {
-    epoch: Epoch,
-    code: ReasonCode,
-    reason: String,
+enum Report {
+    /// It fell back on its own account in `epoch`: the session goes SAFE.
+    Safe {
+        epoch: Epoch,
+        code: ReasonCode,
+        reason: String,
+    },
+    /// It latched a local e-stop.
+    Estop { reason: String },
+    /// It cleared that latch.
+    Clear,
 }
 
 /// A handle that tells the host an edge fell back on its own account, for
@@ -243,14 +283,14 @@ struct SafeReport {
 /// [`Participant::report_safe`].
 #[derive(Clone, Debug)]
 pub struct SafeReporter {
-    tx: mpsc::UnboundedSender<SafeReport>,
+    tx: mpsc::UnboundedSender<Report>,
 }
 
 impl SafeReporter {
     /// Queues an `EnterSafe` for a fault in `epoch`; never blocks.
     pub fn report(&self, epoch: Epoch, code: ReasonCode, reason: impl Into<String>) {
         // The reporter task is gone only after the participant closed.
-        let _ = self.tx.send(SafeReport {
+        let _ = self.tx.send(Report::Safe {
             epoch,
             code,
             reason: reason.into(),
@@ -281,8 +321,10 @@ struct Shared {
     /// The newest seq received per subscribed channel.
     seen: Mutex<BTreeMap<ChannelId, Arc<AtomicU64>>>,
     edge: Arc<EdgeReport>,
-    /// Edges' requests that the session go SAFE, sent by the reporter task.
-    reports: mpsc::UnboundedSender<SafeReport>,
+    /// This robot process's stops, sent in order by the reporter task.
+    reports: mpsc::UnboundedSender<Report>,
+    /// The local e-stop latch every edge of this process reads each tick.
+    estop: Arc<LocalLatch>,
     /// This controller's binding revisions.
     binding_revision: AtomicU32,
     /// This embodiment's publishers by stream, for installing demands.
@@ -525,6 +567,7 @@ impl Participant {
             seen: Mutex::new(BTreeMap::new()),
             edge: Arc::new(EdgeReport::default()),
             reports,
+            estop: Arc::default(),
             binding_revision: AtomicU32::new(0),
             outlets: Mutex::new(BTreeMap::new()),
             demand_wake: Notify::new(),
@@ -608,7 +651,7 @@ impl Participant {
         let mut participant = Self {
             shared: shared.clone(),
             tasks: vec![
-                tokio::spawn(report_safe(shared.clone(), report_rx, cancel.clone())),
+                tokio::spawn(report_stops(shared.clone(), report_rx, cancel.clone())),
                 tokio::spawn(install_demands(shared.clone(), cancel.clone())),
                 tokio::spawn(report_streams(shared.clone(), cancel.clone())),
             ],
@@ -1174,6 +1217,39 @@ impl Participant {
         self.safe_reporter().report(epoch, code, reason);
     }
 
+    /// Latches this robot process's local e-stop (DESIGN §6): an atomic
+    /// store, safe from any thread (a hardware button's handler too), that
+    /// needs no network. Every edge of this process refuses chunks and runs
+    /// Estop from its next tick; a background task reports
+    /// `Estop{ESTOP_LOCAL}` to the host, retrying, in order with the other
+    /// reports.
+    pub fn latch_estop(&self, reason: impl Into<String>) {
+        self.shared.estop.latch();
+        let _ = self.shared.reports.send(Report::Estop {
+            reason: reason.into(),
+        });
+    }
+
+    /// Clears the local e-stop latch: the only way to, since no wire path
+    /// clears it. `Clear` is queued behind any unsent `Estop`, so the host
+    /// ends in ESTOP, unlatched, and leaving it still needs disarm and arm.
+    /// It also clears a host latch this process did not set (the local
+    /// clear of §11.1).
+    pub fn clear_estop(&self) {
+        self.shared.estop.latched.store(false, Ordering::SeqCst);
+        let _ = self.shared.reports.send(Report::Clear);
+    }
+
+    /// Whether the local e-stop is latched.
+    pub fn estop_latched(&self) -> bool {
+        self.shared.estop.is_latched()
+    }
+
+    /// The latch, for this process's edges.
+    pub(crate) fn estop_latch(&self) -> Arc<LocalLatch> {
+        self.shared.estop.clone()
+    }
+
     /// A handle for [`Participant::report_safe`] that outlives borrows.
     pub fn safe_reporter(&self) -> SafeReporter {
         SafeReporter {
@@ -1391,16 +1467,17 @@ async fn report_streams(shared: Arc<Shared>, cancel: CancellationToken) {
     report_loop(inputs, streams, cancel).await;
 }
 
-/// How often an unanswered `EnterSafe` is resent.
+/// How often an unanswered stop report is resent.
 const SAFE_RETRY: Duration = Duration::from_millis(100);
 
-/// Sends each `EnterSafe` to the host until the view shows it SAFE or ESTOP
-/// at an epoch at or after the fault's (a re-armed host goes SAFE again: the
-/// fault may be a device's), or the host refuses it. The edge has fallen
-/// back already; this only tells the host.
-async fn report_safe(
+/// Sends this robot process's stops to the host one at a time, in order,
+/// each until the host answers (or refuses it). An `EnterSafe` also stops
+/// once the view shows the host SAFE or ESTOP at an epoch at or after the
+/// fault's (a re-armed host goes SAFE again: the fault may be a device's).
+/// The edges have stopped already; this only tells the host.
+async fn report_stops(
     shared: Arc<Shared>,
-    mut reports: mpsc::UnboundedReceiver<SafeReport>,
+    mut reports: mpsc::UnboundedReceiver<Report>,
     cancel: CancellationToken,
 ) {
     loop {
@@ -1412,20 +1489,31 @@ async fn report_safe(
             },
         };
         loop {
-            let (epoch, mode) = shared.epoch_and_mode();
-            if epoch >= report.epoch.0 && matches!(mode, Mode::Safe | Mode::Estop) {
-                break;
-            }
-            match shared
-                .ctl(Command::EnterSafe {
-                    reason: report.reason.clone(),
-                    code: report.code,
-                })
-                .await
-            {
+            let command = match &report {
+                Report::Safe {
+                    epoch,
+                    code,
+                    reason,
+                } => {
+                    let (now, mode) = shared.epoch_and_mode();
+                    if now >= epoch.0 && matches!(mode, Mode::Safe | Mode::Estop) {
+                        break;
+                    }
+                    Command::EnterSafe {
+                        reason: reason.clone(),
+                        code: *code,
+                    }
+                }
+                Report::Estop { reason } => Command::Estop {
+                    reason: reason.clone(),
+                    code: ReasonCode::EstopLocal,
+                },
+                Report::Clear => Command::Clear,
+            };
+            match shared.ctl(command).await {
                 Ok(_) | Err(SessionError::Rejected(_)) => break,
                 Err(err) => {
-                    warn!(participant = %shared.id, %err, "EnterSafe unanswered; retrying");
+                    warn!(participant = %shared.id, %err, ?report, "stop report unanswered; retrying");
                     tokio::select! {
                         () = cancel.cancelled() => return,
                         () = tokio::time::sleep(SAFE_RETRY) => {}

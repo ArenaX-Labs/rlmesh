@@ -292,7 +292,8 @@ pub struct AuthorityConfig {
     /// Default lease ttl: how long the holder's heartbeats may stop before
     /// its lease lapses.
     pub lease_grace_ns: u64,
-    /// How long any participant's heartbeats may stop before it is lost.
+    /// How long any participant's heartbeats may stop before it is lost (at
+    /// least `lease_grace_ns`).
     pub presence_grace_ns: u64,
     /// The features the session implements (see [`crate::wire::version`]).
     pub supports: Vec<String>,
@@ -848,8 +849,11 @@ impl Authority {
         if let Some(why) = first {
             self.enter_safe(why, &mut events);
         }
-        let presence = i64::try_from(self.config.presence_grace_ns).unwrap_or(i64::MAX);
+        // Never shorter than the lease grace, which a holder may count on.
         let hint = i64::try_from(self.config.lease_grace_ns).unwrap_or(i64::MAX);
+        let presence = i64::try_from(self.config.presence_grace_ns)
+            .unwrap_or(i64::MAX)
+            .max(hint);
         let lost: Vec<ParticipantId> = self
             .seen
             .iter()

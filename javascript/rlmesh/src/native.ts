@@ -127,7 +127,7 @@ interface NativeRobot {
   publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
   due(path: string): NativeDue | null;
   handoverDone(path: string): void;
-  arm(): Promise<void>; disarm(): Promise<void>; estop(reason: string): Promise<void>; clear(): Promise<void>;
+  arm(): Promise<void>; disarm(): Promise<void>; estop(reason: string): void; clearEstop(): void;
   reportSafe(reason: string): void;
   nowNs(): bigint;
   edgeStats(path: string): NativeEdgeStats;
@@ -528,14 +528,18 @@ export class Robot implements AsyncDisposable {
     return wait(() => this.native.disarm());
   }
 
-  /** Emergency stop: latched until `clear`, then disarm and arm. */
-  estop(reason = 'estop'): Promise<void> {
-    return wait(() => this.native.estop(reason));
+  /**
+   * Emergency stop, latched locally with no network (call it from anywhere, a button handler
+   * too): the next `due()` purges every queue and returns `estop`, and the host is told in the
+   * background. Latched until `clearEstop()`, then disarm and arm.
+   */
+  estop(reason = 'estop'): void {
+    call(() => this.native.estop(reason));
   }
 
-  /** Release a latched e-stop (the robot's local clear). */
-  clear(): Promise<void> {
-    return wait(() => this.native.clear());
+  /** Clear the local e-stop latch and tell the host (after any unsent e-stop); then disarm and arm. */
+  clearEstop(): void {
+    call(() => this.native.clearEstop());
   }
 
   /** Tell the host the robot fell back on its own (a device watchdog fired). */

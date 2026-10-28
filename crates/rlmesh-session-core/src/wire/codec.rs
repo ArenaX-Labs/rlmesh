@@ -1107,6 +1107,7 @@ fn applied_to_pb(a: Applied) -> pb::Applied {
         lease_token: a.lease_token.0,
         chunk_seq: a.chunk_seq,
         action_index: a.action_index,
+        reason: reason_code_to_pb(a.reason),
     }
 }
 
@@ -1117,6 +1118,7 @@ fn applied_from_pb(a: pb::Applied) -> Result<Applied, WireError> {
         lease_token: LeaseToken(a.lease_token),
         chunk_seq: a.chunk_seq,
         action_index: a.action_index,
+        reason: reason_code_from_pb(a.reason),
     })
 }
 
@@ -2378,6 +2380,7 @@ mod tests {
                 lease_token: LeaseToken(4),
                 chunk_seq: 9,
                 action_index: 3,
+                reason: ReasonCode::QueueDry,
             }),
         }
     }

@@ -473,6 +473,24 @@ def test_a_raising_predict_releases_the_leases_and_propagates(
             policy.send({"legs": np.zeros((10, 6))}, policy.observe())
 
 
+def test_a_local_estop_stops_the_robot_at_once_and_the_host_learns_why(
+    host: rlmesh.Host,
+) -> None:
+    with FakeUR10e(host) as ur:
+        ur.robot.estop("button")
+        wait_until("the edge in estop", lambda: any(d.mode == "estop" for d in ur.log))
+        wait_until(
+            "ESTOP_LOCAL at the host",
+            lambda: (ur.robot.mode, ur.robot.mode_reason) == ("estop", "estop_local"),
+        )
+        ur.robot.clear_estop()
+        wait_until("the clear", lambda: ur.robot.mode_reason == "estop_cleared")
+        assert ur.robot.mode == "estop", "leaving ESTOP still needs disarm and arm"
+        ur.robot.disarm()
+        ur.robot.arm()
+        assert ur.robot.mode == "armed"
+
+
 def test_publish_checks_fields_dtypes_and_sizes(host: rlmesh.Host) -> None:
     with rlmesh.Robot("ur10e", fixture("robots", "ur10e"), session=host) as robot:
         assert robot.parts["wrist/cam"] == "camera"

@@ -1182,11 +1182,16 @@ class V2Robot:
         """
     def estop(self, reason: builtins.str) -> None:
         r"""
-        Emergency stop: latched until a local `clear`, then disarm and arm.
+        Emergency stop, latched locally with no network (any thread): the
+        next `due` purges every queue and returns `estop`, and the host is
+        told in the background. Latched until `clear_estop`, then disarm and
+        arm.
         """
-    def clear(self) -> None:
+    def clear_estop(self) -> None:
         r"""
-        Releases a latched e-stop (the embodiment's local clear).
+        Clears the local e-stop latch and tells the host `Clear` (after any
+        unsent e-stop): the session stays ESTOP, unlatched, until disarm and
+        arm.
         """
     def report_safe(self, reason: builtins.str) -> None:
         r"""

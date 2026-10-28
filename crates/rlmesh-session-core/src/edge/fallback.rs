@@ -22,7 +22,11 @@
 //!   when the host says SAFE. When the active member's lease was released
 //!   (not lapsed), the ladder still holds and then runs the safe behaviour,
 //!   but unlatched: the next lease on the group resumes it.
-//! - `Estop`: the session is in ESTOP.
+//! - `Estop`: the robot process latched a local e-stop
+//!   ([`Fallback::set_latch`], DESIGN §6), or the session is in ESTOP. The
+//!   local latch comes first, ahead of having no host view at all: it works
+//!   with no network. Clearing it leaves the ladder to the host's view (an
+//!   edge with none stays Idle).
 //!
 //! **Handover.** When the lease moves from member A to member B, A's queue
 //! is purged and the group dispatches nothing until the robot has switched
@@ -139,6 +143,8 @@ pub struct TickView {
     pub mode: Mode,
     /// The lease on the group's active member, if any.
     pub lease: Option<LeaseView>,
+    /// Why the host's mode is what it is (`mode_reason`).
+    pub reason: ReasonCode,
 }
 
 /// How one member's actions reach the robot.
@@ -177,6 +183,9 @@ pub struct Decision {
     /// Set on the tick a handover starts: the robot switches its control
     /// mode, then calls [`Fallback::handover_done`].
     pub handover: Option<Handover>,
+    /// Why the edge is in its mode (Safe, Estop): its own cause, or the
+    /// host's.
+    pub reason: ReasonCode,
 }
 
 /// The ladder of one group.
@@ -188,6 +197,17 @@ pub struct Fallback {
     /// The epoch the edge latched SAFE in.
     safe_epoch: Option<Epoch>,
     safe_cause: Option<SafeCause>,
+    /// The code of that latch (the host's for [`SafeCause::HostSafe`]).
+    safe_reason: ReasonCode,
+    /// The robot process's local e-stop.
+    latch: Option<ReasonCode>,
+    /// A local e-stop was latched since the last tick, or its fence holds:
+    /// no authority from before it drives again, cleared or not.
+    stopped: bool,
+    /// The newest epoch seen while latched, or stopped and in ESTOP: only a
+    /// later one (the host's disarm and arm after the e-stop) releases the
+    /// fence.
+    stop_epoch: Option<Epoch>,
     /// Safe without the latch: the lease was released.
     parked: bool,
     /// The last dispatched action and its member.
@@ -211,6 +231,10 @@ impl Fallback {
             mode: EdgeMode::Idle,
             safe_epoch: None,
             safe_cause: None,
+            safe_reason: ReasonCode::Unspecified,
+            latch: None,
+            stopped: false,
+            stop_epoch: None,
             parked: false,
             last: None,
             dry_since_ns: None,
@@ -229,6 +253,22 @@ impl Fallback {
     /// Why the edge is latched safe, if it is.
     pub fn safe_cause(&self) -> Option<SafeCause> {
         self.safe_cause
+    }
+
+    /// Latches (`Some`, with its code) or clears the robot process's local
+    /// e-stop: from the next tick every queue is purged and the group runs
+    /// Estop until it is cleared. A clear leaves the edge idle until the
+    /// host's authority moves to a later epoch (a disarm and an arm), so a
+    /// lease from before the stop never drives again, and a latch cleared
+    /// before the next tick still purges and fences.
+    pub fn set_latch(&mut self, latch: Option<ReasonCode>) {
+        self.stopped |= latch.is_some();
+        self.latch = latch;
+    }
+
+    /// The local e-stop, if latched.
+    pub fn latch(&self) -> Option<ReasonCode> {
+        self.latch
     }
 
     /// Entries, ticks and time per mode.
@@ -274,29 +314,50 @@ impl Fallback {
         view: Option<TickView>,
         queues: &mut [ActionQueue],
     ) -> Decision {
-        let Some(view) = view else {
-            clear(queues);
-            return self.idle(None);
-        };
-        if view.mode == Mode::Estop {
+        let host_estop = view.filter(|v| v.mode == Mode::Estop).map(|v| v.reason);
+        if let Some(reason) = self.latch.or(host_estop) {
             clear(queues);
             self.last = None;
             self.dry_since_ns = None;
             self.handover = None;
             self.parked = false;
-            return self.decision(EdgeMode::Estop, None, None, true);
+            // A latch cleared before any tick saw it still fences from the
+            // ESTOP it caused: the next view may already be re-armed.
+            if (self.latch.is_some() || self.stopped)
+                && let Some(view) = view
+            {
+                self.stop_epoch = self.stop_epoch.max(Some(view.epoch));
+            }
+            let mut decision = self.decision(EdgeMode::Estop, None, None, true);
+            decision.reason = reason;
+            return decision;
+        }
+        let Some(view) = view else {
+            clear(queues);
+            return self.idle(None);
+        };
+        if self.stopped {
+            let fence = *self.stop_epoch.get_or_insert(view.epoch);
+            if view.epoch <= fence {
+                clear(queues);
+                return self.idle(None);
+            }
+            self.stopped = false;
+            self.stop_epoch = None;
         }
         if let Some(epoch) = self.safe_epoch {
             if view.epoch <= epoch {
                 clear(queues);
-                return self.decision(EdgeMode::Safe, None, None, true);
+                let mut decision = self.decision(EdgeMode::Safe, None, None, true);
+                decision.reason = self.safe_reason;
+                return decision;
             }
             // Re-armed: a fresh epoch releases the latch.
             self.safe_epoch = None;
             self.safe_cause = None;
         }
         if view.mode == Mode::Safe {
-            return self.go_safe(view.epoch, SafeCause::HostSafe, queues);
+            return self.go_safe(view, SafeCause::HostSafe, queues);
         }
         // Only the leased member produces output.
         let active = view.lease.map(|l| l.member);
@@ -320,7 +381,7 @@ impl Fallback {
             let handover = *handover;
             if now_ns.saturating_sub(*since) >= self.hold_max_ns {
                 self.handover = None;
-                return self.go_safe(view.epoch, SafeCause::HandoverTimeout, queues);
+                return self.go_safe(view, SafeCause::HandoverTimeout, queues);
             }
             let first = !core::mem::replace(announced, true);
             let mut decision = self.decision(EdgeMode::Hold, Some(handover.to), None, false);
@@ -329,17 +390,19 @@ impl Fallback {
         }
         let Some(lease) = view.lease else {
             if self.parked {
-                return self.decision(EdgeMode::Safe, self.active, None, true);
+                let mut decision = self.decision(EdgeMode::Safe, self.active, None, true);
+                decision.reason = SafeCause::Released.code();
+                return decision;
             }
             if self.last.is_none() {
                 clear(queues);
                 return self.idle(self.active);
             }
-            return self.hold(now_ns, view.epoch, None, queues);
+            return self.hold(now_ns, view, None, queues);
         };
         match lease.expires_ns {
             Some(expires) if now_ns > expires => {
-                return self.go_safe(view.epoch, SafeCause::LeaseLapsed, queues);
+                return self.go_safe(view, SafeCause::LeaseLapsed, queues);
             }
             Some(_) => {}
             // Untimeable: harmless before anything was applied, a lapse after.
@@ -347,7 +410,7 @@ impl Fallback {
                 clear(queues);
                 return self.idle(Some(lease.member));
             }
-            None => return self.go_safe(view.epoch, SafeCause::LeaseLapsed, queues),
+            None => return self.go_safe(view, SafeCause::LeaseLapsed, queues),
         }
         let Some(queue) = queues.get_mut(lease.member) else {
             return self.idle(None);
@@ -369,7 +432,7 @@ impl Fallback {
             // A lease with nothing applied under it yet.
             return self.decision(EdgeMode::Idle, Some(lease.member), None, false);
         }
-        self.hold(now_ns, view.epoch, Some(lease), queues)
+        self.hold(now_ns, view, Some(lease), queues)
     }
 
     /// Nothing valid is due: wait for one, at most `hold_max` from when
@@ -377,10 +440,11 @@ impl Fallback {
     fn hold(
         &mut self,
         now_ns: i64,
-        epoch: Epoch,
+        view: TickView,
         lease: Option<LeaseView>,
         queues: &mut [ActionQueue],
     ) -> Decision {
+        let epoch = view.epoch;
         let Some((member, last)) = self.last.clone() else {
             return self.idle(self.active);
         };
@@ -396,7 +460,7 @@ impl Fallback {
         let dry_since = *self.dry_since_ns.get_or_insert(covered_until.min(now_ns));
         if now_ns.saturating_sub(dry_since) >= self.hold_max_ns {
             if lease.is_some() {
-                return self.go_safe(epoch, SafeCause::QueueDry, queues);
+                return self.go_safe(view, SafeCause::QueueDry, queues);
             }
             clear(queues);
             self.parked = true;
@@ -404,6 +468,7 @@ impl Fallback {
             self.dry_since_ns = None;
             let mut decision = self.decision(EdgeMode::Safe, Some(member), None, true);
             decision.went_safe = Some(SafeCause::Released);
+            decision.reason = SafeCause::Released.code();
             return decision;
         }
         let ladder = self.ladder(member);
@@ -441,6 +506,7 @@ impl Fallback {
             run_safe,
             went_safe: None,
             handover: None,
+            reason: ReasonCode::Unspecified,
         }
     }
 
@@ -450,16 +516,26 @@ impl Fallback {
         self.decision(EdgeMode::Idle, member, None, false)
     }
 
-    fn go_safe(&mut self, epoch: Epoch, cause: SafeCause, queues: &mut [ActionQueue]) -> Decision {
+    fn go_safe(
+        &mut self,
+        view: TickView,
+        cause: SafeCause,
+        queues: &mut [ActionQueue],
+    ) -> Decision {
         clear(queues);
-        self.safe_epoch = Some(epoch);
+        self.safe_epoch = Some(view.epoch);
         self.safe_cause = Some(cause);
+        self.safe_reason = match cause {
+            SafeCause::HostSafe => view.reason,
+            _ => cause.code(),
+        };
         self.last = None;
         self.dry_since_ns = None;
         self.handover = None;
         self.parked = false;
         let mut decision = self.decision(EdgeMode::Safe, self.active, None, true);
         decision.went_safe = Some(cause);
+        decision.reason = self.safe_reason;
         decision
     }
 }
@@ -517,6 +593,7 @@ mod tests {
                 Mode::Armed
             },
             lease,
+            reason: ReasonCode::Unspecified,
         })
     }
 
@@ -573,6 +650,7 @@ mod tests {
             epoch: Epoch(2),
             mode: Mode::Active,
             lease: Some(lease(0, 3, i64::MAX)),
+            reason: ReasonCode::FirstLease,
         });
         assert_eq!(f.tick(11 * MS, rearmed, &mut q).mode, EdgeMode::Idle);
         let stats: alloc::collections::BTreeMap<_, _> = f.stats().into_iter().collect();
@@ -670,13 +748,70 @@ mod tests {
             epoch: Epoch(1),
             mode: Mode::Estop,
             lease: None,
+            reason: ReasonCode::EstopRemote,
         });
         let d = f.tick(2 * MS, estop, &mut q);
         assert_eq!(
-            (d.mode, d.went_safe, d.run_safe),
-            (EdgeMode::Estop, None, true)
+            (d.mode, d.went_safe, d.run_safe, d.reason),
+            (EdgeMode::Estop, None, true, ReasonCode::EstopRemote)
         );
         assert!(q[0].is_empty(), "ESTOP drops the queue");
+    }
+
+    #[test]
+    fn a_local_latch_stops_with_no_host_view_and_clearing_it_leaves_the_host_in_charge() {
+        let (mut f, mut q) = ladder(50 * MS, true);
+        q[0].splice(splice(1, 0, 100, i64::MAX), 0);
+        assert_eq!(f.tick(MS, held(1), &mut q).mode, EdgeMode::Driving);
+        f.set_latch(Some(ReasonCode::EstopLocal));
+        // No view at all (the host is gone): still Estop, the queue purged.
+        let d = f.tick(2 * MS, None, &mut q);
+        assert_eq!(
+            (d.mode, d.run_safe, d.reason),
+            (EdgeMode::Estop, true, ReasonCode::EstopLocal)
+        );
+        assert!(q[0].is_empty());
+        f.set_latch(None);
+        // Cleared with no view: Idle, no authority, no motion.
+        assert_eq!(f.tick(3 * MS, None, &mut q).mode, EdgeMode::Idle);
+        // With the lease still shown, nothing was kept to resume.
+        assert_eq!(f.tick(4 * MS, held(1), &mut q).mode, EdgeMode::Idle);
+        // The host hasn't seen the stop yet: a fresh chunk under the same
+        // token doesn't drive, and neither does a latch cleared between two
+        // ticks.
+        q[0].splice(splice(1, 5 * MS, 100, i64::MAX), 0);
+        assert_eq!(f.tick(5 * MS, held(1), &mut q).mode, EdgeMode::Idle);
+        assert!(q[0].is_empty(), "the fence purges it");
+        f.set_latch(Some(ReasonCode::EstopLocal));
+        f.set_latch(None);
+        q[0].splice(splice(1, 6 * MS, 100, i64::MAX), 0);
+        assert_eq!(f.tick(6 * MS, held(1), &mut q).mode, EdgeMode::Idle);
+        // Disarmed and armed again: a later epoch's lease drives.
+        let rearmed = Some(TickView {
+            epoch: Epoch(2),
+            ..held(2).expect("view")
+        });
+        let mut next = splice(2, 7 * MS, 100, i64::MAX);
+        Arc::get_mut(&mut next.chunk).expect("unshared").epoch = Epoch(2);
+        q[0].splice(next, 0);
+        assert_eq!(f.tick(7 * MS, rearmed, &mut q).mode, EdgeMode::Driving);
+
+        // Latched and cleared before a tick, then the host's ESTOP: the next
+        // arm releases the fence even when no tick saw the session disarmed.
+        let (mut f, mut q) = ladder(50 * MS, true);
+        f.set_latch(Some(ReasonCode::EstopLocal));
+        f.set_latch(None);
+        let estop = Some(TickView {
+            epoch: Epoch(1),
+            mode: Mode::Estop,
+            lease: None,
+            reason: ReasonCode::EstopLocal,
+        });
+        assert_eq!(f.tick(MS, estop, &mut q).mode, EdgeMode::Estop);
+        let mut next = splice(2, 7 * MS, 100, i64::MAX);
+        Arc::get_mut(&mut next.chunk).expect("unshared").epoch = Epoch(2);
+        q[0].splice(next, 0);
+        assert_eq!(f.tick(7 * MS, rearmed, &mut q).mode, EdgeMode::Driving);
     }
 
     #[test]

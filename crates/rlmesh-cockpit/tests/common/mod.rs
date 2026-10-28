@@ -11,7 +11,7 @@ use rlmesh_session::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session::wire::{
     ActionChunk, Applied, ChannelId, ClockMapping, Command, DType, EdgeMode, Epoch, Health,
     Heartbeat, LeaseToken, ParticipantId, ParticipantReport, PriorityClass, PublisherCounters,
-    Request, Role, RunCounters, Sample, SessionId, StreamSpec,
+    ReasonCode, Request, Role, RunCounters, Sample, SessionId, StreamSpec,
 };
 use rlmesh_session::{Authority, AuthorityConfig};
 
@@ -376,6 +376,7 @@ impl World {
                             lease_token: token,
                             chunk_seq: self.chunk_seq,
                             action_index: 0,
+                            reason: ReasonCode::Unspecified,
                         }
                     } else {
                         Applied::absent(self.edge_mode)

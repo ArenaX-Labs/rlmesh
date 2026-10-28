@@ -12,8 +12,9 @@
 //!
 //! # Intake (§9.2)
 //!
-//! A chunk is rejected whole when: it is for another part; the session is in
-//! ESTOP; the epoch is wrong; the token is not the part's current lease's;
+//! A chunk is rejected whole when: it is for another part; the robot
+//! process latched a local e-stop ([`EdgeCore::set_local_estop`]) or the
+//! session is in ESTOP; the epoch is wrong; the token is not the part's current lease's;
 //! its source is not the lease holder; its binding is not the lease's;
 //! the lease expired by the edge clock; it is past `valid_until`; it fails
 //! the transit check; its seq is not above the last accepted for its token;
@@ -52,7 +53,7 @@ use core::time::Duration;
 
 use crate::wire::{
     ActionChunk, Applied, AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, EdgeMode, Epoch,
-    FenceError, LeaseToken, Mode, PartSpec, ParticipantId,
+    FenceError, LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
 };
 use bytes::Bytes;
 
@@ -101,7 +102,7 @@ pub enum Rejection {
     Malformed,
     /// For a part outside this group.
     WrongChannel,
-    /// The session is in ESTOP.
+    /// A local e-stop is latched, or the session is in ESTOP.
     Estop,
     /// From another epoch.
     StaleEpoch,
@@ -433,6 +434,14 @@ impl EdgeCore {
         self.fallback.handover_done();
     }
 
+    /// Latches (`Some`, with its code) or clears the robot process's local
+    /// e-stop (DESIGN §6): while latched every chunk is refused
+    /// ([`Rejection::Estop`]) and every tick purges the queues and runs
+    /// Estop, with or without a host.
+    pub fn set_local_estop(&mut self, latch: Option<ReasonCode>) {
+        self.fallback.set_latch(latch);
+    }
+
     fn clock(&self, view: &AuthoritySnapshot, who: &ParticipantId) -> ClockView {
         if view.clock_mode != ClockMode::Wall {
             return ClockView {
@@ -527,6 +536,9 @@ impl EdgeCore {
             .iter()
             .position(|m| m.part.channel == chunk.channel)
             .ok_or(Rejection::WrongChannel)?;
+        if self.fallback.latch().is_some() {
+            return Err(Rejection::Estop);
+        }
         let view = view.ok_or(Rejection::NoLease)?;
         if view.mode == Mode::Estop {
             return Err(Rejection::Estop);
@@ -650,6 +662,7 @@ impl EdgeCore {
             epoch: v.epoch,
             mode: v.mode,
             lease: self.lease_view(v, observed_local_ns),
+            reason: v.mode_reason.code,
         });
         let decision = self.fallback.tick(now_ns, tick_view, &mut self.queues);
         let report = decision
@@ -677,10 +690,10 @@ impl EdgeCore {
             .enumerate()
             .map(|(i, m)| {
                 let mine = decision.member == Some(i);
-                let mode = if mine || group_wide {
-                    decision.mode
+                let (mode, reason) = if mine || group_wide {
+                    (decision.mode, decision.reason)
                 } else {
-                    EdgeMode::Idle
+                    (EdgeMode::Idle, ReasonCode::Unspecified)
                 };
                 match decision.action.as_ref().filter(|_| mine) {
                     Some(action) => AppliedSample {
@@ -692,13 +705,17 @@ impl EdgeCore {
                             lease_token: action.chunk.lease_token,
                             chunk_seq: action.chunk.seq,
                             action_index: action.index,
+                            reason,
                         },
                         value: action.value.clone(),
                     },
                     None => AppliedSample {
                         stream: m.applied,
                         part: m.part.channel,
-                        applied: Applied::absent(mode),
+                        applied: Applied {
+                            reason,
+                            ..Applied::absent(mode)
+                        },
                         value: Bytes::new(),
                     },
                 }
@@ -1347,11 +1364,35 @@ mod tests {
         let tick = f.tick(MS);
         assert_eq!(tick.mode, EdgeMode::Estop);
         assert_eq!(tick.safe_behavior.as_deref(), Some("brake"));
+        assert_eq!(tick.applied[0].applied.reason, ReasonCode::EstopRemote);
         assert!(tick.report.is_none(), "the host already knows");
         assert_eq!(
             f.accept(f.chunk("policy", &lease, 2, MS, 50), MS),
             Err(Rejection::Estop)
         );
+
+        // A local latch needs no host: refused chunks, purged queues, Estop.
+        let mut f = Fixture::new();
+        let lease = f.grant("policy", 0);
+        f.publish(0);
+        f.accept(f.chunk("policy", &lease, 1, 0, 50), 0)
+            .expect("accept");
+        assert_eq!(f.tick(0).mode, EdgeMode::Driving);
+        f.edge.set_local_estop(Some(ReasonCode::EstopLocal));
+        assert_eq!(
+            f.accept(f.chunk("policy", &lease, 2, MS, 50), MS),
+            Err(Rejection::Estop)
+        );
+        let tick = f.tick(MS);
+        assert_eq!(
+            (tick.mode, tick.applied[0].applied.reason),
+            (EdgeMode::Estop, ReasonCode::EstopLocal)
+        );
+        assert_eq!(f.edge.queue_depth(), 0);
+        // Cleared, the host still shows the lease, but nothing queued
+        // survived the latch.
+        f.edge.set_local_estop(None);
+        assert_eq!(f.tick(2 * MS).mode, EdgeMode::Idle);
     }
 
     #[test]
@@ -1380,6 +1421,7 @@ mod tests {
                 lease_token: lease.token,
                 chunk_seq: 7,
                 action_index: 1,
+                reason: ReasonCode::Unspecified,
             }
         );
         assert_eq!(&sample.value[..4], &0.5_f32.to_le_bytes());
@@ -1387,9 +1429,15 @@ mod tests {
         let tick = f.tick(4 * MS);
         assert_eq!(tick.applied[0].applied.mode, EdgeMode::Hold);
         assert!(tick.applied[0].applied.present);
-        // Safe: nothing.
+        // Safe: nothing, and why.
         let tick = f.tick(20 * MS);
-        assert_eq!(tick.applied[0].applied, Applied::absent(EdgeMode::Safe));
+        assert_eq!(
+            tick.applied[0].applied,
+            Applied {
+                reason: ReasonCode::QueueDry,
+                ..Applied::absent(EdgeMode::Safe)
+            }
+        );
         assert!(tick.applied[0].value.is_empty());
     }
 
