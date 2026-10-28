@@ -1,24 +1,34 @@
 //! The device's robot against a real session host over Zenoh on loopback,
-//! with this test as its transport: what zenoh-pico does on a board.
+//! with this test as its transport (one session per traffic class): what
+//! zenoh-pico does on a board.
 
 // The transport's side: it reads the clock, as a board's does.
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot, Sub};
-use rlmesh_session::auth::Credential;
+use bytes::Bytes;
+use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot};
+use rlmesh_session::address::AddressKey;
+use rlmesh_session::auth::HostIdentity;
 use rlmesh_session::crypto::{Rng, RngError};
-use rlmesh_session::transport::{Transport, TransportConfig, open_local_listeners};
-use rlmesh_session::wire::ids::{ParticipantId, SessionId, TenantId};
-use rlmesh_session::{HostConfig, SessionHost};
+use rlmesh_session::transport::{TrafficClass, Transport, TransportConfig, open_local_listeners};
+use rlmesh_session::wire::{
+    ChannelId, EdgeMode, Fingerprint, InputRange, Mode, ParticipantId, PriorityClass, Role,
+    SessionId, TenantId,
+};
+use rlmesh_session::{
+    ChunkDraft, HostConfig, Participant, ParticipantConfig, SessionHost, SubscribeOptions,
+};
 use tokio::sync::mpsc;
 use zenoh::query::ConsolidationMode;
 
 const MAP: &str = r#"{"eyes": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"],
   "hz": 50, "command": "position", "safe": "hold",
   "limits": {"pos": [[-0.6, 0.6], [-0.4, 0.4]]}}}"#;
+const WAIT: Duration = Duration::from_secs(10);
 
 /// SplitMix64, seeded from the clock: the handshake's ephemeral keys.
 struct Mix(u64);
@@ -45,8 +55,15 @@ fn seeded() -> Mix {
     Mix(t as u64)
 }
 
+fn pos(pan: f32, tilt: f32) -> [u8; 8] {
+    let mut v = [0; 8];
+    v[..4].copy_from_slice(&pan.to_le_bytes());
+    v[4..].copy_from_slice(&tilt.to_le_bytes());
+    v
+}
+
 enum Event {
-    Sample(Sub, Vec<u8>),
+    Sample(u8, Vec<u8>),
     Reply(u32, Vec<u8>),
     Done(u32),
 }
@@ -55,6 +72,7 @@ struct World {
     tenant: TenantId,
     session: SessionId,
     base: std::net::SocketAddr,
+    identity: Arc<HostIdentity>,
     host: SessionHost,
 }
 
@@ -65,47 +83,76 @@ impl World {
             .expect("host transport");
         let tenant = TenantId::new("test").expect("tenant");
         let session = SessionId::new();
-        let host = SessionHost::start(transport, HostConfig::new(tenant.clone(), session))
-            .await
-            .expect("host");
+        let config = HostConfig::new(tenant.clone(), session);
+        let identity = config.identity.clone();
+        let host = SessionHost::start(transport, config).await.expect("host");
         Self {
             tenant,
             session,
             base,
+            identity,
             host,
         }
     }
 
-    fn config(&self, credential: Credential) -> Config {
-        Config {
+    async fn transport(&self) -> Transport {
+        Transport::open(
+            &TransportConfig::per_class_tcp(
+                Some("127.0.0.1:0".parse().expect("addr")),
+                Some(self.base),
+            )
+            .expect("config"),
+        )
+        .await
+        .expect("transport")
+    }
+
+    fn robot(&self, key: AddressKey) -> Robot {
+        Robot::new(Config {
             tenant: self.tenant.clone(),
             session: self.session,
             name: ParticipantId::new("eyes").expect("id"),
-            credential,
+            key,
             robot_json: MAP.to_owned(),
             heartbeat_ms: 50,
-        }
+        })
+        .expect("a valid map")
+    }
+
+    async fn controller(&self) -> Participant {
+        let mut config = ParticipantConfig::new(
+            self.tenant.clone(),
+            self.session,
+            ParticipantId::new("policy").expect("id"),
+            vec![Role::Controller],
+            PriorityClass::Model,
+        );
+        config.heartbeat_period = Duration::from_millis(20);
+        config.credential = Some(self.host.credential());
+        Participant::attach(self.transport().await, config)
+            .await
+            .expect("controller")
     }
 }
 
+/// What the board's loop saw: the actions its edge dispatched.
+#[derive(Default)]
+struct Seen {
+    actions: Vec<(EdgeMode, Vec<u8>)>,
+    published: u32,
+}
+
 /// Runs `robot` over a fresh transport to the world's host until `done`
-/// holds or `limit` passes, carrying out its actions as a board would.
+/// holds or `limit` passes, carrying out its actions as a board would. Once
+/// it runs, it ticks the part each loop and publishes a sample every 20 ms.
 async fn drive(
     world: &World,
-    robot: &mut Robot,
+    mut robot: Robot,
     limit: Duration,
-    mut done: impl FnMut(&Robot) -> bool,
-) {
-    let transport = Transport::open(
-        &TransportConfig::per_class_tcp(
-            Some("127.0.0.1:0".parse().expect("addr")),
-            Some(world.base),
-        )
-        .expect("config"),
-    )
-    .await
-    .expect("transport");
-    let zenoh = transport.control().clone();
+    seen: Arc<Mutex<Seen>>,
+    mut done: impl FnMut(&Robot) -> bool + Send,
+) -> Robot {
+    let transport = world.transport().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut subscribers = Vec::new();
     let mut tokens = Vec::new();
@@ -113,12 +160,30 @@ async fn drive(
     let start = Instant::now();
     let now_us = || u64::try_from(start.elapsed().as_micros()).expect("µs");
     let mut queries = BTreeMap::new();
-    while start.elapsed() < limit && !done(robot) {
+    let mut next_sample = 0;
+    while start.elapsed() < limit && !done(&robot) {
+        if robot.phase() == Phase::Running {
+            let now = now_us();
+            if let Some(tick) = robot.tick(0, now)
+                && let Some(action) = &tick.tick.action
+            {
+                let mut seen = seen.lock().expect("seen");
+                seen.actions.push((tick.tick.mode, action.value.to_vec()));
+            }
+            if now >= next_sample {
+                next_sample = now + 20_000;
+                if robot.publish(0, now, &pos(0.1, 0.2), now).is_ok() {
+                    seen.lock().expect("seen").published += 1;
+                }
+            }
+        }
         for action in robot.poll(now_us()) {
+            let class = |c: u8| TrafficClass::ALL[usize::from(c)];
             match action {
-                Action::Subscribe { sub, key } => {
+                Action::Subscribe { class: c, sub, key } => {
                     let tx = tx.clone();
-                    let subscriber = zenoh
+                    let subscriber = transport
+                        .session(class(c))
                         .declare_subscriber(key)
                         .callback(move |sample| {
                             let bytes = sample.payload().to_bytes().into_owned();
@@ -128,11 +193,17 @@ async fn drive(
                         .expect("subscribe");
                     subscribers.push(subscriber);
                 }
-                Action::Token { key } => {
-                    tokens.push(zenoh.liveliness().declare_token(key).await.expect("token"));
+                Action::Token { class: c, key } => {
+                    let token = transport.session(class(c)).liveliness().declare_token(key);
+                    tokens.push(token.await.expect("token"));
                 }
-                Action::Query { id, key, payload } => {
-                    let (tx, zenoh) = (tx.clone(), zenoh.clone());
+                Action::Query {
+                    class: c,
+                    id,
+                    key,
+                    payload,
+                } => {
+                    let (tx, zenoh) = (tx.clone(), transport.session(class(c)).clone());
                     queries.insert(
                         id,
                         tokio::spawn(async move {
@@ -157,12 +228,20 @@ async fn drive(
                         }),
                     );
                 }
-                Action::Publish { key, payload } => {
-                    zenoh.put(key, payload).await.expect("publish");
+                Action::Publish {
+                    class: c,
+                    key,
+                    payload,
+                } => {
+                    transport
+                        .session(class(c))
+                        .put(key, payload)
+                        .await
+                        .expect("publish");
                 }
             }
         }
-        let event = tokio::time::timeout(Duration::from_millis(5), rx.recv()).await;
+        let event = tokio::time::timeout(Duration::from_millis(1), rx.recv()).await;
         let mut next = match event {
             Ok(Some(event)) => Some(event),
             _ => None,
@@ -182,28 +261,34 @@ async fn drive(
     for (_, query) in queries {
         query.abort();
     }
+    robot
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_board_joins_declares_its_parts_and_heartbeats() {
     let world = World::start().await;
-    let mut robot = Robot::new(world.config(world.host.credential()));
+    let robot = world.robot(AddressKey::of(&world.identity));
     // Joined, then 3.5 s more: past the time it would count the host lost
     // without echoes.
     let mut running = None;
-    drive(&world, &mut robot, Duration::from_secs(15), |r| {
-        if r.phase() == Phase::Running {
-            running.get_or_insert_with(Instant::now);
-        }
-        running.is_some_and(|at| at.elapsed() > Duration::from_millis(3500))
-    })
+    let robot = drive(
+        &world,
+        robot,
+        Duration::from_secs(15),
+        Arc::default(),
+        |r| {
+            if r.phase() == Phase::Running {
+                running.get_or_insert_with(Instant::now);
+            }
+            running.is_some_and(|at| at.elapsed() > Duration::from_millis(3500))
+        },
+    )
     .await;
     assert!(running.is_some(), "never joined: {:?}", robot.fault());
     assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
     assert!(robot.generation() >= 1);
     // Heartbeats are echoed, sealed both ways.
     assert!(robot.echoes() >= 20, "{} echoes", robot.echoes());
-    assert!(robot.snapshot().is_some());
 
     let snapshot = world.host.snapshot();
     assert!(
@@ -211,22 +296,111 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
         "the host lists the board"
     );
     assert!(
-        snapshot
-            .parts
-            .iter()
-            .any(|p| p.path.to_string().contains("eyes")),
+        snapshot.parts.iter().any(|p| p.path.as_str() == "eyes"),
         "the host has its parts"
     );
+    // Its clock is mapped from the heartbeats' timing: an edge needs it.
+    let id = ParticipantId::new("eyes").expect("id");
+    assert!(snapshot.clock(&id).is_some(), "the board's clock is mapped");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_controller_drives_the_board_and_reads_its_samples() {
+    let world = World::start().await;
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let board = {
+        let robot = world.robot(AddressKey::of(&world.identity));
+        let world = &world;
+        let seen = seen.clone();
+        async move { drive(world, robot, Duration::from_secs(20), seen, |_| false).await }
+    };
+    let controller = async {
+        let id = ParticipantId::new("eyes").expect("id");
+        let policy = world.controller().await;
+        let snapshot = policy
+            .wait_for("the board, declared and mapped", WAIT, |s| {
+                s.parts.iter().any(|p| p.owner == id) && s.clock(&id).is_some()
+            })
+            .await
+            .expect("board");
+        let eyes: ChannelId = snapshot
+            .parts
+            .iter()
+            .find(|p| p.owner == id)
+            .expect("eyes")
+            .channel;
+        let samples = policy
+            .subscribe(&id, "eyes", SubscribeOptions::default())
+            .await
+            .expect("subscribe");
+        policy
+            .declare_binding(Fingerprint::from(1), "{}", vec![eyes], 0.0)
+            .await
+            .expect("binding");
+        policy.arm().await.expect("arm");
+        let lease = policy.grant_lease(eyes, None).await.expect("lease");
+        let tx = policy.chunk_publisher(&lease).await.expect("publisher");
+        // The board installs its k_cmd from the grant's delivery.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let target = pos(0.25, -0.1);
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline {
+            let now = policy.session_now_ns();
+            tx.send(ChunkDraft {
+                based_on: vec![InputRange::one(ChannelId(99), 1)],
+                t0_ns: now + 1_000_000,
+                dt_ns: 20_000_000,
+                replace_from_ns: now,
+                valid_until_ns: now + 200_000_000,
+                actions: Bytes::from([target; 5].concat()),
+                tick: 0,
+            })
+            .expect("send");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let driven = seen
+                .lock()
+                .expect("seen")
+                .actions
+                .iter()
+                .any(|(mode, value)| *mode == EdgeMode::Driving && value[..] == target);
+            if driven && samples.latest().is_some() {
+                break;
+            }
+        }
+        let received = samples.latest().expect("a sample from the board");
+        assert_eq!(received.received.sample.payload[..], pos(0.1, 0.2));
+        let host = world.host.snapshot();
+        assert_ne!(host.mode, Mode::Safe, "{:?}", host.mode_reason);
+        (target, received)
+    };
+    // The board loop runs until the controller is done: race them.
+    let (target, _) = tokio::select! {
+        result = controller => result,
+        robot = board => panic!("the board's loop ended first: {:?}", robot.fault()),
+    };
+    let seen = seen.lock().expect("seen");
+    assert!(
+        seen.actions
+            .iter()
+            .any(|(mode, value)| *mode == EdgeMode::Driving && value[..] == target),
+        "the board dispatched the controller's action: {} ticks with an action",
+        seen.actions.len()
+    );
+    assert!(seen.published > 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_board_with_another_hosts_key_is_refused() {
     let world = World::start().await;
-    let host_static = *world.host.credential().host_static();
-    let mut robot = Robot::new(world.config(Credential::local(&[7; 32], host_static)));
-    drive(&world, &mut robot, Duration::from_secs(10), |r| {
-        r.fault().is_some()
-    })
+    let other = HostIdentity::generate(&mut seeded()).expect("identity");
+    let robot = world.robot(AddressKey::of(&other));
+    let robot = drive(
+        &world,
+        robot,
+        Duration::from_secs(10),
+        Arc::default(),
+        |r| r.fault().is_some(),
+    )
     .await;
     assert_eq!(robot.phase(), Phase::Retry);
     assert!(

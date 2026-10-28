@@ -5648,6 +5648,7 @@ dependencies = [
 name = "rlmesh-device"
 version = "0.2.0-alpha.0"
 dependencies = [
+ "bytes",
  "rlmesh-session",
  "rlmesh-session-core",
  "tokio",

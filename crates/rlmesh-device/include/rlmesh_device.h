@@ -50,25 +50,26 @@ typedef struct rlmesh_device_timing_t {
 int rlmesh_device_timing(rlmesh_device_now_us_fn now_us, rlmesh_device_random_fn random,
                          rlmesh_device_timing_t* out);
 
-/* A config field is invalid: a tenant or name that isn't one, a zero heartbeat
- * period. */
+/* A config field is invalid: an address without its key, a name that isn't
+ * one, a map the host would refuse, a zero heartbeat period. */
 #define RLMESH_DEVICE_ERR_CONFIG (-4)
+/* Not running yet, or the stream's key hasn't arrived: nothing was sent. */
+#define RLMESH_DEVICE_ERR_NOT_READY (-5)
+/* A value not in its part's dense layout. */
+#define RLMESH_DEVICE_ERR_INVALID (-6)
 
 /* The board as a robot in a session. It holds no network: the platform's
  * transport (zenoh-pico) carries out the actions rlmesh_device_robot_next hands
- * out, and passes back replies and samples. */
+ * out, and passes back replies and samples. Parts are named by their index in
+ * the robot's map (rlmesh_device_robot_part). */
 typedef struct rlmesh_device_robot rlmesh_device_robot_t;
 
 typedef struct rlmesh_device_robot_config_t {
-  /* The session's tenant ("local" for an embedded host). */
-  const char* tenant;
-  /* The session's name ("default") or its id, a hyphenated UUID. */
-  const char* session;
-  /* This robot's name. */
+  /* The address the host printed, with its key:
+   * "{host}:{port}[/{session}]#{secret}.{host key}[/{name}]". */
+  const char* address;
+  /* This robot's name; NULL takes the address's. */
   const char* name;
-  /* The address's local secret and the host's key, 32 bytes each. */
-  const uint8_t* secret;
-  const uint8_t* host_key;
   /* The robot's map, as authored JSON. */
   const char* robot_json;
   /* The heartbeat period; 0 is refused. */
@@ -86,9 +87,14 @@ typedef struct rlmesh_device_robot_config_t {
 /* How long a query waits for replies. */
 #define RLMESH_DEVICE_QUERY_MS 2000
 
+/* Traffic classes: the host listens on its address's port plus the class. */
+#define RLMESH_DEVICE_CLASSES 4
+
 /* An action, borrowed from the robot until the next call on it. */
 typedef struct rlmesh_device_action_t {
   uint8_t kind;
+  /* The traffic class: 0 control, 1 realtime, 2 data, 3 bulk. */
+  uint8_t class_;
   /* A subscription's id, for rlmesh_device_robot_sample. */
   uint8_t sub;
   uint8_t has_payload;
@@ -118,7 +124,41 @@ typedef struct rlmesh_device_robot_status_t {
   uint64_t epoch;
   /* Heartbeat echoes received. */
   uint64_t echoes;
+  /* Command chunks the edges accepted. */
+  uint64_t chunks_accepted;
 } rlmesh_device_robot_status_t;
+
+/* No part, in a tick. */
+#define RLMESH_DEVICE_NO_PART 0xFF
+
+/* Edge modes. */
+#define RLMESH_DEVICE_IDLE 0
+#define RLMESH_DEVICE_DRIVING 1
+#define RLMESH_DEVICE_HOLD 2
+#define RLMESH_DEVICE_SAFE 3
+#define RLMESH_DEVICE_ESTOP 4
+
+/* One control tick of a command group, borrowed from the robot until the next
+ * call on it. */
+typedef struct rlmesh_device_tick_t {
+  /* The edge mode, RLMESH_DEVICE_IDLE ... _ESTOP. */
+  uint8_t mode;
+  /* The part it concerns (the active or last-driven member of the group). */
+  uint8_t part;
+  /* Whether value is an action to dispatch to part. */
+  uint8_t has_action;
+  /* A handover between members starts: switch the control mode from
+   * handover_from to handover_to, then call
+   * rlmesh_device_robot_handover_done. */
+  uint8_t handover;
+  uint8_t handover_from;
+  uint8_t handover_to;
+  /* The action, in the part's dense command layout. */
+  const uint8_t* value;
+  size_t value_len;
+  /* The declared safe behaviour to run now ("hold", "stop", ...), or NULL. */
+  const char* safe;
+} rlmesh_device_tick_t;
 
 /* A new robot, joining on the first rlmesh_device_robot_next. The config's
  * strings are copied. */
@@ -126,6 +166,11 @@ int rlmesh_device_robot_new(const rlmesh_device_robot_config_t* config,
                             rlmesh_device_robot_t** out);
 /* Frees a robot; NULL is a no-op. */
 void rlmesh_device_robot_free(rlmesh_device_robot_t* robot);
+/* The host to connect to (owned by the robot), and in *port its first port:
+ * class i listens on port + i. */
+const char* rlmesh_device_robot_host(const rlmesh_device_robot_t* robot, uint16_t* port);
+/* The index of the part at path in the robot's map, or -1. */
+int rlmesh_device_robot_part(const rlmesh_device_robot_t* robot, const char* path);
 /* Runs the timers and hands out the next action: 1 with *out written, 0 when
  * there is none for now. Call it until it returns 0, every loop. */
 int rlmesh_device_robot_next(rlmesh_device_robot_t* robot, uint64_t now_us,
@@ -139,6 +184,21 @@ int rlmesh_device_robot_query_done(rlmesh_device_robot_t* robot, uint32_t query_
 /* A sample on subscription sub. */
 int rlmesh_device_robot_sample(rlmesh_device_robot_t* robot, uint8_t sub, const uint8_t* data,
                                size_t len, uint64_t now_us);
+/* One control tick of part's command group: 1 with *out written when there is
+ * something to do (an action, a safe behaviour, a handover), 0 when there is
+ * nothing, RLMESH_DEVICE_ERR_NOT_READY before the robot runs or for a part
+ * that takes no commands. Call it at the part's control rate; it publishes the
+ * group's applied samples. */
+int rlmesh_device_robot_tick(rlmesh_device_robot_t* robot, uint8_t part, uint64_t now_us,
+                             rlmesh_device_tick_t* out);
+/* The robot finished the handover of part's group: it may dispatch again. */
+int rlmesh_device_robot_handover_done(rlmesh_device_robot_t* robot, uint8_t part);
+/* Publishes a sample of part: value in its dense layout, captured at
+ * capture_us (this board's clock). RLMESH_DEVICE_ERR_NOT_READY before the
+ * robot runs or its key arrived, _ERR_INVALID for a value not in the part's
+ * layout, _ERR_ARG for no such part. */
+int rlmesh_device_robot_publish(rlmesh_device_robot_t* robot, uint8_t part, uint64_t capture_us,
+                                const uint8_t* value, size_t len, uint64_t now_us);
 int rlmesh_device_robot_status(const rlmesh_device_robot_t* robot,
                                rlmesh_device_robot_status_t* out);
 

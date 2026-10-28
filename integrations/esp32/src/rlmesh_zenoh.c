@@ -1,5 +1,6 @@
 #include "rlmesh_zenoh.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -71,17 +72,39 @@ static void on_query_done(void* ctx) {
   free(q);
 }
 
+/* The session for class `c`, opened to the robot's host on its port plus `c`
+ * the first time it's needed; NULL when it can't be. */
+static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c) {
+  if (c >= RLMESH_DEVICE_CLASSES) return NULL;
+  if (!z->open[c]) {
+    uint16_t port = 0;
+    const char* host = rlmesh_device_robot_host(z->robot, &port);
+    char connect[96];
+    int n = snprintf(connect, sizeof connect, "tcp/%s:%u", host, (unsigned)(port + c));
+    if (host == NULL || n <= 0 || (size_t)n >= sizeof connect) return NULL;
+    z_owned_config_t config;
+    z_config_default(&config);
+    zp_config_insert(z_loan_mut(config), Z_CONFIG_MODE_KEY, "client");
+    zp_config_insert(z_loan_mut(config), Z_CONFIG_CONNECT_KEY, connect);
+    if (z_open(&z->sessions[c], z_move(config), NULL) != Z_OK) return NULL;
+    z->open[c] = true;
+  }
+  return z_loan(z->sessions[c]);
+}
+
 static int subscribe(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
-  if (z->sub_count >= RLMESH_ZENOH_SUBS) return -1;
+  const z_loaned_session_t* s = session(z, a->class_);
   z_view_keyexpr_t ke;
-  if (z_view_keyexpr_from_str(&ke, a->key) != Z_OK) return -1;
+  if (s == NULL || z->sub_count >= RLMESH_ZENOH_SUBS ||
+      z_view_keyexpr_from_str(&ke, a->key) != Z_OK) {
+    return -1;
+  }
   rlmesh_zenoh_sub_t* ctx = &z->sub_ctx[z->sub_count];
   ctx->z = z;
   ctx->sub = a->sub;
   z_owned_closure_sample_t callback;
   z_closure(&callback, on_sample, NULL, ctx);
-  if (z_declare_subscriber(z_loan(z->session), &z->subs[z->sub_count], z_loan(ke), z_move(callback),
-                           NULL) != Z_OK) {
+  if (z_declare_subscriber(s, &z->subs[z->sub_count], z_loan(ke), z_move(callback), NULL) != Z_OK) {
     return -1;
   }
   z->sub_count++;
@@ -89,20 +112,29 @@ static int subscribe(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
 }
 
 static int token(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
+  const z_loaned_session_t* s = session(z, a->class_);
   z_view_keyexpr_t ke;
-  if (z->has_token || z_view_keyexpr_from_str(&ke, a->key) != Z_OK) return -1;
-  if (z_liveliness_declare_token(z_loan(z->session), &z->token, z_loan(ke), NULL) != Z_OK) {
+  if (s == NULL || z->token_count >= RLMESH_ZENOH_TOKENS ||
+      z_view_keyexpr_from_str(&ke, a->key) != Z_OK) {
     return -1;
   }
-  z->has_token = true;
+  if (z_liveliness_declare_token(s, &z->tokens[z->token_count], z_loan(ke), NULL) != Z_OK) {
+    return -1;
+  }
+  z->token_count++;
   return 0;
 }
 
 static int query(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
+  const z_loaned_session_t* s = session(z, a->class_);
   z_view_keyexpr_t ke;
-  if (z_view_keyexpr_from_str(&ke, a->key) != Z_OK) return -1;
-  query_t* q = (query_t*)malloc(sizeof(query_t));
-  if (q == NULL) return -1;
+  query_t* q = NULL;
+  if (s == NULL || z_view_keyexpr_from_str(&ke, a->key) != Z_OK ||
+      (q = (query_t*)malloc(sizeof(query_t))) == NULL) {
+    /* The robot waits on every query it asked for: it's over. */
+    push(z, EV_DONE, 0, a->query_id, NULL);
+    return -1;
+  }
   q->z = z;
   q->id = a->query_id;
   z_get_options_t opts;
@@ -115,6 +147,7 @@ static int query(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   if (a->has_payload) {
     if (z_bytes_copy_from_buf(&payload, a->payload, a->payload_len) != Z_OK) {
       free(q);
+      push(z, EV_DONE, 0, a->query_id, NULL);
       return -1;
     }
     opts.payload = z_move(payload);
@@ -123,37 +156,29 @@ static int query(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   z_closure(&callback, on_reply, on_query_done, q);
   /* On failure the closure is dropped, which frees q and reports the query
    * done: the robot retries. */
-  return z_get(z_loan(z->session), z_loan(ke), "", z_move(callback), &opts) == Z_OK ? 0 : -1;
+  return z_get(s, z_loan(ke), "", z_move(callback), &opts) == Z_OK ? 0 : -1;
 }
 
 static int publish(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
+  const z_loaned_session_t* s = session(z, a->class_);
   z_view_keyexpr_t ke;
-  if (z_view_keyexpr_from_str(&ke, a->key) != Z_OK) return -1;
+  if (s == NULL || z_view_keyexpr_from_str(&ke, a->key) != Z_OK) return -1;
   z_owned_bytes_t payload;
   if (z_bytes_copy_from_buf(&payload, a->payload, a->payload_len) != Z_OK) return -1;
   z_put_options_t opts;
   z_put_options_default(&opts);
   opts.priority = Z_PRIORITY_REAL_TIME;
   opts.is_express = true;
-  return z_put(z_loan(z->session), z_loan(ke), z_move(payload), &opts) == Z_OK ? 0 : -1;
+  return z_put(s, z_loan(ke), z_move(payload), &opts) == Z_OK ? 0 : -1;
 }
 
-int rlmesh_zenoh_open(rlmesh_zenoh_t* z, const char* connect, rlmesh_device_robot_t* robot,
+int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
                       rlmesh_device_now_us_fn now_us) {
-  if (z == NULL || connect == NULL || robot == NULL || now_us == NULL) return -1;
+  if (z == NULL || robot == NULL || now_us == NULL) return -1;
   memset(z, 0, sizeof *z);
   z->robot = robot;
   z->now_us = now_us;
-  if (z_mutex_init(&z->lock) != Z_OK) return -1;
-  z_owned_config_t config;
-  z_config_default(&config);
-  zp_config_insert(z_loan_mut(config), Z_CONFIG_MODE_KEY, "client");
-  zp_config_insert(z_loan_mut(config), Z_CONFIG_CONNECT_KEY, connect);
-  if (z_open(&z->session, z_move(config), NULL) != Z_OK) {
-    z_drop(z_move(z->lock));
-    return -1;
-  }
-  return 0;
+  return z_mutex_init(&z->lock) == Z_OK ? 0 : -1;
 }
 
 int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
@@ -205,9 +230,11 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
 
 void rlmesh_zenoh_close(rlmesh_zenoh_t* z) {
   for (uint8_t i = 0; i < z->sub_count; ++i) z_drop(z_move(z->subs[i]));
-  if (z->has_token) z_drop(z_move(z->token));
-  /* Pending queries are dropped with the session: their droppers queue. */
-  z_drop(z_move(z->session));
+  for (uint8_t i = 0; i < z->token_count; ++i) z_drop(z_move(z->tokens[i]));
+  /* Pending queries are dropped with their session: their droppers queue. */
+  for (uint8_t c = 0; c < RLMESH_DEVICE_CLASSES; ++c) {
+    if (z->open[c]) z_drop(z_move(z->sessions[c]));
+  }
   for (event_t* e = z->head; e != NULL;) {
     event_t* next = e->next;
     free(e);
