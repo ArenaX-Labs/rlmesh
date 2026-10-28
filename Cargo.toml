@@ -198,6 +198,15 @@ lto = true
 codegen-units = 1
 strip = true
 
+# The board's static library (crates/rlmesh-device, `mise run build:esp32`):
+# flash is the limit, and a panic resets the board (abort).
+[profile.device]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
 # Keep unwinding well-defined across the rlmesh-capi `extern "C"` boundary: every
 # FFI body relies on `catch_unwind`, which is a no-op under `panic = "abort"`.
 [profile.release]

@@ -5645,6 +5645,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlmesh-device"
+version = "0.2.0-alpha.0"
+dependencies = [
+ "rlmesh-session-core",
+]
+
+[[package]]
 name = "rlmesh-grpc"
 version = "0.2.0-alpha.0"
 dependencies = [

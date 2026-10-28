@@ -1,0 +1,3 @@
+# Staged by `mise run build:esp32` from crates/rlmesh-device.
+/src/rlmesh_device.h
+/src/esp32/

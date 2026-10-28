@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#MISE description="Build the ESP32 device runtime (crates/rlmesh-device) for xtensa-esp32-none-elf with the esp toolchain, stage it into the Arduino library (integrations/esp32) and compile the library's examples with arduino-cli when the esp32 core is installed"
+#MISE dir="{{ config_root }}"
+# Local only: Xtensa needs Espressif's Rust fork (`espup install`), which CI
+# doesn't have. ARDUINO_CLI names an arduino-cli binary off PATH.
+set -euo pipefail
+
+target=xtensa-esp32-none-elf
+lib=integrations/esp32
+export_esp="${ESP_EXPORT:-$HOME/export-esp.sh}"
+if [ ! -f "$export_esp" ]; then
+  echo "no $export_esp: install the esp toolchain with \`espup install\` (or set ESP_EXPORT)" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "$export_esp"
+
+# The esp toolchain's rustc under a nightly cargo: the workspace's manifests
+# need a newer cargo than the fork ships, and -Zbuild-std a nightly one. The
+# fork trails the workspace's MSRV, hence --ignore-rust-version.
+esp_rustc="$(rustup which --toolchain esp rustc)"
+echo "==> rlmesh-device for $target"
+RUSTC="$esp_rustc" cargo +nightly build -q --ignore-rust-version -p rlmesh-device \
+  --no-default-features --profile device --target "$target" -Zbuild-std=core,alloc
+
+mkdir -p "$lib/src/esp32"
+cp "target/$target/device/librlmesh_device.a" "$lib/src/esp32/"
+cp crates/rlmesh-device/include/rlmesh_device.h "$lib/src/"
+
+cli="${ARDUINO_CLI:-arduino-cli}"
+fqbn=esp32:esp32:esp32
+if ! "$cli" version >/dev/null 2>&1 || ! "$cli" board details -b "$fqbn" >/dev/null 2>&1; then
+  echo "==> sketch compile skipped (arduino-cli or its esp32 core not found)"
+  exit 0
+fi
+out="target/esp32"
+mkdir -p "$out"
+for example in "$lib"/examples/*/; do
+  name="$(basename "$example")"
+  echo "==> arduino-cli: examples/$name for $fqbn"
+  # The core warns about its own code: the log is shown only on failure.
+  log="$out/$name.log"
+  if ! "$cli" compile --fqbn "$fqbn" --library "$lib" --warnings all \
+    --build-path "$out/$name" "$example" >"$log" 2>&1; then
+    cat "$log" >&2
+    exit 1
+  fi
+  if grep -n "$lib/\(src\|examples\)/.*warning" "$log"; then
+    echo "the library warns on $fqbn" >&2
+    exit 1
+  fi
+  grep -E '^(Sketch uses|Global variables)' "$log"
+done
