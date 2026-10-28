@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Sans-IO guard: rlmesh-session-core builds for wasm32-unknown-unknown and, without std, for a bare-metal target, with no clock reads, threads, sleeps or IO dependencies"
+#MISE description="Sans-IO guard: rlmesh-session-core and rlmesh-tether build for wasm32-unknown-unknown and, without std, for a bare-metal target, with no clock reads, threads, sleeps or IO dependencies"
 #MISE dir="{{ config_root }}"
 #MISE depends=["setup:js"]
 
@@ -9,7 +9,7 @@
 # always an injected `now_ns`.
 set -euo pipefail
 
-crates=(rlmesh-session-core)
+crates=(rlmesh-session-core rlmesh-tether)
 # A bare-metal target with atomics (ESP32-C6 class), for the no_std build an
 # embedded robot uses. Xtensa needs the esp toolchain, so it stays local.
 bare=riscv32imac-unknown-none-elf
