@@ -2,26 +2,32 @@
 //! layer, and the static page with COOP/COEP.
 //!
 //! - `/control`: the first message is a JSON hello (`{"type": "hello",
-//!   "priority": "model"}`); the gateway attaches a participant for the
-//!   connection and answers with its id, then the authority snapshot. From
-//!   then on binary frames carry `ctl` requests and replies, heartbeats and
-//!   echoes, chunks and authority updates ([`crate::gateway::frame`]).
+//!   "priority": "model"}`, or `"observer"`); the gateway attaches a
+//!   participant for the connection with its token's credential and answers
+//!   with its id, then the authority snapshot. From then on binary frames
+//!   carry `ctl` requests and replies, heartbeats and echoes, chunks and
+//!   authority updates ([`crate::gateway::frame`]).
 //! - `/state` and `/bulk`: JSON `{"type": "subscribe", "id": 0, "path":
 //!   "arm7/arm"}` (and `unsubscribe`); samples come back as `SAMPLE` frames.
 //!   State connections queue 64 frames, bulk ones 4; a full queue drops the
 //!   newest frame (the stream's own seq shows the loss).
+//!
+//! A socket whose participant the host refuses is closed with `4401`
+//! (`UNAUTHENTICATED`: a revoked token) or `4403` (`NOT_AUTHORIZED`), one
+//! the host detaches with [`DETACHED`], and every socket with
+//! [`SESSION_ENDED`] once the session ended.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderName, HeaderValue};
 use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::get;
+use axum::{Extension, Router};
 use bytes::Bytes;
 use futures::{FutureExt, SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -30,9 +36,11 @@ use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{debug, info, warn};
 
-use crate::gateway::bridge::{Gateway, Outbound, report};
+use crate::error::SessionError;
+use crate::gateway::bridge::{self, Gateway, Outbound, report};
 use crate::gateway::config::parse_priority;
-use crate::gateway::security::{self, Policy, SubAdd, SubscriptionSet};
+use crate::gateway::security::{self, Bearer, Policy, SubAdd, SubscriptionSet};
+use crate::wire::CtlStatus;
 
 /// How long a control connection may take to say hello.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -56,11 +64,19 @@ pub fn router(state: AppState, static_dir: Option<&std::path::Path>) -> Router {
         .route("/control", get(control))
         .route(
             "/state",
-            get(|ws: WebSocketUpgrade, st: State<AppState>| data(ws, st, "state")),
+            get(
+                |ws: WebSocketUpgrade, st: State<AppState>, bearer: Extension<Bearer>| {
+                    data(ws, st, bearer, "state")
+                },
+            ),
         )
         .route(
             "/bulk",
-            get(|ws: WebSocketUpgrade, st: State<AppState>| data(ws, st, "bulk")),
+            get(
+                |ws: WebSocketUpgrade, st: State<AppState>, bearer: Extension<Bearer>| {
+                    data(ws, st, bearer, "bulk")
+                },
+            ),
         )
         // Token and Origin checks on the sockets only; the page is public.
         .route_layer(middleware::from_fn_with_state(
@@ -81,6 +97,32 @@ pub fn router(state: AppState, static_dir: Option<&std::path::Path>) -> Router {
 pub const SESSION_ENDED: u16 = 4410;
 /// Its close reason, led by the reason code (`host_lost`).
 pub const SESSION_ENDED_REASON: &str = "host_lost: the session ended";
+/// The close code of a socket whose participant the host detached (its
+/// token revoked, or its device's entry changed): a reconnect attaches
+/// again under the new entry, or is refused with `4401`.
+pub const DETACHED: u16 = 4409;
+
+/// The close a refused attach ends its socket with: `4401` for a key the
+/// host doesn't know (a revoked token), `4403` for what its device (or
+/// this gateway) does not allow.
+fn refused(err: &SessionError) -> Option<(u16, String)> {
+    let refusal = err.refusal()?;
+    let code = match refusal.status {
+        CtlStatus::Unauthenticated => 4401,
+        CtlStatus::NotAuthorized => 4403,
+        _ => return None,
+    };
+    Some((code, close_reason(&refusal.message)))
+}
+
+/// `text` cut to what a close frame carries (123 bytes).
+fn close_reason(text: &str) -> String {
+    let mut end = text.len().min(123);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
 
 fn to_message(out: Outbound) -> Message {
     match out {
@@ -109,15 +151,27 @@ async fn session_ended(mut ended: tokio::sync::watch::Receiver<bool>) {
     }
 }
 
-async fn control(ws: WebSocketUpgrade, State(st): State<AppState>) -> impl IntoResponse {
+async fn control(
+    ws: WebSocketUpgrade,
+    State(st): State<AppState>,
+    Extension(bearer): Extension<Bearer>,
+) -> impl IntoResponse {
     let ws = security::limit(ws, &st.policy);
     match refusal(&st) {
         Some((code, reason)) => ws.on_upgrade(move |socket| close_with(socket, code, reason)),
-        None => ws.on_upgrade(move |socket| control_conn(socket, st)),
+        None => ws.on_upgrade(move |socket| control_conn(socket, st, bearer)),
     }
 }
 
-async fn control_conn(socket: WebSocket, st: AppState) {
+/// The class a hello asks for: `None` for an observer.
+fn hello_class(name: &str) -> Result<Option<crate::wire::PriorityClass>, String> {
+    match name {
+        "observer" => Ok(None),
+        name => parse_priority(name).map(Some),
+    }
+}
+
+async fn control_conn(socket: WebSocket, st: AppState, bearer: Bearer) {
     let (mut tx, mut rx) = socket.split();
     let (out, mut out_rx) = mpsc::channel::<Outbound>(256);
     let writer = tokio::spawn(async move {
@@ -143,7 +197,7 @@ async fn control_conn(socket: WebSocket, st: AppState) {
     let priority = match hello
         .as_ref()
         .filter(|h| h["type"] == "hello")
-        .map(|h| parse_priority(h["priority"].as_str().unwrap_or("model")))
+        .map(|h| hello_class(h["priority"].as_str().unwrap_or("model")))
     {
         Some(Ok(priority)) => priority,
         Some(Err(err)) => {
@@ -161,18 +215,22 @@ async fn control_conn(socket: WebSocket, st: AppState) {
             return;
         }
     };
-    let mut link = match st.gateway.attach(priority, out.clone()).await {
+    let mut link = match st.gateway.attach(&bearer, priority, out.clone()).await {
         Ok(link) => link,
         Err(err) => {
             warn!(%err, "browser attach");
             let _ = out.send(report("error", format!("attach: {err}"))).await;
+            if let Some((code, reason)) = refused(&err) {
+                let _ = out.send(Outbound::Close(code, reason)).await;
+            }
             drop(out);
             let _ = writer.await;
             return;
         }
     };
-    info!(participant = %link.id(), ?priority, "browser attached");
-    let _ = out.send(Outbound::Text(link.hello(priority))).await;
+    let class = priority.map_or("observer".into(), |p| format!("{p:?}").to_lowercase());
+    info!(participant = %link.id(), %class, "browser attached");
+    let _ = out.send(Outbound::Text(link.hello(&class))).await;
     if let Some(state) = link.state_frame() {
         let _ = out.send(Outbound::Binary(state)).await;
     }
@@ -187,6 +245,11 @@ async fn control_conn(socket: WebSocket, st: AppState) {
             m = rx.next() => m,
             () = &mut ended => {
                 let _ = out.send(Outbound::Close(SESSION_ENDED, SESSION_ENDED_REASON.into())).await;
+                break;
+            }
+            () = link.detached() => {
+                info!(participant = %link.id(), "the host detached this browser");
+                let _ = out.send(Outbound::Close(DETACHED, "detached by the host".into())).await;
                 break;
             }
         };
@@ -212,34 +275,54 @@ async fn control_conn(socket: WebSocket, st: AppState) {
 async fn data(
     ws: WebSocketUpgrade,
     st: State<AppState>,
+    Extension(bearer): Extension<Bearer>,
     socket: &'static str,
 ) -> impl IntoResponse {
     let State(st) = st;
     let ws = security::limit(ws, &st.policy);
     match refusal(&st) {
         Some((code, reason)) => ws.on_upgrade(move |s| close_with(s, code, reason)),
-        None => ws.on_upgrade(move |s| data_conn(s, st, socket)),
+        None => ws.on_upgrade(move |s| data_conn(s, st, bearer, socket)),
     }
 }
 
-async fn data_conn(socket: WebSocket, st: AppState, class: &'static str) {
+async fn data_conn(socket: WebSocket, st: AppState, bearer: Bearer, class: &'static str) {
+    let reader = match st.gateway.reader(&bearer).await {
+        Ok(reader) => reader,
+        Err(err) => {
+            warn!(%err, class, "browser reader attach");
+            let (code, reason) = refused(&err).unwrap_or((1011, close_reason(&err.to_string())));
+            close_with(socket, code, reason).await;
+            return;
+        }
+    };
     let (mut tx, mut rx) = socket.split();
     let (frames, mut frames_rx) = mpsc::channel::<Bytes>(if class == "state" { 64 } else { 4 });
     let (replies, mut replies_rx) = mpsc::channel::<String>(32);
     let mut ended = st.gateway.ended();
-    let writer = tokio::spawn(async move {
-        loop {
-            let m = tokio::select! {
-                Some(b) = frames_rx.recv() => Message::Binary(b),
-                Some(t) = replies_rx.recv() => Message::Text(t.into()),
-                Ok(()) = ended.wait_for(|e| *e).map(|r| r.map(|_| ())) => {
-                    let _ = tx.send(to_message(Outbound::Close(SESSION_ENDED, SESSION_ENDED_REASON.into()))).await;
+    let reader = Arc::new(reader);
+    let writer = tokio::spawn({
+        let reader = reader.clone();
+        async move {
+            let detached = bridge::detached(&reader);
+            tokio::pin!(detached);
+            loop {
+                let m = tokio::select! {
+                    Some(b) = frames_rx.recv() => Message::Binary(b),
+                    Some(t) = replies_rx.recv() => Message::Text(t.into()),
+                    Ok(()) = ended.wait_for(|e| *e).map(|r| r.map(|_| ())) => {
+                        let _ = tx.send(to_message(Outbound::Close(SESSION_ENDED, SESSION_ENDED_REASON.into()))).await;
+                        break;
+                    }
+                    () = &mut detached => {
+                        let _ = tx.send(to_message(Outbound::Close(DETACHED, "detached by the host".into()))).await;
+                        break;
+                    }
+                    else => break,
+                };
+                if tx.send(m).await.is_err() {
                     break;
                 }
-                else => break,
-            };
-            if tx.send(m).await.is_err() {
-                break;
             }
         }
     });
@@ -272,7 +355,11 @@ async fn data_conn(socket: WebSocket, st: AppState, class: &'static str) {
                         continue;
                     }
                 }
-                match st.gateway.subscribe(&path, class, id, frames.clone()).await {
+                match st
+                    .gateway
+                    .subscribe(&reader, &path, class, id, frames.clone())
+                    .await
+                {
                     Ok((sub, channel)) => {
                         debug!(class, %path, id, "subscribed");
                         subs.push((id, path.clone(), sub));

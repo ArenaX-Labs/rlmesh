@@ -21,10 +21,9 @@ const timeline: { t: number; what: string; value: string }[] = [];
 const mark = (what: string, value: string) => timeline.push({ t: performance.now(), what, value });
 
 const t0 = performance.now();
-// A token for a non-loopback gateway rides in the URL fragment (never sent to the server): /#token=...
-const token = new URLSearchParams(location.hash.slice(1)).get('token') ?? undefined;
-// The operator class lets this page take over from the robot's model policy.
-const session = await rlmesh.connect(undefined, { priority: 'operator', ...(token ? { token } : {}) });
+// The gateway serving this page, with the token from its URL (#t=..., which run.sh prints). The
+// operator class lets this page take over from the robot's model policy.
+const session = await rlmesh.connect(undefined, { priority: 'operator' });
 const sizes = await fetch('./size.json').then((r) => r.json()).catch(() => ({}));
 const showMe = () => ($('me').textContent = `(you: ${session.id}, ${session.priority})`);
 showMe();

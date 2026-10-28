@@ -131,7 +131,7 @@ export class Session {
   /** Gateway base URL (`ws://` or `wss://`), without the class suffix. */
   readonly url: string;
   /** The class this connection's participant attaches at. */
-  readonly priority: Priority;
+  readonly priority: Priority | 'observer';
   /** Every declared stream: each part's samples, and each commandable part's applied stream. */
   streams: StreamDecl[] = [];
   /** Every commandable part: what `lease()` accepts (when `bound`). */
@@ -527,7 +527,7 @@ export class Session {
   private end(e: SessionEnded) {
     if (this.ended) return;
     this.ended = e;
-    const why = e.code === 4401 ? 'the token was refused' : e.code === 4403 ? 'this page origin is not allowed' : e.code === 4410 ? 'the session ended' : 'the gateway closed';
+    const why = e.code === 4401 ? 'the token was refused' : e.code === 4403 ? 'not allowed (this page origin, or what its token may do)' : e.code === 4410 ? 'the session ended' : 'the gateway closed';
     this.refused(new Error(`${this.url}: ${why} (${e.code}${e.reason ? `: ${e.reason}` : ''})`));
     for (const path of [...this.leases.keys(), ...this.pending.keys()]) this.endLease(path, { cause: 'session_ended', reason: why });
     for (const set of this.subs.values()) for (const q of [...set]) q.close();
@@ -697,7 +697,8 @@ export class Session {
           if (p) {
             clearTimeout(p.timer);
             this.pending.delete(e.path);
-            const l = new Lease(this.leaseHost, e.path, this.priority, e.token, e.holder);
+            // An observer is never granted one.
+            const l = new Lease(this.leaseHost, e.path, this.priority as Priority, e.token, e.holder);
             this.leases.set(e.path, l);
             p.resolve(l);
           }

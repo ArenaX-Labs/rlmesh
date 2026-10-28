@@ -32,12 +32,18 @@ three pieces instead:
 
 ## What the browser is to the session
 
-Each control connection is a participant of its own. On the hello
-(`{"type": "hello", "priority": "model"}`) the gateway attaches a
-controller at that class (capped by `--max-priority`, `model` by default;
-a page that takes over from a model asks for `operator`, which the gateway
-must allow with `--max-priority operator`), declares an identity binding over every commandable part, and
-answers with the participant id. From then on:
+Each control connection is a participant of its own, attached with its
+token's credential (see the security model): the gateway runs a separate
+handshake for it and seals and opens for it, so the wasm holds no keys. On
+the hello (`{"type": "hello", "priority": "model"}`) the gateway attaches a
+controller at that class (capped by `--max-priority`, `model` by default,
+and by the host at the token's device's cap; a page that takes over from a
+model asks for `operator`, which the gateway must allow with
+`--max-priority operator`), declares an identity binding over every
+commandable part, and answers with the participant id. `"observer"`
+attaches one that takes no leases. Each data connection reads through an
+observer of its own under the same credential, so the host hands it only
+the stream keys the token's device may read. From then on:
 
 - **Leases are the host's.** `lease(path)` sends a real `GrantLease` (with
   the binding's fingerprint); the gateway forwards it through the
@@ -73,6 +79,10 @@ answers with the participant id. From then on:
   ends its leases (SAFE when one was active). The client reports the lease
   as revoked (`cause: 'disconnected'`) and never resumes it: the reconnect
   is a new participant, and `arm()` then `lease()` take control again.
+- **A participant the host detaches closes its socket** with `4409`: its
+  token's device was revoked (`rlmesh devices revoke` on the robot), or its
+  entry changed. The socket reconnects, under the new entry, or is refused
+  with `4401` once the host no longer knows the token's key.
 
 Every binary frame is one tag byte and a v2 message
 (`javascript/rlmesh/wasm/src/frame.rs` has the table); text frames are the
@@ -104,43 +114,70 @@ gateway closes every socket with `4410` (reason `host_lost: ...`), the page gets
 (its leases end with `cause: 'session_ended'`), and `rlmesh-gateway`, which
 serves one session, exits. The gateway takes the session as its host
 prints it, `--address {ip}:{port}[/{session}]`, or as `--connect`
-with `--session`/`--session-file`.
+with `--session`/`--session-file`, and joins the host as a client, as
+every participant does (through the password gate of a loopback host, and
+without one to rlmeshd).
 
 ## Security model
 
 `rlmesh-gateway` exposes a robot session to web pages, so it is locked down
 by default (`crates/rlmesh-session/src/gateway/security.rs`):
 
-- **Bind:** `127.0.0.1` by default. A non-loopback `--bind` refuses to start
-  without a token, and without TLS (the token would cross the network in
-  the clear) unless `--insecure-http` says so.
-- **Token:** from `RLMESH_GATEWAY_TOKEN` or `--token-file`, never a
-  command-line value (argv is world-readable). The client offers the
-  WebSocket subprotocols `rlmesh.v2, rlmesh.token.<token>`; the gateway
-  selects `rlmesh.v2` and never echoes the token. A subprotocol rather than a
-  `?token=` query: URLs end up in access logs, proxy logs, tracing spans and
-  resource-timing entries, the `Sec-WebSocket-Protocol` header normally does
-  not. Tokens are RFC 7230 token characters, at least 16 long, compared in
-  constant time. The example page reads one from the URL fragment
-  (`/#token=…`), which is never sent to the server.
+- **Bind:** `127.0.0.1` by default. A non-loopback `--bind` refuses to
+  start without TLS (a token would cross the network in the clear) unless
+  `--insecure-http` says so. A browser on another machine runs a gateway
+  of its own, on its own loopback, rather than
+  reaching the robot's.
+- **Token:** every socket needs one: there is no tokenless loopback, and
+  the gateway refuses to start with no token to accept. The client offers
+  the WebSocket subprotocols `rlmesh.v2, rlmesh.token.<token>`; the gateway
+  selects `rlmesh.v2`, never echoes or logs the token, and keeps only
+  hashes of tokens. A subprotocol rather than a `?token=` query: URLs end
+  up in access logs, proxy logs, tracing spans and resource-timing entries,
+  the `Sec-WebSocket-Protocol` header normally does not. A token is one of:
+  - **this machine's page token**, from `RLMESH_GATEWAY_TOKEN` or
+    `--token-file` (never a command-line value: argv is world-readable),
+    RFC 7230 token characters, at least 16 long. Whoever starts the
+    gateway mints it and opens the page as `http://127.0.0.1:P/#t=…`: the
+    fragment never reaches a server or its logs, and `connect()` moves it
+    to `sessionStorage` and out of the URL. Its browsers attach with the
+    gateway's own credential (the session address's key: device `local`
+    on the robot's machine, or this machine's pairing), at
+    `--max-priority` at most;
+  - **a paired browser token**: `rlmesh pair HOST --browser [--name NAME]`
+    on the machine whose gateway serves the browser pairs it with the
+    robot's rlmeshd as machines pair (design §3, §5): it shows a code, the
+    owner types `rlmesh pair approve CODE [--max CLASS]` on the robot, and
+    rlmeshd enrolls a device of `kind = "browser"` (default cap `model`,
+    or `observer`), with its own `parts` and `verbs` (`rlmesh devices
+allow`). This machine keeps the device's key and the token's hash in
+    `~/.config/rlmesh/browsers.toml` (`--browsers`), which the gateway
+    reads at every upgrade, and the command prints the page URL with the
+    token once. The gateway attaches that browser under the device's key,
+    so the host applies its cap, parts and verbs, and `rlmesh devices
+revoke` detaches exactly that browser.
 - **Origin:** an allowlist, by default the origins the gateway serves its
   own page from, computed from the bind address and port, never from the
   request's `Host` (so DNS rebinding, `evil.example` resolving to
   127.0.0.1, does not pass). `--allow-origin` adds origins and `'*'` allows
-  any, which needs a token. A request without an `Origin` is not a browser page (Node's
+  any. A request without an `Origin` is not a browser page (Node's
   `WebSocket` sends none); the token still applies to it.
 - **What a connection may do:** at most `--max-message-bytes` per inbound
   message and frame (64 KiB) and `--max-subscriptions` per data connection
   (32; duplicates ignored). Its participant attaches at most at
-  `--max-priority` (`model` by default). Heartbeats and chunks must name the connection's own
+  `--max-priority` (`model` by default) and its token's device's cap.
+  Heartbeats and chunks must name the connection's own
   participant, and only `GrantLease`, `ReleaseLease`, `Arm`, `Disarm` and
   `Estop` are forwarded (declaring parts, bindings or acknowledgements is
   refused).
 - **Refusals carry their reason.** A browser cannot read the status of a
   refused WebSocket upgrade, so the gateway completes a refused upgrade and
   closes it at once, before any route sees it: `4401` for the token, `4403`
-  for the origin. `connect()` rejects with that reason instead of waiting
-  out its timeout, and the socket does not retry.
+  for the origin. A participant the host refuses closes its socket the same
+  way: `4401` for a key it doesn't know (`UNAUTHENTICATED`: a revoked
+  token), `4403` above the device's cap (`NOT_AUTHORIZED`). `connect()`
+  rejects with that reason instead of waiting out its timeout, and the
+  socket does not retry.
 - **TLS:** `--tls-cert` and `--tls-key` serve https and wss with rustls (the
   ring provider) on the same port; handshakes run off the accept loop with a
   10 s timeout. A page is cross-origin isolated (COOP/COEP/CORP are always
@@ -150,7 +187,7 @@ by default (`crates/rlmesh-session/src/gateway/security.rs`):
 ## Running it
 
 ```sh
-mise run demo:web     # the example robot and the gateway; open http://127.0.0.1:18080/
+mise run demo:web     # the example robot and the gateway; open the http://127.0.0.1:18080/#t=… it prints
 mise run test:js      # wasm tests under Node, the .wasm checks, strict tsc, JS unit tests
 mise run test:js:e2e  # Node recovery tests against the example robot and a real gateway
 mise run check:sans-io

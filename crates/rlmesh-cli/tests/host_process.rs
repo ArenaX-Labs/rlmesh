@@ -719,4 +719,57 @@ async fn a_machine_pairs_by_the_code_typed_on_the_robot_and_attaches_at_its_cap(
         })
         .await
         .expect("attached as laptop-josh");
+
+    // A browser token pairs the same way: enrolled as a browser at model,
+    // and the laptop keeps the token's hash, never the token.
+    let mut pair = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
+        .args(["pair", &robot.to_string(), "--browser", "--name", "web"])
+        .env("XDG_CONFIG_HOME", laptop.path())
+        .env("RLMESH_STATE_DIR", laptop.path().join("no-daemon"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("rlmesh pair --browser");
+    let mut lines = BufReader::new(pair.stdout.take().expect("stdout")).lines();
+    let code = loop {
+        let line = lines.next().expect("the code").expect("a line");
+        if let Some(code) = line.strip_prefix("Confirm on the robot: rlmesh pair approve ") {
+            break code.to_string();
+        }
+    };
+    assert!(approve(&code).status.success());
+    let token = lines
+        .map(|l| l.expect("a line"))
+        .find_map(|l| l.split_once("/#t=").map(|(_, t)| t.to_string()))
+        .expect("the page URL");
+    assert!(pair.wait().expect("wait").success());
+    let table = enrolled();
+    assert!(
+        table.contains("[devices.web]\n")
+            && table.contains("kind = \"browser\"\nname = \"web\"\nmax_priority = \"model\""),
+        "{table}"
+    );
+    let browsers = laptop.path().join("rlmesh").join("browsers.toml");
+    let kept = std::fs::read_to_string(&browsers).expect("browsers.toml");
+    assert!(!kept.contains(&token), "{kept}");
+    let mode = std::fs::metadata(&browsers)
+        .expect("file")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    let found = rlmesh_session::pairing::BrowserToken::find(&browsers, &token)
+        .expect("readable")
+        .expect("the token's entry");
+    let browser = daemon
+        .join("page", PriorityClass::Model, found.credential())
+        .await
+        .expect("admitted at model");
+    browser
+        .wait_for("its device in the roster", WAIT, |s| {
+            s.participant(browser.id())
+                .is_some_and(|p| p.device == "web")
+        })
+        .await
+        .expect("attached as web");
 }

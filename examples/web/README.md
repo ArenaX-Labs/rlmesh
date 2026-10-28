@@ -7,7 +7,7 @@ gateway's security model.
 
 ```sh
 mise run demo:web     # builds the wasm, the package and this page, then runs the robot and the gateway
-# open http://127.0.0.1:18080/
+# open the http://127.0.0.1:18080/#t=… it prints: the page's token rides in the fragment
 ```
 
 `run.sh` starts two processes (logs in `~/.cache/rlmesh-web/`):
@@ -20,7 +20,8 @@ mise run demo:web     # builds the wasm, the package and this page, then runs th
   RGB). The policy holds the arm at the model class and sways it; it takes
   the arm back whenever it is free.
 - **The gateway**, serving `examples/web/dist` with COOP/COEP, so the page is
-  cross-origin isolated and `latest()` reads a SharedArrayBuffer.
+  cross-origin isolated and `latest()` reads a SharedArrayBuffer. `run.sh`
+  mints the page's token and hands it to the gateway in its environment.
 
 The page:
 
@@ -40,8 +41,7 @@ The page:
 
 Environment knobs: `ROBOT_BASE` (per-class TCP base, default 17600, four
 ports), `HTTP_PORT` (18080), `CAM=jpeg|raw`, `POLICY=on|off`, `DURATION`
-(seconds), `SKIP_BUILD=1`, and `BIND` (default 127.0.0.1; any other address
-needs `RLMESH_GATEWAY_TOKEN`, then open `http://HOST:PORT/#token=…`).
+(seconds) and `SKIP_BUILD=1`.
 
 `window.__rlmesh` exposes the hooks the automated checks use: `measure(s)`,
 `take()`, `release()`, `arm()`, `setTarget([...])`, `pauseHeartbeats(p)`,

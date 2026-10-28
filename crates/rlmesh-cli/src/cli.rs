@@ -565,19 +565,25 @@ pub struct PairArgs {
     /// The name this machine pairs as (default: its host name).
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
+    /// Pair a browser token instead: a device of its own (default cap
+    /// model), which this machine's rlmesh-gateway attaches its browser
+    /// with. Prints the token once.
+    #[arg(long)]
+    pub browser: bool,
     #[command(subcommand)]
     pub command: Option<PairCommand>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum PairCommand {
-    /// On the robot: list the machines waiting, and approve the one
-    /// showing CODE (typed, or asked for).
+    /// On the robot: list the machines and browsers waiting, and approve
+    /// the one showing CODE (typed, or asked for).
     Approve {
         /// The 6-digit code the machine shows.
         code: Option<String>,
         /// The highest class it may attach and lease at: observer,
-        /// scripted, model or operator (default operator).
+        /// scripted, model or operator (default operator for a machine,
+        /// model for a browser).
         #[arg(long, value_name = "CLASS")]
         max: Option<String>,
         /// rlmeshd's state directory (default: `rlmesh/daemon` in the user

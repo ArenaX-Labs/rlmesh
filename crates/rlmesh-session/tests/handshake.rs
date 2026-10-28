@@ -13,6 +13,7 @@ use axum::routing::get;
 use futures::{SinkExt, StreamExt};
 use rlmesh_session::gateway::security::{self, Origins, Policy, SUBPROTOCOL, TOKEN_PREFIX};
 use rlmesh_session::gateway::tls;
+use rlmesh_session::pairing::token_hash;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -32,9 +33,10 @@ async fn echo(ws: WebSocketUpgrade, State(p): State<Arc<Policy>>) -> impl IntoRe
     })
 }
 
-fn policy(port: u16, token: Option<&str>, tls: bool) -> Arc<Policy> {
+fn policy(port: u16, tls: bool) -> Arc<Policy> {
     Arc::new(Policy {
-        token: token.map(Into::into),
+        page: Some(token_hash(TOKEN)),
+        browsers: None,
         origins: Origins::List(security::default_origins(
             "127.0.0.1".parse().unwrap(),
             port,
@@ -54,10 +56,10 @@ fn app(p: Arc<Policy>) -> Router {
 }
 
 /// Bind first so the default origin can use the real port.
-async fn serve(token: Option<&str>) -> (SocketAddr, Arc<Policy>) {
+async fn serve() -> (SocketAddr, Arc<Policy>) {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
-    let p = policy(addr.port(), token, false);
+    let p = policy(addr.port(), false);
     let a = app(p.clone());
     tokio::spawn(async move { axum::serve(l, a).await.unwrap() });
     (addr, p)
@@ -94,7 +96,7 @@ fn with_token() -> String {
 
 #[tokio::test]
 async fn rejected_without_token() {
-    let (addr, _) = serve(Some(TOKEN)).await;
+    let (addr, _) = serve().await;
     let url = format!("ws://{addr}/control");
     let good_origin = format!("http://127.0.0.1:{}", addr.port());
     assert_eq!(
@@ -122,7 +124,7 @@ async fn rejected_without_token() {
 
 #[tokio::test]
 async fn rejected_from_bad_origin() {
-    let (addr, _) = serve(Some(TOKEN)).await;
+    let (addr, _) = serve().await;
     let url = format!("ws://{addr}/control");
     // DNS-rebinding shape: right port, hostile name.
     assert_eq!(
@@ -147,7 +149,7 @@ async fn rejected_from_bad_origin() {
 
 #[tokio::test]
 async fn accepted_from_good_origin_with_token_and_limits_apply() {
-    let (addr, _) = serve(Some(TOKEN)).await;
+    let (addr, _) = serve().await;
     let url = format!("ws://{addr}/control");
     for origin in [
         format!("http://127.0.0.1:{}", addr.port()),
@@ -175,16 +177,19 @@ async fn accepted_from_good_origin_with_token_and_limits_apply() {
 }
 
 #[tokio::test]
-async fn loopback_without_token_accepts_non_browser_clients() {
-    let (addr, _) = serve(None).await;
-    let (_ws, _) = tokio_tungstenite::connect_async(request(
-        &format!("ws://{addr}/control"),
-        None,
-        Some(SUBPROTOCOL),
-    ))
-    .await
-    .unwrap();
-    // Without a token, Origin is still enforced for browser pages.
+async fn a_loopback_socket_without_a_token_is_refused() {
+    let (addr, _) = serve().await;
+    // Not a browser page (no Origin), on loopback: still 4401.
+    assert_eq!(
+        refused_with(request(
+            &format!("ws://{addr}/control"),
+            None,
+            Some(SUBPROTOCOL)
+        ))
+        .await,
+        4401
+    );
+    // Origin is checked first for browser pages.
     assert_eq!(
         refused_with(request(
             &format!("ws://{addr}/control"),
@@ -211,7 +216,7 @@ async fn wss_with_rustls() {
 
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
-    let p = policy(addr.port(), Some(TOKEN), true);
+    let p = policy(addr.port(), true);
     let a = app(p);
     tokio::spawn(async move {
         axum::serve(tls::TlsListener::new(l, cfg).unwrap(), a)

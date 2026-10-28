@@ -1,7 +1,7 @@
 // `rlmesh` for browsers (the `browser` export condition).
 //
 //   import * as rlmesh from 'rlmesh';
-//   const session = await rlmesh.connect();                      // the gateway serving this page
+//   const session = await rlmesh.connect();                      // the gateway serving this page (#t=token)
 //   for await (const s of session.subscribe('arm7/arm')) s.data; // Float64Array, yours
 //   using f = session.peek('arm7/scene/cam');                    // borrowed: pooled buffer + ImageBitmap
 //   const lease = await session.lease('arm7/arm');               // preempts lower classes than `operator`
@@ -45,11 +45,28 @@ export function browserPlatform(opts: ConnectOptions = {}): Platform {
   };
 }
 
+const TOKEN_KEY = 'rlmesh.token';
+
+/**
+ * The token of the gateway serving this page: `#t=…` in the page URL, which never reaches a server, is
+ * moved to `sessionStorage` (and out of the URL and its history entry); else the one kept there.
+ */
+function pageToken(): string | undefined {
+  const t = new URLSearchParams(location.hash.slice(1)).get('t');
+  if (t) {
+    sessionStorage.setItem(TOKEN_KEY, t);
+    history.replaceState(history.state, '', location.pathname + location.search);
+  }
+  return sessionStorage.getItem(TOKEN_KEY) ?? undefined;
+}
+
 /**
  * Join a session through its gateway. `url` is the gateway's base `ws://`/`wss://` URL; it defaults to
- * the page's own origin. Resolves once the declarations and a first clock estimate have arrived.
+ * the page's own origin, with the token from the page URL's fragment (`#t=…`) unless `opts.token` is
+ * given. Resolves once the declarations and a first clock estimate have arrived.
  */
 export function connect(url?: string, opts: ConnectOptions = {}): Promise<Session> {
   const base = url ?? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
-  return connectWith(browserPlatform(opts), base, opts);
+  const token = opts.token ?? (url === undefined ? pageToken() : undefined);
+  return connectWith(browserPlatform(opts), base, token ? { ...opts, token } : opts);
 }

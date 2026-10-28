@@ -636,18 +636,7 @@ impl SessionAddress {
         {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let transport = match local_host(self.base) {
-            Some(transport) => transport,
-            None => open_client(self.base, self.link_auth(), deadline)
-                .await
-                .map_err(|err| match err {
-                    SessionError::Zenoh(_) => SessionError::Timeout(
-                        host_timeout,
-                        format!("the session host at {}", self.base),
-                    ),
-                    other => other,
-                })?,
-        };
+        let transport = self.link(deadline, host_timeout).await?;
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),
             self.session,
@@ -667,6 +656,31 @@ impl SessionAddress {
                     "the host at {} cannot serve session {:?}: {why}",
                     self.base, self.name
                 )),
+                other => other,
+            })
+    }
+}
+
+impl SessionAddress {
+    /// A link to the host by `deadline`, as a Zenoh client (riding its
+    /// transport when this process runs it): through a password gate on
+    /// loopback, and without one to a host that gates no link (rlmeshd,
+    /// an `insecure` host), which the handshake alone admits. `waited` names
+    /// the wait in a timeout.
+    pub async fn link(
+        &self,
+        deadline: tokio::time::Instant,
+        waited: Duration,
+    ) -> Result<Transport, SessionError> {
+        if let Some(transport) = local_host(self.base) {
+            return Ok(transport);
+        }
+        open_client(self.base, self.link_auth(), deadline)
+            .await
+            .map_err(|err| match err {
+                SessionError::Zenoh(_) => {
+                    SessionError::Timeout(waited, format!("the session host at {}", self.base))
+                }
                 other => other,
             })
     }

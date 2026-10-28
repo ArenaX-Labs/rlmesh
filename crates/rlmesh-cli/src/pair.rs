@@ -7,6 +7,13 @@
 //! approve [CODE]` approves the machine showing the code, which rlmeshd
 //! enrolls in `devices.toml` as a `machine` (default cap `operator`).
 //!
+//! `rlmesh pair HOST --browser` pairs a browser token the same way (design
+//! §5), on the machine whose gateway will serve the browser (a
+//! laptop's own): rlmeshd enrolls a `browser` (default cap `model`), and
+//! this machine keeps the token's hash and its device key in
+//! `~/.config/rlmesh/browsers.toml` ([`BrowserToken`]) and prints the
+//! token once, in the page URL's fragment.
+//!
 //! **The local channel.** `pair approve` and `devices provision` reach the
 //! running rlmeshd over a Unix socket in its state directory
 //! ([`SOCKET`], 0600 in a 0700 directory, so only the daemon's user, on
@@ -18,15 +25,22 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use rlmesh_session::address::Address;
-use rlmesh_session::pairing::{self, HostFile};
+use rlmesh_session::auth::pairing::{BROWSER, MACHINE};
+use rlmesh_session::pairing::{self, BrowserToken, HostFile};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{PairArgs, PairCommand};
 
 /// The local channel's socket in rlmeshd's state directory.
 pub const SOCKET: &str = "pair.sock";
-/// A machine's default cap (design §12 decision 6).
-const MACHINE_CAP: &str = "operator";
+/// The default cap of a device of `kind` (design §12 decision 6):
+/// `operator` for a machine approved on the robot, `model` for a browser.
+fn default_cap(kind: &str) -> &'static str {
+    if kind == BROWSER { "model" } else { "operator" }
+}
+
+/// The port `rlmesh-gateway` serves on by default.
+const GATEWAY_PORT: u16 = 18080;
 
 /// A request on the local channel.
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,8 +48,9 @@ const MACHINE_CAP: &str = "operator";
 enum Ask {
     /// The machines waiting for approval.
     Pending,
-    /// Approve the machine showing `code`, at `max`.
-    Approve { code: u32, max: String },
+    /// Approve the machine showing `code`, at `max` (its kind's default
+    /// when absent).
+    Approve { code: u32, max: Option<String> },
     /// The host's key, id and addresses, for a board.
     Host,
 }
@@ -81,12 +96,17 @@ pub async fn pair(args: &PairArgs, stdout: &mut impl Write) -> Result<()> {
         }
         None => {
             let host = args.host.as_deref().context("name the robot's host")?;
-            pair_machine(host, args.name.as_deref(), stdout).await
+            pair_machine(host, args.name.as_deref(), args.browser, stdout).await
         }
     }
 }
 
-async fn pair_machine(host: &str, name: Option<&str>, stdout: &mut impl Write) -> Result<()> {
+async fn pair_machine(
+    host: &str,
+    name: Option<&str>,
+    browser: bool,
+    stdout: &mut impl Write,
+) -> Result<()> {
     let address = Address::session(host)?;
     let Some(named) = address.host.clone() else {
         bail!("{host:?} names no host: give the robot's, as robot.local or 10.0.0.5:7447");
@@ -97,17 +117,38 @@ async fn pair_machine(host: &str, name: Option<&str>, stdout: &mut impl Write) -
         ..named
     }
     .to_string();
-    let name = match name {
-        Some(name) => name.to_string(),
-        None => hostname().unwrap_or_else(|| "machine".into()),
+    let name = match (name, browser) {
+        (Some(name), _) => name.to_string(),
+        (None, true) => "browser".into(),
+        (None, false) => hostname().unwrap_or_else(|| "machine".into()),
     };
-    writeln!(stdout, "pairing with rlmeshd at {dialed} as {name}")?;
+    let kind = if browser { BROWSER } else { MACHINE };
+    writeln!(
+        stdout,
+        "pairing with rlmeshd at {dialed} as {name} ({kind})"
+    )?;
     stdout.flush()?;
-    let paired = pairing::pair(base, &name, |sas| {
+    let paired = pairing::pair(base, &name, kind, |sas| {
         let _ = writeln!(stdout, "Confirm on the robot: rlmesh pair approve {sas}");
         let _ = stdout.flush();
     })
     .await?;
+    if browser {
+        let token = pairing::new_token()?;
+        let path = pairing::browsers_path()
+            .context("no home directory for ~/.config/rlmesh/browsers.toml")?;
+        BrowserToken::new(&paired, &token).add(&path)?;
+        writeln!(
+            stdout,
+            "paired a browser with {} as device {} ({}); this machine's rlmesh-gateway \
+             serves it, its page opened as (shown once):\n\
+             http://127.0.0.1:{GATEWAY_PORT}/#t={token}",
+            paired.info.host_id,
+            paired.info.device,
+            path.display()
+        )?;
+        return Ok(());
+    }
     let file = HostFile::new(&paired, &dialed);
     let dir = pairing::hosts_dir().context("no home directory for ~/.config/rlmesh/hosts")?;
     let path = file.write(&dir)?;
@@ -165,7 +206,7 @@ fn approve(
         Ok(code) if digits.len() == 6 && code < 1_000_000 => code,
         _ => bail!("the code is the 6 digits the machine shows"),
     };
-    let max = max.unwrap_or(MACHINE_CAP).to_string();
+    let max = max.map(str::to_string);
     match call(dir, &Ask::Approve { code, max })? {
         Answer::Approved { device, max } => {
             writeln!(stdout, "paired device {device} at {max}")?;
@@ -287,7 +328,7 @@ async fn answer_local(stream: tokio::net::UnixStream, local: std::sync::Arc<Loca
                 })
                 .collect(),
         },
-        Ok(Ask::Approve { code, max }) => approve_local(&local, code, &max).await,
+        Ok(Ask::Approve { code, max }) => approve_local(&local, code, max.as_deref()).await,
         Ok(Ask::Host) => Answer::Host {
             host_key: rlmesh_session::auth::address::base32(&local.host.host_key),
             host_id: local.host.host_id.clone(),
@@ -303,24 +344,28 @@ async fn answer_local(stream: tokio::net::UnixStream, local: std::sync::Arc<Loca
     }
 }
 
-/// Approves the machine showing `code` at `max`: enrolls it, applies the
-/// table, and sends the machine its result.
+/// Approves the machine showing `code` at `max` (its kind's default when
+/// `None`): enrolls it, applies the table, and sends the machine its
+/// result.
 #[cfg(unix)]
-async fn approve_local(local: &Local, code: u32, max: &str) -> Answer {
+async fn approve_local(local: &Local, code: u32, max: Option<&str>) -> Answer {
     use rlmesh_session::wire::{CtlError, CtlStatus, PairInfo};
 
     use crate::devices::{Entry, edit};
     let error = |message: String| Answer::Error { message };
-    if let Err(err) = crate::devices::class(max) {
+    if let Some(max) = max
+        && let Err(err) = crate::devices::class(max)
+    {
         return error(format!("{err:#}"));
     }
     let approved = match local.service.approve(code) {
         Ok(approved) => approved,
         Err(err) => return error(err.to_string()),
     };
+    let max = max.unwrap_or(default_cap(&approved.kind));
     let public_key = rlmesh_session::auth::address::base32(&approved.public);
     let enrolled = edit(&local.dir, |table| {
-        let id = table.free_id(&approved.name, "machine");
+        let id = table.free_id(&approved.name, &approved.kind);
         let entry = Entry {
             public_key,
             kind: Some(approved.kind.clone()),
