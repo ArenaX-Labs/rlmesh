@@ -4,9 +4,10 @@
 // bootloader that runs at each reset reuses all of the sketch's RAM).
 //
 // Erased data flash on the RA reads back undefined, so "clear" is the
-// flash's blank check, not a value read (§6.4). The core's EEPROM emulation
-// (EEPROM.h) manages all 8 KB of data flash and may erase the block, so
-// with it linked the latch reads as set and never clears.
+// flash's blank check, not a value read (§6.4). The core's data-flash
+// driver (EEPROM.h's emulation, KVStore, a filesystem) manages all 8 KB and
+// may erase the block, so with it linked the latch reads as set and can't
+// be cleared.
 
 #if defined(ARDUINO_ARCH_RENESAS_UNO)
 
@@ -49,16 +50,18 @@ fsp_err_t withFlash(F op) {
 
 }  // namespace
 
-// EEPROM.h's emulation, if the sketch links it: a weak reference to its
-// accessor (at namespace scope, so it has external linkage).
-void rlmeshTetherVeeprom() __asm__("_ZN7veeprom11getInstanceEv") __attribute__((weak));
+// The core's data-flash driver, if the sketch links it (EEPROM.h goes
+// through it too): a weak reference to its accessor, at namespace scope so
+// it has external linkage.
+void rlmeshTetherDataFlash() __asm__("_ZN20DataFlashBlockDevice11getInstanceEv")
+    __attribute__((weak));
 
 namespace {
 
 // Through a volatile pointer, so the compiler can't assume a declared
 // function's address is never null.
 bool eepromLinked() {
-  void (*volatile f)() = &rlmeshTetherVeeprom;
+  void (*volatile f)() = &rlmeshTetherDataFlash;
   return f != nullptr;
 }
 
@@ -95,11 +98,10 @@ void latchClear() {
   withFlash([](flash_lp_instance_ctrl_t* c) { return R_FLASH_LP_Erase(c, kLatch, 1); });
 }
 
+// The backup registers are behind PRC1, as the core's own double-tap
+// magic in VBTBKR[0..3] is: every access is inside the unlock.
 uint16_t boot() {
-  // Access to the backup registers is behind VBTBER, which is protected.
   R_BSP_RegisterProtectDisable(BSP_REG_PROTECT_OM_LPC_BATT);
-  R_SYSTEM->VBTBER_b.VBAE = 1;
-  R_BSP_RegisterProtectEnable(BSP_REG_PROTECT_OM_LPC_BATT);
   volatile uint8_t* r = &R_SYSTEM->VBTBKR[kRecord];
   bool kept = r[0] == kMagic[0] && r[1] == kMagic[1] && r[2] == kMagic[2] && r[3] == kMagic[3];
   uint16_t value = uint16_t(r[4] | (r[5] << 8));
@@ -117,6 +119,7 @@ uint16_t boot() {
   }
   r[4] = uint8_t(value);
   r[5] = uint8_t(value >> 8);
+  R_BSP_RegisterProtectEnable(BSP_REG_PROTECT_OM_LPC_BATT);
   return value;
 }
 

@@ -20,8 +20,8 @@ The board runtime, `RLMeshTether<Map>`, does the board's half of the spec
 - **Link watchdog:** with no valid frame for `watchdog_ms` (default 250),
   every part goes safe and the board says `HELLO` again.
 - **Hardware watchdog:** armed on the first `poll()`, so a slow `setup()` is
-  fine. A sketch that doesn't reach `poll()` or `tether.delay()` for 500 ms
-  resets the MCU, and the next `STATUS` says so.
+  fine. A sketch that doesn't reach `poll()` or `tether.delay()` for about
+  half a second (0.7 s on the R4) resets the MCU.
 - **E-stop pin (optional):** latched in RAM and in storage that survives a
   reset. It is cleared only from the computer the board is plugged into,
   with the button released.
@@ -44,12 +44,14 @@ Any other board fails to build instead of running without a watchdog.
 
 - **AVR:** the library uses the last 5 bytes of EEPROM.
 - **R4:** the boot value uses the last 6 VBATT backup registers.
-- **R4 with an `estopPin`: don't use `EEPROM.h`.** Its emulation manages all
-  of the data flash, and could erase the latch. With it linked, the latch
-  reads as set and never clears, so the board stays e-stopped.
-- **Reset cause:** read at startup. A stock Uno or Nano bootloader (Optiboot
-  4.4) clears it before the sketch runs, so those boards report "other";
-  Optiboot 8 passes it on.
+- **R4 with an `estopPin`: don't use `EEPROM.h`** (or anything else on the
+  data flash, such as KVStore or a filesystem). The core's data-flash driver
+  manages all of it and could erase the latch. With it linked, the latch
+  reads as set and a clear is refused, so the board stays e-stopped.
+- **Reset cause:** read at startup. On AVR the stock bootloaders (Optiboot
+  4.4 on the Uno and Nano, Caterina, the Mega's stk500v2) clear it before
+  the sketch runs, so those boards report "other". Optiboot 8 passes it on,
+  where the lock bits let the sketch read the bootloader's version.
 
 ## The sketch
 
@@ -94,7 +96,7 @@ void loop() {
   and `tether.every(ms, fn)` (one lambda per call site).
 - **Never wait inside a callback.** There, `poll()` and `tether.delay()` do
   nothing, not even feed the watchdog, so a callback that waits more than
-  500 ms resets the board.
+  about half a second resets the board.
 - **`RLMeshTether<Map, RxMax>`:** `RxMax` (16–256, default 64) is the
   largest frame the board accepts. It must fit the largest command's dense
   value plus 9.

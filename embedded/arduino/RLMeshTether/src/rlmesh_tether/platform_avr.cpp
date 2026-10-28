@@ -95,8 +95,12 @@ uint16_t boot() {
 // byte); otherwise unknown ("other").
 uint8_t resetCause() {
   uint8_t f = savedMcusr;
+  // Only where FLASHEND is a near address: on a 2560 a 16-bit read lands
+  // in the sketch, not the bootloader.
+#if FLASHEND <= 0xFFFF
   uint8_t major = pgm_read_byte(FLASHEND);
   if (f == 0 && major >= 8 && major != 0xFF) f = savedR2;
+#endif
   if (f & _BV(WDRF)) return 3;
   if (f & _BV(PORF)) return 0;
   if (f & _BV(BORF)) return 2;

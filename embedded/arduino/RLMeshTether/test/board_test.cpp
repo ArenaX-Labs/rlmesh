@@ -62,6 +62,8 @@ struct FakeHal {
   uint32_t msPerRead = 0;
   // Presses the e-stop after this many more reads (when positive).
   int pressAfterReads = 0;
+  // The erase fails: storage still reads as set.
+  bool eraseFails = false;
   std::vector<std::string> events;
 
   uint32_t millis() { return ms; }
@@ -88,7 +90,7 @@ struct FakeHal {
     events.push_back("store");
   }
   void latchClear() {
-    stored = false;
+    stored = stored && eraseFails;
     events.push_back("clear");
   }
   uint16_t boot() { return kBoot; }
@@ -731,6 +733,32 @@ void theClearReadsThePinAgain() {
   for (const std::string& e : r.hal.events) CHECK(e != "clear");
 }
 
+void aFailedEraseKeepsTheLatch() {
+  scenario = "failed erase";
+  Rig r;
+  r.attached(7);
+  r.hal.input = true;
+  r.poll();
+  r.hal.input = false;
+  r.poll();
+  r.calls.clear();
+  r.sent();
+  r.hal.eraseFails = true;
+  r.attach(8, attach_flags::kClearEstop);
+  r.poll();
+  CHECK(r.board.estopLatched() && r.calls.empty());
+  std::vector<Out> st = r.sentOf(ty::kStatus);
+  CHECK(st.size() == 1 && (statusOf(st[0]).flags & status_flags::kEstopLatched));
+  r.command(0, 100);
+  r.poll();
+  CHECK(r.calls.empty());
+  // Once the storage works, a later clear does.
+  r.hal.eraseFails = false;
+  r.attach(9, attach_flags::kClearEstop);
+  r.poll();
+  CHECK(!r.board.estopLatched() && r.calls.size() == 2);
+}
+
 void notesSurviveALongSilence() {
   scenario = "note wrap";
   Rig r;
@@ -763,6 +791,7 @@ int main() {
   aPollFromACallbackDoesNothing();
   aFloodCannotHoldAPermitOrThePin();
   theClearReadsThePinAgain();
+  aFailedEraseKeepsTheLatch();
   notesSurviveALongSilence();
   if (failures != 0) {
     fprintf(stderr, "%d of %d board checks failed\n", failures, checks);

@@ -302,17 +302,18 @@ class Board {
       attached_ = true;
       // The pin is read again here: it may have been pressed since.
       if ((a.flags & attach_flags::kClearEstop) && latched_ && !input_ && !hal_.estopActive()) {
-        // Storage first, then RAM, then `STATUS` (below).
+        // Storage first, then RAM, then `STATUS` (below). Storage that
+        // still reads as set (a failed erase, or none usable) keeps it.
         hal_.latchClear();
-        latched_ = false;
-        for (uint8_t p = 0; p < spec_.partCount; ++p) {
+        latched_ = hal_.latchLoad();
+        // The erase stalls the MCU: time the link from after it.
+        now = hal_.millis();
+        for (uint8_t p = 0; !latched_ && p < spec_.partCount; ++p) {
           if (slots_[p].mode == PartMode::Estop) {
             slots_[p].mode = PartMode::Safe;
             onSafe_(ctx_, p, spec_.parts[p].safe, false);
           }
         }
-        // The erase stalls the MCU: time the link from after it.
-        now = hal_.millis();
       }
     }
     // The bridge's `seq` restarts at each `ATTACH`.
