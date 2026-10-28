@@ -22,6 +22,12 @@ crate-type = ["staticlib", "rlib"]
 # member can't turn them off.
 rlmesh-session-core = { version = "=0.2.0-alpha.0", path = "../rlmesh-session-core", default-features = false }
 
+[dev-dependencies]
+# The robot against a real host, over Zenoh on loopback.
+rlmesh-session = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+zenoh = { workspace = true }
+
 [features]
 # A board builds without it (`--no-default-features`), on the C library's
 # malloc and abort.
