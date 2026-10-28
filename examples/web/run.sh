@@ -3,8 +3,9 @@
 # and rlmesh-gateway serving this directory's build. `mise run demo:web` builds the page first.
 #
 # Env: ROBOT_BASE (per-class TCP base, default 17600; uses 4 ports), HTTP_PORT (default 18080),
-# CAM=jpeg|raw, POLICY=on|off, DURATION (s, default 3600), BIND (default 127.0.0.1; anything else
-# needs RLMESH_GATEWAY_TOKEN, then open http://HOST:PORT/#token=...), SKIP_BUILD=1.
+# CAM=jpeg|raw, POLICY=on|off, DURATION (s, default 3600), SKIP_BUILD=1.
+# The page's token is minted here and handed to the gateway in its environment; the page gets it in
+# its URL fragment (#t=...), which never reaches the server or its logs.
 # Logs go to ${XDG_CACHE_HOME:-~/.cache}/rlmesh-web/.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -22,8 +23,9 @@ gateway=
 trap 'kill $robot $gateway 2>/dev/null || true' EXIT INT TERM
 for _ in $(seq 100); do [ -s "$logs/session.id" ] && break; sleep 0.1; done
 [ -s "$logs/session.id" ] || { cat "$logs/robot.log" >&2; exit 1; }
-timeout "$dur" "$target/rlmesh-gateway" --connect "127.0.0.1:$rb" --session-file "$logs/session.id" --max-priority operator \
-  --bind "${BIND:-127.0.0.1}" --port "$hp" --static examples/web/dist >"$logs/gateway.log" 2>&1 &
+token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+RLMESH_GATEWAY_TOKEN=$token timeout "$dur" "$target/rlmesh-gateway" --connect "127.0.0.1:$rb" --session-file "$logs/session.id" \
+  --max-priority operator --port "$hp" --static examples/web/dist >"$logs/gateway.log" 2>&1 &
 gateway=$!
-echo "open http://127.0.0.1:$hp/   (logs in $logs; Ctrl-C to stop)"
+echo "open http://127.0.0.1:$hp/#t=$token   (logs in $logs; Ctrl-C to stop)"
 wait

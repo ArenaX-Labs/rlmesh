@@ -205,7 +205,8 @@ export interface RobotEvent {
 
 /**
  * The connection ended for good: `4410` the session ended (its host is gone), `4401` the token was
- * refused, `4403` the page origin was. Leases end and subscriptions close; connect again to continue.
+ * refused (unknown, or revoked on the robot), `4403` the page origin or what the token's device may do
+ * (its cap) was. Leases end and subscriptions close; connect again to continue.
  */
 export interface SessionEnded {
   code: number;
@@ -251,10 +252,10 @@ export interface BackoffOptions {
 }
 
 export interface ConnectOptions {
-  /** Bearer token, sent as the `rlmesh.token.<token>` WebSocket subprotocol next to `rlmesh.v2`. */
+  /** Bearer token, sent as the `rlmesh.token.<token>` WebSocket subprotocol next to `rlmesh.v2`; every gateway socket needs one. In a browser, `connect()` with no URL takes the page's (`#t=…`). */
   token?: string;
-  /** The class this connection's participant attaches at, and its leases are arbitrated at. Default `model`; `operator` (taking over from a model) needs a gateway started with `--max-priority operator`. */
-  priority?: Priority;
+  /** The class this connection's participant attaches at, and its leases are arbitrated at. Default `model`; `operator` (taking over from a model) needs a gateway started with `--max-priority operator`, and a token whose device may; `observer` takes no leases (what a token paired at `--max observer` may do). */
+  priority?: Priority | 'observer';
   /** The declarations and a first clock estimate must arrive within this (ms). Default 5000. */
   timeoutMs?: number;
   /** Per-socket reconnect backoff. */

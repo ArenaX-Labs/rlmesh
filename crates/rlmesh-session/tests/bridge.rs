@@ -1,7 +1,9 @@
 #![cfg(feature = "gateway")]
 //! The gateway against a real session host and robot: a browser connection
 //! is a participant of its own, its heartbeats and chunks are its own, its
-//! leases are the host's, and samples arrive byte for byte as published.
+//! leases are the host's, and samples arrive byte for byte as published. A
+//! paired browser token is a device of its own: the host applies its entry,
+//! revoking it detaches exactly its browser, and no token reaches a log.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
@@ -10,15 +12,20 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use rlmesh_session::auth::Device;
+use rlmesh_session::authority::DeviceAccess;
+use rlmesh_session::crypto::StaticKeypair;
 use rlmesh_session::crypto::sealed::unverified_body;
 use rlmesh_session::edge::{EdgeConfig, Robot};
-use rlmesh_session::gateway::security::{Origins, Policy, SUBPROTOCOL};
+use rlmesh_session::gateway::security::{Origins, Policy, SUBPROTOCOL, TOKEN_PREFIX};
 use rlmesh_session::gateway::{AppState, Gateway, frame, router};
+use rlmesh_session::host::OsRng;
+use rlmesh_session::pairing::{BrowserToken, Paired, new_token, token_hash};
 use rlmesh_session::transport::{open_local_listeners, payload_bytes};
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{
-    AuthoritySnapshot, Command, Epoch, Health, Heartbeat, Mode, ParticipantId, PriorityClass,
-    Request, Role, SessionId, SessionKeys, TenantId,
+    AuthoritySnapshot, Command, CtlStatus, Epoch, Health, Heartbeat, Mode, PairInfo, ParticipantId,
+    PriorityClass, Request, Role, SessionId, SessionKeys, TenantId,
 };
 use rlmesh_session::{
     HostConfig, Participant, ParticipantConfig, SessionHost, SystemMonotonicClock, Transport,
@@ -33,6 +40,8 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 const WAIT: Duration = Duration::from_secs(10);
+/// This machine's page token.
+const PAGE: &str = "page-token-0123456789abcdef";
 const ROBOT: &str = r#"{"arm": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 200, "command": "position",
                        "hold_max_ms": 100, "max_action_age_ms": 1000}}"#;
 
@@ -43,6 +52,7 @@ struct World {
     url: String,
     stop: Arc<AtomicBool>,
     host: SessionHost,
+    browsers: tempfile::TempDir,
     _robot: std::thread::JoinHandle<()>,
 }
 
@@ -109,8 +119,10 @@ impl World {
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let browsers = tempfile::tempdir().unwrap();
         let policy = Arc::new(Policy {
-            token: None,
+            page: Some(token_hash(PAGE)),
+            browsers: Some(browsers.path().join("browsers.toml")),
             origins: Origins::List(Vec::new()),
             max_message_bytes: 1 << 16,
             max_subscriptions: 4,
@@ -124,18 +136,71 @@ impl World {
             url: format!("ws://{addr}"),
             stop,
             host,
+            browsers,
             _robot: spin,
         }
     }
 
     async fn socket(&self, class: &str) -> Ws {
+        self.socket_with(class, PAGE).await
+    }
+
+    async fn socket_with(&self, class: &str, token: &str) -> Ws {
         let mut request = format!("{}/{class}", self.url)
             .into_client_request()
             .unwrap();
-        request
-            .headers_mut()
-            .insert("sec-websocket-protocol", SUBPROTOCOL.parse().unwrap());
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            format!("{SUBPROTOCOL}, {TOKEN_PREFIX}{token}")
+                .parse()
+                .unwrap(),
+        );
         tokio_tungstenite::connect_async(request).await.unwrap().0
+    }
+
+    /// A browser token paired as `device` with `access`, as `rlmesh pair
+    /// --browser` and `pair approve` leave it: the host admits the device,
+    /// the gateway's file keeps the token's hash and key.
+    async fn browser(&self, device: &str, access: DeviceAccess) -> String {
+        let key = StaticKeypair::generate(&mut OsRng).unwrap();
+        self.host
+            .admit(Device {
+                id: device.into(),
+                public: *key.public(),
+                access,
+            })
+            .await
+            .unwrap();
+        let paired = Paired {
+            info: PairInfo {
+                device: device.into(),
+                host_key: *self.host.credential().host_static(),
+                host_id: String::new(),
+                addresses: Vec::new(),
+            },
+            device: key,
+        };
+        let token = new_token().unwrap();
+        BrowserToken::new(&paired, &token)
+            .add(&self.browsers.path().join("browsers.toml"))
+            .unwrap();
+        token
+    }
+
+    /// A control socket with `token`, its hello at `priority` answered:
+    /// the socket and its participant.
+    async fn control_with(&self, token: &str, priority: &str) -> (Ws, ParticipantId) {
+        let mut control = self.socket_with("control", token).await;
+        control
+            .send(tg::Message::text(format!(
+                r#"{{"type": "hello", "priority": "{priority}"}}"#
+            )))
+            .await
+            .unwrap();
+        let hello = text(&mut control).await;
+        assert_eq!(hello["type"], "hello", "{hello}");
+        let me = ParticipantId::new(hello["participant"].as_str().unwrap()).unwrap();
+        (control, me)
     }
 }
 
@@ -397,4 +462,187 @@ async fn samples_arrive_as_published_and_subscriptions_are_checked() {
     );
     bulk.send(tg::Message::text("not json")).await.unwrap();
     assert_eq!(text(&mut bulk).await["type"], "error");
+}
+
+/// The close code `ws` is closed with, skipping what comes before it.
+async fn closed_with(ws: &mut Ws) -> u16 {
+    loop {
+        match tokio::time::timeout(WAIT, ws.next())
+            .await
+            .expect("closed in time")
+        {
+            Some(Ok(tg::Message::Close(Some(frame)))) => return u16::from(frame.code),
+            Some(Ok(_)) => {}
+            other => panic!("expected a close frame, got {other:?}"),
+        }
+    }
+}
+
+/// Sends verb `command` as `me` and returns the host's verdict.
+async fn verb(
+    control: &mut Ws,
+    me: &ParticipantId,
+    id: u32,
+    command: Command,
+) -> Option<CtlStatus> {
+    let request = Request {
+        from: me.clone(),
+        epoch: None,
+        request_id: u64::from(id),
+        command,
+    };
+    control
+        .send(tg::Message::binary(frame::with_id(
+            frame::REQUEST,
+            id,
+            &codec::encode_request(&request),
+        )))
+        .await
+        .unwrap();
+    loop {
+        let reply = frame_with(control, frame::REPLY).await;
+        if frame::read_id(&reply) == Some(id) {
+            return codec::decode_reply(&reply[5..])
+                .unwrap()
+                .result
+                .err()
+                .map(|e| e.status);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_token_attaches_as_its_device_with_its_cap_parts_and_verbs() {
+    let world = World::start().await;
+    let token = world
+        .browser(
+            "web-a",
+            DeviceAccess {
+                parts: vec!["other/**".into()],
+                ..DeviceAccess::new(Some(PriorityClass::Model))
+            },
+        )
+        .await;
+    // Above its cap: the host refuses, and the socket closes with 4403.
+    let mut over = world.socket_with("control", &token).await;
+    over.send(tg::Message::text(
+        r#"{"type": "hello", "priority": "operator"}"#,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(closed_with(&mut over).await, 4403);
+
+    let (mut control, me) = world.control_with(&token, "model").await;
+    let state = state_until(&mut control, |s| s.participant(&me).is_some()).await;
+    assert_eq!(state.participant(&me).unwrap().device, "web-a");
+    // No arm verb, and bot/arm outside its parts.
+    assert_eq!(
+        verb(&mut control, &me, 1, Command::Arm).await,
+        Some(CtlStatus::NotAuthorized)
+    );
+    let arm = state
+        .part_at(&ParticipantId::new("bot").unwrap(), "arm")
+        .unwrap()
+        .channel;
+    let grant = Command::GrantLease {
+        channels: vec![arm],
+        release: Vec::new(),
+        binding: state
+            .binding(&me)
+            .map(|b| b.fingerprint)
+            .unwrap_or_default(),
+        ttl_ns: None,
+    };
+    assert_eq!(
+        verb(&mut control, &me, 2, grant).await,
+        Some(CtlStatus::NotAuthorized)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoking_a_browser_token_detaches_exactly_its_browser() {
+    let world = World::start().await;
+    let access = DeviceAccess::new(Some(PriorityClass::Model));
+    let a = world.browser("web-a", access.clone()).await;
+    let b = world.browser("web-b", access).await;
+    let (mut control_a, _) = world.control_with(&a, "model").await;
+    let mut state_a = world.socket_with("state", &a).await;
+    let (mut control_b, me_b) = world.control_with(&b, "model").await;
+    let state = state_until(&mut control_b, |s| s.participant(&me_b).is_some()).await;
+
+    world.host.revoke("web-a").await.unwrap();
+    assert_eq!(closed_with(&mut control_a).await, 4409);
+    assert_eq!(closed_with(&mut state_a).await, 4409);
+    // Its reconnect is refused: the host no longer knows its key.
+    let mut again = world.socket_with("control", &a).await;
+    again
+        .send(tg::Message::text(
+            r#"{"type": "hello", "priority": "model"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(closed_with(&mut again).await, 4401);
+    // The other browser is untouched: its heartbeats are echoed.
+    control_b
+        .send(tg::Message::binary(heartbeat(&me_b, 1, state.epoch, 42)))
+        .await
+        .unwrap();
+    let echo = frame_with(&mut control_b, frame::ECHO).await;
+    assert_eq!(codec::decode_echo(&echo[1..]).unwrap().t1_ns, 42);
+}
+
+/// A `tracing` writer into a shared buffer.
+#[derive(Clone, Default)]
+struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tokens_never_reach_the_logs() {
+    let logs = Captured::default();
+    tracing_subscriber::fmt()
+        // Everything but zenoh and this test's own client, which logs
+        // the requests it sends.
+        .with_env_filter("trace,zenoh=warn,tungstenite::handshake::client=off")
+        .with_ansi(false)
+        .with_writer({
+            let logs = logs.clone();
+            move || logs.clone()
+        })
+        .try_init()
+        .expect("this test's process logs nowhere else");
+    let world = World::start().await;
+    let browser = world
+        .browser("web-a", DeviceAccess::new(Some(PriorityClass::Model)))
+        .await;
+    for token in [PAGE, browser.as_str()] {
+        let (mut control, me) = world.control_with(token, "model").await;
+        state_until(&mut control, |s| s.participant(&me).is_some()).await;
+        let mut state = world.socket_with("state", token).await;
+        state
+            .send(tg::Message::text(
+                r#"{"type": "subscribe", "id": 1, "path": "bot/arm"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(text(&mut state).await["type"], "subscribed");
+    }
+    let wrong = "wrong-token-0123456789abcdef";
+    assert_eq!(
+        closed_with(&mut world.socket_with("control", wrong).await).await,
+        4401
+    );
+    let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("browser attached"), "the capture works");
+    for token in [PAGE, browser.as_str(), wrong] {
+        assert!(!logs.contains(token), "{token} logged");
+    }
 }

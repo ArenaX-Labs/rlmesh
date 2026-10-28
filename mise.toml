@@ -445,7 +445,7 @@ run = [
 ]
 
 [tasks."demo:web"]
-description = "Run the browser example: the example robot and the gateway, serving examples/web on http://127.0.0.1:18080/"
+description = "Run the browser example: the example robot and the gateway, serving examples/web on http://127.0.0.1:18080/ (open the #t= URL it prints)"
 run = ["mise run build:js --demo", "bash examples/web/run.sh"]
 
 [tasks."test:system:harness"]

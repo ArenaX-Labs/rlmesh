@@ -1,12 +1,19 @@
 //! Who may open a gateway WebSocket, and what one connection may do.
 //!
-//! - **Bind:** loopback (127.0.0.1) by default. A non-loopback bind refuses to start without a token.
-//! - **Token:** carried in the WebSocket subprotocol list, as `rlmesh.token.<token>`, next to
-//!   `rlmesh.v2`. Browsers cannot set headers on a WebSocket, so the choice was the subprotocol or a
-//!   `?token=` query. The subprotocol wins: URLs end up in access logs, proxy logs, tracing spans and
-//!   devtools/resource-timing entries, while the `Sec-WebSocket-Protocol` header normally is not
-//!   logged. The gateway answers with `rlmesh.v2` only and never echoes the token back. Tokens are
-//!   restricted to RFC 7230 token characters (`[A-Za-z0-9._~-]`) and at least 16 characters long.
+//! - **Bind:** loopback (127.0.0.1) by default.
+//! - **Token:** every socket needs one (design §5: no tokenless loopback), carried in the WebSocket
+//!   subprotocol list, as `rlmesh.token.<token>`, next to `rlmesh.v2`. Browsers cannot set headers
+//!   on a WebSocket, so the choice was the subprotocol or a `?token=` query. The subprotocol wins:
+//!   URLs end up in access logs, proxy logs, tracing spans and devtools/resource-timing entries,
+//!   while the `Sec-WebSocket-Protocol` header normally is not logged. The gateway answers with
+//!   `rlmesh.v2` only, never echoes the token, and keeps only hashes of tokens
+//!   ([`pairing::token_hash`]). A token is either
+//!   - this machine's page token (`RLMESH_GATEWAY_TOKEN` or `--token-file`, which the page gets in
+//!     its URL fragment, `/#t=…`, never sent to a server): its browser attaches with the gateway's
+//!     own credential, at `--max-priority` at most; or
+//!   - a browser token paired with the host (`rlmesh pair HOST --browser`, design §5): a device of
+//!     its own, whose key the gateway attaches its browser with, so the host applies that device's
+//!     cap, parts and verbs, and revoking it detaches exactly that browser.
 //! - **Origin:** an allowlist. The default is the origin(s) this gateway serves its own page from,
 //!   computed from the bind address and port (`http(s)://127.0.0.1:P`, `localhost:P`, `[::1]:P`),
 //!   never from the request's `Host` header, so DNS rebinding (evil.example resolving to 127.0.0.1)
@@ -21,8 +28,13 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::warn;
+
+use crate::auth::Credential;
+use crate::crypto::Key;
+use crate::pairing::{self, BrowserToken};
 
 /// The subprotocol the gateway selects: the session protocol generation.
 pub const SUBPROTOCOL: &str = "rlmesh.v2";
@@ -45,14 +57,32 @@ pub enum Origins {
 /// The checks every upgrade and connection gets.
 #[derive(Debug, Clone)]
 pub struct Policy {
-    /// The bearer token, when one is required.
-    pub token: Option<String>,
+    /// The hash of this machine's page token ([`pairing::token_hash`]), if
+    /// it has one.
+    pub page: Option<[u8; 32]>,
+    /// The browser tokens paired on this machine ([`BrowserToken`]), read
+    /// at every upgrade.
+    pub browsers: Option<PathBuf>,
     /// The Origin allowlist.
     pub origins: Origins,
     /// The largest inbound message (and frame).
     pub max_message_bytes: usize,
     /// The most subscriptions one data connection may hold.
     pub max_subscriptions: usize,
+}
+
+/// Whose token an upgrade presented: what its browser attaches with.
+#[derive(Debug, Clone)]
+pub enum Bearer {
+    /// This machine's page token: the gateway's own credential.
+    Page,
+    /// A paired browser token: its device's.
+    Browser {
+        /// The device id.
+        device: String,
+        /// Its key and the host's.
+        credential: Credential,
+    },
 }
 
 /// Why an upgrade was refused.
@@ -144,23 +174,6 @@ pub fn validate_token(t: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A non-loopback bind needs a token.
-pub fn validate_bind(bind: IpAddr, token: Option<&str>) -> Result<(), String> {
-    if !bind.is_loopback() && token.is_none() {
-        return Err(format!(
-            "refusing to bind {bind} without a token: set RLMESH_GATEWAY_TOKEN or --token-file (or bind 127.0.0.1)"
-        ));
-    }
-    Ok(())
-}
-
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 /// The offered subprotocols, across repeated headers and comma lists.
 fn offered_protocols(h: &HeaderMap) -> impl Iterator<Item = &str> {
     h.get_all(header::SEC_WEBSOCKET_PROTOCOL)
@@ -171,8 +184,9 @@ fn offered_protocols(h: &HeaderMap) -> impl Iterator<Item = &str> {
 }
 
 impl Policy {
-    /// Checks the Origin and the token of an upgrade request.
-    pub fn check(&self, h: &HeaderMap) -> Result<(), Reject> {
+    /// Checks the Origin and the token of an upgrade request: whose token it
+    /// is.
+    pub fn check(&self, h: &HeaderMap) -> Result<Bearer, Reject> {
         if let Some(o) = h.get(header::ORIGIN) {
             let o = normalize_origin(o.to_str().unwrap_or(""));
             let ok = match &self.origins {
@@ -183,22 +197,39 @@ impl Policy {
                 return Err(Reject::BadOrigin(o));
             }
         }
-        if let Some(want) = &self.token {
-            let got = offered_protocols(h)
-                .find_map(|p| p.strip_prefix(TOKEN_PREFIX))
-                .ok_or(Reject::MissingToken)?;
-            if !ct_eq(got.as_bytes(), want.as_bytes()) {
-                return Err(Reject::BadToken);
-            }
+        let got = offered_protocols(h)
+            .find_map(|p| p.strip_prefix(TOKEN_PREFIX))
+            .ok_or(Reject::MissingToken)?;
+        if let Some(page) = self.page
+            && Key::from_bytes(page).ct_eq(&Key::from_bytes(pairing::token_hash(got)))
+        {
+            return Ok(Bearer::Page);
         }
-        Ok(())
+        let paired = match &self.browsers {
+            Some(path) => BrowserToken::find(path, got).unwrap_or_else(|err| {
+                warn!(%err, "browser tokens unreadable");
+                None
+            }),
+            None => None,
+        };
+        paired
+            .map(|token| Bearer::Browser {
+                credential: token.credential(),
+                device: token.device,
+            })
+            .ok_or(Reject::BadToken)
     }
 }
 
-/// Middleware for the WebSocket routes: rejects before the upgrade, with 401 or 403.
-pub async fn guard(State(policy): State<Arc<Policy>>, req: Request, next: Next) -> Response {
-    let Err(r) = policy.check(req.headers()) else {
-        return next.run(req).await;
+/// Middleware for the WebSocket routes: rejects before the upgrade, with 401 or 403, and hands
+/// the route the [`Bearer`].
+pub async fn guard(State(policy): State<Arc<Policy>>, mut req: Request, next: Next) -> Response {
+    let r = match policy.check(req.headers()) {
+        Ok(bearer) => {
+            req.extensions_mut().insert(bearer);
+            return next.run(req).await;
+        }
+        Err(r) => r,
     };
     let peer = req
         .headers()
@@ -295,9 +326,10 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
 
-    fn policy(token: Option<&str>) -> Policy {
+    fn policy() -> Policy {
         Policy {
-            token: token.map(Into::into),
+            page: Some(pairing::token_hash(TOK)),
+            browsers: None,
             origins: Origins::List(default_origins("127.0.0.1".parse().unwrap(), 18080, false)),
             max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES,
             max_subscriptions: 2,
@@ -319,6 +351,10 @@ mod tests {
     }
 
     const TOK: &str = "0123456789abcdef-test";
+
+    fn check(p: &Policy, origin: Option<&str>, protos: Option<&str>) -> Result<(), Reject> {
+        p.check(&headers(origin, protos)).map(|_| ())
+    }
 
     #[test]
     fn default_origins_are_the_served_origin_not_host_derived() {
@@ -342,70 +378,58 @@ mod tests {
     }
 
     #[test]
-    fn token_required_when_configured() {
-        let p = policy(Some(TOK));
+    fn every_socket_needs_a_token() {
+        let p = policy();
         let ok = format!("{SUBPROTOCOL}, {TOKEN_PREFIX}{TOK}");
         assert_eq!(
-            p.check(&headers(Some("http://127.0.0.1:18080"), None)),
+            check(&p, Some("http://127.0.0.1:18080"), None),
             Err(Reject::MissingToken)
         );
         assert_eq!(
-            p.check(&headers(None, Some(SUBPROTOCOL))),
+            check(&p, None, Some(SUBPROTOCOL)),
             Err(Reject::MissingToken)
         );
         assert_eq!(
-            p.check(&headers(
+            check(
+                &p,
                 None,
                 Some(&format!("{SUBPROTOCOL}, {TOKEN_PREFIX}nope"))
-            )),
+            ),
             Err(Reject::BadToken)
         );
-        assert_eq!(
+        assert!(matches!(
             p.check(&headers(Some("http://localhost:18080/"), Some(&ok))),
-            Ok(())
-        );
-        assert_eq!(Reject::MissingToken.status(), StatusCode::UNAUTHORIZED);
+            Ok(Bearer::Page)
+        ));
+        assert_eq!(Reject::MissingToken.close_code(), 4401);
     }
 
     #[test]
     fn origin_allowlist() {
-        let p = policy(None);
-        assert_eq!(
-            p.check(&headers(Some("http://127.0.0.1:18080"), None)),
-            Ok(())
-        );
-        assert_eq!(
-            p.check(&headers(Some("HTTP://LOCALHOST:18080"), None)),
-            Ok(())
-        );
+        let p = policy();
+        let ok = format!("{SUBPROTOCOL}, {TOKEN_PREFIX}{TOK}");
+        let ok = Some(ok.as_str());
+        assert_eq!(check(&p, Some("http://127.0.0.1:18080"), ok), Ok(()));
+        assert_eq!(check(&p, Some("HTTP://LOCALHOST:18080"), ok), Ok(()));
         // DNS rebinding: the page origin is evil even though it resolves to loopback.
-        let r = p.check(&headers(Some("http://evil.example:18080"), None));
+        let r = check(&p, Some("http://evil.example:18080"), ok);
         assert_eq!(
             r,
             Err(Reject::BadOrigin("http://evil.example:18080".into()))
         );
         assert_eq!(r.unwrap_err().status(), StatusCode::FORBIDDEN);
-        assert!(
-            p.check(&headers(Some("http://127.0.0.1:9999"), None))
-                .is_err()
-        );
-        // No Origin: not a browser page; allowed (the token, when configured, still applies).
-        assert_eq!(p.check(&headers(None, None)), Ok(()));
+        assert!(check(&p, Some("http://127.0.0.1:9999"), ok).is_err());
+        // No Origin: not a browser page; allowed (the token still applies).
+        assert_eq!(check(&p, None, ok), Ok(()));
         let any = Policy {
             origins: Origins::Any,
-            ..policy(None)
+            ..policy()
         };
-        assert_eq!(
-            any.check(&headers(Some("http://evil.example"), None)),
-            Ok(())
-        );
+        assert_eq!(check(&any, Some("http://evil.example"), ok), Ok(()));
     }
 
     #[test]
-    fn bind_and_token_rules() {
-        assert!(validate_bind("127.0.0.1".parse().unwrap(), None).is_ok());
-        assert!(validate_bind("0.0.0.0".parse().unwrap(), None).is_err());
-        assert!(validate_bind("0.0.0.0".parse().unwrap(), Some(TOK)).is_ok());
+    fn token_rules() {
         assert!(validate_token(TOK).is_ok());
         assert!(validate_token("short").is_err());
         assert!(validate_token("has space in it 0123456").is_err());

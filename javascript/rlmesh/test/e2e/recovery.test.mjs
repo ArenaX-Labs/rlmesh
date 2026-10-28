@@ -9,10 +9,14 @@
 //      (disconnected); restart it -> sockets reconnect with backoff, data resumes, the host went SAFE,
 //      arm + a fresh lease bring it back to ACTIVE.
 //
+// The page token (`RLMESH_GATEWAY_TOKEN`, which a page gets in its URL fragment) never reaches the
+// gateway's logs, at debug.
+//
 // `mise run test:js:e2e` builds the release binaries and dist/ and sets RLMESH_E2E_TARGET.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,16 +30,20 @@ const ROBOT_BASE = base;
 const HTTP_PORT = base + 10;
 const scratch = mkdtempSync(join(process.env.XDG_CACHE_HOME ?? join(process.env.HOME ?? tmpdir(), '.cache'), 'rlmesh-e2e-'));
 const sessionFile = join(scratch, 'session.id');
+const TOKEN = randomBytes(24).toString('hex');
 const procs = new Set();
+/** Everything every gateway logged. */
+let gatewayLog = '';
 
-function start(name, path, args) {
+function start(name, path, args, env = {}) {
   return new Promise((resolve, reject) => {
-    const p = spawn(path, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, RUST_LOG: process.env.RUST_LOG ?? 'warn' } });
+    const p = spawn(path, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, RUST_LOG: process.env.RUST_LOG ?? 'warn', ...env } });
     procs.add(p);
     let log = '';
     const t = setTimeout(() => reject(new Error(`${name} not READY: ${log}`)), 30000);
     const onData = (d) => {
       log += d;
+      if (name === 'rlmesh-gateway') gatewayLog += d;
       if (log.includes('READY')) {
         clearTimeout(t);
         resolve(p);
@@ -52,7 +60,10 @@ function start(name, path, args) {
 }
 
 const startGateway = () =>
-  start('rlmesh-gateway', bin.gateway, ['--connect', `127.0.0.1:${ROBOT_BASE}`, '--session-file', sessionFile, '--port', String(HTTP_PORT), '--max-priority', 'operator']);
+  start('rlmesh-gateway', bin.gateway, ['--connect', `127.0.0.1:${ROBOT_BASE}`, '--session-file', sessionFile, '--port', String(HTTP_PORT), '--max-priority', 'operator', '--browsers', join(scratch, 'none.toml')], {
+    RLMESH_GATEWAY_TOKEN: TOKEN,
+    RUST_LOG: 'debug,zenoh=warn',
+  });
 const waitFor = (session, type, pred = () => true, ms = 10000) =>
   new Promise((resolve, reject) => {
     const t = setTimeout(() => { off(); reject(new Error(`no ${type} event within ${ms} ms`)); }, ms);
@@ -95,7 +106,7 @@ let robot, gateway, session;
 before(async () => {
   robot = await start('web_robot', bin.robot, ['--listen-base', `127.0.0.1:${ROBOT_BASE}`, '--session-file', sessionFile]);
   gateway = await startGateway();
-  session = await connect(`ws://127.0.0.1:${HTTP_PORT}`, { priority: 'operator', backoff: { initialMs: 50, maxMs: 400 }, timeoutMs: 10000 });
+  session = await connect(`ws://127.0.0.1:${HTTP_PORT}`, { token: TOKEN, priority: 'operator', backoff: { initialMs: 50, maxMs: 400 }, timeoutMs: 10000 });
 });
 after(() => {
   session?.close();
@@ -195,4 +206,9 @@ test('session host killed: the gateway ends the session (4410), the page is told
   assert.equal((await sub.next()).done, true, 'subscriptions end with the session');
   assert.equal(await exited, 0, 'a gateway serves one session: it exits when that ends');
   console.log(`  host killed: ended (${e.code}: ${e.reason}) after ${Date.now() - t0} ms; gateway exited`);
+});
+
+test('the page token never reaches the gateway\'s logs', () => {
+  assert.match(gatewayLog, /browser attached/, 'the gateways logged at debug');
+  assert.ok(!gatewayLog.includes(TOKEN), 'the token was logged');
 });

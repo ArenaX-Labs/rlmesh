@@ -32,6 +32,9 @@ pub const HANDSHAKES_PER_MINUTE: usize = 10;
 pub const WRONG_CODES: u32 = 5;
 /// The kind a laptop pairs as.
 pub const MACHINE: &str = "machine";
+/// The kind a browser token pairs as, for the gateway that holds its key
+/// (design §5).
+pub const BROWSER: &str = "browser";
 /// The longest name a laptop may give.
 pub const MAX_NAME: usize = 64;
 
@@ -308,10 +311,13 @@ impl Pairings {
                 let Ok(nonce) = codec::decode_pair_nonce(opened.body) else {
                     return Answer::Once(refusal(CtlStatus::InvalidRequest, "a malformed nonce"));
                 };
-                if nonce.kind != MACHINE || nonce.name.is_empty() || nonce.name.len() > MAX_NAME {
+                if ![MACHINE, BROWSER].contains(&nonce.kind.as_str())
+                    || nonce.name.is_empty()
+                    || nonce.name.len() > MAX_NAME
+                {
                     return Answer::Once(refusal(
                         CtlStatus::InvalidRequest,
-                        "a machine pairs with a name of 1 to 64 bytes",
+                        "a machine or browser pairs with a name of 1 to 64 bytes",
                     ));
                 }
                 match linked.commit.reveal(&nonce.ni) {
@@ -596,6 +602,7 @@ enum LaptopStage {
 pub struct Pairing {
     exchange: [u8; 16],
     name: String,
+    kind: &'static str,
     request: Vec<u8>,
     stage: LaptopStage,
 }
@@ -610,7 +617,8 @@ impl core::fmt::Debug for Pairing {
 
 impl Pairing {
     /// Starts exchange `exchange` (16 random bytes) with `device`, the key
-    /// this machine will attach with, under the name `name`.
+    /// this machine (or the browser token it holds) will attach with, under
+    /// the name `name`, as `kind` ([`MACHINE`] or [`BROWSER`]).
     ///
     /// # Errors
     /// [`PairError::Handshake`].
@@ -619,11 +627,13 @@ impl Pairing {
         device: &StaticKeypair,
         exchange: [u8; 16],
         name: &str,
+        kind: &'static str,
     ) -> Result<Self, PairError> {
         let (initiator, xx1) = PairInitiator::start(rng, device, &exchange)?;
         Ok(Self {
             exchange,
             name: name.to_string(),
+            kind,
             request: codec::encode_pair_request(&PairRequest {
                 exchange,
                 step: PairStep::Xx1(xx1),
@@ -691,7 +701,7 @@ impl Pairing {
                 let nonce = codec::encode_pair_nonce(&PairNonce {
                     ni: *laptop.nonce(),
                     name: self.name.clone(),
-                    kind: MACHINE.to_string(),
+                    kind: self.kind.to_string(),
                 });
                 let sealed = link
                     .sender
@@ -775,7 +785,8 @@ mod tests {
         let host = HostIdentity::from_secrets(&mut [6; 32], &mut [7; 32], &mut [8; 32]);
         let device = StaticKeypair::from_private(&mut [5; 32]);
         let mut daemon = Pairings::new();
-        let mut laptop = Pairing::start(&mut rng, &device, [7; 16], "laptop-josh").unwrap();
+        let mut laptop =
+            Pairing::start(&mut rng, &device, [7; 16], "laptop-josh", MACHINE).unwrap();
         let sas = to_code(&mut daemon, &host, &mut laptop, &mut rng);
         assert_eq!(daemon.pending(5)[0].name, "laptop-josh");
 
@@ -812,7 +823,7 @@ mod tests {
         let host = HostIdentity::from_secrets(&mut [6; 32], &mut [7; 32], &mut [8; 32]);
         let device = StaticKeypair::from_private(&mut [5; 32]);
         let mut daemon = Pairings::new();
-        let mut laptop = Pairing::start(&mut rng, &device, [1; 16], "a").unwrap();
+        let mut laptop = Pairing::start(&mut rng, &device, [1; 16], "a", MACHINE).unwrap();
         let sas = to_code(&mut daemon, &host, &mut laptop, &mut rng);
         let wrong = (sas.value() + 1) % 1_000_000;
         for _ in 1..WRONG_CODES {

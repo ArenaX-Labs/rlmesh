@@ -1,10 +1,12 @@
 //! `rlmesh-gateway`: serves browsers a session until interrupted.
 //!
 //! ```text
-//! rlmesh-gateway --address 127.0.0.1:17600/<session>#<key> --static examples/web/dist
+//! RLMESH_GATEWAY_TOKEN=… rlmesh-gateway --address 127.0.0.1:17600/<session>#<key> --static examples/web/dist
 //! ```
 //!
-//! It logs to stderr (`RUST_LOG`) and prints `READY <url>` once it serves.
+//! It logs to stderr (`RUST_LOG`) and prints `READY <url>` once it serves
+//! (never with a token: the page's comes in its fragment, `#t=…`, from
+//! whoever minted it).
 
 // The READY line is for the scripts that wait on it.
 #![allow(clippy::print_stderr)]
@@ -14,7 +16,6 @@ use std::sync::Arc;
 use axum::serve::ListenerExt;
 use clap::Parser;
 use rlmesh_session::gateway::{AppState, Args, Config, Gateway, router, tls};
-use rlmesh_session::{Transport, TransportConfig, TransportTuning};
 use tracing::{error, info};
 
 #[tokio::main]
@@ -40,32 +41,25 @@ async fn run(args: Args) -> Result<(), String> {
         Some((cert, key)) => Some(tls::load_config(cert, key)?),
         None => None,
     };
-    // Its links to a host on loopback present the password the key derives
-    // (§5).
-    // TODO: a peer can't tell a refused password from a host not up, so a
-    // gateway on loopback can't reach a LAN-bound host there; dial its LAN
-    // address until step 13 gives the gateway its own credential and join.
-    let tuning = TransportTuning {
-        link: rlmesh_session::address::link_auth(config.connect, config.key.as_ref()),
-        ..TransportTuning::default()
-    };
-    let transport = TransportConfig::per_class_tcp(Some(config.zenoh_listen), Some(config.connect))
-        .map_err(|e| e.to_string())?
-        .with_tuning(tuning);
-    let transport = Transport::open(&transport)
+    // As every participant joins: a client of the host, through the
+    // password gate of a loopback host, and without one to a host that
+    // gates no link (rlmeshd), which the handshake alone admits.
+    let address = &config.address;
+    let wait = std::time::Duration::from_secs(10);
+    let transport = address
+        .link(tokio::time::Instant::now() + wait, wait)
         .await
         .map_err(|e| e.to_string())?;
-    let credential = rlmesh_session::address::credential(config.connect, config.key.as_ref())
-        .map_err(|e| e.to_string())?;
+    let credential = address.credential().map_err(|e| e.to_string())?;
     let gateway = Gateway::open(
         transport,
-        config.tenant.clone(),
-        config.session,
+        address.tenant.clone(),
+        address.session,
         credential,
         config.max_priority,
     )
     .await
-    .map_err(|e| format!("attach to session {}: {e}", config.session))?;
+    .map_err(|e| format!("attach to session {}: {e}", address.session))?;
     let state = AppState {
         gateway,
         policy: Arc::new(config.policy.clone()),
@@ -83,14 +77,15 @@ async fn run(args: Args) -> Result<(), String> {
     };
     let policy = &config.policy;
     info!(
-        token = if policy.token.is_some() { "required" } else { "off" },
+        page_token = policy.page.is_some(),
+        browsers = ?policy.browsers,
         origins = ?policy.origins,
         max_message_bytes = policy.max_message_bytes,
         max_subscriptions = policy.max_subscriptions,
         max_priority = ?config.max_priority,
         "serving session {} of {}",
-        config.session,
-        config.connect
+        address.session,
+        address.base
     );
     // The demo scripts wait for this line.
     eprintln!("READY {scheme}://{host}:{}/", config.port);

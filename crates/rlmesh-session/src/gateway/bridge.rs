@@ -1,20 +1,24 @@
 //! The session side of the gateway: real `rlmesh-session` participants on
 //! the real v2 keyspace.
 //!
-//! - The [`Gateway`] attaches one observer participant of its own, for the
-//!   declarations (it resolves subscriptions against the host's parts), and
+//! - The [`Gateway`] attaches one observer participant of its own, with the
+//!   session address's key, for the declarations and to watch the host, and
 //!   relays the host's authority updates (`host/state`) as they were
 //!   published, once their signature verifies (the browser gets the plain
 //!   snapshot: the wasm holds no keys).
-//! - Every participant attaches with the gateway's credential (the session
-//!   address's key: device `local`), so each runs its own handshake and
-//!   seals its own verbs and heartbeats.
-//! - Every browser control connection is a [`BrowserLink`]: a participant of
-//!   its own (a controller at the class the browser asked for, capped by
-//!   `--max-priority`), with an identity binding over every commandable part
-//!   so it can be granted leases. The host is the only authority: lease
-//!   grants, releases and the session verbs go to it through the
-//!   participant, and its replies come back as `CtlReply`s.
+//! - Every browser socket is a participant attached with its token's
+//!   credential ([`Bearer`], design §5): a paired browser token's own
+//!   device key, so the host applies that device's cap, parts and verbs,
+//!   or, for this machine's page token, the gateway's. Each runs its own
+//!   handshake, and the gateway seals and opens for it (it holds that
+//!   participant's keys and lease keys), so the wasm needs no crypto.
+//! - Every browser control connection is a [`BrowserLink`]: a controller
+//!   at the class the browser asked for (capped by `--max-priority`, and by
+//!   the host at its device's cap), with an identity binding over every
+//!   commandable part so it can be granted leases, or an observer. The host
+//!   is the only authority: lease grants, releases and the session verbs go
+//!   to it through the participant, and its replies come back as
+//!   `CtlReply`s.
 //! - **Heartbeats are the browser's own.** The participant relays them
 //!   instead of its own: each browser heartbeat (with its four-timestamp
 //!   exchange, in the browser's clock) is sealed under the participant's
@@ -27,17 +31,17 @@
 //!   The gateway refuses a chunk that names another source or a part that is
 //!   not commandable, and reports (but still forwards) one the current
 //!   snapshot would fence.
-//! - Samples are opened under the gateway observer's stream keys and
-//!   forwarded as plain samples: the gateway subscribes on the stream's
-//!   class and prepends the subscription id.
-//!
-//! TODO: the gateway's participants hold the browsers' keys and seal and
-//! open for them; one credential per browser token (step 13) moves them
-//! into the browser.
+//! - Every data connection reads through an observer of its own
+//!   ([`Gateway::reader`]), so the host gives it only the stream keys its
+//!   device may read. Samples are opened under them, each subscription with
+//!   its own replay windows, and forwarded as plain samples: the gateway
+//!   subscribes on the stream's class and prepends the subscription id.
 //!
 //! Dropping a link drops its participant: its heartbeats stop, so the host
 //! ends its leases (the edge holds, then goes safe) and nothing is
-//! resumed by a reconnect, which attaches a new participant.
+//! resumed by a reconnect, which attaches a new participant. A participant
+//! the host detaches (its device revoked or its entry changed, design
+//! §8.5) closes its socket ([`detached`]).
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -62,6 +66,7 @@ use tracing::{debug, info, warn};
 use zenoh::Wait;
 
 use crate::gateway::frame;
+use crate::gateway::security::Bearer;
 
 /// What goes out on a browser socket.
 #[derive(Clone, Debug, PartialEq)]
@@ -204,11 +209,6 @@ impl Gateway {
         self.ended.clone()
     }
 
-    /// The host's latest snapshot, as the gateway's observer holds it.
-    pub fn view(&self) -> Option<AuthoritySnapshot> {
-        self.observer.authority()
-    }
-
     /// The session.
     pub fn session(&self) -> SessionId {
         self.session
@@ -219,19 +219,42 @@ impl Gateway {
         self.max_priority
     }
 
+    fn credential_of(&self, bearer: &Bearer) -> Credential {
+        match bearer {
+            Bearer::Page => self.credential.clone(),
+            Bearer::Browser { credential, .. } => credential.clone(),
+        }
+    }
+
+    /// Attaches the observer a data connection of `bearer`'s reads through.
+    pub async fn reader(&self, bearer: &Bearer) -> Result<Participant, SessionError> {
+        let mut config = ParticipantConfig::new(
+            self.tenant.clone(),
+            self.session,
+            random_id("view")?,
+            vec![Role::Observer],
+            PriorityClass::Scripted,
+        );
+        config.name = format!("browser reader via {}", self.observer.id());
+        config.credential = Some(self.credential_of(bearer));
+        Participant::attach(self.transport.clone(), config).await
+    }
+
     /// Subscribes `sink` to the stream at `path` (`{robot}/{part}` or
     /// `{robot}/{part}/_applied`) for a `socket` (`state` or `bulk`)
-    /// connection: every sample its publisher sends, as
-    /// [`frame::SAMPLE`] frames for subscription `id`. A full sink drops the
-    /// frame.
+    /// connection reading through `reader`: every sample its publisher
+    /// sends, as [`frame::SAMPLE`] frames for subscription `id`. A full sink
+    /// drops the frame, and a stream `reader` holds no key for (its device
+    /// may not read it) sends none.
     pub async fn subscribe(
         self: &Arc<Self>,
+        reader: &Participant,
         path: &str,
         socket: &'static str,
         id: u32,
         sink: mpsc::Sender<Bytes>,
     ) -> Result<(zenoh::pubsub::Subscriber<()>, ChannelId), String> {
-        let view = self.view().ok_or("no authority snapshot yet")?;
+        let view = reader.authority().ok_or("no authority snapshot yet")?;
         let (robot, part_path) = path
             .split_once('/')
             .ok_or_else(|| format!("{path}: not {{robot}}/{{part}}"))?;
@@ -259,7 +282,7 @@ impl Gateway {
         let counters = usize::from(socket == "bulk");
         let gw = Arc::downgrade(self);
         let key = self.keys.data(&robot, &spec.path);
-        let sealer = self.observer.sealer();
+        let sealer = reader.sealer();
         let (applied, channel) = (spec.applied, spec.channel);
         let windows = std::sync::Mutex::default();
         let subscriber = self
@@ -288,29 +311,40 @@ impl Gateway {
         Ok((subscriber, spec.channel))
     }
 
-    /// Attaches a browser control connection as a participant of its own at
-    /// `priority`; `out` carries its echoes.
+    /// Attaches a browser control connection of `bearer`'s as a participant
+    /// of its own: a controller at `priority`, or an observer (`None`);
+    /// `out` carries its echoes.
+    ///
+    /// # Errors
+    /// The host's refusal: `UNAUTHENTICATED` for a key it doesn't know (a
+    /// revoked token), `NOT_AUTHORIZED` above the device's cap (or this
+    /// gateway's `--max-priority`).
     pub async fn attach(
         self: &Arc<Self>,
-        priority: PriorityClass,
+        bearer: &Bearer,
+        priority: Option<PriorityClass>,
         out: mpsc::Sender<Outbound>,
     ) -> Result<BrowserLink, SessionError> {
-        if priority > self.max_priority {
-            return Err(SessionError::Config(format!(
-                "{priority:?} is above this gateway's --max-priority {:?}",
-                self.max_priority
+        if let Some(priority) = priority
+            && priority > self.max_priority
+        {
+            return Err(SessionError::Rejected(CtlError::new(
+                CtlStatus::NotAuthorized,
+                format!(
+                    "{priority:?} is above this gateway's --max-priority {:?}",
+                    self.max_priority
+                ),
             )));
         }
         let id = random_id("web")?;
-        let mut config = ParticipantConfig::new(
-            self.tenant.clone(),
-            self.session,
-            id.clone(),
-            vec![Role::Controller],
-            priority,
-        );
+        let (roles, class) = match priority {
+            Some(priority) => (vec![Role::Controller], priority),
+            None => (vec![Role::Observer], PriorityClass::Scripted),
+        };
+        let mut config =
+            ParticipantConfig::new(self.tenant.clone(), self.session, id.clone(), roles, class);
         config.name = format!("browser via {}", self.observer.id());
-        config.credential = Some(self.credential.clone());
+        config.credential = Some(self.credential_of(bearer));
         // The participant's own heartbeats would renew leases on the
         // gateway's account: it relays the browser's instead (one of its own
         // may leave before the switch below; it carries no timing sample).
@@ -329,6 +363,7 @@ impl Gateway {
             gw: self.clone(),
             participant: Arc::new(participant),
             id,
+            controller: priority.is_some(),
             chunks: Mutex::new(BTreeMap::new()),
             bound: Arc::new(Mutex::new(Vec::new())),
             tasks: vec![relay],
@@ -337,11 +372,26 @@ impl Gateway {
     }
 }
 
+/// Resolves once the host detached `participant`: its view no longer lists
+/// it (design §8.5: its device revoked, or its entry changed).
+pub async fn detached(participant: &Participant) {
+    let id = participant.id().clone();
+    let mut view = participant.watch();
+    let gone = view
+        .wait_for(|v| v.as_ref().is_some_and(|s| s.participant(&id).is_none()))
+        .await
+        .is_ok();
+    if !gone {
+        std::future::pending::<()>().await;
+    }
+}
+
 /// One browser control connection's participant: see the module docs.
 pub struct BrowserLink {
     gw: Arc<Gateway>,
     participant: Arc<Participant>,
     id: ParticipantId,
+    controller: bool,
     chunks: Mutex<BTreeMap<ChannelId, zenoh::pubsub::Publisher<'static>>>,
     bound: Arc<Mutex<Vec<ChannelId>>>,
     tasks: Vec<JoinHandle<()>>,
@@ -409,14 +459,19 @@ impl BrowserLink {
         &self.id
     }
 
+    /// Resolves once the host detached this browser ([`detached`]).
+    pub async fn detached(&self) {
+        detached(&self.participant).await;
+    }
+
     /// The hello the gateway answers with (JSON).
-    pub fn hello(&self, priority: PriorityClass) -> String {
+    pub fn hello(&self, priority: &str) -> String {
         json!({
             "type": "hello",
             "participant": self.id.as_str(),
             "tenant": self.gw.tenant.as_str(),
             "session": self.gw.session.to_string(),
-            "priority": format!("{priority:?}").to_lowercase(),
+            "priority": priority,
             "heartbeat_ms": 50,
             "gateway": env!("CARGO_PKG_VERSION"),
         })
@@ -438,16 +493,18 @@ impl BrowserLink {
     /// commandable parts change, and relays the host's authority updates to
     /// `out`.
     pub async fn start(&mut self, out: mpsc::Sender<Outbound>) -> Result<(), SessionError> {
-        rebind(&self.participant, &self.bound).await?;
-        let (participant, bound) = (self.participant.clone(), self.bound.clone());
-        let mut view = self.participant.watch();
-        self.tasks.push(tokio::spawn(async move {
-            while view.changed().await.is_ok() {
-                if let Err(err) = rebind(&participant, &bound).await {
-                    warn!(participant = %participant.id(), %err, "binding");
+        if self.controller {
+            rebind(&self.participant, &self.bound).await?;
+            let (participant, bound) = (self.participant.clone(), self.bound.clone());
+            let mut view = self.participant.watch();
+            self.tasks.push(tokio::spawn(async move {
+                while view.changed().await.is_ok() {
+                    if let Err(err) = rebind(&participant, &bound).await {
+                        warn!(participant = %participant.id(), %err, "binding");
+                    }
                 }
-            }
-        }));
+            }));
+        }
         let mut updates = self.gw.state.subscribe();
         let gw = self.gw.clone();
         self.tasks.push(tokio::spawn(async move {
