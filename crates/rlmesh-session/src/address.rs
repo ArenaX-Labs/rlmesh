@@ -35,6 +35,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::str::FromStr;
 use std::time::Duration;
 
+pub use rlmesh_session_core::auth::AddressKey;
+use rlmesh_session_core::auth::address::{base32, unbase32};
 use rlmesh_session_core::auth::{Credential, HostIdentity};
 use zeroize::Zeroizing;
 
@@ -93,99 +95,6 @@ impl fmt::Display for HostName {
             Some(port) => write!(f, ":{port}"),
             None => Ok(()),
         }
-    }
-}
-
-/// The key an embedded host's address carries (`#{secret}.{host}`): its
-/// local secret, from which a holder derives the `local` device's key, and
-/// its static public key. A secret: never logged.
-#[derive(Clone, PartialEq, Eq)]
-pub struct AddressKey {
-    secret: Zeroizing<[u8; 32]>,
-    host: [u8; 32],
-}
-
-impl fmt::Debug for AddressKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("AddressKey(..)")
-    }
-}
-
-/// RFC 4648 base32, lowercase, unpadded: 52 characters for 32 bytes.
-const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
-
-fn base32(bytes: &[u8; 32]) -> String {
-    let mut out = String::with_capacity(52);
-    let (mut acc, mut bits) = (0_u32, 0_u32);
-    for &b in bytes {
-        acc = (acc << 8) | u32::from(b);
-        bits += 8;
-        while bits >= 5 {
-            bits -= 5;
-            out.push(char::from(BASE32[((acc >> bits) & 31) as usize]));
-        }
-    }
-    if bits > 0 {
-        out.push(char::from(BASE32[((acc << (5 - bits)) & 31) as usize]));
-    }
-    out
-}
-
-fn unbase32(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 52 {
-        return None;
-    }
-    let mut out = [0_u8; 32];
-    let (mut acc, mut bits, mut at) = (0_u32, 0_u32, 0);
-    for c in text.bytes() {
-        let value = BASE32.iter().position(|&b| b == c.to_ascii_lowercase())?;
-        acc = (acc << 5) | u32::try_from(value).ok()?;
-        bits += 5;
-        if bits >= 8 {
-            bits -= 8;
-            *out.get_mut(at)? = (acc >> bits) as u8;
-            at += 1;
-        }
-    }
-    // The 4 padding bits of the last character are zero.
-    (at == 32 && acc & ((1 << bits) - 1) == 0).then_some(out)
-}
-
-impl AddressKey {
-    /// The key of `identity`'s address.
-    pub fn of(identity: &HostIdentity) -> Self {
-        Self {
-            secret: Zeroizing::new(*identity.local_secret()),
-            host: *identity.static_public(),
-        }
-    }
-
-    /// The credential of its holder (device `local`).
-    pub fn credential(&self) -> Credential {
-        Credential::local(&self.secret, self.host)
-    }
-
-    fn parse(text: &str) -> Option<Self> {
-        let (secret, host) = text.split_once('.')?;
-        Some(Self {
-            secret: Zeroizing::new(unbase32(secret)?),
-            host: unbase32(host)?,
-        })
-    }
-}
-
-impl FromStr for AddressKey {
-    type Err = SessionError;
-
-    /// `{secret}.{host key}`, as an address carries it after `#`.
-    fn from_str(text: &str) -> Result<Self, SessionError> {
-        Self::parse(text.trim()).ok_or_else(|| invalid(text, "not {secret}.{host key}"))
-    }
-}
-
-impl fmt::Display for AddressKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", base32(&self.secret), base32(&self.host))
     }
 }
 
@@ -365,8 +274,8 @@ impl Address {
         let (body, key) = split_key(trimmed.strip_prefix(SCHEME).unwrap_or(trimmed));
         let key = match key {
             Some(key) => Some(
-                AddressKey::parse(key)
-                    .ok_or_else(|| invalid(text, "the key after # is not {secret}.{host key}"))?,
+                key.parse::<AddressKey>()
+                    .map_err(|_| invalid(text, "the key after # is not {secret}.{host key}"))?,
             ),
             None => None,
         };
@@ -856,7 +765,7 @@ fn local_key(base: SocketAddr) -> Option<AddressKey> {
         return None;
     }
     let text = std::fs::read_to_string(key_file(base.port())?).ok()?;
-    AddressKey::parse(text.trim())
+    text.parse().ok()
 }
 
 /// Where an embedded host on `port` leaves its key for this user's other
@@ -1253,12 +1162,6 @@ mod tests {
                 assert!(!shown.contains(secret) && shown.contains("#…"), "{shown}");
             }
         }
-        assert_eq!(
-            key.credential().device_public(),
-            &config.identity.local_public(),
-            "a holder derives the local device's key"
-        );
-        assert!(format!("{key:?}").len() < 20, "never logged");
         // A launcher's keys: the host it starts hosts under them.
         let (text, launched) = launch_identity().expect("keys");
         let mut parts = text.split('.').map(|p| unbase32(p).expect("base32"));

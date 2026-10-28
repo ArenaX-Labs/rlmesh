@@ -10,15 +10,16 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rlmesh_session::address::AddressKey;
+use rlmesh_session::crypto::{Key, Kind, KindSet, SealSender, Security};
 use rlmesh_session::edge::{Edge, EdgeConfig, EdgeMode, EdgeTick, Rejection};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::{
-    ChannelId, Fingerprint, InputRange, Lease, Mode, ParticipantId, PriorityClass, ReasonCode,
-    Role, SessionId, TenantId,
+    ActionChunk, ChannelId, Fingerprint, InputRange, Lease, Mode, ParticipantId, PriorityClass,
+    ReasonCode, Role, SessionId, TenantId, codec,
 };
 use rlmesh_session::{
-    ChunkDraft, HostConfig, Participant, ParticipantConfig, SessionHost, SubscribeOptions,
-    SystemMonotonicClock, Transport, TransportConfig,
+    ChunkDraft, HostConfig, Participant, ParticipantConfig, SessionError, SessionHost,
+    SubscribeOptions, SystemMonotonicClock, Transport, TransportConfig,
 };
 use serde_json::json;
 
@@ -301,11 +302,52 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
         "the fenced queue is not acted on"
     );
     assert!(tick.action.is_none() && tick.safe_behavior.is_some());
-    model_tx
-        .send(horizon(&policy, 50, 1, Duration::from_millis(100)))
-        .expect("send");
-    wait_until("model chunk fenced", || {
-        edge.stats().rejected(Rejection::StaleToken) == 1
+    // The preempted holder's key ended with its token: it can't seal...
+    policy
+        .wait_for("the model sees the preemption", WAIT, |s| {
+            s.lease(cmd).is_some_and(|l| l.token == human.token)
+        })
+        .await
+        .expect("view");
+    let late = model_tx.send(horizon(&policy, 50, 1, Duration::from_millis(100)));
+    assert!(matches!(late, Err(SessionError::Key(_))), "{late:?}");
+    // ...and a chunk naming the new lease, sealed by anyone but its holder
+    // (here under its public key id with a made-up key), never opens.
+    let now = operator.session_now_ns();
+    let forged = ActionChunk {
+        channel: cmd,
+        epoch: robot.authority().expect("view").epoch,
+        lease_token: human.token,
+        seq: 1,
+        source: operator.id().clone(),
+        binding: human.binding,
+        based_on: Vec::new(),
+        t0_ns: now,
+        dt_ns: 1_000_000,
+        replace_from_ns: now,
+        valid_until_ns: now + 100_000_000,
+        count: 1,
+        actions: Bytes::from(vec![9; 24]),
+        publish_ns: now,
+        tick: 0,
+    };
+    let mut forger = SealSender::new(
+        human.key_id,
+        Key::from_bytes([7; 32]),
+        KindSet::ALL,
+        Security::Sign,
+    );
+    let key = robot.keys().commands(robot.id(), "cmd");
+    let body = codec::encode_chunk(&forged).expect("encode").to_vec();
+    let sealed = forger.seal(Kind::ActionChunk, &key, &body).expect("seal");
+    policy
+        .transport()
+        .control()
+        .put(&key, sealed)
+        .await
+        .expect("put");
+    wait_until("the forged chunk refused", || {
+        edge.stats().rejected(Rejection::Unauthenticated) == 1
     })
     .await;
     let human_tx = operator.chunk_publisher(&human).await.expect("publisher");
@@ -411,7 +453,7 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
         stats.queue.fenced > 0,
         "the model's queued actions were dropped: {stats:?}"
     );
-    assert!(stats.rejected(Rejection::StaleToken) > 0, "{stats:?}");
+    // The model's later chunks never left: its key ended with its token.
     assert_eq!(stats.mode(EdgeMode::Safe).entries, 0, "{stats:?}");
     assert_eq!(world.host.snapshot().mode, Mode::Active);
 }

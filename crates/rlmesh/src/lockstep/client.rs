@@ -268,6 +268,7 @@ impl LockstepClient {
             seeds: seeds.iter().map(|s| *s as u64).collect(),
             options_json: meta_json::optional_to_json(options),
             episode_ids: (first..first + width as u64).collect(),
+            lease_token: LeaseToken(d.token.load(Ordering::Acquire)),
         };
         let reply = d.link.call(Request::Reset(reset), timeout).await?;
         self.timed(reply.timing);

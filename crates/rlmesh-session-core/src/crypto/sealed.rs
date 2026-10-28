@@ -278,6 +278,15 @@ impl Header {
     }
 }
 
+/// Where the body of an integrity-only message lies, **unverified**: for an
+/// observer that records or displays what was sent (a recorder, a cockpit)
+/// without the key to verify it, and never acts on it. `None` for an
+/// encrypted or malformed message.
+pub fn unverified_body(msg: &[u8]) -> Option<core::ops::Range<usize>> {
+    let header = Header::parse(msg).ok()?;
+    (!header.encrypted).then(|| HEADER_LEN..msg.len() - TAG_LEN)
+}
+
 /// The nonce of (kind, seq): `kind` ‖ 3 zero bytes ‖ `seq` (u64 LE).
 pub fn nonce(kind: Kind, seq: u64) -> [u8; 12] {
     let mut out = [0u8; 12];
@@ -431,6 +440,28 @@ impl SealSender {
         body: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<(), SealError> {
+        let sealing = self.peek(kind)?;
+        let next = sealing.seq.wrapping_add(1);
+        sealing.finish_to(keyexpr, body, out)?;
+        self.next[kind.index()] = next;
+        Ok(())
+    }
+
+    /// Takes the next `seq` of `kind` and hands the sealing to the caller,
+    /// to finish without the lock it holds this sender under (a large body
+    /// then never holds up the key's other users). The `seq` is used even
+    /// if the sealing fails or is dropped.
+    ///
+    /// # Errors
+    /// [`SealError`] for a kind this key doesn't carry or an exhausted
+    /// counter.
+    pub fn begin(&mut self, kind: Kind) -> Result<Sealing, SealError> {
+        let sealing = self.peek(kind)?;
+        self.next[kind.index()] = sealing.seq.wrapping_add(1);
+        Ok(sealing)
+    }
+
+    fn peek(&self, kind: Kind) -> Result<Sealing, SealError> {
         if !self.kinds.contains(kind) {
             return Err(SealError::WrongKind(kind));
         }
@@ -438,19 +469,53 @@ impl SealSender {
         if seq == 0 {
             return Err(SealError::SeqExhausted(kind));
         }
-        let encrypted = kind.encrypted(self.security);
         let header = Header {
-            encrypted,
+            encrypted: kind.encrypted(self.security),
             kind,
             key_id: self.key_id,
             seq,
-        }
-        .to_bytes();
-        let nonce = Nonce::from(nonce(kind, seq));
+        };
+        Ok(Sealing {
+            aead: self.aead.clone(),
+            header,
+            seq,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_next(&mut self, kind: Kind, seq: u64) {
+        self.next[kind.index()] = seq;
+    }
+}
+
+/// One message being sealed, its `seq` taken ([`SealSender::begin`]).
+pub struct Sealing {
+    aead: ChaCha20Poly1305,
+    header: Header,
+    seq: u64,
+}
+
+impl core::fmt::Debug for Sealing {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Sealing")
+            .field("header", &self.header)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Sealing {
+    /// Seals `body` on `keyexpr`, appending to `out` (unchanged on error).
+    /// It takes the sealing: one `seq`, one message.
+    ///
+    /// # Errors
+    /// [`SealError`].
+    pub fn finish_to(self, keyexpr: &str, body: &[u8], out: &mut Vec<u8>) -> Result<(), SealError> {
+        let header = self.header.to_bytes();
+        let nonce = Nonce::from(nonce(self.header.kind, self.seq));
         let start = out.len();
         out.extend_from_slice(&header);
         out.extend_from_slice(body);
-        let sealed = if encrypted {
+        let sealed = if self.header.encrypted {
             let buffer = &mut out[start + HEADER_LEN..];
             with_aad(&header, keyexpr, None, |aad| {
                 self.aead.encrypt_in_place_detached(&nonce, aad, buffer)
@@ -463,7 +528,6 @@ impl SealSender {
         match sealed {
             Ok(Ok(tag)) => {
                 out.extend_from_slice(&tag);
-                self.next[kind.index()] = seq.wrapping_add(1);
                 Ok(())
             }
             Ok(Err(_)) => {
@@ -476,10 +540,61 @@ impl SealSender {
             }
         }
     }
+}
 
-    #[cfg(test)]
-    pub(crate) fn set_next(&mut self, kind: Kind, seq: u64) {
-        self.next[kind.index()] = seq;
+/// One message being opened ([`SealReceiver::begin`]): its header passed
+/// the key's checks and its replay window.
+pub struct Opening {
+    aead: ChaCha20Poly1305,
+    header: Header,
+}
+
+impl core::fmt::Debug for Opening {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Opening")
+            .field("header", &self.header)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Opening {
+    /// The header.
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+
+    /// Verifies (and decrypts) `msg`, received on `keyexpr`, in place,
+    /// without the lock its receiver is held under; then
+    /// [`SealReceiver::commit`] its `seq`.
+    ///
+    /// # Errors
+    /// [`OpenError`]. `msg` may hold garbage after a failed decryption.
+    pub fn finish<'m>(&self, keyexpr: &str, msg: &'m mut [u8]) -> Result<Opened<'m>, OpenError> {
+        if Header::parse(msg)? != self.header {
+            return Err(OpenError::Auth);
+        }
+        let header = self.header;
+        let nonce = Nonce::from(nonce(header.kind, header.seq));
+        let (head, rest) = msg.split_at_mut(HEADER_LEN);
+        let (body, tag) = rest.split_at_mut(rest.len() - TAG_LEN);
+        let tag = Tag::clone_from_slice(tag);
+        let mut header_bytes = [0u8; HEADER_LEN];
+        header_bytes.copy_from_slice(head);
+        let verified = if header.encrypted {
+            with_aad(&header_bytes, keyexpr, None, |aad| {
+                self.aead.decrypt_in_place_detached(&nonce, aad, body, &tag)
+            })
+        } else {
+            with_aad(&header_bytes, keyexpr, Some(body), |aad| {
+                self.aead
+                    .decrypt_in_place_detached(&nonce, aad, &mut [], &tag)
+            })
+        };
+        match verified {
+            Ok(Ok(())) => Ok(Opened { header, body }),
+            Ok(Err(_)) => Err(OpenError::Auth),
+            Err(LpTooLong) => Err(OpenError::KeyExprTooLong),
+        }
     }
 }
 
@@ -543,6 +658,30 @@ impl SealReceiver {
     /// [`OpenError`]; the window is unchanged then. `msg` may hold
     /// garbage after a failed decryption.
     pub fn open<'m>(&mut self, keyexpr: &str, msg: &'m mut [u8]) -> Result<Opened<'m>, OpenError> {
+        let opening = self.begin(msg)?;
+        let opened = opening.finish(keyexpr, msg)?;
+        self.commit(&opened.header)?;
+        Ok(opened)
+    }
+
+    /// Checks `msg`'s header (its key, kind and protection) and replay
+    /// window, and hands the verification to the caller, to finish without
+    /// the lock it holds this receiver under.
+    ///
+    /// # Errors
+    /// [`OpenError`].
+    pub fn begin(&self, msg: &[u8]) -> Result<Opening, OpenError> {
+        let opening = self.begin_unwindowed(msg)?;
+        self.windows[opening.header.kind.index()].check(opening.header.seq)?;
+        Ok(opening)
+    }
+
+    /// [`Self::begin`] for a caller that keeps its own replay window for
+    /// this flow (one per subscription): the header checks only.
+    ///
+    /// # Errors
+    /// [`OpenError`].
+    pub fn begin_unwindowed(&self, msg: &[u8]) -> Result<Opening, OpenError> {
         let header = Header::parse(msg)?;
         if header.key_id != self.key_id {
             return Err(OpenError::WrongKey(header.key_id));
@@ -553,31 +692,19 @@ impl SealReceiver {
         if header.encrypted != header.kind.encrypted(self.security) {
             return Err(OpenError::Protection(header.kind));
         }
-        let window = &mut self.windows[header.kind.index()];
-        window.check(header.seq)?;
-        let nonce = Nonce::from(nonce(header.kind, header.seq));
-        let (head, rest) = msg.split_at_mut(HEADER_LEN);
-        let (body, tag) = rest.split_at_mut(rest.len() - TAG_LEN);
-        let tag = Tag::clone_from_slice(tag);
-        let mut header_bytes = [0u8; HEADER_LEN];
-        header_bytes.copy_from_slice(head);
-        let verified = if header.encrypted {
-            with_aad(&header_bytes, keyexpr, None, |aad| {
-                self.aead.decrypt_in_place_detached(&nonce, aad, body, &tag)
-            })
-        } else {
-            with_aad(&header_bytes, keyexpr, Some(body), |aad| {
-                self.aead
-                    .decrypt_in_place_detached(&nonce, aad, &mut [], &tag)
-            })
-        };
-        match verified {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => return Err(OpenError::Auth),
-            Err(LpTooLong) => return Err(OpenError::KeyExprTooLong),
-        }
-        window.insert(header.seq)?;
-        Ok(Opened { header, body })
+        Ok(Opening {
+            aead: self.aead.clone(),
+            header,
+        })
+    }
+
+    /// Records the `seq` of a message an [`Opening`] verified: a second
+    /// copy that verified meanwhile is refused here.
+    ///
+    /// # Errors
+    /// [`OpenError::Replayed`].
+    pub fn commit(&mut self, header: &Header) -> Result<(), OpenError> {
+        Ok(self.windows[header.kind.index()].insert(header.seq)?)
     }
 }
 

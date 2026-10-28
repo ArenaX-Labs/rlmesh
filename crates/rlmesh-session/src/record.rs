@@ -56,6 +56,7 @@ use crate::wire::{
 };
 use crate::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use bytes::Bytes;
+use rlmesh_session_core::crypto::sealed::unverified_body;
 use tracing::{debug, info, warn};
 
 /// What can go wrong recording or reading a recording.
@@ -663,8 +664,16 @@ async fn watch_parts(
                         .declare_subscriber(key)
                         .callback(move |sample| {
                             let log_time = stamp.now();
+                            // The recorder holds no command key: it records
+                            // a signed chunk's body as sent, unverified, and
+                            // can't read a sealed one.
+                            // TODO: verify recorded chunks once observers
+                            // can hold command keys (per-device read
+                            // permission, step 8).
                             let data = payload_bytes(sample.payload());
-                            on_chunk(&tx, &stamp, &topic, log_time, data);
+                            if let Some(body) = unverified_body(&data) {
+                                on_chunk(&tx, &stamp, &topic, log_time, data.slice(body));
+                            }
                         })
                         .await;
                     match declared {

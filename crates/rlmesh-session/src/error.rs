@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use crate::participant::Pending;
 use crate::wire::{ChannelId, CtlError, IdError, WireError};
 
 /// Everything a session call can fail with.
@@ -27,6 +28,18 @@ pub enum SessionError {
     /// The host did not answer in time.
     #[error("no reply from the session host within {0:?}")]
     NoReply(Duration),
+    /// The host did not answer a verb in time, and it stays pending: its
+    /// outcome is unknown until [`Pending::reply`] resolves (§8.6).
+    #[error(
+        "no reply from the session host within {timeout:?}: request {} is pending, its outcome unknown",
+        .pending.id()
+    )]
+    Pending {
+        /// How long the call waited.
+        timeout: Duration,
+        /// The request, still being sent.
+        pending: Pending,
+    },
     /// Something expected did not happen in time.
     #[error("timed out after {0:?} waiting for {1}")]
     Timeout(Duration, String),
@@ -61,6 +74,10 @@ pub enum SessionError {
     /// An I/O error (the host binary's files, local sockets).
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// A message under a delivered key was refused, or there is no key to
+    /// send it under yet (§8.5).
+    #[error("keys: {0}")]
+    Key(String),
     /// The session (or one of its tasks) has stopped.
     #[error("the session has stopped")]
     Closed,

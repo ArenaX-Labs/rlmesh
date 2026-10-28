@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use rlmesh_session::crypto::sealed::unverified_body;
 use rlmesh_session::edge::{EdgeConfig, Robot};
 use rlmesh_session::gateway::security::{Origins, Policy, SUBPROTOCOL};
 use rlmesh_session::gateway::{AppState, Gateway, frame, router};
@@ -338,7 +339,8 @@ impl World {
 #[tokio::test(flavor = "multi_thread")]
 async fn samples_arrive_as_published_and_subscriptions_are_checked() {
     let world = World::start().await;
-    // A raw subscriber on the same key: what the publisher put on the wire.
+    // A raw subscriber on the same key: what the publisher put on the wire
+    // (signed: its body is in clear).
     let transport = open(world.base).await;
     let keys = SessionKeys::new(&world.tenant, world.session);
     let (raw_tx, mut raw_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
@@ -369,6 +371,7 @@ async fn samples_arrive_as_published_and_subscriptions_are_checked() {
         let body = frame_bytes.slice(6..);
         let sample = codec::decode_sample(body.clone()).unwrap();
         while let Ok(raw) = raw_rx.try_recv() {
+            let raw = raw.slice(unverified_body(&raw).expect("signed"));
             let s = codec::decode_sample(raw.clone()).unwrap();
             seen.insert(s.seq, raw);
         }

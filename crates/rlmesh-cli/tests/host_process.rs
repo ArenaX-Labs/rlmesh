@@ -244,7 +244,10 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
         .expect("watch");
     let err = operator.arm().await.expect_err("no host");
     assert!(
-        matches!(err, SessionError::NoReply(_) | SessionError::Zenoh(_)),
+        matches!(
+            err,
+            SessionError::NoReply(_) | SessionError::Pending { .. } | SessionError::Zenoh(_)
+        ),
         "{err}"
     );
     assert!(!host.wait_exit().success());

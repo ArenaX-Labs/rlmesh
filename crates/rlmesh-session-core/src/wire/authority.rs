@@ -11,6 +11,7 @@ use core::fmt;
 use crate::wire::action::ChunkRef;
 use crate::wire::contract::{ActionGrid, Demand, StreamContract};
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId, SessionId};
+use crate::wire::key::{IssuedKey, KeysAck};
 use crate::wire::part::{PartSpec, StreamSpec};
 
 /// What a participant does in a session. One participant may hold several.
@@ -313,6 +314,8 @@ pub struct Lease {
     pub expires_ns: i64,
     /// The binding every chunk under it must carry.
     pub binding: Fingerprint,
+    /// The id of its `k_cmd` (§8.4): never the key itself.
+    pub key_id: u32,
 }
 
 /// A published clock mapping: `session_ns = participant_ns + offset_ns`,
@@ -608,6 +611,8 @@ pub enum Command {
         spec_version: u32,
         /// The authored map.
         robot_json: String,
+        /// The part paths this robot process can seal (§8.8).
+        seal: Vec<String>,
     },
     /// A controller's binding. A changed fingerprint voids the controller's
     /// leases and re-issues them under fresh tokens.
@@ -686,6 +691,10 @@ pub enum Command {
         /// The chunks it sent for it (none: no action).
         chunks: Vec<ChunkRef>,
     },
+    /// What a key delivery changed at the sender (§8.5).
+    KeysAck(KeysAck),
+    /// Every key issued to the sender's generation, in the reply (§8.5).
+    GetKeys,
 }
 
 /// A verb from a participant.
@@ -775,6 +784,9 @@ pub struct CtlReply {
     pub leases: Vec<Lease>,
     /// The request this answers.
     pub request_id: u64,
+    /// Keys for the caller (a grant's, or `GetKeys`'), sealed with the
+    /// reply.
+    pub keys: Vec<IssuedKey>,
 }
 
 /// msg 1 of the handshake, on `hs`: Noise IK with an empty payload.

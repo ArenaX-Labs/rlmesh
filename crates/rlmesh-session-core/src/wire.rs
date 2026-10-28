@@ -59,6 +59,7 @@ pub mod contract;
 pub mod error;
 pub mod heartbeat;
 pub mod ids;
+pub mod key;
 pub mod keys;
 pub mod lockstep;
 pub mod model;
@@ -83,8 +84,12 @@ pub use heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
 pub use ids::{
     ChannelId, Epoch, Fingerprint, IdError, LeaseToken, ParticipantId, SessionId, TenantId,
 };
+pub use key::{IssuedKey, KeyBytes, KeyDelivery, KeyPurpose, KeysAck, Security};
 pub use keys::SessionKeys;
-pub use lockstep::{LockstepReply, LockstepReset, LockstepStep, PartValues};
+pub use lockstep::{
+    LockstepOp, LockstepReply, LockstepRequest, LockstepReset, LockstepResponse, LockstepResult,
+    LockstepStep, PartValues,
+};
 pub use model::{
     ModelEpisode, ModelFault, ModelGroup, ModelHistoryRow, ModelOutcome, ModelReply, ModelRequest,
     ModelResolve, ModelResolved,

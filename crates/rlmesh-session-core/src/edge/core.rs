@@ -131,11 +131,14 @@ pub enum Rejection {
     NoClockMapping,
     /// The clock error bound exceeds [`EdgeConfig::max_clock_error`].
     ClockUncertain,
+    /// Not sealed under a command key this robot holds for the chunk's
+    /// part, token and source (design §8.4): not the lease holder's.
+    Unauthenticated,
 }
 
 impl Rejection {
     /// Every rejection, in stats order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Malformed,
         Self::WrongChannel,
         Self::Estop,
@@ -152,6 +155,7 @@ impl Rejection {
         Self::InvalidValue,
         Self::NoClockMapping,
         Self::ClockUncertain,
+        Self::Unauthenticated,
     ];
 
     fn index(self) -> usize {
@@ -875,6 +879,7 @@ mod tests {
                 Command::DeclareParts {
                     spec_version: SPEC_VERSION,
                     robot_json: robot_map(hold_last),
+                    seal: Vec::new(),
                 },
             );
             let channels: Vec<ChannelId> = auth

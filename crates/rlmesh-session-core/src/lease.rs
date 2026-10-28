@@ -605,6 +605,7 @@ mod tests {
             granted_ns: 0,
             expires_ns,
             binding: Fingerprint::from(7),
+            key_id: 0,
         }
     }
 
@@ -643,6 +644,7 @@ mod tests {
             result: Ok(()),
             state: snapshot(5, 0, Mode::Active, vec![lease("web-1", 9, 1_000 * MS)]),
             leases: vec![lease("web-1", 9, 1_000 * MS)],
+            keys: Vec::new(),
         };
         assert!(client.on_reply(&reply, clock, MS));
     }
@@ -819,6 +821,7 @@ mod tests {
             result: Err(CtlError::new(CtlStatus::LeaseBusy, "held by safety")),
             state: snapshot(5, 0, Mode::Active, Vec::new()),
             leases: Vec::new(),
+            keys: Vec::new(),
         };
         assert!(!client.on_reply(&reply, None, MS));
         assert!(
@@ -844,6 +847,7 @@ mod tests {
             result: Ok(()),
             state: snapshot(5, 0, Mode::Active, both.clone()),
             leases: both,
+            keys: Vec::new(),
         };
         assert!(group.on_reply(&reply, None, MS));
         assert!(group.holds_all(2 * MS));

@@ -585,7 +585,13 @@ impl Controller {
                 .get(&part.channel)
                 .filter(|p| Some(p.token()) == token)
             {
-                Some(publisher) => Sent::Seq(publisher.send(draft)?),
+                Some(publisher) => match publisher.send(draft) {
+                    Ok(seq) => Sent::Seq(seq),
+                    // Its key went with a token that just ended, before
+                    // the lease group saw it: no lease.
+                    Err(SessionError::Key(_)) => Sent::NoLease,
+                    Err(err) => return Err(err.into()),
+                },
                 None => Sent::NoLease,
             };
             sent.push((row.entry.clone(), outcome));

@@ -9,14 +9,13 @@
 //! back on its own account it tells the host through the participant
 //! (`EnterSafe`, retried in the background); the heartbeat reports its
 //! queue. Every chunk and tick reads the robot process's local e-stop latch
-//! first ([`Participant::latch_estop`]).
+//! first ([`Participant::latch_estop`]). A chunk counts only when it opens
+//! under the lease's `k_cmd` (design §8.4), which only its holder has.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::participant::LocalLatch;
-use crate::transport::payload_bytes;
-use crate::wire::codec;
+use crate::participant::{LocalLatch, Sealer};
 use crate::wire::{ActionChunk, ChannelId, ChunkRef, ClockMode, ReasonCode};
 use crate::{
     AuthorityView, Clock, EdgeReport, Participant, SafeReporter, SamplePublisher, TrafficClass,
@@ -43,6 +42,7 @@ struct Shared {
     on_accept: Option<OnAccept>,
     /// The time of the last tick: the edge's clock in virtual mode.
     tick_ns: AtomicI64,
+    sealer: Sealer,
 }
 
 impl Shared {
@@ -63,12 +63,12 @@ impl Shared {
         core
     }
 
-    fn on_payload(&self, payload: &zenoh::bytes::ZBytes) {
-        let chunk = match codec::decode_chunk(payload_bytes(payload)) {
+    fn on_payload(&self, key: &str, payload: &zenoh::bytes::ZBytes) {
+        let chunk = match self.sealer.open_chunk(key, payload.to_bytes().into_owned()) {
             Ok(chunk) => chunk,
             Err(err) => {
-                debug!(%err, "undecodable chunk");
-                self.core().count_rejection(Rejection::Malformed);
+                debug!(%err, "chunk refused");
+                self.core().count_rejection(Rejection::Unauthenticated);
                 return;
             }
         };
@@ -140,24 +140,24 @@ impl Edge {
             latches_seen: AtomicU64::new(0),
             on_accept,
             tick_ns: AtomicI64::new(0),
+            sealer: participant.sealer(),
         });
         let mut subscribers = Vec::with_capacity(parts.len());
         let mut applied = Vec::with_capacity(parts.len());
         for part in &parts {
             // A plain subscriber: chunks are never served from history, so
             // a restarted edge cannot act on old ones.
+            let key = participant
+                .keys()
+                .commands(participant.id(), part.path.as_str());
             subscribers.push(
                 participant
                     .transport()
                     .session(TrafficClass::of(part.priority))
-                    .declare_subscriber(
-                        participant
-                            .keys()
-                            .commands(participant.id(), part.path.as_str()),
-                    )
+                    .declare_subscriber(key.clone())
                     .callback({
                         let shared = shared.clone();
-                        move |sample| shared.on_payload(sample.payload())
+                        move |sample| shared.on_payload(&key, sample.payload())
                     })
                     .await?,
             );

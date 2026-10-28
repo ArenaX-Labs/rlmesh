@@ -21,6 +21,18 @@
 //! host's Ed25519 key, under the host instance and one publication counter
 //! (§8.7).
 //!
+//! **Keys** (§8.4, §8.5): the host draws every other key, delivers it on
+//! `p/{participant}/keys` sealed under the recipient's `k_down`, and
+//! retries until the recipient's `KeysAck` (its
+//! [`KeyIssuer`](crate::auth::KeyIssuer)). Each part's
+//! stream key goes to every member (and the host) and, once they installed
+//! it, to its robot to send under; a robot's new generation rotates it. A
+//! grant (or a rebind) that mints a token is prepared on a copy of the
+//! authority, its `k_cmd` and `k_obs` go to the robots, and the verb is
+//! applied, re-checked, only once every robot acknowledged: the holder gets
+//! its keys in the reply. Meanwhile the host keeps dispatching; a retry of
+//! the pending request joins it.
+//!
 //! The host also keeps the session's **history store** (§8.8): for every
 //! declared stream (bulk streams only when configured) it subscribes to the
 //! samples and keeps a bounded ring per stream, in the current epoch only,
@@ -30,7 +42,10 @@
 //! `after_seq`, an inclusive `until_seq` watermark taken from the live
 //! stream and a limit; the reply is one or more [`SampleBatch`] pages, the
 //! first carrying `truncated` (retention ran out before the range) and the
-//! gaps the store knows of.
+//! gaps the store knows of. A query must be sealed under the requester's
+//! `k_up`, and its pages are sealed under its `k_down` with the query's
+//! request id (§8.6); the store opens every sample under its stream's key
+//! and keeps only the session's current epoch.
 //!
 //! In a virtual-clock session the host also runs the tick barrier (§11.3)
 //! and publishes its ticks on `host/tick`.
@@ -47,11 +62,14 @@ use crate::wire::codec;
 use crate::wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
 use crate::wire::{
     Applied, AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
-    Epoch, HeartbeatEcho, HistoryQuery, Lease, ParticipantId, SampleBatch, SampleMeta, SeqRange,
-    SessionId, SessionKeys, StreamSpec, TenantId,
+    Epoch, HeartbeatEcho, HistoryQuery, IssuedKey, Lease, LeaseToken, ParticipantId, SampleBatch,
+    SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec, TenantId,
 };
 use bytes::Bytes;
-use rlmesh_session_core::auth::{Admit, Credential, HostAuth, HostIdentity, RequestWindow};
+use rlmesh_session_core::auth::issuer::{GrantId, GrantPart, GrantRequest, Prepared};
+use rlmesh_session_core::auth::{
+    Admit, Credential, HostAuth, HostIdentity, Keyring, RequestWindow,
+};
 use rlmesh_session_core::crypto::sealed::Header;
 use rlmesh_session_core::crypto::{
     Kind, Rng, RngError, SealReceiver, SealSender, SignedKind, SignedSender,
@@ -65,14 +83,14 @@ use zenoh::Wait;
 use zenoh::query::Query;
 use zenoh::sample::SampleKind;
 
-use crate::authority::{Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent, Identity};
+use crate::authority::{
+    Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent, Identity, SealPolicy,
+};
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
 use crate::error::SessionError;
 use crate::metrics::{LinkStats, ParticipantHealth, Report};
-use crate::sample::decode_data;
 use crate::transport::{
     CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, TrafficClass, Transport,
-    frame_zbytes,
 };
 use crate::virtual_clock::VirtualConfig;
 
@@ -161,6 +179,9 @@ pub struct HostConfig {
     pub history: HistoryConfig,
     /// Virtual clock mode (§11.3); `None` is wall mode.
     pub virtual_clock: Option<VirtualConfig>,
+    /// The parts whose streams, chunks and lockstep traffic are encrypted
+    /// rather than signed (§8.2): none by default.
+    pub seal: SealPolicy,
     /// The host's keys, shared by every session a multi-session host runs:
     /// participants handshake with its static key, and it signs its
     /// broadcasts with its Ed25519 key. Holders of its local secret (the
@@ -196,6 +217,7 @@ impl HostConfig {
                 .collect(),
             history: HistoryConfig::default(),
             virtual_clock: None,
+            seal: SealPolicy::None,
         }
     }
 
@@ -231,6 +253,7 @@ impl std::fmt::Debug for HostConfig {
             .field("supports", &self.supports)
             .field("history", &self.history)
             .field("virtual_clock", &self.virtual_clock)
+            .field("seal", &self.seal)
             .finish_non_exhaustive()
     }
 }
@@ -262,6 +285,7 @@ impl SessionHost {
                     .unwrap_or(u64::MAX),
                 supports: config.supports.clone(),
                 virtual_clock: config.virtual_clock,
+                seal: config.seal.clone(),
             },
         );
         let epoch = Arc::new(AtomicU64::new(authority.epoch().0));
@@ -316,10 +340,12 @@ impl SessionHost {
             .congestion_control(CONTROL_CONGESTION)
             .express(true)
             .await?;
+        let host_keys = Arc::new(Mutex::new(Keyring::new(None, 0)));
         let store = HistoryStore {
             depth: config.history.depth.max(1),
             clock: Some(config.clock.clone()),
             rings: Arc::default(),
+            peers: peers.clone(),
         };
         let history = transport
             .session(TrafficClass::Data)
@@ -361,6 +387,9 @@ impl SessionHost {
             events: events.clone(),
             store,
             recorded: HashMap::new(),
+            host_keys,
+            waiting: HashMap::new(),
+            failed: Vec::new(),
         };
         actor.publish().await;
         info!(session = %actor.config.session, key = actor.keys.prefix(), "session host up");
@@ -517,6 +546,9 @@ fn on_heartbeat_sample(
         }
     };
     if let Some(publisher) = peer.echo.get() {
+        // t3 under the lock: waiting for it is the host's hold time, never
+        // network time.
+        let mut down = lock(&peer.down);
         let echo = HeartbeatEcho {
             seq: heartbeat.seq,
             t1_ns: heartbeat.t1_ns,
@@ -524,7 +556,6 @@ fn on_heartbeat_sample(
             t3_ns: clock.now_ns(),
             epoch: Epoch(epoch.load(Ordering::Relaxed)),
         };
-        let mut down = lock(&peer.down);
         let sent = down
             .seal(
                 Kind::HeartbeatEcho,
@@ -564,25 +595,37 @@ struct RingState {
 struct Ring {
     spec: StreamSpec,
     state: Mutex<RingState>,
+    /// The session's epoch: the only one a sample is kept in (§8.5).
+    epoch: Arc<AtomicU64>,
+    /// Samples kept.
+    depth: usize,
 }
 
 impl Ring {
-    /// Records a live sample.
-    fn record(&self, payload: &zenoh::bytes::ZBytes, depth: usize) {
-        if let Ok(sample) = decode_data(payload) {
-            self.record_one(sample, depth);
+    /// Records a live sample, opened under its stream's key.
+    fn record(&self, keys: &Mutex<Keyring>, keyexpr: &str, payload: &zenoh::bytes::ZBytes) {
+        let bytes = payload.to_bytes().into_owned();
+        let opened = lock(keys).open_sample(keyexpr, bytes, &self.spec.owner, self.spec.applied);
+        match opened {
+            Ok(sample) => self.record_one(sample),
+            Err(err) => debug!(channel = %self.spec.channel, %err, "history sample dropped"),
         }
     }
 
-    fn record_one(&self, sample: crate::wire::Sample, depth: usize) {
+    fn record_one(&self, sample: crate::wire::Sample) {
         if sample.channel != self.spec.channel || self.spec.check_payload(&sample.payload).is_err()
         {
             return;
         }
+        // A forged future epoch can't reset the ring: only the session's.
+        if sample.epoch != Epoch(self.epoch.load(Ordering::Relaxed)) {
+            return;
+        }
+        let depth = self.depth;
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        if sample.epoch > state.epoch {
+        if sample.epoch != state.epoch {
             // A new epoch never seeds from an older one.
             *state = RingState {
                 epoch: sample.epoch,
@@ -590,8 +633,6 @@ impl Ring {
                 samples: VecDeque::with_capacity(depth.min(1024)),
                 gaps: VecDeque::new(),
             };
-        } else if sample.epoch < state.epoch {
-            return;
         }
         let last = state.samples.back().map(|s| s.seq);
         match last {
@@ -636,6 +677,7 @@ impl Ring {
             payload: Bytes::new(),
             truncated: false,
             gaps: Vec::new(),
+            request_id: 0,
         };
         if query.epoch != state.epoch {
             // Another epoch's samples are never served: an empty page says
@@ -714,10 +756,14 @@ struct HistoryStore {
     depth: usize,
     clock: Option<Arc<dyn Clock>>,
     rings: Arc<RwLock<HashMap<StreamKey, Arc<Ring>>>>,
+    /// Requesters' keys: a query is sealed under its sender's `k_up`.
+    peers: SharedPeers,
 }
 
 impl HistoryStore {
-    /// Replies to an `h/{robot}/{path}` query with its pages.
+    /// Replies to an `h/{robot}/{path}` query, sealed under the `k_up` of a
+    /// generation in effect, with its pages sealed under that generation's
+    /// `k_down` (§8.6). Anything else is dropped unanswered.
     fn serve(&self, keys: &SessionKeys, query: &Query) {
         let key = query.key_expr().as_str();
         let Some((robot, path)) = keys.history_of(key) else {
@@ -731,26 +777,65 @@ impl HistoryStore {
         let Some(ring) = ring else {
             return;
         };
-        let request = match query.payload() {
-            Some(payload) => match codec::decode_history_query(&payload.to_bytes()) {
-                Ok(request) => request,
-                Err(err) => {
-                    warn!(%key, %err, "undecodable history query");
-                    return;
-                }
-            },
-            None => HistoryQuery::default(),
+        let mut raw = query
+            .payload()
+            .map(|p| p.to_bytes().into_owned())
+            .unwrap_or_default();
+        let Some(peer) = Header::parse(&raw).ok().and_then(|h| {
+            let peers = self.peers.read().ok()?;
+            let peer = peers.by_key.get(&h.key_id)?;
+            peers
+                .current
+                .get(&peer.participant)
+                .filter(|current| Arc::ptr_eq(current, peer))
+                .cloned()
+        }) else {
+            debug!(%key, "a history query not sealed by a member refused");
+            return;
+        };
+        // TODO: every member may read every stream until per-device read
+        // permission lands (step 8); check it here, before producing anything.
+        let request = match lock(&peer.up).open(key, &mut raw) {
+            Ok(opened) if opened.header.kind == Kind::HistoryQuery => {
+                codec::decode_history_query(opened.body)
+            }
+            Ok(opened) => {
+                debug!(%key, kind = ?opened.header.kind, "not a history query");
+                return;
+            }
+            Err(err) => {
+                debug!(%key, %err, "history query dropped");
+                return;
+            }
+        };
+        let request = match request {
+            Ok(request) => request,
+            Err(err) => {
+                warn!(%key, %err, "undecodable history query");
+                return;
+            }
         };
         let now = self.clock.as_ref().map_or(0, |c| c.now_ns());
         for page in ring.pages(&request, self.depth, now) {
-            let frame = match codec::encode_batch(&page) {
-                Ok(encoded) => frame_zbytes(encoded),
+            let page = SampleBatch {
+                request_id: request.request_id,
+                ..page
+            };
+            let sealed = codec::encode_batch(&page)
+                .map_err(|err| err.to_string())
+                .and_then(|encoded| {
+                    lock(&peer.down)
+                        .seal(Kind::HistoryPage, key, &encoded.to_vec())
+                        .map_err(|err| err.to_string())
+                });
+            let sealed = match sealed {
+                Ok(sealed) => sealed,
                 Err(err) => {
                     warn!(%key, %err, "history page");
                     return;
                 }
             };
-            if let Err(err) = query.reply(key, frame).wait() {
+            if let Err(err) = query.reply(key, sealed).wait() {
                 warn!(%key, %err, "history reply failed");
                 return;
             }
@@ -814,6 +899,40 @@ struct HostActor {
     events: broadcast::Sender<AuthorityEvent>,
     store: HistoryStore,
     recorded: HashMap<StreamKey, Recorded>,
+    /// The host's own receivers of every stream key: what the history
+    /// store opens samples with.
+    host_keys: Arc<Mutex<Keyring>>,
+    /// Grants waiting for their robots' keys.
+    waiting: HashMap<GrantId, Waiting>,
+    /// Grants a participant's end failed, still to answer.
+    failed: Vec<GrantId>,
+}
+
+/// A grant (or rebind) whose keys are on their way to its robots: the verb,
+/// what it was prepared against, and every query waiting for its answer.
+struct Waiting {
+    peer: Arc<Peer>,
+    request: crate::wire::Request,
+    token: LeaseToken,
+    epoch: Epoch,
+    robots: Vec<(ParticipantId, u32)>,
+    queries: Vec<Query>,
+}
+
+/// What the host does with a verb.
+enum Outcome {
+    /// Answer it now.
+    Reply(Result<(), CtlError>, Vec<Lease>, Vec<IssuedKey>),
+    /// A candidate sent something other than `Attach`: dropped unanswered.
+    Drop,
+    /// A grant waiting for its robots: answered once they acknowledged.
+    Deferred(GrantId),
+}
+
+impl Outcome {
+    fn refused(err: CtlError) -> Self {
+        Self::Reply(Err(err), Vec::new(), Vec::new())
+    }
 }
 
 impl HostActor {
@@ -845,6 +964,7 @@ impl HostActor {
                     Ok(query) => {
                         self.on_ctl(query).await;
                         self.sync_history().await;
+                        self.sync_streams();
                     }
                     Err(_) => break,
                 },
@@ -880,8 +1000,20 @@ impl HostActor {
                         }
                     }
                     self.health_tx.send_replace(rows);
+                    // A missed acknowledgement never detaches anyone: the
+                    // step waits, and says for whom (§8.5).
+                    for step in self.auth.issuer().pending() {
+                        info!(
+                            robot = %step.robot,
+                            version = step.version,
+                            stage = step.stage,
+                            waiting = ?step.waiting,
+                            "stream key rotation pending",
+                        );
+                    }
                 }
             }
+            self.flush_keys().await;
         }
         debug!(session = %self.config.session, "session host stopped");
     }
@@ -931,15 +1063,17 @@ impl HostActor {
                     gaps: VecDeque::new(),
                 }),
                 spec: spec.clone(),
+                epoch: self.epoch.clone(),
+                depth: self.store.depth,
             });
-            let depth = self.store.depth;
+            let data = self.keys.data(&spec.owner, &spec.path);
             let subscriber = self
                 .transport
                 .for_priority(spec.priority)
-                .declare_subscriber(self.keys.data(&spec.owner, &spec.path))
+                .declare_subscriber(data.clone())
                 .callback({
-                    let ring = ring.clone();
-                    move |sample| ring.record(sample.payload(), depth)
+                    let (ring, keys) = (ring.clone(), self.host_keys.clone());
+                    move |sample| ring.record(&keys, &data, sample.payload())
                 })
                 .await;
             match subscriber {
@@ -1047,6 +1181,7 @@ impl HostActor {
                     state: self.snapshot(),
                     leases: Vec::new(),
                     request_id: 0,
+                    keys: Vec::new(),
                 };
                 Self::reply(query, codec::encode_reply(&reply)).await;
                 return;
@@ -1057,8 +1192,19 @@ impl HostActor {
         let admitted = match lock(&peer.requests).admit(request_id) {
             Admit::Done(reply) => Some(reply.clone()),
             Admit::Expired => Some(Vec::new()),
+            Admit::Pending => None,
             Admit::Execute => None,
         };
+        // A retry of a grant still waiting for its keys joins it.
+        if admitted.is_none()
+            && let Some(waiting) = self
+                .waiting
+                .values_mut()
+                .find(|w| Arc::ptr_eq(&w.peer, &peer) && w.request.request_id == request_id)
+        {
+            waiting.queries.push(query);
+            return;
+        }
         let encoded = match admitted {
             // A retry of an answered request: the same reply, sealed afresh.
             Some(cached) if !cached.is_empty() => cached,
@@ -1068,21 +1214,28 @@ impl HostActor {
                     format!("request {request_id} is below the reply window: re-read the state"),
                 )),
                 Vec::new(),
+                Vec::new(),
                 request_id,
             ),
             None => {
                 let outcome = match request {
                     Ok(request) => self.execute(&peer, request).await,
-                    Err(err) => Some((
-                        Err(CtlError::new(CtlStatus::InvalidRequest, err)),
-                        Vec::new(),
-                    )),
+                    Err(err) => Outcome::refused(CtlError::new(CtlStatus::InvalidRequest, err)),
                 };
-                // A verb a candidate may not send yet is dropped unanswered.
-                let Some((result, leases)) = outcome else {
-                    return;
+                let (result, leases, keys) = match outcome {
+                    // A verb a candidate may not send yet is dropped
+                    // unanswered.
+                    Outcome::Drop => return,
+                    Outcome::Deferred(id) => {
+                        lock(&peer.requests).begin(request_id);
+                        if let Some(waiting) = self.waiting.get_mut(&id) {
+                            waiting.queries.push(query);
+                        }
+                        return;
+                    }
+                    Outcome::Reply(result, leases, keys) => (result, leases, keys),
                 };
-                let encoded = self.answer(result, leases, request_id);
+                let encoded = self.answer(result, leases, keys, request_id);
                 lock(&peer.requests).complete(request_id, encoded.clone());
                 encoded
             }
@@ -1097,24 +1250,16 @@ impl HostActor {
         }
     }
 
-    /// Applies a verb from `peer`. `None`: a candidate sent something other
-    /// than `Attach`, which is dropped.
-    async fn execute(
-        &mut self,
-        peer: &Arc<Peer>,
-        request: crate::wire::Request,
-    ) -> Option<(Result<(), CtlError>, Vec<Lease>)> {
+    /// Applies a verb from `peer`.
+    async fn execute(&mut self, peer: &Arc<Peer>, request: crate::wire::Request) -> Outcome {
         let now = self.now();
         if request.from != peer.participant {
-            return Some((
-                Err(CtlError::new(
-                    CtlStatus::Unauthenticated,
-                    format!(
-                        "sealed under {}'s keys but sent as {}",
-                        peer.participant, request.from
-                    ),
-                )),
-                Vec::new(),
+            return Outcome::refused(CtlError::new(
+                CtlStatus::Unauthenticated,
+                format!(
+                    "sealed under {}'s keys but sent as {}",
+                    peer.participant, request.from
+                ),
             ));
         }
         let in_effect = self
@@ -1125,17 +1270,33 @@ impl HostActor {
             .is_some_and(|current| Arc::ptr_eq(&current, peer));
         if !in_effect {
             if !matches!(request.command, Command::Attach { .. }) {
-                return None;
+                return Outcome::Drop;
             }
             let Identity { device, generation } = &peer.identity;
             if let Err(err) = self
                 .auth
                 .may_take_effect(&peer.participant, device, *generation)
             {
-                return Some((Err(err), Vec::new()));
+                return Outcome::refused(err);
             }
         }
         debug!(from = %request.from, command = ?request.command, "ctl");
+        let generation = peer.identity.generation;
+        match &request.command {
+            Command::KeysAck(ack) => {
+                self.auth
+                    .issuer()
+                    .ack(&peer.participant, generation, ack, now);
+            }
+            Command::GetKeys => {
+                let keys = self.auth.issuer().get_keys(&peer.participant, generation);
+                return Outcome::Reply(Ok(()), Vec::new(), keys);
+            }
+            Command::GrantLease { .. } | Command::DeclareBinding { .. } => {
+                return self.mint(peer, request).await;
+            }
+            _ => {}
+        }
         let result = self.authority.apply_from(request, &peer.identity, now);
         match result {
             Ok(Accepted { leases, events }) => {
@@ -1143,21 +1304,303 @@ impl HostActor {
                     self.take_effect(peer);
                 }
                 self.record(events).await;
-                Some((Ok(()), leases))
+                Outcome::Reply(Ok(()), leases, Vec::new())
             }
             Err(err) => {
                 info!(status = ?err.status, "ctl refused: {}", err.message);
-                Some((Err(err), Vec::new()))
+                Outcome::refused(err)
             }
         }
     }
 
+    /// A verb that may mint a lease token (a grant, a rebind): tried on a
+    /// copy of the authority with a reserved token. Minting nothing, it is
+    /// applied at once; otherwise its keys go to its robots and it waits
+    /// (§8.5 Grant).
+    async fn mint(&mut self, peer: &Arc<Peer>, request: crate::wire::Request) -> Outcome {
+        let now = self.now();
+        let token = self.authority.reserve_token();
+        let mut trial = self.authority.clone();
+        let applied = match trial.apply_minting(request.clone(), &peer.identity, now, token) {
+            Ok(applied) => applied,
+            Err(err) => {
+                info!(status = ?err.status, "ctl refused: {}", err.message);
+                return Outcome::refused(err);
+            }
+        };
+        let minted: Vec<Lease> = trial
+            .leases()
+            .filter(|l| l.token == token)
+            .cloned()
+            .collect();
+        if minted.is_empty() {
+            self.authority = trial;
+            self.record(applied.events).await;
+            return Outcome::Reply(Ok(()), applied.leases, Vec::new());
+        }
+        let parts: Vec<GrantPart> = minted
+            .iter()
+            .filter_map(|lease| {
+                let part = self.authority.part(lease.channel)?;
+                Some(GrantPart {
+                    robot: part.owner.clone(),
+                    channel: lease.channel,
+                    priority: part.priority,
+                    security: self.authority.security(lease.channel),
+                })
+            })
+            .collect();
+        let mut robots: Vec<(ParticipantId, u32)> = Vec::new();
+        for part in &parts {
+            if robots.iter().all(|(r, _)| r != &part.robot) {
+                let generation = self
+                    .authority
+                    .participant(&part.robot)
+                    .map_or(0, |p| p.generation);
+                robots.push((part.robot.clone(), generation));
+            }
+        }
+        let grant = GrantRequest {
+            holder: peer.participant.clone(),
+            holder_generation: peer.identity.generation,
+            device: peer.identity.device.clone(),
+            class: minted[0].priority,
+            token,
+            parts,
+        };
+        match self.auth.issuer().prepare_grant(&mut OsRng, grant, now) {
+            Ok(Prepared { id, evicted }) => {
+                for victim in evicted {
+                    let preempted = CtlError::new(
+                        CtlStatus::LeaseBusy,
+                        "preempted: a higher class's grant took this robot's last pending slot",
+                    );
+                    self.finish_grant(victim, Err(preempted)).await;
+                }
+                self.waiting.insert(
+                    id,
+                    Waiting {
+                        peer: peer.clone(),
+                        request,
+                        token,
+                        epoch: self.authority.epoch(),
+                        robots,
+                        queries: Vec::new(),
+                    },
+                );
+                Outcome::Deferred(id)
+            }
+            Err(err) => {
+                info!(status = ?err.status, "grant refused: {}", err.message);
+                Outcome::refused(err)
+            }
+        }
+    }
+
+    /// Grant `id`'s robots all installed its keys: re-check it against the
+    /// current state (the holder's and robots' generations, the epoch, and
+    /// every grant check) and commit it, or refuse it.
+    async fn commit_grant(
+        &mut self,
+        id: GrantId,
+    ) -> Result<(Vec<Lease>, Vec<IssuedKey>), CtlError> {
+        let changed = |why: &str| {
+            CtlError::new(
+                CtlStatus::StaleEpoch,
+                format!("{why} while the lease's keys were delivered"),
+            )
+        };
+        let Some(waiting) = self.waiting.get(&id) else {
+            return Err(changed("the grant ended"));
+        };
+        let holder_current = self
+            .peers
+            .read()
+            .ok()
+            .and_then(|p| p.current.get(&waiting.peer.participant).cloned())
+            .is_some_and(|current| Arc::ptr_eq(&current, &waiting.peer));
+        let robots_current = waiting.robots.iter().all(|(robot, generation)| {
+            self.authority
+                .participant(robot)
+                .is_some_and(|p| p.generation == *generation)
+        });
+        if !holder_current || !robots_current {
+            self.auth.issuer().refuse_grant(id);
+            return Err(changed("a holder or robot restarted"));
+        }
+        if waiting.epoch != self.authority.epoch() {
+            self.auth.issuer().refuse_grant(id);
+            return Err(changed("the epoch changed"));
+        }
+        let (request, identity, token) = (
+            waiting.request.clone(),
+            waiting.peer.identity.clone(),
+            waiting.token,
+        );
+        let mut trial = self.authority.clone();
+        let applied = match trial.apply_minting(request, &identity, self.now(), token) {
+            Ok(applied) => applied,
+            Err(err) => {
+                self.auth.issuer().refuse_grant(id);
+                return Err(err);
+            }
+        };
+        let minted: BTreeMap<ChannelId, ()> = trial
+            .leases()
+            .filter(|l| l.token == token)
+            .map(|l| (l.channel, ()))
+            .collect();
+        let prepared: BTreeMap<ChannelId, ()> = self
+            .auth
+            .issuer()
+            .grant(id)
+            .map(|g| g.parts.iter().map(|p| (p.channel, ())).collect())
+            .unwrap_or_default();
+        if minted != prepared {
+            self.auth.issuer().refuse_grant(id);
+            return Err(changed("the parts it covers changed"));
+        }
+        let Some(committed) = self.auth.issuer().commit_grant(id) else {
+            return Err(changed("the grant ended"));
+        };
+        for (channel, key_id) in &committed.key_ids {
+            trial.set_key_id(*channel, *key_id);
+        }
+        let leases = applied
+            .leases
+            .iter()
+            .map(|l| trial.lease(l.channel).cloned().unwrap_or_else(|| l.clone()))
+            .collect();
+        self.authority = trial;
+        self.record(applied.events).await;
+        Ok((leases, committed.keys))
+    }
+
+    /// Answers every query waiting on grant `id`, once.
+    async fn finish_grant(
+        &mut self,
+        id: GrantId,
+        outcome: Result<(Vec<Lease>, Vec<IssuedKey>), CtlError>,
+    ) {
+        let Some(waiting) = self.waiting.remove(&id) else {
+            return;
+        };
+        let request_id = waiting.request.request_id;
+        let encoded = match outcome {
+            Ok((leases, keys)) => self.answer(Ok(()), leases, keys, request_id),
+            Err(err) => {
+                info!(status = ?err.status, "grant refused: {}", err.message);
+                self.answer(Err(err), Vec::new(), Vec::new(), request_id)
+            }
+        };
+        lock(&waiting.peer.requests).complete(request_id, encoded.clone());
+        let key = self.keys.ctl();
+        for query in waiting.queries {
+            let sealed = lock(&waiting.peer.down).seal(Kind::CtlReply, &key, &encoded);
+            match sealed {
+                Ok(sealed) => Self::reply(query, sealed).await,
+                Err(err) => warn!(%err, "grant reply not sealed"),
+            }
+        }
+    }
+
+    /// Keeps one stream key slot per declared part (§8.4).
+    fn sync_streams(&mut self) {
+        let streams: Vec<(ParticipantId, Vec<ChannelId>, crate::wire::Security)> = self
+            .authority
+            .parts()
+            .map(|part| {
+                let channels = [Some(part.channel), part.applied_channel]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                (
+                    part.owner.clone(),
+                    channels,
+                    self.authority.security(part.channel),
+                )
+            })
+            .collect();
+        let now = self.now();
+        if let Err(err) = self.auth.issuer().sync_streams(&mut OsRng, &streams, now) {
+            warn!(%err, "stream keys");
+        }
+    }
+
+    /// Sends what the key schedule has due: the host's own receivers first,
+    /// then every member's delivery; then decides the grants whose robots
+    /// answered (or ran out of time) and answers those a participant's end
+    /// failed.
+    async fn flush_keys(&mut self) {
+        let now = self.now();
+        while let Some(delivery) = self.auth.issuer().host_delivery() {
+            let ack = lock(&self.host_keys).apply(&delivery, now);
+            self.auth.issuer().host_ack(&ack, now);
+        }
+        for (who, delivery) in self.auth.issuer().deliveries(now) {
+            let Some(peer) = self
+                .peers
+                .read()
+                .ok()
+                .and_then(|p| p.current.get(&who).cloned())
+            else {
+                continue;
+            };
+            let key = self.keys.participant_keys(&who);
+            let sealed = lock(&peer.down).seal(
+                Kind::KeyDelivery,
+                &key,
+                &codec::encode_key_delivery(&delivery),
+            );
+            let sent = match sealed {
+                Ok(sealed) => self
+                    .transport
+                    .control()
+                    .put(key, sealed)
+                    .priority(CONTROL_PRIORITY)
+                    .congestion_control(CONTROL_CONGESTION)
+                    .express(true)
+                    .await
+                    .map_err(|err| err.to_string()),
+                Err(err) => Err(err.to_string()),
+            };
+            if let Err(err) = sent {
+                warn!(participant = %who, %err, "key delivery failed");
+            }
+        }
+        for id in std::mem::take(&mut self.failed) {
+            let gone = CtlError::new(CtlStatus::NotAttached, "the holder or a robot left");
+            self.finish_grant(id, Err(gone)).await;
+        }
+        let decided = self.auth.issuer().ready_grants(now);
+        for (id, ready) in decided {
+            let outcome = match ready {
+                Ok(()) => self.commit_grant(id).await,
+                Err(err) => {
+                    self.auth.issuer().refuse_grant(id);
+                    Err(err)
+                }
+            };
+            self.finish_grant(id, outcome).await;
+        }
+    }
+
     /// `peer`'s `Attach` was accepted: it is the generation in effect, and
-    /// every older one of its participant is dropped.
+    /// every older one of its participant is dropped. It gets the stream
+    /// keys it reads, and a robot's streams rotate to it.
     fn take_effect(&mut self, peer: &Arc<Peer>) {
         let Identity { device, generation } = &peer.identity;
         self.auth
             .take_effect(&peer.participant, device, *generation);
+        let now = self.now();
+        match self
+            .auth
+            .issuer()
+            .attach(&mut OsRng, &peer.participant, *generation, now)
+        {
+            Ok(failed) => self.failed.extend(failed),
+            Err(err) => warn!(participant = %peer.participant, %err, "keys"),
+        }
         if let Ok(mut peers) = self.peers.write() {
             peers.by_key.retain(|_, p| {
                 p.participant != peer.participant || p.identity.generation >= *generation
@@ -1166,13 +1609,21 @@ impl HostActor {
         }
     }
 
-    /// The encoded reply: the result and the snapshot right after it.
-    fn answer(&self, result: Result<(), CtlError>, leases: Vec<Lease>, request_id: u64) -> Vec<u8> {
+    /// The encoded reply: the result, the snapshot right after it and the
+    /// caller's keys.
+    fn answer(
+        &self,
+        result: Result<(), CtlError>,
+        leases: Vec<Lease>,
+        keys: Vec<IssuedKey>,
+        request_id: u64,
+    ) -> Vec<u8> {
         codec::encode_reply(&CtlReply {
             result,
             state: self.snapshot(),
             leases,
             request_id,
+            keys,
         })
     }
 
@@ -1273,6 +1724,8 @@ impl HostActor {
                 }
                 AuthorityEvent::Detached { participant, .. } => {
                     self.links.remove(participant);
+                    let failed = self.auth.issuer().detach(participant);
+                    self.failed.extend(failed);
                     // Detaching ends the generation: its keys go with it.
                     if let Ok(mut peers) = self.peers.write()
                         && let Some(peer) = peers.current.remove(participant)
@@ -1285,6 +1738,11 @@ impl HostActor {
             // Having no subscriber is fine.
             let _ = self.events.send(event);
         }
+        let authority = &self.authority;
+        self.auth
+            .issuer()
+            .end_tokens(|token| authority.leases().any(|l| l.token == token));
+        self.sync_streams();
         self.epoch
             .store(self.authority.epoch().0, Ordering::Relaxed);
         self.publish().await;
@@ -1427,10 +1885,12 @@ mod tests {
                 samples: VecDeque::new(),
                 gaps: VecDeque::new(),
             }),
+            epoch: Arc::new(AtomicU64::new(2)),
+            depth: 6,
         }
     }
 
-    fn put(ring: &Ring, epoch: u64, seq: u64, depth: usize) {
+    fn put(ring: &Ring, epoch: u64, seq: u64) {
         let sample = Sample {
             channel: ChannelId(3),
             epoch: Epoch(epoch),
@@ -1441,7 +1901,7 @@ mod tests {
             payload: Bytes::from(seq.to_le_bytes().to_vec()),
             applied: None,
         };
-        ring.record(&frame_zbytes(codec::encode_sample(&sample)), depth);
+        ring.record_one(sample);
     }
 
     fn seqs(pages: &[SampleBatch]) -> Vec<u64> {
@@ -1455,14 +1915,16 @@ mod tests {
     fn the_store_pages_by_epoch_watermark_and_limit_with_gaps_and_truncation() {
         let ring = ring(vec![FieldSpec::new("x", crate::wire::DType::U64, &[])]);
         for seq in [1, 2, 3, 6, 7, 8, 9, 10] {
-            put(&ring, 2, seq, 6);
+            put(&ring, 2, seq);
         }
-        put(&ring, 1, 11, 6);
+        put(&ring, 1, 11);
+        put(&ring, 3, 11);
         let query = |after, until, limit| HistoryQuery {
             epoch: Epoch(2),
             after_seq: after,
             until_seq: until,
             limit,
+            request_id: 0,
         };
         // Kept: 3, 6..=10 (depth 6), with 4..=5 known missing.
         let pages = ring.pages(&query(0, None, None), 1024, 0);
@@ -1479,8 +1941,10 @@ mod tests {
         let pages = ring.pages(&HistoryQuery::default(), 1024, 0);
         assert!(pages[0].samples.is_empty());
         assert_eq!(pages[0].epoch, Epoch(2));
-        // A new epoch empties the ring; it never seeds from the old one.
-        put(&ring, 3, 1, 6);
+        // Only the session's epoch is kept: a new one empties the ring, and
+        // it never seeds from the old one.
+        ring.epoch.store(3, Ordering::Relaxed);
+        put(&ring, 3, 1);
         let pages = ring.pages(
             &HistoryQuery {
                 epoch: Epoch(3),
@@ -1495,9 +1959,11 @@ mod tests {
 
     #[test]
     fn large_ranges_split_into_pages() {
-        let ring = ring(vec![FieldSpec::new("x", crate::wire::DType::U64, &[])]);
+        let mut ring = ring(vec![FieldSpec::new("x", crate::wire::DType::U64, &[])]);
+        ring.depth = 1024;
+        ring.epoch.store(1, Ordering::Relaxed);
         for seq in 1..=600 {
-            put(&ring, 1, seq, 1024);
+            put(&ring, 1, seq);
         }
         let pages = ring.pages(
             &HistoryQuery {

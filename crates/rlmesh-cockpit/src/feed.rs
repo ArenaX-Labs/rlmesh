@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 
+use rlmesh_session::crypto::sealed::unverified_body;
 use rlmesh_session::transport::{TrafficClass, payload_bytes};
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{ChannelId, StreamSpec};
@@ -299,7 +300,13 @@ async fn watch_parts(
                     .declare_subscriber(key)
                     .callback(move |sample| {
                         let receive_ns = clock.now_ns();
-                        match codec::decode_chunk(payload_bytes(sample.payload())) {
+                        // No command key here: a signed chunk is shown as
+                        // sent, unverified; a sealed one can't be read.
+                        let bytes = payload_bytes(sample.payload());
+                        let Some(body) = unverified_body(&bytes) else {
+                            return;
+                        };
+                        match codec::decode_chunk(bytes.slice(body)) {
                             Ok(chunk) => data.send(Input::Chunk { chunk, receive_ns }),
                             Err(err) => debug!(%err, "undecodable chunk"),
                         }

@@ -279,6 +279,7 @@ impl Inputs {
                         after_seq,
                         until_seq: Some(until_seq),
                         limit: None,
+                        request_id: 0,
                     },
                 )
                 .await?;

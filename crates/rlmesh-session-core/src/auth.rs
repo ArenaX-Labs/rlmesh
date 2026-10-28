@@ -14,7 +14,13 @@
 //!   name → device bindings and which generation of each participant is in
 //!   effect;
 //! - the host's per-generation [`RequestWindow`]: request ids and the
-//!   reply cache that makes a retried verb idempotent.
+//!   reply cache that makes a retried verb idempotent;
+//! - the keys the host delivers besides the handshake's ([`keyring`] on
+//!   each holder, [`issuer`] at the host, §8.4, §8.5): a lease's `k_cmd` and
+//!   `k_obs`, a stream's `k_stream`. A [`Link`] holds its participant's
+//!   [`Keyring`], installs what the host delivers (`KeyDelivery`, the keys a
+//!   reply carries), and seals and opens chunks, samples, history and
+//!   lockstep under them.
 //!
 //! What a participant sends under its keys, the host accepts only from the
 //! generation in effect: a handshake makes a candidate, and the candidate
@@ -23,11 +29,21 @@
 
 use alloc::collections::BTreeMap;
 
+use bytes::Bytes;
 use zeroize::{Zeroize, Zeroizing};
+
+pub mod address;
+pub mod issuer;
+pub mod keyring;
+
+pub use address::AddressKey;
+pub use issuer::KeyIssuer;
+pub use keyring::{KeyError, Keyring, StreamWindows};
 
 use crate::crypto::StaticKeypair;
 use crate::crypto::handshake::{self, HandshakeError, IkInitiator, IkResponder};
 use crate::crypto::lp::kdf;
+use crate::crypto::sealed::{HEADER_LEN, Header, TAG_LEN};
 use crate::crypto::{
     Kind, OpenError, Rng, RngError, SealError, SealReceiver, SealSender, SignedError,
     SignedReceiver, SignedSender,
@@ -38,8 +54,9 @@ use crate::wire::error::WireError;
 use crate::wire::heartbeat::{Heartbeat, HeartbeatEcho};
 use crate::wire::tick::VirtualTick;
 use crate::wire::{
-    AuthoritySnapshot, Command, CtlError, CtlReply, CtlStatus, Epoch, HandshakeAccept,
-    HandshakeRequest, ParticipantId, PriorityClass, Request,
+    ActionChunk, AuthoritySnapshot, Command, CtlError, CtlReply, CtlStatus, Epoch, HandshakeAccept,
+    HandshakeRequest, HistoryQuery, KeysAck, LeaseToken, LockstepRequest, LockstepResponse,
+    ParticipantId, PriorityClass, Request, Sample, SampleBatch, SampleMeta,
 };
 
 /// The device of every process holding an embedded host's address.
@@ -186,6 +203,17 @@ pub enum LinkError {
     /// It authenticated but did not decode.
     #[error(transparent)]
     Wire(#[from] WireError),
+    /// A delivered key's message: unknown key, out of scope, or none to
+    /// send under.
+    #[error(transparent)]
+    Key(#[from] KeyError),
+    /// A history page answering another query.
+    #[error("a page for history query {0}, not this one")]
+    OtherQuery(u64),
+    /// Request `0` is still unanswered, and a new id would put it below the
+    /// host's window (§8.6).
+    #[error("request {0} is still unanswered: {REQUEST_WINDOW} requests are outstanding")]
+    Outstanding(u64),
 }
 
 /// What a reply on `ctl` was ([`Link::reply`]).
@@ -237,19 +265,244 @@ pub struct Link {
     down: SealReceiver,
     host: SignedReceiver,
     last_request: u64,
+    /// Request ids sent and not yet answered: a caller that timed out
+    /// leaves its id here, to retry until answered (§8.6).
+    unanswered: alloc::collections::BTreeSet<u64>,
+    last_history: u64,
+    keyring: Keyring,
 }
 
 impl Link {
     /// The link a completed handshake as `participant` left.
     pub fn new(participant: ParticipantId, attached: Attached) -> Self {
         Self {
+            keyring: Keyring::new(Some(participant.clone()), attached.accept.generation),
             participant,
             accept: attached.accept,
             up: attached.up,
             down: attached.down,
             host: attached.host,
             last_request: 0,
+            unanswered: alloc::collections::BTreeSet::new(),
+            last_history: 0,
         }
+    }
+
+    /// The keys the host delivered to this generation.
+    pub fn keyring(&self) -> &Keyring {
+        &self.keyring
+    }
+
+    /// The keys, for two-phase sealing and opening of large samples
+    /// ([`Keyring::begin_sample`], [`Keyring::begin_open_sample`]).
+    pub fn keyring_mut(&mut self) -> &mut Keyring {
+        &mut self.keyring
+    }
+
+    /// Opens a `KeyDelivery` on `keyexpr` (`p/{self}/keys`) in place and
+    /// applies it at `now_ns` (this participant's clock): the `KeysAck` to
+    /// send.
+    ///
+    /// # Errors
+    /// [`LinkError`]: it is dropped.
+    pub fn keys(
+        &mut self,
+        keyexpr: &str,
+        msg: &mut [u8],
+        now_ns: i64,
+    ) -> Result<KeysAck, LinkError> {
+        let opened = self.down.open(keyexpr, msg)?;
+        if opened.header.kind != Kind::KeyDelivery {
+            return Err(OpenError::WrongKind(opened.header.kind).into());
+        }
+        let delivery = codec::decode_key_delivery(opened.body)?;
+        Ok(self.keyring.apply(&delivery, now_ns))
+    }
+
+    /// Takes a newer authority snapshot, at `now_ns`: lease keys whose
+    /// token ended go, and every key once a newer generation took over.
+    pub fn observe(&mut self, snapshot: &AuthoritySnapshot, now_ns: i64) {
+        self.keyring.observe(snapshot, now_ns);
+    }
+
+    /// Seals `chunk` for `robot` on `keyexpr` under its lease's `k_cmd`.
+    ///
+    /// # Errors
+    /// [`LinkError::Key`] without that key.
+    pub fn seal_chunk(
+        &mut self,
+        keyexpr: &str,
+        robot: &ParticipantId,
+        chunk: &ActionChunk,
+    ) -> Result<Vec<u8>, LinkError> {
+        Ok(self.keyring.seal_chunk(keyexpr, robot, chunk)?)
+    }
+
+    /// Opens a chunk to this robot on `keyexpr`: under a `k_cmd` whose part,
+    /// token and sender match it.
+    ///
+    /// # Errors
+    /// [`LinkError::Key`]: it is dropped.
+    pub fn open_chunk(&mut self, keyexpr: &str, msg: Vec<u8>) -> Result<ActionChunk, LinkError> {
+        Ok(self.keyring.open_chunk(keyexpr, msg)?)
+    }
+
+    /// Seals one of this robot's samples (an `_applied` entry when
+    /// `applied`) on `keyexpr`.
+    ///
+    /// # Errors
+    /// [`LinkError::Key`] before the stream's key arrived.
+    pub fn seal_sample(
+        &mut self,
+        keyexpr: &str,
+        sample: &Sample,
+        applied: bool,
+    ) -> Result<Vec<u8>, LinkError> {
+        Ok(self.keyring.seal_sample(keyexpr, sample, applied)?)
+    }
+
+    /// Opens a sample of `robot` on `keyexpr`.
+    ///
+    /// # Errors
+    /// [`LinkError::Key`]: it is dropped.
+    pub fn open_sample(
+        &mut self,
+        keyexpr: &str,
+        msg: Vec<u8>,
+        robot: &ParticipantId,
+        applied: bool,
+    ) -> Result<Sample, LinkError> {
+        Ok(self.keyring.open_sample(keyexpr, msg, robot, applied)?)
+    }
+
+    /// Seals a history query on `keyexpr` (`h/{robot}/{path}`) under
+    /// `k_up`, with a new request id: the id and the bytes.
+    ///
+    /// # Errors
+    /// [`LinkError::Seal`].
+    pub fn history_query(
+        &mut self,
+        keyexpr: &str,
+        query: HistoryQuery,
+    ) -> Result<(u64, Vec<u8>), LinkError> {
+        let request_id = self.last_history + 1;
+        let query = HistoryQuery {
+            request_id,
+            ..query
+        };
+        let sealed = self.up.seal(
+            Kind::HistoryQuery,
+            keyexpr,
+            &codec::encode_history_query(&query),
+        )?;
+        self.last_history = request_id;
+        Ok((request_id, sealed))
+    }
+
+    /// Opens one reply to history query `request_id`, received on
+    /// `history_key`: the host's page under `k_down`, or an event stream's
+    /// last sample its robot sealed on `data_key` under the stream's key (a
+    /// page of one).
+    ///
+    /// # Errors
+    /// [`LinkError`]: it is dropped.
+    pub fn history_page(
+        &mut self,
+        history_key: &str,
+        data_key: &str,
+        mut msg: Vec<u8>,
+        request_id: u64,
+        robot: &ParticipantId,
+    ) -> Result<SampleBatch, LinkError> {
+        let kind = Header::parse(&msg)?.kind;
+        if matches!(kind, Kind::Sample | Kind::Applied) {
+            let sample = self.open_sample(data_key, msg, robot, kind == Kind::Applied)?;
+            return Ok(SampleBatch {
+                channel: sample.channel,
+                epoch: sample.epoch,
+                publish_ns: sample.publish_ns,
+                samples: vec![SampleMeta {
+                    seq: sample.seq,
+                    capture_ns: sample.capture_ns,
+                    tick: sample.tick,
+                    applied: sample.applied,
+                }],
+                payload: sample.payload,
+                truncated: false,
+                gaps: Vec::new(),
+                request_id,
+            });
+        }
+        let opened = self.down.open(history_key, &mut msg)?;
+        if opened.header.kind != Kind::HistoryPage {
+            return Err(OpenError::WrongKind(opened.header.kind).into());
+        }
+        let end = msg.len() - TAG_LEN;
+        let page = codec::decode_batch(Bytes::from(msg).slice(HEADER_LEN..end))?;
+        if page.request_id != request_id {
+            return Err(LinkError::OtherQuery(page.request_id));
+        }
+        Ok(page)
+    }
+
+    /// Seals a lockstep request to `robot` under token `token` on
+    /// `keyexpr` (`l/{robot}`).
+    ///
+    /// # Errors
+    /// [`LinkError::Key`] without the lease's keys.
+    pub fn seal_lockstep_request(
+        &mut self,
+        keyexpr: &str,
+        robot: &ParticipantId,
+        token: LeaseToken,
+        request: &LockstepRequest,
+    ) -> Result<Vec<u8>, LinkError> {
+        Ok(self
+            .keyring
+            .seal_lockstep_request(keyexpr, robot, token, request)?)
+    }
+
+    /// Opens a lockstep request to this robot: it and its key's token.
+    ///
+    /// # Errors
+    /// [`LinkError::Key`]: it is dropped.
+    pub fn open_lockstep_request(
+        &mut self,
+        keyexpr: &str,
+        msg: Vec<u8>,
+    ) -> Result<(LockstepRequest, LeaseToken), LinkError> {
+        Ok(self.keyring.open_lockstep_request(keyexpr, msg)?)
+    }
+
+    /// Seals this robot's response under token `token`'s `k_obs`.
+    ///
+    /// # Errors
+    /// [`LinkError::Key`] without it.
+    pub fn seal_lockstep_response(
+        &mut self,
+        keyexpr: &str,
+        token: LeaseToken,
+        response: &LockstepResponse,
+    ) -> Result<Vec<u8>, LinkError> {
+        Ok(self
+            .keyring
+            .seal_lockstep_response(keyexpr, token, response)?)
+    }
+
+    /// Opens `robot`'s response under token `token`'s `k_obs`.
+    ///
+    /// # Errors
+    /// [`LinkError::Key`]: it is dropped.
+    pub fn open_lockstep_response(
+        &mut self,
+        keyexpr: &str,
+        msg: Vec<u8>,
+        robot: &ParticipantId,
+        token: LeaseToken,
+    ) -> Result<LockstepResponse, LinkError> {
+        Ok(self
+            .keyring
+            .open_lockstep_response(keyexpr, msg, robot, token)?)
     }
 
     /// What the host issued: generation, device, keys' ids, instance.
@@ -264,10 +517,12 @@ impl Link {
     }
 
     /// Seals `command`, sent from `epoch`, as a new request on `keyexpr`
-    /// (the session's `ctl`): its id and the bytes.
+    /// (the session's `ctl`): its id and the bytes. The id stays
+    /// unanswered until [`Self::reply`] takes its answer.
     ///
     /// # Errors
-    /// [`LinkError::Seal`].
+    /// [`LinkError::Seal`]; [`LinkError::Outstanding`] when an unanswered
+    /// id would fall below the host's window.
     pub fn request(
         &mut self,
         keyexpr: &str,
@@ -275,9 +530,20 @@ impl Link {
         command: &Command,
     ) -> Result<(u64, Vec<u8>), LinkError> {
         let id = self.last_request + 1;
+        if let Some(&oldest) = self.unanswered.first()
+            && id >= oldest + REQUEST_WINDOW
+        {
+            return Err(LinkError::Outstanding(oldest));
+        }
         let sealed = self.resend(keyexpr, id, epoch, command)?;
         self.last_request = id;
+        self.unanswered.insert(id);
         Ok((id, sealed))
+    }
+
+    /// Whether request `request_id` is still unanswered.
+    pub fn unanswered(&self, request_id: u64) -> bool {
+        self.unanswered.contains(&request_id)
     }
 
     /// Seals `command` again as request `request_id`, under a fresh `seq`:
@@ -305,6 +571,7 @@ impl Link {
 
     /// Takes a reply on `keyexpr` to request `request_id`: opened under
     /// `k_down` in place, or, failing that, an unsealed refusal as a hint.
+    /// An answer's keys are installed at `now_ns` (this participant's clock).
     ///
     /// # Errors
     /// [`LinkError`]: anything else, which is dropped.
@@ -313,12 +580,18 @@ impl Link {
         keyexpr: &str,
         msg: &mut [u8],
         request_id: u64,
+        now_ns: i64,
     ) -> Result<ReplyOutcome, LinkError> {
         let plain = codec::decode_reply(msg);
         match self.down.open(keyexpr, msg) {
             Ok(opened) => {
                 let reply = codec::decode_reply(opened.body)?;
+                self.unanswered.remove(&reply.request_id);
                 Ok(if reply.request_id == request_id {
+                    for key in &reply.keys {
+                        self.keyring.install(key, now_ns);
+                    }
+                    self.keyring.observe(&reply.state, now_ns);
                     ReplyOutcome::Answer(Box::new(reply))
                 } else {
                     ReplyOutcome::Other(reply.request_id)
@@ -492,7 +765,8 @@ pub struct HostAuth {
     /// Participant id → the generation in effect.
     current: BTreeMap<ParticipantId, u32>,
     last_generation: u32,
-    last_key_id: u32,
+    /// Every key besides the handshake's, and the one key-id counter.
+    issuer: KeyIssuer,
 }
 
 /// A handshake that went wrong for a reason the initiator should hear (an
@@ -520,8 +794,13 @@ impl HostAuth {
             names: BTreeMap::new(),
             current: BTreeMap::new(),
             last_generation: 0,
-            last_key_id: 0,
+            issuer: KeyIssuer::default(),
         }
+    }
+
+    /// The host's key schedule (§8.4, §8.5).
+    pub fn issuer(&mut self) -> &mut KeyIssuer {
+        &mut self.issuer
     }
 
     /// Accepts handshakes from the device with this static public key.
@@ -578,8 +857,8 @@ impl HostAuth {
             )
         };
         let generation = self.last_generation.checked_add(1).ok_or_else(exhausted)?;
-        let up_key_id = self.last_key_id.checked_add(1).ok_or_else(exhausted)?;
-        let down_key_id = up_key_id.checked_add(1).ok_or_else(exhausted)?;
+        let up_key_id = self.issuer.next_key_id().ok_or_else(exhausted)?;
+        let down_key_id = self.issuer.next_key_id().ok_or_else(exhausted)?;
         let accept = HandshakeAccept {
             generation,
             device: device.clone(),
@@ -595,7 +874,6 @@ impl HostAuth {
             .accept(&codec::encode_handshake_accept(&accept))
             .map_err(|err| refused(CtlStatus::Unauthenticated, err))?;
         self.last_generation = generation;
-        self.last_key_id = down_key_id;
         let (down, up) = keys.into_host(up_key_id, down_key_id);
         Ok((
             msg2,
@@ -668,18 +946,22 @@ pub enum Admit<'a, R> {
     Execute,
     /// A retry of an answered request: send this reply again.
     Done(&'a R),
+    /// A retry of a request still executing (a grant waiting for its
+    /// robots' keys): it joins that operation and gets its one reply.
+    Pending,
     /// Below the window: never applied (`EXPIRED`).
     Expired,
 }
 
 /// One participant generation's request ids (§8.6): a window of
-/// [`REQUEST_WINDOW`] ids from a floor, each absent or answered (with its
-/// reply). The host applies verbs one at a time, so no id is ever seen
-/// mid-execution.
+/// [`REQUEST_WINDOW`] ids from a floor, each absent, pending or answered
+/// (with its reply). The host applies verbs one at a time; only a grant
+/// stays pending past its turn, while its robots install its keys.
 #[derive(Debug)]
 pub struct RequestWindow<R> {
     floor: u64,
     done: BTreeMap<u64, R>,
+    pending: alloc::collections::BTreeSet<u64>,
 }
 
 impl<R> Default for RequestWindow<R> {
@@ -687,6 +969,7 @@ impl<R> Default for RequestWindow<R> {
         Self {
             floor: 1,
             done: BTreeMap::new(),
+            pending: alloc::collections::BTreeSet::new(),
         }
     }
 }
@@ -702,14 +985,24 @@ impl<R> RequestWindow<R> {
             self.floor = id - (REQUEST_WINDOW - 1);
             self.done = self.done.split_off(&self.floor);
         }
+        if self.pending.contains(&id) {
+            return Admit::Pending;
+        }
         match self.done.get(&id) {
             Some(reply) => Admit::Done(reply),
             None => Admit::Execute,
         }
     }
 
+    /// `id` is executing past its turn: retries join it until
+    /// [`complete`](Self::complete).
+    pub fn begin(&mut self, id: u64) {
+        self.pending.insert(id);
+    }
+
     /// Records the reply to `id`, which a retry gets again.
     pub fn complete(&mut self, id: u64, reply: R) {
+        self.pending.remove(&id);
         if id >= self.floor {
             self.done.insert(id, reply);
         }
@@ -774,17 +1067,18 @@ mod tests {
             state: snapshot.clone(),
             leases: Vec::new(),
             request_id,
+            keys: Vec::new(),
         };
         let mut sealed = candidate
             .down
             .seal(Kind::CtlReply, "ctl", &codec::encode_reply(&reply(id)))
             .expect("seal");
         assert_eq!(
-            link.reply("ctl", &mut sealed.clone(), id).expect("ours"),
+            link.reply("ctl", &mut sealed.clone(), id, 0).expect("ours"),
             ReplyOutcome::Answer(Box::new(reply(id)))
         );
         assert!(
-            link.reply("ctl", &mut sealed, id).is_err(),
+            link.reply("ctl", &mut sealed, id, 0).is_err(),
             "a replay is dropped"
         );
         // A retry keeps its id under a fresh seq.
@@ -792,6 +1086,29 @@ mod tests {
         let retried =
             codec::decode_request(candidate.up.open("ctl", &mut again).expect("open").body);
         assert_eq!(retried.expect("request").request_id, id);
+        // An unanswered id holds the window: 63 more ids, then no new one
+        // until it is answered.
+        assert!(!link.unanswered(id), "answered");
+        let (lost, _) = link.request("ctl", None, &Command::Arm).expect("seal");
+        for _ in 0..63 {
+            let (next, _) = link.request("ctl", None, &Command::Arm).expect("seal");
+            let mut sealed = candidate
+                .down
+                .seal(Kind::CtlReply, "ctl", &codec::encode_reply(&reply(next)))
+                .expect("seal");
+            link.reply("ctl", &mut sealed, next, 0).expect("answered");
+        }
+        assert!(matches!(
+            link.request("ctl", None, &Command::Arm),
+            Err(LinkError::Outstanding(id)) if id == lost
+        ));
+        let mut late = candidate
+            .down
+            .seal(Kind::CtlReply, "ctl", &codec::encode_reply(&reply(lost)))
+            .expect("seal");
+        link.reply("ctl", &mut late, lost, 0)
+            .expect("the retry's answer");
+        assert!(link.request("ctl", None, &Command::Arm).is_ok());
         // Anyone can answer `ctl`: a plain refusal is only a hint, a plain
         // answer nothing.
         let refusal = CtlError::new(CtlStatus::Unauthenticated, "superseded");
@@ -800,11 +1117,11 @@ mod tests {
             ..reply(id)
         });
         assert_eq!(
-            link.reply("ctl", &mut plain, id).expect("a hint"),
+            link.reply("ctl", &mut plain, id, 0).expect("a hint"),
             ReplyOutcome::Hint(refusal)
         );
         assert!(
-            link.reply("ctl", &mut codec::encode_reply(&reply(id)), id)
+            link.reply("ctl", &mut codec::encode_reply(&reply(id)), id, 0)
                 .is_err()
         );
 

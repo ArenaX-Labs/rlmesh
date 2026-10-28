@@ -150,6 +150,8 @@ pub struct SampleBatch {
     pub truncated: bool,
     /// History replies: seqs known missing.
     pub gaps: Vec<SeqRange>,
+    /// History replies: the query this page answers.
+    pub request_id: u64,
 }
 
 impl SampleBatch {
@@ -205,6 +207,8 @@ pub struct HistoryQuery {
     pub until_seq: Option<u64>,
     /// At most this many samples; `None` takes the store's cap.
     pub limit: Option<u32>,
+    /// Rising per participant generation; the host's pages echo it (§8.6).
+    pub request_id: u64,
 }
 
 #[cfg(test)]
@@ -227,6 +231,7 @@ mod tests {
             payload: Bytes::from((0..16_u8).collect::<Vec<_>>()),
             truncated: false,
             gaps: vec![SeqRange { first: 4, last: 4 }],
+            request_id: 0,
         };
         let samples = batch.split(Some(8)).expect("split");
         assert_eq!(samples[1].seq, 5);

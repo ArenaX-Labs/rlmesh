@@ -11,6 +11,7 @@
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb            heartbeats (participant -> host, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb/echo       heartbeat echoes (host -> participant, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/report        observer telemetry (§8.10)
+//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/keys          key deliveries (host -> participant, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}           samples
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}/_applied  applied samples
 //! rlmesh/v2/{tenant}/s/{session}/c/{robot}/{path...}           action chunks
@@ -123,6 +124,11 @@ impl SessionKeys {
     /// The host's echoes of a participant's heartbeats.
     pub fn heartbeat_echo(&self, id: &ParticipantId) -> String {
         format!("{}/p/{id}/hb/echo", self.prefix)
+    }
+
+    /// Key deliveries from the host to one participant (§8.5).
+    pub fn participant_keys(&self, id: &ParticipantId) -> String {
+        format!("{}/p/{id}/keys", self.prefix)
     }
 
     /// A participant's observer telemetry ([`crate::wire::ParticipantReport`]).

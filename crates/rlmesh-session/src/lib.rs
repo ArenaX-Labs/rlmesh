@@ -110,7 +110,8 @@ pub use host::{HistoryConfig, HostConfig, SessionHost};
 pub use media::{ImagePublisher, MediaStats, Offer};
 pub use metrics::ParticipantHealth;
 pub use participant::{
-    AuthorityView, EdgeReport, ManualView, Participant, ParticipantConfig, SafeReporter, TickStream,
+    AuthorityView, EdgeReport, ManualView, Participant, ParticipantConfig, Pending, SafeReporter,
+    Sealer, TickStream,
 };
 pub use sample::{
     Fresh, Received, SamplePublisher, SampleStats, SampleSubscriber, SubscribeOptions,

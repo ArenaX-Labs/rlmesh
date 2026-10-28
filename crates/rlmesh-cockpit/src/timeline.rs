@@ -491,6 +491,7 @@ mod tests {
             granted_ns: 0,
             expires_ns,
             binding: Fingerprint::from(1_u64),
+            key_id: 0,
         }
     }
 

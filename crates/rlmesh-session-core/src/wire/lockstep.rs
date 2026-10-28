@@ -41,6 +41,9 @@ pub struct LockstepReset {
     pub options_json: String,
     /// Episode ids, minted by the driver (as v1).
     pub episode_ids: Vec<u64>,
+    /// The driver's lease token on the env's commandable parts: a reset
+    /// needs the lease, like a step.
+    pub lease_token: LeaseToken,
 }
 
 /// One step: exactly one wrapped Gym step.
@@ -79,4 +82,48 @@ pub struct LockstepReply {
     pub info_json: String,
     /// What the env measured answering.
     pub timing: Option<EndpointTiming>,
+}
+
+/// What a lockstep request asks (§8.6): carried in the authenticated body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LockstepOp {
+    /// One step.
+    Step(LockstepStep),
+    /// Reset lanes.
+    Reset(LockstepReset),
+    /// Render one lane's frame.
+    Render(u32),
+    /// Is the route to the env up?
+    Probe,
+}
+
+/// A lockstep request: kind 11 under the lease's `k_cmd`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LockstepRequest {
+    /// Matches the reply to the request.
+    pub request_id: u64,
+    /// The operation.
+    pub op: LockstepOp,
+}
+
+/// What the env answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LockstepResult {
+    /// A step's or a reset's observation.
+    Obs(Box<LockstepReply>),
+    /// A rendered frame's PNG bytes; empty for none.
+    Frame(Bytes),
+    /// The route is up.
+    Probe,
+    /// The env's failure, as JSON `{code, message, recoverable}`.
+    Failure(String),
+}
+
+/// The env's answer: kind 12 under the `k_obs` of the request's token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LockstepResponse {
+    /// The request it answers.
+    pub request_id: u64,
+    /// The result.
+    pub result: LockstepResult,
 }

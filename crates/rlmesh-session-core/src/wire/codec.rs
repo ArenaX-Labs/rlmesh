@@ -49,7 +49,11 @@ use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContra
 use crate::wire::error::WireError;
 use crate::wire::heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId};
-use crate::wire::lockstep::{LockstepReply, LockstepReset, LockstepStep, PartValues};
+use crate::wire::key::{IssuedKey, KeyBytes, KeyDelivery, KeyPurpose, KeysAck, Security};
+use crate::wire::lockstep::{
+    LockstepOp, LockstepReply, LockstepRequest, LockstepReset, LockstepResponse, LockstepResult,
+    LockstepStep, PartValues,
+};
 use crate::wire::model::{
     ModelEpisode, ModelFault, ModelGroup, ModelHistoryRow, ModelReply, ModelRequest, ModelResolve,
     ModelResolved,
@@ -119,6 +123,7 @@ pub fn encode_reply(reply: &CtlReply) -> Vec<u8> {
         state: Some(state_to_pb(&reply.state)),
         leases: reply.leases.iter().map(lease_to_pb).collect(),
         request_id: reply.request_id,
+        keys: reply.keys.iter().map(key_to_pb).collect(),
     }
     .encode_to_vec()
 }
@@ -134,6 +139,94 @@ pub fn decode_reply(buf: &[u8]) -> Result<CtlReply, WireError> {
         state: state_from_pb(state)?,
         leases: collect(reply.leases, lease_from_pb)?,
         request_id: reply.request_id,
+        keys: collect(reply.keys, key_from_pb)?,
+    })
+}
+
+/// Encodes a key delivery (§8.5).
+pub fn encode_key_delivery(delivery: &KeyDelivery) -> Vec<u8> {
+    pb::KeyDelivery {
+        keys: delivery.keys.iter().map(key_to_pb).collect(),
+        retire_through: delivery.retire_through.clone(),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes a key delivery.
+pub fn decode_key_delivery(buf: &[u8]) -> Result<KeyDelivery, WireError> {
+    let d = pb::KeyDelivery::decode(buf)?;
+    Ok(KeyDelivery {
+        keys: collect(d.keys, key_from_pb)?,
+        retire_through: d.retire_through,
+    })
+}
+
+fn key_to_pb(k: &IssuedKey) -> pb::Key {
+    let purpose = match k.purpose {
+        KeyPurpose::Command => pb::KeyPurpose::Command,
+        KeyPurpose::LockstepReply => pb::KeyPurpose::LockstepReply,
+        KeyPurpose::Stream => pb::KeyPurpose::Stream,
+        KeyPurpose::SessionStream => pb::KeyPurpose::SessionStream,
+        KeyPurpose::Estop => pb::KeyPurpose::Estop,
+    };
+    let security = match k.security {
+        Security::Sign => pb::Security::Sign,
+        Security::Seal => pb::Security::Seal,
+    };
+    pb::Key {
+        key_id: k.key_id,
+        purpose: purpose as i32,
+        sender: k
+            .sender
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        robot: k
+            .robot
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        channels: channels(&k.channels),
+        token: k.token.0,
+        version: k.version,
+        key: Bytes::copy_from_slice(&k.key.0),
+        send: k.send,
+        security: security as i32,
+        generation: k.generation,
+    }
+}
+
+fn key_from_pb(k: pb::Key) -> Result<IssuedKey, WireError> {
+    let purpose = match pb::KeyPurpose::try_from(k.purpose) {
+        Ok(pb::KeyPurpose::Command) => KeyPurpose::Command,
+        Ok(pb::KeyPurpose::LockstepReply) => KeyPurpose::LockstepReply,
+        Ok(pb::KeyPurpose::Stream) => KeyPurpose::Stream,
+        Ok(pb::KeyPurpose::SessionStream) => KeyPurpose::SessionStream,
+        Ok(pb::KeyPurpose::Estop) => KeyPurpose::Estop,
+        _ => return Err(bad_enum("key purpose", k.purpose)),
+    };
+    let security = match pb::Security::try_from(k.security) {
+        Ok(pb::Security::Sign) => Security::Sign,
+        Ok(pb::Security::Seal) => Security::Seal,
+        _ => return Err(bad_enum("key security", k.security)),
+    };
+    let bytes: [u8; 32] =
+        k.key.as_ref().try_into().map_err(|_| {
+            WireError::malformed("key", format!("{} key bytes, not 32", k.key.len()))
+        })?;
+    let id = |s: String| (!s.is_empty()).then(|| ParticipantId::new(s)).transpose();
+    Ok(IssuedKey {
+        key_id: k.key_id,
+        purpose,
+        sender: id(k.sender)?,
+        robot: id(k.robot)?,
+        channels: k.channels.into_iter().map(ChannelId).collect(),
+        token: LeaseToken(k.token),
+        version: k.version,
+        key: KeyBytes(bytes),
+        send: k.send,
+        security,
+        generation: k.generation,
     })
 }
 
@@ -433,6 +526,7 @@ pub fn encode_history_query(query: &HistoryQuery) -> Vec<u8> {
         after_seq: query.after_seq,
         until_seq: query.until_seq.unwrap_or(0),
         limit: query.limit.unwrap_or(0),
+        request_id: query.request_id,
     }
     .encode_to_vec()
 }
@@ -445,6 +539,7 @@ pub fn decode_history_query(buf: &[u8]) -> Result<HistoryQuery, WireError> {
         after_seq: q.after_seq,
         until_seq: (q.until_seq > 0).then_some(q.until_seq),
         limit: (q.limit > 0).then_some(q.limit),
+        request_id: q.request_id,
     })
 }
 
@@ -571,6 +666,7 @@ pub fn encode_batch(batch: &SampleBatch) -> Result<Encoded, WireError> {
                 last: g.last,
             })
             .collect(),
+        request_id: batch.request_id,
     }
     .encode_to_vec();
     Ok(Encoded::around(
@@ -612,6 +708,7 @@ pub fn decode_batch(buf: Bytes) -> Result<SampleBatch, WireError> {
                 last: g.last,
             })
             .collect(),
+        request_id: b.request_id,
     })
 }
 
@@ -747,36 +844,6 @@ fn values_from_pb(values: Vec<pb::PartValues>) -> Vec<PartValues> {
         .collect()
 }
 
-/// Encodes a lockstep reset.
-pub fn encode_lockstep_reset(reset: &LockstepReset) -> Vec<u8> {
-    pb::LockstepReset {
-        epoch: reset.epoch.0,
-        lanes: reset.lanes.clone(),
-        seeds: reset.seeds.clone(),
-        options_json: reset.options_json.clone(),
-        episode_ids: reset.episode_ids.clone(),
-    }
-    .encode_to_vec()
-}
-
-/// Decodes a lockstep reset.
-pub fn decode_lockstep_reset(buf: &[u8]) -> Result<LockstepReset, WireError> {
-    let r = pb::LockstepReset::decode(buf)?;
-    if !r.seeds.is_empty() && !r.lanes.is_empty() && r.seeds.len() != r.lanes.len() {
-        return Err(WireError::malformed(
-            "lockstep reset",
-            format!("{} seeds for {} lanes", r.seeds.len(), r.lanes.len()),
-        ));
-    }
-    Ok(LockstepReset {
-        epoch: Epoch(r.epoch),
-        lanes: r.lanes,
-        seeds: r.seeds,
-        options_json: r.options_json,
-        episode_ids: r.episode_ids,
-    })
-}
-
 /// Encodes a lockstep step.
 pub fn encode_lockstep_step(step: &LockstepStep) -> Vec<u8> {
     pb::LockstepStep {
@@ -803,6 +870,10 @@ pub fn decode_lockstep_step(buf: Bytes) -> Result<LockstepStep, WireError> {
 
 /// Encodes a lockstep reply.
 pub fn encode_lockstep_reply(reply: &LockstepReply) -> Vec<u8> {
+    lockstep_reply_to_pb(reply).encode_to_vec()
+}
+
+fn lockstep_reply_to_pb(reply: &LockstepReply) -> pb::LockstepReply {
     pb::LockstepReply {
         epoch: reply.epoch.0,
         step: reply.step,
@@ -814,13 +885,15 @@ pub fn encode_lockstep_reply(reply: &LockstepReply) -> Vec<u8> {
         info_json: reply.info_json.clone(),
         timing: reply.timing.as_ref().map(endpoint_timing_to_pb),
     }
-    .encode_to_vec()
 }
 
 /// Decodes a lockstep reply. The slabs slice `buf` (no copy).
 pub fn decode_lockstep_reply(buf: Bytes) -> Result<LockstepReply, WireError> {
-    let r = pb::LockstepReply::decode(buf)?;
-    Ok(LockstepReply {
+    Ok(lockstep_reply_from_pb(pb::LockstepReply::decode(buf)?))
+}
+
+fn lockstep_reply_from_pb(r: pb::LockstepReply) -> LockstepReply {
+    LockstepReply {
         epoch: Epoch(r.epoch),
         step: r.step,
         observations: values_from_pb(r.observations),
@@ -830,6 +903,106 @@ pub fn decode_lockstep_reply(buf: Bytes) -> Result<LockstepReply, WireError> {
         episode_ids: r.episode_ids,
         info_json: r.info_json,
         timing: r.timing.map(endpoint_timing_from_pb),
+    }
+}
+
+/// Encodes a lockstep request (§8.6).
+pub fn encode_lockstep_request(request: &LockstepRequest) -> Vec<u8> {
+    use pb::lockstep_request::Op;
+    let op = match &request.op {
+        LockstepOp::Step(step) => Op::Step(pb::LockstepStep {
+            epoch: step.epoch.0,
+            step: step.step,
+            lease_token: step.lease_token.0,
+            lanes: step.lanes.clone(),
+            commands: values_to_pb(&step.commands),
+        }),
+        LockstepOp::Reset(reset) => Op::Reset(pb::LockstepReset {
+            epoch: reset.epoch.0,
+            lanes: reset.lanes.clone(),
+            seeds: reset.seeds.clone(),
+            options_json: reset.options_json.clone(),
+            episode_ids: reset.episode_ids.clone(),
+            lease_token: reset.lease_token.0,
+        }),
+        LockstepOp::Render(lane) => Op::Render(*lane),
+        LockstepOp::Probe => Op::Probe(pb::LockstepProbe {}),
+    };
+    pb::LockstepRequest {
+        request_id: request.request_id,
+        op: Some(op),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes a lockstep request. A step's slabs slice `buf` (no copy).
+pub fn decode_lockstep_request(buf: Bytes) -> Result<LockstepRequest, WireError> {
+    use pb::lockstep_request::Op;
+    let r = pb::LockstepRequest::decode(buf)?;
+    let op = match r.op {
+        Some(Op::Step(s)) => LockstepOp::Step(LockstepStep {
+            epoch: Epoch(s.epoch),
+            step: s.step,
+            lease_token: LeaseToken(s.lease_token),
+            lanes: s.lanes,
+            commands: values_from_pb(s.commands),
+        }),
+        Some(Op::Reset(r)) => {
+            if !r.seeds.is_empty() && !r.lanes.is_empty() && r.seeds.len() != r.lanes.len() {
+                return Err(WireError::malformed(
+                    "lockstep reset",
+                    format!("{} seeds for {} lanes", r.seeds.len(), r.lanes.len()),
+                ));
+            }
+            LockstepOp::Reset(LockstepReset {
+                epoch: Epoch(r.epoch),
+                lanes: r.lanes,
+                seeds: r.seeds,
+                options_json: r.options_json,
+                episode_ids: r.episode_ids,
+                lease_token: LeaseToken(r.lease_token),
+            })
+        }
+        Some(Op::Render(lane)) => LockstepOp::Render(lane),
+        Some(Op::Probe(_)) => LockstepOp::Probe,
+        None => return Err(WireError::malformed("lockstep request", "no operation")),
+    };
+    Ok(LockstepRequest {
+        request_id: r.request_id,
+        op,
+    })
+}
+
+/// Encodes a lockstep response.
+pub fn encode_lockstep_response(response: &LockstepResponse) -> Vec<u8> {
+    use pb::lockstep_response::Result as R;
+    let result = match &response.result {
+        LockstepResult::Obs(reply) => R::Obs(lockstep_reply_to_pb(reply)),
+        LockstepResult::Frame(frame) => R::Frame(frame.clone()),
+        LockstepResult::Probe => R::Probe(pb::LockstepProbe {}),
+        LockstepResult::Failure(failure) => R::Failure(failure.clone()),
+    };
+    pb::LockstepResponse {
+        request_id: response.request_id,
+        result: Some(result),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes a lockstep response. Slabs and frames slice `buf` (no copy).
+pub fn decode_lockstep_response(buf: Bytes) -> Result<LockstepResponse, WireError> {
+    use pb::lockstep_response::Result as R;
+    let r = pb::LockstepResponse::decode(buf)?;
+    let result = match r.result {
+        Some(R::Obs(reply)) => LockstepResult::Obs(Box::new(lockstep_reply_from_pb(reply))),
+        Some(R::Frame(frame)) => LockstepResult::Frame(frame),
+        Some(R::Probe(_)) => LockstepResult::Probe,
+        Some(R::Failure(failure)) => LockstepResult::Failure(failure),
+        None => return Err(WireError::malformed("lockstep response", "no result")),
+    };
+    Ok(LockstepResponse {
+        request_id: r.request_id,
+        result,
     })
 }
 
@@ -1434,6 +1607,7 @@ fn lease_to_pb(l: &Lease) -> pb::Lease {
         granted_ns: l.granted_ns,
         expires_ns: l.expires_ns,
         binding: Bytes::copy_from_slice(l.binding.as_bytes()),
+        key_id: l.key_id,
     }
 }
 
@@ -1447,6 +1621,7 @@ fn lease_from_pb(l: pb::Lease) -> Result<Lease, WireError> {
         granted_ns: l.granted_ns,
         expires_ns: l.expires_ns,
         binding: fingerprint_from_pb("lease", &l.binding)?,
+        key_id: l.key_id,
     })
 }
 
@@ -1732,9 +1907,11 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
         Command::DeclareParts {
             spec_version,
             robot_json,
+            seal,
         } => Verb::DeclareParts(pb::DeclareParts {
             spec_version: *spec_version,
             robot_json: robot_json.clone(),
+            seal: seal.clone(),
         }),
         Command::DeclareBinding {
             fingerprint,
@@ -1792,6 +1969,12 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             tick: *tick,
             chunks: chunks.iter().map(chunk_ref_to_pb).collect(),
         }),
+        Command::KeysAck(ack) => Verb::KeysAck(pb::KeysAck {
+            installed: ack.installed.clone(),
+            sending: ack.sending.clone(),
+            retired: ack.retired.clone(),
+        }),
+        Command::GetKeys => Verb::GetKeys(pb::GetKeys {}),
     };
     pb::CtlRequest {
         participant: r.from.to_string(),
@@ -1824,6 +2007,7 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
         Verb::DeclareParts(d) => Command::DeclareParts {
             spec_version: d.spec_version,
             robot_json: d.robot_json,
+            seal: d.seal,
         },
         Verb::DeclareBinding(b) => Command::DeclareBinding {
             fingerprint: fingerprint_from_pb("declare binding", &b.fingerprint)?,
@@ -1869,6 +2053,12 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
             tick: decided.tick,
             chunks: decided.chunks.into_iter().map(chunk_ref_from_pb).collect(),
         },
+        Verb::KeysAck(ack) => Command::KeysAck(KeysAck {
+            installed: ack.installed,
+            sending: ack.sending,
+            retired: ack.retired,
+        }),
+        Verb::GetKeys(_) => Command::GetKeys,
     };
     Ok(Request {
         from: ParticipantId::new(r.participant)?,
@@ -2101,6 +2291,7 @@ mod tests {
                 granted_ns: 6,
                 expires_ns: 11,
                 binding: Fingerprint::from(77),
+                key_id: 0,
             }],
             clocks: vec![ClockMapping {
                 participant: pid("op"),
@@ -2178,6 +2369,7 @@ mod tests {
                     granted_ns: 2,
                     expires_ns: 7,
                     binding: Fingerprint::from(76),
+                    key_id: 0,
                 },
                 reason: Reason {
                     code: ReasonCode::Preempted,
@@ -2234,6 +2426,7 @@ mod tests {
             Command::DeclareParts {
                 spec_version: 1,
                 robot_json: r#"{"arm": {"kind": "x/arm"}}"#.into(),
+                seal: Vec::new(),
             },
             Command::DeclareBinding {
                 fingerprint: Fingerprint::from(9),
@@ -2335,6 +2528,7 @@ mod tests {
                 leases: state.leases.clone(),
                 state: state.clone(),
                 request_id: 11,
+                keys: Vec::new(),
             };
             assert_eq!(decode_reply(&encode_reply(&reply)).expect("decode"), reply);
         }
@@ -2468,6 +2662,7 @@ mod tests {
             after_seq: 10,
             until_seq: Some(20),
             limit: None,
+            request_id: 0,
         };
         assert_eq!(
             decode_history_query(&encode_history_query(&query)).expect("decode"),
@@ -2578,6 +2773,7 @@ mod tests {
             payload: Bytes::from(vec![1_u8; 48]),
             truncated: true,
             gaps: vec![SeqRange { first: 5, last: 5 }],
+            request_id: 0,
         };
         let buf = Bytes::from(encode_batch(&batch).expect("encode").to_vec());
         let decoded = decode_batch(buf.clone()).expect("decode");
@@ -2649,14 +2845,24 @@ mod tests {
             seeds: vec![11, 12],
             options_json: "{}".into(),
             episode_ids: vec![100, 101],
+            lease_token: LeaseToken(3),
         };
-        assert_eq!(
-            decode_lockstep_reset(&encode_lockstep_reset(&reset)).expect("decode"),
-            reset
-        );
+        let request = |op| LockstepRequest { request_id: 5, op };
+        let round_trip =
+            |r: &LockstepRequest| decode_lockstep_request(Bytes::from(encode_lockstep_request(r)));
+        for op in [
+            LockstepOp::Reset(reset.clone()),
+            LockstepOp::Render(2),
+            LockstepOp::Probe,
+        ] {
+            assert_eq!(
+                round_trip(&request(op.clone())).expect("decode"),
+                request(op)
+            );
+        }
         let mut bad = reset.clone();
         bad.seeds.push(13);
-        assert!(decode_lockstep_reset(&encode_lockstep_reset(&bad)).is_err());
+        assert!(round_trip(&request(LockstepOp::Reset(bad))).is_err());
         let step = LockstepStep {
             epoch: Epoch(2),
             step: 41,
@@ -2696,6 +2902,18 @@ mod tests {
             decode_lockstep_reply(Bytes::from(encode_lockstep_reply(&reply))).expect("decode"),
             reply
         );
+        for result in [
+            LockstepResult::Obs(Box::new(reply)),
+            LockstepResult::Frame(Bytes::from_static(b"png")),
+            LockstepResult::Failure("{}".into()),
+        ] {
+            let response = LockstepResponse {
+                request_id: 5,
+                result,
+            };
+            let buf = Bytes::from(encode_lockstep_response(&response));
+            assert_eq!(decode_lockstep_response(buf).expect("decode"), response);
+        }
     }
 
     #[test]

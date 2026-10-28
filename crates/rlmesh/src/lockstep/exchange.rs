@@ -15,10 +15,15 @@
 //! | same process | [`DirectLink`]: a function call, no serialisation |
 //! | same host or remote | [`ZenohLink`]: a query on `l/{robot}` over the lockstep class session, answered by [`serve_zenoh`] |
 //!
-//! A reset is the same query with the selector parameter `reset`, a render
-//! the selector parameter `render` (the lane as a little-endian `u32` in, the
-//! frame's PNG bytes out, empty for none); an error reply carries the env's
-//! failure as JSON (`{code, message, recoverable}`).
+//! Over Zenoh every request is a `LockstepRequest` sealed under the lease's
+//! `k_cmd` (design §8.6): a step, a reset, a render (a lane's frame) or a
+//! probe, with a request id. The env answers a `LockstepResponse` with that
+//! id, sealed under the lease's `k_obs`: the observation, the frame's PNG
+//! bytes (empty for none), the probe, or the env's failure as JSON
+//! (`{code, message, recoverable}`). A request that doesn't open under a
+//! lease key the env holds gets a plain error reply, which the driver takes
+//! only as a hint. Both ends check the request's lease token against the
+//! key's.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -26,11 +31,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use rlmesh_session::Sealer;
 use rlmesh_session::transport::payload_bytes;
-use rlmesh_session::wire::codec;
 use rlmesh_session::wire::timing::ns;
 use rlmesh_session::wire::{
-    AuthoritySnapshot, ChannelId, LockstepReply, LockstepReset, LockstepStep, Mode, ParticipantId,
+    AuthoritySnapshot, ChannelId, LeaseToken, LockstepOp, LockstepReply, LockstepRequest,
+    LockstepReset, LockstepResponse, LockstepResult, LockstepStep, Mode, ParticipantId,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -39,14 +45,6 @@ use zenoh::query::ConsolidationMode;
 
 use crate::lockstep::error::{GymError, failure_from_json, failure_to_json};
 
-/// The selector parameter of a reset query.
-const RESET: &str = "reset";
-/// The selector parameter of a render query.
-const RENDER: &str = "render";
-/// The selector parameter of a probe: answered with an empty reply, so a
-/// driver knows the route to the env is up before its first request.
-const PROBE: &str = "probe";
-
 /// One lockstep request.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
@@ -54,6 +52,24 @@ pub enum Request {
     Reset(LockstepReset),
     /// Step lanes: exactly one wrapped step.
     Step(LockstepStep),
+}
+
+impl Request {
+    /// The epoch it was issued in.
+    pub fn epoch(&self) -> rlmesh_session::wire::Epoch {
+        match self {
+            Self::Reset(reset) => reset.epoch,
+            Self::Step(step) => step.epoch,
+        }
+    }
+
+    /// The driver's lease token: a reset needs the lease, like a step.
+    pub fn lease_token(&self) -> LeaseToken {
+        match self {
+            Self::Reset(reset) => reset.lease_token,
+            Self::Step(step) => step.lease_token,
+        }
+    }
 }
 
 /// The env side of the exchange.
@@ -155,22 +171,17 @@ impl Gate {
             return Err(GymError::Refused("the session is e-stopped".into()));
         }
         let epoch = self.epoch.load(Ordering::Acquire);
-        let (asked, token) = match request {
-            Request::Reset(reset) => (reset.epoch.0, None),
-            Request::Step(step) => (step.epoch.0, Some(step.lease_token.0)),
-        };
+        let (asked, token) = (request.epoch().0, request.lease_token().0);
         if asked != epoch {
             return Err(GymError::Refused(format!(
                 "epoch {asked} is stale; the session is in epoch {epoch}"
             )));
         }
-        if let Some(token) = token {
-            let held = self.token.load(Ordering::Acquire);
-            if held == 0 || token != held {
-                return Err(GymError::Refused(format!(
-                    "lease token {token} does not hold the robot's commandable parts"
-                )));
-            }
+        let held = self.token.load(Ordering::Acquire);
+        if held == 0 || token != held {
+            return Err(GymError::Refused(format!(
+                "lease token {token} does not hold the robot's commandable parts"
+            )));
         }
         Ok(())
     }
@@ -294,72 +305,75 @@ impl LockstepLink for DirectLink {
 /// How long a lockstep query waits when the request sets no deadline.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// A query on `l/{robot}` over the lockstep class session.
+/// A query on `l/{robot}` over the lockstep class session, sealed under
+/// the lease's keys.
 pub struct ZenohLink {
     session: zenoh::Session,
     key: String,
-    reset_selector: String,
-    render_selector: String,
+    sealer: Sealer,
+    robot: ParticipantId,
+    token: LeaseToken,
+    last_request: AtomicU64,
 }
 
 impl ZenohLink {
-    /// A link to the queryable on `key`.
-    pub fn new(session: zenoh::Session, key: String) -> Self {
+    /// A link to `robot`'s queryable on `key`, under the lease `token`
+    /// whose keys `sealer` holds.
+    pub fn new(
+        session: zenoh::Session,
+        key: String,
+        sealer: Sealer,
+        robot: ParticipantId,
+        token: LeaseToken,
+    ) -> Self {
         Self {
-            reset_selector: format!("{key}?{RESET}"),
-            render_selector: format!("{key}?{RENDER}"),
             session,
             key,
+            sealer,
+            robot,
+            token,
+            last_request: AtomicU64::new(0),
         }
     }
 
-    /// Waits until the env's queryable answers (its declaration has
-    /// reached this session), probing every 20 ms for up to `timeout`.
+    /// Waits until the env's queryable answers a probe (its declaration
+    /// has reached this session), probing every 20 ms for up to `timeout`.
     pub async fn wait_ready(&self, timeout: Duration) -> Result<(), GymError> {
         let deadline = tokio::time::Instant::now() + timeout;
-        let selector = format!("{}?{PROBE}", self.key);
         loop {
-            let replies = self
-                .session
-                .get(&selector)
-                .consolidation(ConsolidationMode::None)
-                .timeout(Duration::from_millis(500))
+            match self
+                .exchange(LockstepOp::Probe, Some(Duration::from_millis(500)))
                 .await
-                .map_err(|e| GymError::Closed(e.to_string()))?;
-            if let Ok(reply) = replies.recv_async().await
-                && reply.result().is_ok()
             {
-                return Ok(());
+                Ok(_) => return Ok(()),
+                Err(_) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(_) => return Err(GymError::Timeout(timeout)),
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(GymError::Timeout(timeout));
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
-}
 
-/// Encodes a request: its selector parameters and its payload.
-fn encode(request: &Request) -> (bool, Vec<u8>) {
-    match request {
-        Request::Reset(reset) => (true, codec::encode_lockstep_reset(reset)),
-        Request::Step(step) => (false, codec::encode_lockstep_step(step)),
-    }
-}
-
-impl ZenohLink {
-    /// One query on `selector`: the reply's payload, or the env's error.
-    async fn query(
+    /// One sealed request: the env's sealed result. An unsealed error reply
+    /// is only a hint (anyone can answer `l/{robot}`), returned when no
+    /// sealed reply came.
+    async fn exchange(
         &self,
-        selector: &str,
-        payload: Vec<u8>,
+        op: LockstepOp,
         timeout: Option<Duration>,
-    ) -> Result<Bytes, GymError> {
+    ) -> Result<LockstepResult, GymError> {
         let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
+        let request_id = self.last_request.fetch_add(1, Ordering::Relaxed) + 1;
+        let sealed = self.sealer.seal_lockstep_request(
+            &self.key,
+            &self.robot,
+            self.token,
+            &LockstepRequest { request_id, op },
+        )?;
         let replies = self
             .session
-            .get(selector)
-            .payload(payload)
+            .get(&self.key)
+            .payload(sealed)
             .consolidation(ConsolidationMode::None)
             .priority(Priority::RealTime)
             .congestion_control(CongestionControl::Block)
@@ -367,19 +381,44 @@ impl ZenohLink {
             .timeout(timeout)
             .await
             .map_err(|e| GymError::Closed(e.to_string()))?;
-        let reply = replies
-            .recv_async()
-            .await
-            .map_err(|_| GymError::Timeout(timeout))?;
-        match reply.result() {
-            Ok(sample) => Ok(payload_bytes(sample.payload())),
-            Err(err) => match failure_from_json(&payload_bytes(err.payload())) {
-                Some(failure) if !failure.message.is_empty() => Err(GymError::Env(failure)),
-                // A Zenoh-level error (the queryable is gone).
-                _ => Err(GymError::Timeout(timeout)),
-            },
+        let mut hint = None;
+        while let Ok(reply) = replies.recv_async().await {
+            match reply.result() {
+                Ok(sample) => {
+                    let msg = sample.payload().to_bytes().into_owned();
+                    match self.sealer.open_lockstep_response(
+                        &self.key,
+                        msg,
+                        &self.robot,
+                        self.token,
+                    ) {
+                        Ok(response) if response.request_id == request_id => {
+                            return match response.result {
+                                LockstepResult::Failure(json) => {
+                                    Err(failure(json.as_bytes())
+                                        .unwrap_or(GymError::Timeout(timeout)))
+                                }
+                                result => Ok(result),
+                            };
+                        }
+                        Ok(_) => {}
+                        Err(err) => debug!(%err, "lockstep reply dropped"),
+                    }
+                }
+                Err(err) => hint = failure(&payload_bytes(err.payload())),
+            }
         }
+        // No sealed reply: the env's plain refusal, or a Zenoh-level error
+        // (the queryable is gone).
+        Err(hint.unwrap_or(GymError::Timeout(timeout)))
     }
+}
+
+/// The env's failure in `json`, if it names one.
+fn failure(json: &[u8]) -> Option<GymError> {
+    failure_from_json(json)
+        .filter(|f| !f.message.is_empty())
+        .map(GymError::Env)
 }
 
 #[async_trait]
@@ -389,14 +428,14 @@ impl LockstepLink for ZenohLink {
         request: Request,
         timeout: Option<Duration>,
     ) -> Result<LockstepReply, GymError> {
-        let (reset, payload) = encode(&request);
-        let selector = if reset {
-            self.reset_selector.as_str()
-        } else {
-            self.key.as_str()
+        let op = match request {
+            Request::Reset(reset) => LockstepOp::Reset(reset),
+            Request::Step(step) => LockstepOp::Step(step),
         };
-        let reply = self.query(selector, payload, timeout).await?;
-        Ok(codec::decode_lockstep_reply(reply)?)
+        match self.exchange(op, timeout).await? {
+            LockstepResult::Obs(reply) => Ok(*reply),
+            other => Err(GymError::Malformed(format!("{other:?} answers a step"))),
+        }
     }
 
     async fn render(
@@ -404,35 +443,35 @@ impl LockstepLink for ZenohLink {
         lane: u32,
         timeout: Option<Duration>,
     ) -> Result<Option<Bytes>, GymError> {
-        let frame = self
-            .query(&self.render_selector, lane.to_le_bytes().to_vec(), timeout)
-            .await?;
-        Ok((!frame.is_empty()).then_some(frame))
+        match self.exchange(LockstepOp::Render(lane), timeout).await? {
+            LockstepResult::Frame(frame) => Ok((!frame.is_empty()).then_some(frame)),
+            other => Err(GymError::Malformed(format!("{other:?} answers a render"))),
+        }
     }
 }
 
-fn decode_request(query: &zenoh::query::Query) -> Result<Request, GymError> {
-    let payload = query.payload().map(payload_bytes).unwrap_or_default();
-    if query.parameters().contains_key(RESET) {
-        Ok(Request::Reset(codec::decode_lockstep_reset(&payload)?))
-    } else {
-        Ok(Request::Step(codec::decode_lockstep_step(payload)?))
-    }
-}
-
-async fn answer(query: &zenoh::query::Query, key: &str, result: Result<LockstepReply, GymError>) {
-    answer_bytes(
-        query,
-        key,
-        result.map(|reply| codec::encode_lockstep_reply(&reply)),
-    )
-    .await;
-}
-
-async fn answer_bytes(query: &zenoh::query::Query, key: &str, result: Result<Vec<u8>, GymError>) {
-    let sent = match result {
-        Ok(payload) => query.reply(key, payload).express(true).await,
-        Err(err) => query.reply_err(failure_to_json(&err.to_failure())).await,
+/// Answers request `request_id` under the lease `token`'s `k_obs`.
+async fn answer(
+    query: &zenoh::query::Query,
+    key: &str,
+    sealer: &Sealer,
+    token: LeaseToken,
+    request_id: u64,
+    result: Result<LockstepResult, GymError>,
+) {
+    let result = result.unwrap_or_else(|err| {
+        LockstepResult::Failure(
+            String::from_utf8_lossy(&failure_to_json(&err.to_failure())).into_owned(),
+        )
+    });
+    let sealed =
+        sealer.seal_lockstep_response(key, token, &LockstepResponse { request_id, result });
+    let sent = match sealed {
+        Ok(sealed) => query.reply(key, sealed).express(true).await,
+        Err(err) => {
+            warn!(%err, "lockstep reply not sealed");
+            return;
+        }
     };
     if let Err(err) = sent {
         warn!(%err, "lockstep reply not sent");
@@ -459,12 +498,14 @@ async fn timed(
     Ok(reply)
 }
 
-/// Serves `handler` on `key` until `cancel` fires.
+/// Serves `handler` on `key` until `cancel` fires, opening requests and
+/// sealing replies under the lease keys `sealer` holds.
 pub async fn serve_zenoh(
     session: zenoh::Session,
     key: String,
     handler: Arc<dyn LockstepHandler>,
     cancel: CancellationToken,
+    sealer: Sealer,
 ) -> Result<(), GymError> {
     let queryable = session
         .declare_queryable(&key)
@@ -480,30 +521,59 @@ pub async fn serve_zenoh(
                 Err(_) => break,
             },
         };
-        if query.parameters().contains_key(PROBE) {
-            answer(&query, &key, Ok(LockstepReply::default())).await;
-            continue;
-        }
-        if query.parameters().contains_key(RENDER) {
-            let payload = query.payload().map(payload_bytes).unwrap_or_default();
-            let result = match <[u8; 4]>::try_from(payload.as_ref()) {
-                Ok(lane) => handler
-                    .render(u32::from_le_bytes(lane))
-                    .await
-                    .map(|frame| frame.map(|f| f.to_vec()).unwrap_or_default()),
-                Err(_) => Err(GymError::Malformed("a render names one u32 lane".into())),
-            };
-            answer_bytes(&query, &key, result).await;
-            continue;
-        }
         let arrived = std::time::Instant::now();
-        let request = match decode_request(&query) {
-            Ok(request) => request,
+        let msg = query
+            .payload()
+            .map(|p| p.to_bytes().into_owned())
+            .unwrap_or_default();
+        let (request, token) = match sealer.open_lockstep_request(&key, msg) {
+            Ok(opened) => opened,
             Err(err) => {
-                answer(&query, &key, Err(err)).await;
+                // Not a lease holder's: a plain refusal, a hint only.
+                let refused = GymError::Refused(err.to_string());
+                if let Err(err) = query
+                    .reply_err(failure_to_json(&refused.to_failure()))
+                    .await
+                {
+                    debug!(%err, "lockstep refusal not sent");
+                }
                 continue;
             }
         };
+        let request_id = request.request_id;
+        let request = match request.op {
+            LockstepOp::Probe => {
+                answer(
+                    &query,
+                    &key,
+                    &sealer,
+                    token,
+                    request_id,
+                    Ok(LockstepResult::Probe),
+                )
+                .await;
+                continue;
+            }
+            LockstepOp::Render(lane) => {
+                let frame = handler
+                    .render(lane)
+                    .await
+                    .map(|frame| LockstepResult::Frame(frame.unwrap_or_default()));
+                answer(&query, &key, &sealer, token, request_id, frame).await;
+                continue;
+            }
+            LockstepOp::Reset(reset) => Request::Reset(reset),
+            LockstepOp::Step(step) => Request::Step(step),
+        };
+        // The request's lease is the one whose key it came under.
+        if request.lease_token() != token {
+            let refused = GymError::Refused(format!(
+                "lease token {} under the key of {token}",
+                request.lease_token()
+            ));
+            answer(&query, &key, &sealer, token, request_id, Err(refused)).await;
+            continue;
+        }
         let decode_ns = arrived.elapsed();
         // Lane-scoped requests of a lane endpoint run side by side (as on
         // v1's Join stream); everything else is served in order, inline.
@@ -512,14 +582,30 @@ pub async fn serve_zenoh(
             Request::Step(step) => !step.lanes.is_empty(),
         };
         if concurrent && lane_scoped {
-            let (handler, key) = (handler.clone(), key.clone());
+            let (handler, key, sealer) = (handler.clone(), key.clone(), sealer.clone());
             tokio::spawn(async move {
                 let result = timed(handler.handle(request), arrived, decode_ns).await;
-                answer(&query, &key, result).await;
+                answer(
+                    &query,
+                    &key,
+                    &sealer,
+                    token,
+                    request_id,
+                    result.map(|reply| LockstepResult::Obs(Box::new(reply))),
+                )
+                .await;
             });
         } else {
             let result = timed(handler.handle(request), arrived, decode_ns).await;
-            answer(&query, &key, result).await;
+            answer(
+                &query,
+                &key,
+                &sealer,
+                token,
+                request_id,
+                result.map(|reply| LockstepResult::Obs(Box::new(reply))),
+            )
+            .await;
         }
     }
     drop(queryable);

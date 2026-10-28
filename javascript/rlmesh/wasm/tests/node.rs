@@ -109,6 +109,7 @@ fn lease(channel: u32, holder: &str, token: u64, expires_ns: i64) -> Lease {
         granted_ns: 0,
         expires_ns,
         binding: Fingerprint::from(0xabcd),
+        key_id: 0,
     }
 }
 
@@ -350,6 +351,7 @@ fn grant(
             held.iter().cloned().chain([granted.clone()]).collect(),
         ),
         leases: vec![granted],
+        keys: Vec::new(),
     };
     let ev = c
         .on_frame(
@@ -519,6 +521,7 @@ fn refusals_and_verbs_answer_with_the_host_state() {
         result: Err(CtlError::new(CtlStatus::LeaseBusy, "held by safety")),
         state: snapshot(2, Vec::new()),
         leases: Vec::new(),
+        keys: Vec::new(),
     };
     let ev = c
         .on_frame(
