@@ -49,7 +49,7 @@ use crate::crypto::handshake::{self, HandshakeError, IkInitiator, IkResponder};
 use crate::crypto::lp::{hash_labelled, kdf};
 use crate::crypto::sealed::{HEADER_LEN, Header, TAG_LEN};
 use crate::crypto::{
-    Kind, OpenError, Rng, RngError, SealError, SealReceiver, SealSender, SignedError,
+    Kind, OpenError, Rng, RngError, SealError, SealReceiver, SealSender, SignedError, SignedKind,
     SignedReceiver, SignedSender,
 };
 use crate::prelude::*;
@@ -58,9 +58,10 @@ use crate::wire::error::WireError;
 use crate::wire::heartbeat::{Heartbeat, HeartbeatEcho};
 use crate::wire::tick::VirtualTick;
 use crate::wire::{
-    ActionChunk, AuthoritySnapshot, Command, CtlError, CtlReply, CtlStatus, Epoch, EstopSignal,
-    HandshakeAccept, HandshakeRequest, HistoryQuery, KeysAck, LeaseToken, LockstepRequest,
-    LockstepResponse, ParticipantId, Request, Sample, SampleBatch, SampleMeta,
+    ActionChunk, AuthoritySnapshot, AuthorityView, Command, CtlError, CtlReply, CtlStatus,
+    DeviceView, Epoch, EstopSignal, HandshakeAccept, HandshakeRequest, HistoryQuery, KeysAck,
+    LeaseToken, LockstepRequest, LockstepResponse, ParticipantId, Request, Sample, SampleBatch,
+    SampleMeta, ViewReply,
 };
 
 /// The device of every process holding an embedded host's address.
@@ -222,11 +223,12 @@ pub enum LinkError {
     Outstanding(u64),
 }
 
-/// What a reply on `ctl` was ([`Link::reply`]).
+/// What a reply on `ctl` was ([`Link::reply`], or [`Link::reply_view`]
+/// for a robot that takes its device view).
 #[derive(Debug, Clone, PartialEq)]
-pub enum ReplyOutcome {
+pub enum ReplyOutcome<R = CtlReply> {
     /// The host's sealed answer to the request.
-    Answer(Box<CtlReply>),
+    Answer(Box<R>),
     /// The host's sealed answer to another request (an earlier attempt).
     Other(u64),
     /// An unsealed `UNAUTHENTICATED` refusal: only a hint, since anyone can
@@ -244,6 +246,29 @@ pub fn open_state(
     msg: &[u8],
 ) -> Result<AuthoritySnapshot, LinkError> {
     Ok(codec::decode_state(host.verify(keyexpr, msg)?.body)?)
+}
+
+/// Verifies a robot's `host/view/{robot}` broadcast received on `keyexpr`
+/// under `host`: signed by the host instance, newer than the last view taken,
+/// a device view (kind 22) and the key's robot's. Decoded without the
+/// authority state's decoder.
+///
+/// # Errors
+/// [`LinkError`].
+pub fn open_view(
+    host: &mut SignedReceiver,
+    keyexpr: &str,
+    msg: &[u8],
+) -> Result<DeviceView, LinkError> {
+    let verified = host.verify(keyexpr, msg)?;
+    if verified.header.kind != SignedKind::DeviceView {
+        return Err(SignedError::UnknownKind(verified.header.kind.as_u8()).into());
+    }
+    let view = codec::decode_view(verified.body)?;
+    if keyexpr.rsplit('/').next() != Some(view.robot.as_str()) {
+        return Err(WireError::malformed("device view", "another robot's").into());
+    }
+    Ok(view)
 }
 
 /// Verifies a `host/tick` broadcast received on `keyexpr` under `host`.
@@ -327,7 +352,7 @@ impl Link {
 
     /// Takes a newer authority snapshot, at `now_ns`: lease keys whose
     /// token ended go, and every key once a newer generation took over.
-    pub fn observe(&mut self, snapshot: &AuthoritySnapshot, now_ns: i64) {
+    pub fn observe(&mut self, snapshot: &impl AuthorityView, now_ns: i64) {
         self.keyring.observe(snapshot, now_ns);
     }
 
@@ -650,6 +675,50 @@ impl Link {
         }
     }
 
+    /// [`Self::reply`] for a robot that asked for its device view (scene
+    /// design §3.4): the host answers it with its view and no authority
+    /// state, and this path never calls the state's decoder, so a board
+    /// that only takes views doesn't link it. The answer's keys are
+    /// installed and its view observed at `now_ns`.
+    ///
+    /// # Errors
+    /// [`LinkError`]: anything else, which is dropped.
+    pub fn reply_view(
+        &mut self,
+        keyexpr: &str,
+        msg: &mut [u8],
+        request_id: u64,
+        now_ns: i64,
+    ) -> Result<ReplyOutcome<ViewReply>, LinkError> {
+        let plain = codec::decode_view_reply(msg);
+        match self.down.open(keyexpr, msg) {
+            Ok(opened) => {
+                let reply = codec::decode_view_reply(opened.body)?;
+                self.unanswered.remove(&reply.request_id);
+                Ok(if reply.request_id == request_id {
+                    for key in &reply.keys {
+                        self.keyring.install(key, now_ns);
+                    }
+                    if let Some(view) = &reply.view {
+                        self.keyring.observe(view, now_ns);
+                    }
+                    ReplyOutcome::Answer(Box::new(reply))
+                } else {
+                    ReplyOutcome::Other(reply.request_id)
+                })
+            }
+            Err(err) => match plain {
+                Ok(ViewReply {
+                    result: Err(refusal),
+                    ..
+                }) if refusal.status == CtlStatus::Unauthenticated => {
+                    Ok(ReplyOutcome::Hint(refusal))
+                }
+                _ => Err(err.into()),
+            },
+        }
+    }
+
     /// Seals a heartbeat on `keyexpr` (the participant's `hb`).
     ///
     /// # Errors
@@ -681,6 +750,15 @@ impl Link {
     /// [`LinkError`].
     pub fn state(&mut self, keyexpr: &str, msg: &[u8]) -> Result<AuthoritySnapshot, LinkError> {
         open_state(&mut self.host, keyexpr, msg)
+    }
+
+    /// Verifies this robot's `host/view/{robot}` broadcast on `keyexpr`
+    /// ([`open_view`]).
+    ///
+    /// # Errors
+    /// [`LinkError`].
+    pub fn open_view(&mut self, keyexpr: &str, msg: &[u8]) -> Result<DeviceView, LinkError> {
+        open_view(&mut self.host, keyexpr, msg)
     }
 
     /// Verifies a `host/tick` broadcast on `keyexpr`.
@@ -1329,6 +1407,36 @@ mod tests {
             link.state("state", &stranger.expect("sign")).is_err(),
             "another instance"
         );
+
+        // The robot's device view: the same checks, on its own floor, and
+        // only a view of the robot its key names.
+        let key = "s/demo/host/view/robot";
+        let view = DeviceView::of(&snapshot, &pid("robot"));
+        let body = codec::encode_view(&view);
+        let older = signer
+            .sign(crate::crypto::SignedKind::DeviceView, key, &body)
+            .expect("sign");
+        let newer = signer
+            .sign(crate::crypto::SignedKind::DeviceView, key, &body)
+            .expect("sign");
+        assert_eq!(link.open_view(key, &newer).expect("verified"), view);
+        assert!(link.open_view(key, &older).is_err(), "stale");
+        assert!(link.open_view(key, &newer).is_err(), "replayed");
+        let forged = HostIdentity::generate(&mut TestRng::new(3))
+            .expect("identity")
+            .signer(7)
+            .sign(crate::crypto::SignedKind::DeviceView, key, &body)
+            .expect("sign");
+        assert!(link.open_view(key, &forged).is_err(), "another host's key");
+        let state = signer
+            .sign(crate::crypto::SignedKind::AuthorityState, key, &body)
+            .expect("sign");
+        assert!(link.open_view(key, &state).is_err(), "not a view");
+        let other = "s/demo/host/view/arm";
+        let misnamed = signer
+            .sign(crate::crypto::SignedKind::DeviceView, other, &body)
+            .expect("sign");
+        assert!(link.open_view(other, &misnamed).is_err(), "another robot's");
     }
 
     #[test]

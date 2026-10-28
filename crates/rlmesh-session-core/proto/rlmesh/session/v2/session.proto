@@ -800,6 +800,10 @@ message CtlReply {
   Assignment assignment = 7;
   // A run's state (`RunScene`, `SceneStatus`, `StopScene`, `ArmScene`).
   RunState run = 8;
+  // A robot that asked for its device view (`Attach.supports` has
+  // "view.device") gets its view here and no `state`, so a board decodes
+  // every reply without the authority state's decoder.
+  DeviceView view = 9;
 }
 
 // The level of a key's configured kinds (chunks, samples, applied entries,

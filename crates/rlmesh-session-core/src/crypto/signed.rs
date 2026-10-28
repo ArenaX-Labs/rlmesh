@@ -1,12 +1,12 @@
-//! The host's `Signed` broadcasts (§8.7): authority state and virtual ticks,
-//! in clear, signed with the host's Ed25519 key.
+//! The host's `Signed` broadcasts (§8.7): authority state, virtual ticks and
+//! device views, in clear, signed with the host's Ed25519 key.
 //!
 //! | Offset | Size | Field |
 //! |---|---|---|
 //! | 0 | 1 | `version` = 1 |
-//! | 1 | 1 | `kind`: 20 authority state, 21 virtual tick |
+//! | 1 | 1 | `kind`: 20 authority state, 21 virtual tick, 22 device view |
 //! | 2 | 8 | `host_instance` (u64 LE) |
-//! | 10 | 8 | `seq` (u64 LE): one counter per host instance, across both kinds |
+//! | 10 | 8 | `seq` (u64 LE): one counter per host instance, across every kind |
 //! | 18 | n | `body` |
 //! | 18 + n | 64 | Ed25519 signature over `lp("rlmesh/v2 signed") ‖ header ‖ lp(key expression) ‖ body` |
 
@@ -32,6 +32,8 @@ pub enum SignedKind {
     AuthorityState = 20,
     /// `VirtualTick` on `host/tick`.
     VirtualTick = 21,
+    /// `DeviceView` on `host/view/{robot}` (scene design §3.4).
+    DeviceView = 22,
 }
 
 impl SignedKind {
@@ -40,6 +42,7 @@ impl SignedKind {
         match byte {
             20 => Some(Self::AuthorityState),
             21 => Some(Self::VirtualTick),
+            22 => Some(Self::DeviceView),
             _ => None,
         }
     }
@@ -111,7 +114,7 @@ pub enum SignedError {
     /// A version other than 1.
     #[error("unknown version {0}")]
     Version(u8),
-    /// The kind byte is not 20 or 21.
+    /// The kind byte is not 20, 21 or 22.
     #[error("unknown kind {0}")]
     UnknownKind(u8),
     /// Signed by another host instance than the handshake authenticated.
@@ -243,7 +246,7 @@ pub struct Verified<'m> {
 pub struct SignedReceiver {
     key: VerifyingKey,
     host_instance: u64,
-    last: [Option<u64>; 2],
+    last: [Option<u64>; 3],
 }
 
 impl SignedReceiver {
@@ -260,7 +263,7 @@ impl SignedReceiver {
         Ok(Self {
             key,
             host_instance,
-            last: [None; 2],
+            last: [None; 3],
         })
     }
 
@@ -412,7 +415,7 @@ mod tests {
         let mut bad = msg.clone();
         bad[0] = 0;
         assert_eq!(rx.verify(STATE, &bad), Err(SignedError::Version(0)));
-        for kind in [0, 19, 22] {
+        for kind in [0, 19, 23] {
             let mut bad = msg.clone();
             bad[1] = kind;
             assert_eq!(rx.verify(STATE, &bad), Err(SignedError::UnknownKind(kind)));

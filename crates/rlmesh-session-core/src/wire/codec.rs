@@ -74,7 +74,7 @@ use crate::wire::scene::{
 };
 use crate::wire::tick::{Step, TickState, VirtualTick};
 use crate::wire::timing::EndpointTiming;
-use crate::wire::view::{DeviceView, Member, ViewGrid};
+use crate::wire::view::{DeviceView, Member, ViewGrid, ViewReply};
 
 /// Generated `rlmesh.session.v2` messages: private, so the schema can move
 /// without touching any public type.
@@ -132,13 +132,96 @@ pub fn encode_reply(reply: &CtlReply) -> Vec<u8> {
         keys: reply.keys.iter().map(key_to_pb).collect(),
         assignment: reply.assignment.as_ref().map(assignment_to_pb),
         run: reply.run.as_ref().map(run_state_to_pb),
+        view: None,
     }
     .encode_to_vec()
 }
 
-/// Decodes the host's answer.
+/// Encodes the host's answer to a robot that takes its device view: its
+/// view in `view`, and no `state`.
+pub fn encode_view_reply(reply: &ViewReply) -> Vec<u8> {
+    let (status, message) = match &reply.result {
+        Ok(()) => (pb::CtlStatus::Ok, String::new()),
+        Err(err) => (status_to_pb(err.status), err.message.clone()),
+    };
+    pb::CtlReply {
+        status: status as i32,
+        message,
+        state: None,
+        leases: reply.leases.iter().map(lease_to_pb).collect(),
+        request_id: reply.request_id,
+        keys: reply.keys.iter().map(key_to_pb).collect(),
+        assignment: reply.assignment.as_ref().map(assignment_to_pb),
+        run: reply.run.as_ref().map(run_state_to_pb),
+        view: reply.view.as_ref().map(view_to_pb),
+    }
+    .encode_to_vec()
+}
+
+/// `CtlReply` without its `state` (field 3), which prost skips unread: what
+/// [`decode_view_reply`] decodes, so a board never links the authority
+/// state's decoder.
+#[derive(Clone, PartialEq, prost::Message)]
+struct ReplyWithoutState {
+    #[prost(enumeration = "pb::CtlStatus", tag = "1")]
+    status: i32,
+    #[prost(string, tag = "2")]
+    message: String,
+    #[prost(message, repeated, tag = "4")]
+    leases: Vec<pb::Lease>,
+    #[prost(uint64, tag = "5")]
+    request_id: u64,
+    #[prost(message, repeated, tag = "6")]
+    keys: Vec<pb::Key>,
+    #[prost(message, optional, tag = "7")]
+    assignment: Option<pb::Assignment>,
+    #[prost(message, optional, tag = "8")]
+    run: Option<pb::RunState>,
+    #[prost(message, optional, tag = "9")]
+    view: Option<pb::DeviceView>,
+}
+
+/// Decodes any host answer as a robot that takes its device view does:
+/// `state`, if present, is skipped unread.
+pub fn decode_view_reply(buf: &[u8]) -> Result<ViewReply, WireError> {
+    let reply = ReplyWithoutState::decode(buf)?;
+    Ok(ViewReply {
+        result: status_from_pb(reply.status, reply.message),
+        view: reply.view.map(view_from_pb).transpose()?,
+        leases: collect(reply.leases, lease_from_pb)?,
+        request_id: reply.request_id,
+        keys: collect(reply.keys, key_from_pb)?,
+        assignment: reply.assignment.map(assignment_from_pb).transpose()?,
+        run: reply.run.map(run_state_from_pb).transpose()?,
+    })
+}
+
+/// `CtlReply` without its `view` (field 9), which only robots that take
+/// their device view get: what [`decode_reply`] decodes, so the browser's
+/// binding never links the view's decoder.
+#[derive(Clone, PartialEq, prost::Message)]
+struct ReplyWithoutView {
+    #[prost(enumeration = "pb::CtlStatus", tag = "1")]
+    status: i32,
+    #[prost(string, tag = "2")]
+    message: String,
+    #[prost(message, optional, tag = "3")]
+    state: Option<pb::AuthorityState>,
+    #[prost(message, repeated, tag = "4")]
+    leases: Vec<pb::Lease>,
+    #[prost(uint64, tag = "5")]
+    request_id: u64,
+    #[prost(message, repeated, tag = "6")]
+    keys: Vec<pb::Key>,
+    #[prost(message, optional, tag = "7")]
+    assignment: Option<pb::Assignment>,
+    #[prost(message, optional, tag = "8")]
+    run: Option<pb::RunState>,
+}
+
+/// Decodes the host's answer (a `view`, if present, is skipped unread).
 pub fn decode_reply(buf: &[u8]) -> Result<CtlReply, WireError> {
-    let reply = pb::CtlReply::decode(buf)?;
+    let reply = ReplyWithoutView::decode(buf)?;
     let state = reply
         .state
         .ok_or_else(|| WireError::malformed("ctl reply", "no state"))?;
@@ -503,6 +586,10 @@ pub fn decode_state(buf: &[u8]) -> Result<AuthoritySnapshot, WireError> {
 
 /// Encodes one robot's device view.
 pub fn encode_view(view: &DeviceView) -> Vec<u8> {
+    view_to_pb(view).encode_to_vec()
+}
+
+fn view_to_pb(view: &DeviceView) -> pb::DeviceView {
     pb::DeviceView {
         robot: view.robot.to_string(),
         epoch: view.epoch.0,
@@ -537,13 +624,15 @@ pub fn encode_view(view: &DeviceView) -> Vec<u8> {
             .collect(),
         closing: view.closing.as_ref().map(reason_to_pb),
     }
-    .encode_to_vec()
 }
 
 /// Decodes one robot's device view, without the authority state's
 /// decoder (a board links only this).
 pub fn decode_view(buf: &[u8]) -> Result<DeviceView, WireError> {
-    let v = pb::DeviceView::decode(buf)?;
+    view_from_pb(pb::DeviceView::decode(buf)?)
+}
+
+fn view_from_pb(v: pb::DeviceView) -> Result<DeviceView, WireError> {
     Ok(DeviceView {
         robot: ParticipantId::new(v.robot)?,
         epoch: Epoch(v.epoch),
@@ -3075,6 +3164,32 @@ mod tests {
         assert_eq!(decode_view(&bytes).expect("decode"), view);
         // The view is its own message, not a state a board could misread.
         assert!(decode_state(&bytes).is_err());
+
+        // A ctl reply to a robot that takes its view carries it in field 9
+        // and no state; the view path reads any reply, skipping `state`.
+        let reply = ViewReply {
+            result: Err(CtlError::new(CtlStatus::LeaseBusy, "held")),
+            view: Some(view),
+            leases: state.leases.clone(),
+            request_id: 13,
+            keys: Vec::new(),
+            assignment: None,
+            run: None,
+        };
+        let bytes = encode_view_reply(&reply);
+        assert_eq!(decode_view_reply(&bytes).expect("decode"), reply);
+        assert!(decode_reply(&bytes).is_err(), "no state in it");
+        let full = encode_reply(&CtlReply {
+            result: Ok(()),
+            state: state.clone(),
+            leases: Vec::new(),
+            request_id: 14,
+            keys: Vec::new(),
+            assignment: None,
+            run: None,
+        });
+        let read = decode_view_reply(&full).expect("decode");
+        assert_eq!((read.request_id, read.view), (14, None));
     }
 
     #[test]
