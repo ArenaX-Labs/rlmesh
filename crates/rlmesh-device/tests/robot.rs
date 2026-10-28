@@ -277,7 +277,7 @@ async fn drive(
 async fn a_board_joins_declares_its_parts_and_heartbeats() {
     let world = World::start().await;
     let robot = world.robot(AddressKey::of(&world.identity));
-    // Joined, then 3.5 s more: past the time it would count the host lost
+    // Joined, then 5.5 s more: past the time it would count the host lost
     // without echoes.
     let mut running = None;
     let robot = drive(
@@ -289,7 +289,7 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
             if r.phase() == Phase::Running {
                 running.get_or_insert_with(Instant::now);
             }
-            running.is_some_and(|at| at.elapsed() > Duration::from_millis(3500))
+            running.is_some_and(|at| at.elapsed() > Duration::from_millis(5500))
         },
     )
     .await;
