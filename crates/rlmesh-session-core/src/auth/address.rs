@@ -86,6 +86,26 @@ impl AddressKey {
     pub fn credential(&self) -> Credential {
         Credential::local(&self.secret, self.host)
     }
+
+    /// The password of the host's loopback links ([`link_password`]).
+    pub fn link_password(&self) -> Zeroizing<String> {
+        link_password(&self.secret)
+    }
+}
+
+/// The `kdf` label of an embedded host's link password.
+pub const LINK_LABEL: &[u8] = b"rlmesh/v2 link";
+
+/// The Zenoh `usrpwd` password of an embedded host's links (design §5):
+/// `kdf(local secret, "rlmesh/v2 link")`, base32. Only holders of the
+/// address's key (and the host) have it, so other local users can't link
+/// to the host's router.
+pub fn link_password(secret: &[u8; 32]) -> Zeroizing<String> {
+    let key = Zeroizing::new(
+        crate::crypto::lp::kdf(secret, LINK_LABEL, &[])
+            .unwrap_or_else(|_| unreachable!("a short label")),
+    );
+    Zeroizing::new(base32(&key))
 }
 
 impl FromStr for AddressKey {

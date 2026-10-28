@@ -50,7 +50,7 @@ snow = { version = "0.10", default-features = false, features = [
 poly1305 = { version = "0.8", default-features = false, features = ["zeroize"] }
 subtle = { version = "2.6", default-features = false }
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
-zeroize = { version = "1", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 [features]
 default = ["std"]

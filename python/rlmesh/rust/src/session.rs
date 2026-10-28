@@ -301,8 +301,16 @@ fn observe_err(err: ObserveError) -> PyErr {
 /// hosting rule: joined, or hosted in this process when no host answers.
 /// Joining it puts capture times on `CLOCK_MONOTONIC`,
 /// `time.monotonic_ns()`'s clock.
-fn place(py: Python<'_>, text: &str, lease_grace: Duration) -> PyResult<EmbeddedHost> {
-    let address = Address::session(text).map_err(address_err)?;
+fn place(
+    py: Python<'_>,
+    text: &str,
+    lease_grace: Duration,
+    insecure: bool,
+) -> PyResult<EmbeddedHost> {
+    let address = Address {
+        insecure,
+        ..Address::session(text).map_err(address_err)?
+    };
     block_on(py, async move {
         EmbeddedHost::start(&address, lease_grace)
             .await
@@ -332,11 +340,11 @@ pub struct PyHost {
 #[pymethods]
 impl PyHost {
     /// Places the session `address` names (`":0"`: hosted here on an
-    /// OS-assigned port).
+    /// OS-assigned port). It listens on loopback only unless `insecure`.
     #[new]
-    #[pyo3(signature = (address=":0", lease_grace_ms=250))]
-    fn new(py: Python<'_>, address: &str, lease_grace_ms: u64) -> PyResult<Self> {
-        let host = place(py, address, Duration::from_millis(lease_grace_ms))?;
+    #[pyo3(signature = (address=":0", lease_grace_ms=250, insecure=false))]
+    fn new(py: Python<'_>, address: &str, lease_grace_ms: u64, insecure: bool) -> PyResult<Self> {
+        let host = place(py, address, Duration::from_millis(lease_grace_ms), insecure)?;
         Ok(Self { host })
     }
 
@@ -492,7 +500,7 @@ impl PyRobot {
         robot_json: String,
         timeout_s: f64,
     ) -> PyResult<Self> {
-        let session = place(py, address, LEASE_GRACE)?;
+        let session = place(py, address, LEASE_GRACE, false)?;
         let address = session.address().clone();
         let wait = timeout(timeout_s)?;
         let robot = block_on(py, async move {
@@ -964,7 +972,7 @@ impl PyController {
         captures: BTreeMap<String, String>,
         timeout_s: f64,
     ) -> PyResult<Self> {
-        let session = place(py, address, LEASE_GRACE)?;
+        let session = place(py, address, LEASE_GRACE, false)?;
         let address = session.address().clone();
         let wait = timeout(timeout_s)?;
         let class = self::priority(priority)?;
@@ -1294,7 +1302,7 @@ impl PyRecorder {
         name: &str,
         timeout_s: f64,
     ) -> PyResult<Self> {
-        let session = place(py, address, LEASE_GRACE)?;
+        let session = place(py, address, LEASE_GRACE, false)?;
         let address = session.address().clone();
         let wait = timeout(timeout_s)?;
         let recorder = block_on(py, async {

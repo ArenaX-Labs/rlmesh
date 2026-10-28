@@ -20,7 +20,7 @@ use rlmesh_session::wire::{
 };
 use rlmesh_session::{
     Inputs, ObserveError, Participant, ParticipantConfig, SessionError, SubscribeOptions,
-    Transport, TransportConfig,
+    Transport, TransportConfig, TransportTuning,
 };
 
 /// Participants listen too (the OS picks the ports): in peer mode, data
@@ -120,8 +120,17 @@ async fn join(
     roles: Vec<Role>,
     priority: PriorityClass,
 ) -> Participant {
+    // A client of the host, as the SDK joins, presenting the password the
+    // printed key derives.
+    let tuning = TransportTuning {
+        client: true,
+        link: host.address.link_auth(),
+        ..TransportTuning::default()
+    };
     let transport = Transport::open(
-        &TransportConfig::per_class_tcp(Some(any_local_port()), Some(host.base)).expect("config"),
+        &TransportConfig::per_class_tcp(Some(any_local_port()), Some(host.base))
+            .expect("config")
+            .with_tuning(tuning),
     )
     .await
     .expect("transport");

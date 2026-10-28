@@ -171,6 +171,7 @@ pub fn local_run_session() -> Result<String, GymError> {
                         SocketAddr::from(([127, 0, 0, 1], 0)),
                         rlmesh_session::address::DEFAULT_SESSION,
                         LEASE_GRACE,
+                        false,
                     ))
                     .map_err(|e| e.to_string())?;
                 let base = placed.address.base;
@@ -212,15 +213,18 @@ pub(crate) fn owns_links(transport: &Transport) -> bool {
     !(transport.is_shared() || transport.is_in_process())
 }
 
-/// The lockstep class session of a participant (§10.2): the transport's
-/// own when it opens no links of its own (close it only when it does).
+/// The lockstep class session of a participant of the session at
+/// `address` (§10.2): the transport's own when it opens no links of its own
+/// (close it only when it does), else a link of its own to the host,
+/// presenting what the participant's links did (design §5).
 pub async fn lockstep_session(
     transport: &Transport,
-    base: SocketAddr,
+    address: &SessionAddress,
 ) -> Result<zenoh::Session, GymError> {
     if !owns_links(transport) {
         return Ok(transport.control().clone());
     }
+    let base = address.base;
     let endpoints = Endpoints {
         listen: vec![format!("tcp/{}", SocketAddr::new(listen_ip(base), 0))],
         connect: vec![format!("tcp/{base}")],
@@ -228,6 +232,7 @@ pub async fn lockstep_session(
     // A client participant's lockstep session is a client too.
     let tuning = TransportTuning {
         client: transport.is_client(),
+        link: transport.link().cloned(),
         ..TransportTuning::default()
     };
     let mut config = zenoh_config(&endpoints, &tuning)?;
@@ -481,7 +486,7 @@ async fn serve_robot(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(local_key.clone(), Arc::downgrade(&handler));
-        let lockstep = lockstep_session(participant.transport(), address.session.base).await?;
+        let lockstep = lockstep_session(participant.transport(), &address.session).await?;
         Ok((handler, lockstep))
     }
     .await;
@@ -726,7 +731,7 @@ impl Attached {
             Some(handler) => (Arc::new(DirectLink(handler)), None),
             None => {
                 let session =
-                    lockstep_session(participant.transport(), self.address.session.base).await?;
+                    lockstep_session(participant.transport(), &self.address.session).await?;
                 let keys: &SessionKeys = participant.keys();
                 let link = ZenohLink::new(
                     session.clone(),

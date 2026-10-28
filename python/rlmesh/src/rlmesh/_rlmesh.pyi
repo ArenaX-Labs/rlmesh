@@ -959,10 +959,10 @@ class V2Host:
         `{ip}:{port}[/{session}]#{key}`: what participants connect to. The
         key is a credential (its holder attaches as device `local`).
         """
-    def __new__(cls, address: builtins.str = ..., lease_grace_ms: builtins.int = ...) -> V2Host:
+    def __new__(cls, address: builtins.str = ..., lease_grace_ms: builtins.int = ..., insecure: builtins.bool = ...) -> V2Host:
         r"""
         Places the session `address` names (`":0"`: hosted here on an
-        OS-assigned port).
+        OS-assigned port). It listens on loopback only unless `insecure`.
         """
     def close(self) -> None:
         r"""

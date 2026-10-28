@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::serve::ListenerExt;
 use clap::Parser;
 use rlmesh_session::gateway::{AppState, Args, Config, Gateway, router, tls};
-use rlmesh_session::{Transport, TransportConfig};
+use rlmesh_session::{Transport, TransportConfig, TransportTuning};
 use tracing::{error, info};
 
 #[tokio::main]
@@ -40,8 +40,18 @@ async fn run(args: Args) -> Result<(), String> {
         Some((cert, key)) => Some(tls::load_config(cert, key)?),
         None => None,
     };
+    // Its links to a host on loopback present the password the key derives
+    // (§5).
+    // TODO: a peer can't tell a refused password from a host not up, so a
+    // gateway on loopback can't reach a LAN-bound host there; dial its LAN
+    // address until step 13 gives the gateway its own credential and join.
+    let tuning = TransportTuning {
+        link: rlmesh_session::address::link_auth(config.connect, config.key.as_ref()),
+        ..TransportTuning::default()
+    };
     let transport = TransportConfig::per_class_tcp(Some(config.zenoh_listen), Some(config.connect))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .with_tuning(tuning);
     let transport = Transport::open(&transport)
         .await
         .map_err(|e| e.to_string())?;

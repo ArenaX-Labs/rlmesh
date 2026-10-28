@@ -45,7 +45,9 @@ use crate::error::SessionError;
 use crate::host::HostConfig;
 use crate::participant::{Participant, ParticipantConfig};
 use crate::server::SessionServer;
-use crate::transport::{Transport, TransportConfig, TransportTuning, open_local_listeners};
+use crate::transport::{
+    LINK_USER, LinkAuth, Transport, TransportConfig, TransportTuning, free_local_base,
+};
 use crate::wire::{CtlError, CtlStatus, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
 /// The well-known port a session host listens on (control class; the other
@@ -157,6 +159,8 @@ pub struct Address {
     pub participant: Option<String>,
     /// The key it carries, if any (`#...`).
     pub key: Option<AddressKey>,
+    /// Host it beyond loopback anyway ([`host_at`]); never in its text.
+    pub insecure: bool,
 }
 
 /// Where the hosting rule puts a session.
@@ -331,6 +335,7 @@ impl Address {
             ParticipantId::new(name).map_err(|e| invalid(text, e))?;
         }
         Ok(Self {
+            insecure: false,
             host,
             session: session.map(str::to_string),
             participant: name.map(str::to_string),
@@ -509,6 +514,11 @@ impl SessionAddress {
         self.text(true)
     }
 
+    /// What its links to the host present: see [`link_auth`].
+    pub fn link_auth(&self) -> Option<LinkAuth> {
+        link_auth(self.base, self.key.as_ref())
+    }
+
     /// The participant address of `participant` in this session, with the
     /// key: an invite, as [`Self::invite`].
     pub fn participant_invite(&self, participant: &str) -> String {
@@ -621,22 +631,25 @@ impl SessionAddress {
         let transport = match local_host(self.base) {
             Some(transport) => transport,
             None => {
-                let tuning = TransportTuning {
-                    client: true,
-                    connect_timeout: Some(host_timeout),
-                    ..TransportTuning::default()
-                };
-                Transport::open(
-                    &TransportConfig::per_class_tcp(None, Some(self.base))?.with_tuning(tuning),
-                )
-                .await
-                .map_err(|err| match err {
-                    SessionError::Zenoh(_) => SessionError::Timeout(
-                        host_timeout,
-                        format!("the session host at {}", self.base),
-                    ),
-                    other => other,
-                })?
+                // A host on this machine not up yet leaves its key when it
+                // is: its links need the password the key derives.
+                let mut link = self.link_auth();
+                while link.is_none()
+                    && self.base.ip().is_loopback()
+                    && tokio::time::Instant::now() < deadline
+                {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    link = self.link_auth();
+                }
+                open_client(self.base, link, deadline)
+                    .await
+                    .map_err(|err| match err {
+                        SessionError::Zenoh(_) => SessionError::Timeout(
+                            host_timeout,
+                            format!("the session host at {}", self.base),
+                        ),
+                        other => other,
+                    })?
             }
         };
         let mut config = ParticipantConfig::new(
@@ -751,6 +764,20 @@ pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credenti
         })
 }
 
+/// What a link to the host at `base` presents (design §5): on loopback, the
+/// password `key` derives, else the key of a host on this machine's; on the
+/// LAN, nothing.
+pub fn link_auth(base: SocketAddr, key: Option<&AddressKey>) -> Option<LinkAuth> {
+    if !base.ip().is_loopback() {
+        return None;
+    }
+    let key = key.cloned().or_else(|| local_key(base))?;
+    Some(LinkAuth {
+        password: key.link_password(),
+        dictionary: None,
+    })
+}
+
 /// The key of a host on this machine: one this process runs, or the file
 /// one left for this user ([`key_file`]).
 fn local_key(base: SocketAddr) -> Option<AddressKey> {
@@ -782,6 +809,12 @@ fn key_file(port: u16) -> Option<std::path::PathBuf> {
 /// directory 0700 and the file 0600, written whole (renamed into place).
 fn leave_key(port: u16, key: &AddressKey) -> std::io::Result<()> {
     let path = key_file(port).ok_or_else(|| std::io::Error::other("no home directory"))?;
+    write_private(&path, key.to_string().as_bytes())
+}
+
+/// Writes `contents` to `path` for this user only: the directory 0700 and
+/// the file 0600, written whole (renamed into place).
+fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| std::io::Error::other("no directory"))?;
@@ -790,13 +823,17 @@ fn leave_key(port: u16, key: &AddressKey) -> std::io::Result<()> {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder.create(dir)?;
-    let partial = dir.join(format!(".{port}.{}", std::process::id()));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let partial = dir.join(format!(".{name}.{}.partial", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(&partial)?, key.to_string().as_bytes())?;
-    std::fs::rename(&partial, &path)
+    std::io::Write::write_all(&mut options.open(&partial)?, contents)?;
+    std::fs::rename(&partial, path)
 }
 
 /// This process stopped hosting at `address`: forget its transport, and
@@ -818,20 +855,74 @@ fn listening(base: SocketAddr) -> bool {
     TcpStream::connect_timeout(&joinable(base), Duration::from_millis(200)).is_ok()
 }
 
+/// How long a link presenting the password gets, once the host listens,
+/// before [`open_client`] tries one without.
+const GATED_TRY: Duration = Duration::from_secs(1);
+
+/// Joins the host at `base` as a Zenoh client by `deadline`, presenting
+/// `link`. A host bound beyond loopback (`insecure`, rlmeshd's LAN listener)
+/// gates no link, since Zenoh can't gate one listener and not another
+/// (design §5), and refuses a password it never asked for: when a gated
+/// link to a listening host fails, the join links without one, and the
+/// handshake alone admits it, as on any LAN link.
+async fn open_client(
+    base: SocketAddr,
+    link: Option<LinkAuth>,
+    deadline: tokio::time::Instant,
+) -> Result<Transport, SessionError> {
+    let open = |link, until: tokio::time::Instant| {
+        let tuning = TransportTuning {
+            client: true,
+            connect_timeout: Some(until.saturating_duration_since(tokio::time::Instant::now())),
+            link,
+            ..TransportTuning::default()
+        };
+        async move {
+            Transport::open(&TransportConfig::per_class_tcp(None, Some(base))?.with_tuning(tuning))
+                .await
+        }
+    };
+    let Some(link) = link else {
+        return open(None, deadline).await;
+    };
+    while !listening(base) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let gated = open(
+        Some(link),
+        deadline.min(tokio::time::Instant::now() + GATED_TRY),
+    )
+    .await;
+    if gated.is_ok() || !listening(base) {
+        return gated;
+    }
+    open(None, deadline).await
+}
+
 /// Hosts session `name` in this process on `base` (port 0: OS-assigned),
 /// and every other session of [`TENANT`] its participants name, under fresh
 /// keys (or the ones its launcher passed in [`HOST_IDENTITY_VAR`]): the
 /// returned address carries them, and on a named port they are also left
 /// for this user's other processes.
+///
+/// It listens on loopback only (design §12 decision 9) unless `insecure`,
+/// or a launcher passed its keys (a sandbox's container, whose published
+/// ports its launcher dials with them): LAN sessions are rlmeshd's. On
+/// loopback, and in a launched container, every link must present the
+/// password the key derives (design §5). Beyond loopback no link does:
+/// Zenoh gates every listener of a router or none, and a board's zenoh-pico
+/// has no `usrpwd`, so there the handshake alone admits, as on any LAN link.
 pub async fn host_at(
     base: SocketAddr,
     name: &str,
     lease_grace: Duration,
+    insecure: bool,
 ) -> Result<Placed, SessionError> {
     serve_at(
         base,
         name,
         lease_grace,
+        insecure,
         #[cfg(feature = "record")]
         None,
     )
@@ -845,34 +936,45 @@ pub async fn host_recording_at(
     base: SocketAddr,
     name: &str,
     lease_grace: Duration,
+    insecure: bool,
     rolling: crate::record::Rolling,
 ) -> Result<Placed, SessionError> {
-    serve_at(base, name, lease_grace, Some(rolling)).await
+    serve_at(base, name, lease_grace, insecure, Some(rolling)).await
 }
 
 async fn serve_at(
     base: SocketAddr,
     name: &str,
     lease_grace: Duration,
+    insecure: bool,
     #[cfg(feature = "record")] rolling: Option<crate::record::Rolling>,
 ) -> Result<Placed, SessionError> {
+    let launched = launched_identity()?;
+    if !base.ip().is_loopback() && !insecure && launched.is_none() {
+        return Err(SessionError::Config(format!(
+            "an embedded host listens on loopback only, not {base}: for a session other \
+             machines join, run rlmeshd; to accept that anyone who can reach {base} can try \
+             this host, pass insecure (Host(insecure=True), rlmesh host --insecure)"
+        )));
+    }
     // Only a port someone can name is worth a key file: an OS-assigned one
     // is reached by the address this returns.
     let named_port = base.port() != 0;
-    let (transport, base) = if base.port() == 0 {
-        open_local_listeners(base.ip()).await?
-    } else {
-        let transport = Transport::open(&TransportConfig::per_class_tcp(Some(base), None)?).await?;
-        (transport, base)
+    let mut config = HostConfig::new(TenantId::new(TENANT)?, session_id(name));
+    let launched = match launched {
+        Some(identity) => {
+            config.identity = std::sync::Arc::new(identity);
+            true
+        }
+        None => false,
     };
+    let gated = base.ip().is_loopback() || launched;
+    let password = gated.then(|| config.identity.link_password());
+    let (transport, base) = open_listeners(base, password.as_ref()).await?;
     let mut address = SessionAddress::new(joinable(base), name)?;
-    let mut config = HostConfig::new(address.tenant.clone(), address.session);
     config.clock = SystemMonotonicClock.shared();
     config.lease_grace = lease_grace.max(Duration::from_millis(1));
     config.health_log = None;
-    if let Some(identity) = launched_identity()? {
-        config.identity = std::sync::Arc::new(identity);
-    }
     let key = AddressKey::of(&config.identity);
     address.key = Some(key.clone());
     #[cfg(feature = "record")]
@@ -893,6 +995,68 @@ async fn serve_at(
         address,
         hosted: Some((host, transport)),
     })
+}
+
+/// Opens a host's per-class listeners on `base` (port 0: free local
+/// ports), every link gated by `password` (Zenoh `usrpwd`, design §5) when
+/// there is one.
+async fn open_listeners(
+    base: SocketAddr,
+    password: Option<&zeroize::Zeroizing<String>>,
+) -> Result<(Transport, SocketAddr), SessionError> {
+    let dictionary = password.map(dictionary).transpose()?;
+    let tuning = TransportTuning {
+        link: password
+            .zip(dictionary.clone())
+            .map(|(password, dictionary)| LinkAuth {
+                password: password.clone(),
+                dictionary: Some(dictionary),
+            }),
+        ..TransportTuning::default()
+    };
+    let open = |base| {
+        TransportConfig::per_class_tcp(Some(base), None).map(|c| c.with_tuning(tuning.clone()))
+    };
+    let opened = if base.port() == 0 {
+        let mut last = SessionError::Config("no free local ports".into());
+        let mut found = None;
+        for _ in 0..16 {
+            let free = free_local_base(base.ip())?;
+            match Transport::open(&open(free)?).await {
+                Ok(transport) => {
+                    found = Some((transport, free));
+                    break;
+                }
+                Err(err) => last = err,
+            }
+        }
+        found.ok_or(last)
+    } else {
+        Transport::open(&open(base)?)
+            .await
+            .map(|transport| (transport, base))
+    };
+    if let Some(dictionary) = dictionary {
+        let _ = std::fs::remove_file(dictionary);
+    }
+    opened
+}
+
+/// Writes the `user:password` file a gated host's Zenoh reads at open; the
+/// caller removes it right after.
+fn dictionary(password: &zeroize::Zeroizing<String>) -> Result<std::path::PathBuf, SessionError> {
+    let dir = key_file(0)
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .ok_or_else(|| SessionError::Config("no directory for the link gate".into()))?;
+    static OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = dir.join(format!(".link.{}.{n}", std::process::id()));
+    write_private(
+        &path,
+        format!("{LINK_USER}:{}", password.as_str()).as_bytes(),
+    )
+    .map_err(|err| SessionError::Config(format!("the link gate: {err}")))?;
+    Ok(path)
 }
 
 /// Reaches the session `address` names by the hosting rule: joins the local
@@ -929,7 +1093,7 @@ pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, S
         Placement::Host(base) if base.port() != 0 && listening(base) => return join(base),
         Placement::Host(base) => base,
     };
-    match host_at(base, name, lease_grace).await {
+    match host_at(base, name, lease_grace, address.insecure).await {
         Ok(placed) => Ok(placed),
         // Another process holds the port: join it.
         Err(_) if base.port() != 0 && listening(base) => join(base),
@@ -951,6 +1115,7 @@ mod tests {
 
     fn address(host: Option<HostName>, session: Option<&str>, name: Option<&str>) -> Address {
         Address {
+            insecure: false,
             host,
             session: session.map(str::to_string),
             participant: name.map(str::to_string),
@@ -1185,6 +1350,79 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_embedded_host_stays_on_loopback_and_links_only_with_its_key() {
+        let grace = Duration::from_millis(250);
+        let wide: SocketAddr = "0.0.0.0:0".parse().expect("addr");
+        let err = host_at(wide, "lan", grace, false)
+            .await
+            .expect_err("off loopback");
+        assert!(err.to_string().contains("rlmeshd"), "{err}");
+
+        let mut placed = host_at("127.0.0.1:0".parse().expect("addr"), "gated", grace, false)
+            .await
+            .expect("host");
+        let client = |base, link| {
+            let tuning = TransportTuning {
+                client: true,
+                connect_timeout: Some(Duration::from_millis(500)),
+                link,
+                ..TransportTuning::default()
+            };
+            TransportConfig::per_class_tcp(None, Some(base))
+                .expect("config")
+                .with_tuning(tuning)
+        };
+        // Another local user's process, without the key: no link at all.
+        let wrong = Some(LinkAuth {
+            password: zeroize::Zeroizing::new("guess".into()),
+            dictionary: None,
+        });
+        for link in [None, wrong.clone()] {
+            assert!(
+                Transport::open(&client(placed.address.base, link))
+                    .await
+                    .is_err()
+            );
+        }
+        let linked = Transport::open(&client(placed.address.base, placed.address.link_auth()))
+            .await
+            .expect("the key's password links");
+        linked.close().await.expect("close");
+        placed.close().await.expect("close");
+
+        // Bound beyond loopback, it gates no link (a board's zenoh-pico has
+        // no usrpwd), and a join that offers a password links without one;
+        // the handshake still refuses a device it never enrolled.
+        let mut lan = host_at(wide, "lan", grace, true).await.expect("insecure");
+        let base = lan.address.base;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let offered = open_client(base, wrong, deadline).await.expect("links");
+        offered.close().await.expect("close");
+        let transport = Transport::open(&client(base, None))
+            .await
+            .expect("links without a password");
+        let host_static = *lan.address.credential().expect("credential").host_static();
+        let mut config = ParticipantConfig::new(
+            lan.address.tenant.clone(),
+            lan.address.session,
+            ParticipantId::new("intruder").expect("id"),
+            vec![Role::Observer],
+            PriorityClass::Scripted,
+        );
+        config.credential = Some(Credential::local(&[7; 32], host_static));
+        let err = Participant::attach(transport, config)
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(
+            err.refusal().map(|e| e.status),
+            Some(CtlStatus::Unauthenticated),
+            "{err}"
+        );
+        lan.close().await.expect("close");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_explicit_local_port_hosts_and_a_second_placement_joins_it() {
         let grace = Duration::from_millis(250);
         let mut first = place(&Address::session(":0").expect("parse"), grace)
@@ -1283,11 +1521,12 @@ mod tests {
         host.close().await.expect("close");
 
         // A plain single-session host cannot start sessions: refused at once.
-        let (transport, base) = open_local_listeners(IpAddr::from(Ipv4Addr::LOCALHOST))
+        let tenant = TenantId::new(TENANT).expect("tenant");
+        let config = HostConfig::new(tenant, session_id("only"));
+        let local = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let (transport, base) = open_listeners(local, Some(&config.identity.link_password()))
             .await
             .expect("listen");
-        let only = SessionAddress::new(base, "only").expect("session");
-        let config = HostConfig::new(only.tenant.clone(), only.session);
         let key = AddressKey::of(&config.identity);
         let single = SessionHost::start(transport.clone(), config)
             .await

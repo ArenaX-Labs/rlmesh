@@ -753,6 +753,12 @@ impl HostIdentity {
         &self.local
     }
 
+    /// The password of this host's loopback links
+    /// ([`address::link_password`]).
+    pub fn link_password(&self) -> Zeroizing<String> {
+        address::link_password(&self.local)
+    }
+
     /// The `local` device's static public key.
     pub fn local_public(&self) -> [u8; 32] {
         *local_keypair(&self.local).public()

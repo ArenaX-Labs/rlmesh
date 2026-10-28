@@ -16,6 +16,7 @@ mujoco``).
 from __future__ import annotations
 
 import json
+import selectors
 import socket
 import subprocess
 import sys
@@ -59,17 +60,23 @@ def _assert_ok(result: subprocess.CompletedProcess[str]) -> None:
 
 def _serve_example(relative: str) -> Iterator[str]:
     """Start a server example hosting its session on a free port and yield
-    the env's address."""
-    address = f"127.0.0.1:{_free_port()}/env"
+    the env's address as the server announces it: on loopback that carries
+    the session's key (``host:port#key/env``), which a client needs to
+    attach."""
     process = subprocess.Popen(
-        [sys.executable, str(EXAMPLES / relative), "--address", address],
+        [
+            sys.executable,
+            "-u",
+            str(EXAMPLES / relative),
+            "--address",
+            f"127.0.0.1:{_free_port()}/env",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     )
     try:
-        _wait_until_listening(address, process)
-        yield address
+        yield _announced_address(process)
     finally:
         process.terminate()
         try:
@@ -79,21 +86,25 @@ def _serve_example(relative: str) -> Iterator[str]:
             process.wait(timeout=10)
 
 
-def _wait_until_listening(address: str, process: subprocess.Popen[str]) -> None:
-    host, port = address.split("/", 1)[0].rsplit(":", 1)
+def _announced_address(process: subprocess.Popen[str]) -> str:
+    """The address in the server's ``serving ... on ADDRESS`` line."""
+    assert process.stdout is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    output: list[str] = []
     deadline = time.monotonic() + SERVER_STARTUP_TIMEOUT
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            output = process.stdout.read() if process.stdout else ""
+    while (left := deadline - time.monotonic()) > 0:
+        if not selector.select(timeout=left):
+            break
+        line = process.stdout.readline()
+        if not line:
             raise AssertionError(
-                f"server exited early (exit={process.returncode}):\n{output}"
+                f"server exited early (exit={process.wait()}):\n{''.join(output)}"
             )
-        try:
-            with socket.create_connection((host, int(port)), timeout=0.5):
-                return
-        except OSError:
-            time.sleep(0.05)
-    raise AssertionError(f"server never listened on {address}")
+        output.append(line)
+        if line.startswith("serving ") and " on " in line:
+            return line.rsplit(" on ", 1)[1].strip()
+    raise AssertionError(f"server never announced its address:\n{''.join(output)}")
 
 
 @pytest.fixture(scope="module")
