@@ -27,7 +27,7 @@ async fn parts_stay_in_authored_order_after_a_redeclaration() {
     let mut config = HostConfig::new(tenant.clone(), session);
     config.clock = SystemMonotonicClock.shared();
     config.health_log = None;
-    let _host = SessionHost::start(transport, config).await.unwrap();
+    let host = SessionHost::start(transport, config).await.unwrap();
 
     let any = "127.0.0.1:0".parse().unwrap();
     let peer = Transport::open(&TransportConfig::per_class_tcp(Some(any), Some(base)).unwrap())
@@ -41,6 +41,7 @@ async fn parts_stay_in_authored_order_after_a_redeclaration() {
         PriorityClass::Scripted,
     );
     pc.clock = SystemMonotonicClock.shared();
+    pc.credential = Some(host.credential());
     let bot = Participant::attach(peer, pc).await.unwrap();
 
     let first = bot.declare_parts(FIRST).await.unwrap();

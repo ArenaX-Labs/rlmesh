@@ -62,4 +62,15 @@ impl VirtualTick {
             Self::Step(step) => step.tick,
         }
     }
+
+    /// Where it falls in the host's order: (epoch, tick, phase), observe
+    /// before step. A receiver drops a tick at or below the last it took
+    /// (§8.7).
+    pub fn order(&self) -> (Epoch, u64, u8) {
+        let phase = match self {
+            Self::Observe(_) => 0,
+            Self::Step(_) => 1,
+        };
+        (self.epoch(), self.tick(), phase)
+    }
 }

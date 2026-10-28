@@ -10,7 +10,8 @@
 //!
 //! `both` runs the embodiment here and spawns the controller as a second OS
 //! process; `embodiment` and `controller` run one side each (`--base` names
-//! the per-class TCP base port, `--session-file` passes the session id).
+//! the per-class TCP base port, `--session-file` passes the session id and
+//! the host's address key).
 //! Every timestamp is the machine's `CLOCK_MONOTONIC`, shared by both
 //! processes. The result is one JSON object on stdout:
 //!
@@ -53,6 +54,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
+use rlmesh_session::address::AddressKey;
 use rlmesh_session::edge::{Edge, EdgeConfig, EdgeMode};
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::spec::apply::{Tensor, Value as ActionValue};
@@ -219,7 +221,7 @@ fn robot_map(args: &Args) -> String {
 }
 
 fn participant_config(
-    session: SessionId,
+    (session, key): (SessionId, &AddressKey),
     id: &str,
     roles: Vec<Role>,
     priority: PriorityClass,
@@ -233,6 +235,7 @@ fn participant_config(
     );
     config.clock = SystemMonotonicClock.shared();
     config.ctl_timeout = Duration::from_secs(5);
+    config.credential = Some(key.credential());
     Ok(config)
 }
 
@@ -340,6 +343,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     let mut host_config = HostConfig::new(TenantId::new("bench")?, session);
     host_config.clock = SystemMonotonicClock.shared();
     host_config.health_log = None;
+    let key = AddressKey::of(&host_config.identity);
     let host = SessionHost::start(transport.clone(), host_config).await?;
     let host_events = Arc::new(Mutex::new(BTreeMap::<&'static str, u64>::new()));
     let events_task = tokio::spawn({
@@ -365,7 +369,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     let robot = Participant::attach(
         transport.clone(),
         participant_config(
-            session,
+            (session, &key),
             ROBOT,
             vec![Role::Embodiment],
             PriorityClass::Scripted,
@@ -377,7 +381,7 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     let cmd = declared.part_at(&robot_id, "cmd").ok_or("cmd")?.channel;
     let ft_channel = declared.part_at(&robot_id, "ft").ok_or("ft")?.channel;
     if let Some(path) = &args.session_file {
-        std::fs::write(path, session.to_string())?;
+        std::fs::write(path, format!("{session} {key}"))?;
     }
 
     let clock = SystemMonotonicClock;
@@ -704,18 +708,19 @@ async fn bound_controller(args: &Args, policy: Participant) -> Result<Value, Box
 async fn controller(args: &Args) -> Result<Value, BoxError> {
     let transport = Transport::open(&transport_config(args, false)?).await?;
     let session_file = args.session_file.as_ref().ok_or("--session-file")?;
-    let session: SessionId = loop {
+    let (session, key): (SessionId, AddressKey) = loop {
         if let Ok(text) = std::fs::read_to_string(session_file)
-            && let Ok(id) = text.trim().parse()
+            && let Some((id, key)) = text.trim().split_once(' ')
+            && let (Ok(id), Ok(key)) = (id.parse(), key.parse())
         {
-            break id;
+            break (id, key);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     let policy = Participant::attach(
         transport.clone(),
         participant_config(
-            session,
+            (session, &key),
             "policy",
             vec![Role::Controller],
             PriorityClass::Model,

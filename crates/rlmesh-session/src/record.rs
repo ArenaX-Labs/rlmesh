@@ -380,13 +380,31 @@ impl Recorder {
             let previous: Mutex<Option<AuthoritySnapshot>> = Mutex::new(None);
             let tx = tx.clone();
             let stamp = stamp.clone();
+            // Only what the host signed is recorded, as its plain snapshot.
+            let verifier = Mutex::new(
+                participant
+                    .host_verifier()
+                    .ok_or_else(|| RecordError::Session(SessionError::Closed))?,
+            );
+            let key = participant.keys().host_state();
             participant
                 .transport()
                 .control()
-                .declare_subscriber(participant.keys().host_state())
+                .declare_subscriber(key.clone())
                 .callback(move |sample| {
                     let log_time = stamp.now();
-                    let data = sample.payload().to_bytes().into_owned();
+                    let signed = sample.payload().to_bytes();
+                    let data = match verifier
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .verify(&key, &signed)
+                    {
+                        Ok(verified) => verified.body.to_vec(),
+                        Err(err) => {
+                            debug!(%err, "authority update dropped");
+                            return;
+                        }
+                    };
                     let Ok(state) = codec::decode_state(&data) else {
                         debug!("undecodable authority update");
                         return;
@@ -431,6 +449,10 @@ impl Recorder {
                 .await
                 .map_err(SessionError::from)?
         };
+        // TODO: heartbeats are sealed to the host since session auth (design
+        // §8.2), so none decodes here and recordings carry no heartbeats;
+        // have the host relay its per-participant link health to observers
+        // (the cockpit's TODO too), then record that instead.
         let heartbeats = subscribe_envelopes(
             &participant,
             &tx,

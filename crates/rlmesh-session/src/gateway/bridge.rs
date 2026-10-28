@@ -4,17 +4,21 @@
 //! - The [`Gateway`] attaches one observer participant of its own, for the
 //!   declarations (it resolves subscriptions against the host's parts), and
 //!   relays the host's authority updates (`host/state`) as they were
-//!   published.
+//!   published, once their signature verifies (the browser gets the plain
+//!   snapshot: the wasm holds no keys).
+//! - Every participant attaches with the gateway's credential (the session
+//!   address's key: device `local`), so each runs its own handshake and
+//!   seals its own verbs and heartbeats.
 //! - Every browser control connection is a [`BrowserLink`]: a participant of
 //!   its own (a controller at the class the browser asked for, capped by
 //!   `--max-priority`), with an identity binding over every commandable part
 //!   so it can be granted leases. The host is the only authority: lease
 //!   grants, releases and the session verbs go to it through the
 //!   participant, and its replies come back as `CtlReply`s.
-//! - **Heartbeats are the browser's own.** The participant's heartbeat loop
-//!   is switched off; each browser heartbeat (with its four-timestamp
-//!   exchange, in the browser's clock) is forwarded as sent, and the host's
-//!   echoes come back as sent. The host therefore renews leases only while
+//! - **Heartbeats are the browser's own.** The participant relays them
+//!   instead of its own: each browser heartbeat (with its four-timestamp
+//!   exchange, in the browser's clock) is sealed under the participant's
+//!   keys and forwarded, and the host's echoes come back opened. The host therefore renews leases only while
 //!   the browser itself is alive, maps the browser's clock (not the
 //!   gateway's), and lapses the lease when the browser stops.
 //! - **Chunks are the browser's own**, forwarded as sent to the part's
@@ -42,13 +46,13 @@ use crate::wire::{
 };
 use crate::{MonotonicClock, Participant, ParticipantConfig, SessionError, Transport};
 use bytes::Bytes;
+use rlmesh_session_core::auth::{self, Credential};
 use serde_json::json;
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use zenoh::Wait;
 use zenoh::bytes::ZBytes;
-use zenoh::qos::{CongestionControl, Priority};
 
 use crate::gateway::frame;
 
@@ -82,6 +86,7 @@ pub struct Gateway {
     keys: SessionKeys,
     tenant: TenantId,
     session: SessionId,
+    credential: Credential,
     observer: Participant,
     state: broadcast::Sender<Bytes>,
     max_priority: PriorityClass,
@@ -125,26 +130,16 @@ pub fn socket_of(priority: ChannelPriority) -> &'static str {
 }
 
 impl Gateway {
-    /// Attaches the gateway's observer to the session on `transport`.
+    /// Attaches the gateway's observer to the session on `transport`, with
+    /// `credential` (the session address's key).
     pub async fn open(
         transport: Transport,
         tenant: TenantId,
         session: SessionId,
+        credential: Credential,
         max_priority: PriorityClass,
     ) -> Result<Arc<Self>, SessionError> {
         let keys = SessionKeys::new(&tenant, session);
-        let (state, _) = broadcast::channel(64);
-        let raw_state = transport
-            .control()
-            .declare_subscriber(keys.host_state())
-            .callback({
-                let state = state.clone();
-                move |sample| {
-                    // No receivers is fine.
-                    let _ = state.send(payload_bytes(sample.payload()));
-                }
-            })
-            .await?;
         let mut config = ParticipantConfig::new(
             tenant.clone(),
             session,
@@ -153,8 +148,31 @@ impl Gateway {
             PriorityClass::Scripted,
         );
         config.name = "rlmesh-gateway".into();
+        config.credential = Some(credential.clone());
         let observer = Participant::attach(transport.clone(), config).await?;
         info!(gateway = %observer.id(), %session, "attached");
+        let (state, _) = broadcast::channel(64);
+        let verifier = std::sync::Mutex::new(observer.host_verifier().ok_or(SessionError::Closed)?);
+        let raw_state = transport
+            .control()
+            .declare_subscriber(keys.host_state())
+            .callback({
+                let (state, key) = (state.clone(), keys.host_state());
+                move |sample| {
+                    let signed = payload_bytes(sample.payload());
+                    let mut verifier = verifier
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    match auth::open_state(&mut verifier, &key, &signed) {
+                        // No receivers is fine.
+                        Ok(snapshot) => {
+                            let _ = state.send(Bytes::from(codec::encode_state(&snapshot)));
+                        }
+                        Err(err) => debug!(%err, "authority update dropped"),
+                    }
+                }
+            })
+            .await?;
         let (end, ended) = watch::channel(false);
         tokio::spawn(watch_host(observer.host_present(), end));
         Ok(Arc::new(Self {
@@ -162,6 +180,7 @@ impl Gateway {
             keys,
             tenant,
             session,
+            credential,
             observer,
             state,
             max_priority,
@@ -273,46 +292,28 @@ impl Gateway {
             priority,
         );
         config.name = format!("browser via {}", self.observer.id());
+        config.credential = Some(self.credential.clone());
         // The participant's own heartbeats would renew leases on the
-        // gateway's account: they stay off (one may leave before the switch
-        // below; it carries no timing sample), and the browser's are
-        // forwarded instead.
+        // gateway's account: it relays the browser's instead (one of its own
+        // may leave before the switch below; it carries no timing sample).
         config.heartbeat_period = Duration::from_secs(3600);
         config.clock = MonotonicClock::new().shared();
         let participant = Participant::attach(self.transport.clone(), config).await?;
-        participant.set_heartbeats_enabled(false);
-        let heartbeat = self
-            .transport
-            .control()
-            .declare_publisher(self.keys.heartbeat(&id))
-            .priority(Priority::RealTime)
-            .congestion_control(CongestionControl::Drop)
-            .express(true)
-            .await?;
-        let echo = self
-            .transport
-            .control()
-            .declare_subscriber(self.keys.heartbeat_echo(&id))
-            .callback({
-                let out = out.clone();
-                move |sample| {
-                    let body = payload_bytes(sample.payload());
-                    let _ = out.try_send(Outbound::Binary(Bytes::from(frame::tagged(
-                        frame::ECHO,
-                        &body,
-                    ))));
-                }
-            })
-            .await?;
+        let (echoes, mut opened) = mpsc::unbounded_channel();
+        participant.relay_heartbeats(echoes);
+        let relay = tokio::spawn(async move {
+            while let Some(echo) = opened.recv().await {
+                let frame = frame::tagged(frame::ECHO, &codec::encode_echo(&echo));
+                let _ = out.try_send(Outbound::Binary(Bytes::from(frame)));
+            }
+        });
         let link = BrowserLink {
             gw: self.clone(),
             participant: Arc::new(participant),
             id,
-            heartbeat,
             chunks: Mutex::new(BTreeMap::new()),
             bound: Arc::new(Mutex::new(Vec::new())),
-            tasks: Vec::new(),
-            _echo: echo,
+            tasks: vec![relay],
         };
         Ok(link)
     }
@@ -323,11 +324,9 @@ pub struct BrowserLink {
     gw: Arc<Gateway>,
     participant: Arc<Participant>,
     id: ParticipantId,
-    heartbeat: zenoh::pubsub::Publisher<'static>,
     chunks: Mutex<BTreeMap<ChannelId, zenoh::pubsub::Publisher<'static>>>,
     bound: Arc<Mutex<Vec<ChannelId>>>,
     tasks: Vec<JoinHandle<()>>,
-    _echo: zenoh::pubsub::Subscriber<()>,
 }
 
 /// Every commandable part, by id.
@@ -462,7 +461,7 @@ impl BrowserLink {
     pub async fn on_frame(&self, frame_bytes: Bytes) -> Option<Outbound> {
         let (&tag, _) = frame_bytes.split_first()?;
         match tag {
-            frame::HEARTBEAT => self.on_heartbeat(frame_bytes.slice(1..)),
+            frame::HEARTBEAT => self.on_heartbeat(frame_bytes.slice(1..)).await,
             frame::CHUNK => self.on_chunk(frame_bytes.slice(1..)).await,
             frame::REQUEST => {
                 let id = frame::read_id(&frame_bytes)?;
@@ -472,10 +471,10 @@ impl BrowserLink {
         }
     }
 
-    fn on_heartbeat(&self, body: Bytes) -> Option<Outbound> {
+    async fn on_heartbeat(&self, body: Bytes) -> Option<Outbound> {
         match codec::decode_heartbeat(&body) {
             Ok(hb) if hb.participant == self.id => {
-                if let Err(err) = self.heartbeat.put(ZBytes::from(body)).wait() {
+                if let Err(err) = self.participant.send_heartbeat(&hb).await {
                     warn!(participant = %self.id, %err, "heartbeat");
                 }
                 None
@@ -613,6 +612,7 @@ impl BrowserLink {
             Err(err) => (Err(err), Vec::new()),
         };
         let reply = CtlReply {
+            request_id: 0,
             result,
             state,
             leases,

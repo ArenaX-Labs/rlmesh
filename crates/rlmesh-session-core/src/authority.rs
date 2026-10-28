@@ -315,6 +315,16 @@ impl Default for AuthorityConfig {
     }
 }
 
+/// Who sent a verb, as the host's handshake authenticated it (§8.3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Identity {
+    /// The sender's device.
+    pub device: String,
+    /// The sender's generation: a new one of a known participant replaces
+    /// the old process.
+    pub generation: u32,
+}
+
 /// What an accepted verb produced.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Applied {
@@ -523,8 +533,21 @@ impl Authority {
         }
     }
 
-    /// Applies a verb. Accepted verbs that change state bump the revision.
+    /// Applies a verb from an unauthenticated sender (device `""`,
+    /// generation 0): sans-IO tests and simulations. The host applies every
+    /// verb with [`Self::apply_from`].
     pub fn apply(&mut self, request: Request, now_ns: i64) -> Result<Applied, CtlError> {
+        self.apply_from(request, &Identity::default(), now_ns)
+    }
+
+    /// Applies a verb from `sender`. Accepted verbs that change state bump
+    /// the revision.
+    pub fn apply_from(
+        &mut self,
+        request: Request,
+        sender: &Identity,
+        now_ns: i64,
+    ) -> Result<Applied, CtlError> {
         self.now_ns = now_ns;
         let mut applied = Applied::default();
         let from = request.from;
@@ -552,7 +575,15 @@ impl Authority {
                         format!("this session (protocol minor {PROTOCOL_MINOR}) lacks {missing:?}"),
                     ));
                 }
-                // A re-attach (reconnect) keeps the participant's leases.
+                // A re-attach of the same generation (a reconnect) keeps the
+                // participant's leases; a new generation replaces the old.
+                if self
+                    .roster
+                    .get(&from)
+                    .is_some_and(|p| p.generation != sender.generation)
+                {
+                    self.replace_generation(&from, &mut applied.events);
+                }
                 self.roster.insert(
                     from.clone(),
                     ParticipantInfo {
@@ -568,6 +599,8 @@ impl Authority {
                         workflow_editions,
                         present: true,
                         left: None,
+                        device: sender.device.clone(),
+                        generation: sender.generation,
                     },
                 );
                 self.seen.insert(
@@ -941,6 +974,37 @@ impl Authority {
         self.needed.retain(|(p, _), _| p != id);
         self.recompute_demands(events);
         self.barrier_gone(id, self.now_ns);
+    }
+
+    /// A new process attached as `id` (a new generation, §8.3): the old one
+    /// ends. A robot's restart is the identity half of an embodiment swap: a
+    /// new epoch voids every lease, and ACTIVE becomes ARMED; no other mode
+    /// changes, so a restart never stands in for an arm or a clear. Anyone
+    /// else's leases end as a detached holder's, and an ACTIVE session goes
+    /// SAFE.
+    fn replace_generation(&mut self, id: &ParticipantId, events: &mut Vec<AuthorityEvent>) {
+        if self.parts.values().any(|p| &p.owner == id) {
+            let why = self.reason(ReasonCode::VoidedByEpoch, id, "the robot restarted");
+            self.epoch = self.epoch.next();
+            if let Some(clock) = &mut self.clock {
+                clock.reset(self.epoch, self.now_ns);
+            }
+            self.revoke_all(ReasonCode::VoidedByEpoch, &why, events);
+            if self.mode == Mode::Active {
+                self.set_mode(Mode::Armed, why, events);
+            }
+        } else {
+            let why = self.reason(
+                ReasonCode::HolderDetached,
+                id,
+                "a new process attached under its id",
+            );
+            let before = events.len();
+            self.end_leases_of(id, &why, events);
+            if events.len() > before {
+                self.enter_safe(why, events);
+            }
+        }
     }
 
     fn require_attached(&self, id: &ParticipantId) -> Result<&ParticipantInfo, CtlError> {
@@ -1907,6 +1971,7 @@ mod tests {
                     Request {
                         from: pid(id),
                         epoch: None,
+                        request_id: 0,
                         command: attach(id, roles, priority),
                     },
                     0,
@@ -1940,6 +2005,7 @@ mod tests {
                 Request {
                     from: pid(from),
                     epoch,
+                    request_id: 0,
                     command,
                 },
                 now,
@@ -2613,6 +2679,7 @@ mod tests {
             Request {
                 from: pid("policy"),
                 epoch: Some(Epoch(1)),
+                request_id: 0,
                 command: Command::GrantLease {
                     channels: vec![f.ch("cmd1")],
                     release: Vec::new(),
@@ -3014,6 +3081,7 @@ mod tests {
                     Request {
                         from: pid(id),
                         epoch: None,
+                        request_id: 0,
                         command: attach(id, roles, priority),
                     },
                     0,
@@ -3068,6 +3136,7 @@ mod tests {
             Request {
                 from: pid("robot"),
                 epoch: Some(Epoch(1)),
+                request_id: 0,
                 command: ready(2),
             },
             4,

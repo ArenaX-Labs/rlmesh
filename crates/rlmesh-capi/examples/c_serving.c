@@ -509,7 +509,7 @@ static void host_signal(int sig) {
   if (sig == SIGINT) ++host_ints;
 }
 /* The participant address the model serves at, once its host session is up. */
-static char served_at[96];
+static char served_at[256];
 static atomic_bool hosting;
 /* A run through the served model returns only once its serve has joined, past
  * where it installs (or skips) its signal handlers. */

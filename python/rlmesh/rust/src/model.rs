@@ -1005,7 +1005,7 @@ impl PyModel {
                         cancel.cancel();
                     })
                 };
-                tracing::info!(address = %binding.address(), "model serving");
+                tracing::info!(address = %binding, "model serving");
                 let mut serve = std::pin::pin!(binding.serve(service, close, cancel.clone()));
                 let mut poll = crate::client::signal_poll();
                 let result = loop {

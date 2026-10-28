@@ -21,6 +21,7 @@ import rlmesh._sandbox.session as session_mod
 def _session_ports(monkeypatch: pytest.MonkeyPatch) -> None:
     """Containers publish on 40000-40003 and serve at once."""
     monkeypatch.setattr(session_mod, "_sandbox_session_ports", lambda: 40000)
+    monkeypatch.setattr(session_mod, "_sandbox_host_identity", lambda: ("secret", "k"))
     monkeypatch.setattr(model_mod, "wait_serving", lambda *_args: None)
 
 
@@ -73,7 +74,7 @@ def test_image_source_serve_starts_a_published_container(
     assert "RLMESH_NAME=model" in cmd
     assert "--cap-drop" in cmd and "no-new-privileges" in cmd
     assert model.container_id == "container-abc"
-    assert model.address == "127.0.0.1:40000/model"
+    assert model.address == "127.0.0.1:40000#k/model"
 
 
 def test_gpus_requests_the_device_on_serve(

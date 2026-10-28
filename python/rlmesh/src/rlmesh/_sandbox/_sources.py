@@ -8,10 +8,12 @@ their own.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from typing import Literal
 
 SourceKind = Literal["build", "prebuilt"]
@@ -27,9 +29,15 @@ DOCKER_PULL_TIMEOUT_SECONDS = 1800.0
 
 
 def run_docker(
-    cmd: list[str], *, timeout: float = DOCKER_TIMEOUT_SECONDS
+    cmd: list[str],
+    *,
+    timeout: float = DOCKER_TIMEOUT_SECONDS,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a Docker CLI command with a hang guard.
+
+    ``env`` adds to the CLI's environment: a secret a ``-e NAME`` passes on
+    without putting it in argv.
 
     Every sandbox ``docker ...`` subprocess goes through here: a wedged Docker
     daemon otherwise blocks a plain ``subprocess.run`` forever. A timeout is
@@ -37,7 +45,12 @@ def run_docker(
     """
     try:
         return subprocess.run(
-            cmd, capture_output=True, text=True, check=False, timeout=timeout
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=None if env is None else {**os.environ, **env},
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(

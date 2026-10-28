@@ -126,6 +126,8 @@ re_mp4 = "0.5"
 sha2 = "0.11"
 tempfile = "3"
 uuid = "1"
+# Wipes secrets on drop (an embedded host's address key).
+zeroize = "1"
 
 # Python Bindings
 pyo3 = "0.29"

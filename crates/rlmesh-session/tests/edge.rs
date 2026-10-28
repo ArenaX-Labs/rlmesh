@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use rlmesh_session::address::AddressKey;
 use rlmesh_session::edge::{Edge, EdgeConfig, EdgeMode, EdgeTick, Rejection};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::{
@@ -53,6 +54,8 @@ struct World {
     base: std::net::SocketAddr,
     tenant: TenantId,
     session: SessionId,
+    /// The host's address key, which a child process attaches with.
+    key: AddressKey,
     host: SessionHost,
 }
 
@@ -75,17 +78,28 @@ impl World {
         config.clock = SystemMonotonicClock.shared();
         config.lease_grace = GRACE;
         config.health_log = None;
+        let key = AddressKey::of(&config.identity);
         let host = SessionHost::start(transport, config).await.expect("host");
         Self {
             base,
             tenant,
             session,
+            key,
             host,
         }
     }
 
     async fn join(&self, id: &str, roles: Vec<Role>, priority: PriorityClass) -> Participant {
-        join(self.base, &self.tenant, self.session, id, roles, priority).await
+        join(
+            self.base,
+            &self.tenant,
+            self.session,
+            &self.key,
+            id,
+            roles,
+            priority,
+        )
+        .await
     }
 
     async fn robot(&self) -> Participant {
@@ -108,7 +122,10 @@ impl World {
             .args(["--exact", "child_process", "--nocapture"])
             .env(
                 CHILD,
-                format!("{},{},{},{scenario}", self.base, self.session, self.tenant),
+                format!(
+                    "{},{},{},{},{scenario}",
+                    self.base, self.session, self.tenant, self.key
+                ),
             )
             .stdout(stdout)
             .spawn()
@@ -120,6 +137,7 @@ async fn join(
     base: std::net::SocketAddr,
     tenant: &TenantId,
     session: SessionId,
+    key: &AddressKey,
     id: &str,
     roles: Vec<Role>,
     priority: PriorityClass,
@@ -138,6 +156,7 @@ async fn join(
     );
     config.clock = SystemMonotonicClock.shared();
     config.heartbeat_period = Duration::from_millis(20);
+    config.credential = Some(key.credential());
     Participant::attach(transport, config)
         .await
         .expect("attach")
@@ -529,7 +548,7 @@ async fn stream(p: &Participant, lease: &Lease, tag: u8, duration: Duration, war
 }
 
 /// The child half of the cross-process tests: runs only when a parent test
-/// launches this binary with [`CHILD`] set to `base,session,tenant,scenario`.
+/// launches this binary with [`CHILD`] set to `base,session,tenant,key,scenario`.
 #[tokio::test(flavor = "multi_thread")]
 async fn child_process() {
     let Ok(spec) = std::env::var(CHILD) else {
@@ -539,12 +558,14 @@ async fn child_process() {
     let base: std::net::SocketAddr = parts.next().expect("base").parse().expect("base");
     let session: SessionId = parts.next().expect("session").parse().expect("session");
     let tenant = TenantId::new(parts.next().expect("tenant")).expect("tenant");
+    let key: AddressKey = parts.next().expect("key").parse().expect("key");
     let scenario = parts.next().expect("scenario").to_string();
     if scenario == "observe-applied" {
         let observer = join(
             base,
             &tenant,
             session,
+            &key,
             "observer",
             vec![Role::Observer],
             PriorityClass::Scripted,
@@ -597,6 +618,7 @@ async fn child_process() {
         base,
         &tenant,
         session,
+        &key,
         "remote-policy",
         vec![Role::Controller],
         PriorityClass::Model,

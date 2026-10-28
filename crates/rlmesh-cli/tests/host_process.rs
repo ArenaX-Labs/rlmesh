@@ -6,6 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use rlmesh_session::SessionAddress;
 use rlmesh_session::address::{DEFAULT_SESSION, TENANT, session_id};
 use rlmesh_session::media::synthetic_frame;
 use rlmesh_session::record::{Recorded, read};
@@ -37,6 +38,8 @@ struct HostProcess {
     base: std::net::SocketAddr,
     /// Where it records its sessions.
     recordings: tempfile::TempDir,
+    /// The address it printed, with its key.
+    address: SessionAddress,
 }
 
 impl HostProcess {
@@ -66,12 +69,16 @@ impl HostProcess {
         BufReader::new(stdout)
             .read_line(&mut line)
             .expect("address line");
-        if line.trim() == base.to_string() {
+        if let Ok(address) = line.trim().parse::<SessionAddress>()
+            && address.base == base
+            && address.key.is_some()
+        {
             return Some(Self {
                 child,
                 session: session_id(DEFAULT_SESSION),
                 base,
                 recordings,
+                address,
             });
         }
         let _ = child.kill();
@@ -126,6 +133,7 @@ async fn join(
         priority,
     );
     config.heartbeat_period = Duration::from_millis(20);
+    config.credential = Some(host.address.credential().expect("the printed key"));
     Participant::attach(transport, config)
         .await
         .expect("attach")

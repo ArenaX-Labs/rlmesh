@@ -172,6 +172,7 @@ impl World {
                 Request {
                     from: pid(from),
                     epoch,
+                    request_id: 0,
                     command,
                 },
                 self.now,

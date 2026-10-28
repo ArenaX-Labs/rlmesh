@@ -209,7 +209,9 @@ pub(crate) fn session_err(err: SessionError) -> PyErr {
     match ErrorKind::of(&err) {
         ErrorKind::Refused(status) => Python::attach(|py| {
             let message = match &err {
-                SessionError::Rejected(refusal) => refusal.message.clone(),
+                SessionError::Rejected(refusal) | SessionError::Unverified(refusal) => {
+                    refusal.message.clone()
+                }
                 other => other.to_string(),
             };
             let err = SessionRefused::new_err(message);
@@ -338,10 +340,11 @@ impl PyHost {
         Ok(Self { host })
     }
 
-    /// `{ip}:{port}[/{session}]`: what participants connect to.
+    /// `{ip}:{port}[/{session}]#{key}`: what participants connect to. The
+    /// key is a credential (its holder attaches as device `local`).
     #[getter]
     fn address(&self) -> String {
-        self.host.address().to_string()
+        self.host.address().invite()
     }
 
     /// Stops the host (participants see it leave).
@@ -513,10 +516,10 @@ impl PyRobot {
         &self.name
     }
 
-    /// The robot's participant address, `{ip}:{port}[/{session}]/{name}`.
+    /// The robot's participant address, `{ip}:{port}[/{session}]#{key}/{name}`.
     #[getter]
     fn address(&self) -> String {
-        self.session.address().participant(&self.name)
+        self.session.address().participant_invite(&self.name)
     }
 
     /// The parts as the host normalised them, in authored order.

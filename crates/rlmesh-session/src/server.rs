@@ -123,6 +123,7 @@ impl SessionServer {
                         PriorityClass::Scripted,
                     );
                     participant.clock = config.clock.clone();
+                    participant.credential = Some(config.identity.local_credential());
                     let recorded = async {
                         let participant = Participant::attach(transport, participant).await?;
                         Recorder::start_rolling(Arc::new(participant), rolling, session).await

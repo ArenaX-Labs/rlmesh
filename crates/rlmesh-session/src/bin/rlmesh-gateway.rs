@@ -1,7 +1,7 @@
 //! `rlmesh-gateway`: serves browsers a session until interrupted.
 //!
 //! ```text
-//! rlmesh-gateway --address 127.0.0.1:17600/local/<session> --static examples/web/dist
+//! rlmesh-gateway --address 127.0.0.1:17600/<session>#<key> --static examples/web/dist
 //! ```
 //!
 //! It logs to stderr (`RUST_LOG`) and prints `READY <url>` once it serves.
@@ -45,10 +45,13 @@ async fn run(args: Args) -> Result<(), String> {
     let transport = Transport::open(&transport)
         .await
         .map_err(|e| e.to_string())?;
+    let credential = rlmesh_session::address::credential(config.connect, config.key.as_ref())
+        .map_err(|e| e.to_string())?;
     let gateway = Gateway::open(
         transport,
         config.tenant.clone(),
         config.session,
+        credential,
         config.max_priority,
     )
     .await

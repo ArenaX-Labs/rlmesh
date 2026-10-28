@@ -132,6 +132,35 @@ pub enum SignedError {
     BadKey,
 }
 
+/// A broadcast's header and body, **unverified**: for a participant's
+/// bootstrap read of `host_instance` before its handshake (§8.3), and for
+/// readers that hold no host key. Never a basis for acting.
+///
+/// # Errors
+/// [`SignedError`] for a malformed envelope.
+pub fn peek(msg: &[u8]) -> Result<Verified<'_>, SignedError> {
+    if msg.len() < HEADER_LEN + SIGNATURE_LEN {
+        return Err(SignedError::Truncated);
+    }
+    if msg[0] != VERSION {
+        return Err(SignedError::Version(msg[0]));
+    }
+    let kind = SignedKind::from_u8(msg[1]).ok_or(SignedError::UnknownKind(msg[1]))?;
+    let mut word = [0u8; 8];
+    word.copy_from_slice(&msg[2..10]);
+    let host_instance = u64::from_le_bytes(word);
+    word.copy_from_slice(&msg[10..18]);
+    let seq = u64::from_le_bytes(word);
+    Ok(Verified {
+        header: SignedHeader {
+            kind,
+            host_instance,
+            seq,
+        },
+        body: &msg[HEADER_LEN..msg.len() - SIGNATURE_LEN],
+    })
+}
+
 /// The host's side: its signing key and its one publication counter.
 pub struct SignedSender {
     key: SigningKey,
@@ -250,18 +279,15 @@ impl SignedReceiver {
         keyexpr: &str,
         msg: &'m [u8],
     ) -> Result<Verified<'m>, SignedError> {
-        if msg.len() < HEADER_LEN + SIGNATURE_LEN {
-            return Err(SignedError::Truncated);
-        }
-        if msg[0] != VERSION {
-            return Err(SignedError::Version(msg[0]));
-        }
-        let kind = SignedKind::from_u8(msg[1]).ok_or(SignedError::UnknownKind(msg[1]))?;
-        let mut word = [0u8; 8];
-        word.copy_from_slice(&msg[2..10]);
-        let host_instance = u64::from_le_bytes(word);
-        word.copy_from_slice(&msg[10..18]);
-        let seq = u64::from_le_bytes(word);
+        let Verified {
+            header:
+                SignedHeader {
+                    kind,
+                    host_instance,
+                    seq,
+                },
+            ..
+        } = peek(msg)?;
         if host_instance != self.host_instance {
             return Err(SignedError::WrongInstance(host_instance));
         }

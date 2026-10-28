@@ -460,6 +460,8 @@ mod tests {
                     workflow_editions: vec![],
                     present: true,
                     left: None,
+                    device: "local".into(),
+                    generation: 1,
                 })
                 .collect(),
             leases,

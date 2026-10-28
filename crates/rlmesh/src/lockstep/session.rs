@@ -119,9 +119,18 @@ impl LockstepAddress {
     }
 }
 
+impl LockstepAddress {
+    /// The address with its session's key: the invite drivers connect by
+    /// ([`SessionAddress::invite`]).
+    pub fn invite(&self) -> String {
+        self.session.participant_invite(self.robot.as_str())
+    }
+}
+
+/// Without the key, for logs and errors.
 impl std::fmt::Display for LockstepAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.session.participant(self.robot.as_str()))
+        write!(f, "{}/{}", self.session, self.robot)
     }
 }
 
@@ -316,9 +325,10 @@ pub async fn bind(address: &str) -> Result<LockstepBinding, GymError> {
 }
 
 impl LockstepBinding {
-    /// The full address drivers connect to.
+    /// The full address drivers connect to: an invite, key included
+    /// ([`LockstepAddress::invite`]).
     pub fn address(&self) -> String {
-        self.address.to_string()
+        self.address.invite()
     }
 
     /// Leaves the session and stops its host, for a binding that never
@@ -825,7 +835,8 @@ async fn gym_client(
     map.bind_channels(&attached.parts)?;
     let channels: Vec<ChannelId> = map.action.parts.iter().map(|p| p.spec.channel).collect();
     let table = format!("{{\"lockstep\":{:?}}}", robot.to_string());
-    let session = attached.address.session.to_string();
+    // Models the client invites join by it: the key goes with it.
+    let session = attached.address.session.invite();
     let (link, epoch, token, held) = attached
         .lease(table, None, channels, options.direct, options.timeout)
         .await?;

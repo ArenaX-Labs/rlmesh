@@ -11,6 +11,11 @@
 //!
 //! - [`address`]: the address grammar (`[host/][session/]participant`),
 //!   the hosting rule, and joining a session from another process.
+//! - [`auth`] and [`crypto`]: attaching through the Noise IK handshake, the
+//!   `Sealed` envelopes every `ctl` verb, reply and heartbeat travels in,
+//!   and the host's `Signed` broadcasts (design §8). A participant attaches
+//!   with a [`Credential`](auth::Credential): an embedded host's address
+//!   carries one.
 //! - [`authority`]: epoch, roster, the DISARMED/ARMED/ACTIVE/SAFE/ESTOP mode
 //!   machine with a latched e-stop, the part table with host-assigned,
 //!   never-reused ids (normalised by [`spec`]), bindings, and the
@@ -63,11 +68,13 @@
 #![warn(missing_docs)]
 
 pub mod address;
+pub use rlmesh_session_core::auth;
 pub use rlmesh_session_core::authority;
 pub mod cache;
 pub mod chunk;
 pub mod clock;
 pub mod controller;
+pub use rlmesh_session_core::crypto;
 pub mod edge;
 pub mod error;
 #[cfg(feature = "gateway")]

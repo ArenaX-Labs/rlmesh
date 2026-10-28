@@ -347,7 +347,7 @@ export class Host implements AsyncDisposable {
     return new Host(await wait(() => native().openHost(opts.address ?? ':0', opts.leaseGraceMs ?? 250)));
   }
 
-  /** `{ip}:{port}[/{session}]`: what participants connect to. */
+  /** `{ip}:{port}[/{session}]#{key}`: what participants connect to. The key is a credential (its holder attaches as device `local`). */
   get address(): string {
     return this.native.address;
   }
@@ -695,7 +695,8 @@ export class Policy implements AsyncDisposable {
   private native: NativePolicy | null = null;
   private bound: Binding | null = null;
   private readonly policyJson: string;
-  private readonly address: string;
+  // A true private field: the address carries the session's key, which an inspected Policy must not show.
+  readonly #address: string;
   readonly name: string;
   private readonly priority: Priority;
   private readonly timeout: number;
@@ -705,7 +706,7 @@ export class Policy implements AsyncDisposable {
     opts: { session: Host | string; name?: string; priority?: Priority; timeout?: number },
   ) {
     this.policyJson = JSON.stringify(policy);
-    this.address = address(opts.session);
+    this.#address = address(opts.session);
     this.name = opts.name ?? 'policy';
     this.priority = opts.priority ?? 'model';
     this.timeout = opts.timeout ?? 10;
@@ -721,7 +722,7 @@ export class Policy implements AsyncDisposable {
       return entry;
     });
     this.native = await wait(() =>
-      native().bindPolicy(this.address, this.name, this.policyJson, robot, {
+      native().bindPolicy(this.#address, this.name, this.policyJson, robot, {
         priority: this.priority,
         under: opts.under,
         at: opts.at,

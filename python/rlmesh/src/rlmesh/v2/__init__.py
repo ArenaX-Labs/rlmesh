@@ -43,6 +43,7 @@ try:
 except ImportError as exc:  # pragma: no cover - import guard
     raise ImportError("rlmesh.v2 requires numpy. Install rlmesh[numpy].") from exc
 
+from .._client._endpoint import redact_address
 from .._rlmesh import (
     BindingRefused,
     SessionException,
@@ -110,8 +111,15 @@ class Host:
 
     @property
     def address(self) -> str:
-        """``{ip}:{port}[/{session}]``: what participants connect to."""
+        """``{ip}:{port}[/{session}]#{key}``: what participants connect to.
+
+        The key is a credential (its holder attaches as device ``local``):
+        pass the address to the processes you mean to join, not to logs.
+        """
         return self._native.address
+
+    def __repr__(self) -> str:
+        return f"Host({redact_address(self.address)!r})"
 
     def close(self) -> None:
         """Stop the host."""
@@ -330,7 +338,11 @@ class Robot:
 
     @property
     def address(self) -> str:
-        """The robot's participant address, with its host's real port."""
+        """The robot's participant address, with its host's real port.
+
+        It carries its session's key: a credential, as :attr:`Host.address`
+        says.
+        """
         return self._native.address
 
     @property

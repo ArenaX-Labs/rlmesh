@@ -113,6 +113,7 @@ __all__ = [
     "resolve_execution_horizon",
     "resolve_workflow_edition_rungs",
     "run_cli",
+    "sandbox_host_identity",
     "sandbox_reap_orphans",
     "sandbox_session_ports",
     "sandbox_start_env",
@@ -955,7 +956,8 @@ class V2Host:
     @property
     def address(self) -> builtins.str:
         r"""
-        `{ip}:{port}[/{session}]`: what participants connect to.
+        `{ip}:{port}[/{session}]#{key}`: what participants connect to. The
+        key is a credential (its holder attaches as device `local`).
         """
     def __new__(cls, address: builtins.str = ..., lease_grace_ms: builtins.int = ...) -> V2Host:
         r"""
@@ -1130,7 +1132,7 @@ class V2Robot:
     @property
     def address(self) -> builtins.str:
         r"""
-        The robot's participant address, `{ip}:{port}[/{session}]/{name}`.
+        The robot's participant address, `{ip}:{port}[/{session}]#{key}/{name}`.
         """
     @property
     def mode(self) -> builtins.str:
@@ -1293,6 +1295,8 @@ def resolve_workflow_edition_rungs(*, call: typing.Optional[builtins.str] = None
     """
 
 def run_cli(args: list[str]) -> int: ...
+
+def sandbox_host_identity() -> tuple[str, str]: ...
 
 def sandbox_reap_orphans() -> None: ...
 

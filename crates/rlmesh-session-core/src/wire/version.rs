@@ -21,8 +21,9 @@ pub const PROTOCOL_MINOR: u32 = 0;
 pub const SPEC_VERSION: u32 = 1;
 
 /// Features this build implements as a host: behaviour added in later
-/// minors. Empty at minor 0.
-pub const FEATURES: &[&str] = &[];
+/// minors. `auth.sealed`: participants attach through the handshake and
+/// seal their control traffic (design §8.8).
+pub const FEATURES: &[&str] = &["auth.sealed"];
 
 /// The features in `required` that `supported` lacks (empty: compatible).
 pub fn missing_features<'a>(required: &'a [String], supported: &[String]) -> Vec<&'a str> {
@@ -45,6 +46,6 @@ mod tests {
             missing_features(&["merge.blend".into(), "frame.fixed".into()], &supported),
             vec!["merge.blend"]
         );
-        assert!(FEATURES.is_empty(), "minor 0 adds no feature");
+        assert_eq!(FEATURES, ["auth.sealed"]);
     }
 }

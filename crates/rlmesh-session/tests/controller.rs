@@ -41,7 +41,7 @@ struct World {
     base: std::net::SocketAddr,
     tenant: TenantId,
     session: SessionId,
-    _host: SessionHost,
+    host: SessionHost,
 }
 
 impl World {
@@ -67,7 +67,7 @@ impl World {
             base,
             tenant,
             session,
-            _host: host,
+            host,
         }
     }
 
@@ -90,6 +90,7 @@ impl World {
         );
         config.clock = SystemMonotonicClock.shared();
         config.heartbeat_period = Duration::from_millis(20);
+        config.credential = Some(self.host.credential());
         Participant::attach(transport, config)
             .await
             .expect("attach")

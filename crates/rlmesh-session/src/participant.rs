@@ -1,13 +1,20 @@
 //! A participant: presence, heartbeats, the authority view and `ctl` verbs.
 //!
 //! [`Participant::attach`] announces presence (a liveliness token), waits
-//! for the host, subscribes to authority updates, attaches through `ctl` and
-//! starts heartbeating on the control class. From then on it keeps the
-//! newest authority snapshot (from updates and from every `ctl` reply) and
-//! hands out endpoints addressed by robot and path: sample publishers and
-//! subscribers, chunk publishers, history queries, the virtual-mode tick
-//! stream, and the hooks an edge runtime needs ([`AuthorityView`],
-//! [`EdgeReport`], [`Participant::report_safe`], the local e-stop latch).
+//! for the host, subscribes to authority updates, runs the handshake with
+//! its [`Credential`] (design §8.3), attaches through `ctl` and starts
+//! heartbeating on the control class. Every verb and heartbeat it sends is
+//! sealed under its `k_up`, every reply and echo it takes is opened under
+//! its `k_down`, and every `host/state` and `host/tick` it takes is
+//! verified against the host's signing key: anything else is dropped.
+//! Verbs carry rising request ids, so a retry is answered once.
+//!
+//! From then on it keeps the newest authority snapshot (from updates and
+//! from every `ctl` reply) and hands out endpoints addressed by robot and
+//! path: sample publishers and subscribers, chunk publishers, history
+//! queries, the virtual-mode tick stream, and the hooks an edge runtime
+//! needs ([`AuthorityView`], [`EdgeReport`], [`Participant::report_safe`],
+//! the local e-stop latch).
 //!
 //! A robot process tells the host about its own stops through **one ordered
 //! queue** (DESIGN §6): `EnterSafe`, a local `Estop` and its `Clear` are
@@ -29,11 +36,15 @@ use crate::spec::{BindError, Binding, Policy, RunOptions};
 use crate::wire::codec;
 use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use crate::wire::{
-    AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlReply, Epoch, Fingerprint,
-    Health, Heartbeat, HistoryQuery, Lease, LeaseToken, Mode, PartSpec, ParticipantId,
-    PriorityClass, Reason, ReasonCode, Request, Role, SampleBatch, SessionId, SessionKeys,
-    StreamSpec, TenantId, TimingSample, VirtualTick, Watermark,
+    AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlError, CtlReply, CtlStatus,
+    Epoch, Fingerprint, Health, Heartbeat, HeartbeatEcho, HistoryQuery, Lease, LeaseToken, Mode,
+    PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Role, SampleBatch, SessionId,
+    SessionKeys, StreamSpec, TenantId, TimingSample, VirtualTick, Watermark,
 };
+use rlmesh_session_core::auth::{self, Credential};
+use rlmesh_session_core::auth::{Link, ReplyOutcome};
+use rlmesh_session_core::crypto::SignedReceiver;
+use rlmesh_session_core::crypto::signed;
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -45,6 +56,7 @@ use zenoh::sample::SampleKind;
 use crate::chunk::ChunkPublisher;
 use crate::clock::{Clock, MonotonicClock, OffsetEstimate};
 use crate::error::SessionError;
+use crate::host::OsRng;
 use crate::media::ImagePublisher;
 use crate::report::{ReportInputs, RunSource, report_loop};
 use crate::sample::{
@@ -84,6 +96,10 @@ pub struct ParticipantConfig {
     pub workflow_edition: String,
     /// Every workflow edition it runs.
     pub workflow_editions: Vec<String>,
+    /// What it attaches with: its device's key and the host's static key
+    /// (`SessionHost::credential` in-process; a session address's key
+    /// otherwise). Required.
+    pub credential: Option<Credential>,
 }
 
 impl ParticipantConfig {
@@ -111,6 +127,7 @@ impl ParticipantConfig {
             requires: Vec::new(),
             workflow_edition: String::new(),
             workflow_editions: Vec::new(),
+            credential: None,
         }
     }
 }
@@ -243,13 +260,27 @@ impl ManualView {
 pub(crate) struct LocalLatch {
     latched: AtomicBool,
     latches: AtomicU64,
+    /// Why it latched last.
+    reason: Mutex<String>,
 }
 
 impl LocalLatch {
-    /// Latches it.
-    fn latch(&self) {
-        self.latches.fetch_add(1, Ordering::SeqCst);
+    /// Latches it for `reason`: which latch this is. Counted first, so a
+    /// clear that sees the flag also sees the count.
+    fn latch(&self, reason: String) -> u64 {
+        let mut last = lock(&self.reason);
+        *last = reason;
+        let seq = self.latches.fetch_add(1, Ordering::SeqCst) + 1;
         self.latched.store(true, Ordering::SeqCst);
+        seq
+    }
+
+    /// Clears it: how many latches came before, and why the last one
+    /// latched.
+    fn clear(&self) -> (u64, String) {
+        let last = lock(&self.reason);
+        self.latched.store(false, Ordering::SeqCst);
+        (self.latches.load(Ordering::SeqCst), last.clone())
     }
 
     /// Whether it is latched now.
@@ -272,10 +303,74 @@ enum Report {
         code: ReasonCode,
         reason: String,
     },
-    /// It latched a local e-stop.
-    Estop { reason: String },
-    /// It cleared that latch.
-    Clear,
+    /// It latched a local e-stop, its `seq`th.
+    Estop { reason: String, seq: u64 },
+    /// It cleared the latch, after `after` latches, the last for
+    /// `reason`.
+    Clear { after: u64, reason: String },
+}
+
+/// Keeps a robot process's stop reports in DESIGN §6's order whatever order
+/// its threads queued them in: a `Clear` goes out only after an `Estop` for
+/// every latch before it, and an `Estop` a clear already covered goes
+/// nowhere.
+#[derive(Debug, Default)]
+struct StopOrder {
+    /// The latches an `Estop` went out for.
+    estops: u64,
+}
+
+impl StopOrder {
+    /// What `report` sends, in order.
+    fn plan(&mut self, report: Report) -> Vec<Report> {
+        match report {
+            Report::Estop { seq, .. } if seq <= self.estops => Vec::new(),
+            Report::Estop { reason, seq } => {
+                self.estops = seq;
+                vec![Report::Estop { reason, seq }]
+            }
+            // The latch's own report hasn't gone out: the clear sends it,
+            // with its reason.
+            Report::Clear { after, reason } if after > self.estops => {
+                self.estops = after;
+                vec![
+                    Report::Estop {
+                        reason: reason.clone(),
+                        seq: after,
+                    },
+                    Report::Clear { after, reason },
+                ]
+            }
+            other => vec![other],
+        }
+    }
+}
+
+/// What the reporter does with one attempt's outcome.
+#[derive(Debug, PartialEq, Eq)]
+enum Attempt {
+    /// The host answered (or refused it, authenticated): next report.
+    Done,
+    /// Send it again under the same request id.
+    Retry,
+    /// Its outcome is unknown (`EXPIRED`): send it again, anew.
+    Anew,
+}
+
+impl Attempt {
+    /// Judges `result`. A sealed refusal is the host's own and ends a
+    /// report as an answer does (`EXPIRED` sends it anew). An unsealed one
+    /// ([`SessionError::Unverified`]) is only a hint (anyone can answer
+    /// `ctl`, and a superseded key gets one too): it never ends a report
+    /// while this generation lasts (`ended`).
+    fn of(result: &Result<(), SessionError>, ended: bool) -> Self {
+        match result {
+            Err(SessionError::Rejected(err)) if err.status == CtlStatus::Expired => Self::Anew,
+            Ok(()) | Err(SessionError::Rejected(_)) => Self::Done,
+            Err(SessionError::Unverified(_)) if ended => Self::Done,
+            Err(_) => Self::Retry,
+        }
+    }
 }
 
 /// A handle that tells the host an edge fell back on its own account, for
@@ -298,8 +393,24 @@ impl SafeReporter {
     }
 }
 
+/// A lock that a panicked holder left behind is still the state to use.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 struct Shared {
     transport: Transport,
+    /// This process's link to the host (its keys, request ids and the
+    /// host's broadcast floor), set once the handshake completes. One lock:
+    /// a seq is allocated and its message sealed under it.
+    link: std::sync::OnceLock<Mutex<Link>>,
+    /// The heartbeat publisher, once attached.
+    heartbeat: std::sync::OnceLock<zenoh::pubsub::Publisher<'static>>,
+    /// Where the host's echoes go while this participant relays another
+    /// clock's heartbeats ([`Participant::relay_heartbeats`]).
+    relay: Mutex<Option<mpsc::UnboundedSender<HeartbeatEcho>>>,
     keys: SessionKeys,
     id: ParticipantId,
     ctl_timeout: Duration,
@@ -366,6 +477,19 @@ impl Shared {
             .unwrap_or_default()
     }
 
+    /// Whether this participant's generation ended: the view lists a newer
+    /// one under its id, or none at all.
+    fn generation_ended(&self) -> bool {
+        let Some(link) = self.link.get() else {
+            return true;
+        };
+        let mine = lock(link).accept().generation;
+        self.view.borrow().as_ref().is_some_and(|view| {
+            view.participant(&self.id)
+                .is_none_or(|p| p.generation != mine)
+        })
+    }
+
     fn epoch_and_mode(&self) -> (u64, Mode) {
         self.view
             .borrow()
@@ -388,6 +512,7 @@ impl Shared {
             result,
             state,
             leases,
+            ..
         } = self.ctl_reply(command).await?;
         result?;
         Ok((state, leases))
@@ -395,33 +520,163 @@ impl Shared {
 
     /// [`Self::ctl`], with a refusal left in the reply.
     async fn ctl_reply(&self, command: Command) -> Result<CtlReply, SessionError> {
-        let (epoch, _) = self.epoch_and_mode();
-        let request = Request {
-            from: self.id.clone(),
-            epoch: (epoch > 0).then_some(Epoch(epoch)),
-            command,
+        self.call(None, &command).await.1
+    }
+
+    /// Sends `command` as a new request (`None`) or again as request `id`
+    /// (a retry, which the host answers from its reply cache, never
+    /// applying the verb twice, §8.6), and takes the first reply that
+    /// answers it. An unsealed refusal is only a hint (anyone can answer
+    /// `ctl`): it is returned, as [`SessionError::Unverified`], when no
+    /// sealed reply came. Returns the id.
+    async fn call(
+        &self,
+        request_id: Option<u64>,
+        command: &Command,
+    ) -> (Option<u64>, Result<CtlReply, SessionError>) {
+        let Some(link) = self.link.get() else {
+            return (request_id, Err(SessionError::Closed));
         };
+        let (epoch, _) = self.epoch_and_mode();
+        let epoch = (epoch > 0).then_some(Epoch(epoch));
+        let key = self.keys.ctl();
+        let sealed = {
+            let mut link = lock(link);
+            match request_id {
+                Some(id) => link
+                    .resend(&key, id, epoch, command)
+                    .map(|sealed| (id, sealed)),
+                None => link.request(&key, epoch, command),
+            }
+        };
+        match sealed {
+            Ok((id, sealed)) => (Some(id), self.exchange(link, &key, id, sealed).await),
+            Err(err) => (
+                request_id,
+                Err(SessionError::Config(format!("ctl request: {err}"))),
+            ),
+        }
+    }
+
+    async fn exchange(
+        &self,
+        link: &Mutex<Link>,
+        key: &str,
+        request_id: u64,
+        sealed: Vec<u8>,
+    ) -> Result<CtlReply, SessionError> {
         let timeout = self.ctl_timeout;
         let replies = self
             .transport
             .control()
-            .get(self.keys.ctl())
-            .payload(codec::encode_request(&request))
+            .get(key)
+            .payload(sealed)
             .consolidation(ConsolidationMode::None)
             .priority(CONTROL_PRIORITY)
             .congestion_control(CONTROL_CONGESTION)
             .express(true)
             .timeout(timeout)
             .await?;
-        let reply = replies
-            .recv_async()
-            .await
-            .map_err(|_| SessionError::NoReply(timeout))?;
-        let sample = reply.result().map_err(|_| SessionError::NoReply(timeout))?;
-        let reply = codec::decode_reply(&sample.payload().to_bytes())?;
-        self.observe(reply.state.clone());
-        Ok(reply)
+        let mut hint = None;
+        while let Ok(reply) = replies.recv_async().await {
+            let Ok(sample) = reply.result() else {
+                continue;
+            };
+            let mut bytes = sample.payload().to_bytes().into_owned();
+            let outcome = lock(link).reply(key, &mut bytes, request_id);
+            match outcome {
+                Ok(ReplyOutcome::Answer(reply)) => {
+                    self.observe(reply.state.clone());
+                    return Ok(*reply);
+                }
+                Ok(ReplyOutcome::Hint(refusal)) => hint = Some(refusal),
+                Ok(ReplyOutcome::Other(_)) => {}
+                Err(err) => debug!(participant = %self.id, %err, "ctl reply dropped"),
+            }
+        }
+        Err(hint.map_or(SessionError::NoReply(timeout), SessionError::Unverified))
     }
+
+    /// Verifies a `host/state` broadcast, received on `key`.
+    fn verify_state(&self, key: &str, msg: &[u8]) -> Option<AuthoritySnapshot> {
+        lock(self.link.get()?)
+            .state(key, msg)
+            .map_err(|err| debug!(participant = %self.id, %err, "authority update dropped"))
+            .ok()
+    }
+}
+
+/// What a participant without the address's key is told.
+const NO_CREDENTIAL: &str = "no credential for this session: join with the address its host \
+                             printed (it ends in #key), or set ParticipantConfig.credential";
+
+/// Runs the handshake (§8.3): reads the host instance from the public
+/// snapshot (a hint: a wrong one only fails the handshake), sends msg 1 on
+/// `hs` and reads msg 2.
+async fn handshake(
+    control: &zenoh::Session,
+    keys: &SessionKeys,
+    config: &ParticipantConfig,
+) -> Result<auth::Attached, SessionError> {
+    let credential = config.credential.as_ref().ok_or_else(|| {
+        SessionError::Rejected(CtlError::new(CtlStatus::Unauthenticated, NO_CREDENTIAL))
+    })?;
+    let unauthenticated =
+        |why: String| SessionError::Rejected(CtlError::new(CtlStatus::Unauthenticated, why));
+    let timeout = config.ctl_timeout;
+    let state = ask(control, &keys.host_state(), None, timeout).await?;
+    let host_instance = signed::peek(&state)
+        .map_err(|err| unauthenticated(format!("the host's state is not signed ({err})")))?
+        .header
+        .host_instance;
+    let (initiator, hello) = credential
+        .start(
+            &mut OsRng,
+            config.tenant.as_str(),
+            &config.session.to_string(),
+            host_instance,
+            &config.id,
+        )
+        .map_err(|err| unauthenticated(err.to_string()))?;
+    let reply = ask(
+        control,
+        &keys.handshake(),
+        Some(codec::encode_handshake_request(&hello)),
+        timeout,
+    )
+    .await?;
+    let msg2 = codec::decode_handshake_reply(&reply)??;
+    auth::finish(initiator, &msg2).map_err(|err| {
+        unauthenticated(format!(
+            "the host's handshake reply failed ({err}): the address's key is not this host's"
+        ))
+    })
+}
+
+/// The first reply to a query on `key`.
+async fn ask(
+    control: &zenoh::Session,
+    key: &str,
+    payload: Option<Vec<u8>>,
+    timeout: Duration,
+) -> Result<Vec<u8>, SessionError> {
+    let mut get = control
+        .get(key)
+        .consolidation(ConsolidationMode::None)
+        .priority(CONTROL_PRIORITY)
+        .congestion_control(CONTROL_CONGESTION)
+        .express(true)
+        .timeout(timeout);
+    if let Some(payload) = payload {
+        get = get.payload(payload);
+    }
+    let replies = get.await?;
+    while let Ok(reply) = replies.recv_async().await {
+        if let Ok(sample) = reply.result() {
+            return Ok(sample.payload().to_bytes().into_owned());
+        }
+    }
+    Err(SessionError::NoReply(timeout))
 }
 
 /// An attached participant. Dropping it stops heartbeats and withdraws its
@@ -537,6 +792,9 @@ impl Participant {
         let (reports, report_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             transport: transport.clone(),
+            link: std::sync::OnceLock::new(),
+            heartbeat: std::sync::OnceLock::new(),
+            relay: Mutex::new(None),
             keys: keys.clone(),
             id: config.id.clone(),
             ctl_timeout: config.ctl_timeout,
@@ -560,13 +818,17 @@ impl Participant {
             run: Arc::default(),
         });
 
+        // Subscriptions first (§8.5): nothing the host sends after the
+        // handshake can be missed. Until it completes, nothing verifies.
         let state = control
             .declare_subscriber(keys.host_state())
             .callback({
-                let shared = shared.clone();
-                move |sample| match codec::decode_state(&sample.payload().to_bytes()) {
-                    Ok(snapshot) => shared.observe(snapshot),
-                    Err(err) => warn!(%err, "undecodable authority update"),
+                let (shared, key) = (shared.clone(), keys.host_state());
+                move |sample| {
+                    if let Some(snapshot) = shared.verify_state(&key, &sample.payload().to_bytes())
+                    {
+                        shared.observe(snapshot);
+                    }
                 }
             })
             .await?;
@@ -574,15 +836,22 @@ impl Participant {
             .declare_subscriber(keys.heartbeat_echo(&config.id))
             .callback({
                 let (shared, clock) = (shared.clone(), config.clock.clone());
+                let key = keys.heartbeat_echo(&config.id);
                 move |sample| {
                     let t4 = clock.now_ns();
-                    match codec::decode_echo(&sample.payload().to_bytes()) {
-                        Ok(echo) => {
-                            if let Ok(mut slot) = shared.completed.lock() {
-                                *slot = Some(echo.complete(t4));
+                    let Some(link) = shared.link.get() else {
+                        return;
+                    };
+                    let mut bytes = sample.payload().to_bytes().into_owned();
+                    let echo = lock(link).echo(&key, &mut bytes);
+                    match echo {
+                        Ok(echo) => match &*lock(&shared.relay) {
+                            Some(relay) => {
+                                let _ = relay.send(echo);
                             }
-                        }
-                        Err(err) => warn!(%err, "undecodable heartbeat echo"),
+                            None => *lock(&shared.completed) = Some(echo.complete(t4)),
+                        },
+                        Err(err) => debug!(%err, "heartbeat echo dropped"),
                     }
                 }
             })
@@ -633,6 +902,12 @@ impl Participant {
             refusal = not_served(&control, &config.tenant, config.session) => return Err(refusal),
         }
 
+        let attached = handshake(&control, &keys, &config).await?;
+        let generation = attached.accept.generation;
+        let _ = shared
+            .link
+            .set(Mutex::new(Link::new(config.id.clone(), attached)));
+
         let cancel = CancellationToken::new();
         let mut participant = Self {
             shared: shared.clone(),
@@ -666,13 +941,13 @@ impl Participant {
             .congestion_control(HEARTBEAT_CONGESTION)
             .express(true)
             .await?;
+        let _ = shared.heartbeat.set(publisher);
         participant.tasks.push(tokio::spawn(heartbeat_loop(
             shared,
-            publisher,
             config.heartbeat_period,
             participant.cancel.clone(),
         )));
-        info!(participant = %config.id, session = %config.session, "attached");
+        info!(participant = %config.id, session = %config.session, generation, "attached");
         Ok(participant)
     }
 
@@ -744,16 +1019,41 @@ impl Participant {
         found.clone().ok_or(SessionError::Closed)
     }
 
-    /// Queries the host for its current snapshot.
+    /// Queries the host for its current snapshot, verified. A reply that
+    /// a newer publication overtook leaves the newer view.
     pub async fn fetch_authority(&self) -> Result<AuthoritySnapshot, SessionError> {
-        let snapshot = query_authority(
-            &self.shared.transport,
-            &self.shared.keys,
-            self.shared.ctl_timeout,
-        )
-        .await?;
-        self.shared.observe(snapshot.clone());
-        Ok(snapshot)
+        let key = self.shared.keys.host_state();
+        let timeout = self.shared.ctl_timeout;
+        let signed = ask(self.shared.transport.control(), &key, None, timeout).await?;
+        if let Some(snapshot) = self.shared.verify_state(&key, &signed) {
+            self.shared.observe(snapshot);
+        }
+        self.authority().ok_or(SessionError::NoReply(timeout))
+    }
+
+    /// A verifier of the host's broadcasts (`host/state`, `host/tick`), for
+    /// a subscriber of this process's own (a recorder, the gateway's relay):
+    /// the host's key and instance from this participant's handshake, and
+    /// the floor of its own state updates.
+    pub fn host_verifier(&self) -> Option<SignedReceiver> {
+        self.shared
+            .link
+            .get()
+            .map(|link| lock(link).host_verifier())
+    }
+
+    /// Relays another clock's heartbeats (a gateway's browser): this
+    /// participant's own heartbeats stop, [`Self::send_heartbeat`] seals and
+    /// sends each relayed one, and the host's echoes of them, opened, go to
+    /// `echoes`.
+    pub fn relay_heartbeats(&self, echoes: mpsc::UnboundedSender<HeartbeatEcho>) {
+        *lock(&self.shared.relay) = Some(echoes);
+    }
+
+    /// Seals and sends one heartbeat under this participant's keys (a
+    /// relayed one: see [`Self::relay_heartbeats`]).
+    pub async fn send_heartbeat(&self, heartbeat: &Heartbeat) -> Result<(), SessionError> {
+        self.shared.send_heartbeat(heartbeat).await
     }
 
     /// DISARMED or SAFE to ARMED, in a fresh epoch.
@@ -1165,22 +1465,36 @@ impl Participant {
             .map(|_| ())
     }
 
-    /// Virtual mode: the host's ticks from now on (`host/tick`).
+    /// Virtual mode: the host's ticks from now on (`host/tick`), verified
+    /// and in the host's (epoch, tick, phase) order: a tick that is not
+    /// signed by the host, or not after the last one taken, is dropped.
     pub async fn virtual_ticks(&self) -> Result<TickStream, SessionError> {
         let (tx, rx) = mpsc::unbounded_channel();
+        let verifier = Mutex::new(self.host_verifier().ok_or(SessionError::Closed)?);
+        let key = self.shared.keys.host_tick();
+        let last = Mutex::new(None);
         let subscriber = self
             .shared
             .transport
             .control()
-            .declare_subscriber(self.shared.keys.host_tick())
-            .callback(
-                move |sample| match codec::decode_tick(&sample.payload().to_bytes()) {
-                    Ok(tick) => {
-                        let _ = tx.send(tick);
+            .declare_subscriber(key.clone())
+            .callback(move |sample| {
+                let bytes = sample.payload().to_bytes();
+                let tick = match auth::open_tick(&mut lock(&verifier), &key, &bytes) {
+                    Ok(tick) => tick,
+                    Err(err) => {
+                        debug!(%err, "tick dropped");
+                        return;
                     }
-                    Err(err) => warn!(%err, "undecodable tick"),
-                },
-            )
+                };
+                let mut last = lock(&last);
+                if last.is_none_or(|last| tick.order() > last) {
+                    *last = Some(tick.order());
+                    let _ = tx.send(tick);
+                } else {
+                    debug!(order = ?tick.order(), "a tick out of order dropped");
+                }
+            })
             .await?;
         Ok(TickStream {
             rx,
@@ -1210,10 +1524,9 @@ impl Participant {
     /// `Estop{ESTOP_LOCAL}` to the host, retrying, in order with the other
     /// reports.
     pub fn latch_estop(&self, reason: impl Into<String>) {
-        self.shared.estop.latch();
-        let _ = self.shared.reports.send(Report::Estop {
-            reason: reason.into(),
-        });
+        let reason = reason.into();
+        let seq = self.shared.estop.latch(reason.clone());
+        let _ = self.shared.reports.send(Report::Estop { reason, seq });
     }
 
     /// Clears the local e-stop latch: the only way to, since no wire path
@@ -1222,8 +1535,8 @@ impl Participant {
     /// It also clears a host latch this process did not set (the local
     /// clear of §11.1).
     pub fn clear_estop(&self) {
-        self.shared.estop.latched.store(false, Ordering::SeqCst);
-        let _ = self.shared.reports.send(Report::Clear);
+        let (after, reason) = self.shared.estop.clear();
+        let _ = self.shared.reports.send(Report::Clear { after, reason });
     }
 
     /// Whether the local e-stop is latched.
@@ -1316,12 +1629,20 @@ fn health_of(code: u8) -> Health {
     }
 }
 
-async fn heartbeat_loop(
-    shared: Arc<Shared>,
-    publisher: zenoh::pubsub::Publisher<'static>,
-    period: Duration,
-    cancel: CancellationToken,
-) {
+impl Shared {
+    /// Seals `heartbeat` under `k_up` and publishes it.
+    async fn send_heartbeat(&self, heartbeat: &Heartbeat) -> Result<(), SessionError> {
+        let (Some(link), Some(publisher)) = (self.link.get(), self.heartbeat.get()) else {
+            return Err(SessionError::Closed);
+        };
+        let sealed = lock(link)
+            .heartbeat(publisher.key_expr().as_str(), heartbeat)
+            .map_err(|err| SessionError::Config(format!("heartbeat: {err}")))?;
+        Ok(publisher.put(sealed).await?)
+    }
+}
+
+async fn heartbeat_loop(shared: Arc<Shared>, period: Duration, cancel: CancellationToken) {
     let mut interval = tokio::time::interval(period);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut seq = 0_u64;
@@ -1330,7 +1651,7 @@ async fn heartbeat_loop(
             () = cancel.cancelled() => break,
             _ = interval.tick() => {}
         }
-        if !shared.heartbeats_enabled.load(Ordering::Relaxed) {
+        if !shared.heartbeats_enabled.load(Ordering::Relaxed) || lock(&shared.relay).is_some() {
             continue;
         }
         seq += 1;
@@ -1363,7 +1684,7 @@ async fn heartbeat_loop(
             queue_depth,
             health: health_of(shared.health.load(Ordering::Relaxed)),
         };
-        if let Err(err) = publisher.put(codec::encode_heartbeat(&heartbeat)).await {
+        if let Err(err) = shared.send_heartbeat(&heartbeat).await {
             warn!(participant = %shared.id, %err, "heartbeat failed");
         }
     }
@@ -1466,6 +1787,7 @@ async fn report_stops(
     mut reports: mpsc::UnboundedReceiver<Report>,
     cancel: CancellationToken,
 ) {
+    let mut order = StopOrder::default();
     loop {
         let report = tokio::select! {
             () = cancel.cancelled() => return,
@@ -1474,36 +1796,55 @@ async fn report_stops(
                 None => return,
             },
         };
-        loop {
-            let command = match &report {
-                Report::Safe {
-                    epoch,
-                    code,
-                    reason,
-                } => {
-                    let (now, mode) = shared.epoch_and_mode();
-                    if now >= epoch.0 && matches!(mode, Mode::Safe | Mode::Estop) {
-                        break;
-                    }
-                    Command::EnterSafe {
-                        reason: reason.clone(),
-                        code: *code,
-                    }
+        for report in order.plan(report) {
+            if !send_stop(&shared, &report, &cancel).await {
+                return;
+            }
+        }
+    }
+}
+
+/// Sends one stop report until it is done ([`Attempt`]); `false` once the
+/// participant closed.
+async fn send_stop(shared: &Shared, report: &Report, cancel: &CancellationToken) -> bool {
+    // One request id per report: a retry is answered from the host's reply
+    // cache, never applied twice.
+    let mut request_id = None;
+    loop {
+        let command = match &report {
+            Report::Safe {
+                epoch,
+                code,
+                reason,
+            } => {
+                let (now, mode) = shared.epoch_and_mode();
+                if now >= epoch.0 && matches!(mode, Mode::Safe | Mode::Estop) {
+                    return true;
                 }
-                Report::Estop { reason } => Command::Estop {
+                Command::EnterSafe {
                     reason: reason.clone(),
-                    code: ReasonCode::EstopLocal,
-                },
-                Report::Clear => Command::Clear,
-            };
-            match shared.ctl(command).await {
-                Ok(_) | Err(SessionError::Rejected(_)) => break,
-                Err(err) => {
+                    code: *code,
+                }
+            }
+            Report::Estop { reason, .. } => Command::Estop {
+                reason: reason.clone(),
+                code: ReasonCode::EstopLocal,
+            },
+            Report::Clear { .. } => Command::Clear,
+        };
+        let (id, reply) = shared.call(request_id, &command).await;
+        request_id = id;
+        let result = reply.and_then(|reply| reply.result.map_err(SessionError::Rejected));
+        match Attempt::of(&result, shared.generation_ended()) {
+            Attempt::Done => return true,
+            Attempt::Anew => request_id = None,
+            Attempt::Retry => {
+                if let Err(err) = &result {
                     warn!(participant = %shared.id, %err, ?report, "stop report unanswered; retrying");
-                    tokio::select! {
-                        () = cancel.cancelled() => return,
-                        () = tokio::time::sleep(SAFE_RETRY) => {}
-                    }
+                }
+                tokio::select! {
+                    () = cancel.cancelled() => return false,
+                    () = tokio::time::sleep(SAFE_RETRY) => {}
                 }
             }
         }
@@ -1566,24 +1907,84 @@ pub async fn wait_for_host(
         .map_err(|_| SessionError::Timeout(timeout, "the session host".into()))?
 }
 
-/// Queries a session host for its authority snapshot, without attaching: how
-/// a late-joining observer (or anyone) gets state at once.
+/// Queries a session host for its authority snapshot, without attaching:
+/// how anyone gets state at once. **Unverified**: without a handshake there
+/// is no host key to check its signature against (authority state is
+/// public, §8.7), so act only on what [`Participant::fetch_authority`]
+/// returns.
 pub async fn query_authority(
     transport: &Transport,
     keys: &SessionKeys,
     timeout: Duration,
 ) -> Result<AuthoritySnapshot, SessionError> {
-    let replies = transport
-        .control()
-        .get(keys.host_state())
-        .consolidation(ConsolidationMode::None)
-        .priority(CONTROL_PRIORITY)
-        .timeout(timeout)
-        .await?;
-    let reply = replies
-        .recv_async()
-        .await
-        .map_err(|_| SessionError::NoReply(timeout))?;
-    let sample = reply.result().map_err(|_| SessionError::NoReply(timeout))?;
-    Ok(codec::decode_state(&sample.payload().to_bytes())?)
+    let signed = ask(transport.control(), &keys.host_state(), None, timeout).await?;
+    let body = signed::peek(&signed)
+        .map_err(|err| {
+            SessionError::Wire(crate::wire::WireError::Malformed {
+                message: "host state",
+                reason: err.to_string(),
+            })
+        })?
+        .body;
+    Ok(codec::decode_state(body)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_reports_keep_estop_before_clear_and_retry_through_spoofed_refusals() {
+        let estop = |seq| Report::Estop {
+            reason: "button".into(),
+            seq,
+        };
+        let clear = |after| Report::Clear {
+            after,
+            reason: "button".into(),
+        };
+        // A latch whose report was queued after the clear that followed
+        // it: the clear sends its Estop first, with the latch's reason,
+        // and the late one nothing.
+        let mut order = StopOrder::default();
+        let sent: Vec<Report> = [clear(1), estop(1), estop(2), clear(2)]
+            .into_iter()
+            .flat_map(|r| order.plan(r))
+            .collect();
+        assert_eq!(sent[0], estop(1));
+        let kinds: Vec<&str> = sent
+            .iter()
+            .map(|r| match r {
+                Report::Estop { .. } => "estop",
+                Report::Clear { .. } => "clear",
+                Report::Safe { .. } => "safe",
+            })
+            .collect();
+        assert_eq!(kinds, ["estop", "clear", "estop", "clear"]);
+
+        // A plain UNAUTHENTICATED (a MITM's, while the host's reply is
+        // suppressed) keeps the Estop queued; the restored link's answer
+        // ends it, and only then does the Clear go. The host's own sealed
+        // UNAUTHENTICATED is an answer.
+        let spoofed = Err(SessionError::Unverified(CtlError::new(
+            CtlStatus::Unauthenticated,
+            "spoofed",
+        )));
+        assert_eq!(Attempt::of(&spoofed, false), Attempt::Retry);
+        assert_eq!(
+            Attempt::of(&Err(SessionError::NoReply(Duration::ZERO)), false),
+            Attempt::Retry
+        );
+        assert_eq!(Attempt::of(&Ok(()), false), Attempt::Done);
+        // An authenticated refusal, an expired id, a generation that ended.
+        let refused = |status| Err(SessionError::Rejected(CtlError::new(status, "")));
+        for status in [CtlStatus::InvalidTransition, CtlStatus::Unauthenticated] {
+            assert_eq!(Attempt::of(&refused(status), false), Attempt::Done);
+        }
+        assert_eq!(
+            Attempt::of(&refused(CtlStatus::Expired), false),
+            Attempt::Anew
+        );
+        assert_eq!(Attempt::of(&spoofed, true), Attempt::Done);
+    }
 }

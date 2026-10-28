@@ -1310,6 +1310,13 @@ pub struct ModelBinding {
     placed: Placed,
 }
 
+/// The model's address without the key, for logs.
+impl std::fmt::Display for ModelBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.session, self.name)
+    }
+}
+
 impl ModelBinding {
     /// Places the session of the participant address `address` (the
     /// model's name is its participant) by the hosting rule.
@@ -1325,9 +1332,10 @@ impl ModelBinding {
         })
     }
 
-    /// The full address drivers reach the model at.
+    /// The full address drivers reach the model at: an invite, key
+    /// included ([`SessionAddress::invite`]).
     pub fn address(&self) -> String {
-        self.session.participant(self.name.as_str())
+        self.session.participant_invite(self.name.as_str())
     }
 
     /// Joins the session as the model and answers `service` until
@@ -1453,8 +1461,7 @@ impl ModelConnection {
         let link = ModelLink::new(lockstep_session.clone(), participant.keys().model(model));
         link.wait_ready(timeout).await.map_err(|err| match err {
             GymError::Timeout(_) => GymError::Session(SessionError::Config(format!(
-                "no model {model} answered at {} within {timeout:?}",
-                session.participant(model.as_str())
+                "no model {model} answered at {session}/{model} within {timeout:?}"
             ))),
             other => other,
         })?;
@@ -2053,7 +2060,7 @@ mod rejoin_tests {
         )
         .await
         .unwrap();
-        let session = target.address.to_string();
+        let session = target.address.invite();
         let invite = |id: &'static str| {
             let (address, session) = (address.clone(), session.clone());
             async move {

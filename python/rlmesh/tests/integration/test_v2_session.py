@@ -198,6 +198,15 @@ def raised(out: list[object]) -> bool:
     return False
 
 
+def test_the_sessions_key_is_in_the_address_never_in_a_repr(host: rlmesh.Host) -> None:
+    key = host.address.partition("#")[2]
+    assert len(key) > 52
+    with FakeUR10e(host) as ur:
+        assert key in ur.robot.address
+        for shown in (repr(host), str(host), repr(ur.robot)):
+            assert key not in shown, shown
+
+
 def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) -> None:
     seen: list[rlmesh.Observation] = []
 

@@ -1,5 +1,4 @@
-//! Length-prefixed bytes (§8.1). (`kdf` lands with the host wiring that
-//! uses it: the embedded `local` key and the loopback password.)
+//! Length-prefixed bytes and `kdf` (§8.1).
 
 use crate::prelude::*;
 
@@ -53,6 +52,25 @@ pub(crate) fn hash_labelled(label: &[u8], fields: &[&[u8]]) -> Result<[u8; 32], 
         hash.update(field);
     }
     Ok(hash.finalize().into())
+}
+
+/// `kdf(key, label, fields…)`: BLAKE2s-256 keyed with `key`, over
+/// `lp(label) ‖ fields`. Only for the embedded `local` key (and later the
+/// loopback password, §5).
+///
+/// # Errors
+/// [`LpTooLong`] if `label` is over 65,535 bytes.
+pub fn kdf(key: &[u8; 32], label: &[u8], fields: &[&[u8]]) -> Result<[u8; 32], LpTooLong> {
+    use blake2::digest::{KeyInit, Mac};
+    let prefix = lp_prefix(label)?;
+    let mut mac = <blake2::Blake2sMac256 as KeyInit>::new_from_slice(key)
+        .unwrap_or_else(|_| unreachable!("a 32-byte key is a valid BLAKE2s key"));
+    mac.update(&prefix);
+    mac.update(label);
+    for field in fields {
+        mac.update(field);
+    }
+    Ok(mac.finalize().into_bytes().into())
 }
 
 #[cfg(test)]

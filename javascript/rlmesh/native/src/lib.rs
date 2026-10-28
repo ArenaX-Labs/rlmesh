@@ -89,7 +89,9 @@ fn session_err(err: SessionError) -> Error {
     match ErrorKind::of(&err) {
         ErrorKind::Refused(status) => {
             let message = match err {
-                SessionError::Rejected(refusal) => refusal.message,
+                SessionError::Rejected(refusal) | SessionError::Unverified(refusal) => {
+                    refusal.message
+                }
                 other => other.to_string(),
             };
             error(
@@ -207,10 +209,11 @@ pub async fn open_host(address: String, lease_grace_ms: u32) -> Result<NativeHos
 
 #[napi]
 impl NativeHost {
-    /// `{ip}:{port}[/{session}]`: what participants connect to.
+    /// `{ip}:{port}[/{session}]#{key}`: what participants connect to. The
+    /// key is a credential (its holder attaches as device `local`).
     #[napi(getter)]
     pub fn address(&self) -> String {
-        self.host.address().to_string()
+        self.host.address().invite()
     }
 
     /// Stops the host (participants see it leave).

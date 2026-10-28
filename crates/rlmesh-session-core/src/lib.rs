@@ -7,6 +7,8 @@
 //! - [`authority`]: epoch, roster, the mode machine, parts, bindings and the
 //!   lease table (preemption, command groups, TTLs, fencing tokens); the
 //!   session host is its single writer.
+//! - [`auth`]: attaching through the handshake: credentials, the host's
+//!   identity, generations, name → device bindings and the reply cache.
 //! - [`lease`]: the holder's side of a lease: the local deadline (a
 //!   conservative lower bound of the host's expiry that never outlives
 //!   it), renewal and loss from authority snapshots, and fenced chunks.
@@ -119,6 +121,7 @@ mod float {
     }
 }
 
+pub mod auth;
 pub mod authority;
 pub mod cache;
 pub mod clock;
@@ -131,7 +134,7 @@ pub mod stream;
 pub mod virtual_clock;
 pub mod wire;
 
-pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason};
+pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, Identity};
 pub use cache::{Cached, InputCache, InputSnapshot, Skip, Snapshot};
 pub use clock::{OffsetEstimate, OffsetEstimator, OffsetEstimatorConfig};
 pub use lease::{LeaseChange, LeaseClient, LeaseError, LeaseGroup, LeaseState};
