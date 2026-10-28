@@ -1341,4 +1341,34 @@ impl PyRecorder {
         d.set_item("leases", leases)?;
         Ok(d)
     }
+
+    /// Every sample of a recording (an MCAP file, or a directory of them)
+    /// split into its declared fields, in log-time order: `(topic, log_ns,
+    /// fields)`, each field `(name, dtype, shape, bytes)`. Topics are
+    /// `{robot}/{path}` and `{robot}/{path}/_applied`; camera frames come
+    /// as raw RGB.
+    #[staticmethod]
+    #[gen_stub(override_return_type(type_repr = "builtins.list[tuple[builtins.str, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]]", imports = ("builtins",)))]
+    fn samples<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyList>> {
+        let samples = py
+            .detach(|| {
+                rlmesh_session::record::read(&path)
+                    .map(|messages| rlmesh_session::record::decode_samples(&messages))
+            })
+            .map_err(record_err)?;
+        let out = PyList::empty(py);
+        for sample in samples {
+            let fields = PyList::empty(py);
+            for f in sample.fields {
+                fields.append((
+                    f.name,
+                    f.dtype.name(),
+                    f.shape,
+                    pyo3::types::PyBytes::new(py, &f.bytes),
+                ))?;
+            }
+            out.append((sample.topic, sample.log_ns, fields))?;
+        }
+        Ok(out)
+    }
 }

@@ -267,6 +267,11 @@ impl Model {
         }
     }
 
+    /// The observer this cockpit attached as.
+    pub fn me(&self) -> &ParticipantId {
+        &self.me
+    }
+
     /// The newest authority snapshot.
     pub fn snapshot(&self) -> Option<&AuthoritySnapshot> {
         self.snapshot.as_ref()

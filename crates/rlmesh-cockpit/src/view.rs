@@ -9,8 +9,9 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use rlmesh_session::server::RECORDER;
 use rlmesh_session::wire::{
-    BindingRecord, ChannelId, ClockMode, ContractMode, EdgeMode, Mode, PartSpec, Plan,
+    BindingRecord, ChannelId, ClockMode, ContractMode, EdgeMode, Health, Mode, PartSpec, Plan,
     PriorityClass, Role,
 };
 use serde_json::Value as Json;
@@ -90,6 +91,20 @@ pub struct Header {
     pub last_outcome: Option<(Verb, Result<(), String>, f64)>,
     /// Inputs the cockpit itself dropped (its UI fell behind).
     pub overrun: u64,
+    /// Whether the host records the session.
+    pub recording: Recording,
+}
+
+/// The host's always-on recorder, as its participant shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Recording {
+    /// Not in the session (`rlmesh host --no-record`, or another host).
+    #[default]
+    Off,
+    /// Recording.
+    On,
+    /// Paused: the recordings disk is below its free-space floor.
+    Paused,
 }
 
 /// One row of the path tree.
@@ -422,6 +437,13 @@ impl Model {
                 .clone()
                 .map(|(verb, result, at)| (verb, result, ms(now_ns - at) * 1e-3)),
             overrun: self.overrun,
+            recording: match s.roster.iter().find(|p| p.id.as_str() == RECORDER) {
+                None => Recording::Off,
+                Some(p) => match self.heartbeats.get(&p.id) {
+                    Some((hb, _)) if hb.health == Health::Degraded => Recording::Paused,
+                    _ => Recording::On,
+                },
+            },
         }
     }
 

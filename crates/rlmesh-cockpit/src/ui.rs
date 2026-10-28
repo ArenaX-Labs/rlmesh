@@ -12,9 +12,10 @@ use egui::{
 use rlmesh_session::wire::{ChannelId, EdgeMode, Mode};
 
 use crate::model::Verb;
+use crate::replay::{Replay, SPEEDS};
 use crate::timeline::Tone;
 use crate::values::Value;
-use crate::view::{View, clocks};
+use crate::view::{Recording, View, clocks};
 
 /// The central panel's tabs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub enum Tab {
     /// Declared vs measured (§8.10).
     #[default]
     Measured,
-    /// The lease and mode timeline.
+    /// Every mode, lease, binding and roster change.
     Timeline,
     /// The binding tables (§6.8).
     Bindings,
@@ -35,6 +36,10 @@ pub struct UiState {
     pub tab: Tab,
     /// The arm confirmation is open.
     pub confirm_arm: bool,
+    /// A recorded session: no verbs.
+    pub replay: bool,
+    /// A live session paused on its history: only the e-stop.
+    pub paused: bool,
     textures: BTreeMap<ChannelId, (u64, TextureHandle)>,
 }
 
@@ -43,6 +48,8 @@ impl std::fmt::Debug for UiState {
         f.debug_struct("UiState")
             .field("tab", &self.tab)
             .field("confirm_arm", &self.confirm_arm)
+            .field("replay", &self.replay)
+            .field("paused", &self.paused)
             .finish_non_exhaustive()
     }
 }
@@ -76,17 +83,29 @@ fn ms(v: Option<f64>) -> String {
     v.map_or_else(|| "—".into(), |v| format!("{v:.1}"))
 }
 
-/// Renders `view` into `ui`; returns the verbs to send.
-pub fn show(ui: &mut egui::Ui, view: &View, state: &mut UiState) -> Vec<Verb> {
+/// Renders `view` into `ui`; returns the verbs to send. The header holds
+/// the session line and the verbs, then `bar` (the live or replay
+/// transport); the lanes stay along the bottom whatever the tab.
+pub fn show(
+    ui: &mut egui::Ui,
+    view: &View,
+    state: &mut UiState,
+    bar: impl FnOnce(&mut egui::Ui),
+) -> Vec<Verb> {
     let mut verbs = Vec::new();
-    egui::Panel::top("cockpit_header").show(ui, |ui| header(ui, view, state, &mut verbs));
+    egui::Panel::top("cockpit_header").show(ui, |ui| {
+        header(ui, view, state, &mut verbs);
+        ui.separator();
+        bar(ui);
+    });
+    egui::Panel::bottom("cockpit_lanes").show(ui, |ui| lanes(ui, view));
     egui::Panel::left("cockpit_channels")
         .default_size(440.0)
         .show(ui, |ui| channels(ui, view, state));
     egui::CentralPanel::default_margins().show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut state.tab, Tab::Measured, "Declared vs measured");
-            ui.selectable_value(&mut state.tab, Tab::Timeline, "Lease and mode timeline");
+            ui.selectable_value(&mut state.tab, Tab::Timeline, "Events");
             ui.selectable_value(&mut state.tab, Tab::Bindings, "Bindings");
         });
         ui.separator();
@@ -129,6 +148,206 @@ pub fn show(ui: &mut egui::Ui, view: &View, state: &mut UiState) -> Vec<Verb> {
     verbs
 }
 
+/// What the live bar asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveAction {
+    /// Pause on the recent history.
+    Pause,
+    /// Back to the live session.
+    Resume,
+    /// Keep the host's recent recording as an incident.
+    Keep,
+    /// Start an episode of [`LiveBar::task`].
+    Start,
+    /// End the episode and collect it, a success or not.
+    Finish {
+        /// The operator's verdict.
+        success: bool,
+    },
+    /// End the episode and drop it.
+    Discard,
+}
+
+/// What the live bar shows and edits.
+#[derive(Clone, Debug, Default)]
+pub struct LiveBar {
+    /// Showing the recent history, not the session now.
+    pub paused: bool,
+    /// The host records into this machine's recordings directory, so Keep
+    /// and episodes work.
+    pub local: bool,
+    /// The next or running episode's task.
+    pub task: String,
+    /// Seconds into the running episode.
+    pub episode_s: Option<f64>,
+    /// The last Keep's or episode's answer.
+    pub note: Option<Result<String, String>>,
+}
+
+/// A live session's bar: pause or resume, Keep, and the episode controls
+/// (start with a task; success, fail or discard).
+pub fn live_bar(ui: &mut egui::Ui, bar: &mut LiveBar) -> Option<LiveAction> {
+    let mut action = None;
+    let local_only = "The host does not record into this machine's recordings";
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let (label, tone) = if bar.paused {
+            ("PAUSED", Tone::Warn)
+        } else {
+            ("LIVE", Tone::Good)
+        };
+        ui.label(RichText::new(label).strong().color(tone_color(tone)));
+        if bar.paused {
+            if ui
+                .button("Back to live")
+                .on_hover_text("Show the session as it is now")
+                .clicked()
+            {
+                action = Some(LiveAction::Resume);
+            }
+        } else if ui
+            .button("Pause")
+            .on_hover_text("Scrub the last minute; the session keeps running")
+            .clicked()
+        {
+            action = Some(LiveAction::Pause);
+        }
+        if ui
+            .add_enabled(bar.local, Button::new("Keep"))
+            .on_hover_text("Keep the host's recording of the last 2 minutes as an incident")
+            .on_disabled_hover_text(local_only)
+            .clicked()
+        {
+            action = Some(LiveAction::Keep);
+        }
+        ui.separator();
+        match bar.episode_s {
+            None => {
+                ui.add_enabled(
+                    bar.local,
+                    egui::TextEdit::singleline(&mut bar.task)
+                        .hint_text("task")
+                        .desired_width(260.0),
+                )
+                .on_hover_text("The episode's task, as a policy is told it");
+                if ui
+                    .add_enabled(bar.local, Button::new("Start episode"))
+                    .on_hover_text("Collect from now until Success, Fail or Discard")
+                    .on_disabled_hover_text(local_only)
+                    .clicked()
+                {
+                    action = Some(LiveAction::Start);
+                }
+            }
+            Some(seconds) => {
+                ui.label(
+                    RichText::new(format!("EPISODE {seconds:.1} s"))
+                        .strong()
+                        .color(tone_color(Tone::Bad)),
+                );
+                ui.label(RichText::new(&bar.task).weak());
+                if ui
+                    .add(Button::new("Success").fill(tone_color(Tone::Good)))
+                    .clicked()
+                {
+                    action = Some(LiveAction::Finish { success: true });
+                }
+                if ui
+                    .button("Fail")
+                    .on_hover_text("Collected, marked failed")
+                    .clicked()
+                {
+                    action = Some(LiveAction::Finish { success: false });
+                }
+                if ui
+                    .button("Discard")
+                    .on_hover_text("A bad take: not collected")
+                    .clicked()
+                {
+                    action = Some(LiveAction::Discard);
+                }
+            }
+        }
+        match &bar.note {
+            Some(Ok(note)) => {
+                ui.label(RichText::new(note).weak());
+            }
+            Some(Err(why)) => {
+                ui.label(RichText::new(why).color(tone_color(Tone::Warn)));
+            }
+            None => {}
+        }
+    });
+    ui.add_space(4.0);
+    action
+}
+
+/// The replay transport: play or pause, step, speed, and a scrub bar over
+/// the recording, in seconds from its start. `label` names what is
+/// replayed; with `rerun`, an "Open in Rerun" button, and whether it was
+/// clicked is returned.
+pub fn replay_bar(ui: &mut egui::Ui, replay: &mut Replay, label: &str, rerun: bool) -> bool {
+    let mut open = false;
+    let (first, last) = replay.bounds();
+    let secs = |t: i64| (t - first) as f64 / 1e9;
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(label)
+                .strong()
+                .color(tone_color(Tone::Neutral)),
+        );
+        if ui
+            .button("Prev")
+            .on_hover_text("Previous message")
+            .clicked()
+        {
+            replay.playing = false;
+            replay.step(false);
+        }
+        let play = if replay.playing { "Pause" } else { "Play" };
+        if ui.button(play).clicked() {
+            if !replay.playing && replay.at_ns() >= last {
+                replay.seek(first);
+            }
+            replay.playing = !replay.playing;
+        }
+        if ui.button("Next").on_hover_text("Next message").clicked() {
+            replay.playing = false;
+            replay.step(true);
+        }
+        egui::ComboBox::from_label("speed")
+            .selected_text(format!("{}×", replay.speed))
+            .width(60.0)
+            .show_ui(ui, |ui| {
+                for speed in SPEEDS {
+                    ui.selectable_value(&mut replay.speed, speed, format!("{speed}×"));
+                }
+            });
+        if rerun
+            && ui
+                .button("Open in Rerun")
+                .on_hover_text("The recording in the Rerun viewer (`rerun` on the PATH)")
+                .clicked()
+        {
+            open = true;
+        }
+        let mut at = secs(replay.at_ns());
+        ui.spacing_mut().slider_width = (ui.available_width() - 220.0).max(100.0);
+        let slider = ui.add(
+            egui::Slider::new(&mut at, 0.0..=secs(last))
+                .suffix(" s")
+                .fixed_decimals(3)
+                .text(format!("of {:.3} s", secs(last))),
+        );
+        if slider.changed() {
+            replay.seek(first + (at * 1e9) as i64);
+        }
+    });
+    ui.add_space(4.0);
+    open
+}
+
 fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<Verb>) {
     let h = &view.header;
     ui.add_space(4.0);
@@ -160,9 +379,27 @@ fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<V
             };
             ui.horizontal(|ui| {
                 ui.label(host);
+                match h.recording {
+                    Recording::On => {
+                        ui.label(RichText::new("REC").strong().color(tone_color(Tone::Bad)))
+                            .on_hover_text("The host records this session");
+                    }
+                    Recording::Paused => {
+                        ui.label(
+                            RichText::new("recording paused: disk low")
+                                .color(tone_color(Tone::Warn)),
+                        );
+                    }
+                    Recording::Off => {
+                        ui.label(RichText::new("not recorded").weak());
+                    }
+                }
                 ui.label(RichText::new(&h.clock).weak());
             });
         });
+        if state.replay {
+            return;
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let estop = ui
                 .add(
@@ -178,6 +415,9 @@ fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<V
                 .on_hover_text("Emergency stop: one click, latches until the robot clears it");
             if estop.clicked() {
                 verbs.push(Verb::Estop);
+            }
+            if state.paused {
+                return;
             }
             ui.add_space(12.0);
             if ui
@@ -293,17 +533,23 @@ fn channels(ui: &mut egui::Ui, view: &View, state: &mut UiState) {
                                 handle
                             }
                         };
-                        ui.image((texture.id(), vec2(thumb.width as f32, thumb.height as f32)));
-                        ui.label(RichText::new(value.brief()).small().weak());
+                        let size = vec2(thumb.width as f32, thumb.height as f32);
+                        let scale = ((ui.available_width() - 8.0) / size.x).clamp(1.0, 3.0);
+                        ui.vertical(|ui| {
+                            ui.image((texture.id(), size * scale));
+                            ui.label(RichText::new(value.brief()).small().weak());
+                        });
                     }
                     _ => {
-                        if !row.plot.is_empty() {
-                            sparkline(ui, &row.plot, view.lane_window_s.min(10.0));
-                        }
-                        ui.add(
-                            egui::Label::new(RichText::new(value.brief()).monospace().small())
-                                .wrap(),
-                        );
+                        ui.vertical(|ui| {
+                            if !row.plot.is_empty() {
+                                sparkline(ui, &row.plot, view.lane_window_s.min(10.0));
+                            }
+                            ui.add(
+                                egui::Label::new(RichText::new(value.brief()).monospace().small())
+                                    .wrap(),
+                            );
+                        });
                     }
                 }
             });
@@ -318,7 +564,8 @@ const SERIES: [Color32; 3] = [
 ];
 
 fn sparkline(ui: &mut egui::Ui, series: &[Vec<[f64; 2]>], window_s: f64) {
-    let (response, painter) = ui.allocate_painter(vec2(120.0, 28.0), Sense::hover());
+    let width = (ui.available_width() - 8.0).clamp(120.0, 480.0);
+    let (response, painter) = ui.allocate_painter(vec2(width, 40.0), Sense::hover());
     let rect = response.rect;
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
     let (lo, hi) = series
@@ -615,14 +862,15 @@ fn edge_tone(mode: EdgeMode) -> Tone {
     crate::model::edge_tone(mode)
 }
 
-fn timeline(ui: &mut egui::Ui, view: &View) {
-    section(
-        ui,
-        "Lanes",
-        &format!(
-            "the last {:.0} s, now at the right edge",
+/// Mode, lease and edge lanes over the last minute.
+fn lanes(ui: &mut egui::Ui, view: &View) {
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(format!(
+            "Lanes: the last {:.0} s, now at the right edge",
             view.lane_window_s
-        ),
+        ))
+        .weak(),
     );
     let label_width = 220.0;
     let width = (ui.available_width() - label_width - 16.0).max(200.0);
@@ -659,6 +907,10 @@ fn timeline(ui: &mut egui::Ui, view: &View) {
             }
         });
     }
+    ui.add_space(4.0);
+}
+
+fn timeline(ui: &mut egui::Ui, view: &View) {
     section(
         ui,
         "Events",

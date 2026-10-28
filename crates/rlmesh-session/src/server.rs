@@ -9,6 +9,11 @@
 //! it would a host started ahead of it. The server's queryable
 //! (`{tenant}/server`) tells a participant that a host here will serve its
 //! session, so one that finds only other sessions' hosts fails at once.
+//!
+//! With recording on ([`SessionServer::start_recording`]), each session
+//! also gets an always-on recorder that joins as the observer
+//! [`RECORDER`]. It never counts as a member: the session still stops when
+//! its last other participant leaves, after the recorder has finished.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -20,11 +25,23 @@ use zenoh::sample::SampleKind;
 
 use crate::error::SessionError;
 use crate::host::{HostConfig, SessionHost, token_declared};
+#[cfg(feature = "record")]
+use crate::participant::{Participant, ParticipantConfig};
+#[cfg(feature = "record")]
+use crate::record::{Recorder, Rolling};
 use crate::transport::Transport;
 use crate::wire::SessionId;
 use crate::wire::keys::{session_of, session_server, tenant_participants};
+#[cfg(feature = "record")]
+use crate::wire::{ParticipantId, PriorityClass, Role};
 
 type Hosts = Arc<Mutex<HashMap<SessionId, SessionHost>>>;
+
+/// The id the server's own recorder joins each session as.
+pub const RECORDER: &str = "_recorder";
+
+#[cfg(feature = "record")]
+type Recorders = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<Option<Recorder>>>>>;
 
 /// A participant's liveliness token appeared (`true`) or left.
 type Presence = (bool, SessionId, String);
@@ -33,6 +50,8 @@ type Presence = (bool, SessionId, String);
 /// [`SessionServer::shutdown`], which waits for them.
 pub struct SessionServer {
     hosts: Hosts,
+    #[cfg(feature = "record")]
+    recorders: Recorders,
     _server: zenoh::query::Queryable<()>,
     _watch: zenoh::pubsub::Subscriber<()>,
 }
@@ -55,11 +74,77 @@ impl SessionServer {
     /// Serves every session of `config.tenant` on `transport`, each with
     /// `config` (its `session` replaced), starting `config.session` at once.
     pub async fn start(transport: Transport, config: HostConfig) -> Result<Self, SessionError> {
+        Self::serve(
+            transport,
+            config,
+            #[cfg(feature = "record")]
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::start`], recording every session it hosts into `rolling`
+    /// ([`Recorder::start_rolling`]).
+    #[cfg(feature = "record")]
+    pub async fn start_recording(
+        transport: Transport,
+        config: HostConfig,
+        rolling: Rolling,
+    ) -> Result<Self, SessionError> {
+        Self::serve(transport, config, Some(rolling)).await
+    }
+
+    async fn serve(
+        transport: Transport,
+        config: HostConfig,
+        #[cfg(feature = "record")] rolling: Option<Rolling>,
+    ) -> Result<Self, SessionError> {
         let hosts: Hosts = Arc::default();
+        #[cfg(feature = "record")]
+        let recorders: Recorders = Arc::default();
+        // Only a recording server's own recorder is not a member.
+        #[cfg(feature = "record")]
+        let recording = rolling.is_some();
+        #[cfg(not(feature = "record"))]
+        let recording = false;
+        #[cfg(feature = "record")]
+        let record = {
+            let (transport, config) = (transport.clone(), config.clone());
+            move |session: SessionId| {
+                let rolling = rolling.clone()?;
+                let (transport, config) = (transport.ridden(), config.clone());
+                Some(tokio::spawn(async move {
+                    let id = ParticipantId::new(RECORDER).ok()?;
+                    let mut participant = ParticipantConfig::new(
+                        config.tenant.clone(),
+                        session,
+                        id,
+                        vec![Role::Observer],
+                        PriorityClass::Scripted,
+                    );
+                    participant.clock = config.clock.clone();
+                    let recorded = async {
+                        let participant = Participant::attach(transport, participant).await?;
+                        Recorder::start_rolling(Arc::new(participant), rolling, session).await
+                    };
+                    match recorded.await {
+                        Ok(recorder) => Some(recorder),
+                        Err(err) => {
+                            warn!(%session, %err, "session not recorded");
+                            None
+                        }
+                    }
+                }))
+            }
+        };
         hosts.lock().await.insert(
             config.session,
             SessionHost::start(transport.clone(), config.clone()).await?,
         );
+        #[cfg(feature = "record")]
+        if let Some(started) = record(config.session) {
+            recorders.lock().await.insert(config.session, started);
+        }
         let control = transport.control().clone();
         let tenant_id = config.tenant.clone();
         let tenant = config.tenant.to_string();
@@ -67,10 +152,15 @@ impl SessionServer {
         let (presence, mut changes) = tokio::sync::mpsc::unbounded_channel::<Presence>();
         tokio::spawn({
             let hosts = hosts.clone();
+            #[cfg(feature = "record")]
+            let recorders = recorders.clone();
             let control = control.clone();
             async move {
                 let mut present: HashMap<SessionId, HashSet<String>> = HashMap::new();
                 while let Some((joined, session, key)) = changes.recv().await {
+                    if recording && key.rsplit('/').next() == Some(RECORDER) {
+                        continue;
+                    }
                     let members = present.entry(session).or_default();
                     if joined {
                         members.insert(key);
@@ -91,6 +181,10 @@ impl SessionServer {
                             Ok(host) => {
                                 info!(%session, "session started for its first participant");
                                 hosts.insert(session, host);
+                                #[cfg(feature = "record")]
+                                if let Some(started) = record(session) {
+                                    recorders.lock().await.insert(session, started);
+                                }
                             }
                             Err(err) => warn!(%session, %err, "session did not start"),
                         }
@@ -99,6 +193,8 @@ impl SessionServer {
                         && let Some(host) = hosts.remove(&session)
                     {
                         info!(%session, "session stopped: its last participant left");
+                        #[cfg(feature = "record")]
+                        finish_recorder(&recorders, session).await;
                         host.shutdown().await;
                     }
                 }
@@ -129,6 +225,8 @@ impl SessionServer {
             .await?;
         Ok(Self {
             hosts,
+            #[cfg(feature = "record")]
+            recorders,
             _server: server,
             _watch: watch,
         })
@@ -141,10 +239,30 @@ impl SessionServer {
 
     /// Stops every session (participants see their hosts leave).
     pub async fn shutdown(self) {
+        #[cfg(feature = "record")]
+        {
+            let sessions: Vec<SessionId> = self.recorders.lock().await.keys().copied().collect();
+            for session in sessions {
+                finish_recorder(&self.recorders, session).await;
+            }
+        }
         let hosts: Vec<SessionHost> = self.hosts.lock().await.drain().map(|(_, h)| h).collect();
         for host in hosts {
             host.shutdown().await;
         }
+    }
+}
+
+/// Finishes `session`'s recorder, if it has one, so its last segment is
+/// complete before the host stops.
+#[cfg(feature = "record")]
+async fn finish_recorder(recorders: &Recorders, session: SessionId) {
+    let started = recorders.lock().await.remove(&session);
+    if let Some(started) = started
+        && let Ok(Some(recorder)) = started.await
+        && let Err(err) = recorder.finish().await
+    {
+        warn!(%session, %err, "recording did not finish cleanly");
     }
 }
 

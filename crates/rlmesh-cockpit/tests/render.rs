@@ -34,7 +34,7 @@ fn harness(view: View) -> Harness<'static, State> {
     Harness::builder()
         .with_size(vec2(1600.0, 950.0))
         .build_ui_state(
-            |ui, (view, state, verbs): &mut State| verbs.extend(ui::show(ui, view, state)),
+            |ui, (view, state, verbs): &mut State| verbs.extend(ui::show(ui, view, state, |_| {})),
             (view, UiState::default(), Vec::new()),
         )
 }
@@ -118,7 +118,7 @@ fn every_tab_renders_headless_with_the_estop_visible() {
     for label in [
         "Live channels",
         "Declared vs measured",
-        "Lease and mode timeline",
+        "Events",
         "Bindings",
         "E-STOP",
     ] {
@@ -192,10 +192,10 @@ fn live_session() {
     let mut model = Model::new(pid("cockpit-snapshot"), ModelConfig::default());
     let end = std::time::Instant::now() + Duration::from_secs_f64(seconds);
     while std::time::Instant::now() < end {
-        feed.drain(&mut model);
+        feed.drain(&mut model, None);
         std::thread::sleep(Duration::from_millis(50));
     }
-    feed.drain(&mut model);
+    feed.drain(&mut model, None);
     let mut h = harness(model.view(feed.now_ns()));
     h.run();
     assert!(

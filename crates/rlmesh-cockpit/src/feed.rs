@@ -26,6 +26,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::model::{Input, Model, Verb};
+use crate::replay::History;
 
 /// How many data inputs may wait for the UI.
 pub const QUEUE: usize = 1 << 16;
@@ -194,11 +195,15 @@ impl Feed {
         let _ = self.verbs.send(verb);
     }
 
-    /// Takes every waiting input into `model`; returns how many.
-    pub fn drain(&self, model: &mut Model) -> usize {
+    /// Takes every waiting input into `model`, and into `history` when
+    /// given; returns how many.
+    pub fn drain(&self, model: &mut Model, mut history: Option<&mut History>) -> usize {
         let now = self.now_ns();
         let mut n = 0;
         for input in self.control.try_iter().chain(self.data.try_iter()) {
+            if let Some(history) = history.as_deref_mut() {
+                history.push(now, &input);
+            }
             model.ingest(input, now);
             n += 1;
         }

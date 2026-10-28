@@ -574,6 +574,34 @@ pub async fn host_at(
     name: &str,
     lease_grace: Duration,
 ) -> Result<Placed, SessionError> {
+    serve_at(
+        base,
+        name,
+        lease_grace,
+        #[cfg(feature = "record")]
+        None,
+    )
+    .await
+}
+
+/// [`host_at`], recording every session it hosts into `rolling`
+/// ([`SessionServer::start_recording`]).
+#[cfg(feature = "record")]
+pub async fn host_recording_at(
+    base: SocketAddr,
+    name: &str,
+    lease_grace: Duration,
+    rolling: crate::record::Rolling,
+) -> Result<Placed, SessionError> {
+    serve_at(base, name, lease_grace, Some(rolling)).await
+}
+
+async fn serve_at(
+    base: SocketAddr,
+    name: &str,
+    lease_grace: Duration,
+    #[cfg(feature = "record")] rolling: Option<crate::record::Rolling>,
+) -> Result<Placed, SessionError> {
     let (transport, base) = if base.port() == 0 {
         open_local_listeners(base.ip()).await?
     } else {
@@ -585,6 +613,12 @@ pub async fn host_at(
     config.clock = SystemMonotonicClock.shared();
     config.lease_grace = lease_grace.max(Duration::from_millis(1));
     config.health_log = None;
+    #[cfg(feature = "record")]
+    let host = match rolling {
+        Some(rolling) => SessionServer::start_recording(transport.clone(), config, rolling).await?,
+        None => SessionServer::start(transport.clone(), config).await?,
+    };
+    #[cfg(not(feature = "record"))]
     let host = SessionServer::start(transport.clone(), config).await?;
     local_hosts()
         .lock()

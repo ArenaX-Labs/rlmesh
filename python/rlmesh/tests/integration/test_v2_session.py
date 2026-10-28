@@ -420,6 +420,34 @@ def test_a_recorder_writes_the_session_to_mcap_and_reads_it_back(
     arm = [lease for lease in summary["leases"] if lease["part"] == "ur10e/arm"]
     assert arm[0]["holder"] == "model" and arm[0]["priority"] == "model"
 
+    # The same recording as a collected episode, resampled for LeRobot.
+    from rlmesh.v2 import lerobot
+
+    take = tmp_path / "collected" / "default" / "1"
+    take.mkdir(parents=True)
+    path.rename(take / path.name)
+    arm_topic = topics["/ur10e/arm"]
+    (take / "episode.json").write_text(
+        json.dumps(
+            {
+                "task": "hold",
+                "start_ns": arm_topic["first_log_ns"],
+                "end_ns": arm_topic["last_log_ns"],
+                "success": True,
+            }
+        )
+    )
+    [episode] = lerobot._takes(take.parent, include_failed=False)
+    frames = list(lerobot._frames(episode, fps=30))
+    assert len(frames) > 1
+    states, actions, cameras = lerobot._layout(frames[-1], None)
+    assert "ur10e/arm" in states and actions == ["ur10e/arm/_applied"]
+    assert cameras == {
+        "observation.images.scene_cam": "ur10e/scene/cam",
+        "observation.images.wrist_cam": "ur10e/wrist/cam",
+    }
+    np.testing.assert_allclose(lerobot._numbers(frames[-1]["ur10e/arm/_applied"]), 0.25)
+
 
 def test_a_raising_predict_releases_the_leases_and_propagates(
     host: rlmesh.Host,

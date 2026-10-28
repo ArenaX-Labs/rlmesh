@@ -30,7 +30,9 @@ clap = { workspace = true, features = ["derive"], optional = true }
 image = { workspace = true, features = ["jpeg"] }
 jpeg-encoder = { workspace = true }
 futures = { workspace = true, optional = true }
-# Session recordings (§13), feature `record`.
+# Session recordings (§13), feature `record`; `dirs` for their default
+# directory.
+dirs = { workspace = true, optional = true }
 mcap = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 # The sans-IO core (the wire, the spec, authority, clock offsets, input
@@ -83,7 +85,7 @@ gateway = [
   "tokio/net",
 ]
 # MCAP recording of a session (`record`).
-record = ["dep:mcap"]
+record = ["dep:dirs", "dep:mcap", "dep:serde_json"]
 # QUIC links (one stream per Zenoh priority, so one connection can carry
 # every class across NAT); needs TLS certificates.
 quic = ["zenoh/transport_quic"]

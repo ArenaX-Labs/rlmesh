@@ -5700,6 +5700,7 @@ dependencies = [
  "blake3",
  "bytes",
  "clap",
+ "dirs",
  "futures",
  "image",
  "jpeg-encoder",

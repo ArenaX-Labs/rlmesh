@@ -57,6 +57,9 @@ pub struct World {
     pub stall_until: i64,
     /// The edge mode `_applied` reports.
     pub edge_mode: EdgeMode,
+    /// What a recorder would have written (snapshots, samples, chunks), by
+    /// receipt time, in ingest order.
+    pub recorded: Vec<(i64, Input)>,
 }
 
 impl World {
@@ -73,6 +76,7 @@ impl World {
             coalesced: 0,
             stall_until: 0,
             edge_mode: EdgeMode::Driving,
+            recorded: Vec::new(),
         };
         for (id, role, priority) in [
             ("ur10e", Role::Embodiment, PriorityClass::Scripted),
@@ -224,7 +228,7 @@ impl World {
             })
             .collect();
         let snapshot = self.auth.snapshot(clocks, self.now);
-        self.model.ingest(Input::Authority(snapshot), self.now);
+        self.record(Input::Authority(snapshot), self.now);
     }
 
     fn payload(spec: &StreamSpec, v: f32) -> Bytes {
@@ -264,7 +268,7 @@ impl World {
             payload,
             applied,
         };
-        self.model.ingest(
+        self.record(
             Input::Sample {
                 sample,
                 receive_ns: self.now + delay_ns,
@@ -304,13 +308,18 @@ impl World {
             publish_ns: self.now,
             tick: 0,
         };
-        self.model.ingest(
+        self.record(
             Input::Chunk {
                 chunk,
                 receive_ns: self.now + 2 * MS,
             },
             self.now + 2 * MS,
         );
+    }
+
+    fn record(&mut self, input: Input, at: i64) {
+        self.recorded.push((at, input.clone()));
+        self.model.ingest(input, at);
     }
 
     fn heartbeat(&mut self, who: &str, seen: Vec<(ChannelId, u64)>, queue_depth: u32) {

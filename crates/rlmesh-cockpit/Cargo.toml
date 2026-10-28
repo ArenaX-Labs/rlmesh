@@ -29,7 +29,7 @@ clap = { workspace = true, features = ["derive"] }
 eframe = { workspace = true }
 egui = { workspace = true }
 half = { workspace = true }
-rlmesh-session = { workspace = true }
+rlmesh-session = { workspace = true, features = ["record"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing = { workspace = true }

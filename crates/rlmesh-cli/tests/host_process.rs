@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rlmesh_session::address::{DEFAULT_SESSION, TENANT, session_id};
 use rlmesh_session::media::synthetic_frame;
+use rlmesh_session::record::{Recorded, read};
 use rlmesh_session::spec::apply::Value;
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::free_local_base;
@@ -34,6 +35,8 @@ struct HostProcess {
     child: Child,
     session: SessionId,
     base: std::net::SocketAddr,
+    /// Where it records its sessions.
+    recordings: tempfile::TempDir,
 }
 
 impl HostProcess {
@@ -50,8 +53,10 @@ impl HostProcess {
 
     fn try_spawn() -> Option<Self> {
         let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
+        let recordings = tempfile::tempdir().expect("tempdir");
         let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
-            .args(["host", "--listen", &base.to_string()])
+            .args(["host", "--listen", &base.to_string(), "--record-dir"])
+            .arg(recordings.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -66,6 +71,7 @@ impl HostProcess {
                 child,
                 session: session_id(DEFAULT_SESSION),
                 base,
+                recordings,
             });
         }
         let _ = child.kill();
@@ -237,7 +243,7 @@ async fn a_host_process_arbitrates_leases_and_its_loss_is_seen() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_terminated_host_shuts_down_cleanly() {
+async fn a_terminated_host_shuts_down_cleanly_with_its_session_recorded() {
     let mut host = HostProcess::spawn();
     let robot = join(
         &host,
@@ -246,6 +252,14 @@ async fn a_terminated_host_shuts_down_cleanly() {
         PriorityClass::Scripted,
     )
     .await;
+    robot.declare_parts(ROBOT).await.expect("declare");
+    let ft = robot.publisher("ft").await.expect("publisher");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 0..5_u8 {
+        ft.publish(robot.clock().now_ns(), Bytes::from(vec![i; 32]))
+            .expect("publish");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     host.signal(15);
     let status = host.wait_exit();
     assert!(status.success(), "clean exit: {status:?}");
@@ -254,6 +268,25 @@ async fn a_terminated_host_shuts_down_cleanly() {
         .await
         .expect("withdrawn presence seen in time")
         .expect("watch");
+
+    // The recorder finished its segment before the host stopped.
+    let dir = host
+        .recordings
+        .path()
+        .join("rolling")
+        .join(host.session.to_string());
+    let segments: Vec<_> = std::fs::read_dir(&dir)
+        .expect("the session's recordings")
+        .map(|e| e.expect("entry").path())
+        .collect();
+    assert_eq!(segments.len(), 1, "{segments:?}");
+    let messages = read(&segments[0]).expect("a complete segment");
+    assert!(matches!(messages[0].message, Recorded::Authority(_)));
+    let samples = messages
+        .iter()
+        .filter(|m| matches!(m.message, Recorded::Sample(_)))
+        .count();
+    assert_eq!(samples, 5);
 }
 
 /// The conformance fixtures of `rlmesh_session::spec` (§14, §15).

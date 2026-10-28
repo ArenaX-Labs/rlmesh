@@ -28,6 +28,9 @@
 //! [`ui`] renders a [`view::View`] with egui and returns
 //! [`model::Verb`]s. Tests drive the model and render the UI headless.
 //!
+//! [`replay`] feeds a recorded session (MCAP) through the same model, with
+//! a play, pause, scrub and step bar instead of the verbs.
+//!
 //! The counters only the measuring side knows (a publisher's produced
 //! count, a controller's starts and skips) come from observer reports
 //! (`rlmesh_session::report`); everything else is measured here.
@@ -36,6 +39,7 @@ pub mod app;
 pub mod feed;
 pub mod meter;
 pub mod model;
+pub mod replay;
 pub mod timeline;
 pub mod ui;
 pub mod values;
@@ -44,5 +48,6 @@ pub mod view;
 pub use app::CockpitApp;
 pub use feed::Feed;
 pub use model::{Input, Model, ModelConfig, Verb};
+pub use replay::Replay;
 pub use ui::{Tab, UiState};
 pub use view::View;
