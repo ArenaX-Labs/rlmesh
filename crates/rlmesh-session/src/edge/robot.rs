@@ -267,6 +267,21 @@ impl Robot {
         Ok(())
     }
 
+    /// Latches this robot's e-stop locally, from any thread (the hook for
+    /// a hardware button): no network. The next [`Self::due`] of every
+    /// group purges its queue and returns Estop, every chunk is refused,
+    /// and the host is told (`Estop{ESTOP_LOCAL}`) in the background.
+    pub fn estop(&self, reason: impl Into<String>) {
+        self.participant.latch_estop(reason);
+    }
+
+    /// Clears the local latch (only this process can) and tells the host
+    /// `Clear`, after any unsent `Estop`: the session ends in ESTOP,
+    /// unlatched, and disarm then arm resume it.
+    pub fn clear_estop(&self) {
+        self.participant.clear_estop();
+    }
+
     /// The counters of the edge serving `path`.
     pub fn edge_stats(&self, path: &str) -> Result<EdgeStats, SessionError> {
         Ok(self.edges[self.edge_index(path)?].stats())

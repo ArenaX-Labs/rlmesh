@@ -66,7 +66,7 @@ block instead of the `finally`.
 | `Robot(name, parts, session=host)`                 | `await Robot.connect(name, parts, { session: host })`         |
 | `robot.publish("arm", pos=q, vel=dq)`              | `robot.publish('arm', { pos: q, vel: dq })`                   |
 | `robot.due("arm").value` (NumPy array)             | `robot.due('arm').value` (`{ dtype, shape, data }`)           |
-| `robot.arm()`, `estop(reason)`, `clear()`          | `await robot.arm()`, `estop(reason)`, `clear()`               |
+| `robot.arm()`, `estop(reason)`, `clear_estop()`    | `await robot.arm()`, `estop(reason)`, `clearEstop()`          |
 | `robot.now_ns()` (`time.monotonic_ns()`)           | `robot.nowNs()` (`process.hrtime.bigint()`)                   |
 | `Policy(map, session=host).bind(robot, **opts)`    | `await new Policy(map, { session: host }).bind(robot, opts)`  |
 | `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                             |

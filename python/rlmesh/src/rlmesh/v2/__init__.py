@@ -482,12 +482,17 @@ class Robot:
         self._native.disarm()
 
     def estop(self, reason: str = "estop") -> None:
-        """Emergency stop: latched until :meth:`clear`, then disarm and arm."""
+        """Emergency stop, latched here with no network (any thread, a button handler too).
+
+        The next :meth:`due` purges every queue and returns ``estop``, and
+        the host is told in the background. Latched until
+        :meth:`clear_estop`, then disarm and arm.
+        """
         self._native.estop(reason)
 
-    def clear(self) -> None:
-        """Release a latched e-stop (the robot's local clear)."""
-        self._native.clear()
+    def clear_estop(self) -> None:
+        """Clear the local e-stop latch and tell the host (after any unsent e-stop); then disarm and arm."""
+        self._native.clear_estop()
 
     def report_safe(self, reason: str) -> None:
         """Tell the host the robot fell back on its own (a device watchdog fired)."""

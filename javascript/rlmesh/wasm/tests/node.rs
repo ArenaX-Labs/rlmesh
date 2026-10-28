@@ -14,7 +14,8 @@ use rlmesh_session_core::wire::version::SPEC_VERSION;
 use rlmesh_session_core::wire::{
     Applied, AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command,
     CtlError, CtlReply, CtlStatus, EdgeMode, Epoch, Fingerprint, HeartbeatEcho, LastStop, Lease,
-    LeaseToken, Mode, PartSpec, ParticipantId, PriorityClass, Reason, Sample, SessionId,
+    LeaseToken, Mode, PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Sample,
+    SessionId,
 };
 use rlmesh_wasm::frame;
 use rlmesh_wasm::*;
@@ -263,6 +264,7 @@ fn frames_copy_into_pooled_buffers_and_applied_samples_carry_the_edge_mode() {
         lease_token: LeaseToken(5),
         chunk_seq: 3,
         action_index: 0,
+        reason: ReasonCode::Unspecified,
     });
     assert_eq!(s.push(sample_frame(1, &applied), T0).unwrap(), 1);
     assert_eq!(s.applied_mode(), "hold");

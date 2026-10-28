@@ -654,23 +654,22 @@ impl NativeRobot {
         Ok(())
     }
 
-    /// Emergency stop: latched until a local `clear`, then disarm and arm.
+    /// Emergency stop, latched locally with no network (any thread): the
+    /// next `due` purges every queue and returns `estop`, and the host is
+    /// told in the background. Latched until `clearEstop`, then disarm and
+    /// arm.
     #[napi]
-    pub async fn estop(&self, reason: String) -> Result<()> {
-        let robot = self.robot()?;
-        robot
-            .participant()
-            .estop(reason)
-            .await
-            .map_err(session_err)?;
+    pub fn estop(&self, reason: String) -> Result<()> {
+        self.robot()?.estop(reason);
         Ok(())
     }
 
-    /// Releases a latched e-stop (the embodiment's local clear).
+    /// Clears the local e-stop latch and tells the host `Clear` (after any
+    /// unsent e-stop): the session stays ESTOP, unlatched, until disarm and
+    /// arm.
     #[napi]
-    pub async fn clear(&self) -> Result<()> {
-        let robot = self.robot()?;
-        robot.participant().clear().await.map_err(session_err)?;
+    pub fn clear_estop(&self) -> Result<()> {
+        self.robot()?.clear_estop();
         Ok(())
     }
 

@@ -685,6 +685,9 @@ message Applied {
   uint64 lease_token = 3;
   uint64 chunk_seq = 4;
   uint32 action_index = 5;
+  // Why the edge is in its mode (Safe, Estop): its own cause, or the host's
+  // mode_reason.
+  ReasonCode reason = 6;
 }
 
 // On d/{robot}/{path} (and d/{robot}/{path}/_applied).

@@ -11,7 +11,7 @@ use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::{
-    DType, LeaseToken, PriorityClass, ReasonCode, Role, SessionId, TenantId,
+    DType, LeaseToken, Mode, PriorityClass, ReasonCode, Role, SessionId, TenantId,
 };
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
@@ -357,6 +357,60 @@ async fn a_failing_model_stops_sending_and_lets_go_of_the_robot() {
         .send(&[("arm".into(), wrong)], &observation.meta.based_on, at)
         .expect_err("[6] is not [5, 6]");
     assert!(err.to_string().contains("expected [5, 6]"), "{err}");
+    stop.store(true, Ordering::Relaxed);
+    robot_loop.join().expect("robot loop");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_estop_stops_the_robot_at_once_and_reaches_the_host_before_its_clear() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let model = world.controller("model", PriorityClass::Model).await;
+    let (stop, log): (_, Log) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
+    let run = run_in_thread(&model, 1.5);
+    wait_until("the robot driven by the policy", || driven_to(&log, 1.5)).await;
+
+    // Latched and cleared back to back: the edge stops on its next tick,
+    // and the host still sees the Estop before the Clear.
+    robot.estop("button");
+    let latched_at = Instant::now();
+    robot.clear_estop();
+    wait_until("the edge in ESTOP", || {
+        log.lock()
+            .expect("log")
+            .iter()
+            .any(|(at, mode, ..)| *at >= latched_at && *mode == EdgeMode::Estop)
+    })
+    .await;
+    let p = robot.participant();
+    let view = p
+        .wait_for("ESTOP, cleared", WAIT, |s| {
+            s.mode == Mode::Estop && s.mode_reason.code == ReasonCode::EstopCleared
+        })
+        .await
+        .expect("cleared");
+    assert!(!view.estop_latched);
+    assert!(
+        view.ended
+            .iter()
+            .any(|e| { e.reason.code == ReasonCode::VoidedByEstop && e.reason.by == "ur10e" })
+    );
+    // Leaving ESTOP still needs disarm and arm.
+    p.disarm().await.expect("disarm");
+    p.arm().await.expect("arm");
+    let resumed = Instant::now();
+    wait_until("driven again", || {
+        driven_to(&log, 1.5)
+            && log
+                .lock()
+                .expect("log")
+                .last()
+                .is_some_and(|e| e.0 > resumed)
+    })
+    .await;
+    model.stop();
+    run.join().expect("run thread").0.expect("a clean stop");
     stop.store(true, Ordering::Relaxed);
     robot_loop.join().expect("robot loop");
 }

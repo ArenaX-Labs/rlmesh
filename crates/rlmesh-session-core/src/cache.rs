@@ -386,7 +386,7 @@ mod tests {
     use super::*;
     use crate::spec::{Policy, RunOptions, bind, normalise};
     use crate::wire::version::SPEC_VERSION;
-    use crate::wire::{EdgeMode, LeaseToken, ParticipantId};
+    use crate::wire::{EdgeMode, LeaseToken, ParticipantId, ReasonCode};
 
     const MS: i64 = 1_000_000;
 
@@ -454,6 +454,7 @@ mod tests {
                 lease_token: LeaseToken(1),
                 chunk_seq: 1,
                 action_index: 0,
+                reason: ReasonCode::Unspecified,
             }),
             ..sample(seq, capture_ms, 0)
         }

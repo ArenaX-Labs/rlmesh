@@ -7,6 +7,7 @@ use core::fmt;
 
 use bytes::Bytes;
 
+use crate::wire::authority::ReasonCode;
 use crate::wire::ids::{ChannelId, Epoch, LeaseToken};
 
 /// What the edge did on one control tick, per command group.
@@ -63,6 +64,9 @@ pub struct Applied {
     pub chunk_seq: u64,
     /// The action's index in it.
     pub action_index: u32,
+    /// Why the edge is in its mode (Safe, Estop): its own cause
+    /// (`ESTOP_LOCAL`, `QUEUE_DRY`, ...) or the host's `mode_reason`.
+    pub reason: ReasonCode,
 }
 
 impl Applied {
@@ -74,6 +78,7 @@ impl Applied {
             lease_token: LeaseToken(0),
             chunk_seq: 0,
             action_index: 0,
+            reason: ReasonCode::Unspecified,
         }
     }
 }

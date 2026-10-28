@@ -8,14 +8,16 @@
 //! decides, publishes one applied sample per member (§9.4), and when it falls
 //! back on its own account it tells the host through the participant
 //! (`EnterSafe`, retried in the background); the heartbeat reports its
-//! queue.
+//! queue. Every chunk and tick reads the robot process's local e-stop latch
+//! first ([`Participant::latch_estop`]).
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::participant::LocalLatch;
 use crate::transport::payload_bytes;
 use crate::wire::codec;
-use crate::wire::{ActionChunk, ChannelId, ChunkRef, ClockMode};
+use crate::wire::{ActionChunk, ChannelId, ChunkRef, ClockMode, ReasonCode};
 use crate::{
     AuthorityView, Clock, EdgeReport, Participant, SafeReporter, SamplePublisher, TrafficClass,
 };
@@ -34,18 +36,31 @@ struct Shared {
     clock: Arc<dyn Clock>,
     report: Arc<EdgeReport>,
     reporter: SafeReporter,
+    /// The robot process's local e-stop.
+    latch: Arc<LocalLatch>,
+    /// How many latches the core has seen.
+    latches_seen: AtomicU64,
     on_accept: Option<OnAccept>,
     /// The time of the last tick: the edge's clock in virtual mode.
     tick_ns: AtomicI64,
 }
 
 impl Shared {
+    /// The core, with the local latch as of now.
     fn core(&self) -> MutexGuard<'_, EdgeCore> {
         // A poisoned edge only means a panic elsewhere mid-update; the core
         // stays consistent between calls, so keep serving it.
-        self.core
+        let mut core = self
+            .core
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A latch cleared since the last look still stops and fences.
+        let latches = self.latch.latches();
+        if self.latches_seen.swap(latches, Ordering::SeqCst) != latches {
+            core.set_local_estop(Some(ReasonCode::EstopLocal));
+        }
+        core.set_local_estop(self.latch.is_latched().then_some(ReasonCode::EstopLocal));
+        core
     }
 
     fn on_payload(&self, payload: &zenoh::bytes::ZBytes) {
@@ -121,6 +136,8 @@ impl Edge {
             clock: participant.clock().clone(),
             report: participant.edge_report(),
             reporter: participant.safe_reporter(),
+            latch: participant.estop_latch(),
+            latches_seen: AtomicU64::new(0),
             on_accept,
             tick_ns: AtomicI64::new(0),
         });

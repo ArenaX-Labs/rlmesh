@@ -100,8 +100,8 @@ pub struct HostConfig {
     pub clock: Arc<dyn Clock>,
     /// How long a lease holder's heartbeats may stop before its lease lapses.
     pub lease_grace: Duration,
-    /// How long any participant's heartbeats may stop before it is lost (a
-    /// liveliness delete shortens it to `lease_grace`).
+    /// How long any participant's heartbeats may stop before it is lost (at
+    /// least `lease_grace`; a liveliness delete shortens it to that).
     pub presence_grace: Duration,
     /// How often lease expiry is checked: the lapse latency on top of grace.
     pub tick: Duration,
