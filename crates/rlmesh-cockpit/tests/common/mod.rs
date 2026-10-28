@@ -95,6 +95,7 @@ impl World {
                     requires: vec![],
                     workflow_edition: String::new(),
                     workflow_editions: vec![],
+                    estop: None,
                 },
             )
             .expect("attach");

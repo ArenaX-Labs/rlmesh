@@ -870,6 +870,7 @@ mod tests {
                         requires: Vec::new(),
                         workflow_edition: String::new(),
                         workflow_editions: Vec::new(),
+                        estop: None,
                     },
                 );
             }
@@ -1365,6 +1366,7 @@ mod tests {
             Command::Estop {
                 reason: "test".into(),
                 code: ReasonCode::EstopRemote,
+                origin: None,
             },
         );
         f.publish(MS);

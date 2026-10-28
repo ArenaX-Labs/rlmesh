@@ -42,8 +42,8 @@ use prost::encoding::encode_varint;
 use crate::wire::action::{ActionChunk, ChunkRef, InputRange};
 use crate::wire::authority::{
     AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
-    CtlStatus, HandshakeAccept, HandshakeRequest, LastStop, Lease, LeaseEnd, Mode, ParticipantInfo,
-    PriorityClass, Reason, ReasonCode, Request, Role, Watermark,
+    CtlStatus, EstopSignal, HandshakeAccept, HandshakeRequest, LastStop, Lease, LeaseEnd, Mode,
+    ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, Watermark,
 };
 use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 use crate::wire::error::WireError;
@@ -150,6 +150,24 @@ pub fn encode_key_delivery(delivery: &KeyDelivery) -> Vec<u8> {
         retire_through: delivery.retire_through.clone(),
     }
     .encode_to_vec()
+}
+
+/// Encodes an e-stop signal's body.
+pub fn encode_estop_signal(signal: &EstopSignal) -> Vec<u8> {
+    pb::EstopSignal {
+        reason: signal.reason.clone(),
+        sent_ns: signal.sent_ns,
+    }
+    .encode_to_vec()
+}
+
+/// Decodes an e-stop signal's body.
+pub fn decode_estop_signal(buf: &[u8]) -> Result<EstopSignal, WireError> {
+    let s = pb::EstopSignal::decode(buf)?;
+    Ok(EstopSignal {
+        reason: s.reason,
+        sent_ns: s.sent_ns,
+    })
 }
 
 /// Decodes a key delivery.
@@ -1895,7 +1913,12 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             requires,
             workflow_edition,
             workflow_editions,
+            estop,
         } => Verb::Attach(pb::Attach {
+            estop: estop.as_ref().map(|reason| pb::LocalEstop {
+                latched: true,
+                reason: Some(reason_to_pb(reason)),
+            }),
             name: name.clone(),
             roles: roles.iter().map(|r| role_to_pb(*r) as i32).collect(),
             priority: priority_to_pb(*priority) as i32,
@@ -1956,9 +1979,14 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             channels: channels(release),
             token: token.0,
         }),
-        Command::Estop { reason, code } => Verb::Estop(pb::Estop {
+        Command::Estop {
+            reason,
+            code,
+            origin,
+        } => Verb::Estop(pb::Estop {
             reason: reason.clone(),
             code: reason_code_to_pb(*code),
+            origin: origin.as_ref().map(ToString::to_string).unwrap_or_default(),
         }),
         Command::Clear => Verb::Clear(pb::Clear {}),
         Command::EnterSafe { reason, code } => Verb::EnterSafe(pb::EnterSafe {
@@ -2004,6 +2032,10 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
             requires: a.requires,
             workflow_edition: a.workflow_edition,
             workflow_editions: a.workflow_editions,
+            estop: a
+                .estop
+                .filter(|e| e.latched)
+                .map(|e| e.reason.map(reason_from_pb).unwrap_or_default()),
         },
         Verb::Detach(_) => Command::Detach,
         Verb::Arm(_) => Command::Arm,
@@ -2039,6 +2071,9 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
         Verb::Estop(e) => Command::Estop {
             reason: e.reason,
             code: reason_code_from_pb(e.code),
+            origin: (!e.origin.is_empty())
+                .then(|| ParticipantId::new(e.origin))
+                .transpose()?,
         },
         Verb::Clear(_) => Command::Clear,
         Verb::EnterSafe(e) => Command::EnterSafe {
@@ -2426,6 +2461,7 @@ mod tests {
                 requires: vec!["merge.blend".into()],
                 workflow_edition: "2026.06".into(),
                 workflow_editions: vec!["2026.06".into()],
+                estop: None,
             },
             Command::DeclareParts {
                 spec_version: 1,
@@ -2478,6 +2514,7 @@ mod tests {
             Command::Estop {
                 reason: "red button".into(),
                 code: ReasonCode::EstopLocal,
+                origin: None,
             },
             Command::EnterSafe {
                 reason: "queue dry".into(),

@@ -35,8 +35,8 @@ use crate::prelude::*;
 use crate::wire::codec;
 use crate::wire::error::WireError;
 use crate::wire::{
-    ActionChunk, AuthoritySnapshot, ChannelId, IssuedKey, KeyDelivery, KeyPurpose, KeysAck,
-    LeaseToken, LockstepRequest, LockstepResponse, ParticipantId, Sample, Security,
+    ActionChunk, AuthoritySnapshot, ChannelId, EstopSignal, IssuedKey, KeyDelivery, KeyPurpose,
+    KeysAck, LeaseToken, LockstepRequest, LockstepResponse, ParticipantId, Sample, Security,
 };
 
 /// How long a fixed key waits for its token to appear in authority state
@@ -355,10 +355,19 @@ impl Keyring {
         let live: BTreeSet<LeaseToken> = snapshot.leases.iter().map(|l| l.token).collect();
         let gone = &mut self.gone;
         self.held.retain(|id, held| {
-            if held.scope.purpose.rotates() || held.scope.purpose == KeyPurpose::Estop {
+            if held.scope.purpose.rotates() {
                 return true;
             }
-            if live.contains(&held.scope.token) {
+            // A `k_estop` lives while its sender's generation does.
+            let current = if held.scope.purpose == KeyPurpose::Estop {
+                let sender = held.scope.sender.as_ref();
+                sender
+                    .and_then(|s| snapshot.participant(s))
+                    .is_some_and(|p| p.generation == held.scope.generation)
+            } else {
+                live.contains(&held.scope.token)
+            };
+            if current {
                 held.live = true;
                 return true;
             }
@@ -718,6 +727,38 @@ impl Keyring {
 
     /// Opens `msg` (which must be `kind`) and returns its body, sliced from
     /// the buffer without a copy, and its key's scope.
+    /// Seals this participant's e-stop signal on `keyexpr`
+    /// (`estop/{me}`) under its generation's `k_estop` (§6, §8.4).
+    ///
+    /// # Errors
+    /// [`KeyError::NoKey`] without it: this generation isn't attached.
+    pub fn seal_estop(&mut self, keyexpr: &str, signal: &EstopSignal) -> Result<Vec<u8>, KeyError> {
+        let (me, generation) = (self.me.clone(), self.generation);
+        let body = codec::encode_estop_signal(signal);
+        self.seal(Kind::EstopSignal, keyexpr, &body, "an e-stop signal", |s| {
+            s.purpose == KeyPurpose::Estop && s.sender == me && s.generation == generation
+        })
+    }
+
+    /// Opens `by`'s e-stop signal received on `keyexpr`: under the
+    /// `k_estop` of `by`'s current generation, and no one else's.
+    ///
+    /// # Errors
+    /// [`KeyError`]: it is dropped (a non-member, a forgery, an ended
+    /// generation, or a key this edge doesn't hold yet).
+    pub fn open_estop(
+        &mut self,
+        keyexpr: &str,
+        msg: Vec<u8>,
+        by: &ParticipantId,
+    ) -> Result<EstopSignal, KeyError> {
+        let (body, scope) = self.open_body(keyexpr, msg, Kind::EstopSignal)?;
+        if scope.purpose != KeyPurpose::Estop || scope.sender.as_ref() != Some(by) {
+            return Err(KeyError::Scope("not the sender's e-stop key"));
+        }
+        Ok(codec::decode_estop_signal(&body)?)
+    }
+
     fn open_body(
         &mut self,
         keyexpr: &str,

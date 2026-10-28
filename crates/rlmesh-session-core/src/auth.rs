@@ -55,9 +55,9 @@ use crate::wire::error::WireError;
 use crate::wire::heartbeat::{Heartbeat, HeartbeatEcho};
 use crate::wire::tick::VirtualTick;
 use crate::wire::{
-    ActionChunk, AuthoritySnapshot, Command, CtlError, CtlReply, CtlStatus, Epoch, HandshakeAccept,
-    HandshakeRequest, HistoryQuery, KeysAck, LeaseToken, LockstepRequest, LockstepResponse,
-    ParticipantId, Request, Sample, SampleBatch, SampleMeta,
+    ActionChunk, AuthoritySnapshot, Command, CtlError, CtlReply, CtlStatus, Epoch, EstopSignal,
+    HandshakeAccept, HandshakeRequest, HistoryQuery, KeysAck, LeaseToken, LockstepRequest,
+    LockstepResponse, ParticipantId, Request, Sample, SampleBatch, SampleMeta,
 };
 
 /// The device of every process holding an embedded host's address.
@@ -504,6 +504,41 @@ impl Link {
         Ok(self
             .keyring
             .open_lockstep_response(keyexpr, msg, robot, token)?)
+    }
+
+    /// Seals this participant's e-stop signal on `keyexpr`
+    /// (`…/estop/{participant}`) under its generation's `k_estop` (§6):
+    /// kind 13, integrity only.
+    ///
+    /// # Errors
+    /// [`LinkError::Key`] without it: this generation isn't attached (any
+    /// more), so only the robot's own stop is left.
+    pub fn estop_signal(
+        &mut self,
+        keyexpr: &str,
+        signal: &EstopSignal,
+    ) -> Result<Vec<u8>, LinkError> {
+        Ok(self.keyring.seal_estop(keyexpr, signal)?)
+    }
+
+    /// Opens an e-stop signal received on `keyexpr` (`…/estop/{by}`): who
+    /// sent it (from the key path, checked against its `k_estop`) and the
+    /// signal. An edge latches it with `ESTOP_SIGNAL`.
+    ///
+    /// # Errors
+    /// [`LinkError::Key`]: it is dropped (a non-member, a forgery, an ended
+    /// generation, or a key not delivered yet).
+    pub fn open_estop_signal(
+        &mut self,
+        keyexpr: &str,
+        msg: Vec<u8>,
+    ) -> Result<(ParticipantId, EstopSignal), LinkError> {
+        let by = keyexpr
+            .rsplit_once("/estop/")
+            .and_then(|(_, id)| ParticipantId::new(id).ok())
+            .ok_or(KeyError::Scope("not an e-stop key path"))?;
+        let signal = self.keyring.open_estop(keyexpr, msg, &by)?;
+        Ok((by, signal))
     }
 
     /// What the host issued: generation, device, keys' ids, instance.

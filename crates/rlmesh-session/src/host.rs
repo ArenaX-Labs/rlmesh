@@ -62,11 +62,13 @@ use crate::wire::codec;
 use crate::wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
 use crate::wire::{
     Applied, AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
-    Epoch, HeartbeatEcho, HistoryQuery, IssuedKey, Lease, LeaseToken, ParticipantId, SampleBatch,
-    SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec, TenantId,
+    Epoch, HeartbeatEcho, HistoryQuery, IssuedKey, Lease, LeaseToken, ParticipantId, Role,
+    SampleBatch, SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec, TenantId,
 };
 use bytes::Bytes;
-use rlmesh_session_core::auth::issuer::{GrantId, GrantPart, GrantRequest, Prepared, StreamSlot};
+use rlmesh_session_core::auth::issuer::{
+    GrantId, GrantPart, GrantRequest, Joining, Prepared, StreamSlot,
+};
 use rlmesh_session_core::auth::{
     Admit, Credential, Device, HostAuth, HostIdentity, Keyring, LOCAL_DEVICE, RequestWindow,
 };
@@ -1374,6 +1376,7 @@ impl HostActor {
             }
             _ => {}
         }
+        let attaching = matches!(request.command, Command::Attach { .. });
         let result = self.authority.apply_from(request, &peer.identity, now);
         match result {
             Ok(Accepted { leases, events }) => {
@@ -1381,7 +1384,14 @@ impl HostActor {
                     self.take_effect(peer);
                 }
                 self.record(events).await;
-                Outcome::Reply(Ok(()), leases, Vec::new())
+                // An attach's reply carries the generation's `k_estop`.
+                let keys = if attaching {
+                    let estop = self.auth.issuer().estop_key(&peer.participant, generation);
+                    estop.into_iter().collect()
+                } else {
+                    Vec::new()
+                };
+                Outcome::Reply(Ok(()), leases, keys)
             }
             Err(err) => {
                 info!(status = ?err.status, "ctl refused: {}", err.message);
@@ -1707,14 +1717,21 @@ impl HostActor {
         self.auth
             .take_effect(&peer.participant, device, *generation);
         let now = self.now();
-        match self.auth.issuer().attach(
-            &mut OsRng,
-            &peer.participant,
-            *generation,
+        let robot = self
+            .authority
+            .participant(&peer.participant)
+            .is_some_and(|p| p.has_role(Role::Embodiment));
+        let joining = Joining {
+            participant: &peer.participant,
+            generation: *generation,
             device,
-            &self.authority.config().access,
-            now,
-        ) {
+            robot,
+        };
+        match self
+            .auth
+            .issuer()
+            .attach(&mut OsRng, joining, &self.authority.config().access, now)
+        {
             Ok(failed) => self.failed.extend(failed),
             Err(err) => warn!(participant = %peer.participant, %err, "keys"),
         }

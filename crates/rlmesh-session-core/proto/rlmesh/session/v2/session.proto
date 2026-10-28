@@ -497,6 +497,14 @@ message Attach {
   // which the roster shows the driver that negotiates a run's edition.
   string workflow_edition = 7;
   repeated string workflow_editions = 8;
+  // An embodiment's e-stop latch carried from its previous session: the
+  // session starts in ESTOP.
+  LocalEstop estop = 9;
+}
+
+message LocalEstop {
+  bool latched = 1;
+  Reason reason = 2;
 }
 
 message Detach {}
@@ -552,6 +560,17 @@ message Estop {
   // REASON_ESTOP_LOCAL or REASON_ESTOP_SIGNAL when an edge reports its own
   // latch; anything else is REASON_ESTOP_REMOTE.
   ReasonCode code = 2;
+  // REASON_ESTOP_SIGNAL: the participant whose signal the edge latched.
+  string origin = 3;
+}
+
+// A member's e-stop, published on estop/{participant} (control class,
+// reliable, express) and sealed (kind 13, integrity only) under its
+// generation's k_estop: every robot edge latches it directly, host or not.
+message EstopSignal {
+  string reason = 1;
+  // The sender's clock.
+  int64 sent_ns = 2;
 }
 
 message Clear {}

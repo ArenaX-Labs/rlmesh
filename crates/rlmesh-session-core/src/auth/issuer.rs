@@ -28,6 +28,13 @@
 //!   [`ROBOT_PENDING`]; a full robot evicts the newest pending grant of the
 //!   lowest class below the new one (`PREEMPTED`).
 //!
+//! - **E-stop keys.** Each generation gets a `k_estop` when it takes
+//!   effect: it sends under it (the key comes back in its `Attach` reply,
+//!   [`KeyIssuer::estop_key`]) and every robot member receives it, so its
+//!   edges latch the member's signal with no host (§6, §8.4). Nothing waits
+//!   on their acknowledgements: until an edge has the key, it drops the
+//!   signal and the ctl `Estop` still stops the session.
+//!
 //! Every key is 32 random bytes from the caller's [`Rng`], under an id from
 //! one counter per host instance (shared with the handshake's keys).
 
@@ -67,6 +74,19 @@ pub struct GrantPart {
     pub priority: ChannelPriority,
     /// Its level.
     pub security: Security,
+}
+
+/// A participant generation taking effect ([`KeyIssuer::attach`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Joining<'a> {
+    /// Who.
+    pub participant: &'a ParticipantId,
+    /// Its generation.
+    pub generation: u32,
+    /// Its device.
+    pub device: &'a str,
+    /// It embodies a robot (its edges latch every member's e-stop).
+    pub robot: bool,
 }
 
 /// One declared part's stream slot ([`KeyIssuer::sync_streams`]).
@@ -140,6 +160,10 @@ pub struct PendingStep {
 struct Member {
     generation: u32,
     device: String,
+    /// It embodies a robot: its edges receive every member's `k_estop`.
+    robot: bool,
+    /// Its generation's `k_estop`.
+    estop: u32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -324,34 +348,59 @@ impl KeyIssuer {
         }
     }
 
-    /// Generation `generation` of `participant` (on `device`) took effect:
-    /// it gets every stream key its device may read, and a robot's streams
-    /// rotate to it. Returns the pending grants an older generation's end
-    /// failed.
+    /// A participant generation took effect ([`Joining`]): it gets every stream key its device
+    /// may read and a `k_estop` of its own, a robot also every member's
+    /// `k_estop`, and a robot's streams rotate to it. Returns the pending
+    /// grants an older generation's end failed.
     ///
     /// # Errors
     /// [`CtlError`] when no key could be drawn.
     pub fn attach(
         &mut self,
         rng: &mut dyn Rng,
-        participant: &ParticipantId,
-        generation: u32,
-        device: &str,
+        joining: Joining<'_>,
         access: &Access,
         now_ns: i64,
     ) -> Result<Vec<GrantId>, CtlError> {
+        let Joining {
+            participant,
+            generation,
+            device,
+            robot,
+        } = joining;
         let failed = match self.members.get(participant) {
             Some(m) if m.generation == generation => return Ok(Vec::new()),
             Some(_) => self.detach(participant),
             None => Vec::new(),
         };
+        let mut estop = self.draw(rng, KeyPurpose::Estop, Security::Sign)?;
+        estop.sender = Some(participant.clone());
+        estop.generation = generation;
+        let estop_id = estop.key_id;
+        self.keys.insert(estop_id, estop);
         self.members.insert(
             participant.clone(),
             Member {
                 generation,
                 device: device.to_string(),
+                robot,
+                estop: estop_id,
             },
         );
+        let others: Vec<(ParticipantId, bool, u32)> = self
+            .members
+            .iter()
+            .filter(|(id, _)| *id != participant)
+            .map(|(id, m)| (id.clone(), m.robot, m.estop))
+            .collect();
+        for (other, other_robot, other_estop) in others {
+            if other_robot {
+                self.queue(&other, estop_id, false);
+            }
+            if robot {
+                self.queue(participant, other_estop, false);
+            }
+        }
         let slots: Vec<Slot> = self.slots.keys().cloned().collect();
         for slot in slots {
             if &slot.robot == participant {
@@ -373,7 +422,9 @@ impl KeyIssuer {
     /// leaves every pending set at once, as if it had acknowledged. Returns
     /// the pending grants that needed it (as holder or robot), now failed.
     pub fn detach(&mut self, participant: &ParticipantId) -> Vec<GrantId> {
-        self.members.remove(participant);
+        if let Some(member) = self.members.remove(participant) {
+            self.forget(&[member.estop]);
+        }
         self.outbox.remove(participant);
         let failed: Vec<GrantId> = self
             .grants
@@ -776,6 +827,19 @@ impl KeyIssuer {
             .collect()
     }
 
+    /// Generation `generation` of `participant`'s own `k_estop`, to send
+    /// under: what its `Attach` reply carries.
+    pub fn estop_key(&self, participant: &ParticipantId, generation: u32) -> Option<IssuedKey> {
+        let member = self
+            .members
+            .get(participant)
+            .filter(|m| m.generation == generation)?;
+        self.keys.get(&member.estop).map(|key| IssuedKey {
+            send: true,
+            ..key.clone()
+        })
+    }
+
     /// Every key issued to generation `generation` of `participant` (with
     /// `send` where it is the sender), for its `GetKeys`: stream keys only
     /// where its device may read.
@@ -792,9 +856,16 @@ impl KeyIssuer {
         else {
             return Vec::new();
         };
-        let mut out = Vec::new();
+        let mut out: Vec<IssuedKey> = self
+            .estop_key(participant, generation)
+            .into_iter()
+            .collect();
         let with =
             |id: &u32, send: bool| self.keys.get(id).map(|k| IssuedKey { send, ..k.clone() });
+        if member.robot {
+            let others = self.members.iter().filter(|(id, _)| *id != participant);
+            out.extend(others.filter_map(|(_, m)| with(&m.estop, false)));
+        }
         for (slot, state) in &self.slots {
             if &slot.robot == participant {
                 if let Some(id) = state.sending
@@ -1097,9 +1168,12 @@ mod tests {
             issuer
                 .attach(
                     &mut rng,
-                    &pid(who),
-                    generation,
-                    "local",
+                    Joining {
+                        participant: &pid(who),
+                        generation,
+                        device: "local",
+                        robot: false,
+                    },
                     &Access::default(),
                     0,
                 )
@@ -1121,7 +1195,17 @@ mod tests {
 
         // The robot restarts: generation 3 takes over its slot at version 2.
         issuer
-            .attach(&mut rng, &pid("arm"), 3, "local", &Access::default(), 10)
+            .attach(
+                &mut rng,
+                Joining {
+                    participant: &pid("arm"),
+                    generation: 3,
+                    device: "local",
+                    robot: false,
+                },
+                &Access::default(),
+                10,
+            )
             .expect("attach");
         rings.insert(pid("arm"), Keyring::new(Some(pid("arm")), 3));
         exchange(&mut issuer, &mut rings, &[], 11);
@@ -1137,7 +1221,11 @@ mod tests {
             .collect();
         assert_eq!(policy, vec![2], "retire_through dropped version 1 ({v1:?})");
         // Recovery hands the new generation its sending key only.
-        let recovered = issuer.get_keys(&pid("arm"), 3, &Access::default());
+        let recovered: Vec<IssuedKey> = issuer
+            .get_keys(&pid("arm"), 3, &Access::default())
+            .into_iter()
+            .filter(|k| k.purpose == KeyPurpose::Stream)
+            .collect();
         assert_eq!(recovered.len(), 1);
         assert!(recovered[0].send && recovered[0].version == 2);
         assert!(
@@ -1161,7 +1249,17 @@ mod tests {
             ("policy", 3, "local"),
         ] {
             issuer
-                .attach(&mut rng, &pid(who), generation, device, &access, 0)
+                .attach(
+                    &mut rng,
+                    Joining {
+                        participant: &pid(who),
+                        generation,
+                        device,
+                        robot: false,
+                    },
+                    &access,
+                    0,
+                )
                 .expect("attach");
             rings.insert(pid(who), Keyring::new(Some(pid(who)), generation));
         }
@@ -1214,7 +1312,12 @@ mod tests {
         );
         assert!(!read(&mut rings, "eye", next.clone()), "the old reader");
         assert!(read(&mut rings, "policy", next));
-        assert!(issuer.get_keys(&pid("eye"), 2, &access).is_empty());
+        assert!(
+            issuer
+                .get_keys(&pid("eye"), 2, &access)
+                .iter()
+                .all(|k| k.purpose == KeyPurpose::Estop)
+        );
     }
 
     #[test]
@@ -1226,9 +1329,12 @@ mod tests {
             issuer
                 .attach(
                     &mut rng,
-                    &pid(who),
-                    generation,
-                    "local",
+                    Joining {
+                        participant: &pid(who),
+                        generation,
+                        device: "local",
+                        robot: false,
+                    },
                     &Access::default(),
                     0,
                 )
@@ -1242,7 +1348,17 @@ mod tests {
             exchange(&mut issuer, &mut rings, &[], t);
         }
         issuer
-            .attach(&mut rng, &pid("arm"), 4, "local", &Access::default(), 10)
+            .attach(
+                &mut rng,
+                Joining {
+                    participant: &pid("arm"),
+                    generation: 4,
+                    device: "local",
+                    robot: false,
+                },
+                &Access::default(),
+                10,
+            )
             .expect("attach");
         rings.insert(pid("arm"), Keyring::new(Some(pid("arm")), 4));
         // The board never acknowledges: install waits 500 ms, then the
@@ -1270,7 +1386,17 @@ mod tests {
         let mut rng = TestRng::new(7);
         let mut issuer = KeyIssuer::default();
         issuer
-            .attach(&mut rng, &pid("arm"), 1, "local", &Access::default(), 0)
+            .attach(
+                &mut rng,
+                Joining {
+                    participant: &pid("arm"),
+                    generation: 1,
+                    device: "local",
+                    robot: false,
+                },
+                &Access::default(),
+                0,
+            )
             .expect("attach");
         let request = |holder: &str, device: &str, class, token| GrantRequest {
             holder: pid(holder),

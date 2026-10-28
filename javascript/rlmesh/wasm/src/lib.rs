@@ -1039,6 +1039,7 @@ impl ControlSession {
                 Command::Estop {
                     reason: reason.to_string(),
                     code: ReasonCode::EstopRemote,
+                    origin: None,
                 },
                 "estop",
             ),
