@@ -126,6 +126,8 @@ typedef struct rlmesh_device_robot_status_t {
   uint64_t echoes;
   /* Command chunks the edges accepted. */
   uint64_t chunks_accepted;
+  /* The e-stop latch: 0 clear, 1 this robot's own stop, 2 a member's signal. */
+  uint8_t estop;
 } rlmesh_device_robot_status_t;
 
 /* No part, in a tick. */
@@ -181,9 +183,18 @@ int rlmesh_device_robot_reply(rlmesh_device_robot_t* robot, uint32_t query_id, c
 /* Query query_id is over: every reply has arrived, or it timed out. */
 int rlmesh_device_robot_query_done(rlmesh_device_robot_t* robot, uint32_t query_id,
                                    uint64_t now_us);
-/* A sample on subscription sub. */
-int rlmesh_device_robot_sample(rlmesh_device_robot_t* robot, uint8_t sub, const uint8_t* data,
-                               size_t len, uint64_t now_us);
+/* A sample on subscription sub, received on key (key_len bytes, not
+ * NUL-terminated: an e-stop signal names its sender in it). */
+int rlmesh_device_robot_sample(rlmesh_device_robot_t* robot, uint8_t sub, const char* key,
+                               size_t key_len, const uint8_t* data, size_t len, uint64_t now_us);
+/* Latches this robot's e-stop for its own stop (an e-stop pin; reason may be
+ * NULL): every part stops at once, with or without a host, and the host is
+ * told. Only rlmesh_device_robot_clear_estop clears it. */
+int rlmesh_device_robot_estop(rlmesh_device_robot_t* robot, const char* reason, uint64_t now_us);
+/* Clears the e-stop latch, whoever set it: the only way to. Call it only from a
+ * local action on the board, with the e-stop released. The host ends in ESTOP,
+ * unlatched; leaving that still needs disarm and arm. */
+int rlmesh_device_robot_clear_estop(rlmesh_device_robot_t* robot);
 /* One control tick of part's command group: 1 with *out written when there is
  * something to do (an action, a safe behaviour, a handover), 0 when there is
  * nothing, RLMESH_DEVICE_ERR_NOT_READY before the robot runs or for a part

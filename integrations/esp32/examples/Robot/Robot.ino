@@ -21,6 +21,10 @@ const char kMap[] =
 
 const int kPanPin = 18;
 const int kTiltPin = 19;
+// An e-stop button, or -1 for none: normally closed, between this pin and
+// GND, so a press or a cut wire reads high. It latches the board's e-stop;
+// type "clear" in the Serial Monitor, with the button released, to clear it.
+const int kEstopPin = -1;
 const uint32_t kPeriodUs = 20000;  // the map's 50 Hz
 
 const char* const kPhases[] = {"reading the host", "handshake", "attaching",
@@ -55,6 +59,7 @@ void setup() {
   ledcAttach(kTiltPin, 50, 14);
   writeServo(kPanPin, 0);
   writeServo(kTiltPin, 0);
+  if (kEstopPin >= 0) pinMode(kEstopPin, INPUT_PULLUP);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(kSsid, kPassword);
@@ -85,14 +90,32 @@ void report() {
   }
   if (robot.running() && millis() - lastReport > 5000) {
     lastReport = millis();
-    Serial.printf("  mode %u, epoch %llu, %llu chunks, %llu echoes, heap %lu\n", s.mode,
+    Serial.printf("  mode %u, epoch %llu, %llu chunks, %llu echoes, e-stop %u, heap %lu\n", s.mode,
                   (unsigned long long)s.epoch, (unsigned long long)s.chunks_accepted,
-                  (unsigned long long)s.echoes, (unsigned long)ESP.getFreeHeap());
+                  (unsigned long long)s.echoes, s.estop, (unsigned long)ESP.getFreeHeap());
+  }
+}
+
+// The e-stop button, every loop: it latches at once, session or not.
+void estopButton() {
+  bool pressed = kEstopPin >= 0 && digitalRead(kEstopPin) == HIGH;
+  if (pressed && !robot.estopLatched()) {
+    robot.estop("e-stop button");
+    Serial.println("e-stop latched");
+  }
+  if (Serial.available() && Serial.readStringUntil('\n').startsWith("clear")) {
+    if (pressed) {
+      Serial.println("release the e-stop button first");
+    } else {
+      robot.clearEstop();
+      Serial.println("e-stop cleared: disarm and arm the session to drive again");
+    }
   }
 }
 
 void loop() {
   robot.poll();
+  estopButton();
   report();
   uint64_t now = rlmesh::esp32::nowUs();
   if (eyes < 0 || !robot.running() || now < nextTick) return;

@@ -74,6 +74,15 @@ class Robot {
     return publish(part, &value, sizeof value);
   }
 
+  // Latches this robot's e-stop (an e-stop pin): every part stops at once,
+  // with or without the host, and the host is told. Only clearEstop()
+  // clears it.
+  void estop(const char* reason = "e-stop pin");
+  // Clears the e-stop latch, whoever set it: call it only from a local
+  // action on the board, with the e-stop released.
+  void clearEstop();
+  bool estopLatched() const { return status().estop != 0; }
+
   rlmesh_device_robot_status_t status() const;
   bool running() const { return status().phase == 4; }
   // Actions the transport failed to carry out.
