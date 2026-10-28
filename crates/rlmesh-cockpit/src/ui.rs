@@ -23,7 +23,7 @@ pub enum Tab {
     /// Declared vs measured (§8.10).
     #[default]
     Measured,
-    /// The lease and mode timeline.
+    /// Every mode, lease, binding and roster change.
     Timeline,
     /// The binding tables (§6.8).
     Bindings,
@@ -83,17 +83,29 @@ fn ms(v: Option<f64>) -> String {
     v.map_or_else(|| "—".into(), |v| format!("{v:.1}"))
 }
 
-/// Renders `view` into `ui`; returns the verbs to send.
-pub fn show(ui: &mut egui::Ui, view: &View, state: &mut UiState) -> Vec<Verb> {
+/// Renders `view` into `ui`; returns the verbs to send. The header holds
+/// the session line and the verbs, then `bar` (the live or replay
+/// transport); the lanes stay along the bottom whatever the tab.
+pub fn show(
+    ui: &mut egui::Ui,
+    view: &View,
+    state: &mut UiState,
+    bar: impl FnOnce(&mut egui::Ui),
+) -> Vec<Verb> {
     let mut verbs = Vec::new();
-    egui::Panel::top("cockpit_header").show(ui, |ui| header(ui, view, state, &mut verbs));
+    egui::Panel::top("cockpit_header").show(ui, |ui| {
+        header(ui, view, state, &mut verbs);
+        ui.separator();
+        bar(ui);
+    });
+    egui::Panel::bottom("cockpit_lanes").show(ui, |ui| lanes(ui, view));
     egui::Panel::left("cockpit_channels")
         .default_size(440.0)
         .show(ui, |ui| channels(ui, view, state));
     egui::CentralPanel::default_margins().show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut state.tab, Tab::Measured, "Declared vs measured");
-            ui.selectable_value(&mut state.tab, Tab::Timeline, "Lease and mode timeline");
+            ui.selectable_value(&mut state.tab, Tab::Timeline, "Events");
             ui.selectable_value(&mut state.tab, Tab::Bindings, "Bindings");
         });
         ui.separator();
@@ -521,17 +533,23 @@ fn channels(ui: &mut egui::Ui, view: &View, state: &mut UiState) {
                                 handle
                             }
                         };
-                        ui.image((texture.id(), vec2(thumb.width as f32, thumb.height as f32)));
-                        ui.label(RichText::new(value.brief()).small().weak());
+                        let size = vec2(thumb.width as f32, thumb.height as f32);
+                        let scale = ((ui.available_width() - 8.0) / size.x).clamp(1.0, 3.0);
+                        ui.vertical(|ui| {
+                            ui.image((texture.id(), size * scale));
+                            ui.label(RichText::new(value.brief()).small().weak());
+                        });
                     }
                     _ => {
-                        if !row.plot.is_empty() {
-                            sparkline(ui, &row.plot, view.lane_window_s.min(10.0));
-                        }
-                        ui.add(
-                            egui::Label::new(RichText::new(value.brief()).monospace().small())
-                                .wrap(),
-                        );
+                        ui.vertical(|ui| {
+                            if !row.plot.is_empty() {
+                                sparkline(ui, &row.plot, view.lane_window_s.min(10.0));
+                            }
+                            ui.add(
+                                egui::Label::new(RichText::new(value.brief()).monospace().small())
+                                    .wrap(),
+                            );
+                        });
                     }
                 }
             });
@@ -546,7 +564,8 @@ const SERIES: [Color32; 3] = [
 ];
 
 fn sparkline(ui: &mut egui::Ui, series: &[Vec<[f64; 2]>], window_s: f64) {
-    let (response, painter) = ui.allocate_painter(vec2(120.0, 28.0), Sense::hover());
+    let width = (ui.available_width() - 8.0).clamp(120.0, 480.0);
+    let (response, painter) = ui.allocate_painter(vec2(width, 40.0), Sense::hover());
     let rect = response.rect;
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
     let (lo, hi) = series
@@ -843,14 +862,15 @@ fn edge_tone(mode: EdgeMode) -> Tone {
     crate::model::edge_tone(mode)
 }
 
-fn timeline(ui: &mut egui::Ui, view: &View) {
-    section(
-        ui,
-        "Lanes",
-        &format!(
-            "the last {:.0} s, now at the right edge",
+/// Mode, lease and edge lanes over the last minute.
+fn lanes(ui: &mut egui::Ui, view: &View) {
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(format!(
+            "Lanes: the last {:.0} s, now at the right edge",
             view.lane_window_s
-        ),
+        ))
+        .weak(),
     );
     let label_width = 220.0;
     let width = (ui.available_width() - label_width - 16.0).max(200.0);
@@ -887,6 +907,10 @@ fn timeline(ui: &mut egui::Ui, view: &View) {
             }
         });
     }
+    ui.add_space(4.0);
+}
+
+fn timeline(ui: &mut egui::Ui, view: &View) {
     section(
         ui,
         "Events",

@@ -49,6 +49,8 @@ struct Live {
     bar: LiveBar,
     /// The running episode: its start, wall clock and session time.
     episode: Option<(SystemTime, i64)>,
+    /// What the bar asked for, done next frame.
+    action: Option<LiveAction>,
 }
 
 impl Live {
@@ -84,6 +86,7 @@ impl CockpitApp {
                 dataset,
                 bar: LiveBar::default(),
                 episode: None,
+                action: None,
             })),
             ui: UiState::default(),
         }
@@ -118,21 +121,9 @@ impl eframe::App for CockpitApp {
             Source::Live(live) => {
                 live.feed.drain(&mut live.model, Some(&mut live.history));
                 let now_ns = live.feed.now_ns();
-                live.bar.paused = live.paused.is_some();
-                live.bar.local = live.session().is_some();
-                live.bar.episode_s = live
-                    .episode
-                    .map(|(_, start)| (live.model.session_ns(now_ns) - start) as f64 * 1e-9);
-                let action = egui::Panel::top("cockpit_live")
-                    .show(ui, |ui| {
-                        let action = ui::live_bar(ui, &mut live.bar);
-                        if let Some((replay, _)) = &mut live.paused {
-                            ui::replay_bar(ui, replay, "LAST MINUTE", false);
-                        }
-                        action
-                    })
-                    .inner;
-                match action {
+                // What the bar asked for last frame (it is drawn inside the
+                // header, after the view is chosen).
+                match live.action.take() {
                     Some(LiveAction::Pause) => {
                         let replay = live
                             .history
@@ -173,6 +164,11 @@ impl eframe::App for CockpitApp {
                     }
                     None => {}
                 }
+                live.bar.paused = live.paused.is_some();
+                live.bar.local = live.session().is_some();
+                live.bar.episode_s = live
+                    .episode
+                    .map(|(_, start)| (live.model.session_ns(now_ns) - start) as f64 * 1e-9);
                 self.ui.paused = live.paused.is_some();
                 let view = match &mut live.paused {
                     Some((replay, last)) => {
@@ -184,8 +180,17 @@ impl eframe::App for CockpitApp {
                     }
                     None => live.model.view(now_ns),
                 };
-                for verb in ui::show(ui, &view, &mut self.ui) {
+                let bar = |ui: &mut egui::Ui| {
+                    live.action = ui::live_bar(ui, &mut live.bar);
+                    if let Some((replay, _)) = &mut live.paused {
+                        ui::replay_bar(ui, replay, "LAST MINUTE", false);
+                    }
+                };
+                for verb in ui::show(ui, &view, &mut self.ui, bar) {
                     live.feed.send(verb);
+                }
+                if live.action.is_some() {
+                    ui.ctx().request_repaint();
                 }
                 ui.ctx().request_repaint_after(REFRESH);
             }
@@ -196,18 +201,21 @@ impl eframe::App for CockpitApp {
                 rerun_failed,
             } => {
                 tick(replay, last);
-                egui::Panel::top("cockpit_replay").show(ui, |ui| {
+                let view = replay.model().view(replay.at_ns());
+                let bar = |ui: &mut egui::Ui| {
                     if ui::replay_bar(ui, replay, "REPLAY", true) {
                         *rerun_failed = open_in_rerun(path).err();
                     }
                     if let Some(why) = rerun_failed {
                         ui.label(why.as_str());
                     }
-                });
-                let view = replay.model().view(replay.at_ns());
-                ui::show(ui, &view, &mut self.ui);
+                };
+                ui::show(ui, &view, &mut self.ui, bar);
+                // The bar acts after the view is drawn: show its effect.
                 if replay.playing {
                     ui.ctx().request_repaint();
+                } else {
+                    ui.ctx().request_repaint_after(REFRESH);
                 }
             }
         }
