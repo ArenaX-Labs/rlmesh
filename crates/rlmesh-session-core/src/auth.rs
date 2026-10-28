@@ -753,6 +753,14 @@ impl HostIdentity {
         &self.local
     }
 
+    /// Copies its static X25519 private key and its Ed25519 seed into
+    /// `noise` and `sign`, for storage (rlmeshd's `host.key`); wiping them
+    /// is the caller's job.
+    pub fn write_secrets(&self, noise: &mut [u8; 32], sign: &mut [u8; 32]) {
+        self.noise.write_private(noise);
+        sign.copy_from_slice(&self.sign[..]);
+    }
+
     /// The password of this host's loopback links
     /// ([`address::link_password`]).
     pub fn link_password(&self) -> Zeroizing<String> {
@@ -817,6 +825,9 @@ pub struct HostAuth {
     devices: BTreeMap<[u8; 32], String>,
     /// Participant id → the device it is bound to, for this host instance.
     names: BTreeMap<ParticipantId, String>,
+    /// Robot name → the device its pin names (rlmeshd's, design §4): the
+    /// binding, checked at every handshake.
+    pins: BTreeMap<ParticipantId, String>,
     /// Participant id → the generation in effect.
     current: BTreeMap<ParticipantId, u32>,
     last_generation: u32,
@@ -844,6 +855,7 @@ impl HostAuth {
             sign_public: identity.sign_public,
             devices: table,
             names: BTreeMap::new(),
+            pins: BTreeMap::new(),
             current: BTreeMap::new(),
             last_generation: 0,
             issuer: KeyIssuer::default(),
@@ -858,6 +870,27 @@ impl HostAuth {
     /// Accepts handshakes from the device with this static public key.
     pub fn enroll(&mut self, public: [u8; 32], device: impl Into<String>) {
         self.devices.insert(public, device.into());
+    }
+
+    /// Refuses `device`'s handshakes from now on (it was revoked). The
+    /// names it is bound to stay bound, so they can't be taken.
+    pub fn unenroll(&mut self, device: &str) {
+        self.devices.retain(|_, id| id != device);
+    }
+
+    /// Pins robot name `robot` to `device` (`None`: unpins it, and the name
+    /// binds to its next embodiment's device again): the pin it had.
+    pub fn pin(&mut self, robot: &ParticipantId, device: Option<&str>) -> Option<String> {
+        match device {
+            Some(device) => {
+                self.names.insert(robot.clone(), device.to_string());
+                self.pins.insert(robot.clone(), device.to_string())
+            }
+            None => {
+                self.names.remove(robot);
+                self.pins.remove(robot)
+            }
+        }
     }
 
     /// The instance these handshakes are bound to.
@@ -941,7 +974,11 @@ impl HostAuth {
     }
 
     fn check_name(&self, participant: &ParticipantId, device: &str) -> Result<(), CtlError> {
-        match self.names.get(participant) {
+        match self
+            .pins
+            .get(participant)
+            .or_else(|| self.names.get(participant))
+        {
             Some(bound) if bound != device => Err(refused(
                 CtlStatus::NotAuthorized,
                 format!("name {participant} belongs to device {bound}"),
