@@ -1,7 +1,7 @@
 # The Node binding
 
 Status: Experimental (protocol v2). The `rlmesh` npm package
-(`javascript/rlmesh`) is not published yet; the API may change.
+(`javascript/rlmesh`) ships with each release; the API may change.
 
 In Node 22+ and Electron's main process, `rlmesh` runs real-time sessions
 in-process: a session host, robots with their edges, and bound policies, on

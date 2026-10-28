@@ -1,8 +1,8 @@
 name: Release
 
-# Tags build Linux/Windows/macOS wheels and publish crates.io and PyPI via OIDC,
-# plus the GitHub Release. 0.2 ships Rust and Python only: the C/C++, NuGet and
-# Unity packages are not built until those languages ship.
+# Tags build Linux/Windows/macOS wheels, C/C++ tarballs, NuGet/Unity packages
+# and the npm package with its per-platform Node addons. Publish crates.io, PyPI,
+# configured nuget.org and npm via OIDC, plus GitHub assets.
 # workflow_dispatch only runs on tags; re-run failed jobs to preserve built bytes.
 
 on:
@@ -56,6 +56,46 @@ jobs:
           path: python/rlmesh/dist/*.whl
           if-no-files-found: error
 
+      - name: Package the C/C++ library
+        run: mise run --skip-tools release:cxx:package
+
+      # Cross-built from Linux, like the Windows wheels: no Windows runner.
+      - name: Package the C/C++ library for Windows (MSVC)
+        run: mise run --skip-tools release:cxx:package --target windows
+
+      - name: Build preliminary NuGet and Unity packages
+        timeout-minutes: 10
+        run: |
+          mise run --skip-tools csharp:pack
+          mise run --skip-tools csharp:upm
+
+      - name: Upload the C/C++ package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: capi-linux
+          path: |
+            target/capi-pkg/*.tar.gz
+            target/capi-pkg/*.tar.gz.sha256
+          if-no-files-found: error
+
+      # The wasm and the bundles, and the Node addons for Linux and Windows,
+      # cross-built here like the wheels. macOS builds its own two.
+      - name: Build the npm package and its Linux and Windows addons
+        run: |
+          mise run --skip-tools build:js
+          for platform in linux-x64 linux-arm64 win32-x64; do
+            mise run --skip-tools release:js:native "$platform"
+          done
+
+      - name: Upload the npm build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-linux
+          path: |
+            javascript/rlmesh/dist/
+            target/npm-native/*.node
+          if-no-files-found: error
+
       - name: Minimize uv cache
         if: always()
         run: uv cache prune --ci
@@ -95,19 +135,104 @@ jobs:
           path: python/rlmesh/dist/*.whl
           if-no-files-found: error
 
+      - name: Build universal macOS C library
+        timeout-minutes: 40
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build -p rlmesh-capi --release --lib --target aarch64-apple-darwin
+          cargo build -p rlmesh-capi --release --lib --target x86_64-apple-darwin
+          mkdir -p target/macos-universal
+          lipo -create target/aarch64-apple-darwin/release/librlmesh_capi.dylib target/x86_64-apple-darwin/release/librlmesh_capi.dylib -output target/macos-universal/librlmesh_capi.dylib
+          lipo -create target/aarch64-apple-darwin/release/librlmesh_capi.a target/x86_64-apple-darwin/release/librlmesh_capi.a -output target/macos-universal/librlmesh_capi.a
+          library=target/macos-universal/librlmesh_capi.dylib
+          if [[ "$(otool -D "$library" | tail -1)" != '@rpath/librlmesh_capi.dylib' ]]; then
+            install_name_tool -id @rpath/librlmesh_capi.dylib "$library"
+          fi
+
+      - name: Sign the universal macOS library
+        id: macos-sign
+        timeout-minutes: 5
+        env:
+          RLMESH_ALLOW_UNSIGNED_MACOS: ${{ vars.RLMESH_ALLOW_UNSIGNED_MACOS }}
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/release-macos-sign.sh sign
+
+      - name: Notarize the universal macOS library
+        if: steps.macos-sign.outputs.notarize == 'true'
+        timeout-minutes: 17
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/release-macos-sign.sh notarize
+
+      - name: Upload macOS notarization evidence
+        if: always() && steps.macos-sign.outputs.notarize == 'true'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-notarization
+          path: target/macos-universal/notarization*.json
+          if-no-files-found: warn
+
+      - name: Delete the temporary signing keychain
+        if: always()
+        timeout-minutes: 2
+        run: bash scripts/release-macos-sign.sh cleanup
+
+      - name: Package the macOS C/C++ library
+        timeout-minutes: 5
+        run: mise run --skip-tools release:cxx:package --target macos
+
+      - name: Smoke test the macOS C/C++ package
+        timeout-minutes: 5
+        run: bash scripts/release-macos-smoke.sh
+
+      - name: Upload the macOS C/C++ package
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: capi-macos
+          path: |
+            target/capi-pkg/*.tar.gz
+            target/capi-pkg/*.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Build the macOS Node addons
+        timeout-minutes: 40
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          mise run --skip-tools release:js:native darwin-arm64
+          mise run --skip-tools release:js:native darwin-x64
+
+      - name: Upload the macOS Node addons
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-macos
+          path: target/npm-native/*.node
+          if-no-files-found: error
+
       - name: Minimize uv cache
         if: always()
         run: uv cache prune --ci
 
   publish:
-    name: Publish crates.io + PyPI + GitHub Release
+    name: Publish crates.io + PyPI + NuGet + npm + GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: depot-ubuntu-24.04-4
     needs: [wheels-linux, wheels-macos]
     environment: release
     permissions:
       contents: write # GitHub Release
-      id-token: write # OIDC trusted publishing (crates.io + PyPI)
+      id-token: write # OIDC trusted publishing (crates.io, PyPI, nuget.org, npm)
 
     steps:
       - name: Checkout repository
@@ -125,6 +250,38 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: python/rlmesh/dist
+
+      - name: Download the C/C++ package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: capi-*
+          merge-multiple: true
+          path: target/capi-pkg
+
+      # Both builders have completed: require all four RIDs and preserve the
+      # signed/notarized macOS bytes from the C tarball.
+      - name: Assemble final NuGet and Unity release packages
+        timeout-minutes: 10
+        run: |
+          mise run --skip-tools csharp:pack --require-all
+          mise run --skip-tools csharp:upm --require-all
+
+      # Linux uploads two roots, so its artifact keeps repository paths; macOS
+      # uploads only its addons, which land flat.
+      - name: Download the npm build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-linux
+          path: .
+
+      - name: Download the macOS Node addons
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-macos
+          path: target/npm-native
+
+      - name: Pack the npm packages
+        run: mise run --skip-tools release:js:package --require-all
 
       - name: Package crates
         run: mise run --skip-tools release:rust:package
@@ -146,6 +303,33 @@ jobs:
         with:
           packages-dir: python/rlmesh/dist
           skip-existing: true
+
+      - name: Authenticate to nuget.org with trusted publishing
+        id: nuget-login
+        if: vars.NUGET_USER != ''
+        timeout-minutes: 2
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: Publish NuGet package and symbols
+        if: vars.NUGET_USER != ''
+        timeout-minutes: 5
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: |
+          # Keep the temporary key in the environment; do not enable tracing.
+          mise -C csharp exec -- dotnet nuget push "$GITHUB_WORKSPACE/target/csharp-pkg/*.nupkg" --no-symbols --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          mise -C csharp exec -- dotnet nuget push "$GITHUB_WORKSPACE/target/csharp-pkg/*.snupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Note nuget.org publishing is not configured
+        if: vars.NUGET_USER == ''
+        timeout-minutes: 1
+        run: echo '::notice::nuget.org publishing skipped; configure the trusted publishing policy and NUGET_USER repository variable to enable it.'
+
+      - name: Publish to npm
+        timeout-minutes: 10
+        run: mise run --skip-tools release:js:publish "${GITHUB_REF_NAME#v}"
 
       - name: Create GitHub Release
         env:

@@ -16,6 +16,7 @@
 // this module converts typed arrays at the boundary. Times are `bigint` ns on
 // `process.hrtime.bigint()`'s clock. `publish` copies its values before returning.
 
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Priority } from './types.js';
 
@@ -156,18 +157,21 @@ let addon: Addon | undefined;
 
 /**
  * The addon for this platform: `RLMESH_NATIVE` if set, else `rlmesh.{platform}-{arch}.node` next to
- * this module. Loaded on first use, so `connect` (the gateway client) works without it.
+ * this module (a local build), else the `@rlmesh/{platform}-{arch}` package npm installs as an
+ * optional dependency. Loaded on first use, so `connect` (the gateway client) works without it.
  */
 function native(): Addon {
   if (addon) return addon;
   const require = createRequire(import.meta.url);
-  const file = process.env.RLMESH_NATIVE ?? new URL(`./rlmesh.${process.platform}-${process.arch}.node`, import.meta.url).pathname;
+  const target = `${process.platform}-${process.arch}`;
+  const local = new URL(`./rlmesh.${target}.node`, import.meta.url).pathname;
+  const file = process.env.RLMESH_NATIVE ?? (existsSync(local) ? local : `@rlmesh/${target}`);
   try {
     addon = require(file) as Addon;
   } catch (e) {
     throw new SessionException(
-      `the rlmesh native addon is not available for ${process.platform}-${process.arch} (${file}): ` +
-        `${(e as Error).message}. Build it with \`mise run build:js:native\`, or join through a gateway with connect().`,
+      `the rlmesh native addon is not available for ${target} (${file}): ${(e as Error).message}. ` +
+        `Reinstall rlmesh without --no-optional, build it with \`mise run build:js:native\`, or join through a gateway with connect().`,
     );
   }
   return addon;
