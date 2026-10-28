@@ -35,18 +35,23 @@
 //! it beside the host's store, so a controller that joins after a single
 //! publication (the task text) still sees it, even when the store's
 //! subscription had not reached the publisher yet.
+//!
+//! Every sample is sealed under its stream's key (`k_stream`, §8.4): signed
+//! by default, encrypted when the session seals the part. A publisher
+//! without the key yet (a robot's first moments) drops samples unsent; a
+//! subscriber drops anything that doesn't open under a key it holds.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::wire::codec;
 use crate::wire::{
     Applied, AuthoritySnapshot, ClockMode, Epoch, HistoryQuery, ParticipantId, Plan, Sample,
-    SampleBatch, SampleMeta, StreamSpec,
+    SampleBatch, StreamSpec,
 };
 use bytes::Bytes;
+use rlmesh_session_core::auth::StreamWindows;
 use tokio::sync::{Notify, watch};
 use tracing::{debug, warn};
 use zenoh::Wait;
@@ -55,10 +60,9 @@ use zenoh::query::ConsolidationMode;
 
 use crate::clock::Clock;
 use crate::error::SessionError;
+use crate::participant::Sealer;
 
-use crate::transport::{
-    TrafficClass, Transport, declare_publisher, frame_zbytes, payload_bytes, stream_qos,
-};
+use crate::transport::{TrafficClass, Transport, declare_publisher, stream_qos};
 pub use rlmesh_session_core::stream::SampleStats;
 use rlmesh_session_core::stream::{check_sample, is_stale};
 
@@ -114,6 +118,12 @@ struct PlanState {
 pub(crate) struct Outlet {
     spec: StreamSpec,
     publisher: zenoh::pubsub::Publisher<'static>,
+    /// The data key, which every sealed sample is bound to.
+    key: String,
+    sealer: Sealer,
+    /// Held across a sample's seq, seal and send, so a stream leaves in
+    /// order (§8.2).
+    sending: Mutex<()>,
     seq: AtomicU64,
     epoch: Arc<AtomicU64>,
     clock: Arc<dyn Clock>,
@@ -125,66 +135,44 @@ pub(crate) struct Outlet {
     state: Mutex<PlanState>,
     changed: Notify,
     coalesced: AtomicU64,
-    /// An event stream's last sample, for late joiners.
-    last: Mutex<Option<Sample>>,
+    /// An event stream's last sample as sent (sealed), for late joiners.
+    last: Mutex<Option<Vec<u8>>>,
 }
 
 impl Outlet {
-    fn put_sample(&self, sample: &Sample) -> Result<(), SessionError> {
+    /// Seals and sends `sample`; `false` when there is no key for the
+    /// stream yet (nothing is sent).
+    fn put_sample(&self, sample: &Sample) -> Result<bool, SessionError> {
+        let sealed = match self
+            .sealer
+            .seal_sample(&self.key, sample, self.spec.applied)
+        {
+            Ok(sealed) => sealed,
+            Err(SessionError::Key(err)) => {
+                debug!(channel = %self.spec.channel, %err, "sample dropped unsent");
+                return Ok(false);
+            }
+            Err(err) => return Err(err),
+        };
         if self.spec.event
             && let Ok(mut last) = self.last.lock()
         {
-            *last = Some(sample.clone());
+            *last = Some(sealed.clone());
         }
-        self.publisher
-            .put(frame_zbytes(codec::encode_sample(sample)))
-            .wait()?;
-        Ok(())
+        self.publisher.put(sealed).wait()?;
+        Ok(true)
     }
 
-    /// Answers a history query on an event stream with its last sample, when
-    /// the query's range holds it.
+    /// Answers a history query on an event stream with its last sample as
+    /// it was sent: this robot can't open the query (it is sealed for the
+    /// host), so the requester filters it, and opens it under the stream's
+    /// key.
     fn serve_last(&self, query: &zenoh::query::Query) {
-        let request = match query.payload() {
-            Some(payload) => match codec::decode_history_query(&payload.to_bytes()) {
-                Ok(request) => request,
-                Err(err) => {
-                    debug!(channel = %self.spec.channel, %err, "undecodable history query");
-                    return;
-                }
-            },
-            None => HistoryQuery::default(),
-        };
-        let Some(sample) = self.last.lock().ok().and_then(|last| last.clone()) else {
+        let Some(sealed) = self.last.lock().ok().and_then(|last| last.clone()) else {
             return;
         };
-        if sample.epoch != request.epoch
-            || sample.seq <= request.after_seq
-            || request.until_seq.is_some_and(|until| sample.seq > until)
-        {
-            return;
-        }
-        let page = SampleBatch {
-            channel: sample.channel,
-            epoch: sample.epoch,
-            publish_ns: sample.publish_ns,
-            samples: vec![SampleMeta {
-                seq: sample.seq,
-                capture_ns: sample.capture_ns,
-                tick: sample.tick,
-                applied: sample.applied,
-            }],
-            payload: sample.payload,
-            truncated: false,
-            gaps: Vec::new(),
-        };
-        match codec::encode_batch(&page) {
-            Ok(encoded) => {
-                if let Err(err) = query.reply(query.key_expr(), frame_zbytes(encoded)).wait() {
-                    debug!(channel = %self.spec.channel, %err, "last-event reply failed");
-                }
-            }
-            Err(err) => debug!(channel = %self.spec.channel, %err, "last-event page"),
+        if let Err(err) = query.reply(query.key_expr(), sealed).wait() {
+            debug!(channel = %self.spec.channel, %err, "last-event reply failed");
         }
     }
 
@@ -249,11 +237,12 @@ impl SamplePublisher {
         ceiling_hz: Option<f64>,
         epoch: Arc<AtomicU64>,
         clock: Arc<dyn Clock>,
+        sealer: Sealer,
     ) -> Result<Self, SessionError> {
         let publisher = declare_publisher(
             transport,
             TrafficClass::of(spec.priority),
-            key,
+            key.clone(),
             stream_qos(&spec, clock_mode),
         )
         .await?;
@@ -276,6 +265,9 @@ impl SamplePublisher {
             last: Mutex::new(None),
             spec,
             publisher,
+            key,
+            sealer,
+            sending: Mutex::new(()),
             seq: AtomicU64::new(0),
             epoch,
             clock,
@@ -409,15 +401,17 @@ impl SamplePublisher {
                 return Ok(None);
             }
         }
-        let seq = outlet.seq.fetch_add(1, Ordering::Relaxed) + 1;
-        outlet.put_sample(&sample(seq))?;
+        let _sending = outlet
+            .sending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seq = outlet.seq.load(Ordering::Relaxed) + 1;
+        if !outlet.put_sample(&sample(seq))? {
+            return Ok(None);
+        }
+        outlet.seq.store(seq, Ordering::Relaxed);
         Ok(Some(seq))
     }
-}
-
-/// The sample a data payload carries.
-pub(crate) fn decode_data(payload: &ZBytes) -> Result<Sample, String> {
-    codec::decode_sample(payload_bytes(payload)).map_err(|e| e.to_string())
 }
 
 /// A sample as received.
@@ -467,6 +461,11 @@ pub struct SubscribeOptions {
 
 struct SubState {
     spec: StreamSpec,
+    /// The data key samples are sealed to.
+    key: String,
+    sealer: Sealer,
+    /// This subscription's replay windows (§8.2).
+    windows: Mutex<StreamWindows>,
     me: ParticipantId,
     clock: Arc<dyn Clock>,
     view: watch::Receiver<Option<AuthoritySnapshot>>,
@@ -474,8 +473,8 @@ struct SubState {
     latest: Mutex<Option<Received>>,
     depth: usize,
     window: Mutex<VecDeque<Received>>,
-    /// While warming from history, live payloads wait here.
-    warming: Mutex<Option<Vec<ZBytes>>>,
+    /// While warming from history, live samples wait here.
+    warming: Mutex<Option<Vec<Sample>>>,
     /// Shared with the participant's heartbeat (`last_seq_seen`).
     seen: Arc<AtomicU64>,
     /// Publisher clock to subscriber clock, refreshed from the view.
@@ -485,23 +484,34 @@ struct SubState {
 
 impl SubState {
     fn on_live(&self, payload: &ZBytes) {
+        let opened = self.sealer.open_stream(
+            &self.key,
+            payload.to_bytes().into_owned(),
+            &self.spec.owner,
+            self.spec.channel,
+            self.spec.applied,
+            &self.windows,
+        );
+        let sample = match opened {
+            Ok((sample, _, restarted)) => {
+                if restarted {
+                    self.restart();
+                }
+                sample
+            }
+            Err(err) => {
+                debug!(channel = %self.spec.channel, %err, "sample dropped");
+                self.bump(|s| s.undecodable += 1);
+                return;
+            }
+        };
         if let Ok(mut warming) = self.warming.lock()
             && let Some(buffer) = warming.as_mut()
         {
-            buffer.push(payload.clone());
+            buffer.push(sample);
             return;
         }
-        self.on_payload(payload);
-    }
-
-    fn on_payload(&self, payload: &ZBytes) {
-        match decode_data(payload) {
-            Ok(sample) => self.on_sample(sample, false),
-            Err(err) => {
-                debug!(channel = %self.spec.channel, %err, "undecodable sample");
-                self.bump(|s| s.undecodable += 1);
-            }
-        }
+        self.on_sample(sample, false);
     }
 
     fn on_sample(&self, sample: Sample, from_history: bool) {
@@ -547,6 +557,18 @@ impl SubState {
         }
     }
 
+    /// The robot restarted under a newer stream key, its `seq`s from 1
+    /// (§8.5): the high-water and what was kept from before go.
+    fn restart(&self) {
+        self.bump(|s| s.last_seq = 0);
+        if let Ok(mut latest) = self.latest.lock() {
+            *latest = None;
+        }
+        if let Ok(mut window) = self.window.lock() {
+            window.clear();
+        }
+    }
+
     fn bump(&self, f: impl FnOnce(&mut SampleStats)) {
         if let Ok(mut stats) = self.stats.lock() {
             f(&mut stats);
@@ -577,13 +599,14 @@ pub struct SampleSubscriber {
 
 pub(crate) struct SubscribeContext {
     pub key: String,
-    pub history_key: String,
+    pub keys: crate::wire::SessionKeys,
     pub spec: StreamSpec,
     pub me: ParticipantId,
     pub clock: Arc<dyn Clock>,
     pub view: watch::Receiver<Option<AuthoritySnapshot>>,
     pub seen: Arc<AtomicU64>,
     pub history_timeout: Duration,
+    pub sealer: Sealer,
 }
 
 impl SampleSubscriber {
@@ -596,6 +619,9 @@ impl SampleSubscriber {
         let priority = ctx.spec.priority;
         let state = Arc::new(SubState {
             spec: ctx.spec,
+            key: ctx.key.clone(),
+            sealer: ctx.sealer.clone(),
+            windows: Mutex::default(),
             me: ctx.me,
             clock: ctx.clock,
             view: ctx.view,
@@ -624,9 +650,7 @@ impl SampleSubscriber {
                 .warming
                 .lock()
                 .ok()
-                .and_then(|w| w.as_ref()?.first().cloned())
-                .and_then(|p| decode_data(&p).ok())
-                .map(|s| s.seq);
+                .and_then(|w| w.as_ref()?.first().map(|s| s.seq));
             let epoch = Epoch(state.view.borrow().as_ref().map_or(0, |v| v.epoch.0));
             let query = HistoryQuery {
                 epoch,
@@ -635,8 +659,18 @@ impl SampleSubscriber {
                     .map(|seq| seq.saturating_sub(1))
                     .filter(|s| *s > 0),
                 limit: u32::try_from(depth).ok(),
+                request_id: 0,
             };
-            match fetch_history(transport, &ctx.history_key, &query, ctx.history_timeout).await {
+            let fetched = fetch_history(
+                transport,
+                &ctx.sealer,
+                &state.spec,
+                &ctx.keys,
+                query,
+                ctx.history_timeout,
+            )
+            .await;
+            match fetched {
                 Ok(pages) => {
                     let stride = state
                         .spec
@@ -662,8 +696,8 @@ impl SampleSubscriber {
             // Hold the warming lock while flushing, so no live sample can
             // overtake the buffered ones.
             if let Ok(mut warming) = state.warming.lock() {
-                for payload in warming.take().unwrap_or_default() {
-                    state.on_payload(&payload);
+                for sample in warming.take().unwrap_or_default() {
+                    state.on_sample(sample, false);
                 }
             }
         }
@@ -740,27 +774,46 @@ impl Drop for SampleSubscriber {
     }
 }
 
-/// Queries the host's history store: every page of the reply, in order.
+/// Queries the host's history store for `stream`, sealed under this
+/// participant's `k_up` (§8.6): every page of the reply that opens (under
+/// its `k_down`, or an event stream's last sample under the stream's key)
+/// and falls in the query's range, in order.
 pub(crate) async fn fetch_history(
     transport: &Transport,
-    key: &str,
-    query: &HistoryQuery,
+    sealer: &Sealer,
+    stream: &StreamSpec,
+    keys: &crate::wire::SessionKeys,
+    query: HistoryQuery,
     timeout: Duration,
 ) -> Result<Vec<SampleBatch>, SessionError> {
+    let history_key = keys.history(&stream.owner, &stream.path);
+    let data_key = keys.data(&stream.owner, &stream.path);
+    let (request_id, sealed) = sealer.history_query(&history_key, query)?;
     let replies = transport
         .session(TrafficClass::Data)
-        .get(key)
-        .payload(codec::encode_history_query(query))
+        .get(&history_key)
+        .payload(sealed)
         .consolidation(ConsolidationMode::None)
         .timeout(timeout)
         .await?;
+    let in_range = |page: &SampleBatch| {
+        page.samples.iter().all(|s| {
+            page.epoch == query.epoch
+                && s.seq > query.after_seq
+                && query.until_seq.is_none_or(|until| s.seq <= until)
+        })
+    };
     let mut pages = Vec::new();
     while let Ok(reply) = replies.recv_async().await {
         match reply.result() {
-            Ok(sample) => match codec::decode_batch(payload_bytes(sample.payload())) {
-                Ok(page) => pages.push(page),
-                Err(err) => warn!(%err, "undecodable history page"),
-            },
+            Ok(sample) => {
+                let msg = sample.payload().to_bytes().into_owned();
+                match sealer.history_page(&history_key, &data_key, msg, request_id, &stream.owner) {
+                    Ok(page) if in_range(&page) || page.samples.is_empty() => pages.push(page),
+                    Ok(_) => {}
+                    Err(err) => warn!(%err, "history page dropped"),
+                }
+            }
             Err(err) => warn!(?err, "history error reply"),
         }
     }
@@ -793,6 +846,9 @@ mod tests {
     fn state(depth: usize, view: watch::Receiver<Option<AuthoritySnapshot>>) -> SubState {
         SubState {
             spec: spec(),
+            key: "d/robot/ft".into(),
+            sealer: Sealer::detached(),
+            windows: Mutex::default(),
             me: ParticipantId::new("ctl").expect("id"),
             clock: MonotonicClock::with_anchor(Instant::now(), 0).shared(),
             view,
@@ -807,8 +863,8 @@ mod tests {
         }
     }
 
-    fn payload(seq: u64, epoch: u64, len: usize) -> ZBytes {
-        let sample = Sample {
+    fn sample(seq: u64, epoch: u64, len: usize) -> Sample {
+        Sample {
             channel: ChannelId(1),
             epoch: Epoch(epoch),
             seq,
@@ -817,8 +873,7 @@ mod tests {
             tick: 0,
             payload: Bytes::from(vec![0_u8; len]),
             applied: None,
-        };
-        frame_zbytes(codec::encode_sample(&sample))
+        }
     }
 
     #[test]
@@ -826,7 +881,7 @@ mod tests {
         let (_tx, view) = watch::channel(None);
         let state = state(3, view);
         for seq in [1, 2, 5, 4, 6, 6, 10] {
-            state.on_payload(&payload(seq, 1, 24));
+            state.on_sample(sample(seq, 1, 24), false);
         }
         let stats = *state.stats.lock().expect("stats");
         assert_eq!(stats.received, 5);
@@ -854,10 +909,11 @@ mod tests {
         snapshot.epoch = Epoch(3);
         let (_tx, view) = watch::channel(Some(snapshot));
         let state = state(1, view);
-        state.on_payload(&payload(1, 2, 24));
-        state.on_payload(&payload(2, 3, 24));
-        state.on_payload(&payload(3, 3, 20));
-        state.on_payload(&ZBytes::from(vec![1_u8, 2, 3]));
+        state.on_sample(sample(1, 2, 24), false);
+        state.on_sample(sample(2, 3, 24), false);
+        state.on_sample(sample(3, 3, 20), false);
+        // Anything that doesn't open under the stream's key is dropped.
+        state.on_live(&ZBytes::from(vec![1_u8, 2, 3]));
         let stats = *state.stats.lock().expect("stats");
         assert_eq!((stats.stale_epoch, stats.received), (1, 1));
         assert_eq!((stats.malformed, stats.undecodable), (1, 1));
@@ -880,24 +936,21 @@ mod tests {
     fn live_samples_wait_while_warming_and_merge_by_seq() {
         let (_tx, view) = watch::channel(None);
         let state = state(8, view);
-        *state.warming.lock().expect("lock") = Some(Vec::new());
-        state.on_live(&payload(5, 1, 24));
-        state.on_live(&payload(6, 1, 24));
+        // Live samples, opened, wait in the warming buffer.
+        *state.warming.lock().expect("lock") = Some(vec![sample(5, 1, 24), sample(6, 1, 24)]);
         assert_eq!(state.stats.lock().expect("stats").received, 0, "buffered");
         // History up to the first live seq, overlapping it by one.
         for seq in [3, 4, 5] {
-            if let Ok(sample) = codec::decode_sample(payload_bytes(&payload(seq, 1, 24))) {
-                state.on_sample(sample, true);
-            }
+            state.on_sample(sample(seq, 1, 24), true);
         }
-        for p in state
+        for live in state
             .warming
             .lock()
             .expect("lock")
             .take()
             .unwrap_or_default()
         {
-            state.on_payload(&p);
+            state.on_sample(live, false);
         }
         let stats = *state.stats.lock().expect("stats");
         assert_eq!(

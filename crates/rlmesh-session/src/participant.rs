@@ -9,6 +9,15 @@
 //! verified against the host's signing key: anything else is dropped.
 //! Verbs carry rising request ids, so a retry is answered once.
 //!
+//! **Keys** (design §8.4, §8.5): the host delivers the participant's other
+//! keys on `p/{id}/keys` (subscribed before the handshake), and a grant's
+//! reply carries the holder's. The participant installs them in its link
+//! and acknowledges each delivery (`KeysAck`); a message under a key it
+//! doesn't hold makes it ask for every key of its generation (`GetKeys`).
+//! Its chunk publishers seal under the lease's `k_cmd`, its sample
+//! publishers under the stream's `k_stream`, and its subscribers, edges and
+//! history queries open under them ([`Sealer`]).
+//!
 //! From then on it keeps the newest authority snapshot (from updates and
 //! from every `ctl` reply) and hands out endpoints addressed by robot and
 //! path: sample publishers and subscribers, chunk publishers, history
@@ -36,15 +45,16 @@ use crate::spec::{BindError, Binding, Policy, RunOptions};
 use crate::wire::codec;
 use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use crate::wire::{
-    AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlError, CtlReply, CtlStatus,
-    Epoch, Fingerprint, Health, Heartbeat, HeartbeatEcho, HistoryQuery, Lease, LeaseToken, Mode,
-    PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Role, SampleBatch, SessionId,
-    SessionKeys, StreamSpec, TenantId, TimingSample, VirtualTick, Watermark,
+    ActionChunk, AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlError, CtlReply,
+    CtlStatus, Epoch, Fingerprint, Health, Heartbeat, HeartbeatEcho, HistoryQuery, KeysAck, Lease,
+    LeaseToken, LockstepRequest, LockstepResponse, Mode, PartSpec, ParticipantId, PriorityClass,
+    Reason, ReasonCode, Role, Sample, SampleBatch, SessionId, SessionKeys, StreamSpec, TenantId,
+    TimingSample, VirtualTick, Watermark,
 };
-use rlmesh_session_core::auth::{self, Credential};
-use rlmesh_session_core::auth::{Link, ReplyOutcome};
+use rlmesh_session_core::auth::{self, Credential, KeyError, StreamWindows};
+use rlmesh_session_core::auth::{Link, LinkError, ReplyOutcome};
 use rlmesh_session_core::crypto::SignedReceiver;
-use rlmesh_session_core::crypto::signed;
+use rlmesh_session_core::crypto::{sealed, signed};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -400,12 +410,245 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Work for the key task: acknowledge a delivery, recover missing keys,
+/// or keep retrying a request whose caller timed out (its reply may carry
+/// keys: a grant's).
+#[derive(Debug)]
+enum KeyWork {
+    Ack(KeysAck),
+    Missing,
+    Unanswered(u64, Command, watch::Sender<Option<CtlReply>>),
+}
+
+/// A request the host did not answer before its call timed out (§8.6): its
+/// outcome is unknown. The participant keeps sending it under its id, which
+/// the host answers from its reply cache without applying the verb twice,
+/// until the answer comes or this generation ends.
+#[derive(Clone, Debug)]
+pub struct Pending {
+    id: u64,
+    reply: watch::Receiver<Option<CtlReply>>,
+}
+
+impl Pending {
+    /// The request's id.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The host's answer (a refusal stays in it, keys are installed), once
+    /// it comes; [`SessionError::Closed`] when this generation ended first.
+    pub async fn reply(mut self) -> Result<CtlReply, SessionError> {
+        let reply = self.reply.wait_for(Option::is_some).await;
+        reply
+            .ok()
+            .and_then(|reply| reply.clone())
+            .ok_or(SessionError::Closed)
+    }
+}
+
+/// The link, once the handshake completed.
+type SharedLink = Arc<std::sync::OnceLock<Mutex<Link>>>;
+
+/// A participant's delivered keys, for its publishers, subscribers, edges
+/// and lockstep links: seals and opens under what its link holds (§8.4).
+/// A message under a key it doesn't hold makes the participant recover its
+/// keys (`GetKeys`). Cheap to clone.
+#[derive(Clone)]
+pub struct Sealer {
+    link: SharedLink,
+    work: mpsc::UnboundedSender<KeyWork>,
+}
+
+impl std::fmt::Debug for Sealer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sealer").finish_non_exhaustive()
+    }
+}
+
+impl Sealer {
+    /// A sealer with no link: everything is refused.
+    #[cfg(test)]
+    pub(crate) fn detached() -> Self {
+        Self {
+            link: Arc::default(),
+            work: mpsc::unbounded_channel().0,
+        }
+    }
+
+    fn with<R>(
+        &self,
+        f: impl FnOnce(&mut Link) -> Result<R, LinkError>,
+    ) -> Result<R, SessionError> {
+        let link = self.link.get().ok_or(SessionError::Closed)?;
+        let result = f(&mut lock(link));
+        result.map_err(|err| {
+            if matches!(err, LinkError::Key(KeyError::Unknown(_))) {
+                let _ = self.work.send(KeyWork::Missing);
+            }
+            SessionError::Key(err.to_string())
+        })
+    }
+
+    pub(crate) fn seal_chunk(
+        &self,
+        keyexpr: &str,
+        robot: &ParticipantId,
+        chunk: &ActionChunk,
+    ) -> Result<Vec<u8>, SessionError> {
+        self.with(|link| link.seal_chunk(keyexpr, robot, chunk))
+    }
+
+    pub(crate) fn open_chunk(
+        &self,
+        keyexpr: &str,
+        msg: Vec<u8>,
+    ) -> Result<ActionChunk, SessionError> {
+        self.with(|link| link.open_chunk(keyexpr, msg))
+    }
+
+    /// Seals one of this robot's samples (an `_applied` entry when
+    /// `applied`) on its data key `keyexpr`.
+    ///
+    /// # Errors
+    /// [`SessionError::Key`] before the stream's key arrived.
+    pub fn seal_sample(
+        &self,
+        keyexpr: &str,
+        sample: &Sample,
+        applied: bool,
+    ) -> Result<Vec<u8>, SessionError> {
+        // Only the seq is taken under the link's lock: a camera frame is
+        // sealed without holding up the process's chunks.
+        let sealing =
+            self.with(|link| Ok(link.keyring_mut().begin_sample(sample.channel, applied)?))?;
+        let body = codec::encode_sample(sample).to_vec();
+        let mut out = Vec::with_capacity(sealed::OVERHEAD + body.len());
+        sealing
+            .finish_to(keyexpr, &body, &mut out)
+            .map_err(|err| SessionError::Key(err.to_string()))?;
+        Ok(out)
+    }
+
+    /// Opens a sample of `robot`'s stream `channel` received on `keyexpr`
+    /// for one subscription (its replay `windows`), verifying it outside
+    /// the link's lock: the sample, its encoded body, and whether it is the
+    /// first under a robot's newer stream key (its `seq`s restarted).
+    pub(crate) fn open_stream(
+        &self,
+        keyexpr: &str,
+        mut msg: Vec<u8>,
+        robot: &ParticipantId,
+        channel: ChannelId,
+        applied: bool,
+        windows: &Mutex<StreamWindows>,
+    ) -> Result<(Sample, bytes::Bytes, bool), SessionError> {
+        let (opening, version) = self.with(|link| {
+            Ok(link
+                .keyring()
+                .begin_open_stream(&msg, robot, channel, applied, &lock(windows))?)
+        })?;
+        let key = |err: String| SessionError::Key(err);
+        opening
+            .finish(keyexpr, &mut msg)
+            .map_err(|err| key(err.to_string()))?;
+        let restarted = lock(windows)
+            .commit(opening.header(), version)
+            .map_err(|err| key(err.to_string()))?;
+        self.with(|link| Ok(link.keyring_mut().opened(opening.header())?))?;
+        let end = msg.len() - sealed::TAG_LEN;
+        let body = bytes::Bytes::from(msg).slice(sealed::HEADER_LEN..end);
+        let sample = codec::decode_sample(body.clone())?;
+        if sample.channel != channel {
+            return Err(key(format!("a sample of {} on {channel}", sample.channel)));
+        }
+        Ok((sample, body, restarted))
+    }
+
+    pub(crate) fn history_query(
+        &self,
+        keyexpr: &str,
+        query: HistoryQuery,
+    ) -> Result<(u64, Vec<u8>), SessionError> {
+        self.with(|link| link.history_query(keyexpr, query))
+    }
+
+    pub(crate) fn history_page(
+        &self,
+        history_key: &str,
+        data_key: &str,
+        msg: Vec<u8>,
+        request_id: u64,
+        robot: &ParticipantId,
+    ) -> Result<SampleBatch, SessionError> {
+        self.with(|link| link.history_page(history_key, data_key, msg, request_id, robot))
+    }
+
+    /// Seals a lockstep request to `robot` under token `token` on
+    /// `keyexpr` (`l/{robot}`).
+    ///
+    /// # Errors
+    /// [`SessionError::Key`] without the lease's keys.
+    pub fn seal_lockstep_request(
+        &self,
+        keyexpr: &str,
+        robot: &ParticipantId,
+        token: LeaseToken,
+        request: &LockstepRequest,
+    ) -> Result<Vec<u8>, SessionError> {
+        self.with(|link| link.seal_lockstep_request(keyexpr, robot, token, request))
+    }
+
+    /// Opens a lockstep request to this robot: it and its key's token.
+    ///
+    /// # Errors
+    /// [`SessionError::Key`]: it is dropped.
+    pub fn open_lockstep_request(
+        &self,
+        keyexpr: &str,
+        msg: Vec<u8>,
+    ) -> Result<(LockstepRequest, LeaseToken), SessionError> {
+        self.with(|link| link.open_lockstep_request(keyexpr, msg))
+    }
+
+    /// Seals this robot's response under token `token`'s `k_obs`.
+    ///
+    /// # Errors
+    /// [`SessionError::Key`] without it.
+    pub fn seal_lockstep_response(
+        &self,
+        keyexpr: &str,
+        token: LeaseToken,
+        response: &LockstepResponse,
+    ) -> Result<Vec<u8>, SessionError> {
+        self.with(|link| link.seal_lockstep_response(keyexpr, token, response))
+    }
+
+    /// Opens `robot`'s response under token `token`'s `k_obs`.
+    ///
+    /// # Errors
+    /// [`SessionError::Key`]: it is dropped.
+    pub fn open_lockstep_response(
+        &self,
+        keyexpr: &str,
+        msg: Vec<u8>,
+        robot: &ParticipantId,
+        token: LeaseToken,
+    ) -> Result<LockstepResponse, SessionError> {
+        self.with(|link| link.open_lockstep_response(keyexpr, msg, robot, token))
+    }
+}
+
 struct Shared {
     transport: Transport,
     /// This process's link to the host (its keys, request ids and the
     /// host's broadcast floor), set once the handshake completes. One lock:
     /// a seq is allocated and its message sealed under it.
-    link: std::sync::OnceLock<Mutex<Link>>,
+    link: SharedLink,
+    /// The key task's queue.
+    key_work: mpsc::UnboundedSender<KeyWork>,
+    /// Bumped on every key delivery, for waiters on a key.
+    keys_changed: watch::Sender<u64>,
     /// The heartbeat publisher, once attached.
     heartbeat: std::sync::OnceLock<zenoh::pubsub::Publisher<'static>>,
     /// Where the host's echoes go while this participant relays another
@@ -449,6 +692,9 @@ struct Shared {
 impl Shared {
     /// Keeps the newest snapshot.
     fn observe(&self, snapshot: AuthoritySnapshot) {
+        if let Some(link) = self.link.get() {
+            lock(link).observe(&snapshot, self.clock.now_ns());
+        }
         let id = &self.id;
         self.view.send_if_modified(|view| {
             if view
@@ -518,9 +764,31 @@ impl Shared {
         Ok((state, leases))
     }
 
-    /// [`Self::ctl`], with a refusal left in the reply.
+    /// [`Self::ctl`], with a refusal left in the reply. A request left
+    /// unanswered is retried in the background under its id until the
+    /// host's answer (its cached reply, keys included) arrives or this
+    /// generation ends (§8.6); a caller that timed out gets
+    /// [`SessionError::Pending`], whose handle resolves with that answer.
     async fn ctl_reply(&self, command: Command) -> Result<CtlReply, SessionError> {
-        self.call(None, &command).await.1
+        let (id, reply) = self.call(None, &command).await;
+        let Some(id) = id.filter(|&id| {
+            reply.is_err()
+                && self
+                    .link
+                    .get()
+                    .is_some_and(|link| lock(link).unanswered(id))
+        }) else {
+            return reply;
+        };
+        let (answer, pending) = watch::channel(None);
+        let _ = self.key_work.send(KeyWork::Unanswered(id, command, answer));
+        match reply {
+            Err(SessionError::NoReply(timeout)) => Err(SessionError::Pending {
+                timeout,
+                pending: Pending { id, reply: pending },
+            }),
+            other => other,
+        }
     }
 
     /// Sends `command` as a new request (`None`) or again as request `id`
@@ -583,7 +851,7 @@ impl Shared {
                 continue;
             };
             let mut bytes = sample.payload().to_bytes().into_owned();
-            let outcome = lock(link).reply(key, &mut bytes, request_id);
+            let outcome = lock(link).reply(key, &mut bytes, request_id, self.clock.now_ns());
             match outcome {
                 Ok(ReplyOutcome::Answer(reply)) => {
                     self.observe(reply.state.clone());
@@ -595,6 +863,13 @@ impl Shared {
             }
         }
         Err(hint.map_or(SessionError::NoReply(timeout), SessionError::Unverified))
+    }
+
+    fn sealer(&self) -> Sealer {
+        Sealer {
+            link: self.link.clone(),
+            work: self.key_work.clone(),
+        }
     }
 
     /// Verifies a `host/state` broadcast, received on `key`.
@@ -692,6 +967,7 @@ pub struct Participant {
     _liveliness: zenoh::liveliness::LivelinessToken,
     _state: zenoh::pubsub::Subscriber<()>,
     _echo: zenoh::pubsub::Subscriber<()>,
+    _keys: zenoh::pubsub::Subscriber<()>,
 }
 
 /// Whether `transport` reaches another Zenoh session within `timeout`: at
@@ -790,9 +1066,13 @@ impl Participant {
         let (view, _) = watch::channel(None);
         let (host_present, _) = watch::channel(false);
         let (reports, report_rx) = mpsc::unbounded_channel();
+        let (key_work, key_rx) = mpsc::unbounded_channel();
+        let (keys_changed, _) = watch::channel(0);
         let shared = Arc::new(Shared {
             transport: transport.clone(),
-            link: std::sync::OnceLock::new(),
+            link: Arc::default(),
+            key_work,
+            keys_changed,
             heartbeat: std::sync::OnceLock::new(),
             relay: Mutex::new(None),
             keys: keys.clone(),
@@ -856,6 +1136,28 @@ impl Participant {
                 }
             })
             .await?;
+        let deliveries = control
+            .declare_subscriber(keys.participant_keys(&config.id))
+            .callback({
+                let shared = shared.clone();
+                let key = keys.participant_keys(&config.id);
+                move |sample| {
+                    let Some(link) = shared.link.get() else {
+                        return;
+                    };
+                    let mut bytes = sample.payload().to_bytes().into_owned();
+                    let now = shared.clock.now_ns();
+                    let ack = lock(link).keys(&key, &mut bytes, now);
+                    match ack {
+                        Ok(ack) => {
+                            shared.keys_changed.send_modify(|n| *n += 1);
+                            let _ = shared.key_work.send(KeyWork::Ack(ack));
+                        }
+                        Err(err) => debug!(%err, "key delivery dropped"),
+                    }
+                }
+            })
+            .await?;
         let host = control
             .liveliness()
             .declare_subscriber(keys.host_liveliness())
@@ -915,11 +1217,13 @@ impl Participant {
                 tokio::spawn(report_stops(shared.clone(), report_rx, cancel.clone())),
                 tokio::spawn(install_demands(shared.clone(), cancel.clone())),
                 tokio::spawn(report_streams(shared.clone(), cancel.clone())),
+                tokio::spawn(work_keys(shared.clone(), key_rx, cancel.clone())),
             ],
             cancel,
             _liveliness: liveliness,
             _state: state,
             _echo: echo,
+            _keys: deliveries,
             _host: host,
         };
         shared
@@ -1053,7 +1357,7 @@ impl Participant {
     /// Seals and sends one heartbeat under this participant's keys (a
     /// relayed one: see [`Self::relay_heartbeats`]).
     pub async fn send_heartbeat(&self, heartbeat: &Heartbeat) -> Result<(), SessionError> {
-        self.shared.send_heartbeat(heartbeat).await
+        self.shared.send_heartbeat(heartbeat.clone(), false).await
     }
 
     /// DISARMED or SAFE to ARMED, in a fresh epoch.
@@ -1089,15 +1393,50 @@ impl Participant {
     /// Declares this embodiment's robot map (the authored JSON, §3): the
     /// host normalises it and assigns channel ids. Re-declaring identically
     /// is a no-op; the parts are part of the authority snapshot.
+    ///
+    /// This runtime can seal every part, so the session's choice of level
+    /// stands. Returns once the host's keys for every part reached this
+    /// process (or after `ctl_timeout`, with a warning): samples published
+    /// before then are dropped unsent.
     pub async fn declare_parts(&self, robot_json: &str) -> Result<AuthoritySnapshot, SessionError> {
-        Ok(self
+        let seal = crate::spec::normalise(&self.shared.id, SPEC_VERSION, robot_json)
+            .map(|parts| parts.iter().map(|p| p.path.to_string()).collect())
+            .unwrap_or_default();
+        let snapshot = self
             .shared
             .ctl(Command::DeclareParts {
                 spec_version: SPEC_VERSION,
                 robot_json: robot_json.to_string(),
+                seal,
             })
             .await?
-            .0)
+            .0;
+        let channels: Vec<ChannelId> = snapshot
+            .parts
+            .iter()
+            .filter(|p| p.owner == self.shared.id)
+            .map(|p| p.channel)
+            .collect();
+        let Some(link) = self.shared.link.get() else {
+            return Ok(snapshot);
+        };
+        let ready = || {
+            let link = lock(link);
+            channels.iter().all(|c| link.keyring().sends_stream(*c))
+        };
+        let mut changed = self.shared.keys_changed.subscribe();
+        let waited = tokio::time::timeout(self.shared.ctl_timeout, async {
+            while !ready() {
+                if changed.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
+        if waited.is_err() {
+            warn!(participant = %self.shared.id, "the host's stream keys have not arrived yet");
+        }
+        Ok(snapshot)
     }
 
     /// Declares an identity binding for this controller: the parts it will
@@ -1291,6 +1630,12 @@ impl Participant {
             .unwrap_or(0)
     }
 
+    /// Seals and opens under this participant's delivered keys (a lockstep
+    /// link's requests and replies).
+    pub fn sealer(&self) -> Sealer {
+        self.shared.sealer()
+    }
+
     /// A publisher for one of this embodiment's own parts.
     pub async fn publisher(&self, path: &str) -> Result<SamplePublisher, SessionError> {
         let part = self.own_part(path)?;
@@ -1336,6 +1681,7 @@ impl Participant {
             ceiling_hz,
             self.shared.epoch.clone(),
             self.shared.clock.clone(),
+            self.shared.sealer(),
         )
         .await?;
         if let Ok(mut outlets) = self.shared.outlets.lock() {
@@ -1401,13 +1747,14 @@ impl Participant {
     ) -> Result<SampleSubscriber, SessionError> {
         let ctx = SubscribeContext {
             key: self.shared.keys.data(&stream.owner, &stream.path),
-            history_key: self.shared.keys.history(&stream.owner, &stream.path),
+            keys: self.shared.keys.clone(),
             seen: self.shared.seen(stream.channel),
             spec: stream,
             me: self.shared.id.clone(),
             clock: self.shared.clock.clone(),
             view: self.shared.view.subscribe(),
             history_timeout: self.shared.history_timeout,
+            sealer: self.shared.sealer(),
         };
         SampleSubscriber::declare(&self.shared.transport, ctx, options).await
     }
@@ -1421,8 +1768,10 @@ impl Participant {
     ) -> Result<Vec<SampleBatch>, SessionError> {
         fetch_history(
             &self.shared.transport,
-            &self.shared.keys.history(&stream.owner, &stream.path),
-            &query,
+            &self.shared.sealer(),
+            stream,
+            &self.shared.keys,
+            query,
             self.shared.history_timeout,
         )
         .await
@@ -1443,6 +1792,7 @@ impl Participant {
             epoch,
             self.shared.clock_mode(),
             self.shared.clock.clone(),
+            self.shared.sealer(),
         )
         .await
     }
@@ -1631,14 +1981,107 @@ fn health_of(code: u8) -> Health {
 
 impl Shared {
     /// Seals `heartbeat` under `k_up` and publishes it.
-    async fn send_heartbeat(&self, heartbeat: &Heartbeat) -> Result<(), SessionError> {
+    /// Seals and sends `heartbeat`. With `stamp`, its `t1` is taken
+    /// under the link's lock, so time spent waiting for the lock (another
+    /// task sealing or opening) never counts as network time in the clock
+    /// mapping.
+    async fn send_heartbeat(
+        &self,
+        mut heartbeat: Heartbeat,
+        stamp: bool,
+    ) -> Result<(), SessionError> {
         let (Some(link), Some(publisher)) = (self.link.get(), self.heartbeat.get()) else {
             return Err(SessionError::Closed);
         };
-        let sealed = lock(link)
-            .heartbeat(publisher.key_expr().as_str(), heartbeat)
-            .map_err(|err| SessionError::Config(format!("heartbeat: {err}")))?;
+        let sealed = {
+            let mut link = lock(link);
+            if stamp {
+                heartbeat.t1_ns = self.clock.now_ns();
+            }
+            link.heartbeat(publisher.key_expr().as_str(), &heartbeat)
+        }
+        .map_err(|err| SessionError::Config(format!("heartbeat: {err}")))?;
         Ok(publisher.put(sealed).await?)
+    }
+}
+
+/// How often a participant missing keys asks for them again.
+const GET_KEYS_PERIOD: Duration = Duration::from_millis(250);
+
+/// Acknowledges every key delivery and, when a message came under a key
+/// this participant doesn't hold, asks for every key of its generation
+/// (`GetKeys`, at most every [`GET_KEYS_PERIOD`]): the reply installs them.
+async fn work_keys(
+    shared: Arc<Shared>,
+    mut work: mpsc::UnboundedReceiver<KeyWork>,
+    cancel: CancellationToken,
+) {
+    let mut last_recovery: Option<tokio::time::Instant> = None;
+    loop {
+        let item = tokio::select! {
+            () = cancel.cancelled() => return,
+            item = work.recv() => match item {
+                Some(item) => item,
+                None => return,
+            },
+        };
+        let command = match item {
+            KeyWork::Ack(ack) if !ack.is_empty() => Command::KeysAck(ack),
+            KeyWork::Ack(_) => continue,
+            KeyWork::Missing => {
+                if last_recovery.is_some_and(|at| at.elapsed() < GET_KEYS_PERIOD) {
+                    continue;
+                }
+                last_recovery = Some(tokio::time::Instant::now());
+                Command::GetKeys
+            }
+            KeyWork::Unanswered(id, command, answer) => {
+                tokio::spawn(retry_unanswered(
+                    shared.clone(),
+                    id,
+                    command,
+                    answer,
+                    cancel.clone(),
+                ));
+                continue;
+            }
+        };
+        match shared.ctl(command).await {
+            Ok(_) => {
+                shared.keys_changed.send_modify(|n| *n += 1);
+            }
+            Err(err) => debug!(participant = %shared.id, %err, "keys"),
+        }
+    }
+}
+
+/// Resends request `id` until it is answered, and hands the answer to its
+/// [`Pending`] handle. Stops when this generation ends, or when another
+/// attempt's reply answered it and no handle waits.
+async fn retry_unanswered(
+    shared: Arc<Shared>,
+    id: u64,
+    command: Command,
+    answer: watch::Sender<Option<CtlReply>>,
+    cancel: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            () = tokio::time::sleep(SAFE_RETRY) => {}
+        }
+        let open = shared
+            .link
+            .get()
+            .is_some_and(|link| lock(link).unanswered(id));
+        if (!open && answer.is_closed()) || shared.generation_ended() {
+            return;
+        }
+        if let Ok(reply) = shared.call(Some(id), &command).await.1 {
+            shared.keys_changed.send_modify(|n| *n += 1);
+            answer.send_replace(Some(reply));
+            return;
+        }
     }
 }
 
@@ -1684,7 +2127,7 @@ async fn heartbeat_loop(shared: Arc<Shared>, period: Duration, cancel: Cancellat
             queue_depth,
             health: health_of(shared.health.load(Ordering::Relaxed)),
         };
-        if let Err(err) = shared.send_heartbeat(&heartbeat).await {
+        if let Err(err) = shared.send_heartbeat(heartbeat, true).await {
             warn!(participant = %shared.id, %err, "heartbeat failed");
         }
     }

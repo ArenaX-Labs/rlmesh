@@ -507,7 +507,14 @@ async fn serve_robot(
     };
     let key = participant.keys().lockstep(&address.robot);
     info!(robot = %address.robot, %key, "lockstep robot serving");
-    let served = serve_zenoh(lockstep.clone(), key, handler.clone(), shutdown).await;
+    let served = serve_zenoh(
+        lockstep.clone(),
+        key,
+        handler.clone(),
+        shutdown,
+        participant.sealer(),
+    )
+    .await;
 
     local()
         .lock()
@@ -721,7 +728,13 @@ impl Attached {
                 let session =
                     lockstep_session(participant.transport(), self.address.session.base).await?;
                 let keys: &SessionKeys = participant.keys();
-                let link = ZenohLink::new(session.clone(), keys.lockstep(&self.address.robot));
+                let link = ZenohLink::new(
+                    session.clone(),
+                    keys.lockstep(&self.address.robot),
+                    participant.sealer(),
+                    self.address.robot.clone(),
+                    token,
+                );
                 link.wait_ready(timeout).await?;
                 let owned = owns_links(participant.transport()).then_some(session);
                 (Arc::new(link), owned)

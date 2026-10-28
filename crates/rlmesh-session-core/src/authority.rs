@@ -299,6 +299,36 @@ pub struct AuthorityConfig {
     pub supports: Vec<String>,
     /// Virtual clock mode (§11.3); `None` is wall mode.
     pub virtual_clock: Option<VirtualConfig>,
+    /// The parts whose streams, chunks and lockstep traffic are encrypted
+    /// (design §8.2); every other part is signed.
+    pub seal: SealPolicy,
+}
+
+/// Which parts a session seals (encrypts) rather than signs (§8.2, §8.8).
+/// A robot that declares a part it can't seal (`DeclareParts.seal`) is
+/// refused; a level is never lowered silently.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SealPolicy {
+    /// Every part is signed: integrity only.
+    #[default]
+    None,
+    /// Every part is sealed.
+    All,
+    /// These parts (`{robot}/{path}`) are sealed.
+    Parts(Vec<String>),
+}
+
+impl SealPolicy {
+    /// Whether `robot`'s part at `path` is sealed.
+    pub fn seals(&self, robot: &ParticipantId, path: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Parts(parts) => parts
+                .iter()
+                .any(|p| p.split_once('/') == Some((robot.as_str(), path))),
+        }
+    }
 }
 
 impl Default for AuthorityConfig {
@@ -311,6 +341,7 @@ impl Default for AuthorityConfig {
                 .map(ToString::to_string)
                 .collect(),
             virtual_clock: None,
+            seal: SealPolicy::None,
         }
     }
 }
@@ -370,6 +401,11 @@ pub struct Authority {
     /// its contract: what its publisher must have acknowledged.
     needed: BTreeMap<(ParticipantId, ChannelId), u64>,
     last_token: u64,
+    /// The token the verb being applied mints, reserved before its keys
+    /// were delivered (§8.5).
+    minting: Option<LeaseToken>,
+    /// The streams (parts and their applied streams) that are sealed.
+    sealed: BTreeSet<ChannelId>,
     clock: Option<VirtualClock>,
     /// Virtual ticks to publish.
     ticks: Vec<VirtualTick>,
@@ -408,6 +444,8 @@ impl Authority {
             demand_revisions: BTreeMap::new(),
             needed: BTreeMap::new(),
             last_token: 0,
+            minting: None,
+            sealed: BTreeSet::new(),
             clock,
             ticks: Vec::new(),
         }
@@ -692,7 +730,10 @@ impl Authority {
             Command::DeclareParts {
                 spec_version,
                 robot_json,
-            } => self.declare_parts(&from, spec_version, &robot_json, &mut applied.events)?,
+                seal,
+            } => {
+                self.declare_parts(&from, spec_version, &robot_json, &seal, &mut applied.events)?
+            }
             Command::DeclareBinding {
                 fingerprint,
                 revision,
@@ -827,6 +868,11 @@ impl Authority {
                     let ticks = clock.on_decided(&from, tick, &chunks, &who, now_ns)?;
                     self.ticks.extend(ticks);
                 }
+            }
+            // Key verbs change no authority state: the host's key schedule
+            // answers them (§8.5).
+            Command::KeysAck(_) | Command::GetKeys => {
+                self.require_attached(&from)?;
             }
         }
         if !applied.events.is_empty() {
@@ -1027,8 +1073,60 @@ impl Authority {
     }
 
     fn next_token(&mut self) -> LeaseToken {
+        if let Some(token) = self.minting.take() {
+            return token;
+        }
         self.last_token += 1;
         LeaseToken(self.last_token)
+    }
+
+    /// Reserves the next lease token, for a verb whose keys go out before
+    /// it is applied ([`Self::apply_minting`]).
+    pub fn reserve_token(&mut self) -> LeaseToken {
+        self.last_token += 1;
+        LeaseToken(self.last_token)
+    }
+
+    /// [`Self::apply_from`], minting `token` (from [`Self::reserve_token`])
+    /// if the verb mints one.
+    pub fn apply_minting(
+        &mut self,
+        request: Request,
+        sender: &Identity,
+        now_ns: i64,
+        token: LeaseToken,
+    ) -> Result<Applied, CtlError> {
+        self.minting = Some(token);
+        let applied = self.apply_from(request, sender, now_ns);
+        self.minting = None;
+        applied
+    }
+
+    /// Every lease.
+    pub fn leases(&self) -> impl Iterator<Item = &Lease> {
+        self.leases.values()
+    }
+
+    /// Records the id of the `k_cmd` the lease on `channel` was committed
+    /// with (its `Lease.key_id`).
+    pub fn set_key_id(&mut self, channel: ChannelId, key_id: u32) {
+        if let Some(lease) = self.leases.get_mut(&channel) {
+            lease.key_id = key_id;
+        }
+    }
+
+    /// The participant in the roster under `id`.
+    pub fn participant(&self, id: &ParticipantId) -> Option<&ParticipantInfo> {
+        self.roster.get(id)
+    }
+
+    /// The level of a stream (a part's or its applied stream's).
+    pub fn security(&self, channel: ChannelId) -> crate::wire::Security {
+        if self.sealed.contains(&channel) {
+            crate::wire::Security::Seal
+        } else {
+            crate::wire::Security::Sign
+        }
     }
 
     fn next_channel(&mut self) -> Result<ChannelId, CtlError> {
@@ -1049,10 +1147,24 @@ impl Authority {
         from: &ParticipantId,
         spec_version: u32,
         robot_json: &str,
+        can_seal: &[String],
         events: &mut Vec<AuthorityEvent>,
     ) -> Result<(), CtlError> {
         self.require_role(from, Role::Embodiment)?;
         let declared = crate::spec::normalise(from, spec_version, robot_json)?;
+        let sealed: BTreeSet<String> = declared
+            .iter()
+            .filter(|p| self.config.seal.seals(from, p.path.as_str()))
+            .map(|p| p.path.to_string())
+            .collect();
+        if let Some(path) = sealed.iter().find(|p| !can_seal.contains(p)) {
+            return Err(CtlError::new(
+                CtlStatus::Unsupported,
+                format!(
+                    "{from}/{path}: this session seals the part, and this robot process can't                      seal it"
+                ),
+            ));
+        }
         let fingerprint = crate::spec::normalise::fingerprint(&declared);
         let current: BTreeMap<&str, &PartSpec> = self
             .parts
@@ -1117,6 +1229,21 @@ impl Authority {
         }
         self.remove_parts(from, &removed, events);
         self.contract.insert(from.clone(), fingerprint);
+        for spec in self
+            .parts
+            .values()
+            .filter(|p| &p.owner == from)
+            .chain(&added)
+        {
+            let streams = [Some(spec.channel), spec.applied_channel];
+            for channel in streams.into_iter().flatten() {
+                if sealed.contains(spec.path.as_str()) {
+                    self.sealed.insert(channel);
+                } else {
+                    self.sealed.remove(&channel);
+                }
+            }
+        }
         if !added.is_empty() {
             events.push(AuthorityEvent::PartsDeclared {
                 owner: from.clone(),
@@ -1145,6 +1272,7 @@ impl Authority {
                     .into_iter()
                     .flatten()
                 {
+                    self.sealed.remove(&stream);
                     if self.demands.remove(&stream).is_some() {
                         events.push(AuthorityEvent::DemandChanged {
                             channel: stream,
@@ -1650,6 +1778,7 @@ impl Authority {
                 granted_ns: now_ns,
                 expires_ns,
                 binding: grant.binding,
+                key_id: 0,
             };
             events.push(match self.leases.insert(*channel, lease.clone()) {
                 Some(previous) => {
@@ -2089,6 +2218,7 @@ mod tests {
         Command::DeclareParts {
             spec_version: SPEC_VERSION,
             robot_json: json.into(),
+            seal: Vec::new(),
         }
     }
 

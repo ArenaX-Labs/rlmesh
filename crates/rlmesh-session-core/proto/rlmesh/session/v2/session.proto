@@ -94,6 +94,8 @@ message Lease {
   int64 expires_ns = 7;
   // The binding fingerprint (8 bytes) every chunk under this lease carries.
   bytes binding = 8;
+  // The id of the lease's `k_cmd` for this part (never the key itself).
+  uint32 key_id = 9;
 }
 
 // session_ns = participant_ns + offset_ns, within ± error_ns.
@@ -509,6 +511,9 @@ message DeclareParts {
   uint32 spec_version = 1;
   // The authored map, as JSON.
   string robot_json = 2;
+  // The part paths this robot process can seal (default none): what its
+  // runtime can do, so it stays out of the map and its fingerprint.
+  repeated string seal = 3;
 }
 
 // Controller -> host.
@@ -613,6 +618,8 @@ message CtlRequest {
     DemandAck demand_ack = 24;
     Ready ready = 25;
     Decided decided = 26;
+    KeysAck keys_ack = 27;
+    GetKeys get_keys = 28;
   }
 }
 
@@ -662,7 +669,72 @@ message CtlReply {
   repeated Lease leases = 4;
   // The request this answers (sealed replies, kind 2 under `k_down`).
   uint64 request_id = 5;
+  // Keys for the caller: a lease holder's from the grant that minted its
+  // token, or every key issued to its generation (`GetKeys`).
+  repeated Key keys = 6;
 }
+
+// The level of a key's configured kinds (chunks, samples, applied entries,
+// lockstep): integrity only, or encrypted.
+enum Security {
+  SECURITY_UNSPECIFIED = 0;
+  SECURITY_SIGN = 1;
+  SECURITY_SEAL = 2;
+}
+
+// What a delivered key is for, and so which kinds it carries.
+enum KeyPurpose {
+  KEY_PURPOSE_UNSPECIFIED = 0;
+  // `k_cmd`: chunks and lockstep requests under one token to one robot.
+  KEY_PURPOSE_COMMAND = 1;
+  // `k_obs`: a robot's lockstep replies under one token.
+  KEY_PURPOSE_LOCKSTEP_REPLY = 2;
+  // `k_stream`: one part's samples and `_applied` entries.
+  KEY_PURPOSE_STREAM = 3;
+  // `k_session_stream`: one host session stream.
+  KEY_PURPOSE_SESSION_STREAM = 4;
+  // `k_estop`: one participant generation's e-stop signals.
+  KEY_PURPOSE_ESTOP = 5;
+}
+
+// A key the host drew, with its scope. Authority state never carries one.
+message Key {
+  uint32 key_id = 1;
+  KeyPurpose purpose = 2;
+  // The only participant that may send under it (empty: the host).
+  string sender = 3;
+  string robot = 4;
+  repeated uint32 channels = 5;
+  uint64 token = 6;
+  // Rises per slot (purpose, robot, channels) of a rotating key; 0 for a
+  // fixed one.
+  uint32 version = 7;
+  bytes key = 8;
+  // The recipient sends under it.
+  bool send = 9;
+  Security security = 10;
+  // The sender's generation (0 for a host-sent key).
+  uint32 generation = 11;
+}
+
+// Host -> one participant on `p/{participant}/keys` (kind 6 under its
+// `k_down`): keys to install and keys to drop (with every older version of
+// their slot). Retried until acknowledged.
+message KeyDelivery {
+  repeated Key keys = 1;
+  repeated uint32 retire_through = 2;
+}
+
+// Participant -> host: what a delivery changed.
+message KeysAck {
+  repeated uint32 installed = 1;
+  repeated uint32 sending = 2;
+  repeated uint32 retired = 3;
+}
+
+// Participant -> host: every key issued to the caller's generation, in the
+// reply's `keys`.
+message GetKeys {}
 
 // The handshake (`hs`, the only unsealed request): Noise IK, the
 // participant as initiator. msg 1 has an empty payload.
@@ -786,6 +858,8 @@ message SampleBatch {
   bool truncated = 6;
   // History replies: seqs known missing.
   repeated SeqRange gaps = 7;
+  // History replies: the query this page answers.
+  uint64 request_id = 8;
 }
 
 // The payload of a query on h/{robot}/{path}.
@@ -797,6 +871,8 @@ message HistoryQuery {
   // At most this many samples (the newest of the range); 0 takes the
   // store's cap.
   uint32 limit = 4;
+  // Rising per participant generation; the host's pages echo it.
+  uint64 request_id = 5;
 }
 
 message InputRange {
@@ -850,6 +926,9 @@ message LockstepReset {
   string options_json = 4;
   // Minted by the driver, as v1.
   repeated uint64 episode_ids = 5;
+  // The driver's lease token on the env's commandable parts: a reset
+  // needs the lease, like a step.
+  uint64 lease_token = 6;
 }
 
 message LockstepStep {
@@ -859,6 +938,35 @@ message LockstepStep {
   // Empty = all lanes.
   repeated uint32 lanes = 4;
   repeated PartValues commands = 5;
+}
+
+// A lockstep request on `l/{robot}` (kind 11 under the lease's `k_cmd`):
+// the operation travels in the authenticated body.
+message LockstepRequest {
+  uint64 request_id = 1;
+  oneof op {
+    LockstepStep step = 2;
+    LockstepReset reset = 3;
+    // The lane whose frame to render.
+    uint32 render = 4;
+    LockstepProbe probe = 5;
+  }
+}
+
+// The route to the env is up.
+message LockstepProbe {}
+
+// The env's answer (kind 12 under the `k_obs` of the request's token).
+message LockstepResponse {
+  uint64 request_id = 1;
+  oneof result {
+    LockstepReply obs = 2;
+    // A rendered frame's PNG bytes; empty for none.
+    bytes frame = 3;
+    LockstepProbe probe = 4;
+    // The env's failure, as JSON `{code, message, recoverable}`.
+    string failure = 5;
+  }
 }
 
 message LockstepReply {

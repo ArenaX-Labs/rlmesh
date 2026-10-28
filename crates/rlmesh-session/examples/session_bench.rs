@@ -34,7 +34,8 @@
 //! Options: `--camera off|raw|jpeg` (640x480 at `--camera-hz 20`; jpeg is
 //! q75 with an 8 Mbit/s cap), `--horizon N` actions at 1 ms re-planned every
 //! `--replan-ms` (default 1 for N=1, else 10), `--links per-class|shared`,
-//! `--warmup-s 3`, `--duration-s 30`.
+//! `--warmup-s 3`, `--duration-s 30`, `--seal none|all` (encrypt every
+//! part rather than sign it).
 //!
 //! `--controller raw` (the default) re-plans from the transport callback on
 //! every `replan`-th ft sample. `--controller bound` is a bound policy
@@ -88,6 +89,7 @@ struct Args {
     replan: u64,
     links: String,
     controller: String,
+    seal: String,
     warmup_ns: i64,
     duration_ns: i64,
     base: Option<std::net::SocketAddr>,
@@ -129,6 +131,7 @@ fn parse_args() -> Result<Args, BoxError> {
             .get("controller")
             .cloned()
             .unwrap_or_else(|| "raw".into()),
+        seal: opts.get("seal").cloned().unwrap_or_else(|| "none".into()),
         warmup_ns: (num("warmup-s", 3.0)? * 1e9) as i64,
         duration_ns: (num("duration-s", 30.0)? * 1e9) as i64,
         base: opts.get("base").map(|b| b.parse()).transpose()?,
@@ -158,6 +161,8 @@ fn to_args(
         args.links.clone(),
         "--controller".into(),
         args.controller.clone(),
+        "--seal".into(),
+        args.seal.clone(),
         "--warmup-s".into(),
         (args.warmup_ns as f64 / 1e9).to_string(),
         "--duration-s".into(),
@@ -343,6 +348,9 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
     let mut host_config = HostConfig::new(TenantId::new("bench")?, session);
     host_config.clock = SystemMonotonicClock.shared();
     host_config.health_log = None;
+    if args.seal == "all" {
+        host_config.seal = rlmesh_session::authority::SealPolicy::All;
+    }
     let key = AddressKey::of(&host_config.identity);
     let host = SessionHost::start(transport.clone(), host_config).await?;
     let host_events = Arc::new(Mutex::new(BTreeMap::<&'static str, u64>::new()));

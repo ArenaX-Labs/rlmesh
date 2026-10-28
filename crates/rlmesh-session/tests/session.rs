@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rlmesh_session::auth::{self, Credential, HostIdentity, Link, ReplyOutcome};
+use rlmesh_session::crypto::sealed::Header;
 use rlmesh_session::crypto::{Rng, RngError, StaticKeypair, signed};
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
@@ -265,6 +266,24 @@ async fn ask(transport: &Transport, key: &str, payload: Option<Vec<u8>>) -> Vec<
         .into_owned()
 }
 
+/// Every reply to a query on `key` within a second.
+async fn replies(transport: &Transport, key: &str, payload: Vec<u8>) -> Vec<Vec<u8>> {
+    let replies = transport
+        .session(TrafficClass::Data)
+        .get(key)
+        .payload(payload)
+        .timeout(Duration::from_secs(1))
+        .await
+        .expect("query");
+    let mut out = Vec::new();
+    while let Ok(reply) = replies.recv_async().await {
+        if let Ok(sample) = reply.result() {
+            out.push(sample.payload().to_bytes().into_owned());
+        }
+    }
+    out
+}
+
 /// A participant built from the wire up, as a board runs one: the
 /// handshake on `hs`, then an [`auth::Link`] sealing verbs with the request
 /// ids it picks. The SDK never sends these (a retry with a fresh seq, a
@@ -350,7 +369,7 @@ impl Raw {
     /// Sends sealed bytes: the host's answer, or its plain refusal.
     async fn send(&mut self, request_id: u64, sealed: Vec<u8>) -> Result<CtlReply, CtlError> {
         let mut reply = ask(&self.transport, &self.ctl, Some(sealed)).await;
-        match self.link.reply(&self.ctl, &mut reply, request_id) {
+        match self.link.reply(&self.ctl, &mut reply, request_id, 0) {
             Ok(ReplyOutcome::Answer(reply)) => Ok(*reply),
             Ok(ReplyOutcome::Hint(refusal)) => Err(refusal),
             other => panic!("not an answer: {other:?}"),
@@ -1037,6 +1056,11 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         )
         .await
         .expect("subscribe");
+    // A second subscription in the same process: its own replay window.
+    let early_again = early
+        .subscribe(&robot_id(), "ft", SubscribeOptions::default())
+        .await
+        .expect("subscribe");
     // Let the subscriptions (the host's history store too) propagate.
     tokio::time::sleep(Duration::from_millis(200)).await;
     for i in 1..=6_u8 {
@@ -1051,6 +1075,10 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
     .await;
     let stats = early_ft.stats();
     assert_eq!((stats.received, stats.lost), (6, 0));
+    wait_until("the second subscription has all six too", || {
+        early_again.stats().received == 6
+    })
+    .await;
     let latest = early_ft.latest().expect("latest");
     assert_eq!(latest.received.sample.epoch, world.host.snapshot().epoch);
     assert_eq!(latest.received.sample.payload, ft_payload(6.0));
@@ -1084,6 +1112,7 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
                 after_seq: 1,
                 until_seq: Some(5),
                 limit: Some(3),
+                request_id: 0,
             },
         )
         .await
@@ -1105,6 +1134,37 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
         .await
         .expect("history");
     assert!(other_epoch.iter().all(|p| p.samples.is_empty()));
+
+    // A query sealed under one member's `k_up` is answered under its
+    // `k_down`, encrypted: no other member opens the pages. An unsealed
+    // query is never answered.
+    let mut reader = world.raw("reader", Role::Observer).await;
+    let mut other = world.raw("other", Role::Observer).await;
+    let (history, data) = (
+        world.host.keys().history(&robot_id(), "ft"),
+        world.host.keys().data(&robot_id(), "ft"),
+    );
+    let query = HistoryQuery {
+        epoch,
+        after_seq: 4,
+        ..HistoryQuery::default()
+    };
+    let (id, sealed) = reader.link.history_query(&history, query).expect("seal");
+    let pages = replies(&reader.transport, &history, sealed).await;
+    assert_eq!(pages.len(), 1, "one page");
+    assert!(Header::parse(&pages[0]).expect("sealed").encrypted);
+    let page =
+        |link: &mut Link| link.history_page(&history, &data, pages[0].clone(), id, &robot_id());
+    assert!(page(&mut other.link).is_err(), "sealed for the reader only");
+    let page = page(&mut reader.link).expect("the reader's page");
+    let seqs: Vec<u64> = page.samples.iter().map(|s| s.seq).collect();
+    assert_eq!((page.request_id, seqs), (id, vec![5, 6]));
+    let unsealed = codec::encode_history_query(&query);
+    assert!(
+        replies(&reader.transport, &history, unsealed)
+            .await
+            .is_empty()
+    );
 
     // A late joiner is served the host's history, then live samples.
     let late = world
@@ -1147,6 +1207,30 @@ async fn samples_carry_seq_and_a_late_subscriber_warms_from_the_paged_history() 
     .await
     .expect("reported in time")
     .expect("health");
+
+    // The robot's process restarts (its parts kept): its seqs start over
+    // under a newer stream key, and the live subscriber takes them from 1.
+    drop(ft);
+    drop(robot);
+    let started = Instant::now();
+    let robot = loop {
+        let config = world.config("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0);
+        match Participant::attach(world.transport().await, config).await {
+            Ok(robot) => break robot,
+            Err(err) => assert!(started.elapsed() < WAIT, "restart: {err}"),
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    robot.declare_parts(&raw_camera()).await.expect("declare");
+    let ft = robot.publisher("ft").await.expect("publisher");
+    let before = late_ft.stats().received;
+    let started = Instant::now();
+    while late_ft.stats().received == before {
+        assert!(started.elapsed() < WAIT, "{:?}", late_ft.stats());
+        let _ = ft.publish(robot.clock().now_ns(), ft_payload(8.0));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(late_ft.stats().last_seq < 7, "{:?}", late_ft.stats());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1229,7 +1313,10 @@ async fn seq_gaps_count_as_losses_and_old_samples_go_stale() {
             payload: ft_payload(0.5),
             applied: None,
         };
-        let frame = codec::encode_sample(&sample).to_vec();
+        let frame = robot
+            .sealer()
+            .seal_sample(&key, &sample, false)
+            .expect("seal");
         raw.session(TrafficClass::Realtime)
             .put(&key, frame)
             .await
@@ -1579,6 +1666,7 @@ async fn only_the_handshakes_keys_reach_the_host_and_only_its_signature_reaches_
                 state: fake.clone(),
                 leases: Vec::new(),
                 request_id: 0,
+                keys: Vec::new(),
             };
             move |query| {
                 let _ = zenoh::Wait::wait(
@@ -1602,6 +1690,81 @@ async fn only_the_handshakes_keys_reach_the_host_and_only_its_signature_reaches_
         assert!(view.revision < fake.revision);
     }
     drop(rogue);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_grant_that_outlives_its_call_stays_pending_and_resolves_with_its_keys() {
+    let world = World::start_with(|c| c.presence_grace = Duration::from_secs(30)).await;
+    // A robot that acknowledges its keys only when told: until then the
+    // grant waits for it.
+    let mut robot = world.raw("robot", Role::Embodiment).await;
+    let keys = world.host.keys().participant_keys(&robot_id());
+    let deliveries = robot
+        .transport
+        .control()
+        .declare_subscriber(keys.clone())
+        .await
+        .expect("subscribe");
+    let declare = Command::DeclareParts {
+        spec_version: rlmesh_session::wire::version::SPEC_VERSION,
+        robot_json: raw_camera(),
+        seal: Vec::new(),
+    };
+    robot.call(2, declare).await.result.expect("declared");
+    let mut config = world.config("policy", vec![Role::Controller], PriorityClass::Model, 0);
+    config.ctl_timeout = Duration::from_millis(300);
+    let policy = Participant::attach(world.transport().await, config)
+        .await
+        .expect("attach");
+    let view = policy
+        .wait_for("the robot's parts", WAIT, |s| {
+            s.part_at(&robot_id(), "arm").is_some()
+        })
+        .await
+        .expect("parts");
+    let arm = view.part_at(&robot_id(), "arm").expect("arm").channel;
+    policy
+        .declare_binding(fingerprint_of(&policy, 0), "{}", vec![arm], 0.0)
+        .await
+        .expect("bind");
+    arm_seen_by(&policy, &[]).await;
+
+    let err = policy.grant_lease(arm, None).await.expect_err("not yet");
+    let SessionError::Pending { pending, .. } = err else {
+        panic!("expected a pending request, got {err}");
+    };
+    // The robot acknowledges: the grant commits, and the retry takes the
+    // cached reply, keys and all.
+    let reply = tokio::spawn(pending.reply());
+    let mut request_id = 3;
+    while !reply.is_finished() {
+        let Ok(Ok(delivery)) =
+            tokio::time::timeout(Duration::from_millis(50), deliveries.recv_async()).await
+        else {
+            continue;
+        };
+        let mut bytes = delivery.payload().to_bytes().into_owned();
+        let ack = robot.link.keys(&keys, &mut bytes, 0).expect("a delivery");
+        robot.call(request_id, Command::KeysAck(ack)).await;
+        request_id += 1;
+    }
+    let reply = reply.await.expect("task").expect("answered");
+    reply.result.expect("granted");
+    assert!(!reply.keys.is_empty());
+    let chunks = policy
+        .chunk_publisher(&reply.leases[0])
+        .await
+        .expect("publisher");
+    let now = policy.session_now_ns();
+    chunks
+        .send(ChunkDraft {
+            t0_ns: now,
+            replace_from_ns: now,
+            valid_until_ns: now + 50_000_000,
+            actions: Bytes::from(vec![0_u8; 24]),
+            ..ChunkDraft::default()
+        })
+        .expect("sealed under the delivered k_cmd");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1675,18 +1838,20 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
         .binding(policy.id())
         .expect("its binding")
         .fingerprint;
-    let granted = restarted
-        .call(
-            2,
-            Command::GrantLease {
-                channels: vec![arm],
-                release: Vec::new(),
-                binding,
-                ttl_ns: Some(30_000_000_000),
-            },
-        )
-        .await;
+    let grant = Command::GrantLease {
+        channels: vec![arm],
+        release: Vec::new(),
+        binding,
+        ttl_ns: Some(30_000_000_000),
+    };
+    // The grant's reply is lost: its retry gets the cached reply, keys
+    // included, and the lease is usable.
+    let first = restarted.seal(2, grant.clone());
+    let _lost = ask(&restarted.transport, &restarted.ctl, Some(first)).await;
+    let granted = restarted.call(2, grant).await;
     granted.result.expect("granted");
+    assert!(!granted.keys.is_empty());
+    assert!(restarted.link.keyring().holds(granted.leases[0].key_id));
     assert_eq!(granted.state.mode, Mode::Active);
     let mut robot = world
         .handshake("robot", &world.host.credential())

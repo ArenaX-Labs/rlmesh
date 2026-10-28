@@ -27,7 +27,10 @@ pub use handshake::{HandshakeError, HostKeys, IkInitiator, IkResponder, Particip
 pub use lp::{LpTooLong, lp};
 pub use pairing::{PairLink, PairingError, Sas};
 pub use replay::ReplayWindow;
-pub use sealed::{Kind, KindSet, OpenError, Opened, SealError, SealReceiver, SealSender, Security};
+pub use sealed::{
+    Kind, KindSet, OpenError, Opened, Opening, SealError, SealReceiver, SealSender, Sealing,
+    Security,
+};
 pub use signed::{SignError, SignedError, SignedKind, SignedReceiver, SignedSender};
 
 /// A source of cryptographic randomness, implemented by the caller: the OS

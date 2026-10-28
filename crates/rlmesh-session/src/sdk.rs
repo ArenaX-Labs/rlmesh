@@ -40,7 +40,9 @@ impl ErrorKind {
             SessionError::Rejected(refusal) | SessionError::Unverified(refusal) => {
                 Self::Refused(status_name(refusal.status))
             }
-            SessionError::NoReply(_) | SessionError::Timeout(..) => Self::Timeout,
+            SessionError::NoReply(_) | SessionError::Pending { .. } | SessionError::Timeout(..) => {
+                Self::Timeout
+            }
             SessionError::InvalidValue { .. }
             | SessionError::UnknownPart(_)
             | SessionError::WrongChannel { .. } => Self::Value,

@@ -21,12 +21,19 @@
 //!   keys and forwarded, and the host's echoes come back opened. The host therefore renews leases only while
 //!   the browser itself is alive, maps the browser's clock (not the
 //!   gateway's), and lapses the lease when the browser stops.
-//! - **Chunks are the browser's own**, forwarded as sent to the part's
-//!   command key on its class; the edge fences them. The gateway refuses a
-//!   chunk that names another source or a part that is not commandable, and
-//!   reports (but still forwards) one the current snapshot would fence.
-//! - Samples are forwarded as their publisher sent them: the gateway
-//!   subscribes on the stream's class and prepends the subscription id.
+//! - **Chunks are the browser's own**, sealed under the browser
+//!   participant's `k_cmd` (the gateway holds the lease's keys for it) and
+//!   forwarded to the part's command key on its class; the edge fences them.
+//!   The gateway refuses a chunk that names another source or a part that is
+//!   not commandable, and reports (but still forwards) one the current
+//!   snapshot would fence.
+//! - Samples are opened under the gateway observer's stream keys and
+//!   forwarded as plain samples: the gateway subscribes on the stream's
+//!   class and prepends the subscription id.
+//!
+//! TODO: the gateway's participants hold the browsers' keys and seal and
+//! open for them; one credential per browser token (step 13) moves them
+//! into the browser.
 //!
 //! Dropping a link drops its participant: its heartbeats stop, so the host
 //! ends its leases (the edge holds, then goes safe) and nothing is
@@ -41,8 +48,9 @@ use std::time::Duration;
 use crate::transport::{TrafficClass, payload_bytes, stream_qos};
 use crate::wire::codec;
 use crate::wire::{
-    AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
-    Fingerprint, PartSpec, ParticipantId, PriorityClass, Role, SessionId, SessionKeys, TenantId,
+    ActionChunk, AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply,
+    CtlStatus, Fingerprint, PartSpec, ParticipantId, PriorityClass, Role, SessionId, SessionKeys,
+    TenantId,
 };
 use crate::{MonotonicClock, Participant, ParticipantConfig, SessionError, Transport};
 use bytes::Bytes;
@@ -52,7 +60,6 @@ use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use zenoh::Wait;
-use zenoh::bytes::ZBytes;
 
 use crate::gateway::frame;
 
@@ -251,14 +258,25 @@ impl Gateway {
         }
         let counters = usize::from(socket == "bulk");
         let gw = Arc::downgrade(self);
+        let key = self.keys.data(&robot, &spec.path);
+        let sealer = self.observer.sealer();
+        let (applied, channel) = (spec.applied, spec.channel);
+        let windows = std::sync::Mutex::default();
         let subscriber = self
             .transport
             .for_priority(spec.priority)
-            .declare_subscriber(self.keys.data(&robot, &spec.path))
+            .declare_subscriber(key.clone())
             .callback(move |sample| {
-                // One copy, into the WebSocket message; the bytes are the
-                // publisher's.
-                let body = payload_bytes(sample.payload());
+                let bytes = sample.payload().to_bytes().into_owned();
+                // The body as its robot encoded it.
+                let opened = sealer.open_stream(&key, bytes, &robot, channel, applied, &windows);
+                let body = match opened {
+                    Ok((_, body, _)) => body,
+                    Err(err) => {
+                        debug!(%err, "sample dropped");
+                        return;
+                    }
+                };
                 let ok = sink.try_send(Bytes::from(frame::sample(id, &body))).is_ok();
                 if let Some(gw) = gw.upgrade() {
                     let c = &gw.data[counters];
@@ -511,7 +529,7 @@ impl BrowserLink {
         let verdict = view
             .check_fence(chunk.channel, chunk.lease_token, chunk.epoch)
             .err();
-        if let Err(err) = self.publish_chunk(part, &view, body).await {
+        if let Err(err) = self.publish_chunk(part, &view, &chunk).await {
             return Some(report("error", format!("chunk: {err}")));
         }
         verdict.map(|fence| {
@@ -532,8 +550,13 @@ impl BrowserLink {
         &self,
         part: &PartSpec,
         view: &AuthoritySnapshot,
-        body: Bytes,
+        chunk: &ActionChunk,
     ) -> Result<(), SessionError> {
+        let key = self.gw.keys.commands(&part.owner, part.path.as_str());
+        let sealed = self
+            .participant
+            .sealer()
+            .seal_chunk(&key, &part.owner, chunk)?;
         let mut chunks = self.chunks.lock().await;
         let publisher = match chunks.entry(part.channel) {
             Entry::Occupied(e) => e.into_mut(),
@@ -547,7 +570,7 @@ impl BrowserLink {
                     .gw
                     .transport
                     .session(TrafficClass::of(part.priority))
-                    .declare_publisher(self.gw.keys.commands(&part.owner, part.path.as_str()))
+                    .declare_publisher(key)
                     .priority(qos.priority)
                     .reliability(qos.reliability)
                     .congestion_control(qos.congestion)
@@ -556,7 +579,7 @@ impl BrowserLink {
                 e.insert(publisher)
             }
         };
-        publisher.put(ZBytes::from(body)).wait()?;
+        publisher.put(sealed).wait()?;
         Ok(())
     }
 
@@ -616,6 +639,7 @@ impl BrowserLink {
             result,
             state,
             leases,
+            keys: Vec::new(),
         };
         Outbound::Binary(Bytes::from(frame::with_id(
             frame::REPLY,

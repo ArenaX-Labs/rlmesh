@@ -444,6 +444,7 @@ impl GymView {
             seeds: seed.into_iter().collect(),
             options_json: options_json.to_string(),
             episode_ids: Vec::new(),
+            lease_token: LeaseToken(self.token.load(Ordering::Acquire)),
         };
         let reply = self.link.call(Request::Reset(reset), None).await?;
         let step = self.step.load(Ordering::Acquire);

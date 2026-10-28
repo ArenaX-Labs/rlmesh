@@ -105,6 +105,7 @@ impl World {
             Command::DeclareParts {
                 spec_version: SPEC_VERSION,
                 robot_json: ROBOT.into(),
+                seal: Vec::new(),
             },
         )
         .expect("declare");
