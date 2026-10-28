@@ -8,8 +8,8 @@
 
 #include <sdkconfig.h>
 
-#if !defined(CONFIG_IDF_TARGET_ESP32)
-#error "RLMeshESP32 runs on the classic ESP32 (ESP32-WROOM-32) so far"
+#if !defined(CONFIG_IDF_TARGET_ESP32) && !defined(CONFIG_IDF_TARGET_ESP32C6)
+#error "RLMeshESP32 runs on the classic ESP32 (ESP32-WROOM-32) and the ESP32-C6 so far"
 #endif
 
 #include "rlmesh_device.h"

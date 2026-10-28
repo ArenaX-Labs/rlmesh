@@ -15,25 +15,31 @@ For a board without a network (a Nano, Uno or UNO R4 on a USB cable), see
 
 ## Boards
 
-The classic ESP32 (ESP32-WROOM-32), on the Espressif Arduino core 3.x.
-Any other board fails to build. The ESP32-S3 and the RISC-V parts (C3, C6)
-need their own build of the library.
+On the Espressif Arduino core 3.x:
+
+| Board                                  | Rust toolchain                            |
+| -------------------------------------- | ----------------------------------------- |
+| ESP32-C6 (RISC-V)                      | Upstream stable. CI checks that it builds |
+| Classic ESP32 (ESP32-WROOM-32, Xtensa) | Espressif's fork. Built locally only      |
+
+Any other board fails to build. The ESP32-C3 lacks the atomics the core needs. The ESP32-S3 would need its own build.
 
 ## Building
 
-The precompiled library isn't checked in. Building it needs Espressif's
-Rust toolchain (`espup install`), a nightly toolchain
-(`rustup toolchain install nightly`) and the `esp32:esp32` Arduino core
-(for its binutils). The task stages the library into `src/`:
+The precompiled library isn't checked in. `mise run build:esp32` builds
+it for each board and stages it into `src/`. It needs the `esp32:esp32`
+Arduino core for that core's binutils. The classic ESP32 also needs
+Espressif's Rust toolchain (`espup install`) and a nightly toolchain
+(`rustup toolchain install nightly`); without them it's skipped.
 
 ```sh
 mise run build:esp32
 ```
 
 It also compiles each example with `arduino-cli` when that's available
-(pass `ARDUINO_CLI` for a binary off `PATH`). The library keeps the
-firmware's own `memcpy`, `memset` and math in IRAM: the task fails if the
-archive exports any C name but its own.
+(pass `ARDUINO_CLI` for a binary off `PATH`). The firmware keeps its own
+`memcpy`, `memset` and math in IRAM or ROM. The task fails if the archive
+exports any C name but its own, or if the linked `memcpy` runs from flash.
 
 ## Timing
 
@@ -53,7 +59,7 @@ a core. Flash it, and open the Serial Monitor at 115200.
 
 - **Randomness.** The ESP32's hardware RNG is cryptographic only with the
   radio on. Start Wi-Fi before anything draws keys.
-- **Flash.** The crypto adds about 205 KB to a Wi-Fi sketch. With the
+- **Flash.** The crypto adds about 205 KB to a Wi-Fi sketch (189 KB on the C6). With the
   default partition table that leaves little room. Choose a larger app
   partition (Tools → Partition Scheme, such as "Huge APP").
 - **Panics.** A fault in the Rust core calls `abort()`, so the board

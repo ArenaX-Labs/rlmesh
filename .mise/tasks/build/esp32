@@ -1,86 +1,108 @@
 #!/usr/bin/env bash
-#MISE description="Build the ESP32 device runtime (crates/rlmesh-device) for xtensa-esp32-none-elf with the esp toolchain, stage it into the Arduino library (integrations/esp32) and compile the library's examples with arduino-cli when the esp32 core is installed"
+#MISE description="Build the device runtime (crates/rlmesh-device) for each ESP32 the Arduino library supports (the C6 on stable Rust; the classic ESP32 with Espressif's Rust fork, when installed), stage it into integrations/esp32 and compile the library's examples with arduino-cli when the esp32 core is installed"
 #MISE dir="{{ config_root }}"
-# Local only: Xtensa needs Espressif's Rust fork (`espup install`), which CI
-# doesn't have. ARDUINO_CLI names an arduino-cli binary off PATH.
+# Local only: CI has neither the esp32 Arduino core (its binutils) nor
+# Espressif's fork. ARDUINO_CLI names an arduino-cli binary off PATH.
 set -euo pipefail
 
-target=xtensa-esp32-none-elf
 lib=integrations/esp32
+target_dir="${CARGO_TARGET_DIR:-target}"
+tools="$HOME/.arduino15/packages/esp32/tools"
+cli="${ARDUINO_CLI:-arduino-cli}"
+have_cli=false
+if "$cli" version >/dev/null 2>&1; then have_cli=true; fi
+mkdir -p "$target_dir/esp32"
+cp crates/rlmesh-device/include/rlmesh_device.h "$lib/src/"
+
+# One chip: build the archive, keep only the ABI's C names global, stage it
+# under the chip's `build.mcu`, and compile the examples.
+#   $1 mcu   $2 rust target   $3 binutils prefix   $4 esp32 tools dir
+#   $5 fqbn  $6..7 the chip's flash-mapped code range (hex, lowercase)
+# Then the cargo command, after `--`.
+chip() {
+  local mcu="$1" target="$2" prefix="$3" bin="$4" fqbn="$5" flash_lo="$6" flash_hi="$7"
+  shift 8
+  echo "==> rlmesh-device for $target ($mcu)"
+  "$@" -p rlmesh-device --no-default-features --profile device --target "$target"
+  local built="$target_dir/$target/device/librlmesh_device.a"
+
+  # The core library's compiler_builtins carries weak memcpy, memset,
+  # strlen, libm and libgcc helpers, which would replace the firmware's for
+  # the whole image: ESP-IDF keeps its own in IRAM or ROM, for code that
+  # runs with the flash cache off. Every C-level name but the ABI's is made
+  # local to the archive, so the Rust code links against the firmware's.
+  local nm objcopy
+  nm="$(ls "$tools/$bin"/*/bin/"$prefix"nm 2>/dev/null | tail -1)"
+  objcopy="$(ls "$tools/$bin"/*/bin/"$prefix"objcopy 2>/dev/null | tail -1)"
+  if [ -z "$nm" ] || [ -z "$objcopy" ]; then
+    echo "no ${prefix}nm or ${prefix}objcopy: install the esp32:esp32 Arduino core" >&2
+    exit 1
+  fi
+  c_names() { "$nm" -g --defined-only "$1" 2>/dev/null | awk 'NF == 3 { print $3 }' | grep -v '^_R\|^_ZN\|^rlmesh_device_' | sort -u || true; }
+  local names="$target_dir/$target/device/c-names.txt"
+  local staged="$lib/src/$mcu/librlmesh_device.a"
+  c_names "$built" >"$names"
+  mkdir -p "$lib/src/$mcu"
+  "$objcopy" --localize-symbols="$names" "$built" "$staged"
+  local leaked
+  leaked="$(c_names "$staged")"
+  if [ -n "$leaked" ]; then
+    echo "$staged still exports: $(echo "$leaked" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+
+  if ! $have_cli || ! "$cli" board details -b "$fqbn" >/dev/null 2>&1; then
+    echo "==> sketch compile skipped for $fqbn (arduino-cli or its esp32 core not found)"
+    return
+  fi
+  local example name out log
+  for example in "$lib"/examples/*/; do
+    name="$(basename "$example")"
+    out="$target_dir/esp32/$mcu-$name"
+    log="$out.log"
+    echo "==> arduino-cli: examples/$name for $fqbn"
+    # The core warns about its own code: the log is shown only on failure.
+    if ! "$cli" compile --fqbn "$fqbn" --library "$lib" --warnings all \
+      --build-path "$out" "$example" >"$log" 2>&1; then
+      cat "$log" >&2
+      exit 1
+    fi
+    if grep -nE "$lib/(src|examples)/.*warning" "$log"; then
+      echo "the library warns on $fqbn" >&2
+      exit 1
+    fi
+    grep -E '^(Sketch uses|Global variables)' "$log" || true
+    # The firmware's own memcpy (IRAM or ROM), not one in flash.
+    if ! "$nm" "$out/$name.ino.elf" | awk -v lo="$flash_lo" -v hi="$flash_hi" \
+      '$3 == "memcpy" && !($1 >= lo && $1 < hi) { ok = 1 } END { exit !ok }'; then
+      echo "memcpy in $name for $mcu runs from flash, not ESP-IDF's IRAM or ROM copy" >&2
+      exit 1
+    fi
+  done
+}
+
+# ESP32-C6 (RISC-V, with atomics): upstream stable Rust, prebuilt core.
+toolchain="$(mise current rust)"
+rustup target list --installed --toolchain "$toolchain" | grep -qx riscv32imac-unknown-none-elf ||
+  rustup target add --toolchain "$toolchain" riscv32imac-unknown-none-elf
+chip esp32c6 riscv32imac-unknown-none-elf riscv32-esp-elf- esp-rv32 esp32:esp32:esp32c6 \
+  42000000 42800000 -- cargo build
+
+# The classic ESP32 (Xtensa): Espressif's rustc under a nightly cargo, since
+# the workspace's manifests need a newer cargo than the fork ships and
+# -Zbuild-std a nightly one. The fork trails the workspace's MSRV, hence
+# --ignore-rust-version.
 export_esp="${ESP_EXPORT:-$HOME/export-esp.sh}"
-if [ ! -f "$export_esp" ]; then
-  echo "no $export_esp: install the esp toolchain with \`espup install\` (or set ESP_EXPORT)" >&2
+if [ ! -f "$export_esp" ] || ! rustup which --toolchain esp rustc >/dev/null 2>&1; then
+  echo "==> classic ESP32 skipped: no esp toolchain (\`espup install\`, or set ESP_EXPORT)"
+  exit 0
+fi
+if ! rustup which --toolchain nightly cargo >/dev/null 2>&1; then
+  echo "no nightly toolchain for the classic ESP32: \`rustup toolchain install nightly\`" >&2
   exit 1
 fi
 # shellcheck disable=SC1090
 . "$export_esp"
-
-# The esp toolchain's rustc under a nightly cargo: the workspace's manifests
-# need a newer cargo than the fork ships, and -Zbuild-std a nightly one. The
-# fork trails the workspace's MSRV, hence --ignore-rust-version.
-esp_rustc="$(rustup which --toolchain esp rustc)"
-if ! rustup which --toolchain nightly cargo >/dev/null 2>&1; then
-  echo "no nightly toolchain: \`rustup toolchain install nightly\`" >&2
-  exit 1
-fi
-echo "==> rlmesh-device for $target ($("$esp_rustc" --version), $(cargo +nightly --version))"
-RUSTC="$esp_rustc" cargo +nightly build --ignore-rust-version -p rlmesh-device \
-  --no-default-features --profile device --target "$target" -Zbuild-std=core,alloc
-built="${CARGO_TARGET_DIR:-target}/$target/device/librlmesh_device.a"
-
-# -Zbuild-std links compiler_builtins, whose weak memcpy, memset, strlen,
-# libm and libgcc helpers would replace the firmware's for the whole image:
-# ESP-IDF keeps its own in IRAM, for code that runs with the flash cache
-# off. Every C-level name but the ABI's is made local to the archive, so
-# the Rust code links against the firmware's instead.
-tools="$(ls -d "$HOME"/.arduino15/packages/esp32/tools/esp-x32/*/bin 2>/dev/null | tail -1)"
-PATH="${tools:+$tools:}$PATH"
-nm=xtensa-esp32-elf-nm
-objcopy=xtensa-esp32-elf-objcopy
-if ! command -v "$nm" >/dev/null || ! command -v "$objcopy" >/dev/null; then
-  echo "no $nm or $objcopy: install the esp32:esp32 Arduino core" >&2
-  exit 1
-fi
-c_names() { "$nm" -g --defined-only "$1" 2>/dev/null | awk 'NF == 3 { print $3 }' | grep -v '^_R\|^_ZN\|^rlmesh_device_' | sort -u || true; }
-mkdir -p "$lib/src/esp32"
-staged="$lib/src/esp32/librlmesh_device.a"
-names="${CARGO_TARGET_DIR:-target}/$target/device/c-names.txt"
-c_names "$built" >"$names"
-"$objcopy" --localize-symbols="$names" "$built" "$staged"
-leaked="$(c_names "$staged")"
-if [ -n "$leaked" ]; then
-  echo "librlmesh_device.a still exports: $(echo "$leaked" | tr '\n' ' ')" >&2
-  exit 1
-fi
-cp crates/rlmesh-device/include/rlmesh_device.h "$lib/src/"
-
-cli="${ARDUINO_CLI:-arduino-cli}"
-fqbn=esp32:esp32:esp32
-if ! "$cli" version >/dev/null 2>&1 || ! "$cli" board details -b "$fqbn" >/dev/null 2>&1; then
-  echo "==> sketch compile skipped (arduino-cli or its esp32 core not found)"
-  exit 0
-fi
-out="target/esp32"
-mkdir -p "$out"
-for example in "$lib"/examples/*/; do
-  name="$(basename "$example")"
-  echo "==> arduino-cli: examples/$name for $fqbn"
-  # The core warns about its own code: the log is shown only on failure.
-  log="$out/$name.log"
-  if ! "$cli" compile --fqbn "$fqbn" --library "$lib" --warnings all \
-    --build-path "$out/$name" "$example" >"$log" 2>&1; then
-    cat "$log" >&2
-    exit 1
-  fi
-  if grep -nE "$lib/(src|examples)/.*warning" "$log"; then
-    echo "the library warns on $fqbn" >&2
-    exit 1
-  fi
-  grep -E '^(Sketch uses|Global variables)' "$log" || true
-  # The firmware's own memcpy, in IRAM (0x40080000..0x400A0000), not one
-  # from the archive.
-  if ! "$nm" "$out/$name/$name.ino.elf" | awk '$3 == "memcpy" && $1 >= "40080000" && $1 < "400a0000" { ok = 1 } END { exit !ok }'; then
-    echo "memcpy isn't ESP-IDF's IRAM copy in $name" >&2
-    exit 1
-  fi
-done
+chip esp32 xtensa-esp32-none-elf xtensa-esp32-elf- esp-x32 esp32:esp32:esp32 \
+  400d0000 40400000 -- env RUSTC="$(rustup which --toolchain esp rustc)" \
+  cargo +nightly build --ignore-rust-version -Zbuild-std=core,alloc
