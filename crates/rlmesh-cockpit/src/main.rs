@@ -35,6 +35,10 @@ struct Args {
     /// --record-dir`), for Keep; the host's default when absent.
     #[arg(long, value_name = "DIR")]
     record_dir: Option<PathBuf>,
+    /// The dataset episodes are collected into (`collected/{dataset}/`
+    /// under the recordings directory).
+    #[arg(long, default_value = "default")]
+    dataset: String,
 }
 
 fn main() -> ExitCode {
@@ -74,7 +78,7 @@ fn replay(args: &Args, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     eframe::run_native(
         "rlmesh-cockpit",
         options(format!("RLMesh cockpit · {}", path.display())),
-        Box::new(|_| Ok(Box::new(CockpitApp::replay(replay)))),
+        Box::new(|_| Ok(Box::new(CockpitApp::replay(replay, path.to_path_buf())))),
     )?;
     Ok(())
 }
@@ -106,6 +110,7 @@ fn run(args: &Args, address: &SessionAddress) -> Result<(), Box<dyn std::error::
                 feed,
                 Model::new(me, ModelConfig::default()),
                 recordings.map(Rolling::new),
+                args.dataset.clone(),
             )))
         }),
     )?;

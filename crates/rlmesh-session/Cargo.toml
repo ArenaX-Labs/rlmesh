@@ -85,7 +85,7 @@ gateway = [
   "tokio/net",
 ]
 # MCAP recording of a session (`record`).
-record = ["dep:dirs", "dep:mcap"]
+record = ["dep:dirs", "dep:mcap", "dep:serde_json"]
 # QUIC links (one stream per Zenoh priority, so one connection can carry
 # every class across NAT); needs TLS certificates.
 quic = ["zenoh/transport_quic"]

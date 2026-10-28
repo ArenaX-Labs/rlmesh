@@ -1101,6 +1101,15 @@ class V2Recorder:
         `publish_time_monotonic`, `undecodable`) and `leases` (the lease
         timeline: `log_ns`, `part`, `holder`, `priority`, `token`).
         """
+    @staticmethod
+    def samples(path: builtins.str) -> builtins.list[tuple[builtins.str, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]]:
+        r"""
+        Every sample of a recording (an MCAP file, or a directory of them)
+        split into its declared fields, in log-time order: `(topic, log_ns,
+        fields)`, each field `(name, dtype, shape, bytes)`. Topics are
+        `{robot}/{path}` and `{robot}/{path}/_applied`; camera frames come
+        as raw RGB.
+        """
 
 @typing.final
 class V2Robot:

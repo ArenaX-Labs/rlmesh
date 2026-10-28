@@ -50,8 +50,8 @@ use std::time::Duration;
 use crate::transport::{TrafficClass, payload_bytes};
 use crate::wire::codec::{self, schema};
 use crate::wire::{
-    ActionChunk, AuthoritySnapshot, ChannelId, Fingerprint, Health, Heartbeat, Mode, PartSpec,
-    ParticipantId, ParticipantReport, Sample, SessionId, StreamSpec,
+    ActionChunk, AuthoritySnapshot, ChannelId, DType, Encoding, Fingerprint, Health, Heartbeat,
+    Mode, PartSpec, ParticipantId, ParticipantReport, Sample, SessionId, StreamSpec,
 };
 use crate::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use bytes::Bytes;
@@ -1117,8 +1117,72 @@ impl RollingSink {
 // carry Keep (and episode marks) on the wire once the spec's Mark message
 // is built.
 pub fn keep(rolling: &Rolling, session: SessionId, label: &str) -> Result<PathBuf, RecordError> {
-    let label: String = label
-        .chars()
+    let now = std::time::SystemTime::now();
+    let since = now.checked_sub(rolling.incident_before).unwrap_or(now);
+    let dir = rolling
+        .dir
+        .join("incidents")
+        .join(session.to_string())
+        .join(format!("{}-{}", unix_ms(now), file_name(label)));
+    link_since(rolling, session, since, &dir)?;
+    Ok(dir)
+}
+
+/// A collected episode's outcome, written beside its segments as
+/// `episode.json` (`task`, `start_ns`, `end_ns`, `success`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Episode {
+    /// What the operator was doing.
+    pub task: String,
+    /// When it started, session time (as recorded log times count it).
+    pub start_ns: i64,
+    /// When it ended.
+    pub end_ns: i64,
+    /// The operator's verdict, if given.
+    pub success: Option<bool>,
+}
+
+/// Collects `session`'s rolling segments written since `started` (wall
+/// clock) as an episode of `dataset`, in `collected/{dataset}/{unix_ms}/`
+/// with its `episode.json`. Nothing purges collected episodes; returns
+/// the directory.
+// TODO: an episode longer than the rolling budget (30 min or 20 GB) loses
+// its purged start; link segments as they open while an episode runs when
+// takes get that long.
+pub fn collect(
+    rolling: &Rolling,
+    session: SessionId,
+    dataset: &str,
+    episode: &Episode,
+    started: std::time::SystemTime,
+) -> Result<PathBuf, RecordError> {
+    let dir = rolling
+        .dir
+        .join("collected")
+        .join(file_name(dataset))
+        .join(unix_ms(started).to_string());
+    link_since(rolling, session, started, &dir)?;
+    let json = serde_json::json!({
+        "session": session.to_string(),
+        "task": episode.task,
+        "start_ns": episode.start_ns,
+        "end_ns": episode.end_ns,
+        "success": episode.success,
+    });
+    let path = dir.join("episode.json");
+    std::fs::write(&path, format!("{json:#}\n"))
+        .map_err(|source| RecordError::Io { path, source })?;
+    Ok(dir)
+}
+
+fn unix_ms(t: std::time::SystemTime) -> u128 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
+}
+
+/// `name` with anything but ASCII letters, digits and `-` replaced by `_`.
+fn file_name(name: &str) -> String {
+    name.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' {
                 c
@@ -1126,47 +1190,44 @@ pub fn keep(rolling: &Rolling, session: SessionId, label: &str) -> Result<PathBu
                 '_'
             }
         })
-        .collect();
-    let now = std::time::SystemTime::now();
-    let wall_ms = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis());
+        .collect()
+}
+
+/// Hard-links `session`'s rolling segments written since `since` into a
+/// new `dir`.
+fn link_since(
+    rolling: &Rolling,
+    session: SessionId,
+    since: std::time::SystemTime,
+    dir: &Path,
+) -> Result<(), RecordError> {
     let source = rolling.session_dir(session);
     let io = |path: &Path| {
         let path = path.to_path_buf();
         move |source| RecordError::Io { path, source }
     };
-    let mut recent: Vec<PathBuf> = std::fs::read_dir(&source)
+    let segments: Vec<PathBuf> = std::fs::read_dir(&source)
         .map_err(io(&source))?
         .flatten()
         .filter(|f| {
             f.path().extension().is_some_and(|e| e == "mcap")
                 && f.metadata()
                     .and_then(|m| m.modified())
-                    .is_ok_and(|modified| {
-                        now.duration_since(modified)
-                            .is_ok_and(|age| age <= rolling.incident_before)
-                    })
+                    .is_ok_and(|modified| modified >= since)
         })
         .map(|f| f.path())
         .collect();
-    if recent.is_empty() {
+    if segments.is_empty() {
         return Err(RecordError::Io {
             path: source,
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "no recent segments"),
         });
     }
-    recent.sort();
-    let dir = rolling
-        .dir
-        .join("incidents")
-        .join(session.to_string())
-        .join(format!("{wall_ms}-{label}"));
-    std::fs::create_dir_all(&dir).map_err(io(&dir))?;
-    for segment in &recent {
-        link_into(segment, &dir);
+    std::fs::create_dir_all(dir).map_err(io(dir))?;
+    for segment in &segments {
+        link_into(segment, dir);
     }
-    Ok(dir)
+    Ok(())
 }
 
 /// Hard-links `segment` into `dir` (copies it where links are refused).
@@ -1442,13 +1503,39 @@ pub struct RecordedMessage {
 }
 
 /// Every sample, chunk, authority snapshot, heartbeat and report of a
-/// recording, ordered by
+/// recording (one MCAP file, or a directory of them: rolling segments, an
+/// incident, an episode), ordered by
 /// log time (stable, so each channel keeps its recorded order). Binding
 /// records are skipped (the snapshots carry them), as are envelopes that do
 /// not decode ([`summarize`] counts those). A file cut short (the recorder
 /// crashed or lost power) yields what was written before the cut.
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordedMessage>, RecordError> {
-    let path = path.as_ref();
+    let mut out = Vec::new();
+    for file in mcap_files(path.as_ref())? {
+        out.extend(read_file(&file)?);
+    }
+    out.sort_by_key(|m| m.log_ns);
+    Ok(out)
+}
+
+/// `path` itself, or the `*.mcap` files in it, in name (opening) order.
+pub fn mcap_files(path: &Path) -> Result<Vec<PathBuf>, RecordError> {
+    if !path.is_dir() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+        .map_err(|source| RecordError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "mcap"))
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
+fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
     // TODO: reads the whole file into memory; stream it chunk by chunk when
     // recordings outgrow RAM (long camera sessions, rolling segments).
     let bytes = std::fs::read(path).map_err(|source| RecordError::Io {
@@ -1487,8 +1574,93 @@ pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordedMessage>, RecordError>
             });
         }
     }
-    out.sort_by_key(|m| m.log_ns);
     Ok(out)
+}
+
+/// One field of a [`DecodedSample`]: little-endian values, or UTF-8 text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Field {
+    /// Its declared name.
+    pub name: String,
+    /// Its element type.
+    pub dtype: DType,
+    /// Its shape (`[H, W, 3]` for a camera frame).
+    pub shape: Vec<u32>,
+    /// Its bytes.
+    pub bytes: Vec<u8>,
+}
+
+/// A recorded sample split into its declared fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedSample {
+    /// `{robot}/{path}`, or `{robot}/{path}/_applied` for what an edge
+    /// dispatched.
+    pub topic: String,
+    /// When the recorder received it (session time).
+    pub log_ns: i64,
+    /// Its fields, in declared order; a JPEG frame decoded to raw RGB.
+    pub fields: Vec<Field>,
+}
+
+/// Every sample of `messages` (as [`read`] returns them) split into its
+/// fields, through the parts the authority snapshots before it declare.
+/// A sample of a channel not declared yet, or that does not decode, is
+/// skipped.
+pub fn decode_samples(messages: &[RecordedMessage]) -> Vec<DecodedSample> {
+    let mut streams: BTreeMap<ChannelId, StreamSpec> = BTreeMap::new();
+    let mut out = Vec::new();
+    for m in messages {
+        let sample = match &m.message {
+            Recorded::Authority(snapshot) => {
+                for part in &snapshot.parts {
+                    for stream in [
+                        part.stream().ok(),
+                        part.applied_stream().and_then(Result::ok),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        streams.insert(stream.channel, stream);
+                    }
+                }
+                continue;
+            }
+            Recorded::Sample(sample) => sample,
+            _ => continue,
+        };
+        let Some(spec) = streams.get(&sample.channel) else {
+            continue;
+        };
+        let fields = if matches!(spec.encoding, Encoding::Jpeg { .. }) {
+            let Ok(rgb) = crate::media::decode_payload(spec, &sample.payload) else {
+                debug!(channel = %spec.channel, "undecodable frame");
+                continue;
+            };
+            vec![(0, rgb)]
+        } else {
+            match spec.layout.stride() {
+                None => vec![(0, sample.payload.to_vec())],
+                Some(stride) if stride == sample.payload.len() => (0..spec.fields.len())
+                    .filter_map(|i| Some((i, sample.payload.get(spec.layout.field(i)?)?.to_vec())))
+                    .collect(),
+                Some(_) => continue,
+            }
+        };
+        out.push(DecodedSample {
+            topic: format!("{}/{}", spec.owner, spec.path),
+            log_ns: m.log_ns,
+            fields: fields
+                .into_iter()
+                .map(|(i, bytes)| Field {
+                    name: spec.fields[i].name.clone(),
+                    dtype: spec.fields[i].dtype,
+                    shape: spec.fields[i].shape.clone(),
+                    bytes,
+                })
+                .collect(),
+        });
+    }
+    out
 }
 
 fn lease_changes(

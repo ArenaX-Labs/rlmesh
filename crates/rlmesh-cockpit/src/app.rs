@@ -4,25 +4,36 @@
 //!
 //! A live session can be paused: the cockpit replays its recent history
 //! ([`History`]) while the feed keeps draining underneath, and only the
-//! e-stop stays on. Keep asks the host's recorder, through this machine's
-//! recordings directory, to keep the last minutes as an incident.
+//! e-stop stays on. Keep and the episode controls work on the host's
+//! recording, through this machine's recordings directory: Keep keeps the
+//! last minutes as an incident, an episode is collected into
+//! `collected/{dataset}/` when the operator marks it a success or a
+//! failure.
 
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
-use rlmesh_session::record::{self, Rolling};
+use rlmesh_session::record::{self, Episode, Rolling};
 use rlmesh_session::wire::SessionId;
 
 use crate::feed::Feed;
 use crate::model::{Model, ModelConfig};
 use crate::replay::{History, Replay};
-use crate::ui::{self, LiveAction, UiState};
+use crate::ui::{self, LiveAction, LiveBar, UiState};
 
 /// How often the window repaints without new authority state.
 pub const REFRESH: Duration = Duration::from_millis(100);
 
 enum Source {
     Live(Box<Live>),
-    Replay { replay: Box<Replay>, last: Instant },
+    Replay {
+        replay: Box<Replay>,
+        last: Instant,
+        /// The recording's file or directory.
+        path: PathBuf,
+        /// Why Rerun did not open.
+        rerun_failed: Option<String>,
+    },
 }
 
 struct Live {
@@ -33,8 +44,11 @@ struct Live {
     paused: Option<(Replay, Instant)>,
     /// The host's recordings root, when it is on this machine.
     recordings: Option<Rolling>,
-    /// The last Keep's answer.
-    kept: Option<Result<String, String>>,
+    /// Where episodes are collected: `collected/{dataset}/`.
+    dataset: String,
+    bar: LiveBar,
+    /// The running episode: its start, wall clock and session time.
+    episode: Option<(SystemTime, i64)>,
 }
 
 impl Live {
@@ -57,8 +71,9 @@ pub struct CockpitApp {
 
 impl CockpitApp {
     /// A window over a live `feed`; `recordings` is the recordings root
-    /// the host records into, when it is on this machine (Keep).
-    pub fn new(feed: Feed, model: Model, recordings: Option<Rolling>) -> Self {
+    /// the host records into, when it is on this machine (Keep and
+    /// episodes, collected into `dataset`).
+    pub fn new(feed: Feed, model: Model, recordings: Option<Rolling>, dataset: String) -> Self {
         Self {
             source: Source::Live(Box::new(Live {
                 feed,
@@ -66,20 +81,24 @@ impl CockpitApp {
                 history: History::new(History::WINDOW, History::MAX_BYTES),
                 paused: None,
                 recordings,
-                kept: None,
+                dataset,
+                bar: LiveBar::default(),
+                episode: None,
             })),
             ui: UiState::default(),
         }
     }
 
-    /// A window over a recorded session.
-    pub fn replay(replay: Replay) -> Self {
+    /// A window over the session recorded at `path`.
+    pub fn replay(replay: Replay, path: PathBuf) -> Self {
         let mut ui = UiState::default();
         ui.replay = true;
         Self {
             source: Source::Replay {
                 replay: Box::new(replay),
                 last: Instant::now(),
+                path,
+                rerun_failed: None,
             },
             ui,
         }
@@ -98,13 +117,17 @@ impl eframe::App for CockpitApp {
         match &mut self.source {
             Source::Live(live) => {
                 live.feed.drain(&mut live.model, Some(&mut live.history));
-                let can_keep = live.session().is_some();
+                let now_ns = live.feed.now_ns();
+                live.bar.paused = live.paused.is_some();
+                live.bar.local = live.session().is_some();
+                live.bar.episode_s = live
+                    .episode
+                    .map(|(_, start)| (live.model.session_ns(now_ns) - start) as f64 * 1e-9);
                 let action = egui::Panel::top("cockpit_live")
                     .show(ui, |ui| {
-                        let action =
-                            ui::live_bar(ui, live.paused.is_some(), can_keep, live.kept.as_ref());
+                        let action = ui::live_bar(ui, &mut live.bar);
                         if let Some((replay, _)) = &mut live.paused {
-                            ui::replay_bar(ui, replay, "LAST MINUTE");
+                            ui::replay_bar(ui, replay, "LAST MINUTE", false);
                         }
                         action
                     })
@@ -118,11 +141,35 @@ impl eframe::App for CockpitApp {
                     }
                     Some(LiveAction::Resume) => live.paused = None,
                     Some(LiveAction::Keep) => {
-                        live.kept = live.session().map(|(session, rolling)| {
+                        live.bar.note = live.session().map(|(session, rolling)| {
                             record::keep(rolling, session, "keep")
-                                .map(|dir| dir.display().to_string())
-                                .map_err(|err| err.to_string())
+                                .map(|dir| format!("kept in {}", dir.display()))
+                                .map_err(|err| format!("not kept: {err}"))
                         });
+                    }
+                    Some(LiveAction::Start) => {
+                        live.episode = Some((SystemTime::now(), live.model.session_ns(now_ns)));
+                        live.bar.note = None;
+                    }
+                    Some(LiveAction::Finish { success }) => {
+                        let started = live.episode.take();
+                        live.bar.note = live.session().zip(started).map(
+                            |((session, rolling), (wall, start_ns))| {
+                                let episode = Episode {
+                                    task: live.bar.task.clone(),
+                                    start_ns,
+                                    end_ns: live.model.session_ns(now_ns),
+                                    success: Some(success),
+                                };
+                                record::collect(rolling, session, &live.dataset, &episode, wall)
+                                    .map(|dir| format!("episode in {}", dir.display()))
+                                    .map_err(|err| format!("episode not collected: {err}"))
+                            },
+                        );
+                    }
+                    Some(LiveAction::Discard) => {
+                        live.episode = None;
+                        live.bar.note = Some(Ok("episode discarded".into()));
                     }
                     None => {}
                 }
@@ -135,17 +182,28 @@ impl eframe::App for CockpitApp {
                         }
                         replay.model().view(replay.at_ns())
                     }
-                    None => live.model.view(live.feed.now_ns()),
+                    None => live.model.view(now_ns),
                 };
                 for verb in ui::show(ui, &view, &mut self.ui) {
                     live.feed.send(verb);
                 }
                 ui.ctx().request_repaint_after(REFRESH);
             }
-            Source::Replay { replay, last } => {
+            Source::Replay {
+                replay,
+                last,
+                path,
+                rerun_failed,
+            } => {
                 tick(replay, last);
-                egui::Panel::top("cockpit_replay")
-                    .show(ui, |ui| ui::replay_bar(ui, replay, "REPLAY"));
+                egui::Panel::top("cockpit_replay").show(ui, |ui| {
+                    if ui::replay_bar(ui, replay, "REPLAY", true) {
+                        *rerun_failed = open_in_rerun(path).err();
+                    }
+                    if let Some(why) = rerun_failed {
+                        ui.label(why.as_str());
+                    }
+                });
                 let view = replay.model().view(replay.at_ns());
                 ui::show(ui, &view, &mut self.ui);
                 if replay.playing {
@@ -154,4 +212,15 @@ impl eframe::App for CockpitApp {
             }
         }
     }
+}
+
+/// Opens the MCAP files at `path` in the Rerun viewer, which decodes their
+/// protobuf envelopes itself.
+fn open_in_rerun(path: &Path) -> Result<(), String> {
+    let files = record::mcap_files(path).map_err(|err| err.to_string())?;
+    std::process::Command::new("rerun")
+        .args(files)
+        .spawn()
+        .map(drop)
+        .map_err(|err| format!("could not start rerun: {err}"))
 }

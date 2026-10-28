@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rlmesh_session::edge::{EdgeConfig, Robot};
-use rlmesh_session::record::{Recorded, Recorder, Rolling, keep, read, summarize};
+use rlmesh_session::record::{
+    Episode, Recorded, Recorder, Rolling, collect, decode_samples, keep, read, summarize,
+};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
@@ -339,7 +341,8 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn rolling_capture_keeps_to_its_budget_and_incidents_and_pauses_below_the_free_space_floor() {
+async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_below_the_free_space_floor()
+ {
     let world = World::start().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let mut rolling = Rolling::new(dir.path());
@@ -356,8 +359,17 @@ async fn rolling_capture_keeps_to_its_budget_and_incidents_and_pauses_below_the_
         .join("robot", Role::Embodiment, PriorityClass::Scripted)
         .await;
     robot.declare_parts(FT).await.expect("declare");
+    let started = std::time::SystemTime::now();
     publish_ft(&robot, 500).await;
     let kept = keep(&rolling, world.session, "keep").expect("kept on request");
+    let episode = Episode {
+        task: "hold".into(),
+        start_ns: 0,
+        end_ns: 1,
+        success: Some(true),
+    };
+    let collected =
+        collect(&rolling, world.session, "test set", &episode, started).expect("collected");
     robot.estop("test").await.expect("estop");
     publish_ft(&robot, 500).await;
     let stats = recorder.finish().await.expect("finish");
@@ -385,6 +397,22 @@ async fn rolling_capture_keeps_to_its_budget_and_incidents_and_pauses_below_the_
             .iter()
             .any(|m| matches!(m.message, Recorded::Heartbeat(_)))
     );
+
+    // The episode keeps its segments, decoded into the declared fields.
+    assert!(collected.starts_with(dir.path().join("collected").join("test_set")));
+    let json = std::fs::read_to_string(collected.join("episode.json")).expect("episode.json");
+    assert!(json.contains(r#""task": "hold""#), "{json}");
+    let samples = decode_samples(&read(&collected).expect("read the episode"));
+    let ft = samples
+        .iter()
+        .find(|s| s.topic == "robot/ft")
+        .expect("ft samples");
+    let fields: Vec<_> = ft
+        .fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.bytes.len()))
+        .collect();
+    assert_eq!(fields, [("force", 12), ("torque", 12)]);
 
     // A disk below the floor gets nothing written.
     let full = tempfile::tempdir().expect("tempdir");

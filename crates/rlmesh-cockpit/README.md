@@ -37,6 +37,18 @@ The same views over a recorded session, with play/pause, speed, previous/next me
 
 `rlmesh host` keeps an incident by itself on an e-stop, safe mode, a lease preemption or 5 missed edge deadlines within 10 s: the 2 minutes before and 30 s after, under `incidents/SESSION/UNIXMS-LABEL/`, for 14 days or 10 GB in all.
 
+## Collect a dataset
+
+With the host on this machine, the live bar collects episodes: type the task, **Start episode**, then **Success**, **Fail** or **Discard** (a bad take, dropped). A success or a failure links the host's recording of the take into `collected/DATASET/UNIXMS/` with an `episode.json` (`--dataset`, default `default`); nothing purges it. Export the takes as a LeRobot dataset through the `lerobot` package (`pip install 'lerobot[dataset]'`); failed takes are left out unless `--include-failed`:
+
+```sh
+python -m rlmesh.v2.lerobot ~/.local/share/rlmesh/recordings/collected/default ./ur10e-sweeps --repo-id me/ur10e-sweeps --fps 30
+```
+
+Each frame holds the newest sample of every stream at its time: `observation.state` is every numeric stream (`--state TOPIC...` to choose), `action` every `_applied` stream (what the edges dispatched) and `observation.images.PATH` every camera, as video.
+
+A replay of a file or directory also offers **Open in Rerun** (`rerun` on the PATH), which decodes the recording's protobuf envelopes for a deeper look.
+
 ## What it shows
 
 - **Live channels** (left): the robot path tree, each part's kind, latest value (numbers with a 10 s plot, or a camera thumbnail), age since capture and seq gaps. Commandable parts list their `_applied` stream: what the edge dispatched on each tick.

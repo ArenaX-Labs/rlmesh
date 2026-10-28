@@ -145,26 +145,47 @@ pub enum LiveAction {
     Resume,
     /// Keep the host's recent recording as an incident.
     Keep,
+    /// Start an episode of [`LiveBar::task`].
+    Start,
+    /// End the episode and collect it, a success or not.
+    Finish {
+        /// The operator's verdict.
+        success: bool,
+    },
+    /// End the episode and drop it.
+    Discard,
 }
 
-/// A live session's bar: pause or resume, and Keep (`can_keep`: the host
-/// records into this machine's recordings directory) with its last answer.
-pub fn live_bar(
-    ui: &mut egui::Ui,
-    paused: bool,
-    can_keep: bool,
-    kept: Option<&Result<String, String>>,
-) -> Option<LiveAction> {
+/// What the live bar shows and edits.
+#[derive(Clone, Debug, Default)]
+pub struct LiveBar {
+    /// Showing the recent history, not the session now.
+    pub paused: bool,
+    /// The host records into this machine's recordings directory, so Keep
+    /// and episodes work.
+    pub local: bool,
+    /// The next or running episode's task.
+    pub task: String,
+    /// Seconds into the running episode.
+    pub episode_s: Option<f64>,
+    /// The last Keep's or episode's answer.
+    pub note: Option<Result<String, String>>,
+}
+
+/// A live session's bar: pause or resume, Keep, and the episode controls
+/// (start with a task; success, fail or discard).
+pub fn live_bar(ui: &mut egui::Ui, bar: &mut LiveBar) -> Option<LiveAction> {
     let mut action = None;
+    let local_only = "The host does not record into this machine's recordings";
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let (label, tone) = if paused {
+        let (label, tone) = if bar.paused {
             ("PAUSED", Tone::Warn)
         } else {
             ("LIVE", Tone::Good)
         };
         ui.label(RichText::new(label).strong().color(tone_color(tone)));
-        if paused {
+        if bar.paused {
             if ui
                 .button("Back to live")
                 .on_hover_text("Show the session as it is now")
@@ -180,19 +201,67 @@ pub fn live_bar(
             action = Some(LiveAction::Pause);
         }
         if ui
-            .add_enabled(can_keep, Button::new("Keep"))
+            .add_enabled(bar.local, Button::new("Keep"))
             .on_hover_text("Keep the host's recording of the last 2 minutes as an incident")
-            .on_disabled_hover_text("The host does not record into this machine's recordings")
+            .on_disabled_hover_text(local_only)
             .clicked()
         {
             action = Some(LiveAction::Keep);
         }
-        match kept {
-            Some(Ok(dir)) => {
-                ui.label(RichText::new(format!("kept in {dir}")).weak());
+        ui.separator();
+        match bar.episode_s {
+            None => {
+                ui.add_enabled(
+                    bar.local,
+                    egui::TextEdit::singleline(&mut bar.task)
+                        .hint_text("task")
+                        .desired_width(260.0),
+                )
+                .on_hover_text("The episode's task, as a policy is told it");
+                if ui
+                    .add_enabled(bar.local, Button::new("Start episode"))
+                    .on_hover_text("Collect from now until Success, Fail or Discard")
+                    .on_disabled_hover_text(local_only)
+                    .clicked()
+                {
+                    action = Some(LiveAction::Start);
+                }
+            }
+            Some(seconds) => {
+                ui.label(
+                    RichText::new(format!("EPISODE {seconds:.1} s"))
+                        .strong()
+                        .color(tone_color(Tone::Bad)),
+                );
+                ui.label(RichText::new(&bar.task).weak());
+                if ui
+                    .add(Button::new("Success").fill(tone_color(Tone::Good)))
+                    .clicked()
+                {
+                    action = Some(LiveAction::Finish { success: true });
+                }
+                if ui
+                    .button("Fail")
+                    .on_hover_text("Collected, marked failed")
+                    .clicked()
+                {
+                    action = Some(LiveAction::Finish { success: false });
+                }
+                if ui
+                    .button("Discard")
+                    .on_hover_text("A bad take: not collected")
+                    .clicked()
+                {
+                    action = Some(LiveAction::Discard);
+                }
+            }
+        }
+        match &bar.note {
+            Some(Ok(note)) => {
+                ui.label(RichText::new(note).weak());
             }
             Some(Err(why)) => {
-                ui.label(RichText::new(format!("not kept: {why}")).color(tone_color(Tone::Warn)));
+                ui.label(RichText::new(why).color(tone_color(Tone::Warn)));
             }
             None => {}
         }
@@ -203,8 +272,10 @@ pub fn live_bar(
 
 /// The replay transport: play or pause, step, speed, and a scrub bar over
 /// the recording, in seconds from its start. `label` names what is
-/// replayed.
-pub fn replay_bar(ui: &mut egui::Ui, replay: &mut Replay, label: &str) {
+/// replayed; with `rerun`, an "Open in Rerun" button, and whether it was
+/// clicked is returned.
+pub fn replay_bar(ui: &mut egui::Ui, replay: &mut Replay, label: &str, rerun: bool) -> bool {
+    let mut open = false;
     let (first, last) = replay.bounds();
     let secs = |t: i64| (t - first) as f64 / 1e9;
     ui.add_space(4.0);
@@ -241,6 +312,14 @@ pub fn replay_bar(ui: &mut egui::Ui, replay: &mut Replay, label: &str) {
                     ui.selectable_value(&mut replay.speed, speed, format!("{speed}×"));
                 }
             });
+        if rerun
+            && ui
+                .button("Open in Rerun")
+                .on_hover_text("The recording in the Rerun viewer (`rerun` on the PATH)")
+                .clicked()
+        {
+            open = true;
+        }
         let mut at = secs(replay.at_ns());
         ui.spacing_mut().slider_width = (ui.available_width() - 220.0).max(100.0);
         let slider = ui.add(
@@ -254,6 +333,7 @@ pub fn replay_bar(ui: &mut egui::Ui, replay: &mut Replay, label: &str) {
         }
     });
     ui.add_space(4.0);
+    open
 }
 
 fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<Verb>) {
