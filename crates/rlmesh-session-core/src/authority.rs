@@ -578,6 +578,8 @@ impl Authority {
             mode_reason: self.mode_reason.clone(),
             ended: self.ended.iter().cloned().collect(),
             last_stop: self.last_stop,
+            places: Vec::new(),
+            scene: None,
         }
     }
 
@@ -743,10 +745,13 @@ impl Authority {
                     }
                 }
             }
+            // The host checked `board_id` against the robot's pin before
+            // (`HostAuth::check_board`).
             Command::DeclareParts {
                 spec_version,
                 robot_json,
                 seal,
+                board_id: _,
             } => {
                 self.declare_parts(&from, spec_version, &robot_json, &seal, &mut applied.events)?
             }
@@ -797,10 +802,12 @@ impl Authority {
             Command::ReleaseLease { channels, token } => {
                 self.release(&from, &channels, token, &mut applied.events)?;
             }
+            // `at_ns` is on the edge's clock; the reason takes the host's.
             Command::Estop {
                 reason,
                 code,
                 origin,
+                at_ns: _,
             } => {
                 // Accepted from every member (the host authenticated it):
                 // refusing an e-stop is never safer. An edge reports its own
@@ -882,6 +889,19 @@ impl Authority {
             // answers them (§8.5).
             Command::KeysAck(_) | Command::GetKeys => {
                 self.require_attached(&from)?;
+            }
+            // TODO: only the home daemon's `_lobby` will answer these (scene
+            // steps 7 and 12); a session host refuses them.
+            Command::LobbyWait(_)
+            | Command::RunScene { .. }
+            | Command::SceneStatus { .. }
+            | Command::StopScene { .. }
+            | Command::HostStarted(_)
+            | Command::ArmScene { .. } => {
+                return Err(CtlError::new(
+                    CtlStatus::Unsupported,
+                    "a lobby verb: this session runs no lobby",
+                ));
             }
         }
         if !applied.events.is_empty() {
@@ -2365,6 +2385,7 @@ mod tests {
             spec_version: SPEC_VERSION,
             robot_json: json.into(),
             seal: Vec::new(),
+            board_id: None,
         }
     }
 
@@ -3083,6 +3104,7 @@ mod tests {
             reason: "button".into(),
             code: ReasonCode::Unspecified,
             origin: None,
+            at_ns: 0,
         };
         f.run("viewer", estop, 7).expect("estop");
         assert_eq!(f.auth.mode_reason().code, ReasonCode::EstopRemote);
@@ -3234,6 +3256,7 @@ mod tests {
                 reason: "red button".into(),
                 code: ReasonCode::EstopRemote,
                 origin: None,
+                at_ns: 0,
             },
             1,
         )
@@ -3253,6 +3276,7 @@ mod tests {
                 reason: "again".into(),
                 code: ReasonCode::EstopLocal,
                 origin: None,
+                at_ns: 0,
             },
             2,
         )
@@ -3277,6 +3301,7 @@ mod tests {
             reason: "button".into(),
             code: ReasonCode::EstopLocal,
             origin: None,
+            at_ns: 0,
         };
         f.run("robot", local, 4).expect("relatch");
         assert!(f.auth.estop_latched());

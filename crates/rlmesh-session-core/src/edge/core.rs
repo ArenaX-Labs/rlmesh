@@ -881,6 +881,7 @@ mod tests {
                     spec_version: SPEC_VERSION,
                     robot_json: robot_map(hold_last),
                     seal: Vec::new(),
+                    board_id: None,
                 },
             );
             let channels: Vec<ChannelId> = auth
@@ -1367,6 +1368,7 @@ mod tests {
                 reason: "test".into(),
                 code: ReasonCode::EstopRemote,
                 origin: None,
+                at_ns: 0,
             },
         );
         f.publish(MS);

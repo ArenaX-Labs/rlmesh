@@ -1606,7 +1606,7 @@ pub enum Recorded {
     /// An action chunk on its way to an edge.
     Chunk(ActionChunk),
     /// An authority snapshot (it carries the bindings too).
-    Authority(AuthoritySnapshot),
+    Authority(Box<AuthoritySnapshot>),
     /// A participant's heartbeat.
     Heartbeat(Heartbeat),
     /// A participant's observer report.
@@ -1687,9 +1687,9 @@ fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
         let decoded = match schema {
             Some(schema::SAMPLE) => codec::decode_sample(data).ok().map(Recorded::Sample),
             Some(schema::ACTION_CHUNK) => codec::decode_chunk(data).ok().map(Recorded::Chunk),
-            Some(schema::AUTHORITY_STATE) => {
-                codec::decode_state(&data).ok().map(Recorded::Authority)
-            }
+            Some(schema::AUTHORITY_STATE) => codec::decode_state(&data)
+                .ok()
+                .map(|s| Recorded::Authority(Box::new(s))),
             Some(schema::HEARTBEAT) => codec::decode_heartbeat(&data).ok().map(Recorded::Heartbeat),
             Some(schema::PARTICIPANT_REPORT) => {
                 codec::decode_report(&data).ok().map(Recorded::Report)

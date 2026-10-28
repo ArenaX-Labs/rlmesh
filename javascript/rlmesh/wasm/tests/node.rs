@@ -96,6 +96,8 @@ fn snapshot(revision: u64, leases: Vec<Lease>) -> AuthoritySnapshot {
         mode_reason: Reason::default(),
         ended: Vec::new(),
         last_stop: LastStop::default(),
+        places: Vec::new(),
+        scene: None,
     }
 }
 
@@ -352,6 +354,8 @@ fn grant(
         ),
         leases: vec![granted],
         keys: Vec::new(),
+        assignment: None,
+        run: None,
     };
     let ev = c
         .on_frame(
@@ -522,6 +526,8 @@ fn refusals_and_verbs_answer_with_the_host_state() {
         state: snapshot(2, Vec::new()),
         leases: Vec::new(),
         keys: Vec::new(),
+        assignment: None,
+        run: None,
     };
     let ev = c
         .on_frame(

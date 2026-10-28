@@ -233,7 +233,7 @@ async fn watch_authority(participant: Arc<Participant>, control: Sender<Input>, 
     loop {
         let snapshot = view.borrow_and_update().clone();
         if let Some(snapshot) = snapshot {
-            if control.send(Input::Authority(snapshot)).is_err() {
+            if control.send(Input::Authority(Box::new(snapshot))).is_err() {
                 return;
             }
             wake();

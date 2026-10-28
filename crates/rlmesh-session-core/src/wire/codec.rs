@@ -8,8 +8,8 @@
 //! `proto/rlmesh/session/v2/session.proto`) per payload; the key says which.
 //!
 //! - Control messages ([`Request`], [`CtlReply`], [`AuthoritySnapshot`],
-//!   [`Heartbeat`], [`HeartbeatEcho`], [`ParticipantReport`], [`VirtualTick`],
-//!   [`HistoryQuery`])
+//!   [`DeviceView`], [`Heartbeat`], [`HeartbeatEcho`], [`ParticipantReport`],
+//!   [`VirtualTick`], [`HistoryQuery`])
 //!   encode to one buffer and decode from any byte slice.
 //! - [`Sample`]s, [`SampleBatch`]es and [`ActionChunk`]s carry their values
 //!   as one packed `bytes` payload. [`encode_sample`], [`encode_batch`] and
@@ -68,8 +68,13 @@ use crate::wire::report::{ParticipantReport, PublisherCounters, RunCounters};
 use crate::wire::sample::{
     Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange,
 };
+use crate::wire::scene::{
+    Assignment, DeviceRecord, HostOrder, HostStarted, Join, LobbyWait, MemberStage, MemberState,
+    Place, Pose, RobotPin, RunStage, RunState, SceneInfo, ServeOrder, StopOrder,
+};
 use crate::wire::tick::{Step, TickState, VirtualTick};
 use crate::wire::timing::EndpointTiming;
+use crate::wire::view::{DeviceView, Member, ViewGrid};
 
 /// Generated `rlmesh.session.v2` messages: private, so the schema can move
 /// without touching any public type.
@@ -125,6 +130,8 @@ pub fn encode_reply(reply: &CtlReply) -> Vec<u8> {
         leases: reply.leases.iter().map(lease_to_pb).collect(),
         request_id: reply.request_id,
         keys: reply.keys.iter().map(key_to_pb).collect(),
+        assignment: reply.assignment.as_ref().map(assignment_to_pb),
+        run: reply.run.as_ref().map(run_state_to_pb),
     }
     .encode_to_vec()
 }
@@ -141,6 +148,8 @@ pub fn decode_reply(buf: &[u8]) -> Result<CtlReply, WireError> {
         leases: collect(reply.leases, lease_from_pb)?,
         request_id: reply.request_id,
         keys: collect(reply.keys, key_from_pb)?,
+        assignment: reply.assignment.map(assignment_from_pb).transpose()?,
+        run: reply.run.map(run_state_from_pb).transpose()?,
     })
 }
 
@@ -490,6 +499,81 @@ pub fn encode_state(state: &AuthoritySnapshot) -> Vec<u8> {
 /// Decodes an authority snapshot.
 pub fn decode_state(buf: &[u8]) -> Result<AuthoritySnapshot, WireError> {
     state_from_pb(pb::AuthorityState::decode(buf)?)
+}
+
+/// Encodes one robot's device view.
+pub fn encode_view(view: &DeviceView) -> Vec<u8> {
+    pb::DeviceView {
+        robot: view.robot.to_string(),
+        epoch: view.epoch.0,
+        revision: view.revision,
+        mode: mode_to_pb(view.mode) as i32,
+        mode_reason: reason_code_to_pb(view.mode_reason),
+        last_stop: Some(last_stop_to_pb(view.last_stop)),
+        host_ns: view.host_ns,
+        clock_mode: clock_mode_to_pb(view.clock_mode) as i32,
+        tick_ns: view.tick_ns,
+        generation: view.generation,
+        parts: view.parts.iter().map(part_to_pb).collect(),
+        leases: view.leases.iter().map(lease_to_pb).collect(),
+        clocks: view.clocks.iter().map(clock_to_pb).collect(),
+        grids: view
+            .grids
+            .iter()
+            .map(|g| pb::ViewGrid {
+                binding: Bytes::copy_from_slice(g.binding.as_bytes()),
+                channel: g.channel.0,
+                dt_ns: duration_ns(g.dt),
+            })
+            .collect(),
+        demands: view.demands.iter().map(demand_to_pb).collect(),
+        members: view
+            .members
+            .iter()
+            .map(|m| pb::Member {
+                id: m.id.to_string(),
+                generation: m.generation,
+            })
+            .collect(),
+        closing: view.closing.as_ref().map(reason_to_pb),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes one robot's device view, without the authority state's
+/// decoder (a board links only this).
+pub fn decode_view(buf: &[u8]) -> Result<DeviceView, WireError> {
+    let v = pb::DeviceView::decode(buf)?;
+    Ok(DeviceView {
+        robot: ParticipantId::new(v.robot)?,
+        epoch: Epoch(v.epoch),
+        revision: v.revision,
+        mode: mode_from_pb(v.mode)?,
+        mode_reason: reason_code_from_pb(v.mode_reason),
+        last_stop: last_stop_from_pb(v.last_stop),
+        host_ns: v.host_ns,
+        clock_mode: clock_mode_from_pb(v.clock_mode)?,
+        tick_ns: v.tick_ns,
+        generation: v.generation,
+        parts: collect(v.parts, part_from_pb)?,
+        leases: collect(v.leases, lease_from_pb)?,
+        clocks: collect(v.clocks, clock_from_pb)?,
+        grids: collect(v.grids, |g| {
+            Ok::<_, WireError>(ViewGrid {
+                binding: fingerprint_from_pb("view grid", &g.binding)?,
+                channel: ChannelId(g.channel),
+                dt: Duration::from_nanos(g.dt_ns),
+            })
+        })?,
+        demands: collect(v.demands, demand_from_pb)?,
+        members: collect(v.members, |m| {
+            Ok::<_, WireError>(Member {
+                id: ParticipantId::new(m.id)?,
+                generation: m.generation,
+            })
+        })?,
+        closing: v.closing.map(reason_from_pb),
+    })
 }
 
 /// Encodes one controller's binding record.
@@ -1550,7 +1634,7 @@ fn applied_from_pb(a: pb::Applied) -> Result<Applied, WireError> {
 }
 
 /// Every code with its wire value, so both directions read one table.
-const REASON_CODES: [(ReasonCode, pb::ReasonCode); 28] = [
+const REASON_CODES: [(ReasonCode, pb::ReasonCode); 30] = [
     (ReasonCode::Unspecified, pb::ReasonCode::ReasonUnspecified),
     (ReasonCode::Armed, pb::ReasonCode::ReasonArmed),
     (ReasonCode::Disarmed, pb::ReasonCode::ReasonDisarmed),
@@ -1606,6 +1690,8 @@ const REASON_CODES: [(ReasonCode, pb::ReasonCode); 28] = [
         ReasonCode::AccessChanged,
         pb::ReasonCode::ReasonAccessChanged,
     ),
+    (ReasonCode::SceneEnded, pb::ReasonCode::ReasonSceneEnded),
+    (ReasonCode::SceneFailed, pb::ReasonCode::ReasonSceneFailed),
 ];
 
 fn reason_code_to_pb(code: ReasonCode) -> i32 {
@@ -1703,6 +1789,8 @@ fn status_to_pb(status: CtlStatus) -> pb::CtlStatus {
         CtlStatus::Unauthenticated => pb::CtlStatus::Unauthenticated,
         CtlStatus::NotAuthorized => pb::CtlStatus::NotAuthorized,
         CtlStatus::Expired => pb::CtlStatus::Expired,
+        CtlStatus::RobotBusy => pb::CtlStatus::RobotBusy,
+        CtlStatus::NotPresent => pb::CtlStatus::NotPresent,
     }
 }
 
@@ -1727,6 +1815,8 @@ fn status_from_pb(raw: i32, message: String) -> Result<(), CtlError> {
         Ok(pb::CtlStatus::Unauthenticated) => CtlStatus::Unauthenticated,
         Ok(pb::CtlStatus::NotAuthorized) => CtlStatus::NotAuthorized,
         Ok(pb::CtlStatus::Expired) => CtlStatus::Expired,
+        Ok(pb::CtlStatus::RobotBusy) => CtlStatus::RobotBusy,
+        Ok(pb::CtlStatus::NotPresent) => CtlStatus::NotPresent,
         Ok(pb::CtlStatus::InvalidRequest | pb::CtlStatus::Unspecified) | Err(_) => {
             CtlStatus::InvalidRequest
         }
@@ -1956,10 +2046,9 @@ fn state_to_pb(s: &AuthoritySnapshot) -> pb::AuthorityState {
         demands: s.demands.iter().map(demand_to_pb).collect(),
         mode_reason: Some(reason_to_pb(&s.mode_reason)),
         ended: s.ended.iter().map(lease_end_to_pb).collect(),
-        last_stop: Some(pb::LastStop {
-            epoch: s.last_stop.epoch.0,
-            revision: s.last_stop.revision,
-        }),
+        last_stop: Some(last_stop_to_pb(s.last_stop)),
+        places: s.places.iter().map(place_to_pb).collect(),
+        scene: s.scene.as_deref().map(scene_info_to_pb),
     }
 }
 
@@ -1993,10 +2082,26 @@ fn state_from_pb(s: pb::AuthorityState) -> Result<AuthoritySnapshot, WireError> 
         demands: collect(s.demands, demand_from_pb)?,
         mode_reason: s.mode_reason.map(reason_from_pb).unwrap_or_default(),
         ended: collect(s.ended, lease_end_from_pb)?,
-        last_stop: s.last_stop.map_or_else(LastStop::default, |l| LastStop {
-            epoch: Epoch(l.epoch),
-            revision: l.revision,
-        }),
+        last_stop: last_stop_from_pb(s.last_stop),
+        places: collect(s.places, place_from_pb)?,
+        scene: s
+            .scene
+            .map(|s| scene_info_from_pb(s).map(Box::new))
+            .transpose()?,
+    })
+}
+
+fn last_stop_to_pb(l: LastStop) -> pb::LastStop {
+    pb::LastStop {
+        epoch: l.epoch.0,
+        revision: l.revision,
+    }
+}
+
+fn last_stop_from_pb(l: Option<pb::LastStop>) -> LastStop {
+    l.map_or_else(LastStop::default, |l| LastStop {
+        epoch: Epoch(l.epoch),
+        revision: l.revision,
     })
 }
 
@@ -2088,10 +2193,12 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             spec_version,
             robot_json,
             seal,
+            board_id,
         } => Verb::DeclareParts(pb::DeclareParts {
             spec_version: *spec_version,
             robot_json: robot_json.clone(),
             seal: seal.clone(),
+            board_id: board_id_to_pb(board_id.as_ref()),
         }),
         Command::DeclareBinding {
             fingerprint,
@@ -2136,10 +2243,12 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             reason,
             code,
             origin,
+            at_ns,
         } => Verb::Estop(pb::Estop {
             reason: reason.clone(),
             code: reason_code_to_pb(*code),
             origin: origin.as_ref().map(ToString::to_string).unwrap_or_default(),
+            at_ns: *at_ns,
         }),
         Command::Clear => Verb::Clear(pb::Clear {}),
         Command::EnterSafe { reason, code } => Verb::EnterSafe(pb::EnterSafe {
@@ -2160,6 +2269,24 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             retired: ack.retired.clone(),
         }),
         Command::GetKeys => Verb::GetKeys(pb::GetKeys {}),
+        Command::LobbyWait(wait) => Verb::LobbyWait(pb::LobbyWait {
+            run: wait.run.clone(),
+            last: wait.last.as_ref().map(error_to_pb),
+        }),
+        Command::RunScene {
+            scene_toml,
+            manual_arm,
+        } => Verb::RunScene(pb::RunScene {
+            scene_toml: scene_toml.clone(),
+            manual_arm: *manual_arm,
+        }),
+        Command::SceneStatus { run, after } => Verb::SceneStatus(pb::SceneStatus {
+            run: run.clone(),
+            after: *after,
+        }),
+        Command::StopScene { run } => Verb::StopScene(pb::StopScene { run: run.clone() }),
+        Command::HostStarted(started) => Verb::HostStarted(host_started_to_pb(started)),
+        Command::ArmScene { run } => Verb::ArmScene(pb::ArmScene { run: run.clone() }),
     };
     pb::CtlRequest {
         participant: r.from.to_string(),
@@ -2197,6 +2324,7 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
             spec_version: d.spec_version,
             robot_json: d.robot_json,
             seal: d.seal,
+            board_id: board_id_from_pb("declare parts", &d.board_id)?,
         },
         Verb::DeclareBinding(b) => Command::DeclareBinding {
             fingerprint: fingerprint_from_pb("declare binding", &b.fingerprint)?,
@@ -2227,6 +2355,7 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
             origin: (!e.origin.is_empty())
                 .then(|| ParticipantId::new(e.origin))
                 .transpose()?,
+            at_ns: e.at_ns,
         },
         Verb::Clear(_) => Command::Clear,
         Verb::EnterSafe(e) => Command::EnterSafe {
@@ -2251,6 +2380,21 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
             retired: ack.retired,
         }),
         Verb::GetKeys(_) => Command::GetKeys,
+        Verb::LobbyWait(w) => Command::LobbyWait(LobbyWait {
+            run: w.run,
+            last: w.last.map(error_from_pb),
+        }),
+        Verb::RunScene(r) => Command::RunScene {
+            scene_toml: r.scene_toml,
+            manual_arm: r.manual_arm,
+        },
+        Verb::SceneStatus(s) => Command::SceneStatus {
+            run: s.run,
+            after: s.after,
+        },
+        Verb::StopScene(s) => Command::StopScene { run: s.run },
+        Verb::HostStarted(h) => Command::HostStarted(host_started_from_pb(h)?),
+        Verb::ArmScene(a) => Command::ArmScene { run: a.run },
     };
     Ok(Request {
         from: ParticipantId::new(r.participant)?,
@@ -2438,6 +2582,308 @@ fn part_from_pb(p: pb::PartSpec) -> Result<PartSpec, WireError> {
     })
 }
 
+// --- the lobby and scenes ----------------------------------------------------
+
+fn board_id_to_pb(id: Option<&[u8; 8]>) -> Bytes {
+    id.map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id))
+}
+
+fn board_id_from_pb(what: &'static str, raw: &[u8]) -> Result<Option<[u8; 8]>, WireError> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.try_into()
+        .map(Some)
+        .map_err(|_| WireError::malformed(what, format!("a {}-byte board_id", raw.len())))
+}
+
+/// An optional 32-byte key: empty is none.
+fn key32_from_pb(what: &'static str, raw: &[u8]) -> Result<Option<[u8; 32]>, WireError> {
+    (!raw.is_empty())
+        .then(|| bytes32(what, "host_key", raw))
+        .transpose()
+}
+
+fn assignment_to_pb(a: &Assignment) -> pb::Assignment {
+    use pb::assignment::Order;
+    let order = match a {
+        Assignment::Join(j) => Order::Join(pb::Join {
+            run: j.run.clone(),
+            session: j.session.to_string(),
+            robot: j.robot.to_string(),
+            addresses: j.addresses.clone(),
+            host_key: Bytes::copy_from_slice(&j.host_key),
+            host_id: j.host_id.clone(),
+            tenant: j.tenant.clone(),
+        }),
+        Assignment::Host(h) => Order::Host(pb::HostOrder {
+            run: h.run.clone(),
+            session: h.session.to_string(),
+            scene_toml: h.scene_toml.clone(),
+            devices: h
+                .devices
+                .iter()
+                .map(|d| pb::DeviceRecord {
+                    id: d.id.clone(),
+                    public_key: Bytes::copy_from_slice(&d.public_key),
+                    max_priority: d.max_priority.map_or(0, |p| priority_to_pb(p) as i32),
+                    parts: d.parts.clone(),
+                    verbs: d.verbs.clone(),
+                })
+                .collect(),
+            pins: h
+                .pins
+                .iter()
+                .map(|p| pb::RobotPin {
+                    robot: p.robot.to_string(),
+                    device: p.device.clone(),
+                    board_id: board_id_to_pb(p.board_id.as_ref()),
+                })
+                .collect(),
+        }),
+        Assignment::Serve(s) => Order::Serve(pb::ServeOrder {
+            run: s.run.clone(),
+            member: s.member.to_string(),
+            model: s.model.clone(),
+            session: s.session.to_string(),
+            addresses: s.addresses.clone(),
+            host_key: Bytes::copy_from_slice(&s.host_key),
+        }),
+        Assignment::Stop(s) => Order::Stop(pb::StopOrder {
+            run: s.run.clone(),
+            reason: Some(reason_to_pb(&s.reason)),
+        }),
+    };
+    pb::Assignment { order: Some(order) }
+}
+
+fn assignment_from_pb(a: pb::Assignment) -> Result<Assignment, WireError> {
+    use pb::assignment::Order;
+    Ok(
+        match a
+            .order
+            .ok_or_else(|| WireError::malformed("assignment", "no order"))?
+        {
+            Order::Join(j) => Assignment::Join(Join {
+                run: j.run,
+                session: j.session.parse()?,
+                robot: ParticipantId::new(j.robot)?,
+                addresses: j.addresses,
+                host_key: bytes32("join", "host_key", &j.host_key)?,
+                host_id: j.host_id,
+                tenant: j.tenant,
+            }),
+            Order::Host(h) => Assignment::Host(HostOrder {
+                run: h.run,
+                session: h.session.parse()?,
+                scene_toml: h.scene_toml,
+                devices: collect(h.devices, |d| {
+                    Ok::<_, WireError>(DeviceRecord {
+                        id: d.id,
+                        public_key: bytes32("device record", "public_key", &d.public_key)?,
+                        max_priority: match d.max_priority {
+                            0 => None,
+                            raw => Some(priority_from_pb(raw)?),
+                        },
+                        parts: d.parts,
+                        verbs: d.verbs,
+                    })
+                })?,
+                pins: collect(h.pins, |p| {
+                    Ok::<_, WireError>(RobotPin {
+                        robot: ParticipantId::new(p.robot)?,
+                        device: p.device,
+                        board_id: board_id_from_pb("robot pin", &p.board_id)?,
+                    })
+                })?,
+            }),
+            Order::Serve(s) => Assignment::Serve(ServeOrder {
+                run: s.run,
+                member: ParticipantId::new(s.member)?,
+                model: s.model,
+                session: s.session.parse()?,
+                addresses: s.addresses,
+                host_key: bytes32("serve order", "host_key", &s.host_key)?,
+            }),
+            Order::Stop(s) => Assignment::Stop(StopOrder {
+                run: s.run,
+                reason: s.reason.map(reason_from_pb).unwrap_or_default(),
+            }),
+        },
+    )
+}
+
+fn host_started_to_pb(h: &HostStarted) -> pb::HostStarted {
+    let (host_key, addresses, error) = match &h.result {
+        Ok((key, addresses)) => (Bytes::copy_from_slice(key), addresses.clone(), None),
+        Err(err) => (Bytes::new(), Vec::new(), Some(error_to_pb(err))),
+    };
+    pb::HostStarted {
+        run: h.run.clone(),
+        host_key,
+        addresses,
+        error,
+    }
+}
+
+fn host_started_from_pb(h: pb::HostStarted) -> Result<HostStarted, WireError> {
+    let result = match h.error {
+        Some(err) => Err(error_from_pb(err)),
+        None => Ok((
+            bytes32("host started", "host_key", &h.host_key)?,
+            h.addresses,
+        )),
+    };
+    Ok(HostStarted { run: h.run, result })
+}
+
+const RUN_STAGES: [(RunStage, pb::RunStage); 11] = [
+    (RunStage::Checking, pb::RunStage::Checking),
+    (RunStage::Hosting, pb::RunStage::Hosting),
+    (RunStage::Assigning, pb::RunStage::Assigning),
+    (RunStage::Declaring, pb::RunStage::Declaring),
+    (RunStage::Binding, pb::RunStage::Binding),
+    (RunStage::Arming, pb::RunStage::Arming),
+    (RunStage::Running, pb::RunStage::Running),
+    (RunStage::Ending, pb::RunStage::Ending),
+    (RunStage::Ended, pb::RunStage::Ended),
+    (RunStage::Failed, pb::RunStage::Failed),
+    (RunStage::Rejoining, pb::RunStage::Rejoining),
+];
+
+const MEMBER_STAGES: [(MemberStage, pb::MemberStage); 7] = [
+    (MemberStage::Waiting, pb::MemberStage::Waiting),
+    (MemberStage::Assigned, pb::MemberStage::Assigned),
+    (MemberStage::Joined, pb::MemberStage::Joined),
+    (MemberStage::Declared, pb::MemberStage::Declared),
+    (MemberStage::Bound, pb::MemberStage::Bound),
+    (MemberStage::Lost, pb::MemberStage::Lost),
+    (MemberStage::Returned, pb::MemberStage::Returned),
+];
+
+/// The wire value of `value` in `table` (every value is listed).
+fn enum_to_pb<T: PartialEq, P: Copy + Into<i32>>(table: &[(T, P)], value: &T) -> i32 {
+    table
+        .iter()
+        .find(|(v, _)| v == value)
+        .map_or(0, |(_, pb)| (*pb).into())
+}
+
+fn enum_from_pb<T: Copy, P: Copy + Into<i32>>(
+    table: &[(T, P)],
+    what: &'static str,
+    raw: i32,
+) -> Result<T, WireError> {
+    table
+        .iter()
+        .find(|(_, pb)| (*pb).into() == raw)
+        .map(|(v, _)| *v)
+        .ok_or_else(|| bad_enum(what, raw))
+}
+
+fn run_state_to_pb(r: &RunState) -> pb::RunState {
+    pb::RunState {
+        run: r.run.clone(),
+        version: r.version,
+        stage: enum_to_pb(&RUN_STAGES, &r.stage),
+        members: r
+            .members
+            .iter()
+            .map(|m| pb::MemberState {
+                name: m.name.to_string(),
+                stage: enum_to_pb(&MEMBER_STAGES, &m.stage),
+                error: m.error.as_ref().map(error_to_pb),
+            })
+            .collect(),
+        error: r.error.as_ref().map(error_to_pb),
+        session: r.session.map(|s| s.to_string()).unwrap_or_default(),
+        addresses: r.addresses.clone(),
+        host_key: r
+            .host_key
+            .map_or_else(Bytes::new, |k| Bytes::copy_from_slice(&k)),
+        scene_fingerprint: r
+            .scene_fingerprint
+            .map_or_else(Bytes::new, |f| Bytes::copy_from_slice(f.as_bytes())),
+    }
+}
+
+fn run_state_from_pb(r: pb::RunState) -> Result<RunState, WireError> {
+    Ok(RunState {
+        run: r.run,
+        version: r.version,
+        stage: enum_from_pb(&RUN_STAGES, "run stage", r.stage)?,
+        members: collect(r.members, |m| {
+            Ok::<_, WireError>(MemberState {
+                name: ParticipantId::new(m.name)?,
+                stage: enum_from_pb(&MEMBER_STAGES, "member stage", m.stage)?,
+                error: m.error.map(error_from_pb),
+            })
+        })?,
+        error: r.error.map(error_from_pb),
+        session: (!r.session.is_empty())
+            .then(|| r.session.parse())
+            .transpose()?,
+        addresses: r.addresses,
+        host_key: key32_from_pb("run state", &r.host_key)?,
+        scene_fingerprint: (!r.scene_fingerprint.is_empty())
+            .then(|| fingerprint_from_pb("run state", &r.scene_fingerprint))
+            .transpose()?,
+    })
+}
+
+fn place_to_pb(p: &Place) -> pb::Place {
+    pb::Place {
+        robot: p.robot.to_string(),
+        at: p.at.clone(),
+        from: p.from.clone(),
+        frame: p.frame.clone(),
+        pose: Some(pb::Pose {
+            xyz: p.pose.xyz.to_vec(),
+            quat_xyzw: p.pose.quat_xyzw.to_vec(),
+        }),
+    }
+}
+
+fn place_from_pb(p: pb::Place) -> Result<Place, WireError> {
+    let pose = p
+        .pose
+        .ok_or_else(|| WireError::malformed("place", "no pose"))?;
+    Ok(Place {
+        robot: ParticipantId::new(p.robot)?,
+        at: p.at,
+        from: p.from,
+        frame: p.frame,
+        pose: Pose {
+            xyz: pose.xyz[..]
+                .try_into()
+                .map_err(|_| WireError::malformed("pose", "xyz is not 3 values"))?,
+            quat_xyzw: pose.quat_xyzw[..]
+                .try_into()
+                .map_err(|_| WireError::malformed("pose", "quat_xyzw is not 4 values"))?,
+        },
+    })
+}
+
+fn scene_info_to_pb(s: &SceneInfo) -> pb::SceneInfo {
+    pb::SceneInfo {
+        run: s.run.clone(),
+        name: s.name.clone(),
+        fingerprint: Bytes::copy_from_slice(s.fingerprint.as_bytes()),
+        closing: s.closing.as_ref().map(reason_to_pb),
+        rejoin_until_ns: s.rejoin_until_ns.unwrap_or(0),
+    }
+}
+
+fn scene_info_from_pb(s: pb::SceneInfo) -> Result<SceneInfo, WireError> {
+    Ok(SceneInfo {
+        run: s.run,
+        name: s.name,
+        fingerprint: fingerprint_from_pb("scene info", &s.fingerprint)?,
+        closing: s.closing.map(reason_from_pb),
+        rejoin_until_ns: (s.rejoin_until_ns != 0).then_some(s.rejoin_until_ns),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2576,7 +3022,59 @@ mod tests {
                 epoch: Epoch(2),
                 revision: 5,
             },
+            places: vec![Place {
+                robot: pid("ur10e"),
+                at: "arm".into(),
+                from: String::new(),
+                frame: "base".into(),
+                pose: Pose {
+                    xyz: [0.4, -0.2, 0.0],
+                    quat_xyzw: [0.0, 0.0, 0.6, 0.8],
+                },
+            }],
+            scene: Some(Box::new(SceneInfo {
+                run: "r-7k2m".into(),
+                name: "eyeball-rig".into(),
+                fingerprint: Fingerprint::from(0x5ce5),
+                closing: Some(Reason::new(ReasonCode::SceneEnded)),
+                rejoin_until_ns: Some(60),
+            })),
         }
+    }
+
+    #[test]
+    fn a_device_view_decodes_on_its_own_path() {
+        let state = snapshot();
+        let view = DeviceView {
+            robot: pid("ur10e"),
+            epoch: state.epoch,
+            revision: state.revision,
+            mode: state.mode,
+            mode_reason: ReasonCode::FirstLease,
+            last_stop: state.last_stop,
+            host_ns: state.host_ns,
+            clock_mode: ClockMode::Wall,
+            tick_ns: 0,
+            generation: 3,
+            parts: state.parts.clone(),
+            leases: state.leases.clone(),
+            clocks: state.clocks.clone(),
+            grids: vec![ViewGrid {
+                binding: Fingerprint::from(77),
+                channel: ChannelId(1),
+                dt: Duration::from_millis(10),
+            }],
+            demands: state.demands.clone(),
+            members: vec![Member {
+                id: pid("op"),
+                generation: 3,
+            }],
+            closing: Some(Reason::new(ReasonCode::SceneEnded)),
+        };
+        let bytes = encode_view(&view);
+        assert_eq!(decode_view(&bytes).expect("decode"), view);
+        // The view is its own message, not a state a board could misread.
+        assert!(decode_state(&bytes).is_err());
     }
 
     #[test]
@@ -2620,6 +3118,7 @@ mod tests {
                 spec_version: 1,
                 robot_json: r#"{"arm": {"kind": "x/arm"}}"#.into(),
                 seal: Vec::new(),
+                board_id: Some([0xb0, 0xb1, 0, 0xb3, 0xb4, 0, 0, 0xb7]),
             },
             Command::DeclareBinding {
                 fingerprint: Fingerprint::from(9),
@@ -2668,6 +3167,7 @@ mod tests {
                 reason: "red button".into(),
                 code: ReasonCode::EstopLocal,
                 origin: None,
+                at_ns: 1_234,
             },
             Command::EnterSafe {
                 reason: "queue dry".into(),
@@ -2688,6 +3188,32 @@ mod tests {
                     seq: 9,
                 }],
             },
+            Command::LobbyWait(LobbyWait {
+                run: "r-7k2m".into(),
+                last: Some(CtlError::new(CtlStatus::NotAuthorized, "board on rig-pi")),
+            }),
+            Command::RunScene {
+                scene_toml: "[scene]\nformat = 1\n".into(),
+                manual_arm: true,
+            },
+            Command::SceneStatus {
+                run: "r-7k2m".into(),
+                after: 4,
+            },
+            Command::StopScene {
+                run: "r-7k2m".into(),
+            },
+            Command::ArmScene {
+                run: "r-7k2m".into(),
+            },
+            Command::HostStarted(HostStarted {
+                run: "r-7k2m".into(),
+                result: Ok(([5; 32], vec!["10.0.0.2:7447".into()])),
+            }),
+            Command::HostStarted(HostStarted {
+                run: "r-7k2m".into(),
+                result: Err(CtlError::new(CtlStatus::NotPresent, "no GPU")),
+            }),
         ];
         for command in requests {
             let request = Request {
@@ -2716,6 +3242,11 @@ mod tests {
             Err(CtlError::new(CtlStatus::Unauthenticated, "unknown key")),
             Err(CtlError::new(CtlStatus::NotAuthorized, "bound to eye-3")),
             Err(CtlError::new(CtlStatus::Expired, "below the window")),
+            Err(CtlError::new(CtlStatus::RobotBusy, "arm is in run r-7k2m")),
+            Err(CtlError::new(
+                CtlStatus::NotPresent,
+                "eye-l is not in the lobby",
+            )),
         ] {
             let reply = CtlReply {
                 result,
@@ -2723,6 +3254,104 @@ mod tests {
                 state: state.clone(),
                 request_id: 11,
                 keys: Vec::new(),
+                assignment: None,
+                run: None,
+            };
+            assert_eq!(decode_reply(&encode_reply(&reply)).expect("decode"), reply);
+        }
+        let session = SessionId::new();
+        let assignments = [
+            Assignment::Join(Join {
+                run: "r-7k2m".into(),
+                session,
+                robot: pid("eye-l"),
+                addresses: vec!["10.0.0.2:7447".into(), "rig-pi.local:7447".into()],
+                host_key: [6; 32],
+                host_id: "rlm-3f9a2c".into(),
+                tenant: "local".into(),
+            }),
+            Assignment::Host(HostOrder {
+                run: "r-7k2m".into(),
+                session,
+                scene_toml: "[scene]".into(),
+                devices: vec![DeviceRecord {
+                    id: "laptop-josh".into(),
+                    public_key: [8; 32],
+                    max_priority: Some(PriorityClass::Model),
+                    parts: vec!["**".into()],
+                    verbs: vec!["arm".into()],
+                }],
+                pins: vec![
+                    RobotPin {
+                        robot: pid("skull"),
+                        device: "local".into(),
+                        board_id: Some([1, 2, 3, 4, 5, 6, 7, 8]),
+                    },
+                    RobotPin {
+                        robot: pid("eye-l"),
+                        device: "eye-l".into(),
+                        board_id: None,
+                    },
+                ],
+            }),
+            Assignment::Serve(ServeOrder {
+                run: "r-7k2m".into(),
+                member: pid("grasp"),
+                model: "prebuilt/smolvla/so100".into(),
+                session,
+                addresses: vec!["10.0.0.3:7447".into()],
+                host_key: [9; 32],
+            }),
+            Assignment::Stop(StopOrder {
+                run: "r-7k2m".into(),
+                reason: Reason {
+                    code: ReasonCode::SceneFailed,
+                    detail: "home daemon lost".into(),
+                    ..Reason::default()
+                },
+            }),
+        ];
+        let run = RunState {
+            run: "r-7k2m".into(),
+            version: 7,
+            stage: RunStage::Rejoining,
+            members: vec![MemberState {
+                name: pid("eye-l"),
+                stage: MemberStage::Lost,
+                error: Some(CtlError::new(CtlStatus::Incompatible, "a changed map")),
+            }],
+            error: None,
+            session: Some(session),
+            addresses: vec!["10.0.0.3:7447".into()],
+            host_key: Some([9; 32]),
+            scene_fingerprint: Some(Fingerprint::from(0x5ce5)),
+        };
+        let replies = assignments.into_iter().map(|a| (Some(a), None)).chain([
+            (None, Some(run)),
+            (
+                None,
+                Some(RunState {
+                    run: "r-7k2m".into(),
+                    version: 1,
+                    stage: RunStage::Checking,
+                    members: Vec::new(),
+                    error: None,
+                    session: None,
+                    addresses: Vec::new(),
+                    host_key: None,
+                    scene_fingerprint: None,
+                }),
+            ),
+        ]);
+        for (assignment, run) in replies {
+            let reply = CtlReply {
+                result: Ok(()),
+                state: state.clone(),
+                leases: Vec::new(),
+                request_id: 12,
+                keys: Vec::new(),
+                assignment,
+                run,
             };
             assert_eq!(decode_reply(&encode_reply(&reply)).expect("decode"), reply);
         }

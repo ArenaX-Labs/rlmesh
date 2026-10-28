@@ -70,7 +70,7 @@ use rlmesh_session_core::auth::issuer::{
     GrantId, GrantPart, GrantRequest, Joining, Prepared, StreamSlot,
 };
 use rlmesh_session_core::auth::{
-    Admit, Credential, Device, HostAuth, HostIdentity, Keyring, LOCAL_DEVICE, RequestWindow,
+    Admit, Credential, Device, HostAuth, HostIdentity, Keyring, LOCAL_DEVICE, Pin, RequestWindow,
 };
 use rlmesh_session_core::crypto::sealed::Header;
 use rlmesh_session_core::crypto::{
@@ -196,11 +196,12 @@ pub struct HostConfig {
     /// [`SessionHost::set_access`], [`SessionHost::admit`] and
     /// [`SessionHost::revoke`].
     pub devices: Vec<Device>,
-    /// Robot name → the device its pin names (rlmeshd's `[robots.*]`,
-    /// design §4); none by default, so a name binds to its first
+    /// Robot name → its pin (rlmeshd's `[robots.*]`, design §4): the
+    /// device, checked at the handshake, and a tethered board, checked at
+    /// `DeclareParts`. None by default, so a name binds to its first
     /// embodiment's device for the host instance. Change one at runtime with
     /// [`SessionHost::pin`].
-    pub pins: BTreeMap<ParticipantId, String>,
+    pub pins: BTreeMap<ParticipantId, Pin>,
 }
 
 impl HostConfig {
@@ -314,7 +315,7 @@ enum Change {
     /// A device it no longer accepts.
     Revoke(String),
     /// A robot name's new pin, or none.
-    Pin(ParticipantId, Option<String>),
+    Pin(ParticipantId, Option<Pin>),
 }
 
 impl SessionHost {
@@ -356,8 +357,8 @@ impl SessionHost {
         for device in &config.devices {
             auth.enroll(device.public, device.id.clone());
         }
-        for (robot, device) in &config.pins {
-            auth.pin(robot, Some(device));
+        for (robot, pin) in &config.pins {
+            auth.pin(robot, Some(pin.clone()));
         }
         let signer = config.identity.signer(host_instance);
 
@@ -518,21 +519,16 @@ impl SessionHost {
         self.change(Change::Revoke(device.to_string())).await
     }
 
-    /// Pins robot name `robot` to `device`, or unpins it (`None`), checked
-    /// at every handshake (design §4). A moved or removed pin detaches the
-    /// robot's current embodiment as lost (`ROBOT_LOST`: an ACTIVE session
-    /// goes SAFE); a first pin to the device that embodies it changes
-    /// nothing.
+    /// Pins robot name `robot`, or unpins it (`None`): its device is checked
+    /// at every handshake and its board at every declare (design §4, tether
+    /// spec §7). A moved or removed pin detaches the robot's current
+    /// embodiment as lost (`ROBOT_LOST`: an ACTIVE session goes SAFE); a
+    /// first pin to the device that embodies it changes nothing.
     ///
     /// # Errors
     /// [`SessionError::Closed`] once the host stopped.
-    pub async fn pin(
-        &self,
-        robot: &ParticipantId,
-        device: Option<&str>,
-    ) -> Result<(), SessionError> {
-        self.change(Change::Pin(robot.clone(), device.map(str::to_string)))
-            .await
+    pub async fn pin(&self, robot: &ParticipantId, pin: Option<Pin>) -> Result<(), SessionError> {
+        self.change(Change::Pin(robot.clone(), pin)).await
     }
 
     async fn change(&self, change: Change) -> Result<(), SessionError> {
@@ -1113,8 +1109,8 @@ impl HostActor {
                         Change::Access(device, entry) => self.set_access(&device, entry).await,
                         Change::Admit(device) => self.admit(device).await,
                         Change::Revoke(device) => self.revoke(&device).await,
-                        Change::Pin(robot, device) => {
-                            self.pin(&robot, device.as_deref()).await;
+                        Change::Pin(robot, pin) => {
+                            self.pin(&robot, pin).await;
                             Ok(())
                         }
                     };
@@ -1331,6 +1327,8 @@ impl HostActor {
                     leases: Vec::new(),
                     request_id: 0,
                     keys: Vec::new(),
+                    assignment: None,
+                    run: None,
                 };
                 Self::reply(query, codec::encode_reply(&reply)).await;
                 return;
@@ -1447,6 +1445,16 @@ impl HostActor {
             }
             Command::GrantLease { .. } | Command::DeclareBinding { .. } => {
                 return self.mint(peer, request).await;
+            }
+            Command::DeclareParts { board_id, .. } => {
+                if let Err(err) = self.auth.check_board(
+                    &peer.participant,
+                    &peer.identity.device,
+                    board_id.as_ref(),
+                ) {
+                    info!(status = ?err.status, "ctl refused: {}", err.message);
+                    return Outcome::refused(err);
+                }
             }
             _ => {}
         }
@@ -1821,8 +1829,9 @@ impl HostActor {
     }
 
     /// Pins a robot name: see [`SessionHost::pin`].
-    async fn pin(&mut self, robot: &ParticipantId, device: Option<&str>) {
-        let before = self.auth.pin(robot, device);
+    async fn pin(&mut self, robot: &ParticipantId, pin: Option<Pin>) {
+        let device = pin.as_ref().map(|p| p.device.clone());
+        let before = self.auth.pin(robot, pin);
         let embodied = self
             .authority
             .participant(robot)
@@ -1830,7 +1839,7 @@ impl HostActor {
             .map(|p| p.device.clone());
         info!(%robot, ?device, "pin changed");
         if let Some(embodied) = embodied
-            && (before.is_some() || device != Some(embodied.as_str()))
+            && (before.is_some() || device.as_deref() != Some(embodied.as_str()))
         {
             let events = self.authority.participant_lost(robot, self.now());
             self.record(events).await;
@@ -1886,6 +1895,8 @@ impl HostActor {
             leases,
             request_id,
             keys,
+            assignment: None,
+            run: None,
         })
     }
 

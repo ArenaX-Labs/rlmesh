@@ -17,8 +17,9 @@
 //!   plans ([`contract`]), samples, batches and history queries ([`sample`]),
 //!   timed action chunks ([`action`]), the virtual-mode tick protocol
 //!   ([`tick`]), the lockstep fast path ([`lockstep`]), served models
-//!   ([`model`]), the endpoint timing their replies carry ([`timing`]) and
-//!   machine pairing ([`pair`]);
+//!   ([`model`]), the endpoint timing their replies carry ([`timing`]),
+//!   machine pairing ([`pair`]), the lobby and scenes ([`scene`]) and one
+//!   robot's device view ([`view`]);
 //! - [`codec`]: the one module that knows the byte encoding.
 //!
 //! Every type outside [`codec`] is plain Rust: no generated code, no
@@ -69,9 +70,11 @@ pub mod part;
 pub mod path;
 pub mod report;
 pub mod sample;
+pub mod scene;
 pub mod tick;
 pub mod timing;
 pub mod version;
+pub mod view;
 
 pub use action::{ActionChunk, ChunkRef, InputRange};
 pub use authority::{
@@ -104,5 +107,10 @@ pub use part::{
 pub use path::PartPath;
 pub use report::{ParticipantReport, PublisherCounters, RunCounters};
 pub use sample::{Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange};
+pub use scene::{
+    Assignment, DeviceRecord, HostOrder, HostStarted, Join, LobbyWait, MemberStage, MemberState,
+    Place, Pose, RobotPin, RunStage, RunState, SceneInfo, ServeOrder, StopOrder,
+};
 pub use tick::{Step, TickState, VirtualTick};
 pub use timing::EndpointTiming;
+pub use view::{AuthorityView, DeviceView, Member, ViewGrid};

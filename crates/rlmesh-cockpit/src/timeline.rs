@@ -478,6 +478,8 @@ mod tests {
             mode_reason: Reason::default(),
             ended: vec![],
             last_stop: LastStop::default(),
+            places: Vec::new(),
+            scene: None,
         }
     }
 

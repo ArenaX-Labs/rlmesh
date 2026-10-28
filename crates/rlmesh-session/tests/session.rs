@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use rlmesh_session::auth::{self, Credential, Device, HostIdentity, Link, ReplyOutcome};
+use rlmesh_session::auth::{
+    self, Credential, Device, HostIdentity, LOCAL_DEVICE, Link, Pin, ReplyOutcome,
+};
 use rlmesh_session::authority::DeviceAccess;
 use rlmesh_session::crypto::sealed::Header;
 use rlmesh_session::crypto::{
@@ -1710,6 +1712,8 @@ async fn only_the_handshakes_keys_reach_the_host_and_only_its_signature_reaches_
                 leases: Vec::new(),
                 request_id: 0,
                 keys: Vec::new(),
+                assignment: None,
+                run: None,
             };
             move |query| {
                 let _ = zenoh::Wait::wait(
@@ -1752,6 +1756,7 @@ async fn a_grant_that_outlives_its_call_stays_pending_and_resolves_with_its_keys
         spec_version: rlmesh_session::wire::version::SPEC_VERSION,
         robot_json: raw_camera(),
         seal: Vec::new(),
+        board_id: None,
     };
     robot.call(2, declare).await.result.expect("declared");
     let mut config = world.config("policy", vec![Role::Controller], PriorityClass::Model, 0);
@@ -1911,6 +1916,37 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     assert!(swapped.ended.iter().any(|e| {
         e.lease.token == granted.leases[0].token && e.reason.code == ReasonCode::VoidedByEpoch
     }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_board_other_than_the_pinned_one_is_refused_at_declare() {
+    let board = [0xb0, 0xb1, 0, 0xb3, 0xb4, 0, 0, 0xb7];
+    let world = World::start_with(|c| {
+        let pin = Pin {
+            device: LOCAL_DEVICE.into(),
+            board_id: Some(board),
+        };
+        c.pins.insert(robot_id(), pin);
+    })
+    .await;
+    let mut robot = world.raw("robot", Role::Embodiment).await;
+    let declare = |board_id| Command::DeclareParts {
+        spec_version: rlmesh_session::wire::version::SPEC_VERSION,
+        robot_json: raw_camera(),
+        seal: Vec::new(),
+        board_id,
+    };
+    for (id, other) in [(2, Some([1; 8])), (3, None)] {
+        let refused = robot.call(id, declare(other)).await.result;
+        assert_eq!(
+            refused.expect_err("another board").status,
+            CtlStatus::NotAuthorized
+        );
+    }
+    assert!(world.host.snapshot().parts.is_empty());
+    let declared = robot.call(4, declare(Some(board))).await;
+    declared.result.expect("its own board");
+    assert!(!declared.state.parts.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

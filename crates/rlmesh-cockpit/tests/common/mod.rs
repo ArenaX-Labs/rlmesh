@@ -107,6 +107,7 @@ impl World {
                 spec_version: SPEC_VERSION,
                 robot_json: ROBOT.into(),
                 seal: Vec::new(),
+                board_id: None,
             },
         )
         .expect("declare");
@@ -231,7 +232,7 @@ impl World {
             })
             .collect();
         let snapshot = self.auth.snapshot(clocks, self.now);
-        self.record(Input::Authority(snapshot), self.now);
+        self.record(Input::Authority(Box::new(snapshot)), self.now);
     }
 
     fn payload(spec: &StreamSpec, v: f32) -> Bytes {

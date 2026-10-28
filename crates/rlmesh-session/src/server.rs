@@ -23,7 +23,7 @@ use tracing::{info, warn};
 use zenoh::Wait;
 use zenoh::sample::SampleKind;
 
-use crate::auth::Device;
+use crate::auth::{Device, Pin};
 use crate::error::SessionError;
 use crate::host::{HostConfig, SessionHost, token_declared};
 #[cfg(feature = "record")]
@@ -41,7 +41,7 @@ type Hosts = Arc<Mutex<HashMap<SessionId, SessionHost>>>;
 /// The devices and pins every session starts with ([`HostConfig::devices`],
 /// [`HostConfig::pins`]); changed only while the hosts are locked, so a
 /// session starts with the table every other one has.
-type Table = Arc<std::sync::Mutex<(Vec<Device>, BTreeMap<ParticipantId, String>)>>;
+type Table = Arc<std::sync::Mutex<(Vec<Device>, BTreeMap<ParticipantId, Pin>)>>;
 
 /// The id the server's own recorder joins each session as.
 pub const RECORDER: &str = "_recorder";
@@ -271,7 +271,7 @@ impl SessionServer {
     /// now on (rlmeshd's `devices.toml`, design §4): a device gone is
     /// revoked, a new one admitted, a changed entry or pin applied (see
     /// [`SessionHost`]'s `set_access`, `admit`, `revoke` and `pin`).
-    pub async fn set_devices(&self, devices: Vec<Device>, pins: BTreeMap<ParticipantId, String>) {
+    pub async fn set_devices(&self, devices: Vec<Device>, pins: BTreeMap<ParticipantId, Pin>) {
         let hosts = self.hosts.lock().await;
         let (old, old_pins) = std::mem::replace(
             &mut *self
@@ -307,8 +307,8 @@ impl SessionServer {
 /// key moved to another id is free when it is admitted.
 async fn apply(
     host: &SessionHost,
-    (old, old_pins): (&[Device], &BTreeMap<ParticipantId, String>),
-    (new, pins): (&[Device], &BTreeMap<ParticipantId, String>),
+    (old, old_pins): (&[Device], &BTreeMap<ParticipantId, Pin>),
+    (new, pins): (&[Device], &BTreeMap<ParticipantId, Pin>),
 ) -> Result<(), SessionError> {
     for was in old {
         match new.iter().find(|d| d.id == was.id) {
@@ -329,7 +329,7 @@ async fn apply(
         old_pins.keys().chain(pins.keys()).collect();
     for robot in robots {
         if old_pins.get(robot) != pins.get(robot) {
-            host.pin(robot, pins.get(robot).map(String::as_str)).await?;
+            host.pin(robot, pins.get(robot).cloned()).await?;
         }
     }
     Ok(())
