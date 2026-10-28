@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rlmesh_session::edge::{EdgeConfig, Robot};
-use rlmesh_session::record::{Recorded, Recorder, Rolling, read, summarize};
+use rlmesh_session::record::{Recorded, Recorder, Rolling, keep, read, summarize};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
@@ -267,7 +267,10 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
 
 /// The segment files of one session's rolling recording, oldest first.
 fn segments(root: &std::path::Path, session: SessionId) -> Vec<std::path::PathBuf> {
-    let dir = root.join("rolling").join(session.to_string());
+    files_in(&root.join("rolling").join(session.to_string()))
+}
+
+fn files_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .map(|d| d.map(|e| e.expect("entry").path()).collect())
         .unwrap_or_default();
@@ -336,7 +339,7 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn rolling_capture_keeps_to_its_budget_and_pauses_below_the_free_space_floor() {
+async fn rolling_capture_keeps_to_its_budget_and_incidents_and_pauses_below_the_free_space_floor() {
     let world = World::start().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let mut rolling = Rolling::new(dir.path());
@@ -346,7 +349,7 @@ async fn rolling_capture_keeps_to_its_budget_and_pauses_below_the_free_space_flo
     let observer = world
         .join("recorder", Role::Observer, PriorityClass::Scripted)
         .await;
-    let recorder = Recorder::start_rolling(Arc::new(observer), rolling, world.session)
+    let recorder = Recorder::start_rolling(Arc::new(observer), rolling.clone(), world.session)
         .await
         .expect("recorder");
     let robot = world
@@ -354,12 +357,33 @@ async fn rolling_capture_keeps_to_its_budget_and_pauses_below_the_free_space_flo
         .await;
     robot.declare_parts(FT).await.expect("declare");
     publish_ft(&robot, 500).await;
+    let kept = keep(&rolling, world.session, "keep").expect("kept on request");
+    robot.estop("test").await.expect("estop");
+    publish_ft(&robot, 500).await;
     let stats = recorder.finish().await.expect("finish");
     assert!(stats.segments >= 3, "{stats:?}");
     assert_eq!(
         segments(dir.path(), world.session),
         [stats.path],
         "only the newest is kept"
+    );
+
+    // Both incidents outlive the purge, the e-stop's with the segments
+    // written after it, heartbeats included.
+    let incidents = files_in(&dir.path().join("incidents").join(world.session.to_string()));
+    assert_eq!(incidents.len(), 2, "{incidents:?}");
+    assert!(incidents.contains(&kept));
+    let estop = incidents
+        .iter()
+        .find(|d| d.to_string_lossy().ends_with("-estop"))
+        .expect("the e-stop kept itself");
+    let files = files_in(estop);
+    assert!(files.len() >= 3, "{files:?}");
+    let messages: Vec<_> = files.iter().flat_map(|f| read(f).expect("read")).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| matches!(m.message, Recorded::Heartbeat(_)))
     );
 
     // A disk below the floor gets nothing written.

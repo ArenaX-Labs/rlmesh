@@ -15,7 +15,7 @@ use crate::model::Verb;
 use crate::replay::{Replay, SPEEDS};
 use crate::timeline::Tone;
 use crate::values::Value;
-use crate::view::{View, clocks};
+use crate::view::{Recording, View, clocks};
 
 /// The central panel's tabs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,6 +38,8 @@ pub struct UiState {
     pub confirm_arm: bool,
     /// A recorded session: no verbs.
     pub replay: bool,
+    /// A live session paused on its history: only the e-stop.
+    pub paused: bool,
     textures: BTreeMap<ChannelId, (u64, TextureHandle)>,
 }
 
@@ -47,6 +49,7 @@ impl std::fmt::Debug for UiState {
             .field("tab", &self.tab)
             .field("confirm_arm", &self.confirm_arm)
             .field("replay", &self.replay)
+            .field("paused", &self.paused)
             .finish_non_exhaustive()
     }
 }
@@ -133,15 +136,81 @@ pub fn show(ui: &mut egui::Ui, view: &View, state: &mut UiState) -> Vec<Verb> {
     verbs
 }
 
+/// What the live bar asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveAction {
+    /// Pause on the recent history.
+    Pause,
+    /// Back to the live session.
+    Resume,
+    /// Keep the host's recent recording as an incident.
+    Keep,
+}
+
+/// A live session's bar: pause or resume, and Keep (`can_keep`: the host
+/// records into this machine's recordings directory) with its last answer.
+pub fn live_bar(
+    ui: &mut egui::Ui,
+    paused: bool,
+    can_keep: bool,
+    kept: Option<&Result<String, String>>,
+) -> Option<LiveAction> {
+    let mut action = None;
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let (label, tone) = if paused {
+            ("PAUSED", Tone::Warn)
+        } else {
+            ("LIVE", Tone::Good)
+        };
+        ui.label(RichText::new(label).strong().color(tone_color(tone)));
+        if paused {
+            if ui
+                .button("Back to live")
+                .on_hover_text("Show the session as it is now")
+                .clicked()
+            {
+                action = Some(LiveAction::Resume);
+            }
+        } else if ui
+            .button("Pause")
+            .on_hover_text("Scrub the last minute; the session keeps running")
+            .clicked()
+        {
+            action = Some(LiveAction::Pause);
+        }
+        if ui
+            .add_enabled(can_keep, Button::new("Keep"))
+            .on_hover_text("Keep the host's recording of the last 2 minutes as an incident")
+            .on_disabled_hover_text("The host does not record into this machine's recordings")
+            .clicked()
+        {
+            action = Some(LiveAction::Keep);
+        }
+        match kept {
+            Some(Ok(dir)) => {
+                ui.label(RichText::new(format!("kept in {dir}")).weak());
+            }
+            Some(Err(why)) => {
+                ui.label(RichText::new(format!("not kept: {why}")).color(tone_color(Tone::Warn)));
+            }
+            None => {}
+        }
+    });
+    ui.add_space(4.0);
+    action
+}
+
 /// The replay transport: play or pause, step, speed, and a scrub bar over
-/// the recording, in seconds from its start.
-pub fn replay_bar(ui: &mut egui::Ui, replay: &mut Replay) {
+/// the recording, in seconds from its start. `label` names what is
+/// replayed.
+pub fn replay_bar(ui: &mut egui::Ui, replay: &mut Replay, label: &str) {
     let (first, last) = replay.bounds();
     let secs = |t: i64| (t - first) as f64 / 1e9;
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new("REPLAY")
+            RichText::new(label)
                 .strong()
                 .color(tone_color(Tone::Neutral)),
         );
@@ -218,6 +287,21 @@ fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<V
             };
             ui.horizontal(|ui| {
                 ui.label(host);
+                match h.recording {
+                    Recording::On => {
+                        ui.label(RichText::new("REC").strong().color(tone_color(Tone::Bad)))
+                            .on_hover_text("The host records this session");
+                    }
+                    Recording::Paused => {
+                        ui.label(
+                            RichText::new("recording paused: disk low")
+                                .color(tone_color(Tone::Warn)),
+                        );
+                    }
+                    Recording::Off => {
+                        ui.label(RichText::new("not recorded").weak());
+                    }
+                }
                 ui.label(RichText::new(&h.clock).weak());
             });
         });
@@ -239,6 +323,9 @@ fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<V
                 .on_hover_text("Emergency stop: one click, latches until the robot clears it");
             if estop.clicked() {
                 verbs.push(Verb::Estop);
+            }
+            if state.paused {
+                return;
             }
             ui.add_space(12.0);
             if ui

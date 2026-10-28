@@ -192,10 +192,10 @@ fn live_session() {
     let mut model = Model::new(pid("cockpit-snapshot"), ModelConfig::default());
     let end = std::time::Instant::now() + Duration::from_secs_f64(seconds);
     while std::time::Instant::now() < end {
-        feed.drain(&mut model);
+        feed.drain(&mut model, None);
         std::thread::sleep(Duration::from_millis(50));
     }
-    feed.drain(&mut model);
+    feed.drain(&mut model, None);
     let mut h = harness(model.view(feed.now_ns()));
     h.run();
     assert!(

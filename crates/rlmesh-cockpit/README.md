@@ -18,19 +18,24 @@ Then open the cockpit on the printed address:
 
 ```sh
 mise run cockpit -- 127.0.0.1:41000/local/01a15b0a-...
-# or: cargo run -p rlmesh-cockpit -- ADDRESS [--id cockpit] [--timeout 10]
+# or: cargo run -p rlmesh-cockpit -- ADDRESS [--id cockpit] [--timeout 10] [--record-dir DIR]
 ```
 
 `RUST_LOG=rlmesh_cockpit=debug` logs the feed.
+
+The header says whether the host records the session (`REC`, or "recording paused: disk low"). **Pause** scrubs the last minute (up to 512 MB of samples) while the session keeps running underneath; only E-STOP stays on until **Back to live**. **Keep** keeps the host's recording of the last 2 minutes as an incident; it needs the host on this machine, recording into `--record-dir` (default: the host's default).
 
 ## Replay a recording
 
 ```sh
 mise run cockpit -- --replay session.mcap   # the demo's --record file, or any rlmesh Recorder output
 mise run cockpit -- --replay ~/.local/share/rlmesh/recordings/rolling/SESSION   # what `rlmesh host` recorded
+mise run cockpit -- --replay ~/.local/share/rlmesh/recordings/incidents/SESSION/INCIDENT   # what it kept
 ```
 
-The same views over a recorded session, with play/pause, speed, previous/next message and a scrub bar instead of the verbs. Scrubbing shows exactly what playing straight through shows (checkpoints every 10 s of session time). A recording has no heartbeats or observer reports, so the counters only they carry (produced and published rates, controller starts and skips) stay empty.
+The same views over a recorded session, with play/pause, speed, previous/next message and a scrub bar instead of the verbs. Scrubbing shows exactly what playing straight through shows (checkpoints every 10 s of session time).
+
+`rlmesh host` keeps an incident by itself on an e-stop, safe mode, a lease preemption or 5 missed edge deadlines within 10 s: the 2 minutes before and 30 s after, under `incidents/SESSION/UNIXMS-LABEL/`, for 14 days or 10 GB in all.
 
 ## What it shows
 

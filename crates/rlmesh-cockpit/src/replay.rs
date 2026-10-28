@@ -10,10 +10,10 @@
 //! so a scrubbed frame shows exactly what playing straight through would
 //! have shown, cumulative counters included.
 //!
-//! A recording holds no heartbeats or observer reports, so the counters
-//! only they carry (published and produced rates, controller starts and
-//! skips, clock offsets) stay empty.
+//! [`History`] keeps a live session's recent inputs, so the cockpit can
+//! pause and scrub them the same way.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -186,6 +186,75 @@ fn input(m: RecordedMessage) -> (i64, Input) {
             receive_ns: m.log_ns,
         },
         Recorded::Authority(snapshot) => Input::Authority(snapshot),
+        Recorded::Heartbeat(heartbeat) => Input::Heartbeat {
+            heartbeat,
+            receive_ns: m.log_ns,
+        },
+        Recorded::Report(report) => Input::Report {
+            report,
+            receive_ns: m.log_ns,
+        },
     };
     (m.log_ns, input)
+}
+
+/// A live session's newest inputs, `(cockpit clock, input)`: the last
+/// `window` of them, fewer when their samples' payloads pass `max_bytes`.
+/// The host republishes its snapshot a few times a second, so a window
+/// always holds one.
+pub struct History {
+    inputs: VecDeque<(i64, Input)>,
+    /// Payload bytes of the samples in `inputs`.
+    bytes: usize,
+    window_ns: i64,
+    max_bytes: usize,
+}
+
+impl History {
+    /// How much a live cockpit keeps to pause on.
+    pub const WINDOW: Duration = Duration::from_secs(60);
+    /// The sample payload budget (cameras dominate it).
+    pub const MAX_BYTES: usize = 512 << 20;
+
+    /// An empty history of `window` and `max_bytes`.
+    pub fn new(window: Duration, max_bytes: usize) -> Self {
+        Self {
+            inputs: VecDeque::new(),
+            bytes: 0,
+            window_ns: ns(window),
+            max_bytes,
+        }
+    }
+
+    /// Keeps `input`, received at `at_ns`, and forgets what fell out.
+    pub fn push(&mut self, at_ns: i64, input: &Input) {
+        if matches!(input, Input::Overrun(_) | Input::Outcome { .. }) {
+            return;
+        }
+        self.bytes += payload(input);
+        self.inputs.push_back((at_ns, input.clone()));
+        while let Some((at, _)) = self.inputs.front()
+            && (*at < at_ns - self.window_ns || self.bytes > self.max_bytes)
+            && self.inputs.len() > 1
+        {
+            let Some((_, old)) = self.inputs.pop_front() else {
+                break;
+            };
+            self.bytes -= payload(&old);
+        }
+    }
+
+    /// A replay of what is kept, positioned at its end.
+    pub fn replay(&self, me: ParticipantId, config: ModelConfig) -> Replay {
+        let mut replay = Replay::new(self.inputs.iter().cloned().collect(), me, config);
+        replay.seek(replay.bounds().1);
+        replay
+    }
+}
+
+fn payload(input: &Input) -> usize {
+    match input {
+        Input::Sample { sample, .. } => sample.payload.len(),
+        _ => 0,
+    }
 }

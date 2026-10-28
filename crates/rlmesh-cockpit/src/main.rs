@@ -9,6 +9,7 @@ use std::time::Duration;
 use clap::Parser;
 use rlmesh_cockpit::{CockpitApp, Feed, Model, ModelConfig, Replay};
 use rlmesh_session::SessionAddress;
+use rlmesh_session::record::Rolling;
 use rlmesh_session::wire::{ParticipantId, PriorityClass, Role};
 
 /// The RLMesh cockpit: live channels, declared vs measured rates, the
@@ -30,6 +31,10 @@ struct Args {
     /// How long to wait for the session host, in seconds.
     #[arg(long, default_value_t = 10.0)]
     timeout: f64,
+    /// The recordings directory of a host on this machine (`rlmesh host
+    /// --record-dir`), for Keep; the host's default when absent.
+    #[arg(long, value_name = "DIR")]
+    record_dir: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -96,9 +101,11 @@ fn run(args: &Args, address: &SessionAddress) -> Result<(), Box<dyn std::error::
             let ctx = cc.egui_ctx.clone();
             let wake = Arc::new(move || ctx.request_repaint());
             let feed = runtime.block_on(Feed::start(participant, wake))?;
+            let recordings = args.record_dir.clone().or_else(Rolling::default_dir);
             Ok(Box::new(CockpitApp::new(
                 feed,
                 Model::new(me, ModelConfig::default()),
+                recordings.map(Rolling::new),
             )))
         }),
     )?;

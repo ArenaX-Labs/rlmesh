@@ -88,6 +88,10 @@ pub mod schema {
     pub const AUTHORITY_STATE: &str = "rlmesh.session.v2.AuthorityState";
     /// One controller's binding.
     pub const BINDING_RECORD: &str = "rlmesh.session.v2.BindingRecord";
+    /// A participant's heartbeat (`p/{id}/hb`).
+    pub const HEARTBEAT: &str = "rlmesh.session.v2.Heartbeat";
+    /// A participant's observer telemetry (`p/{id}/report`).
+    pub const PARTICIPANT_REPORT: &str = "rlmesh.session.v2.ParticipantReport";
 }
 
 // --- control messages --------------------------------------------------------

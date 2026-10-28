@@ -13,6 +13,8 @@
 //! | `/{robot}/{path}/_chunks` | `rlmesh.session.v2.ActionChunk` | chunk sent to the edge |
 //! | `/_session/authority` | `rlmesh.session.v2.AuthorityState` | authority change |
 //! | `/_session/bindings` | `rlmesh.session.v2.BindingRecord` | new or changed binding |
+//! | `/_session/heartbeats` | `rlmesh.session.v2.Heartbeat` | participant heartbeat |
+//! | `/_session/reports` | `rlmesh.session.v2.ParticipantReport` | observer report |
 //!
 //! Schemas are the `rlmesh.session.v2` protobuf descriptors. A new MCAP
 //! channel opens for every session channel id. `publish_time` is the
@@ -23,6 +25,13 @@
 //! The recorder records what the session publishes: it declares no delivery
 //! contract, so a stream a policy reads at `latest@R` is recorded at R
 //! (§8.2), while `_applied` and chunks are recorded in full.
+//!
+//! Always-on capture ([`Recorder::start_rolling`]) also keeps incidents:
+//! an e-stop, safe mode, a lease preemption or a burst of missed edge
+//! deadlines links the session's recent segments, and the ones written
+//! for a while after, into `incidents/{session}/{unix_ms}-{label}/`, where
+//! the rolling purge does not reach them. [`keep`] does the same on
+//! request (the cockpit's Keep).
 //!
 //! [`read`] decodes a recording back into its messages in log-time order
 //! (the cockpit's replay). [`summarize`] checks one: message counts per
@@ -41,8 +50,8 @@ use std::time::Duration;
 use crate::transport::{TrafficClass, payload_bytes};
 use crate::wire::codec::{self, schema};
 use crate::wire::{
-    ActionChunk, AuthoritySnapshot, ChannelId, Fingerprint, PartSpec, ParticipantId, Sample,
-    SessionId, StreamSpec,
+    ActionChunk, AuthoritySnapshot, ChannelId, Fingerprint, Health, Heartbeat, Mode, PartSpec,
+    ParticipantId, ParticipantReport, Sample, SessionId, StreamSpec,
 };
 use crate::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use bytes::Bytes;
@@ -109,6 +118,8 @@ enum TopicKey {
     Chunks(ChannelId),
     Authority,
     Bindings,
+    Heartbeats,
+    Reports,
 }
 
 enum Entry {
@@ -118,6 +129,11 @@ enum Entry {
         publish_time: i64,
         sequence: u64,
         data: Vec<u8>,
+    },
+    /// Something worth keeping happened (rolling capture only).
+    Incident {
+        label: &'static str,
+        log_time: i64,
     },
     Finish {
         metadata: Metadata,
@@ -134,6 +150,90 @@ impl Stamp {
     fn now(&self) -> i64 {
         self.participant.session_now_ns()
     }
+
+    /// `t_ns` on `participant`'s clock in session time (unchanged when the
+    /// host has no mapping for it yet).
+    fn to_session(&self, participant: &ParticipantId, t_ns: i64) -> i64 {
+        let offset = self
+            .participant
+            .authority_view()
+            .with(|view| view.and_then(|v| v.clock(participant)).map(|c| c.offset_ns))
+            .unwrap_or(0);
+        t_ns.saturating_add(offset)
+    }
+}
+
+/// What a new authority snapshot shows that is worth keeping, against the
+/// one before it.
+fn incident(previous: &AuthoritySnapshot, now: &AuthoritySnapshot) -> Option<&'static str> {
+    if (now.estop_latched && !previous.estop_latched)
+        || (now.mode == Mode::Estop && previous.mode != Mode::Estop)
+    {
+        return Some("estop");
+    }
+    if now.mode == Mode::Safe && previous.mode != Mode::Safe {
+        return Some("safe");
+    }
+    let preempted = now.leases.iter().any(|lease| {
+        previous.leases.iter().any(|old| {
+            old.channel == lease.channel
+                && old.holder != lease.holder
+                && lease.priority > old.priority
+        })
+    });
+    preempted.then_some("preempted")
+}
+
+/// Missed edge deadlines within [`MISS_WINDOW`] that make an incident.
+const MISS_BURST: usize = 5;
+/// See [`MISS_BURST`].
+const MISS_WINDOW: Duration = Duration::from_secs(10);
+
+/// One `_applied` stream's missed deadlines.
+#[derive(Default)]
+struct Misses {
+    /// The previous tick's seq and capture time.
+    last: Option<(u64, i64)>,
+    /// When each recent miss was recorded.
+    recent: std::collections::VecDeque<i64>,
+}
+
+/// Subscribes to a `_session` topic of every participant's envelopes
+/// (heartbeats, reports), `publish_time` its log time (the send time, on
+/// the sender's clock, is in the envelope): `sequence` decodes one into
+/// its sequence, or `None` to skip it.
+async fn subscribe_envelopes(
+    participant: &Arc<Participant>,
+    tx: &mpsc::Sender<Entry>,
+    stamp: &Stamp,
+    class: TrafficClass,
+    key: String,
+    topic: Topic,
+    sequence: fn(&[u8]) -> Option<u64>,
+) -> Result<zenoh::pubsub::Subscriber<()>, RecordError> {
+    let topic = Arc::new(topic);
+    let (tx, stamp) = (tx.clone(), stamp.clone());
+    Ok(participant
+        .transport()
+        .session(class)
+        .declare_subscriber(key)
+        .callback(move |sample| {
+            let log_time = stamp.now();
+            let data = sample.payload().to_bytes().into_owned();
+            let Some(sequence) = sequence(&data) else {
+                debug!(topic = topic.name, "undecodable envelope");
+                return;
+            };
+            let _ = tx.send(Entry::Message {
+                topic: topic.clone(),
+                log_time,
+                publish_time: log_time,
+                sequence,
+                data,
+            });
+        })
+        .await
+        .map_err(SessionError::from)?)
 }
 
 /// A session recording in progress: see the crate docs.
@@ -143,7 +243,8 @@ pub struct Recorder {
     writer: Option<JoinHandle<Result<RecordStats, RecordError>>>,
     watcher: Option<tokio::task::JoinHandle<Subscriptions>>,
     cancel: tokio::sync::watch::Sender<bool>,
-    authority: Option<zenoh::pubsub::Subscriber<()>>,
+    /// Authority, heartbeats and reports.
+    subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
     /// Every robot declared while recording, as metadata records.
     robots: Arc<Mutex<Metadata>>,
 }
@@ -167,7 +268,7 @@ impl Recorder {
         path: impl AsRef<Path>,
     ) -> Result<Self, RecordError> {
         let segment = Segment::create(path.as_ref(), 0)?;
-        Self::start_with(participant, Sink::File(segment)).await
+        Self::start_with(participant, Sink::File(Box::new(segment))).await
     }
 
     /// Starts always-on recording of the session `participant` is attached
@@ -175,14 +276,14 @@ impl Recorder {
     /// `{dir}/rolling/{session}/`, each opening with the newest authority
     /// snapshot so it replays on its own; the oldest segments of every
     /// session go when the budgets are exceeded. Below the free-space floor
-    /// it stops writing (counted in [`RecordStats::paused_drops`]) and
-    /// retries every segment period.
+    /// it stops writing (counted in [`RecordStats::paused_drops`]), reports
+    /// itself degraded in its heartbeats and retries every segment period.
     pub async fn start_rolling(
         participant: Arc<Participant>,
         rolling: Rolling,
         session: SessionId,
     ) -> Result<Self, RecordError> {
-        let dir = rolling.dir.join("rolling").join(session.to_string());
+        let dir = rolling.session_dir(session);
         std::fs::create_dir_all(&dir).map_err(|source| RecordError::Io {
             path: dir.clone(),
             source,
@@ -190,12 +291,15 @@ impl Recorder {
         let sink = RollingSink {
             rolling,
             dir,
+            session,
+            participant: participant.clone(),
             current: None,
             retry_at: i64::MIN,
             authority: None,
             paused: false,
+            keeping: Vec::new(),
         };
-        Self::start_with(participant, Sink::Rolling(sink)).await
+        Self::start_with(participant, Sink::Rolling(Box::new(sink))).await
     }
 
     async fn start_with(participant: Arc<Participant>, sink: Sink) -> Result<Self, RecordError> {
@@ -229,6 +333,7 @@ impl Recorder {
             });
             let seen: Mutex<BTreeMap<ParticipantId, (Fingerprint, u32)>> =
                 Mutex::new(BTreeMap::new());
+            let previous: Mutex<Option<AuthoritySnapshot>> = Mutex::new(None);
             let tx = tx.clone();
             let stamp = stamp.clone();
             participant
@@ -249,6 +354,14 @@ impl Recorder {
                         sequence: state.revision,
                         data,
                     });
+                    let mut previous = previous
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some(label) = previous.as_ref().and_then(|p| incident(p, &state)) {
+                        let _ = tx.send(Entry::Incident { label, log_time });
+                    }
+                    *previous = Some(state.clone());
+                    drop(previous);
                     robots
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -274,6 +387,36 @@ impl Recorder {
                 .await
                 .map_err(SessionError::from)?
         };
+        let heartbeats = subscribe_envelopes(
+            &participant,
+            &tx,
+            &stamp,
+            TrafficClass::Control,
+            participant.keys().heartbeats(),
+            Topic {
+                key: TopicKey::Heartbeats,
+                name: "/_session/heartbeats".into(),
+                schema: schema::HEARTBEAT,
+                metadata: BTreeMap::new(),
+            },
+            |data| codec::decode_heartbeat(data).ok().map(|hb| hb.seq),
+        )
+        .await?;
+        let reports = subscribe_envelopes(
+            &participant,
+            &tx,
+            &stamp,
+            TrafficClass::Data,
+            participant.keys().reports(),
+            Topic {
+                key: TopicKey::Reports,
+                name: "/_session/reports".into(),
+                schema: schema::PARTICIPANT_REPORT,
+                metadata: BTreeMap::new(),
+            },
+            |data| codec::decode_report(data).ok().map(|_| 0),
+        )
+        .await?;
 
         let (cancel, cancelled) = tokio::sync::watch::channel(false);
         let watcher = tokio::spawn(watch_parts(
@@ -288,7 +431,7 @@ impl Recorder {
             writer: Some(writer),
             watcher: Some(watcher),
             cancel,
-            authority: Some(authority),
+            subscribers: vec![authority, heartbeats, reports],
             robots,
         })
     }
@@ -299,7 +442,7 @@ impl Recorder {
         if let Some(watcher) = self.watcher.take() {
             drop(watcher.await);
         }
-        drop(self.authority.take());
+        self.subscribers.clear();
         let mut metadata = session_metadata(self.participant.authority().as_ref());
         metadata.extend(
             self.robots
@@ -483,18 +626,10 @@ fn on_chunk(
         debug!(topic = topic.name, "undecodable chunk");
         return;
     };
-    let offset = stamp
-        .participant
-        .authority_view()
-        .with(|view| {
-            view.and_then(|v| v.clock(&chunk.source))
-                .map(|c| c.offset_ns)
-        })
-        .unwrap_or(0);
     let _ = tx.send(Entry::Message {
         topic: topic.clone(),
         log_time,
-        publish_time: chunk.publish_ns.saturating_add(offset),
+        publish_time: stamp.to_session(&chunk.source, chunk.publish_ns),
         sequence: chunk.seq,
         data: data.to_vec(),
     });
@@ -531,6 +666,12 @@ async fn subscribe_stream(
         metadata.insert("kind".into(), part.kind.clone());
         metadata.insert("hz".into(), part.hz.to_string());
     }
+    // An `_applied` stream's consecutive ticks more than two control
+    // periods apart are missed deadlines (as the cockpit counts them).
+    let deadline = part
+        .filter(|p| p.applied_channel == Some(stream.channel))
+        .map(|p| 2 * i64::try_from(p.control_period().as_nanos()).unwrap_or(i64::MAX));
+    let misses: Mutex<Misses> = Mutex::default();
     let topic = Arc::new(Topic {
         key: TopicKey::Stream(stream.channel),
         name: format!("/{}/{}", stream.owner, stream.path),
@@ -542,13 +683,40 @@ async fn subscribe_stream(
         let stamp = stamp.clone();
         Arc::new(move |received: &crate::Received| {
             let p = &stamp.participant;
+            let log_time = p.to_session_ns(received.receive_ns);
             let _ = tx.send(Entry::Message {
                 topic: topic.clone(),
-                log_time: p.to_session_ns(received.receive_ns),
+                log_time,
                 publish_time: p.to_session_ns(received.capture_local_ns),
                 sequence: received.sample.seq,
                 data: codec::encode_sample(&received.sample).to_vec(),
             });
+            let Some(deadline) = deadline else {
+                return;
+            };
+            let sample = &received.sample;
+            let mut misses = misses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Misses { last, recent } = &mut *misses;
+            if let Some((seq, at)) = *last
+                && sample.seq == seq + 1
+                && sample.capture_ns - at > deadline
+            {
+                recent.push_back(log_time);
+            }
+            *last = Some((sample.seq, sample.capture_ns));
+            let window = i64::try_from(MISS_WINDOW.as_nanos()).unwrap_or(i64::MAX);
+            while recent.front().is_some_and(|&t| t < log_time - window) {
+                recent.pop_front();
+            }
+            if recent.len() >= MISS_BURST {
+                recent.clear();
+                let _ = tx.send(Entry::Incident {
+                    label: "deadline-misses",
+                    log_time,
+                });
+            }
         })
     };
     participant
@@ -611,6 +779,7 @@ fn ns(t: i64) -> u64 {
 fn write_loop(mut sink: Sink, rx: &mpsc::Receiver<Entry>) -> Result<RecordStats, RecordError> {
     let mut stats = RecordStats::default();
     let mut metadata = Metadata::new();
+    let mut authority_seen = false;
     while let Ok(entry) = rx.recv() {
         match entry {
             Entry::Message {
@@ -620,6 +789,13 @@ fn write_loop(mut sink: Sink, rx: &mpsc::Receiver<Entry>) -> Result<RecordStats,
                 sequence,
                 data,
             } => {
+                // Heartbeats and reports before the first snapshot are
+                // skipped, so a recording opens with the authority.
+                authority_seen |= topic.key == TopicKey::Authority;
+                if !authority_seen && matches!(topic.key, TopicKey::Heartbeats | TopicKey::Reports)
+                {
+                    continue;
+                }
                 let message = Message {
                     topic,
                     log_time,
@@ -630,6 +806,11 @@ fn write_loop(mut sink: Sink, rx: &mpsc::Receiver<Entry>) -> Result<RecordStats,
                 match &mut sink {
                     Sink::File(segment) => segment.write(&message, &mut stats)?,
                     Sink::Rolling(rolling) => rolling.write(message, &mut stats)?,
+                }
+            }
+            Entry::Incident { label, log_time } => {
+                if let Sink::Rolling(rolling) = &mut sink {
+                    rolling.incident(label, log_time);
                 }
             }
             Entry::Finish { metadata: m } => {
@@ -651,8 +832,8 @@ fn write_loop(mut sink: Sink, rx: &mpsc::Receiver<Entry>) -> Result<RecordStats,
 
 /// Where the writer thread puts messages.
 enum Sink {
-    File(Segment),
-    Rolling(RollingSink),
+    File(Box<Segment>),
+    Rolling(Box<RollingSink>),
 }
 
 /// A queued message.
@@ -769,11 +950,20 @@ pub struct Rolling {
     pub max_bytes: u64,
     /// Below this much free space on the disk, capture pauses.
     pub min_free_bytes: u64,
+    /// How far back an incident reaches.
+    pub incident_before: Duration,
+    /// How long after an automatic incident segments are still kept.
+    pub incident_after: Duration,
+    /// Incidents older than this go.
+    pub incident_max_age: Duration,
+    /// The oldest incidents go while all of them together exceed this.
+    pub incident_max_bytes: u64,
 }
 
 impl Rolling {
     /// The defaults (newest 30 min or 20 GB, one-minute segments, pause
-    /// below 2 GB free) under `dir`.
+    /// below 2 GB free; incidents of the 2 min before and 30 s after, kept
+    /// 14 days or 10 GB) under `dir`.
     // TODO: fixed budgets; add per-host profiles (smaller budgets, lower
     // camera rate) when a low-storage host needs them.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
@@ -783,7 +973,22 @@ impl Rolling {
             max_age: Duration::from_secs(30 * 60),
             max_bytes: 20_000_000_000,
             min_free_bytes: 2_000_000_000,
+            incident_before: Duration::from_secs(2 * 60),
+            incident_after: Duration::from_secs(30),
+            incident_max_age: Duration::from_secs(14 * 24 * 60 * 60),
+            incident_max_bytes: 10_000_000_000,
         }
+    }
+
+    /// The user's default recordings root (`rlmesh/recordings` in the data
+    /// directory), shared by `rlmesh host` and the cockpit.
+    pub fn default_dir() -> Option<PathBuf> {
+        dirs::data_dir().map(|d| d.join("rlmesh").join("recordings"))
+    }
+
+    /// Where `session`'s rolling segments are.
+    pub fn session_dir(&self, session: SessionId) -> PathBuf {
+        self.dir.join("rolling").join(session.to_string())
     }
 }
 
@@ -792,12 +997,17 @@ struct RollingSink {
     rolling: Rolling,
     /// This session's segments.
     dir: PathBuf,
+    session: SessionId,
+    /// Reports degraded health while paused.
+    participant: Arc<Participant>,
     current: Option<Segment>,
     /// While paused, the log time to try opening a segment again.
     retry_at: i64,
     /// The newest authority snapshot, written first into every segment.
     authority: Option<Message>,
     paused: bool,
+    /// Open incidents: until when (log time) new segments go into each.
+    keeping: Vec<(i64, PathBuf)>,
 }
 
 impl RollingSink {
@@ -834,12 +1044,12 @@ impl RollingSink {
             if !self.paused {
                 warn!(dir = %self.dir.display(), "recording paused: less than {} bytes free", self.rolling.min_free_bytes);
             }
-            self.paused = true;
+            self.pause(true);
             return Ok(());
         }
         if self.paused {
             info!(dir = %self.dir.display(), "recording resumed");
-            self.paused = false;
+            self.pause(false);
         }
         let wall_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -856,15 +1066,119 @@ impl RollingSink {
             Ok(segment) => segment,
             Err(err) => {
                 warn!(%err, "recording paused: cannot open a segment");
-                self.paused = true;
+                self.pause(true);
                 return Ok(());
             }
         };
         if let Some(authority) = &self.authority {
             segment.write(authority, stats)?;
         }
+        self.keeping.retain(|(until, _)| log_time < *until);
+        for (_, incident) in &self.keeping {
+            link_into(&path, incident);
+        }
         self.current = Some(segment);
         Ok(())
+    }
+
+    fn pause(&mut self, paused: bool) {
+        self.paused = paused;
+        self.participant
+            .set_health(if paused { Health::Degraded } else { Health::Ok });
+    }
+
+    /// Keeps the recent segments as an incident and the ones opened until
+    /// [`Rolling::incident_after`] from now, unless an incident is still
+    /// open (it holds this one's start already).
+    fn incident(&mut self, label: &'static str, log_time: i64) {
+        if self.keeping.iter().any(|(until, _)| log_time < *until) {
+            debug!(session = %self.session, label, "incident within an open one");
+            return;
+        }
+        let until = log_time.saturating_add(
+            i64::try_from(self.rolling.incident_after.as_nanos()).unwrap_or(i64::MAX),
+        );
+        match keep(&self.rolling, self.session, label) {
+            Ok(dir) => {
+                info!(session = %self.session, label, dir = %dir.display(), "incident kept");
+                self.keeping.push((until, dir));
+            }
+            Err(err) => warn!(session = %self.session, label, %err, "incident not kept"),
+        }
+    }
+}
+
+/// Keeps `session`'s rolling segments of the last
+/// [`Rolling::incident_before`] as an incident named `label`, in
+/// `incidents/{session}/{unix_ms}-{label}/`, out of the rolling purge's
+/// reach; returns that directory. The segments are hard links, so the one
+/// being written keeps growing in the incident until it rotates.
+// TODO: works on the recordings directory, so only on the host's machine;
+// carry Keep (and episode marks) on the wire once the spec's Mark message
+// is built.
+pub fn keep(rolling: &Rolling, session: SessionId, label: &str) -> Result<PathBuf, RecordError> {
+    let label: String = label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let now = std::time::SystemTime::now();
+    let wall_ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let source = rolling.session_dir(session);
+    let io = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| RecordError::Io { path, source }
+    };
+    let mut recent: Vec<PathBuf> = std::fs::read_dir(&source)
+        .map_err(io(&source))?
+        .flatten()
+        .filter(|f| {
+            f.path().extension().is_some_and(|e| e == "mcap")
+                && f.metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|modified| {
+                        now.duration_since(modified)
+                            .is_ok_and(|age| age <= rolling.incident_before)
+                    })
+        })
+        .map(|f| f.path())
+        .collect();
+    if recent.is_empty() {
+        return Err(RecordError::Io {
+            path: source,
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "no recent segments"),
+        });
+    }
+    recent.sort();
+    let dir = rolling
+        .dir
+        .join("incidents")
+        .join(session.to_string())
+        .join(format!("{wall_ms}-{label}"));
+    std::fs::create_dir_all(&dir).map_err(io(&dir))?;
+    for segment in &recent {
+        link_into(segment, &dir);
+    }
+    Ok(dir)
+}
+
+/// Hard-links `segment` into `dir` (copies it where links are refused).
+fn link_into(segment: &Path, dir: &Path) {
+    let Some(name) = segment.file_name() else {
+        return;
+    };
+    let target = dir.join(name);
+    if std::fs::hard_link(segment, &target).is_err()
+        && let Err(err) = std::fs::copy(segment, &target)
+    {
+        warn!(%err, segment = %segment.display(), "could not keep a segment");
     }
 }
 
@@ -908,6 +1222,50 @@ fn purge(rolling: &Rolling) {
         }
         if let Some(dir) = path.parent() {
             // Only succeeds once the session's last segment is gone.
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+    // Incidents, by their directories' age; a segment linked into two
+    // counts twice.
+    let mut incidents: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let sessions = std::fs::read_dir(rolling.dir.join("incidents"))
+        .into_iter()
+        .flatten()
+        .flatten();
+    for session in sessions {
+        for incident in std::fs::read_dir(session.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let Ok(modified) = incident.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            let len = std::fs::read_dir(incident.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|f| f.metadata().ok())
+                .map(|m| m.len())
+                .sum();
+            incidents.push((modified, len, incident.path()));
+        }
+    }
+    incidents.sort();
+    let mut total: u64 = incidents.iter().map(|(_, len, _)| len).sum();
+    for (modified, len, path) in incidents {
+        let old = now
+            .duration_since(modified)
+            .is_ok_and(|age| age > rolling.incident_max_age);
+        if !old && total <= rolling.incident_max_bytes {
+            break;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => total = total.saturating_sub(len),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => warn!(%err, path = %path.display(), "could not remove an old incident"),
+        }
+        if let Some(dir) = path.parent() {
             let _ = std::fs::remove_dir(dir);
         }
     }
@@ -1033,6 +1391,8 @@ pub fn summarize(path: impl AsRef<Path>) -> Result<Summary, RecordError> {
             schema::SAMPLE => codec::decode_sample(data).is_ok(),
             schema::ACTION_CHUNK => codec::decode_chunk(data).is_ok(),
             schema::BINDING_RECORD => codec::decode_binding(&data).is_ok(),
+            schema::HEARTBEAT => codec::decode_heartbeat(&data).is_ok(),
+            schema::PARTICIPANT_REPORT => codec::decode_report(&data).is_ok(),
             schema::AUTHORITY_STATE => match codec::decode_state(&data) {
                 Ok(state) => {
                     lease_changes(&state, message.log_time, &mut held, &mut summary.leases);
@@ -1064,6 +1424,10 @@ pub enum Recorded {
     Chunk(ActionChunk),
     /// An authority snapshot (it carries the bindings too).
     Authority(AuthoritySnapshot),
+    /// A participant's heartbeat.
+    Heartbeat(Heartbeat),
+    /// A participant's observer report.
+    Report(ParticipantReport),
 }
 
 /// One recorded message with its MCAP times, both session time.
@@ -1077,7 +1441,8 @@ pub struct RecordedMessage {
     pub message: Recorded,
 }
 
-/// Every sample, chunk and authority snapshot of a recording, ordered by
+/// Every sample, chunk, authority snapshot, heartbeat and report of a
+/// recording, ordered by
 /// log time (stable, so each channel keeps its recorded order). Binding
 /// records are skipped (the snapshots carry them), as are envelopes that do
 /// not decode ([`summarize`] counts those). A file cut short (the recorder
@@ -1107,6 +1472,10 @@ pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordedMessage>, RecordError>
             Some(schema::ACTION_CHUNK) => codec::decode_chunk(data).ok().map(Recorded::Chunk),
             Some(schema::AUTHORITY_STATE) => {
                 codec::decode_state(&data).ok().map(Recorded::Authority)
+            }
+            Some(schema::HEARTBEAT) => codec::decode_heartbeat(&data).ok().map(Recorded::Heartbeat),
+            Some(schema::PARTICIPANT_REPORT) => {
+                codec::decode_report(&data).ok().map(Recorded::Report)
             }
             _ => None,
         };

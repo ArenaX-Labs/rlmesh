@@ -21,12 +21,9 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write) -> Result<()> {
     } else {
         let dir = match &args.record_dir {
             Some(dir) => dir.clone(),
-            None => dirs::data_dir()
-                .context(
-                    "no user data directory to record into (pass --record-dir or --no-record)",
-                )?
-                .join("rlmesh")
-                .join("recordings"),
+            None => Rolling::default_dir().context(
+                "no user data directory to record into (pass --record-dir or --no-record)",
+            )?,
         };
         Some(dir)
     };
