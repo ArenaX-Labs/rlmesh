@@ -36,4 +36,8 @@ for crate in "${crates[@]}"; do
     exit 1
   fi
 done
+# The device runtime links as a board's static library (its allocator and
+# panic handler included) on upstream Rust: the ESP32-C6's target.
+echo "==> rlmesh-device links as a static library for $bare"
+cargo build -q -p rlmesh-device --no-default-features --target "$bare"
 echo "OK: ${crates[*]} sans-IO"
