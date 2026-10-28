@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
 use rlmesh_session::address::{Address, LEASE_GRACE, Placed, SessionAddress, place};
+use rlmesh_session::lease::LeaseGroup;
 use rlmesh_session::transport::{Endpoints, TransportTuning, zenoh_config};
 use rlmesh_session::wire::{
     AuthoritySnapshot, ChannelId, CtlStatus, Epoch, Fingerprint, LeaseToken, Mode, PartSpec,
@@ -654,6 +655,9 @@ impl Attached {
             Fingerprint(bytes)
         });
         let participant = self.participant;
+        // Requested through the holder's lease state machine; the lease ends
+        // with the driver's detach.
+        let mut group = LeaseGroup::new(participant.id(), &channels, 0);
         // The robot may be re-arming after the previous driver left (SAFE,
         // then a fresh epoch): wait for an armed session and retry a verb
         // that raced the new epoch.
@@ -668,9 +672,19 @@ impl Attached {
                 participant
                     .declare_binding(fingerprint, &table, channels.clone(), 0.0)
                     .await?;
-                participant
-                    .grant_leases(channels.clone(), Vec::new(), None)
-                    .await
+                let request = group.request(
+                    participant.binding_fingerprint(),
+                    None,
+                    participant.clock().now_ns(),
+                );
+                let reply = participant.command(request).await?;
+                group.on_reply(
+                    &reply,
+                    participant.clock_estimate().as_ref(),
+                    participant.clock().now_ns(),
+                );
+                reply.result?;
+                Ok::<_, SessionError>(reply.leases)
             }
             .await;
             match granted {
