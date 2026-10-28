@@ -116,7 +116,7 @@ Error decodeForBridge(const Frame& f, DenseLen lens, Msg& out) {
       if (n < 31) return Error::Length;
       const uint8_t nameLen = p[30];
       if (nameLen > kMaxName) return Error::Range;
-      if (n != 31 + nameLen) return Error::Length;
+      if (n != uint16_t(31 + nameLen)) return Error::Length;
       Hello& h = out.hello;
       h.flags = p[19];
       if (reserved(h.flags, hello_flags::kAll)) return Error::Reserved;
