@@ -18,7 +18,7 @@ use crate::spec::apply::Tensor;
 use crate::spec::bind::Dir;
 use crate::spec::policy::Allow;
 use crate::spec::{BindError, Policy, RunOptions};
-use crate::wire::{CtlStatus, DType, PriorityClass, Role};
+use crate::wire::{CtlStatus, DType, PriorityClass, ReasonCode, Role};
 
 /// How a binding reports a [`SessionError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,6 +82,11 @@ pub fn mode_name(mode: EdgeMode) -> &'static str {
         EdgeMode::Safe => "safe",
         EdgeMode::Estop => "estop",
     }
+}
+
+/// A reason code as bindings name it (`robot_lost`).
+pub fn reason_name(code: ReasonCode) -> String {
+    code.name().to_ascii_lowercase()
 }
 
 /// Every edge mode, in ladder order.

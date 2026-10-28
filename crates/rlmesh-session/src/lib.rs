@@ -89,7 +89,7 @@ pub mod transport;
 pub use rlmesh_session_core::virtual_clock;
 
 pub use address::SessionAddress;
-pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, LeaseEnd};
+pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason};
 pub use cache::{
     Cached, InputCache, InputSnapshot, Inputs, Observation, ObserveError, Skip, Snapshot,
 };

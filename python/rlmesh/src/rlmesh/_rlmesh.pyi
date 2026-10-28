@@ -1133,6 +1133,12 @@ class V2Robot:
         The session mode this robot sees (`disarmed`, `armed`, `active`,
         `safe`, `estop`).
         """
+    @property
+    def mode_reason(self) -> builtins.str:
+        r"""
+        Why the session mode is what it is (`robot_lost`, `estop_local`, ...;
+        `unspecified` before any change).
+        """
     def __new__(cls, address: builtins.str, name: builtins.str, robot_json: builtins.str, timeout_s: builtins.float = ...) -> V2Robot:
         r"""
         Attaches as `name` (the robot's participant id), declares

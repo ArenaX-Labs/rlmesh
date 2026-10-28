@@ -177,6 +177,79 @@ message BindingRecord {
   repeated ActionGrid grids = 8;
 }
 
+// Why a mode changed, the edge or the host went SAFE, or a lease ended
+// (one enum for all three, so the cockpit and the browser never infer).
+enum ReasonCode {
+  REASON_UNSPECIFIED = 0;
+  // Mode changes.
+  REASON_ARMED = 1;
+  REASON_DISARMED = 2;
+  REASON_FIRST_LEASE = 3;
+  REASON_LAST_RELEASE = 4;
+  // A ctl Estop through the host.
+  REASON_ESTOP_REMOTE = 5;
+  // robot.estop() or a hardware input at the edge.
+  REASON_ESTOP_LOCAL = 6;
+  // An e-stop signal latched at the edge.
+  REASON_ESTOP_SIGNAL = 7;
+  REASON_ESTOP_CLEARED = 8;
+  // SAFE causes (host or edge). The lease holder's heartbeats lapsed.
+  REASON_HOLDER_LOST = 10;
+  // The holder was silent past its lease's ttl.
+  REASON_HEARTBEAT_LAPSE = 11;
+  // Edge: no valid action within hold_max.
+  REASON_QUEUE_DRY = 12;
+  REASON_EDGE_LEASE_LAPSED = 13;
+  REASON_HANDOVER_TIMEOUT = 14;
+  REASON_DEVICE_WATCHDOG = 15;
+  // An embodiment's heartbeats lapsed.
+  REASON_ROBOT_LOST = 16;
+  // Participant side only, never on the host's wire.
+  REASON_HOST_LOST = 17;
+  // Lease endings.
+  REASON_RELEASED = 20;
+  REASON_PREEMPTED = 21;
+  REASON_REBOUND = 22;
+  REASON_VOIDED_BY_SAFE = 23;
+  REASON_VOIDED_BY_ESTOP = 24;
+  REASON_VOIDED_BY_DISARM = 25;
+  // Arm or reset.
+  REASON_VOIDED_BY_EPOCH = 26;
+  REASON_PART_REMOVED = 27;
+  REASON_HOLDER_DETACHED = 28;
+  // The owner revoked the device.
+  REASON_REVOKED = 29;
+  // The owner changed the device's entry.
+  REASON_ACCESS_CHANGED = 30;
+}
+
+message Reason {
+  ReasonCode code = 1;
+  // The participant that caused it, when one did.
+  string by = 2;
+  string detail = 3;
+  // Host session clock (participant clock for REASON_HOST_LOST).
+  int64 at_ns = 4;
+  // The revision the change landed in.
+  uint64 revision = 5;
+  // The host authenticated the sender itself.
+  bool verified = 6;
+}
+
+// One lease that ended.
+message LeaseEnd {
+  Lease lease = 1;
+  Reason reason = 2;
+  // The preempting or rebound lease.
+  Lease by = 3;
+}
+
+// The host's last entry into SAFE, DISARMED or ESTOP; never lowered.
+message LastStop {
+  uint64 epoch = 1;
+  uint64 revision = 2;
+}
+
 // The host's authority snapshot.
 message AuthorityState {
   string session = 1;
@@ -205,6 +278,12 @@ message AuthorityState {
   map<string, bytes> contract = 17;
   // The publication plan of every stream some binding has a contract on.
   repeated Demand demands = 18;
+  // Why the mode is what it is (also set when a stopped mode records a later
+  // cause without changing).
+  Reason mode_reason = 19;
+  // The latest lease endings, oldest first (a bounded ring).
+  repeated LeaseEnd ended = 20;
+  LastStop last_stop = 21;
 }
 
 // One NTP-style exchange: t1 and t4 in the participant's clock, t2 and t3 in
@@ -455,13 +534,18 @@ message ReleaseLease {
 
 message Estop {
   string reason = 1;
+  // REASON_ESTOP_LOCAL or REASON_ESTOP_SIGNAL when an edge reports its own
+  // latch; anything else is REASON_ESTOP_REMOTE.
+  ReasonCode code = 2;
 }
 
 message Clear {}
 
-// An embodiment's edge fell back on its own account: ACTIVE goes SAFE.
+// An embodiment fell back on its own account (its edge, or a device
+// watchdog): ACTIVE, ARMED and DISARMED go SAFE; SAFE and ESTOP record why.
 message EnterSafe {
   string reason = 1;
+  ReasonCode code = 2;
 }
 
 message Watermark {

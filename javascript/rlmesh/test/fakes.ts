@@ -47,7 +47,7 @@ export const CONTROLS: ControlDecl[] = [
   { path: 'arm7/gripper', robot: 'arm7', part: 'gripper', channel: 3, class: 'control', kind: 'gripper', mode: 'position', group: null, fields: [field('pos', 1)], rate_hz: 100, hold_max_ms: 200, bound: true },
 ];
 
-export const STATE = { session: '0192f3a4-5b6c-7d8e-9f00-112233445566', revision: 3, epoch: 1, mode: 'active', estop_latched: false };
+export const STATE = { session: '0192f3a4-5b6c-7d8e-9f00-112233445566', revision: 3, epoch: 1, mode: 'active', mode_reason: 'first_lease', estop_latched: false };
 
 /** A control worker that answers like the real one: hello, declarations and a clock on init; grants every lease request. */
 export function controlScript(opts: { grant?: boolean } = {}) {

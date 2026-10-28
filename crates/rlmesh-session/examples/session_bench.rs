@@ -59,11 +59,12 @@ use rlmesh_session::spec::apply::{Tensor, Value as ActionValue};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::free_local_base;
 use rlmesh_session::wire::{
-    Fingerprint, InputRange, Mode, ParticipantId, PriorityClass, Role, Sample, SessionId, TenantId,
+    Fingerprint, InputRange, Mode, ParticipantId, PriorityClass, ReasonCode, Role, Sample,
+    SessionId, TenantId,
 };
 use rlmesh_session::{
-    AuthorityEvent, ChunkDraft, Clock, Controller, ControllerConfig, HostConfig, LeaseEnd,
-    Observation, Offer, Participant, ParticipantConfig, Predictor, SessionHost, SubscribeOptions,
+    AuthorityEvent, ChunkDraft, Clock, Controller, ControllerConfig, HostConfig, Observation,
+    Offer, Participant, ParticipantConfig, Predictor, SessionHost, SubscribeOptions,
     SystemMonotonicClock, Transport, TransportConfig,
 };
 use serde_json::{Value, json};
@@ -347,10 +348,11 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
         async move {
             while let Ok(event) = events.recv().await {
                 let key = match &event {
-                    AuthorityEvent::LeaseEnded {
-                        reason: LeaseEnd::Lapsed,
-                        ..
-                    } => "lease_lapsed",
+                    AuthorityEvent::LeaseEnded { reason, .. }
+                        if reason.code == ReasonCode::HeartbeatLapse =>
+                    {
+                        "lease_lapsed"
+                    }
                     AuthorityEvent::ModeChanged { to: Mode::Safe, .. } => "mode_safe",
                     _ => continue,
                 };

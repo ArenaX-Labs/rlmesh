@@ -25,8 +25,8 @@ use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use crate::wire::{
     AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlReply, Epoch, Fingerprint,
     Health, Heartbeat, HistoryQuery, Lease, LeaseToken, Mode, PartSpec, ParticipantId,
-    PriorityClass, Request, Role, SampleBatch, SessionId, SessionKeys, StreamSpec, TenantId,
-    TimingSample, VirtualTick, Watermark,
+    PriorityClass, ReasonCode, Request, Role, SampleBatch, SessionId, SessionKeys, StreamSpec,
+    TenantId, TimingSample, VirtualTick, Watermark,
 };
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -234,6 +234,7 @@ impl ManualView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SafeReport {
     epoch: Epoch,
+    code: ReasonCode,
     reason: String,
 }
 
@@ -246,11 +247,12 @@ pub struct SafeReporter {
 }
 
 impl SafeReporter {
-    /// Queues an `EnterSafe` for `epoch`; never blocks.
-    pub fn report(&self, epoch: Epoch, reason: impl Into<String>) {
+    /// Queues an `EnterSafe` for a fault in `epoch`; never blocks.
+    pub fn report(&self, epoch: Epoch, code: ReasonCode, reason: impl Into<String>) {
         // The reporter task is gone only after the participant closed.
         let _ = self.tx.send(SafeReport {
             epoch,
+            code,
             reason: reason.into(),
         });
     }
@@ -725,6 +727,7 @@ impl Participant {
             .shared
             .ctl(Command::Estop {
                 reason: reason.into(),
+                code: ReasonCode::EstopRemote,
             })
             .await?
             .0)
@@ -1142,13 +1145,14 @@ impl Participant {
         self.shared.edge.clone()
     }
 
-    /// Tells the host that an edge fell back on its own account (queue dry
-    /// past `hold_max`, a lease lapsed by its clock), so the session goes
-    /// SAFE. Never blocks: a background task sends `EnterSafe`, retrying
-    /// every 100 ms until the host answers, the view leaves ACTIVE, or the
-    /// epoch moves on.
-    pub fn report_safe(&self, epoch: Epoch, reason: impl Into<String>) {
-        self.safe_reporter().report(epoch, reason);
+    /// Tells the host that this embodiment fell back on its own account
+    /// (an edge's queue ran dry past `hold_max`, a lease lapsed by its
+    /// clock, a device watchdog fired in `epoch`), so the session goes SAFE.
+    /// Never blocks: a background task sends `EnterSafe`, retrying every
+    /// 100 ms, until the host is SAFE or ESTOP at an epoch at or after
+    /// `epoch`.
+    pub fn report_safe(&self, epoch: Epoch, code: ReasonCode, reason: impl Into<String>) {
+        self.safe_reporter().report(epoch, code, reason);
     }
 
     /// A handle for [`Participant::report_safe`] that outlives borrows.
@@ -1371,9 +1375,10 @@ async fn report_streams(shared: Arc<Shared>, cancel: CancellationToken) {
 /// How often an unanswered `EnterSafe` is resent.
 const SAFE_RETRY: Duration = Duration::from_millis(100);
 
-/// Sends each edge's `EnterSafe` to the host until the host answers, the
-/// view already shows the session out of ACTIVE in that epoch, or the epoch
-/// moves on. The edge has fallen back already; this only tells the host.
+/// Sends each `EnterSafe` to the host until the view shows it SAFE or ESTOP
+/// at an epoch at or after the fault's (a re-armed host goes SAFE again: the
+/// fault may be a device's), or the host refuses it. The edge has fallen
+/// back already; this only tells the host.
 async fn report_safe(
     shared: Arc<Shared>,
     mut reports: mpsc::UnboundedReceiver<SafeReport>,
@@ -1389,12 +1394,13 @@ async fn report_safe(
         };
         loop {
             let (epoch, mode) = shared.epoch_and_mode();
-            if epoch != report.epoch.0 || mode != Mode::Active {
+            if epoch >= report.epoch.0 && matches!(mode, Mode::Safe | Mode::Estop) {
                 break;
             }
             match shared
                 .ctl(Command::EnterSafe {
                     reason: report.reason.clone(),
+                    code: report.code,
                 })
                 .await
             {

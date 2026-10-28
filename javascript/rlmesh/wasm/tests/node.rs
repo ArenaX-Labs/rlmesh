@@ -13,8 +13,8 @@ use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::SPEC_VERSION;
 use rlmesh_session_core::wire::{
     Applied, AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command,
-    CtlError, CtlReply, CtlStatus, EdgeMode, Epoch, Fingerprint, HeartbeatEcho, Lease, LeaseToken,
-    Mode, PartSpec, ParticipantId, PriorityClass, Sample, SessionId,
+    CtlError, CtlReply, CtlStatus, EdgeMode, Epoch, Fingerprint, HeartbeatEcho, LastStop, Lease,
+    LeaseToken, Mode, PartSpec, ParticipantId, PriorityClass, Reason, Sample, SessionId,
 };
 use rlmesh_wasm::frame;
 use rlmesh_wasm::*;
@@ -92,6 +92,9 @@ fn snapshot(revision: u64, leases: Vec<Lease>) -> AuthoritySnapshot {
         }],
         contract: BTreeMap::new(),
         demands: Vec::new(),
+        mode_reason: Reason::default(),
+        ended: Vec::new(),
+        last_stop: LastStop::default(),
     }
 }
 

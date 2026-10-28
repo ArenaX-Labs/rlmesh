@@ -8,7 +8,7 @@ use rlmesh_cockpit::model::Verb;
 use rlmesh_cockpit::timeline::Tone;
 use rlmesh_cockpit::values::Value;
 use rlmesh_cockpit::{Input, View};
-use rlmesh_session::wire::{Command, EdgeMode, LeaseToken, Mode};
+use rlmesh_session::wire::{Command, EdgeMode, LeaseToken, Mode, ReasonCode};
 
 fn close(a: Option<f64>, b: f64, tol: f64) -> bool {
     a.is_some_and(|a| (a - b).abs() <= tol)
@@ -246,6 +246,7 @@ fn the_timeline_follows_leases_epochs_preemption_and_estop() {
         "cockpit",
         Command::Estop {
             reason: "test".into(),
+            code: ReasonCode::EstopRemote,
         },
     )
     .expect("estop");

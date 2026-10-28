@@ -11,7 +11,7 @@ use rlmesh_session_core::wire::part::{DType, FieldSpec, Layout};
 use rlmesh_session_core::wire::path::APPLIED;
 use rlmesh_session_core::wire::{
     AuthoritySnapshot, ChannelId, ChannelPriority, CommandSpec, EdgeMode, Encoding, Mode, PartSpec,
-    ParticipantId, PriorityClass, StreamSpec,
+    ParticipantId, PriorityClass, ReasonCode, StreamSpec,
 };
 
 /// How a stream's values reach JS.
@@ -273,6 +273,11 @@ pub fn mode_name(mode: Mode) -> &'static str {
         Mode::Safe => "safe",
         Mode::Estop => "estop",
     }
+}
+
+/// A reason code, lowercase (`robot_lost`).
+pub fn reason_name(code: ReasonCode) -> String {
+    code.name().to_ascii_lowercase()
 }
 
 /// The edge mode, lowercase.

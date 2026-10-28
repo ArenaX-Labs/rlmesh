@@ -421,7 +421,7 @@ function runControl(init: InitMsg) {
     const t = performance.now();
     if (ev.revision !== declsRevision) {
       declsRevision = ev.revision;
-      post({ op: 'decls', decls: cs.declarations(), state: { session: ev.session, revision: ev.revision, epoch: ev.epoch, mode: ev.mode, estop_latched: ev.estop_latched } });
+      post({ op: 'decls', decls: cs.declarations(), state: { session: ev.session, revision: ev.revision, epoch: ev.epoch, mode: ev.mode, mode_reason: ev.mode_reason, estop_latched: ev.estop_latched } });
       postStatuses();
     }
     // The data Workers need the declarations and the publishers' clock mappings: forward the host's
