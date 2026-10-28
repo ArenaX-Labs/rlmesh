@@ -90,6 +90,17 @@ struct Driver {
     last: std::sync::Mutex<Option<EndpointTiming>>,
 }
 
+impl Drop for Driver {
+    /// A driver dropped without [`LockstepClient::close`] still detaches, in
+    /// the background: the host takes presence from heartbeats, not from a
+    /// withdrawn liveliness token, so only a detach frees the env at once.
+    fn drop(&mut self) {
+        if let Some(keep) = self.keep.get_mut().take() {
+            crate::run::drive::runtime().spawn(keep.release());
+        }
+    }
+}
+
 /// A driver of a lockstep Gym env. Clones share one link.
 #[derive(Clone)]
 pub struct LockstepClient {

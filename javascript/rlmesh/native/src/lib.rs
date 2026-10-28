@@ -1264,6 +1264,11 @@ impl NativePolicy {
             Ok(Ok(stats)) => Ok(stats),
             Ok(Err(RunError::Predict(message))) => Err(error("Predict", &[], message)),
             Ok(Err(RunError::Send(err))) => Err(send_err(err)),
+            Ok(Err(RunError::Lost(reason))) => Err(error(
+                "SessionLost",
+                &[("reason", format!("{:?}", sdk::reason_name(reason.code)))],
+                format!("the session was lost: {reason}"),
+            )),
             Err(join) => Err(exception(format!("the run loop failed: {join}"))),
         }
     }

@@ -25,8 +25,8 @@ use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use crate::wire::{
     AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlReply, Epoch, Fingerprint,
     Health, Heartbeat, HistoryQuery, Lease, LeaseToken, Mode, PartSpec, ParticipantId,
-    PriorityClass, ReasonCode, Request, Role, SampleBatch, SessionId, SessionKeys, StreamSpec,
-    TenantId, TimingSample, VirtualTick, Watermark,
+    PriorityClass, Reason, ReasonCode, Request, Role, SampleBatch, SessionId, SessionKeys,
+    StreamSpec, TenantId, TimingSample, VirtualTick, Watermark,
 };
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -273,6 +273,9 @@ struct Shared {
     heartbeats_enabled: AtomicBool,
     health: AtomicU8,
     host_present: watch::Sender<bool>,
+    /// This participant's clock when the host's liveliness went away
+    /// (`i64::MIN` while it is present).
+    host_lost_ns: AtomicI64,
     /// The last completed exchange, sent with the next heartbeat.
     completed: Mutex<Option<TimingSample>>,
     /// The newest seq received per subscribed channel.
@@ -517,6 +520,7 @@ impl Participant {
             heartbeats_enabled: AtomicBool::new(true),
             health: AtomicU8::new(health_code(Health::Ok)),
             host_present,
+            host_lost_ns: AtomicI64::new(i64::MIN),
             completed: Mutex::new(None),
             seen: Mutex::new(BTreeMap::new()),
             edge: Arc::new(EdgeReport::default()),
@@ -562,9 +566,13 @@ impl Participant {
                 let shared = shared.clone();
                 move |sample| {
                     let present = sample.kind() == SampleKind::Put;
-                    if !present {
+                    let lost_ns = if present {
+                        i64::MIN
+                    } else {
                         warn!(participant = %shared.id, "session host liveliness lost");
-                    }
+                        shared.clock.now_ns()
+                    };
+                    shared.host_lost_ns.store(lost_ns, Ordering::Relaxed);
                     shared.host_present.send_replace(present);
                 }
             })
@@ -676,6 +684,17 @@ impl Participant {
     /// Whether the host's liveliness token is visible.
     pub fn host_present(&self) -> watch::Receiver<bool> {
         self.shared.host_present.subscribe()
+    }
+
+    /// `HOST_LOST` (at this participant's clock) once the host's liveliness
+    /// went away after attaching; `None` while it is visible. The edge keeps
+    /// running on its own clock meanwhile.
+    pub fn host_lost(&self) -> Option<Reason> {
+        let at_ns = self.shared.host_lost_ns.load(Ordering::Relaxed);
+        (at_ns != i64::MIN).then(|| Reason {
+            at_ns,
+            ..Reason::new(ReasonCode::HostLost)
+        })
     }
 
     /// Waits until the authority view satisfies `predicate`.

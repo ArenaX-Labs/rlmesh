@@ -1,7 +1,9 @@
 //! The session host: the single writer of authority state.
 //!
 //! One task owns the [`Authority`] and serialises everything that touches it:
-//! `ctl` queries, heartbeats, liveliness changes and the lease-expiry tick.
+//! `ctl` queries, heartbeats, liveliness changes and the expiry tick.
+//! Presence is heartbeats only: a liveliness delete is a hint that makes the
+//! host check a participant's heartbeats sooner, never proof it left.
 //! Heartbeat echoes are sent from the Zenoh callback itself, off the task, so
 //! the host's hold time (t3 − t2) stays small and queueing cannot inflate the
 //! measured round trip. Their publishers are declared when a participant
@@ -60,7 +62,7 @@ use crate::virtual_clock::VirtualConfig;
 /// Heartbeats queued between the Zenoh callback and the host task. Beyond
 /// this the host is overloaded and drops them (the echo was already sent).
 const HEARTBEAT_QUEUE: usize = 4096;
-/// How long a host asks whether a participant whose token left has another.
+/// How long a server asks whether a participant's token is declared.
 const PRESENCE_QUERY: Duration = Duration::from_millis(500);
 /// The most gap ranges a stream's history remembers.
 const MAX_GAPS: usize = 64;
@@ -98,6 +100,9 @@ pub struct HostConfig {
     pub clock: Arc<dyn Clock>,
     /// How long a lease holder's heartbeats may stop before its lease lapses.
     pub lease_grace: Duration,
+    /// How long any participant's heartbeats may stop before it is lost (a
+    /// liveliness delete shortens it to `lease_grace`).
+    pub presence_grace: Duration,
     /// How often lease expiry is checked: the lapse latency on top of grace.
     pub tick: Duration,
     /// Republish the snapshot this often, so clock mappings stay fresh.
@@ -118,13 +123,15 @@ pub struct HostConfig {
 
 impl HostConfig {
     /// Defaults for `session` in `tenant`: wall mode, a 250 ms lease grace,
-    /// a 10 ms expiry tick, a 500 ms republish and a 1 s health log.
+    /// a 1 s presence grace, a 10 ms expiry tick, a 500 ms republish and a
+    /// 1 s health log.
     pub fn new(tenant: TenantId, session: SessionId) -> Self {
         Self {
             tenant,
             session,
             clock: MonotonicClock::new().shared(),
             lease_grace: Duration::from_millis(250),
+            presence_grace: Duration::from_secs(1),
             tick: Duration::from_millis(10),
             republish: Duration::from_millis(500),
             health_log: Some(Duration::from_secs(1)),
@@ -139,8 +146,10 @@ impl HostConfig {
     }
 
     fn validate(&self) -> Result<(), SessionError> {
-        if self.lease_grace.is_zero() {
-            return Err(SessionError::Config("lease_grace must be positive".into()));
+        if self.lease_grace.is_zero() || self.presence_grace.is_zero() {
+            return Err(SessionError::Config(
+                "lease_grace and presence_grace must be positive".into(),
+            ));
         }
         if self.tick.is_zero() || self.republish.is_zero() {
             return Err(SessionError::Config(
@@ -160,6 +169,7 @@ impl std::fmt::Debug for HostConfig {
             .field("tenant", &self.tenant)
             .field("session", &self.session)
             .field("lease_grace", &self.lease_grace)
+            .field("presence_grace", &self.presence_grace)
             .field("tick", &self.tick)
             .field("republish", &self.republish)
             .field("health_log", &self.health_log)
@@ -193,6 +203,8 @@ impl SessionHost {
             config.session,
             AuthorityConfig {
                 lease_grace_ns: u64::try_from(config.lease_grace.as_nanos()).unwrap_or(u64::MAX),
+                presence_grace_ns: u64::try_from(config.presence_grace.as_nanos())
+                    .unwrap_or(u64::MAX),
                 supports: config.supports.clone(),
                 virtual_clock: config.virtual_clock,
             },
@@ -711,10 +723,7 @@ impl HostActor {
                     self.on_heartbeat(id, heartbeat, t2);
                 }
                 sample = presence.recv_async() => match sample {
-                    Ok(sample) => {
-                        self.on_presence(&sample).await;
-                        self.sync_history().await;
-                    }
+                    Ok(sample) => self.on_presence(&sample),
                     Err(_) => break,
                 },
                 _ = tick.tick() => {
@@ -726,6 +735,7 @@ impl HostActor {
                     }
                     let events = self.authority.expire(self.now());
                     self.record(events).await;
+                    self.publish_ticks().await;
                     self.publish_renewals().await;
                 }
                 _ = republish.tick() => self.publish().await,
@@ -892,28 +902,17 @@ impl HostActor {
         self.authority.heartbeat(&id, heartbeat.epoch, t2);
     }
 
-    async fn on_presence(&mut self, sample: &zenoh::sample::Sample) {
+    /// Liveliness never makes anyone present (anyone on the network can
+    /// declare a token); a delete only has the expiry tick check the
+    /// participant's heartbeats sooner. A participant that rejoined under its
+    /// id keeps heartbeating, so its old token's late delete loses nothing.
+    fn on_presence(&mut self, sample: &zenoh::sample::Sample) {
         let Some(id) = self.keys.participant_of(sample.key_expr().as_str()) else {
             return;
         };
-        match sample.kind() {
-            SampleKind::Put => debug!(%id, "participant present"),
-            SampleKind::Delete => {
-                // A participant that left and joined again under its id (a
-                // refused bind, then another) declares its new token before
-                // its old token's delete may arrive here: only a delete that
-                // leaves no token for the id means it is gone.
-                if self.authority.is_attached(&id)
-                    && token_declared(self.transport.control(), sample.key_expr()).await
-                {
-                    debug!(%id, "a departed participant's token left; its new one stays");
-                    return;
-                }
-                info!(%id, "participant liveliness lost");
-                let events = self.authority.participant_lost(&id, self.now());
-                self.record(events).await;
-                self.publish_ticks().await;
-            }
+        if sample.kind() == SampleKind::Delete {
+            debug!(%id, "participant liveliness withdrawn: checking its heartbeats");
+            self.authority.presence_hint(&id, self.now());
         }
     }
 

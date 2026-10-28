@@ -15,6 +15,7 @@ const SUPPLEMENTAL_EXPORTS: &[&str] = &[
     "SessionRefused",
     "BindingRefused",
     "StartSkipped",
+    "SessionLost",
 ];
 const SUPPLEMENTAL_STUBS: &str = r#"
 __version__: builtins.str
@@ -49,6 +50,9 @@ class StartSkipped(SessionException):
     waiting: builtins.list[builtins.str]
     stale: builtins.list[builtins.str]
     gaps: builtins.list[builtins.str]
+
+class SessionLost(SessionException):
+    reason: builtins.str
 
 ResetInfo: TypeAlias = dict[str, object]
 

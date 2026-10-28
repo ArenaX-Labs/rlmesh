@@ -62,6 +62,14 @@ create_exception!(
 
 create_exception!(
     _rlmesh,
+    SessionLost,
+    SessionException,
+    "The session is gone for a policy's run: its robot's heartbeats lapsed or the host is gone; \
+     `reason` names why (`robot_lost`, `host_lost`)."
+);
+
+create_exception!(
+    _rlmesh,
     StartSkipped,
     SessionException,
     "A policy start was skipped (§8.8): `reason` is `waiting_for`, `stale_input` or \
@@ -75,6 +83,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SessionRefused", py.get_type::<SessionRefused>())?;
     m.add("BindingRefused", py.get_type::<BindingRefused>())?;
     m.add("StartSkipped", py.get_type::<StartSkipped>())?;
+    m.add("SessionLost", py.get_type::<SessionLost>())?;
     m.add_class::<PyHost>()?;
     m.add_class::<PyRobot>()?;
     m.add_class::<PyDue>()?;
@@ -238,6 +247,22 @@ fn bind_policy_err(err: BindPolicyError) -> PyErr {
         BindPolicyError::Policy(_) => BindingRefused::new_err(err.to_string()),
         BindPolicyError::Controller(err) => controller_err(err),
     }
+}
+
+fn lost_err<E>(err: &RunError<E>) -> PyErr {
+    let RunError::Lost(reason) = err else {
+        return SessionException::new_err(err.to_string());
+    };
+    Python::attach(|py| {
+        let lost = SessionLost::new_err(err.to_string());
+        if let Err(set) = lost
+            .value(py)
+            .setattr("reason", sdk::reason_name(reason.code))
+        {
+            return set;
+        }
+        lost
+    })
 }
 
 fn send_err(err: SendError) -> PyErr {
@@ -1101,7 +1126,8 @@ impl PyController {
     /// Runs the policy loop (§8.9) on this thread until `stop()`,
     /// `duration_s`, or a failure, calling `predict(observation)` at the
     /// replan rate with one inference in flight. If `predict` raises, the
-    /// leases are released and the exception propagates.
+    /// leases are released and the exception propagates; if the robot or
+    /// the host is lost, it raises `SessionLost`.
     #[pyo3(signature = (predict, duration_s=None))]
     fn run(
         &self,
@@ -1123,6 +1149,7 @@ impl PyController {
             Ok(()) => Ok(()),
             Err(RunError::Predict(err)) => Err(err),
             Err(RunError::Send(err)) => Err(send_err(err)),
+            Err(err @ RunError::Lost(_)) => Err(lost_err(&err)),
         }
     }
 

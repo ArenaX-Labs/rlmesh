@@ -37,6 +37,13 @@
 //!   atomically (Codex finding 3).
 //! - Leases have a TTL, renewed by every heartbeat from the holder on the
 //!   current epoch; a lapse while ACTIVE takes the session SAFE.
+//! - **Presence** is heartbeats only (DESIGN §7): a participant silent for
+//!   `presence_grace` is lost. A liveliness put never makes anyone present;
+//!   a delete is only a hint ([`Authority::presence_hint`]) that loses the
+//!   participant unless a heartbeat arrives within `lease_grace` of it. A
+//!   lost robot stays in the roster, absent with `left = ROBOT_LOST`, while
+//!   its parts remain; the leases on them end with `ROBOT_LOST` and an
+//!   ACTIVE session goes SAFE.
 //! - ESTOP is accepted from anyone (refusing an e-stop is never safer) and
 //!   latches; only an embodiment's local clear releases the latch, and then a
 //!   disarm and an arm (a fresh epoch) are needed.
@@ -81,8 +88,8 @@ const ENDED: usize = 16;
 pub enum DetachReason {
     /// It sent `Detach`.
     Requested,
-    /// Its liveliness token went away (crash, network loss).
-    LivelinessLost,
+    /// Its heartbeats lapsed (crash, network loss).
+    Lost,
 }
 
 /// Something the authority state did, for publication, logging and evidence.
@@ -285,6 +292,8 @@ pub struct AuthorityConfig {
     /// Default lease ttl: how long the holder's heartbeats may stop before
     /// its lease lapses.
     pub lease_grace_ns: u64,
+    /// How long any participant's heartbeats may stop before it is lost.
+    pub presence_grace_ns: u64,
     /// The features the session implements (see [`crate::wire::version`]).
     pub supports: Vec<String>,
     /// Virtual clock mode (§11.3); `None` is wall mode.
@@ -295,6 +304,7 @@ impl Default for AuthorityConfig {
     fn default() -> Self {
         Self {
             lease_grace_ns: 250_000_000,
+            presence_grace_ns: 1_000_000_000,
             supports: crate::wire::version::FEATURES
                 .iter()
                 .map(ToString::to_string)
@@ -329,6 +339,9 @@ pub struct Authority {
     /// The host clock of the call in progress, for the reasons it records.
     now_ns: i64,
     roster: BTreeMap<ParticipantId, ParticipantInfo>,
+    /// Each present participant's last heartbeat (or attach), and a pending
+    /// liveliness hint.
+    seen: BTreeMap<ParticipantId, Seen>,
     leases: BTreeMap<ChannelId, Lease>,
     /// Declared parts by stream id.
     parts: BTreeMap<ChannelId, PartSpec>,
@@ -374,6 +387,7 @@ impl Authority {
             },
             now_ns: 0,
             roster: BTreeMap::new(),
+            seen: BTreeMap::new(),
             leases: BTreeMap::new(),
             parts: BTreeMap::new(),
             last_channel: 0,
@@ -453,9 +467,9 @@ impl Authority {
         self.leases.len()
     }
 
-    /// Whether `id` is in the roster.
+    /// Whether `id` is in the roster and present.
     pub fn is_attached(&self, id: &ParticipantId) -> bool {
-        self.roster.contains_key(id)
+        self.roster.get(id).is_some_and(|p| p.present)
     }
 
     /// The virtual ticks emitted since the last call, in order.
@@ -551,6 +565,15 @@ impl Authority {
                         requires,
                         workflow_edition,
                         workflow_editions,
+                        present: true,
+                        left: None,
+                    },
+                );
+                self.seen.insert(
+                    from.clone(),
+                    Seen {
+                        last_ns: now_ns,
+                        hint_ns: None,
                     },
                 );
                 applied.events.push(AuthorityEvent::Attached {
@@ -574,6 +597,7 @@ impl Authority {
                 self.contract.remove(&from);
                 self.bindings.remove(&from);
                 self.roster.remove(&from);
+                self.seen.remove(&from);
                 self.needed.retain(|(p, _), _| p != &from);
                 self.recompute_demands(&mut applied.events);
                 applied.events.push(AuthorityEvent::Detached {
@@ -777,9 +801,13 @@ impl Authority {
         Ok(applied)
     }
 
-    /// A heartbeat from `from` arrived: renew its leases when it is on the
-    /// current epoch. Renewal is not a structural change.
+    /// A heartbeat from `from` arrived: it is present, and its leases renew
+    /// when it is on the current epoch. Neither is a structural change.
     pub fn heartbeat(&mut self, from: &ParticipantId, epoch: Epoch, now_ns: i64) {
+        if let Some(seen) = self.seen.get_mut(from) {
+            seen.last_ns = now_ns;
+            seen.hint_ns = None;
+        }
         if epoch != self.epoch {
             return;
         }
@@ -788,8 +816,18 @@ impl Authority {
         }
     }
 
+    /// A participant's liveliness token went away: only a hint (anyone on
+    /// the network can declare or drop a token). It is lost unless a
+    /// heartbeat arrives within `lease_grace`.
+    pub fn presence_hint(&mut self, id: &ParticipantId, now_ns: i64) {
+        if let Some(seen) = self.seen.get_mut(id) {
+            seen.hint_ns.get_or_insert(now_ns);
+        }
+    }
+
     /// Lapses leases whose holder stopped heartbeating (ACTIVE goes SAFE),
-    /// and ends a virtual run whose barrier stalled.
+    /// loses participants whose heartbeats lapsed, and ends a virtual run
+    /// whose barrier stalled.
     pub fn expire(&mut self, now_ns: i64) -> Vec<AuthorityEvent> {
         self.now_ns = now_ns;
         let mut events = Vec::new();
@@ -810,6 +848,20 @@ impl Authority {
         if let Some(why) = first {
             self.enter_safe(why, &mut events);
         }
+        let presence = i64::try_from(self.config.presence_grace_ns).unwrap_or(i64::MAX);
+        let hint = i64::try_from(self.config.lease_grace_ns).unwrap_or(i64::MAX);
+        let lost: Vec<ParticipantId> = self
+            .seen
+            .iter()
+            .filter(|(_, s)| {
+                now_ns.saturating_sub(s.last_ns) > presence
+                    || s.hint_ns.is_some_and(|h| now_ns.saturating_sub(h) > hint)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &lost {
+            self.lose(id, &mut events);
+        }
         if let Some(tick) = self.clock.as_mut().and_then(|c| c.check_timeout(now_ns)) {
             events.push(AuthorityEvent::BarrierTimeout { tick });
             let why = self.reason(
@@ -825,35 +877,72 @@ impl Authority {
         events
     }
 
-    /// The participant's liveliness token went away: it is gone, and any
-    /// lease it held lapses. Its parts and binding stay for a reconnect.
+    /// The participant's heartbeats lapsed. Any lease it held ends
+    /// (`HOLDER_LOST`); a robot stays in the roster, absent, and the leases
+    /// on its parts end with `ROBOT_LOST`. ACTIVE goes SAFE when a lease
+    /// ended or a robot was lost.
     pub fn participant_lost(&mut self, id: &ParticipantId, now_ns: i64) -> Vec<AuthorityEvent> {
         self.now_ns = now_ns;
         let mut events = Vec::new();
-        if self.roster.remove(id).is_none() {
-            return events;
+        self.lose(id, &mut events);
+        if !events.is_empty() {
+            self.revision += 1;
         }
+        events
+    }
+
+    /// A participant is gone: any lease it held ends (`HOLDER_LOST`, and an
+    /// ACTIVE session goes SAFE). A robot stays in the roster, absent, while
+    /// its parts remain: the leases on them end with `ROBOT_LOST` and an
+    /// ACTIVE session goes SAFE. Anyone else leaves the roster. Parts and
+    /// bindings stay for a reconnect.
+    fn lose(&mut self, id: &ParticipantId, events: &mut Vec<AuthorityEvent>) {
+        if !self.is_attached(id) {
+            return;
+        }
+        self.seen.remove(id);
         let before = events.len();
-        let why = self.reason(ReasonCode::HolderLost, id, "");
-        self.end_leases_of(id, &why, &mut events);
+        let held = self.reason(ReasonCode::HolderLost, id, "");
+        self.end_leases_of(id, &held, events);
         let lapsed = events.len() > before;
+        let robot = self.parts.values().any(|p| &p.owner == id);
         events.push(AuthorityEvent::Detached {
             participant: id.clone(),
-            reason: DetachReason::LivelinessLost,
+            reason: DetachReason::Lost,
         });
-        if lapsed {
-            self.enter_safe(why, &mut events);
+        if robot {
+            let why = self.reason(ReasonCode::RobotLost, id, "");
+            let commanded: Vec<ChannelId> = self
+                .parts
+                .values()
+                .filter(|p| &p.owner == id)
+                .map(|p| p.channel)
+                .collect();
+            for channel in commanded {
+                if let Some(lease) = self.leases.remove(&channel) {
+                    self.end(lease, why.clone(), events);
+                }
+            }
+            if let Some(info) = self.roster.get_mut(id) {
+                info.present = false;
+                info.left = Some(why.clone());
+            }
+            self.enter_safe(why, events);
+        } else {
+            self.roster.remove(id);
+            if lapsed {
+                self.enter_safe(held, events);
+            }
         }
         self.needed.retain(|(p, _), _| p != id);
-        self.recompute_demands(&mut events);
-        self.barrier_gone(id, now_ns);
-        self.revision += 1;
-        events
+        self.recompute_demands(events);
+        self.barrier_gone(id, self.now_ns);
     }
 
     fn require_attached(&self, id: &ParticipantId) -> Result<&ParticipantInfo, CtlError> {
         self.roster
             .get(id)
+            .filter(|p| p.present)
             .ok_or_else(|| CtlError::new(CtlStatus::NotAttached, format!("{id} is not attached")))
     }
 
@@ -1183,7 +1272,7 @@ impl Authority {
     fn recompute_demands(&mut self, events: &mut Vec<AuthorityEvent>) {
         let mut wanted: BTreeMap<ChannelId, Vec<&crate::wire::StreamContract>> = BTreeMap::new();
         for (participant, binding) in &self.bindings {
-            if !self.roster.contains_key(participant) {
+            if !self.is_attached(participant) {
                 continue;
             }
             for c in &binding.contracts {
@@ -1239,7 +1328,7 @@ impl Authority {
         // Each attached binding's contracts are included from the current
         // revision on, unless an earlier one already included them.
         for (participant, binding) in &self.bindings {
-            if !self.roster.contains_key(participant) {
+            if !self.is_attached(participant) {
                 continue;
             }
             for c in &binding.contracts {
@@ -1608,13 +1697,13 @@ impl Authority {
                 .parts
                 .values()
                 .map(|p| &p.owner)
-                .filter(|owner| self.roster.contains_key(*owner))
+                .filter(|owner| self.is_attached(owner))
                 .cloned()
                 .collect(),
             controllers: self
                 .bindings
                 .values()
-                .filter(|b| self.roster.contains_key(&b.participant) && b.replan_hz > 0.0)
+                .filter(|b| self.is_attached(&b.participant) && b.replan_hz > 0.0)
                 .map(|b| {
                     let period = (1e9 / (b.replan_hz * tick_ns as f64)).round().max(1.0);
                     (b.participant.clone(), period as u64)
@@ -1736,6 +1825,15 @@ impl Authority {
             self.set_mode(Mode::Safe, reason, events);
         }
     }
+}
+
+/// When a participant was last heard from.
+#[derive(Clone, Copy, Debug)]
+struct Seen {
+    /// Its last heartbeat (or its attach).
+    last_ns: i64,
+    /// When its liveliness token went away, if it did since.
+    hint_ns: Option<i64>,
 }
 
 /// A `GrantLease` verb's arguments.
@@ -2696,11 +2794,68 @@ mod tests {
         assert_eq!(f.auth.mode(), Mode::Active);
         f.auth.participant_lost(&pid("policy"), 0);
         assert_eq!(f.auth.mode(), Mode::Safe);
+        assert_eq!(f.auth.mode_reason().code, ReasonCode::HolderLost);
         assert!(!f.auth.is_attached(&pid("policy")));
         assert!(
             f.auth.binding(&pid("policy")).is_some(),
             "kept for a reconnect"
         );
+    }
+
+    #[test]
+    fn presence_is_heartbeats_and_a_lost_robot_stays_in_the_roster() {
+        let mut f = Fixture::new();
+        f.run("operator", Command::Arm, 0).expect("arm");
+        let lease = f.grant("policy", "cmd1", 0).expect("lease");
+        let epoch = f.auth.epoch();
+        let beat = |f: &mut Fixture, ids: &[&str], now| {
+            for id in ids {
+                f.auth.heartbeat(&pid(id), epoch, now);
+            }
+        };
+        let everyone = ["robot", "policy", "operator", "script", "viewer"];
+        // A liveliness delete is only a hint: a heartbeat after it keeps the
+        // participant present.
+        f.auth.presence_hint(&pid("robot"), 10);
+        beat(&mut f, &everyone, 50);
+        assert!(f.auth.expire(140).is_empty());
+        beat(&mut f, &everyone, 140);
+        // Without one, a robot is lost a lease grace after the hint.
+        f.auth.presence_hint(&pid("robot"), 150);
+        beat(&mut f, &everyone[1..], 200);
+        f.auth.expire(251);
+        assert_eq!(f.auth.mode(), Mode::Safe);
+        let reason = f.auth.mode_reason();
+        assert_eq!(
+            (reason.code, reason.by.as_str()),
+            (ReasonCode::RobotLost, "robot")
+        );
+        let view = f.auth.snapshot(Vec::new(), 251);
+        let robot = view.participant(&pid("robot")).expect("kept");
+        assert!(!robot.present);
+        assert_eq!(
+            robot.left.as_ref().map(|r| r.code),
+            Some(ReasonCode::RobotLost)
+        );
+        assert!(view.part(f.ch("cmd1")).is_some(), "its parts remain");
+        assert!(
+            view.ended.iter().any(|e| {
+                e.lease.token == lease.token && e.reason.code == ReasonCode::RobotLost
+            })
+        );
+        assert_eq!(
+            Fixture::status(f.run("robot", Command::Clear, 252)),
+            CtlStatus::NotAttached
+        );
+        // Re-attaching makes it present again.
+        let back = attach("robot", vec![Role::Embodiment], PriorityClass::Scripted);
+        f.run("robot", back, 260).expect("re-attach");
+        assert!(f.auth.is_attached(&pid("robot")));
+        // Anyone silent past the presence grace is lost; a non-robot leaves.
+        f.auth.expire(260 + 1_000_000_001);
+        let view = f.auth.snapshot(Vec::new(), 0);
+        assert!(view.participant(&pid("viewer")).is_none());
+        assert!(view.participant(&pid("robot")).is_some_and(|r| !r.present));
     }
 
     #[test]

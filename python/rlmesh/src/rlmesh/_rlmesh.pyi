@@ -16,6 +16,7 @@ __all__ = [
     "SessionRefused",
     "BindingRefused",
     "StartSkipped",
+    "SessionLost",
     "ACTION_DELTA_POS",
     "ACTION_DELTA_ROT",
     "ACTION_EEF_POS",
@@ -197,6 +198,9 @@ class StartSkipped(SessionException):
     waiting: builtins.list[builtins.str]
     stale: builtins.list[builtins.str]
     gaps: builtins.list[builtins.str]
+
+class SessionLost(SessionException):
+    reason: builtins.str
 
 ResetInfo: TypeAlias = dict[str, object]
 
@@ -859,7 +863,8 @@ class V2Controller:
         Runs the policy loop (§8.9) on this thread until `stop()`,
         `duration_s`, or a failure, calling `predict(observation)` at the
         replan rate with one inference in flight. If `predict` raises, the
-        leases are released and the exception propagates.
+        leases are released and the exception propagates; if the robot or
+        the host is lost, it raises `SessionLost`.
         """
     def stop(self) -> None:
         r"""

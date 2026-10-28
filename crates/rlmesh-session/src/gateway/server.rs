@@ -79,6 +79,8 @@ pub fn router(state: AppState, static_dir: Option<&std::path::Path>) -> Router {
 
 /// The close code of a session that ended (its host is gone).
 pub const SESSION_ENDED: u16 = 4410;
+/// Its close reason, led by the reason code (`host_lost`).
+pub const SESSION_ENDED_REASON: &str = "host_lost: the session ended";
 
 fn to_message(out: Outbound) -> Message {
     match out {
@@ -93,7 +95,7 @@ fn to_message(out: Outbound) -> Message {
 
 /// A new connection to a session that already ended is closed at once.
 fn refusal(st: &AppState) -> Option<(u16, String)> {
-    (*st.gateway.ended().borrow()).then(|| (SESSION_ENDED, "the session ended".to_string()))
+    (*st.gateway.ended().borrow()).then(|| (SESSION_ENDED, SESSION_ENDED_REASON.to_string()))
 }
 
 async fn close_with(mut socket: WebSocket, code: u16, reason: String) {
@@ -184,7 +186,7 @@ async fn control_conn(socket: WebSocket, st: AppState) {
         let m = tokio::select! {
             m = rx.next() => m,
             () = &mut ended => {
-                let _ = out.send(Outbound::Close(SESSION_ENDED, "the session ended".into())).await;
+                let _ = out.send(Outbound::Close(SESSION_ENDED, SESSION_ENDED_REASON.into())).await;
                 break;
             }
         };
@@ -231,7 +233,7 @@ async fn data_conn(socket: WebSocket, st: AppState, class: &'static str) {
                 Some(b) = frames_rx.recv() => Message::Binary(b),
                 Some(t) = replies_rx.recv() => Message::Text(t.into()),
                 Ok(()) = ended.wait_for(|e| *e).map(|r| r.map(|_| ())) => {
-                    let _ = tx.send(to_message(Outbound::Close(SESSION_ENDED, "the session ended".into()))).await;
+                    let _ = tx.send(to_message(Outbound::Close(SESSION_ENDED, SESSION_ENDED_REASON.into()))).await;
                     break;
                 }
                 else => break,

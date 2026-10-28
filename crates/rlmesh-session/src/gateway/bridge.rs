@@ -24,8 +24,8 @@
 //! - Samples are forwarded as their publisher sent them: the gateway
 //!   subscribes on the stream's class and prepends the subscription id.
 //!
-//! Dropping a link drops its participant: its liveliness token goes, so the
-//! host ends its leases (the edge holds, then goes safe) and nothing is
+//! Dropping a link drops its participant: its heartbeats stop, so the host
+//! ends its leases (the edge holds, then goes safe) and nothing is
 //! resumed by a reconnect, which attaches a new participant.
 
 use std::collections::BTreeMap;

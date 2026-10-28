@@ -14,8 +14,8 @@ use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{
     ChannelId, ClockMode, ContractMode, CtlStatus, Encoding, Epoch, FenceError, Fingerprint,
-    HistoryQuery, Mode, ParticipantId, Plan, PriorityClass, Role, Sample, SessionId, TenantId,
-    VirtualTick, Watermark,
+    HistoryQuery, Mode, ParticipantId, Plan, PriorityClass, ReasonCode, Role, Sample, SessionId,
+    TenantId, VirtualTick, Watermark,
 };
 use rlmesh_session::{
     ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
@@ -447,11 +447,63 @@ async fn a_vanished_holder_takes_the_session_safe() {
     drop(policy);
     transport.close().await.expect("close");
     let view = robot
-        .wait_for("SAFE after liveliness loss", WAIT, |s| s.mode == Mode::Safe)
+        .wait_for("SAFE and the holder gone", WAIT, |s| {
+            s.mode == Mode::Safe && s.participant(&id).is_none()
+        })
         .await
         .expect("safe");
-    assert!(view.participant(&id).is_none());
-    tracing::info!("liveliness loss to SAFE in {:?}", gone.elapsed());
+    // Its lease lapses, or it is lost first: heartbeats decide, either way.
+    assert!(
+        matches!(
+            view.mode_reason.code,
+            ReasonCode::HeartbeatLapse | ReasonCode::HolderLost
+        ),
+        "{}",
+        view.mode_reason
+    );
+    tracing::info!("holder loss to SAFE in {:?}", gone.elapsed());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_robot_stays_in_the_roster_and_a_lost_host_is_reported() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let policy = world.policy().await;
+    let arm = channel(&policy, "arm");
+    policy.arm().await.expect("arm");
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
+
+    let id = robot.id().clone();
+    let transport = robot.transport().clone();
+    drop(robot);
+    transport.close().await.expect("close");
+    let view = policy
+        .wait_for("SAFE after the robot's loss", WAIT, |s| {
+            s.mode == Mode::Safe
+        })
+        .await
+        .expect("safe");
+    assert_eq!(view.mode_reason.code, ReasonCode::RobotLost);
+    let entry = view.participant(&id).expect("kept in the roster");
+    assert!(!entry.present);
+    assert_eq!(
+        entry.left.as_ref().map(|r| r.code),
+        Some(ReasonCode::RobotLost)
+    );
+    assert!(view.part_at(&id, "arm").is_some(), "its parts remain");
+    assert!(
+        view.ended
+            .iter()
+            .any(|e| { e.lease.token == lease.token && e.reason.code == ReasonCode::RobotLost })
+    );
+
+    assert!(policy.host_lost().is_none());
+    world.host.shutdown().await;
+    wait_until("HOST_LOST", || policy.host_lost().is_some()).await;
+    assert_eq!(
+        policy.host_lost().map(|r| r.code),
+        Some(ReasonCode::HostLost)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

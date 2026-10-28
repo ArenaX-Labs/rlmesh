@@ -28,7 +28,9 @@
 //!   one sampled input ([`PhaseAlign`]), so a snapshot reads a sample about
 //!   a millisecond old rather than up to a full replan period old.
 //!   If `predict` fails, the controller stops sending and releases its
-//!   leases; the edge holds, then goes safe.
+//!   leases; the edge holds, then goes safe. If its robot is lost
+//!   (`ROBOT_LOST`) or the host is (`HOST_LOST`), the run stops with
+//!   [`RunError::Lost`].
 //!
 //! [`Controller::run`] and [`Controller::send`] block: call them from a
 //! plain thread, not from inside the async runtime.
@@ -41,7 +43,9 @@ use std::time::Duration;
 use crate::spec::apply::{ApplyError, Value};
 use crate::spec::policy::ChunkStart;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
-use crate::wire::{ChannelId, ClockMode, InputRange, Lease, Mode, ParticipantId, RunCounters};
+use crate::wire::{
+    ChannelId, ClockMode, InputRange, Lease, Mode, ParticipantId, Reason, RunCounters,
+};
 use bytes::Bytes;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -138,6 +142,10 @@ pub enum RunError<E> {
     /// released.
     #[error(transparent)]
     Send(SendError),
+    /// The session is gone for this run: its robot's heartbeats lapsed
+    /// (`ROBOT_LOST`) or the host's liveliness went away (`HOST_LOST`).
+    #[error("the session was lost: {0}")]
+    Lost(Reason),
 }
 
 /// The model side of [`Controller::run`].
@@ -632,6 +640,9 @@ impl Controller {
             if self.stop.load(Ordering::Relaxed) || self.runs.load(Ordering::Relaxed) != run {
                 break Ok(());
             }
+            if let Some(reason) = self.lost() {
+                break Err(RunError::Lost(reason));
+            }
             let off = offset(&phase);
             self.phase_offset_ns.store(off, Ordering::Relaxed);
             let t = now();
@@ -725,6 +736,17 @@ impl Controller {
             warn!(%err, "releasing the leases after the run failed");
         }
         result
+    }
+
+    /// Why the session is gone for this controller: the host, or its
+    /// robot's roster entry left absent.
+    pub fn lost(&self) -> Option<Reason> {
+        self.participant.host_lost().or_else(|| {
+            self.participant.authority_view().with(|view| {
+                let robot = view?.participant(&self.binding.robot)?;
+                (!robot.present).then(|| robot.left.clone().unwrap_or_default())
+            })
+        })
     }
 
     fn schedule(&self) -> MutexGuard<'_, StartSchedule> {
