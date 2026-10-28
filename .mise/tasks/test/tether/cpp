@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build the Arduino tether library (embedded/arduino/RLMeshTether) on the host as a board would (C++11, no exceptions, RTTI, heap or C++ library), run the conformance vectors and the board runtime's tests against it, and compile it for AVR (zig) and the example for real boards (arduino-cli) when those are available"
+#MISE description="Build the Arduino tether library (integrations/arduino) on the host as a board would (C++11, no exceptions, RTTI, heap or C++ library), run the conformance vectors and the board runtime's tests against it, and compile it for AVR (zig) and the example for real boards (arduino-cli) when those are available"
 #MISE dir="{{ config_root }}"
 
 # avr-gcc ships no C++ standard library, so the codec is compiled with
@@ -8,7 +8,7 @@
 # vectors.json the Rust crate checks against.
 set -euo pipefail
 
-lib=embedded/arduino/RLMeshTether
+lib=integrations/arduino
 vectors=crates/rlmesh-tether/tests/vectors.json
 out=target/tether-cpp
 mkdir -p "$out"

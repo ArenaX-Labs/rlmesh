@@ -152,7 +152,7 @@ jobs:
           # The tether crate needs only the sans-IO guard, not the browser build.
           if [ "$run" = true ] || grep -qE '^crates/rlmesh-tether/' <<<"$changed"; then sansio=true; else sansio=false; fi
           # The Arduino codec runs the tether's conformance vectors (g++ only).
-          if grep -qE '^(crates/rlmesh-tether/|embedded/arduino/|\.mise/tasks/test/tether/|mise\.(toml|lock)$|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then tether=true; else tether=false; fi
+          if grep -qE '^(crates/rlmesh-tether/|integrations/arduino/|\.mise/tasks/test/tether/|mise\.(toml|lock)$|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then tether=true; else tether=false; fi
           printf 'run=%s\nsansio=%s\ntether=%s\n' "$run" "$sansio" "$tether" | tee -a "$GITHUB_OUTPUT"
 
       - name: Setup toolchain
