@@ -63,7 +63,7 @@ fn pos(pan: f32, tilt: f32) -> [u8; 8] {
 }
 
 enum Event {
-    Sample(u8, Vec<u8>),
+    Sample(u8, String, Vec<u8>),
     Reply(u32, Vec<u8>),
     Done(u32),
 }
@@ -139,6 +139,10 @@ impl World {
 #[derive(Default)]
 struct Seen {
     actions: Vec<(EdgeMode, Vec<u8>)>,
+    /// The last tick's mode.
+    mode: Option<EdgeMode>,
+    /// Who the e-stop latch names, while latched.
+    latched_by: Option<String>,
     published: u32,
 }
 
@@ -164,12 +168,14 @@ async fn drive(
     while start.elapsed() < limit && !done(&robot) {
         if robot.phase() == Phase::Running {
             let now = now_us();
-            if let Some(tick) = robot.tick(0, now)
-                && let Some(action) = &tick.tick.action
-            {
+            if let Some(tick) = robot.tick(0, now) {
                 let mut seen = seen.lock().expect("seen");
-                seen.actions.push((tick.tick.mode, action.value.to_vec()));
+                seen.mode = Some(tick.tick.mode);
+                if let Some(action) = &tick.tick.action {
+                    seen.actions.push((tick.tick.mode, action.value.to_vec()));
+                }
             }
+            seen.lock().expect("seen").latched_by = robot.estop_reason().map(|r| r.by.clone());
             if now >= next_sample {
                 next_sample = now + 20_000;
                 if robot.publish(0, now, &pos(0.1, 0.2), now).is_ok() {
@@ -187,7 +193,8 @@ async fn drive(
                         .declare_subscriber(key)
                         .callback(move |sample| {
                             let bytes = sample.payload().to_bytes().into_owned();
-                            let _ = tx.send(Event::Sample(sub, bytes));
+                            let key = sample.key_expr().as_str().to_owned();
+                            let _ = tx.send(Event::Sample(sub, key, bytes));
                         })
                         .await
                         .expect("subscribe");
@@ -248,7 +255,9 @@ async fn drive(
         };
         while let Some(event) = next {
             match event {
-                Event::Sample(sub, mut bytes) => robot.sample(sub, &mut bytes, now_us()),
+                Event::Sample(sub, key, mut bytes) => {
+                    robot.sample(sub, &key, &mut bytes, now_us());
+                }
                 Event::Reply(id, bytes) => robot.reply(id, &bytes, now_us(), &mut rng),
                 Event::Done(id) => {
                     queries.remove(&id);
@@ -371,6 +380,29 @@ async fn a_controller_drives_the_board_and_reads_its_samples() {
         assert_eq!(received.received.sample.payload[..], pos(0.1, 0.2));
         let host = world.host.snapshot();
         assert_ne!(host.mode, Mode::Safe, "{:?}", host.mode_reason);
+
+        // The controller's e-stop signal: the board's edge latches it
+        // directly (ESTOP_SIGNAL, by the controller) and stops driving.
+        policy.estop("test").await.expect("e-stop");
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let (mode, by) = {
+                let seen = seen.lock().expect("seen");
+                (seen.mode, seen.latched_by.clone())
+            };
+            if mode == Some(EdgeMode::Estop) && by.as_deref() == Some("policy") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the board latched: {mode:?} by {by:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        policy
+            .wait_for("the host in ESTOP", WAIT, |s| s.mode == Mode::Estop)
+            .await
+            .expect("ESTOP");
         (target, received)
     };
     // The board loop runs until the controller is done: race them.

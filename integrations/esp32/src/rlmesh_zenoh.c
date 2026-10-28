@@ -11,6 +11,8 @@ typedef struct rlmesh_zenoh_event {
   uint8_t kind;
   uint8_t sub;
   uint32_t query_id;
+  /* data holds the key (a sample's), then the payload. */
+  size_t key_len;
   size_t len;
   uint8_t data[];
 } event_t;
@@ -22,8 +24,10 @@ typedef struct {
 } query_t;
 
 /* Queues a copy of `data`, from zenoh-pico's read task. */
+/* Queues a copy of `key` (a sample's, or NULL) and `payload`, from
+ * zenoh-pico's read task. */
 static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id,
-                 const z_loaned_bytes_t* payload) {
+                 const z_loaned_keyexpr_t* key, const z_loaned_bytes_t* payload) {
   z_owned_slice_t slice;
   const uint8_t* data = NULL;
   size_t len = 0;
@@ -32,14 +36,24 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
     data = z_slice_data(z_loan(slice));
     len = z_slice_len(z_loan(slice));
   }
-  event_t* e = (event_t*)malloc(sizeof(event_t) + len);
+  z_view_string_t key_text;
+  const char* key_data = NULL;
+  size_t key_len = 0;
+  if (key != NULL) {
+    z_keyexpr_as_view_string(key, &key_text);
+    key_data = z_string_data(z_loan(key_text));
+    key_len = z_string_len(z_loan(key_text));
+  }
+  event_t* e = (event_t*)malloc(sizeof(event_t) + key_len + len);
   if (e != NULL) {
     e->next = NULL;
     e->kind = kind;
     e->sub = sub;
     e->query_id = query_id;
+    e->key_len = key_len;
     e->len = len;
-    if (len > 0) memcpy(e->data, data, len);
+    if (key_len > 0) memcpy(e->data, key_data, key_len);
+    if (len > 0) memcpy(e->data + key_len, data, len);
   }
   if (have) z_drop(z_move(slice));
   z_mutex_lock(z_loan_mut(z->lock));
@@ -56,19 +70,19 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
 
 static void on_sample(z_loaned_sample_t* sample, void* ctx) {
   rlmesh_zenoh_sub_t* s = (rlmesh_zenoh_sub_t*)ctx;
-  push(s->z, EV_SAMPLE, s->sub, 0, z_sample_payload(sample));
+  push(s->z, EV_SAMPLE, s->sub, 0, z_sample_keyexpr(sample), z_sample_payload(sample));
 }
 
 static void on_reply(z_loaned_reply_t* reply, void* ctx) {
   query_t* q = (query_t*)ctx;
   if (z_reply_is_ok(reply)) {
-    push(q->z, EV_REPLY, 0, q->id, z_sample_payload(z_reply_ok(reply)));
+    push(q->z, EV_REPLY, 0, q->id, NULL, z_sample_payload(z_reply_ok(reply)));
   }
 }
 
 static void on_query_done(void* ctx) {
   query_t* q = (query_t*)ctx;
-  push(q->z, EV_DONE, 0, q->id, NULL);
+  push(q->z, EV_DONE, 0, q->id, NULL, NULL);
   free(q);
 }
 
@@ -132,7 +146,7 @@ static int query(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   if (s == NULL || z_view_keyexpr_from_str(&ke, a->key) != Z_OK ||
       (q = (query_t*)malloc(sizeof(query_t))) == NULL) {
     /* The robot waits on every query it asked for: it's over. */
-    push(z, EV_DONE, 0, a->query_id, NULL);
+    push(z, EV_DONE, 0, a->query_id, NULL, NULL);
     return -1;
   }
   q->z = z;
@@ -147,7 +161,7 @@ static int query(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   if (a->has_payload) {
     if (z_bytes_copy_from_buf(&payload, a->payload, a->payload_len) != Z_OK) {
       free(q);
-      push(z, EV_DONE, 0, a->query_id, NULL);
+      push(z, EV_DONE, 0, a->query_id, NULL, NULL);
       return -1;
     }
     opts.payload = z_move(payload);
@@ -190,7 +204,8 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
     uint64_t now = z->now_us();
     switch (e->kind) {
       case EV_SAMPLE:
-        rlmesh_device_robot_sample(z->robot, e->sub, e->data, e->len, now);
+        rlmesh_device_robot_sample(z->robot, e->sub, (const char*)e->data, e->key_len,
+                                   e->data + e->key_len, e->len, now);
         break;
       case EV_REPLY:
         rlmesh_device_robot_reply(z->robot, e->query_id, e->data, e->len, now);

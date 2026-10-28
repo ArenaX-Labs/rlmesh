@@ -64,6 +64,14 @@ int Robot::publish(int part, const void* value, size_t len) {
                                      len, now);
 }
 
+void Robot::estop(const char* reason) {
+  if (robot_ != nullptr) rlmesh_device_robot_estop(robot_, reason, esp32::nowUs());
+}
+
+void Robot::clearEstop() {
+  if (robot_ != nullptr) rlmesh_device_robot_clear_estop(robot_);
+}
+
 rlmesh_device_robot_status_t Robot::status() const {
   rlmesh_device_robot_status_t s = {};
   if (robot_ != nullptr) rlmesh_device_robot_status(robot_, &s);

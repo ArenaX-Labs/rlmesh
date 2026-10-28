@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Run the ESP32 library's transport (integrations/esp32/src/rlmesh_zenoh.c, over zenoh-pico) and the device robot on Linux against a real session host (rlmesh host): the board's loop with Linux's clock and randomness"
+#MISE description="Run the ESP32 library's transport (integrations/esp32/src/rlmesh_zenoh.c, over zenoh-pico) and the device robot on Linux against a real session host (rlmesh-device's examples/test_host, ungated: zenoh-pico can't present an embedded host's usrpwd link gate): the board's loop with Linux's clock and randomness"
 #MISE dir="{{ config_root }}"
 # Local only: it fetches and builds zenoh-pico.
 set -euo pipefail
@@ -17,8 +17,8 @@ if [ ! -f "$zp_build/lib/libzenohpico.a" ]; then
     cmake --build "$zp_build" --target zenohpico_static -j 4 >>"$out/zenoh-pico.log" 2>&1 ||
     { cat "$out/zenoh-pico.log" >&2; exit 1; }
 fi
-echo "==> rlmesh-device and rlmesh host"
-cargo build -q -p rlmesh-device -p rlmesh-cli
+echo "==> rlmesh-device and its test host"
+cargo build -q -p rlmesh-device --lib --example test_host
 echo "==> the board's loop"
 # The header the library compiles against, staged as build:esp32 does.
 cp crates/rlmesh-device/include/rlmesh_device.h integrations/esp32/src/
@@ -29,7 +29,7 @@ cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -DZENOH_LINUX -DZENOH_C_STANDARD=11 \
   -o "$out/host_robot"
 
 log="$out/host.log"
-"$target_dir/debug/rlmesh" host --listen 127.0.0.1:0 >"$log" 2>&1 &
+"$target_dir/debug/examples/test_host" >"$log" 2>&1 &
 host=$!
 trap 'kill "$host" 2>/dev/null || true' EXIT
 for _ in $(seq 100); do
@@ -39,6 +39,6 @@ done
 address="$(head -1 "$log")"
 case "$address" in
   *#*) ;;
-  *) echo "rlmesh host printed no address:" >&2; cat "$log" >&2; exit 1 ;;
+  *) echo "the test host printed no address:" >&2; cat "$log" >&2; exit 1 ;;
 esac
 "$out/host_robot" "$address" 15

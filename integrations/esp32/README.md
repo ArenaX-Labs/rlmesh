@@ -9,7 +9,8 @@ version of the host's Zenoh.
 
 > **Work in progress.** A board joins a session, declares its parts, takes
 > commands and publishes samples, all sealed or signed per part
-> (`examples/Robot`). Lockstep, history and a board e-stop come next.
+> (`examples/Robot`), and latches every member's e-stop. Lockstep and
+> serving history come next.
 
 For a board without a network (a Nano, Uno or UNO R4 on a USB cable), see
 [RLMeshTether](../arduino).
@@ -47,10 +48,12 @@ exports any C name but its own, or if the linked `memcpy` runs from flash.
 
 ## Joining a session
 
-On the computer, run a host on its LAN address:
+On the computer, run a host on its LAN address. Until `rlmesh host` takes a
+board's links (zenoh-pico can't present its loopback link gate), use the
+device crate's test host:
 
 ```sh
-rlmesh host --listen 192.168.1.20:7447
+cargo run -p rlmesh-device --example test_host -- 192.168.1.20
 ```
 
 It prints the session's address with its key (`192.168.1.20:7447#…`). Put
@@ -89,6 +92,7 @@ void loop() {
 
 - **Commands:** `tick()` is the edge of session-core, as on any robot: an action under the lease, a hold, or the part's declared safe behaviour (`t.safe`) when the lease, the host or the commands lapse. It tells the host when it goes safe on its own account, and publishes what it applied.
 - **Samples:** `publish()` returns `RLMESH_DEVICE_ERR_NOT_READY` until the robot runs and its stream key has arrived.
+- **E-stop:** the board latches every member's e-stop signal at once, with or without the host. `robot.estop()` latches its own (an e-stop pin: `kEstopPin` in the example). Only `robot.clearEstop()`, a local action with the button released, clears it; the host then stays in ESTOP until disarmed and armed. A latch carries into the board's next session.
 - **Starting over:** any failure (no reply, a refusal, no heartbeat echo for 3 s) starts over from the handshake after a second.
 - **The address's key is a secret.** Anyone holding it can join the session.
 - **Ports:** the host listens on four consecutive ports, one per traffic class. The board opens a session to each one it uses (control, and its parts' classes), when it first uses it.

@@ -6,7 +6,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::{CStr, c_char, c_int};
 
-use rlmesh_session_core::wire::{CtlStatus, EdgeMode, Mode, ParticipantId, SessionId, TenantId};
+use rlmesh_session_core::wire::{
+    CtlStatus, EdgeMode, Mode, ParticipantId, ReasonCode, SessionId, TenantId,
+};
 
 use super::{
     CRng, RLMESH_DEVICE_ERR_ARG, RLMESH_DEVICE_ERR_CONFIG, RLMESH_DEVICE_ERR_INVALID,
@@ -88,6 +90,9 @@ pub struct RlmeshDeviceRobotStatus {
     pub echoes: u64,
     /// Command chunks the edges accepted.
     pub chunks_accepted: u64,
+    /// The e-stop latch: 0 clear, 1 this robot's own stop, 2 a member's
+    /// signal.
+    pub estop: u8,
 }
 
 /// No part: `rlmesh_device_tick_t.part` and the handover's.
@@ -384,26 +389,77 @@ pub unsafe extern "C" fn rlmesh_device_robot_query_done(
     RLMESH_DEVICE_OK
 }
 
-/// A sample on subscription `sub`.
+/// A sample on subscription `sub`, received on key `key` (`key_len`
+/// bytes, UTF-8: an e-stop signal names its sender in it).
 ///
 /// # Safety
-/// `robot` is null or from `rlmesh_device_robot_new`; `data` valid for
-/// `len` bytes.
+/// `robot` is null or from `rlmesh_device_robot_new`; `key` valid for
+/// `key_len` bytes and `data` for `len`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_device_robot_sample(
     robot: *mut DeviceRobot,
     sub: u8,
+    key: *const c_char,
+    key_len: usize,
     data: *const u8,
     len: usize,
     now_us: u64,
 ) -> c_int {
     // SAFETY: per the contract.
-    let (Some(r), Some(data)) = (unsafe { robot_mut(robot) }, unsafe { bytes(data, len) }) else {
+    let (Some(r), Some(key), Some(data)) = (
+        unsafe { robot_mut(robot) },
+        unsafe { bytes(key.cast(), key_len) },
+        unsafe { bytes(data, len) },
+    ) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    let Ok(key) = core::str::from_utf8(key) else {
         return RLMESH_DEVICE_ERR_ARG;
     };
     // Opened in place: the transport's buffer is its own.
     let mut copy = data.to_vec();
-    r.robot.sample(sub, &mut copy, now_us);
+    r.robot.sample(sub, key, &mut copy, now_us);
+    RLMESH_DEVICE_OK
+}
+
+/// Latches this robot's e-stop for its own stop (an e-stop pin,
+/// `ESTOP_LOCAL`, `reason` NUL-terminated or null): every part stops at
+/// once, with or without a host, and the host is told. Only
+/// `rlmesh_device_robot_clear_estop` clears it.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `reason` null or
+/// NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_estop(
+    robot: *mut DeviceRobot,
+    reason: *const c_char,
+    now_us: u64,
+) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    // SAFETY: per the contract.
+    let reason = unsafe { text(reason) }.unwrap_or("e-stop pin");
+    r.robot.estop(reason, now_us);
+    RLMESH_DEVICE_OK
+}
+
+/// Clears the e-stop latch, whoever set it: the only way to. Call it only
+/// from a local action on the board (a reset button, with the e-stop
+/// released). The host ends in ESTOP, unlatched; leaving that still needs
+/// disarm and arm.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_clear_estop(robot: *mut DeviceRobot) -> c_int {
+    // SAFETY: per the contract.
+    let Some(r) = (unsafe { robot_mut(robot) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    r.robot.clear_estop();
     RLMESH_DEVICE_OK
 }
 
@@ -621,6 +677,11 @@ pub unsafe extern "C" fn rlmesh_device_robot_status(
             epoch,
             echoes: robot.echoes(),
             chunks_accepted: robot.chunks_accepted(),
+            estop: match robot.estop_reason().map(|r| r.code) {
+                None => 0,
+                Some(ReasonCode::EstopSignal) => 2,
+                Some(_) => 1,
+            },
         });
     }
     RLMESH_DEVICE_OK
@@ -715,12 +776,14 @@ mod tests {
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 1, 0),
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 2, 0),
                 (RLMESH_DEVICE_SUBSCRIBE, 0, 3, 0),
+                (RLMESH_DEVICE_SUBSCRIBE, 0, 4, 0),
                 (RLMESH_DEVICE_TOKEN, 0, 0, 0),
                 (RLMESH_DEVICE_QUERY, 0, 0, 0),
             ]
         );
         assert!(keys[0].ends_with("/host/state"), "{keys:?}");
         assert!(keys[3].ends_with("/p/eyes/keys"), "{keys:?}");
+        assert!(keys[4].ends_with("/estop/*"), "{keys:?}");
         assert_eq!(action.query_id, 1);
 
         let mut status = RlmeshDeviceRobotStatus::default();
@@ -743,6 +806,20 @@ mod tests {
         assert_eq!(rc, RLMESH_DEVICE_ERR_NOT_READY);
         let rc = unsafe { rlmesh_device_robot_publish(robot, 9, 10, value.as_ptr(), 8, 10) };
         assert_eq!(rc, RLMESH_DEVICE_ERR_ARG);
+        // The pin's latch holds before any session, and only a clear
+        // clears it.
+        assert_eq!(
+            unsafe { rlmesh_device_robot_estop(robot, c"pin".as_ptr(), 20) },
+            RLMESH_DEVICE_OK
+        );
+        unsafe { rlmesh_device_robot_status(robot, &mut status) };
+        assert_eq!(status.estop, 1);
+        assert_eq!(
+            unsafe { rlmesh_device_robot_clear_estop(robot) },
+            RLMESH_DEVICE_OK
+        );
+        unsafe { rlmesh_device_robot_status(robot, &mut status) };
+        assert_eq!(status.estop, 0);
         unsafe { rlmesh_device_robot_free(robot) };
     }
 

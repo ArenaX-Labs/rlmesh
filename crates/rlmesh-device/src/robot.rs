@@ -31,8 +31,8 @@ use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session_core::wire::{
     AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlStatus, Epoch, Health, Heartbeat,
-    Mode, PartSpec, ParticipantId, PriorityClass, Role, Sample, SessionId, SessionKeys, TenantId,
-    TimingSample,
+    Mode, PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample, SessionId,
+    SessionKeys, TenantId, TimingSample,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -57,8 +57,10 @@ pub const SUB_TICK: u8 = 1;
 pub const SUB_ECHO: u8 = 2;
 /// `p/{id}/keys`.
 pub const SUB_KEYS: u8 = 3;
+/// `estop/*`: every member's e-stop signal. Its samples need their key.
+pub const SUB_ESTOP: u8 = 4;
 /// The commands of part `i` (in the map's order) are `SUB_COMMANDS + i`.
-pub const SUB_COMMANDS: u8 = 4;
+pub const SUB_COMMANDS: u8 = 5;
 
 /// What a robot needs to join.
 #[derive(Debug, Clone)]
@@ -188,6 +190,8 @@ struct Pending {
 /// One command group's edge.
 struct Edge {
     core: EdgeCore,
+    /// The latch count it last saw: a latch cleared since still fences it.
+    latches_seen: u64,
 }
 
 /// One control tick of a part's command group: session-core's
@@ -241,6 +245,14 @@ pub struct Robot {
     last_get_keys: Option<u64>,
     accepted: u64,
     applied: u64,
+    /// This robot's e-stop latch (DESIGN §6): its own stop (`ESTOP_LOCAL`)
+    /// or a member's signal (`ESTOP_SIGNAL`). It outlives a session, and the
+    /// next attach carries it.
+    estop: Option<Reason>,
+    latches: u64,
+    /// The code it last latched with, which a cleared latch still fences
+    /// an edge with.
+    last_code: ReasonCode,
 }
 
 impl core::fmt::Debug for Robot {
@@ -314,6 +326,9 @@ impl Robot {
             last_get_keys: None,
             accepted: 0,
             applied: 0,
+            estop: None,
+            latches: 0,
+            last_code: ReasonCode::EstopLocal,
         })
     }
 
@@ -357,6 +372,33 @@ impl Robot {
         self.parts.iter().position(|p| p.channel == channel)
     }
 
+    /// Latches this robot's e-stop for its own stop (`ESTOP_LOCAL`): an
+    /// e-stop pin. Every edge stops at once, with or without a host, and
+    /// the host is told. Only [`Self::clear_estop`] clears it.
+    pub fn estop(&mut self, reason: &str, now_us: u64) {
+        self.latch(Reason {
+            code: ReasonCode::EstopLocal,
+            by: self.config.name.to_string(),
+            detail: reason.to_string(),
+            at_ns: ns(now_us),
+            ..Reason::default()
+        });
+    }
+
+    /// Clears the e-stop latch: the only way to, since no wire path clears
+    /// it. The host is told after the `Estop` for every latch before, so it
+    /// ends in ESTOP, unlatched; leaving that still needs disarm and arm.
+    pub fn clear_estop(&mut self) {
+        if self.estop.take().is_some() {
+            self.queue.push_back(Command::Clear);
+        }
+    }
+
+    /// Why the e-stop is latched, while it is.
+    pub fn estop_reason(&self) -> Option<&Reason> {
+        self.estop.as_ref()
+    }
+
     /// Chunks the edges accepted, over every attach.
     pub fn chunks_accepted(&self) -> u64 {
         self.accepted
@@ -388,6 +430,13 @@ impl Robot {
                     class: CLASS_CONTROL,
                     sub: SUB_KEYS,
                     key: self.keys.participant_keys(me),
+                },
+                // A robot latches every member's e-stop signal at once,
+                // with or without a host.
+                Action::Subscribe {
+                    class: CLASS_CONTROL,
+                    sub: SUB_ESTOP,
+                    key: self.keys.estops(),
                 },
                 // A multi-session host starts the session when it sees
                 // this token.
@@ -455,6 +504,9 @@ impl Robot {
                     requires: Vec::new(),
                     workflow_edition: String::new(),
                     workflow_editions: Vec::new(),
+                    // A latch outlives the session: the host learns it at
+                    // once.
+                    estop: self.estop.clone(),
                 });
                 self.next_ctl(now_us);
             }
@@ -476,8 +528,8 @@ impl Robot {
         }
     }
 
-    /// A sample on subscription `sub`.
-    pub fn sample(&mut self, sub: u8, payload: &mut [u8], now_us: u64) {
+    /// A sample on subscription `sub`, received on `key`.
+    pub fn sample(&mut self, sub: u8, key: &str, payload: &mut [u8], now_us: u64) {
         let now = ns(now_us);
         let Some(link) = self.link.as_mut() else {
             return;
@@ -500,6 +552,17 @@ impl Robot {
                     self.previous = Some(echo.complete(now));
                     self.last_echo = now_us;
                     self.echoes += 1;
+                }
+            }
+            SUB_ESTOP => {
+                if let Ok((by, signal)) = link.open_estop_signal(key, payload.to_vec()) {
+                    self.latch(Reason {
+                        code: ReasonCode::EstopSignal,
+                        by: by.to_string(),
+                        detail: signal.reason,
+                        at_ns: now,
+                        ..Reason::default()
+                    });
                 }
             }
             SUB_KEYS => {
@@ -526,7 +589,9 @@ impl Robot {
     pub fn tick(&mut self, part: usize, now_us: u64) -> Option<Tick> {
         let now = ns(now_us);
         let index = (*self.edge_of.get(part)?)?;
+        let latch = self.latch_now();
         let edge = self.edges.get_mut(index)?;
+        apply_latch(edge, latch);
         let tick = edge
             .core
             .tick(now, self.snapshot.as_ref(), self.observed_ns);
@@ -651,6 +716,7 @@ impl Robot {
                 return self.missing_key(&err, now_us);
             }
         };
+        let latch = self.latch_now();
         let Some(Some(edge)) = self
             .edge_of
             .get(index)
@@ -658,6 +724,7 @@ impl Robot {
         else {
             return;
         };
+        apply_latch(edge, latch);
         if edge
             .core
             .accept(chunk, now, self.snapshot.as_ref(), self.observed_ns)
@@ -681,6 +748,31 @@ impl Robot {
         }
         self.last_get_keys = Some(now_us);
         self.queue.push_back(Command::GetKeys);
+    }
+
+    /// Latches the e-stop for `reason`, and queues its report to the host
+    /// (in order: before any `Clear` queued after it).
+    fn latch(&mut self, reason: Reason) {
+        let origin = (reason.code == ReasonCode::EstopSignal)
+            .then(|| ParticipantId::new(&reason.by).ok())
+            .flatten();
+        self.queue.push_back(Command::Estop {
+            reason: reason.detail.clone(),
+            code: reason.code,
+            origin,
+        });
+        self.last_code = reason.code;
+        self.estop = Some(reason);
+        self.latches += 1;
+    }
+
+    /// The latch as the edges take it.
+    fn latch_now(&self) -> Latch {
+        Latch {
+            latches: self.latches,
+            code: self.last_code,
+            latched: self.estop.is_some(),
+        }
     }
 
     fn observe(&mut self, snapshot: AuthoritySnapshot, now: i64) {
@@ -791,8 +883,8 @@ impl Robot {
             if joining {
                 return self.fail(Fault::NoReply, now_us);
             }
-            // A stop report is retried until the host shows the stop.
-            if matches!(pending.command, Command::EnterSafe { .. }) {
+            // A stop report is retried until the host answers it.
+            if is_stop(&pending.command) {
                 self.queue.push_front(pending.command);
             }
             return self.next_ctl(now_us);
@@ -838,10 +930,7 @@ impl Robot {
                 return self.fail(Fault::Refused(refusal.status, refusal.message), now_us);
             }
             // Its first outcome is unknown: send it again, anew.
-            Err(refusal)
-                if refusal.status == CtlStatus::Expired
-                    && matches!(pending.command, Command::EnterSafe { .. }) =>
-            {
+            Err(refusal) if refusal.status == CtlStatus::Expired && is_stop(&pending.command) => {
                 self.queue.push_front(pending.command.clone());
             }
             _ => {}
@@ -917,7 +1006,10 @@ impl Robot {
             for &j in &members {
                 edge_of[j] = Some(edges.len());
             }
-            edges.push(Edge { core });
+            edges.push(Edge {
+                core,
+                latches_seen: 0,
+            });
         }
         for (i, part) in parts.iter().enumerate() {
             if part.command.is_none() || self.subscribed[i] {
@@ -992,4 +1084,33 @@ impl Robot {
         self.edge_of = alloc::vec![None; self.paths.len()];
         self.retry_at = now_us + u64::from(RETRY_MS) * 1000;
     }
+}
+
+/// Whether `command` is a stop report: sent until the host answers it.
+fn is_stop(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::EnterSafe { .. } | Command::Estop { .. } | Command::Clear
+    )
+}
+
+/// The robot's e-stop latch, as an edge takes it.
+#[derive(Clone, Copy)]
+struct Latch {
+    /// How many times it latched.
+    latches: u64,
+    /// The code it last latched with.
+    code: ReasonCode,
+    latched: bool,
+}
+
+/// Gives `edge` the robot's latch: a latch it hasn't seen yet stops and
+/// fences it even when cleared since (as the host-side edge does).
+fn apply_latch(edge: &mut Edge, latch: Latch) {
+    if edge.latches_seen != latch.latches {
+        edge.latches_seen = latch.latches;
+        edge.core.set_local_estop(Some(latch.code));
+    }
+    edge.core
+        .set_local_estop(latch.latched.then_some(latch.code));
 }
