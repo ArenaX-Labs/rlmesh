@@ -206,6 +206,13 @@ opt-level = "s"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+# Checked in RLMesh's own code, where an overflow is a bug and resetting the
+# board is safe; not in the dependencies (the crypto), which wrap on purpose
+# and run on every message.
+overflow-checks = true
+
+[profile.device.package."*"]
+overflow-checks = false
 
 # Keep unwinding well-defined across the rlmesh-capi `extern "C"` boundary: every
 # FFI body relies on `catch_unwind`, which is a no-op under `panic = "abort"`.

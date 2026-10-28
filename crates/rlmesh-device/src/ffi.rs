@@ -23,7 +23,7 @@ pub type NowUs = unsafe extern "C" fn() -> u64;
 /// success.
 pub type Random = unsafe extern "C" fn(buf: *mut u8, len: usize) -> c_int;
 
-/// `RLMESH_DEVICE_VERSION`: major, minor and patch, a byte each.
+/// The crate's version: major, minor and patch, a byte each.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_device_version() -> u32 {
     let n = |s: &str| s.parse::<u32>().unwrap_or(0);
@@ -106,9 +106,15 @@ mod tests {
         CLOCK.fetch_add(10, Ordering::Relaxed)
     }
 
+    static DRAWN: AtomicU64 = AtomicU64::new(0);
+
+    /// A different byte stream on every call: no two keys alike.
     unsafe extern "C" fn random(buf: *mut u8, len: usize) -> c_int {
         for i in 0..len {
-            unsafe { buf.add(i).write(i as u8 ^ 0x5A) };
+            let n = DRAWN
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            unsafe { buf.add(i).write((n >> 56) as u8) };
         }
         0
     }

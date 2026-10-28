@@ -18,8 +18,10 @@ void setup() {
   // The hardware RNG is cryptographic only with the radio on.
   WiFi.mode(WIFI_STA);
 
-  Serial.printf("RLMeshESP32 timing (library %06lx, %lu MHz)\n",
-                (unsigned long)rlmesh_device_version(), (unsigned long)getCpuFrequencyMhz());
+  uint32_t v = rlmesh_device_version();
+  Serial.printf("RLMeshESP32 timing (library %lu.%lu.%lu, %lu MHz)\n", (unsigned long)(v >> 16),
+                (unsigned long)(v >> 8 & 0xFF), (unsigned long)(v & 0xFF),
+                (unsigned long)getCpuFrequencyMhz());
   rlmesh_device_timing_t t;
   int rc = rlmesh::esp32::timing(t);
   if (rc != RLMESH_DEVICE_OK) {
@@ -38,6 +40,8 @@ void setup() {
                 (unsigned long)(tick * 1000 / kTickUs % 10));
   Serial.printf("heap: %lu free, %lu lowest\n", (unsigned long)ESP.getFreeHeap(),
                 (unsigned long)ESP.getMinFreeHeap());
+  // loopTask's stack is 8 KB.
+  Serial.printf("stack: %lu bytes never used\n", (unsigned long)uxTaskGetStackHighWaterMark(NULL));
 }
 
 void loop() {}
