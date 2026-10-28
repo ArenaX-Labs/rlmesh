@@ -433,6 +433,23 @@
       ],
       "rx_max": 256,
       "wire": "00003742000006850103641f00"
+    },
+    {
+      "name": "a sketch's text, then a provisioning frame with its leading delimiter (§14.2)",
+      "results": [
+        {
+          "error": "truncated"
+        },
+        {
+          "frame": {
+            "payload": "524c4d5001",
+            "seq": 0,
+            "type": 144
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "626f6f7465640d0a00029008524c4d5001315c00"
     }
   ],
   "messages": [
@@ -793,6 +810,449 @@
       "lens": [12, 1, 2],
       "name": "f32[3], bool, u8[2]",
       "offsets": [0, 16, 24]
+    }
+  ],
+  "provision": [
+    {
+      "msg": {
+        "type": "GET_DEVICE"
+      },
+      "name": "GET_DEVICE",
+      "seq": 0,
+      "wire": "00029008524c4d5001315c00"
+    },
+    {
+      "msg": {
+        "arch": 4,
+        "device_key": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "flags": 0,
+        "host_id": "",
+        "lib_version": 512,
+        "name": "6579652d33",
+        "type": "DEVICE_INFO"
+      },
+      "name": "DEVICE_INFO, not provisioned",
+      "seq": 0,
+      "wire": "00021006524c4d500103020421a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf09056579652d3330e000"
+    },
+    {
+      "msg": {
+        "arch": 4,
+        "device_key": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "flags": 1,
+        "host_id": "6162636465666768696a6b6c6d6e6f707172737475767778797a616263646566",
+        "lib_version": 512,
+        "name": "6162636465666768696a6b6c6d6e6f707172737475767778797a616263646566",
+        "type": "DEVICE_INFO"
+      },
+      "name": "DEVICE_INFO, provisioned, 32-byte host id and name",
+      "seq": 1,
+      "wire": "00081001524c4d500168020401a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf206162636465666768696a6b6c6d6e6f707172737475767778797a616263646566206162636465666768696a6b6c6d6e6f707172737475767778797a616263646566d47e00"
+    },
+    {
+      "msg": {
+        "arch": 4,
+        "device_key": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "flags": 1,
+        "host_id": "726c6d2d336639613263",
+        "lib_version": 512,
+        "name": "c593696c2dc3bc",
+        "type": "DEVICE_INFO"
+      },
+      "name": "DEVICE_INFO, a multi-byte UTF-8 name",
+      "seq": 2,
+      "wire": "00081002524c4d500139020401a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf0a726c6d2d33663961326307c593696c2dc3bc885200"
+    },
+    {
+      "msg": {
+        "addresses": ["3139322e3136382e312e32303a37343437"],
+        "flags": 0,
+        "host_id": "726c6d2d336639613263",
+        "host_key": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+        "type": "PROVISION"
+      },
+      "name": "PROVISION, one address",
+      "seq": 0,
+      "wire": "000291020141505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f0a726c6d2d33663961326301113139322e3136382e312e32303a37343437198000"
+    },
+    {
+      "msg": {
+        "addresses": ["5b666538303a3a315d3a3635353332", "726f626f742e6c6f63616c3a31"],
+        "flags": 0,
+        "host_id": "726c6d2d336639613263",
+        "host_key": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+        "type": "PROVISION"
+      },
+      "name": "PROVISION, IPv6 and a name, highest port",
+      "seq": 1,
+      "wire": "00049101014d505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f0a726c6d2d336639613263020f5b666538303a3a315d3a36353533320d726f626f742e6c6f63616c3a31c74300"
+    },
+    {
+      "msg": {
+        "addresses": [
+          "686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437"
+        ],
+        "flags": 0,
+        "host_id": "72",
+        "host_key": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+        "type": "PROVISION"
+      },
+      "name": "PROVISION, a 63-byte address",
+      "seq": 2,
+      "wire": "000491020166505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f0172013f686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437384400"
+    },
+    {
+      "msg": {
+        "addresses": [
+          "686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437",
+          "686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437",
+          "686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437",
+          "686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437"
+        ],
+        "flags": 0,
+        "host_id": "6162636465666768696a6b6c6d6e6f707172737475767778797a616263646566",
+        "host_key": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+        "type": "PROVISION"
+      },
+      "name": "PROVISION, the largest payload (252 bytes)",
+      "seq": 3,
+      "wire": "0004910301fd505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f206162636465666768696a6b6c6d6e6f707172737475767778797a616263646566042d686868686868686868686868686868686868686868686868686868686868686868686868686868683a373434372d686868686868686868686868686868686868686868686868686868686868686868686868686868683a373434372d686868686868686868686868686868686868686868686868686868686868686868686868686868683a373434372d686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437f01a00"
+    },
+    {
+      "msg": {
+        "record_crc": 3735928559,
+        "status": 0,
+        "type": "PROVISIONED"
+      },
+      "name": "PROVISIONED, stored",
+      "seq": 4,
+      "wire": "0003110407efbeadde1e8c00"
+    },
+    {
+      "msg": {
+        "record_crc": 0,
+        "status": 9,
+        "type": "PROVISIONED"
+      },
+      "name": "PROVISIONED, an unknown status",
+      "seq": 5,
+      "wire": "000411050901010103a99500"
+    }
+  ],
+  "provision_rejections": [
+    {
+      "error": "direction",
+      "name": "PROVISION heard by the daemon",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d01113139322e3136382e312e32303a37343437",
+      "receiver": "bridge",
+      "type": 145
+    },
+    {
+      "error": "direction",
+      "name": "DEVICE_INFO heard by the board",
+      "payload": "524c4d500100020400a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf000165",
+      "receiver": "board",
+      "type": 16
+    },
+    {
+      "error": "unknown_type",
+      "name": "an unknown daemon type",
+      "payload": "00",
+      "receiver": "board",
+      "type": 146
+    },
+    {
+      "error": "magic",
+      "name": "GET_DEVICE, the tether's magic",
+      "payload": "524c4d5401",
+      "receiver": "board",
+      "type": 144
+    },
+    {
+      "error": "magic",
+      "name": "GET_DEVICE, too short for the magic",
+      "payload": "524c4d",
+      "receiver": "board",
+      "type": 144
+    },
+    {
+      "error": "version",
+      "name": "GET_DEVICE, version 2",
+      "payload": "524c4d5002",
+      "receiver": "board",
+      "type": 144,
+      "version": 2
+    },
+    {
+      "error": "length",
+      "name": "GET_DEVICE, a byte too long",
+      "payload": "524c4d500100",
+      "receiver": "board",
+      "type": 144
+    },
+    {
+      "error": "version",
+      "name": "DEVICE_INFO, version 2, checked before its length",
+      "payload": "524c4d5002",
+      "receiver": "bridge",
+      "type": 16,
+      "version": 2
+    },
+    {
+      "error": "range",
+      "name": "DEVICE_INFO, an empty name",
+      "payload": "524c4d500100020400a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf0000",
+      "receiver": "bridge",
+      "type": 16
+    },
+    {
+      "error": "range",
+      "name": "DEVICE_INFO, a 33-byte name",
+      "payload": "524c4d500100020400a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf00216162636465666768696a6b6c6d6e6f707172737475767778797a61626364656667",
+      "receiver": "bridge",
+      "type": 16
+    },
+    {
+      "error": "range",
+      "name": "DEVICE_INFO, a 33-byte host id",
+      "payload": "524c4d500100020401a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf216162636465666768696a6b6c6d6e6f707172737475767778797a616263646566670165",
+      "receiver": "bridge",
+      "type": 16
+    },
+    {
+      "error": "reserved",
+      "name": "DEVICE_INFO, a reserved flag",
+      "payload": "524c4d500100020402a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf000165",
+      "receiver": "bridge",
+      "type": 16
+    },
+    {
+      "error": "utf8",
+      "name": "DEVICE_INFO, a non-UTF-8 name",
+      "payload": "524c4d500100020400a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf0001ff",
+      "receiver": "bridge",
+      "type": 16
+    },
+    {
+      "error": "length",
+      "name": "DEVICE_INFO, cut inside the key",
+      "payload": "524c4d500100020400a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4",
+      "receiver": "bridge",
+      "type": 16
+    },
+    {
+      "error": "length",
+      "name": "PROVISIONED, a byte short",
+      "payload": "00000000",
+      "receiver": "bridge",
+      "type": 17
+    },
+    {
+      "error": "version",
+      "name": "PROVISION, version 2",
+      "payload": "0200505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d01113139322e3136382e312e32303a37343437",
+      "receiver": "board",
+      "type": 145,
+      "version": 2
+    },
+    {
+      "error": "length",
+      "name": "PROVISION, empty",
+      "payload": "",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "length",
+      "name": "PROVISION, cut inside the last address",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d01113139322e3136382e312e32303a373434",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "length",
+      "name": "PROVISION, a byte past the last address",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d01113139322e3136382e312e32303a3734343700",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "reserved",
+      "name": "PROVISION, a reserved flag",
+      "payload": "0101505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d01113139322e3136382e312e32303a37343437",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "range",
+      "name": "PROVISION, an empty host id",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f0001113139322e3136382e312e32303a37343437",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "range",
+      "name": "PROVISION, a 33-byte host id",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f216162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666701113139322e3136382e312e32303a37343437",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "range",
+      "name": "PROVISION, no address",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d00",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "range",
+      "name": "PROVISION, five addresses",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d05113139322e3136382e312e32303a37343437113139322e3136382e312e32303a37343437113139322e3136382e312e32303a37343437113139322e3136382e312e32303a37343437113139322e3136382e312e32303a37343437",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "range",
+      "name": "PROVISION, an empty address",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d0100",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "range",
+      "name": "PROVISION, a 64-byte address",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d014068686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "range",
+      "name": "PROVISION, port 0",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d0103683a30",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "range",
+      "name": "PROVISION, port 65533",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d0107683a3635353333",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "range",
+      "name": "PROVISION, no port",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f03726c6d010c3139322e3136382e312e3230",
+      "receiver": "board",
+      "type": 145
+    },
+    {
+      "error": "utf8",
+      "name": "PROVISION, a non-UTF-8 host id",
+      "payload": "0100505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f01ff01113139322e3136382e312e32303a37343437",
+      "receiver": "board",
+      "type": 145
+    }
+  ],
+  "provision_write_rejections": [
+    {
+      "error": "range",
+      "msg": {
+        "arch": 4,
+        "device_key": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "flags": 0,
+        "host_id": "",
+        "lib_version": 512,
+        "name": "",
+        "type": "DEVICE_INFO"
+      },
+      "name": "DEVICE_INFO, an empty name"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "arch": 4,
+        "device_key": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "flags": 1,
+        "host_id": "6162636465666768696a6b6c6d6e6f707172737475767778797a61626364656667",
+        "lib_version": 512,
+        "name": "65",
+        "type": "DEVICE_INFO"
+      },
+      "name": "DEVICE_INFO, a 33-byte host id"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "arch": 4,
+        "device_key": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "flags": 2,
+        "host_id": "",
+        "lib_version": 512,
+        "name": "65",
+        "type": "DEVICE_INFO"
+      },
+      "name": "DEVICE_INFO, a reserved flag"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "addresses": ["3139322e3136382e312e32303a37343437"],
+        "flags": 1,
+        "host_id": "726c6d",
+        "host_key": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+        "type": "PROVISION"
+      },
+      "name": "PROVISION, a reserved flag"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "addresses": [],
+        "flags": 0,
+        "host_id": "726c6d",
+        "host_key": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+        "type": "PROVISION"
+      },
+      "name": "PROVISION, no address"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "addresses": ["683a3635353333"],
+        "flags": 0,
+        "host_id": "726c6d",
+        "host_key": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+        "type": "PROVISION"
+      },
+      "name": "PROVISION, port 65533"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "addresses": ["3139322e3136382e312e32303a37343437"],
+        "flags": 0,
+        "host_id": "",
+        "host_key": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+        "type": "PROVISION"
+      },
+      "name": "PROVISION, an empty host id"
+    },
+    {
+      "error": "length",
+      "msg": {
+        "addresses": [
+          "68686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437",
+          "68686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437",
+          "68686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437",
+          "68686868686868686868686868686868686868686868686868686868686868686868686868686868683a37343437"
+        ],
+        "flags": 0,
+        "host_id": "6162636465666768696a6b6c6d6e6f707172737475767778797a616263646566",
+        "host_key": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+        "type": "PROVISION"
+      },
+      "name": "PROVISION, a 253-byte payload"
     }
   ],
   "rejections": [

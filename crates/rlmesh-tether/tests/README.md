@@ -19,16 +19,19 @@ mise run fmt:config
 Bytes are lowercase hex strings. Integers are JSON numbers. Every case has a
 `name`. The top level is an object with `"schema": 1` and these sections:
 
-| Section            | Case fields                                                             | Check                                                                                                                                                  |
-| ------------------ | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `crc`              | `data`, `crc16`, `crc32`                                                | CRC-16/CCITT-FALSE and CRC-32/ISO-HDLC of `data`.                                                                                                      |
-| `cobs_encode`      | `decoded`, `encoded`                                                    | `decoded` encodes to `encoded` (no delimiter), in the pinned form, and decodes back.                                                                   |
-| `cobs_decode`      | `wire`, `rx_max`, `results`                                             | Feeding `wire` (delimiters included) to a decoder with an `rx_max`-byte buffer yields `results` in order.                                              |
-| `frames`           | `wire`, `rx_max`, `results`                                             | As `cobs_decode`, with each decoded frame then parsed (size and CRC).                                                                                  |
-| `messages`         | `seq`, `msg`, `wire`, optional `dense_len`                              | Writing `msg` with `seq` gives exactly `wire` (with its trailing `00`); decoding `wire` at the end its type is meant for gives `msg` back.             |
-| `rejections`       | `receiver`, `type`, `payload`, `error`, optional `version`, `dense_len` | Decoding a frame of `type` with `payload` at `receiver` (`"bridge"` or `"board"`) fails with `error`; a `version` error also reports the version byte. |
-| `write_rejections` | `msg`, `error`                                                          | Writing `msg` fails with `error` and writes nothing.                                                                                                   |
-| `pack`             | `fields`, `offsets`, `lens`, `aligned`, `dense`                         | `to_dense(aligned) == dense` and `to_aligned(dense) == aligned` (padding zeroed). Bridge only: a board never sees the aligned form.                    |
+| Section                      | Case fields                                                             | Check                                                                                                                                                  |
+| ---------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `crc`                        | `data`, `crc16`, `crc32`                                                | CRC-16/CCITT-FALSE and CRC-32/ISO-HDLC of `data`.                                                                                                      |
+| `cobs_encode`                | `decoded`, `encoded`                                                    | `decoded` encodes to `encoded` (no delimiter), in the pinned form, and decodes back.                                                                   |
+| `cobs_decode`                | `wire`, `rx_max`, `results`                                             | Feeding `wire` (delimiters included) to a decoder with an `rx_max`-byte buffer yields `results` in order.                                              |
+| `frames`                     | `wire`, `rx_max`, `results`                                             | As `cobs_decode`, with each decoded frame then parsed (size and CRC).                                                                                  |
+| `messages`                   | `seq`, `msg`, `wire`, optional `dense_len`                              | Writing `msg` with `seq` gives exactly `wire` (with its trailing `00`); decoding `wire` at the end its type is meant for gives `msg` back.             |
+| `rejections`                 | `receiver`, `type`, `payload`, `error`, optional `version`, `dense_len` | Decoding a frame of `type` with `payload` at `receiver` (`"bridge"` or `"board"`) fails with `error`; a `version` error also reports the version byte. |
+| `write_rejections`           | `msg`, `error`                                                          | Writing `msg` fails with `error` and writes nothing.                                                                                                   |
+| `pack`                       | `fields`, `offsets`, `lens`, `aligned`, `dense`                         | `to_dense(aligned) == dense` and `to_aligned(dense) == aligned` (padding zeroed). Bridge only: a board never sees the aligned form.                    |
+| `provision`                  | `seq`, `msg`, `wire`                                                    | As `messages`, for spec §14's provisioning (`provision::write`/`decode`): `wire` starts with its leading `00`. A networked board and the daemon only.  |
+| `provision_rejections`       | `receiver`, `type`, `payload`, `error`, optional `version`              | As `rejections`; the daemon receives as `"bridge"`.                                                                                                    |
+| `provision_write_rejections` | `msg`, `error`                                                          | As `write_rejections`.                                                                                                                                 |
 
 A result in `results` is one of:
 
@@ -46,6 +49,10 @@ value length; a part not listed is unknown. It is the sample length for
 `STATUS`, `NOTE`, `GET_MAP`, `ATTACH`, `COMMAND`, `SAFE`, `PING`, `DETACH`)
 and the spec's field names. `board_id`, `name`, `data`, `text` and `value` are
 hex.
+
+A provisioning `msg` has `type` `GET_DEVICE`, `DEVICE_INFO`, `PROVISION` or
+`PROVISIONED` and §14.3's field names. `device_key`, `host_key`, `host_id`,
+`name` and each of `addresses` are hex.
 
 `error` is one of `unknown_type`, `magic`, `version`, `length`, `reserved`,
 `range`, `unknown_part`, `direction`, `utf8`.

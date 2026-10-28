@@ -15,6 +15,9 @@ use rlmesh_tether::msg::{
     self, EVERY_PART, Hello, MAX_MAP_SLICE, MAX_NAME, MAX_NOTE, Msg, MsgError, Receiver, Status,
     attach_flags, command_flags, hello_flags, status_flags, ty,
 };
+use rlmesh_tether::provision::{
+    self, Addresses, DeviceInfo, MAX_ADDRESS, MAX_ID, Prov, Provision, device_flags, status,
+};
 use rlmesh_tether::{crc, pack};
 use serde_json::{Map, Value, json};
 
@@ -583,6 +586,11 @@ fn frame_cases() -> Vec<Value> {
             "line noise and empty frames, then a good frame",
             256,
             cat(&[&[0, 0, 0x37, 0x42, 0, 0], &ping]),
+        ),
+        (
+            "a sketch's text, then a provisioning frame with its leading delimiter (§14.2)",
+            256,
+            cat(&[b"booted\r\n", &prov_wire(&Prov::GetDevice, 0)]),
         ),
     ];
     cases
@@ -1668,7 +1676,556 @@ fn generate() -> Value {
         "rejections": rejection_cases(),
         "write_rejections": write_rejection_cases(),
         "pack": pack_cases(),
+        "provision": provision_cases(),
+        "provision_rejections": provision_rejection_cases(),
+        "provision_write_rejections": provision_write_rejection_cases(),
     })
+}
+
+// ── Provisioning (spec §14) ──────────────────────────────────────────────
+
+/// Writes `msg`, or panics with its error: a leading delimiter, then the
+/// frame.
+fn prov_wire(msg: &Prov<'_>, seq: u8) -> Vec<u8> {
+    let mut out = Vec::new();
+    provision::write(msg, seq, |b| out.push(b)).expect("writes");
+    out
+}
+
+fn prov_json(m: &Prov<'_>) -> Value {
+    match *m {
+        Prov::GetDevice => json!({ "type": "GET_DEVICE" }),
+        Prov::DeviceInfo(ref d) => json!({
+            "type": "DEVICE_INFO",
+            "lib_version": d.lib_version,
+            "arch": d.arch,
+            "flags": d.flags,
+            "device_key": hex(&d.device_key),
+            "host_id": hex(d.host_id),
+            "name": hex(d.name),
+        }),
+        Prov::Provisioned { status, record_crc } => json!({
+            "type": "PROVISIONED",
+            "status": status,
+            "record_crc": record_crc,
+        }),
+        Prov::Provision(ref p) => json!({
+            "type": "PROVISION",
+            "flags": p.flags,
+            "host_key": hex(&p.host_key),
+            "host_id": hex(p.host_id),
+            "addresses": p.addresses.as_slice().iter().map(|a| hex(a)).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+fn key32(v: &Value) -> [u8; 32] {
+    unhex(v).try_into().expect("32 bytes")
+}
+
+/// Builds the message `v` describes (bytes borrowed from locals) and
+/// passes it to `f`.
+fn with_prov<R>(v: &Value, f: impl FnOnce(Prov<'_>) -> R) -> R {
+    match text(&v["type"]) {
+        "GET_DEVICE" => f(Prov::GetDevice),
+        "DEVICE_INFO" => {
+            let (host_id, name) = (unhex(&v["host_id"]), unhex(&v["name"]));
+            f(Prov::DeviceInfo(DeviceInfo {
+                lib_version: int(&v["lib_version"]),
+                arch: int(&v["arch"]),
+                flags: int(&v["flags"]),
+                device_key: key32(&v["device_key"]),
+                host_id: &host_id,
+                name: &name,
+            }))
+        }
+        "PROVISIONED" => f(Prov::Provisioned {
+            status: int(&v["status"]),
+            record_crc: int(&v["record_crc"]),
+        }),
+        "PROVISION" => {
+            let host_id = unhex(&v["host_id"]);
+            let list: Vec<Vec<u8>> = v["addresses"]
+                .as_array()
+                .expect("addresses")
+                .iter()
+                .map(unhex)
+                .collect();
+            let refs: Vec<&[u8]> = list.iter().map(Vec::as_slice).collect();
+            f(Prov::Provision(Provision {
+                flags: int(&v["flags"]),
+                host_key: key32(&v["host_key"]),
+                host_id: &host_id,
+                addresses: Addresses::new(&refs).expect("at most 4"),
+            }))
+        }
+        other => panic!("unknown provisioning type {other}"),
+    }
+}
+
+fn device_info<'a>(host_id: &'a [u8], name: &'a [u8]) -> DeviceInfo<'a> {
+    DeviceInfo {
+        lib_version: 0x0200,
+        arch: 4,
+        flags: if host_id.is_empty() {
+            0
+        } else {
+            device_flags::PROVISIONED
+        },
+        device_key: core::array::from_fn(|i| 0xA0 ^ i as u8),
+        host_id,
+        name,
+    }
+}
+
+fn provision_of<'a>(host_id: &'a [u8], addresses: &[&'a [u8]]) -> Provision<'a> {
+    Provision {
+        flags: 0,
+        host_key: core::array::from_fn(|i| 0x50 + i as u8),
+        host_id,
+        addresses: Addresses::new(addresses).expect("at most 4"),
+    }
+}
+
+/// An address of `len` bytes: `h…h:7447`.
+fn address(len: usize) -> Vec<u8> {
+    let mut a = vec![b'h'; len - 5];
+    a.extend_from_slice(b":7447");
+    a
+}
+
+/// A PROVISION payload of exactly `len` bytes (36 + 32-byte host id + 4
+/// addresses), with addresses as long as it takes.
+fn provision_addresses(len: usize) -> Vec<Vec<u8>> {
+    // 36 + 32 + 4 × (1 + a) = len.
+    let total = len - 68 - 4;
+    let base = total / 4;
+    (0..4)
+        .map(|i| address(base + usize::from(i < total % 4)))
+        .collect()
+}
+
+fn provision_cases() -> Vec<Value> {
+    let id32 = letters(MAX_ID);
+    let full = provision_addresses(252);
+    let full_refs: Vec<&[u8]> = full.iter().map(Vec::as_slice).collect();
+    let longest = address(MAX_ADDRESS);
+    let cases: Vec<(&str, Prov<'_>, u8)> = vec![
+        ("GET_DEVICE", Prov::GetDevice, 0),
+        (
+            "DEVICE_INFO, not provisioned",
+            Prov::DeviceInfo(device_info(b"", b"eye-3")),
+            0,
+        ),
+        (
+            "DEVICE_INFO, provisioned, 32-byte host id and name",
+            Prov::DeviceInfo(device_info(&id32, &id32)),
+            1,
+        ),
+        (
+            "DEVICE_INFO, a multi-byte UTF-8 name",
+            Prov::DeviceInfo(device_info(b"rlm-3f9a2c", "œil-ü".as_bytes())),
+            2,
+        ),
+        (
+            "PROVISION, one address",
+            Prov::Provision(provision_of(b"rlm-3f9a2c", &[b"192.168.1.20:7447"])),
+            0,
+        ),
+        (
+            "PROVISION, IPv6 and a name, highest port",
+            Prov::Provision(provision_of(
+                b"rlm-3f9a2c",
+                &[b"[fe80::1]:65532", b"robot.local:1"],
+            )),
+            1,
+        ),
+        (
+            "PROVISION, a 63-byte address",
+            Prov::Provision(provision_of(b"r", &[&longest])),
+            2,
+        ),
+        (
+            "PROVISION, the largest payload (252 bytes)",
+            Prov::Provision(provision_of(&id32, &full_refs)),
+            3,
+        ),
+        (
+            "PROVISIONED, stored",
+            Prov::Provisioned {
+                status: status::STORED,
+                record_crc: 0xDEAD_BEEF,
+            },
+            4,
+        ),
+        (
+            "PROVISIONED, an unknown status",
+            Prov::Provisioned {
+                status: 9,
+                record_crc: 0,
+            },
+            5,
+        ),
+    ];
+    let mut buf = [0_u8; 252];
+    let largest = provision::payload(&cases[7].1, &mut buf).expect("fits");
+    assert_eq!(largest, 252, "the largest case is the largest payload");
+    cases
+        .into_iter()
+        .map(|(name, m, seq)| {
+            let wire = prov_wire(&m, seq);
+            json!({ "name": name, "seq": seq, "msg": prov_json(&m), "wire": hex(&wire) })
+        })
+        .collect()
+}
+
+/// A valid PROVISION payload for `host_id` and `addresses`, by hand.
+fn provision_payload(flags: u8, host_id: &[u8], addresses: &[&[u8]]) -> Vec<u8> {
+    let mut p = vec![provision::VERSION, flags];
+    p.extend((0..32).map(|i| 0x50 + i as u8));
+    p.push(host_id.len() as u8);
+    p.extend_from_slice(host_id);
+    p.push(addresses.len() as u8);
+    for a in addresses {
+        p.push(a.len() as u8);
+        p.extend_from_slice(a);
+    }
+    p
+}
+
+fn device_info_payload(flags: u8, host_id: &[u8], name: &[u8]) -> Vec<u8> {
+    let mut p = provision::MAGIC.to_vec();
+    p.extend_from_slice(&[provision::VERSION, 0x00, 0x02, 4, flags]);
+    p.extend((0..32).map(|i| 0xA0 ^ i as u8));
+    p.push(host_id.len() as u8);
+    p.extend_from_slice(host_id);
+    p.push(name.len() as u8);
+    p.extend_from_slice(name);
+    p
+}
+
+fn provision_rejection_cases() -> Vec<Value> {
+    use MsgError as E;
+    use Receiver::{Board, Bridge};
+    use provision::ty as pt;
+    let a: &[u8] = b"192.168.1.20:7447";
+    let ok = provision_payload(0, b"rlm", &[a]);
+    let mut short = ok.clone();
+    short.pop();
+    let mut long = ok.clone();
+    long.push(0);
+    let cases: Vec<(&str, Receiver, u8, Vec<u8>, MsgError)> = vec![
+        // Direction and type.
+        (
+            "PROVISION heard by the daemon",
+            Bridge,
+            pt::PROVISION,
+            ok.clone(),
+            E::Direction,
+        ),
+        (
+            "DEVICE_INFO heard by the board",
+            Board,
+            pt::DEVICE_INFO,
+            device_info_payload(0, b"", b"e"),
+            E::Direction,
+        ),
+        (
+            "an unknown daemon type",
+            Board,
+            0x92,
+            vec![0],
+            E::UnknownType,
+        ),
+        // GET_DEVICE.
+        (
+            "GET_DEVICE, the tether's magic",
+            Board,
+            pt::GET_DEVICE,
+            b"RLMT\x01".to_vec(),
+            E::Magic,
+        ),
+        (
+            "GET_DEVICE, too short for the magic",
+            Board,
+            pt::GET_DEVICE,
+            b"RLM".to_vec(),
+            E::Magic,
+        ),
+        (
+            "GET_DEVICE, version 2",
+            Board,
+            pt::GET_DEVICE,
+            b"RLMP\x02".to_vec(),
+            E::Version(2),
+        ),
+        (
+            "GET_DEVICE, a byte too long",
+            Board,
+            pt::GET_DEVICE,
+            b"RLMP\x01\x00".to_vec(),
+            E::Length,
+        ),
+        // DEVICE_INFO.
+        (
+            "DEVICE_INFO, version 2, checked before its length",
+            Bridge,
+            pt::DEVICE_INFO,
+            b"RLMP\x02".to_vec(),
+            E::Version(2),
+        ),
+        (
+            "DEVICE_INFO, an empty name",
+            Bridge,
+            pt::DEVICE_INFO,
+            device_info_payload(0, b"", b""),
+            E::Range,
+        ),
+        (
+            "DEVICE_INFO, a 33-byte name",
+            Bridge,
+            pt::DEVICE_INFO,
+            device_info_payload(0, b"", &letters(33)),
+            E::Range,
+        ),
+        (
+            "DEVICE_INFO, a 33-byte host id",
+            Bridge,
+            pt::DEVICE_INFO,
+            device_info_payload(1, &letters(33), b"e"),
+            E::Range,
+        ),
+        (
+            "DEVICE_INFO, a reserved flag",
+            Bridge,
+            pt::DEVICE_INFO,
+            device_info_payload(2, b"", b"e"),
+            E::Reserved,
+        ),
+        (
+            "DEVICE_INFO, a non-UTF-8 name",
+            Bridge,
+            pt::DEVICE_INFO,
+            device_info_payload(0, b"", &[0xFF]),
+            E::Utf8,
+        ),
+        (
+            "DEVICE_INFO, cut inside the key",
+            Bridge,
+            pt::DEVICE_INFO,
+            device_info_payload(0, b"", b"e")[..30].to_vec(),
+            E::Length,
+        ),
+        // PROVISIONED.
+        (
+            "PROVISIONED, a byte short",
+            Bridge,
+            pt::PROVISIONED,
+            vec![0; 4],
+            E::Length,
+        ),
+        // PROVISION.
+        (
+            "PROVISION, version 2",
+            Board,
+            pt::PROVISION,
+            {
+                let mut p = ok.clone();
+                p[0] = 2;
+                p
+            },
+            E::Version(2),
+        ),
+        ("PROVISION, empty", Board, pt::PROVISION, vec![], E::Length),
+        (
+            "PROVISION, cut inside the last address",
+            Board,
+            pt::PROVISION,
+            short,
+            E::Length,
+        ),
+        (
+            "PROVISION, a byte past the last address",
+            Board,
+            pt::PROVISION,
+            long,
+            E::Length,
+        ),
+        (
+            "PROVISION, a reserved flag",
+            Board,
+            pt::PROVISION,
+            provision_payload(1, b"rlm", &[a]),
+            E::Reserved,
+        ),
+        (
+            "PROVISION, an empty host id",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, b"", &[a]),
+            E::Range,
+        ),
+        (
+            "PROVISION, a 33-byte host id",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, &letters(33), &[a]),
+            E::Range,
+        ),
+        (
+            "PROVISION, no address",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, b"rlm", &[]),
+            E::Range,
+        ),
+        (
+            "PROVISION, five addresses",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, b"rlm", &[a, a, a, a, a]),
+            E::Range,
+        ),
+        (
+            "PROVISION, an empty address",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, b"rlm", &[b""]),
+            E::Range,
+        ),
+        (
+            "PROVISION, a 64-byte address",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, b"rlm", &[&address(64)]),
+            E::Range,
+        ),
+        (
+            "PROVISION, port 0",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, b"rlm", &[b"h:0"]),
+            E::Range,
+        ),
+        (
+            "PROVISION, port 65533",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, b"rlm", &[b"h:65533"]),
+            E::Range,
+        ),
+        (
+            "PROVISION, no port",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, b"rlm", &[b"192.168.1.20"]),
+            E::Range,
+        ),
+        (
+            "PROVISION, a non-UTF-8 host id",
+            Board,
+            pt::PROVISION,
+            provision_payload(0, &[0xFF], &[a]),
+            E::Utf8,
+        ),
+    ];
+    cases
+        .into_iter()
+        .map(|(name, receiver, ty, payload, error)| {
+            let f = Frame {
+                ty,
+                seq: 0,
+                payload: &payload,
+            };
+            assert_eq!(provision::decode(&f, receiver), Err(error), "{name}");
+            let mut v = json!({
+                "name": name,
+                "receiver": receiver_name(receiver),
+                "type": ty,
+                "payload": hex(&payload),
+            });
+            v.as_object_mut()
+                .expect("object")
+                .extend(msg_error_json(error));
+            v
+        })
+        .collect()
+}
+
+fn provision_write_rejection_cases() -> Vec<Value> {
+    use MsgError as E;
+    let id33 = letters(33);
+    let a: &[u8] = b"192.168.1.20:7447";
+    // A 253-byte payload: one past the frame.
+    let over = provision_addresses(256);
+    let over_refs: Vec<&[u8]> = over.iter().map(Vec::as_slice).collect();
+    let id32 = letters(MAX_ID);
+    let cases: Vec<(&str, Prov<'_>, MsgError)> = vec![
+        (
+            "DEVICE_INFO, an empty name",
+            Prov::DeviceInfo(device_info(b"", b"")),
+            E::Range,
+        ),
+        (
+            "DEVICE_INFO, a 33-byte host id",
+            Prov::DeviceInfo(device_info(&id33, b"e")),
+            E::Range,
+        ),
+        (
+            "DEVICE_INFO, a reserved flag",
+            Prov::DeviceInfo(DeviceInfo {
+                flags: 2,
+                ..device_info(b"", b"e")
+            }),
+            E::Reserved,
+        ),
+        (
+            "PROVISION, a reserved flag",
+            Prov::Provision(Provision {
+                flags: 1,
+                ..provision_of(b"rlm", &[a])
+            }),
+            E::Reserved,
+        ),
+        (
+            "PROVISION, no address",
+            Prov::Provision(provision_of(b"rlm", &[])),
+            E::Range,
+        ),
+        (
+            "PROVISION, port 65533",
+            Prov::Provision(provision_of(b"rlm", &[b"h:65533"])),
+            E::Range,
+        ),
+        (
+            "PROVISION, an empty host id",
+            Prov::Provision(provision_of(b"", &[a])),
+            E::Range,
+        ),
+        (
+            "PROVISION, a 253-byte payload",
+            Prov::Provision(provision_of(&id32, &over_refs)),
+            E::Length,
+        ),
+    ];
+    assert_eq!(
+        provision::payload(&cases[7].1, &mut [0; 252]),
+        Err(E::Length),
+        "the oversized case is over by one"
+    );
+    cases
+        .into_iter()
+        .map(|(name, m, error)| {
+            let mut wrote = false;
+            assert_eq!(
+                provision::write(&m, 0, |_| wrote = true),
+                Err(error),
+                "{name}"
+            );
+            assert!(!wrote, "{name} writes nothing");
+            json!({ "name": name, "msg": prov_json(&m), "error": msg_error_name(error) })
+        })
+        .collect()
 }
 
 #[test]
@@ -1790,6 +2347,49 @@ fn rejection_vectors() {
 }
 
 #[test]
+fn provision_vectors() {
+    let all = load();
+    for v in cases(&all, "provision") {
+        let name = &v["name"];
+        let want = unhex(&v["wire"]);
+        let seq = int(&v["seq"]);
+        with_prov(&v["msg"], |m| {
+            let mut out = Vec::new();
+            provision::write(&m, seq, |b| out.push(b)).expect("writes");
+            assert_eq!(out, want, "{name}");
+        });
+        // The leading delimiter yields nothing; then one frame.
+        assert_eq!(want[0], 0, "{name} starts with a delimiter");
+        let bytes = decode_stream(&want, 256).remove(0).expect("decodes");
+        let f = Frame::parse(&bytes).expect("frame");
+        assert_eq!(f.seq, seq, "{name}");
+        let m = provision::decode(&f, receiver_for(f.ty)).expect("valid");
+        assert_eq!(prov_json(&m), v["msg"], "{name}");
+    }
+    for v in cases(&all, "provision_rejections") {
+        let payload = unhex(&v["payload"]);
+        let f = Frame {
+            ty: int(&v["type"]),
+            seq: 0,
+            payload: &payload,
+        };
+        let err = provision::decode(&f, receiver_from(&v["receiver"])).expect_err("refused");
+        let mut want = msg_error_json(err);
+        want.insert("name".into(), v["name"].clone());
+        let mut got = v.as_object().expect("object").clone();
+        got.retain(|k, _| matches!(k.as_str(), "name" | "error" | "version"));
+        assert_eq!(got, want);
+    }
+    for v in cases(&all, "provision_write_rejections") {
+        let mut wrote = false;
+        let err = with_prov(&v["msg"], |m| provision::write(&m, 0, |_| wrote = true))
+            .expect_err("refused");
+        assert!(!wrote, "{}", v["name"]);
+        assert_eq!(text(&v["error"]), msg_error_name(err), "{}", v["name"]);
+    }
+}
+
+#[test]
 fn pack_vectors() {
     for v in cases(&load(), "pack") {
         let offsets: Vec<usize> = v["offsets"]
@@ -1861,4 +2461,15 @@ fn literal_values_not_from_the_crate() {
         .find(|v| v["name"] == "HELLO")
         .expect("the HELLO vector");
     assert_eq!(unhex(&hello["wire"]), wire);
+    // A GET_DEVICE (spec §14.3) with its leading delimiter, CRC-16 0x5C31
+    // and COBS computed by a separate implementation.
+    let get_device: &[u8] = &[
+        0x00, 0x02, 0x90, 0x08, b'R', b'L', b'M', b'P', 0x01, 0x31, 0x5C, 0x00,
+    ];
+    assert_eq!(prov_wire(&Prov::GetDevice, 0), get_device);
+    let vector = cases(&all, "provision")
+        .iter()
+        .find(|v| v["name"] == "GET_DEVICE")
+        .expect("the GET_DEVICE vector");
+    assert_eq!(unhex(&vector["wire"]), get_device);
 }

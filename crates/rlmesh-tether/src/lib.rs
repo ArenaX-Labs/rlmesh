@@ -11,7 +11,9 @@
 //! - [`frame`]: `type | seq | payload | crc` frames on top of both;
 //! - [`msg`]: the messages, with exact lengths and reserved-bit checks;
 //! - [`pack`]: a part's dense cable form against the session's 8-byte
-//!   aligned layout.
+//!   aligned layout;
+//! - [`provision`]: a networked board's USB provisioning (spec §14), on the
+//!   same framing.
 
 #![no_std]
 #![warn(missing_docs)]
@@ -21,3 +23,4 @@ pub mod crc;
 pub mod frame;
 pub mod msg;
 pub mod pack;
+pub mod provision;

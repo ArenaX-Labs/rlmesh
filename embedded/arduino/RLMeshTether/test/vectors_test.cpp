@@ -504,8 +504,17 @@ int main(int argc, char** argv) {
   }
   // Every section must be present and non-empty, and nothing unknown: a
   // section renamed on the Rust side must fail here, not drop coverage.
-  static const char* const sections[] = {"crc",      "cobs_encode", "cobs_decode",      "frames",
-                                         "messages", "rejections",  "write_rejections", "pack"};
+  static const char* const sections[] = {"crc",
+                                         "cobs_encode",
+                                         "cobs_decode",
+                                         "frames",
+                                         "messages",
+                                         "rejections",
+                                         "write_rejections",
+                                         "pack",
+                                         "provision",
+                                         "provision_rejections",
+                                         "provision_write_rejections"};
   for (const char* name : sections) {
     if (all[name].kind != json::Value::kArray || all[name].items.empty()) {
       fprintf(stderr, "vectors section %s is missing or empty\n", name);
@@ -525,12 +534,19 @@ int main(int argc, char** argv) {
   frameVectors(all);
   messageVectors(all);
   rejectionVectors(all);
-  // Dense <-> aligned conversion happens on the bridge, never on the board.
+  // Dense <-> aligned conversion happens on the bridge, never on the board;
+  // provisioning (spec §14) is a networked board's, in Rust.
   const size_t skipped = all["pack"].items.size();
+  const size_t provision = all["provision"].items.size() +
+                           all["provision_rejections"].items.size() +
+                           all["provision_write_rejections"].items.size();
   if (failures) {
     fprintf(stderr, "%d of %d checks failed\n", failures, checks);
     return 1;
   }
-  printf("ok: %d checks passed (%zu pack vectors are the bridge's, skipped)\n", checks, skipped);
+  printf(
+      "ok: %d checks passed (%zu pack vectors are the bridge's and %zu provisioning vectors a "
+      "networked board's, skipped)\n",
+      checks, skipped, provision);
   return 0;
 }
