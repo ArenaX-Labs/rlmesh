@@ -1,6 +1,7 @@
 //! `rlmesh host`: v2 sessions hosted in the foreground, so participants on
 //! this machine (or, listening beyond loopback, others) join instead of
-//! hosting their own.
+//! hosting their own. It prints its address with its key (`…#key`): the
+//! invite for other machines; this user's processes find the key alone.
 
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -35,7 +36,7 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write) -> Result<()> {
     };
     let mut placed =
         placed.with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
-    writeln!(stdout, "{}", placed.address.base)?;
+    writeln!(stdout, "{}", placed.address.invite())?;
     if let Some(dir) = &recordings {
         writeln!(stdout, "recording to {}", dir.display())?;
     }

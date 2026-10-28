@@ -73,8 +73,8 @@ pub mod version;
 pub use action::{ActionChunk, ChunkRef, InputRange};
 pub use authority::{
     AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
-    CtlStatus, FenceError, LastStop, Lease, LeaseEnd, Mode, ParticipantInfo, PriorityClass, Reason,
-    ReasonCode, Request, Role, Watermark,
+    CtlStatus, FenceError, HandshakeAccept, HandshakeRequest, LastStop, Lease, LeaseEnd, Mode,
+    ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, Watermark,
 };
 pub use codec::Encoded;
 pub use contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};

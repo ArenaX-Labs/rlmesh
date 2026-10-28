@@ -14,6 +14,8 @@ from dataclasses import dataclass, fields
 from os import PathLike, fspath
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from .._client._endpoint import redact_address
+from .._rlmesh import sandbox_host_identity as _sandbox_host_identity
 from .._rlmesh import sandbox_session_ports as _sandbox_session_ports
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
@@ -36,6 +38,9 @@ SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 30.0
 
 #: The ports a session host listens on, one per traffic class, consecutive.
 SESSION_PORTS = 4
+#: The variable a container's session host takes its keys from
+#: (``rlmesh_session::address::HOST_IDENTITY_VAR``).
+HOST_IDENTITY_VAR = "RLMESH_HOST_IDENTITY"
 
 #: The longest one readiness attempt waits, so an image that will never
 #: answer is told apart between attempts.
@@ -157,8 +162,8 @@ _TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
 
 
 def _base(address: str) -> tuple[str, int]:
-    """The host and base port of a sandbox's ``host:port/name`` address."""
-    host, _, port = address.split("/", 1)[0].rpartition(":")
+    """The host and base port of a sandbox's ``host:port[#key]/name`` address."""
+    host, _, port = address.split("/", 1)[0].split("#", 1)[0].rpartition(":")
     return host, int(port)
 
 
@@ -208,7 +213,9 @@ def wait_serving(
         attempt = min(_READY_ATTEMPT_SECONDS, max(deadline - time.monotonic(), 0.1))
         try:
             if not _accepts(sandbox.address):
-                raise ConnectionError(f"nothing listens at {sandbox.address} yet")
+                raise ConnectionError(
+                    f"nothing listens at {redact_address(sandbox.address)} yet"
+                )
             ready(attempt)
             return
         except _TRANSIENT_DIAL_ERRORS as exc:
@@ -261,7 +268,8 @@ def peer_session(sandbox: SandboxInfo) -> str:
             f"sandbox container {sandbox.container_id[:12]} has no network "
             f"address another container can reach: {proc.stderr.strip()}"
         )
-    return f"{ips[0]}:{_base(sandbox.address)[1]}"
+    key = sandbox.address.split("/", 1)[0].partition("#")[2]
+    return f"{ips[0]}:{_base(sandbox.address)[1]}" + (f"#{key}" if key else "")
 
 
 def _container_running(container_id: str) -> bool | None:
@@ -419,7 +427,7 @@ class SandboxLifecycle:
         return (
             f"{type(self).__name__}("
             f"source={self._source!r}, "
-            f"address={self.sandbox.address!r}, "
+            f"address={redact_address(self.sandbox.address)!r}, "
             f"container_id={self.sandbox.container_id!r})"
         )
 
@@ -559,6 +567,10 @@ def start_prebuilt_container(
         if not pulled:
             detail = f":\n{pull_stderr}" if pull_stderr else ""
             raise RuntimeError(f"could not pull prebuilt image {image!r}{detail}")
+    # The container hosts its session under keys made here, so its address
+    # carries their key (design §10: the workload spec); the secret reaches
+    # docker through its environment, never argv.
+    identity, key = _sandbox_host_identity()
     with _PORTS_LOCK:
         host_port = _sandbox_session_ports()
         # The container hosts its session on the host's own port numbers, so a
@@ -586,8 +598,9 @@ def start_prebuilt_container(
             host_port=host_port,
             owner_pid=os.getpid(),
             owner_pid_ns=pid_namespace_id(),
+            pass_env=[HOST_IDENTITY_VAR],
         )
-        proc = run_docker(cmd)
+        proc = run_docker(cmd, env={HOST_IDENTITY_VAR: identity})
     if proc.returncode != 0:
         raise RuntimeError(
             f"failed to start prebuilt container ({proc.returncode}):\n{proc.stderr}"
@@ -596,7 +609,7 @@ def start_prebuilt_container(
     return SandboxInfo(
         requested_source=requested_source,
         resolved_source=f"docker://{image}",
-        address=f"127.0.0.1:{host_port}/{name}",
+        address=f"127.0.0.1:{host_port}#{key}/{name}",
         container_id=container_id,
     )
 
@@ -612,6 +625,7 @@ def prebuilt_run_cmd(
     devices: Sequence[str] | None = None,
     volumes: Sequence[str] | None = None,
     user: str | None = None,
+    pass_env: Sequence[str] = (),
 ) -> list[str]:
     """Build the ``docker run`` argv for a prebuilt sandbox container (pure).
 
@@ -623,7 +637,8 @@ def prebuilt_run_cmd(
     is always last and env vars precede it, so callers/tests can rely on argv shape.
     ``devices`` -> ``--device`` (incl. CDI refs like ``nvidia.com/gpu=all``),
     ``volumes`` -> ``-v`` mounts, and ``user`` -> ``--user``, all before the env
-    vars.
+    vars. ``pass_env`` names variables passed from docker's own environment
+    (``-e NAME``), so a secret stays out of argv.
     """
     cmd = [
         "docker",
@@ -653,6 +668,8 @@ def prebuilt_run_cmd(
         cmd += ["-v", volume]
     for key, value in env_vars.items():
         cmd += ["-e", f"{key}={value}"]
+    for name in pass_env:
+        cmd += ["-e", name]
     cmd.append(image)
     return cmd
 

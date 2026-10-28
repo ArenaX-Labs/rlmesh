@@ -557,7 +557,9 @@ def test_two_processes_meet_by_name_the_first_hosting(
     assert child.stdout is not None and child.stdin is not None
     try:
         printed = child.stdout.readline().strip()
-        assert printed == f"127.0.0.1:{port}/cartpole", printed
+        # The address carries the host's key (``#...``), as an invite.
+        host, rest = printed.split("#", 1)
+        assert host == f"127.0.0.1:{port}" and rest.endswith("/cartpole"), printed
         remote = rlmesh.numpy.RemoteEnv("cartpole")
         try:
             obs, _ = remote.reset(seed=0)

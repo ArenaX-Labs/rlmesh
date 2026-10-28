@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use rlmesh_session::auth::Credential;
 use rlmesh_session::edge::{EdgeConfig, Robot};
 use rlmesh_session::record::{
     Episode, Recorded, Recorder, Rolling, collect, decode_samples, keep, read, summarize,
@@ -38,6 +39,8 @@ struct World {
     base: std::net::SocketAddr,
     tenant: TenantId,
     session: SessionId,
+    /// What every participant attaches with (device `local`).
+    credential: Credential,
     /// `None` when a recording server hosts the session.
     _host: Option<SessionHost>,
 }
@@ -58,6 +61,7 @@ impl World {
             base,
             tenant,
             session,
+            credential: host.credential(),
             _host: Some(host),
         }
     }
@@ -81,6 +85,7 @@ impl World {
         );
         config.clock = SystemMonotonicClock.shared();
         config.heartbeat_period = Duration::from_millis(20);
+        config.credential = Some(self.credential.clone());
         Participant::attach(transport, config)
             .await
             .expect("attach")
@@ -301,6 +306,7 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
     let mut config = HostConfig::new(tenant.clone(), SessionId::new());
     config.clock = SystemMonotonicClock.shared();
     config.health_log = None;
+    let credential = config.identity.local_credential();
     let dir = tempfile::tempdir().expect("tempdir");
     let mut rolling = Rolling::new(dir.path());
     rolling.segment = Duration::from_millis(150);
@@ -315,6 +321,7 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
         base,
         tenant,
         session,
+        credential,
         _host: None,
     };
     let robot = world
@@ -386,7 +393,8 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     );
 
     // Both incidents outlive the purge, the e-stop's with the segments
-    // written after it, heartbeats included.
+    // written after it, reports included (heartbeats are sealed to the
+    // host).
     let incidents = files_in(&dir.path().join("incidents").join(world.session.to_string()));
     assert_eq!(incidents.len(), 2, "{incidents:?}");
     assert!(incidents.contains(&kept));
@@ -400,7 +408,7 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     assert!(
         messages
             .iter()
-            .any(|m| matches!(m.message, Recorded::Heartbeat(_)))
+            .any(|m| matches!(m.message, Recorded::Report(_)))
     );
 
     // The episode keeps its segments, decoded into the declared fields.

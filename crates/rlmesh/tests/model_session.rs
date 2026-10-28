@@ -272,7 +272,7 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
     )
     .await
     .unwrap();
-    let session = target.address.to_string();
+    let session = target.address.invite();
 
     let mut model = ServedModel::new(address.clone(), Duration::from_secs(10));
     model.join(&session).await.unwrap();
@@ -517,7 +517,7 @@ async fn predicts_from_several_sessions_coalesce_into_one_handler_call() {
         .await
         .unwrap();
         let mut model = ServedModel::new(address.clone(), Duration::from_secs(10));
-        model.join(&host.address.to_string()).await.unwrap();
+        model.join(&host.address.invite()).await.unwrap();
         model
             .route_setup()
             .unwrap()
@@ -935,7 +935,7 @@ async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_pr
     )
     .await
     .unwrap();
-    let session = target.address.to_string();
+    let session = target.address.invite();
 
     // Two spellings of one session.
     let invites = (0..4).map(|i| {

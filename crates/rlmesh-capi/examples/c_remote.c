@@ -55,7 +55,7 @@ static RLMeshStatus predict(void* ud, const RLMeshValue* obs, const RLMeshPredic
 typedef struct Serving {
   RLMeshModel* model;
   RLMeshExtCancelToken* cancel;
-  char address[80];
+  char address[256];
   RLMeshStatus status;
 } Serving;
 static void* serve_model(void* arg) {

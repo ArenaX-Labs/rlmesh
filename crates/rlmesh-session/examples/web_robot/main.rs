@@ -32,6 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
+use rlmesh_session::address::AddressKey;
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::edge::{EdgeConfig, EdgeMode, Robot};
 use rlmesh_session::spec::apply::{Tensor, Value};
@@ -59,7 +60,8 @@ struct Args {
     /// The session id (fresh by default).
     #[arg(long)]
     session: Option<String>,
-    /// Write the session id here once the robot is up.
+    /// Write the session id and its key (`{session}#{key}`) here once the
+    /// robot is up.
     #[arg(long)]
     session_file: Option<PathBuf>,
     /// The camera's encoding: jpeg or raw.
@@ -156,7 +158,7 @@ struct View {
 async fn join(
     base: SocketAddr,
     tenant: &TenantId,
-    session: SessionId,
+    (session, key): (SessionId, &AddressKey),
     id: &str,
     role: Role,
     priority: PriorityClass,
@@ -174,6 +176,7 @@ async fn join(
     );
     config.clock = SystemMonotonicClock.shared();
     config.heartbeat_period = Duration::from_millis(20);
+    config.credential = Some(key.credential());
     Ok(Participant::attach(transport, config).await?)
 }
 
@@ -201,13 +204,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     host.clock = SystemMonotonicClock.shared();
     host.lease_grace = Duration::from_millis(args.lease_grace_ms.max(1));
     host.health_log = None;
+    let key = AddressKey::of(&host.identity);
     let host = SessionHost::start(transport, host).await?;
 
     let base = args.listen_base;
     let embodiment = join(
         base,
         &tenant,
-        session,
+        (session, &key),
         ROBOT,
         Role::Embodiment,
         PriorityClass::Scripted,
@@ -221,7 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let p = join(
             base,
             &tenant,
-            session,
+            (session, &key),
             "policy",
             Role::Controller,
             PriorityClass::Model,
@@ -247,7 +251,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(path) = &args.session_file {
-        std::fs::write(path, session.to_string())?;
+        // The session and its key, as the gateway's --session-file takes them.
+        std::fs::write(path, format!("{session}#{key}"))?;
     }
     println!("SESSION {session}");
     println!("READY robot {ROBOT} on {base}");

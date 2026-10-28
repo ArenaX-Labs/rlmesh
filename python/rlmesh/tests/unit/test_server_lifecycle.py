@@ -320,7 +320,8 @@ def test_serve_cli_reports_a_clean_stop_on_ctrl_c(
 
 def test_shutting_down_an_unstarted_lockstep_server_stops_its_session_host() -> None:
     server = rlmesh.EnvServer(TinyEnv(), ":0/env")
-    host, port = server.address.split("/")[0].rsplit(":", 1)
+    # The address is host:port#key/env: the key is the session's invite.
+    host, port = server.address.split("#")[0].rsplit(":", 1)
     socket.create_connection((host, int(port)), timeout=5).close()
     server.shutdown()
     with pytest.raises(OSError):

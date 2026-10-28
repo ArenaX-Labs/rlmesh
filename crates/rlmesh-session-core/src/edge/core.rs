@@ -923,6 +923,7 @@ mod tests {
                 Request {
                     from: pid(from),
                     epoch,
+                    request_id: 0,
                     command,
                 },
                 0,
@@ -952,6 +953,7 @@ mod tests {
                     Request {
                         from: pid(from),
                         epoch,
+                        request_id: 0,
                         command,
                     },
                     now,

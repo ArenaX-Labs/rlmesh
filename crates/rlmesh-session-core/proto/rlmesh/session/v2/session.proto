@@ -70,8 +70,13 @@ message ParticipantInfo {
   // Its heartbeats arrive. A robot whose heartbeats lapsed stays in the
   // roster, absent, while its parts remain.
   bool present = 12;
+  // The device its handshake authenticated (`local` in an embedded host).
+  string device = 11;
   // Why it is absent (REASON_ROBOT_LOST).
   Reason left = 13;
+  // The process attached under this id: rises with every handshake that
+  // takes effect, so a process that sees a newer one knows it was replaced.
+  uint32 generation = 14;
 }
 
 // A time-bounded grant of command authority over one commandable part,
@@ -584,11 +589,15 @@ message Decided {
   repeated ChunkRef chunks = 2;
 }
 
-// A control verb, the payload of a query on `ctl`.
+// A control verb, the payload of a query on `ctl`, sealed under the
+// sender's `k_up` (kind 1).
 message CtlRequest {
   string participant = 1;
   // The epoch the verb was issued against; zero skips the check.
   uint64 epoch = 2;
+  // Rising per participant generation from 1; a retry keeps it, and the
+  // host answers it from its reply cache instead of applying it twice.
+  uint64 request_id = 3;
   oneof verb {
     Attach attach = 10;
     Detach detach = 11;
@@ -633,6 +642,15 @@ enum CtlStatus {
   // A lease requested before every stream of the binding has installed a
   // plan that includes its contract.
   CTL_STATUS_NOT_READY = 16;
+  // No valid handshake: the sender's keys are unknown, superseded or
+  // failed to authenticate the message.
+  CTL_STATUS_UNAUTHENTICATED = 17;
+  // The sender's device may not do this (a participant id bound to
+  // another device).
+  CTL_STATUS_NOT_AUTHORIZED = 18;
+  // A request id below the host's reply window: never applied, and its
+  // first outcome is unknown.
+  CTL_STATUS_EXPIRED = 19;
 }
 
 message CtlReply {
@@ -642,6 +660,41 @@ message CtlReply {
   AuthorityState state = 3;
   // Granted leases, one per channel.
   repeated Lease leases = 4;
+  // The request this answers (sealed replies, kind 2 under `k_down`).
+  uint64 request_id = 5;
+}
+
+// The handshake (`hs`, the only unsealed request): Noise IK, the
+// participant as initiator. msg 1 has an empty payload.
+message HandshakeRequest {
+  string participant = 1;
+  bytes noise = 2;
+}
+
+// msg 2, or a refusal (an unauthenticated hint).
+message HandshakeReply {
+  oneof result {
+    bytes noise = 1;
+    CtlError error = 2;
+  }
+}
+
+// The refusal of a handshake.
+message CtlError {
+  CtlStatus status = 1;
+  string message = 2;
+}
+
+// msg 2's payload, authenticated by the handshake.
+message HandshakeAccept {
+  uint32 generation = 1;
+  string device = 2;
+  PriorityClass max_priority = 3;
+  // The host's Ed25519 key, which signs `host/state` and `host/tick`.
+  bytes host_sign_key = 4;
+  uint64 host_instance = 5;
+  uint32 up_key_id = 6;
+  uint32 down_key_id = 7;
 }
 
 // Virtual mode, host -> participants on `host/tick` (§11.3).

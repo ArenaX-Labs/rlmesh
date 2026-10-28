@@ -42,8 +42,8 @@ use prost::encoding::encode_varint;
 use crate::wire::action::{ActionChunk, ChunkRef, InputRange};
 use crate::wire::authority::{
     AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
-    CtlStatus, LastStop, Lease, LeaseEnd, Mode, ParticipantInfo, PriorityClass, Reason, ReasonCode,
-    Request, Role, Watermark,
+    CtlStatus, HandshakeAccept, HandshakeRequest, LastStop, Lease, LeaseEnd, Mode, ParticipantInfo,
+    PriorityClass, Reason, ReasonCode, Request, Role, Watermark,
 };
 use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 use crate::wire::error::WireError;
@@ -118,6 +118,7 @@ pub fn encode_reply(reply: &CtlReply) -> Vec<u8> {
         message,
         state: Some(state_to_pb(&reply.state)),
         leases: reply.leases.iter().map(lease_to_pb).collect(),
+        request_id: reply.request_id,
     }
     .encode_to_vec()
 }
@@ -132,6 +133,84 @@ pub fn decode_reply(buf: &[u8]) -> Result<CtlReply, WireError> {
         result: status_from_pb(reply.status, reply.message),
         state: state_from_pb(state)?,
         leases: collect(reply.leases, lease_from_pb)?,
+        request_id: reply.request_id,
+    })
+}
+
+/// Encodes msg 1 of the handshake.
+pub fn encode_handshake_request(request: &HandshakeRequest) -> Vec<u8> {
+    pb::HandshakeRequest {
+        participant: request.participant.to_string(),
+        noise: Bytes::copy_from_slice(&request.noise),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes msg 1 of the handshake.
+pub fn decode_handshake_request(buf: &[u8]) -> Result<HandshakeRequest, WireError> {
+    let request = pb::HandshakeRequest::decode(buf)?;
+    Ok(HandshakeRequest {
+        participant: ParticipantId::new(request.participant)?,
+        noise: request.noise.to_vec(),
+    })
+}
+
+/// Encodes the host's answer to a handshake: msg 2, or a refusal.
+pub fn encode_handshake_reply(reply: &Result<Vec<u8>, CtlError>) -> Vec<u8> {
+    use pb::handshake_reply::Result as Answer;
+    let result = match reply {
+        Ok(noise) => Answer::Noise(Bytes::copy_from_slice(noise)),
+        Err(err) => Answer::Error(pb::CtlError {
+            status: status_to_pb(err.status) as i32,
+            message: err.message.clone(),
+        }),
+    };
+    pb::HandshakeReply {
+        result: Some(result),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes the host's answer to a handshake: `Ok(msg 2)`, or its refusal
+/// (`Err(Ok(refusal))`, an unauthenticated hint).
+pub fn decode_handshake_reply(buf: &[u8]) -> Result<Result<Vec<u8>, CtlError>, WireError> {
+    use pb::handshake_reply::Result as Answer;
+    match pb::HandshakeReply::decode(buf)?.result {
+        Some(Answer::Noise(noise)) => Ok(Ok(noise.to_vec())),
+        Some(Answer::Error(err)) => Ok(Err(status_from_pb(err.status, err.message)
+            .err()
+            .unwrap_or_else(|| CtlError::new(CtlStatus::InvalidRequest, "a refusal with OK")))),
+        None => Err(WireError::malformed("handshake reply", "no result")),
+    }
+}
+
+/// Encodes msg 2's payload.
+pub fn encode_handshake_accept(accept: &HandshakeAccept) -> Vec<u8> {
+    pb::HandshakeAccept {
+        generation: accept.generation,
+        device: accept.device.clone(),
+        max_priority: priority_to_pb(accept.max_priority) as i32,
+        host_sign_key: Bytes::copy_from_slice(&accept.host_sign_key),
+        host_instance: accept.host_instance,
+        up_key_id: accept.up_key_id,
+        down_key_id: accept.down_key_id,
+    }
+    .encode_to_vec()
+}
+
+/// Decodes msg 2's payload.
+pub fn decode_handshake_accept(buf: &[u8]) -> Result<HandshakeAccept, WireError> {
+    let accept = pb::HandshakeAccept::decode(buf)?;
+    Ok(HandshakeAccept {
+        generation: accept.generation,
+        device: accept.device,
+        max_priority: priority_from_pb(accept.max_priority)?,
+        host_sign_key: accept.host_sign_key[..].try_into().map_err(|_| {
+            WireError::malformed("handshake accept", "host_sign_key is not 32 bytes")
+        })?,
+        host_instance: accept.host_instance,
+        up_key_id: accept.up_key_id,
+        down_key_id: accept.down_key_id,
     })
 }
 
@@ -1273,6 +1352,9 @@ fn status_to_pb(status: CtlStatus) -> pb::CtlStatus {
         CtlStatus::GroupBusy => pb::CtlStatus::GroupBusy,
         CtlStatus::NotBound => pb::CtlStatus::NotBound,
         CtlStatus::NotReady => pb::CtlStatus::NotReady,
+        CtlStatus::Unauthenticated => pb::CtlStatus::Unauthenticated,
+        CtlStatus::NotAuthorized => pb::CtlStatus::NotAuthorized,
+        CtlStatus::Expired => pb::CtlStatus::Expired,
     }
 }
 
@@ -1294,6 +1376,9 @@ fn status_from_pb(raw: i32, message: String) -> Result<(), CtlError> {
         Ok(pb::CtlStatus::GroupBusy) => CtlStatus::GroupBusy,
         Ok(pb::CtlStatus::NotBound) => CtlStatus::NotBound,
         Ok(pb::CtlStatus::NotReady) => CtlStatus::NotReady,
+        Ok(pb::CtlStatus::Unauthenticated) => CtlStatus::Unauthenticated,
+        Ok(pb::CtlStatus::NotAuthorized) => CtlStatus::NotAuthorized,
+        Ok(pb::CtlStatus::Expired) => CtlStatus::Expired,
         Ok(pb::CtlStatus::InvalidRequest | pb::CtlStatus::Unspecified) | Err(_) => {
             CtlStatus::InvalidRequest
         }
@@ -1315,6 +1400,8 @@ fn participant_to_pb(p: &ParticipantInfo) -> pb::ParticipantInfo {
         workflow_editions: p.workflow_editions.clone(),
         present: p.present,
         left: p.left.as_ref().map(reason_to_pb),
+        device: p.device.clone(),
+        generation: p.generation,
     }
 }
 
@@ -1332,6 +1419,8 @@ fn participant_from_pb(p: pb::ParticipantInfo) -> Result<ParticipantInfo, WireEr
         workflow_editions: p.workflow_editions,
         present: p.present,
         left: p.left.map(reason_from_pb),
+        device: p.device,
+        generation: p.generation,
     })
 }
 
@@ -1707,6 +1796,7 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
     pb::CtlRequest {
         participant: r.from.to_string(),
         epoch: r.epoch.map_or(0, |e| e.0),
+        request_id: r.request_id,
         verb: Some(verb),
     }
 }
@@ -1783,6 +1873,7 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
     Ok(Request {
         from: ParticipantId::new(r.participant)?,
         epoch: (r.epoch > 0).then_some(Epoch(r.epoch)),
+        request_id: r.request_id,
         command,
     })
 }
@@ -1998,6 +2089,8 @@ mod tests {
                     revision: 8,
                     ..Reason::default()
                 }),
+                device: "local".into(),
+                generation: 3,
             }],
             leases: vec![Lease {
                 channel: ChannelId(1),
@@ -2213,6 +2306,7 @@ mod tests {
             let request = Request {
                 from: pid("op"),
                 epoch: Some(Epoch(2)),
+                request_id: 11,
                 command,
             };
             assert_eq!(
@@ -2232,14 +2326,49 @@ mod tests {
                 CtlStatus::NotReady,
                 "wrist/cam has not installed its plan",
             )),
+            Err(CtlError::new(CtlStatus::Unauthenticated, "unknown key")),
+            Err(CtlError::new(CtlStatus::NotAuthorized, "bound to eye-3")),
+            Err(CtlError::new(CtlStatus::Expired, "below the window")),
         ] {
             let reply = CtlReply {
                 result,
                 leases: state.leases.clone(),
                 state: state.clone(),
+                request_id: 11,
             };
             assert_eq!(decode_reply(&encode_reply(&reply)).expect("decode"), reply);
         }
+
+        let hello = HandshakeRequest {
+            participant: pid("op"),
+            noise: vec![1, 2, 3],
+        };
+        assert_eq!(
+            decode_handshake_request(&encode_handshake_request(&hello)).expect("decode"),
+            hello
+        );
+        for reply in [
+            Ok(vec![4, 5]),
+            Err(CtlError::new(CtlStatus::Unauthenticated, "unknown key")),
+        ] {
+            assert_eq!(
+                decode_handshake_reply(&encode_handshake_reply(&reply)).expect("decode"),
+                reply
+            );
+        }
+        let accept = HandshakeAccept {
+            generation: 2,
+            device: "local".into(),
+            max_priority: PriorityClass::Safety,
+            host_sign_key: [7; 32],
+            host_instance: 0xfeed,
+            up_key_id: 3,
+            down_key_id: 4,
+        };
+        assert_eq!(
+            decode_handshake_accept(&encode_handshake_accept(&accept)).expect("decode"),
+            accept
+        );
 
         let hb = Heartbeat {
             participant: pid("op"),

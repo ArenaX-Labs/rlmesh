@@ -51,8 +51,10 @@ pub enum Interrupted {
 }
 
 /// Steps 1, 4 and 5 for an embodiment: `Ready{k}`, then the `Step{k}`
-/// listing the chunks to judge. A `Step` that does not come within
-/// `timeout` (the barrier timeout) ends the episode.
+/// listing the chunks to judge, in the epoch the host accepted the `Ready`
+/// in (a step of tick k from an earlier epoch is never taken). A `Step`
+/// that does not come within `timeout` (the barrier timeout) ends the
+/// episode.
 pub async fn robot_tick(
     participant: &Participant,
     ticks: &mut TickStream,
@@ -61,10 +63,13 @@ pub async fn robot_tick(
     timeout: Duration,
 ) -> Result<Step, Interrupted> {
     participant.ready(k, watermarks).await?;
+    // The host checks `Ready` against its epoch, and its reply updates the
+    // view: this is the epoch the step belongs to.
+    let epoch = participant.authority_view().epoch();
     let tick = ticks
         .wait_for(
             timeout,
-            |t| matches!(t, VirtualTick::Step(s) if s.tick == k),
+            |t| matches!(t, VirtualTick::Step(s) if s.tick == k && s.epoch == epoch),
         )
         .await
         .map_err(|err| match err {

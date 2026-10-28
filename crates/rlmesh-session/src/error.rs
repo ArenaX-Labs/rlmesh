@@ -19,6 +19,11 @@ pub enum SessionError {
     /// The host refused a verb.
     #[error("refused by the host: {0}")]
     Rejected(#[from] CtlError),
+    /// No sealed answer came, only an unsealed refusal: a hint, since
+    /// anyone can answer `ctl` (a key the host no longer knows gets one
+    /// too), so the verb's outcome is unknown.
+    #[error("no authenticated reply from the session host; an unauthenticated one said: {0}")]
+    Unverified(CtlError),
     /// The host did not answer in time.
     #[error("no reply from the session host within {0:?}")]
     NoReply(Duration),
@@ -62,10 +67,11 @@ pub enum SessionError {
 }
 
 impl SessionError {
-    /// The host's refusal, when this is one.
+    /// The host's refusal, or an unsealed one ([`Self::Unverified`]), when
+    /// this is one.
     pub fn refusal(&self) -> Option<&CtlError> {
         match self {
-            Self::Rejected(err) => Some(err),
+            Self::Rejected(err) | Self::Unverified(err) => Some(err),
             _ => None,
         }
     }

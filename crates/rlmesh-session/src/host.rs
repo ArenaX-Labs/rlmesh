@@ -1,13 +1,25 @@
 //! The session host: the single writer of authority state.
 //!
 //! One task owns the [`Authority`] and serialises everything that touches it:
-//! `ctl` queries, heartbeats, liveliness changes and the expiry tick.
-//! Presence is heartbeats only: a liveliness delete is a hint that makes the
-//! host check a participant's heartbeats sooner, never proof it left.
-//! Heartbeat echoes are sent from the Zenoh callback itself, off the task, so
-//! the host's hold time (t3 − t2) stays small and queueing cannot inflate the
-//! measured round trip. Their publishers are declared when a participant
-//! attaches, so the echo path never resolves a key per message.
+//! handshakes, `ctl` queries, heartbeats, liveliness changes and the expiry
+//! tick. Presence is heartbeats only: a liveliness delete is a hint that
+//! makes the host check a participant's heartbeats sooner, never proof it
+//! left. Heartbeat echoes are sent from the Zenoh callback itself, off the
+//! task, so the host's hold time (t3 − t2) stays small and queueing cannot
+//! inflate the measured round trip. Their publishers are declared when a
+//! participant attaches, so the echo path never resolves a key per message.
+//!
+//! **Who is speaking** (design §8.3): a participant attaches through the
+//! Noise IK handshake on `hs`, which gives each process (a generation) its
+//! own `k_up` and `k_down`. Every `ctl` request and heartbeat must be
+//! sealed under the `k_up` of the generation in effect, and every reply and
+//! echo is sealed under its `k_down`; anything else is `UNAUTHENTICATED`.
+//! A handshake makes a candidate, which takes effect when the host accepts
+//! its sealed `Attach`; a newer generation of a participant supersedes the
+//! older one. Request ids and a per-generation reply cache make a retried
+//! verb idempotent (§8.6). `host/state` and `host/tick` are signed with the
+//! host's Ed25519 key, under the host instance and one publication counter
+//! (§8.7).
 //!
 //! The host also keeps the session's **history store** (§8.8): for every
 //! declared stream (bulk streams only when configured) it subscribes to the
@@ -34,11 +46,16 @@ use std::time::Duration;
 use crate::wire::codec;
 use crate::wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
 use crate::wire::{
-    Applied, AuthoritySnapshot, ChannelId, ChannelPriority, CtlError, CtlReply, CtlStatus, Epoch,
-    HeartbeatEcho, HistoryQuery, ParticipantId, SampleBatch, SampleMeta, SeqRange, SessionId,
-    SessionKeys, StreamSpec, TenantId,
+    Applied, AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
+    Epoch, HeartbeatEcho, HistoryQuery, Lease, ParticipantId, SampleBatch, SampleMeta, SeqRange,
+    SessionId, SessionKeys, StreamSpec, TenantId,
 };
 use bytes::Bytes;
+use rlmesh_session_core::auth::{Admit, Credential, HostAuth, HostIdentity, RequestWindow};
+use rlmesh_session_core::crypto::sealed::Header;
+use rlmesh_session_core::crypto::{
+    Kind, Rng, RngError, SealReceiver, SealSender, SignedKind, SignedSender,
+};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -48,7 +65,7 @@ use zenoh::Wait;
 use zenoh::query::Query;
 use zenoh::sample::SampleKind;
 
-use crate::authority::{Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent};
+use crate::authority::{Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent, Identity};
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
 use crate::error::SessionError;
 use crate::metrics::{LinkStats, ParticipantHealth, Report};
@@ -66,6 +83,31 @@ const HEARTBEAT_QUEUE: usize = 4096;
 const PRESENCE_QUERY: Duration = Duration::from_millis(500);
 /// The most gap ranges a stream's history remembers.
 const MAX_GAPS: usize = 64;
+/// How long a handshake's keys wait for their `Attach` before the next
+/// handshake drops them.
+const CANDIDATE_TTL: Duration = Duration::from_secs(10);
+/// What the host answers a request it cannot authenticate.
+const UNSEALED: &str = "this session requires authenticated participants (feature auth.sealed): \
+                        attach through the handshake with the session's address";
+
+/// The operating system's RNG: host keys and handshake ephemerals.
+pub(crate) struct OsRng;
+
+impl Rng for OsRng {
+    fn fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), RngError> {
+        use rand::TryRng;
+        rand::rngs::SysRng
+            .try_fill_bytes(dest)
+            .map_err(|_| RngError)
+    }
+}
+
+/// A lock that a panicked holder left behind is still the state to use.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// What the history store keeps.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,14 +161,26 @@ pub struct HostConfig {
     pub history: HistoryConfig,
     /// Virtual clock mode (§11.3); `None` is wall mode.
     pub virtual_clock: Option<VirtualConfig>,
+    /// The host's keys, shared by every session a multi-session host runs:
+    /// participants handshake with its static key, and it signs its
+    /// broadcasts with its Ed25519 key. Holders of its local secret (the
+    /// address's key) attach as device `local`.
+    pub identity: Arc<HostIdentity>,
 }
 
 impl HostConfig {
     /// Defaults for `session` in `tenant`: wall mode, a 250 ms lease grace,
-    /// a 1 s presence grace, a 10 ms expiry tick, a 500 ms republish and a
-    /// 1 s health log.
+    /// a 1 s presence grace, a 10 ms expiry tick, a 500 ms republish, a
+    /// 1 s health log, and fresh keys.
+    ///
+    /// # Panics
+    /// If the operating system's random number generator fails.
     pub fn new(tenant: TenantId, session: SessionId) -> Self {
         Self {
+            identity: Arc::new(
+                HostIdentity::generate(&mut OsRng)
+                    .expect("the operating system's random number generator failed"),
+            ),
             tenant,
             session,
             clock: MonotonicClock::new().shared(),
@@ -185,6 +239,7 @@ impl std::fmt::Debug for HostConfig {
 /// [`SessionHost::shutdown`], which waits for it.
 pub struct SessionHost {
     keys: SessionKeys,
+    identity: Arc<HostIdentity>,
     snapshot: watch::Receiver<AuthoritySnapshot>,
     health: watch::Receiver<Vec<ParticipantHealth>>,
     events: broadcast::Sender<AuthorityEvent>,
@@ -211,24 +266,37 @@ impl SessionHost {
         );
         let epoch = Arc::new(AtomicU64::new(authority.epoch().0));
         let control = transport.control().clone();
+        let mut instance = [0u8; 8];
+        OsRng
+            .fill_bytes(&mut instance)
+            .map_err(|err| SessionError::Config(err.to_string()))?;
+        let host_instance = u64::from_le_bytes(instance);
+        let auth = HostAuth::new(
+            &config.identity,
+            config.tenant.as_str(),
+            &config.session.to_string(),
+            host_instance,
+        );
+        let signer = config.identity.signer(host_instance);
 
         let (hb_tx, hb_rx) = mpsc::channel(HEARTBEAT_QUEUE);
-        let echoes: Echoes = Arc::new(RwLock::new(HashMap::new()));
+        let peers: SharedPeers = Arc::default();
         let heartbeats = control
             .declare_subscriber(keys.heartbeats())
             .callback({
-                let (keys, clock, epoch, echoes) = (
+                let (keys, clock, epoch, peers) = (
                     keys.clone(),
                     config.clock.clone(),
                     epoch.clone(),
-                    echoes.clone(),
+                    peers.clone(),
                 );
                 move |sample| {
                     let t2 = clock.now_ns();
-                    on_heartbeat_sample(&keys, &*clock, &epoch, &echoes, &hb_tx, &sample, t2);
+                    on_heartbeat_sample(&keys, &*clock, &epoch, &peers, &hb_tx, &sample, t2);
                 }
             })
             .await?;
+        let handshakes = control.declare_queryable(keys.handshake()).await?;
         let ctl = control.declare_queryable(keys.ctl()).await?;
         let state = control.declare_queryable(keys.host_state()).await?;
         let presence = control
@@ -274,9 +342,12 @@ impl SessionHost {
         let (events, _) = broadcast::channel(256);
         let cancel = CancellationToken::new();
 
+        let identity = config.identity.clone();
         let mut actor = HostActor {
             transport,
-            echoes,
+            peers,
+            auth,
+            signer,
             last_publish_ns: 0,
             keys: keys.clone(),
             config,
@@ -297,7 +368,9 @@ impl SessionHost {
         let task = tokio::spawn({
             let cancel = cancel.clone();
             async move {
-                actor.run(cancel, hb_rx, ctl, state, presence).await;
+                actor
+                    .run(cancel, hb_rx, (handshakes, ctl, state), presence)
+                    .await;
                 // Withdraw presence first, so participants stop talking to a
                 // host that no longer answers, then the rest.
                 drop(token);
@@ -310,6 +383,7 @@ impl SessionHost {
 
         Ok(Self {
             keys,
+            identity,
             snapshot,
             health,
             events,
@@ -321,6 +395,12 @@ impl SessionHost {
     /// The session's keys.
     pub fn keys(&self) -> &SessionKeys {
         &self.keys
+    }
+
+    /// The credential of a participant holding this host's address (device
+    /// `local`).
+    pub fn credential(&self) -> Credential {
+        self.identity.local_credential()
     }
 
     /// The latest authority snapshot.
@@ -365,18 +445,47 @@ impl Drop for SessionHost {
     }
 }
 
-/// Echo publishers by participant, shared with the heartbeat callback.
-type Echoes = Arc<RwLock<HashMap<ParticipantId, zenoh::pubsub::Publisher<'static>>>>;
+/// One participant generation's keys: a handshake's candidate, or the
+/// generation in effect. Shared with the heartbeat callback, which opens
+/// heartbeats and seals echoes off the host task.
+struct Peer {
+    participant: ParticipantId,
+    identity: Identity,
+    /// Host clock at the handshake.
+    created_ns: i64,
+    /// `k_up`: requests and heartbeats.
+    up: Mutex<SealReceiver>,
+    /// `k_down`: replies and echoes. One lock per key: a seq is allocated
+    /// and its message sent under it.
+    down: Mutex<SealSender>,
+    /// Request ids and their replies (encoded `CtlReply`s, sealed afresh
+    /// for a retry).
+    requests: Mutex<RequestWindow<Vec<u8>>>,
+    /// The echo publisher, once in effect.
+    echo: std::sync::OnceLock<zenoh::pubsub::Publisher<'static>>,
+}
+
+/// Every generation with keys.
+#[derive(Default)]
+struct Peers {
+    /// Candidates and generations in effect, by `k_up`'s id.
+    by_key: HashMap<u32, Arc<Peer>>,
+    /// The generation in effect, by participant.
+    current: HashMap<ParticipantId, Arc<Peer>>,
+}
+
+type SharedPeers = Arc<RwLock<Peers>>;
 
 type HeartbeatTx = mpsc::Sender<(ParticipantId, crate::wire::Heartbeat, i64)>;
 
-/// The heartbeat callback: echo at once (t3 as late as possible), then queue
-/// the heartbeat for the host task.
+/// The heartbeat callback: open it under the sender's `k_up` (anything else
+/// is dropped: presence is authenticated heartbeats), echo at once (t3 as
+/// late as possible), then queue the heartbeat for the host task.
 fn on_heartbeat_sample(
     keys: &SessionKeys,
     clock: &dyn Clock,
     epoch: &AtomicU64,
-    echoes: &Echoes,
+    peers: &SharedPeers,
     queue: &HeartbeatTx,
     sample: &zenoh::sample::Sample,
     t2: i64,
@@ -384,7 +493,19 @@ fn on_heartbeat_sample(
     let Some(id) = keys.participant_of(sample.key_expr().as_str()) else {
         return;
     };
-    let heartbeat = match codec::decode_heartbeat(&sample.payload().to_bytes()) {
+    // Not attached (or superseded): no keys, no presence.
+    let Some(peer) = peers.read().ok().and_then(|p| p.current.get(&id).cloned()) else {
+        return;
+    };
+    let mut bytes = sample.payload().to_bytes().into_owned();
+    let heartbeat = match lock(&peer.up).open(&keys.heartbeat(&id), &mut bytes) {
+        Ok(opened) => codec::decode_heartbeat(opened.body),
+        Err(err) => {
+            debug!(%id, %err, "heartbeat dropped");
+            return;
+        }
+    };
+    let heartbeat = match heartbeat {
         Ok(hb) if hb.participant == id => hb,
         Ok(hb) => {
             warn!(%id, body = %hb.participant, "heartbeat key and body disagree");
@@ -395,23 +516,26 @@ fn on_heartbeat_sample(
             return;
         }
     };
-    let sent = match echoes.read().ok().as_ref().and_then(|e| e.get(&id)) {
-        Some(publisher) => {
-            let echo = HeartbeatEcho {
-                seq: heartbeat.seq,
-                t1_ns: heartbeat.t1_ns,
-                t2_ns: t2,
-                t3_ns: clock.now_ns(),
-                epoch: Epoch(epoch.load(Ordering::Relaxed)),
-            };
-            publisher.put(codec::encode_echo(&echo)).wait()
+    if let Some(publisher) = peer.echo.get() {
+        let echo = HeartbeatEcho {
+            seq: heartbeat.seq,
+            t1_ns: heartbeat.t1_ns,
+            t2_ns: t2,
+            t3_ns: clock.now_ns(),
+            epoch: Epoch(epoch.load(Ordering::Relaxed)),
+        };
+        let mut down = lock(&peer.down);
+        let sent = down
+            .seal(
+                Kind::HeartbeatEcho,
+                &keys.heartbeat_echo(&id),
+                &codec::encode_echo(&echo),
+            )
+            .map_err(|err| err.to_string())
+            .and_then(|sealed| publisher.put(sealed).wait().map_err(|err| err.to_string()));
+        if let Err(err) = sent {
+            warn!(%id, %err, "heartbeat echo failed");
         }
-        // Not attached yet: no echo; the first exchange completes after
-        // attach.
-        None => Ok(()),
-    };
-    if let Err(err) = sent {
-        warn!(%id, %err, "heartbeat echo failed");
     }
     if queue.try_send((id, heartbeat, t2)).is_err() {
         warn!("host overloaded: heartbeat dropped");
@@ -660,15 +784,21 @@ struct Recorded {
 
 /// A participant's timing link, as the host measures it.
 struct Link {
+    /// The generation it measures: a new process starts a new link.
+    generation: u32,
     estimator: OffsetEstimator,
     stats: LinkStats,
 }
 
 type Fifo<T> = zenoh::handlers::FifoChannelHandler<T>;
+type Queries = zenoh::query::Queryable<Fifo<Query>>;
 
 struct HostActor {
     transport: Transport,
-    echoes: Echoes,
+    peers: SharedPeers,
+    auth: HostAuth,
+    /// Signs `host/state` and `host/tick`: one publication counter.
+    signer: SignedSender,
     /// Host clock at the last snapshot publish.
     last_publish_ns: i64,
     keys: SessionKeys,
@@ -691,8 +821,7 @@ impl HostActor {
         &mut self,
         cancel: CancellationToken,
         mut heartbeats: mpsc::Receiver<(ParticipantId, crate::wire::Heartbeat, i64)>,
-        ctl: zenoh::query::Queryable<Fifo<Query>>,
-        state: zenoh::query::Queryable<Fifo<Query>>,
+        (handshakes, ctl, state): (Queries, Queries, Queries),
         presence: zenoh::pubsub::Subscriber<Fifo<zenoh::sample::Sample>>,
     ) {
         let interval = |period: Duration| {
@@ -708,6 +837,10 @@ impl HostActor {
         loop {
             tokio::select! {
                 () = cancel.cancelled() => break,
+                query = handshakes.recv_async() => match query {
+                    Ok(query) => self.on_handshake(query).await,
+                    Err(_) => break,
+                },
                 query = ctl.recv_async() => match query {
                     Ok(query) => {
                         self.on_ctl(query).await;
@@ -826,45 +959,239 @@ impl HostActor {
         }
     }
 
-    async fn on_ctl(&mut self, query: Query) {
+    /// Answers msg 1 of a handshake: msg 2 and a candidate, or a refusal.
+    async fn on_handshake(&mut self, query: Query) {
         let now = self.now();
-        let request = query
+        let answer = query
             .payload()
-            .ok_or_else(|| CtlError::new(CtlStatus::InvalidRequest, "ctl query without a payload"))
+            .ok_or_else(|| CtlError::new(CtlStatus::InvalidRequest, "a handshake without msg 1"))
             .and_then(|payload| {
-                codec::decode_request(&payload.to_bytes())
+                codec::decode_handshake_request(&payload.to_bytes())
                     .map_err(|err| CtlError::new(CtlStatus::InvalidRequest, err))
+            })
+            .and_then(|request| {
+                self.auth
+                    .handshake(&mut OsRng, &self.config.identity, &request)
             });
-        let result = match request {
-            Ok(request) => {
-                debug!(from = %request.from, command = ?request.command, "ctl");
-                self.authority.apply(request, now)
-            }
-            Err(err) => Err(err),
-        };
-        let (result, leases) = match result {
-            Ok(Accepted { leases, events }) => {
-                self.record(events).await;
-                (Ok(()), leases)
+        let reply = match answer {
+            Ok((msg2, candidate)) => {
+                debug!(participant = %candidate.participant, generation = candidate.generation, "handshake");
+                let ttl = i64::try_from(CANDIDATE_TTL.as_nanos()).unwrap_or(i64::MAX);
+                let peer = Arc::new(Peer {
+                    participant: candidate.participant,
+                    identity: Identity {
+                        device: candidate.device,
+                        generation: candidate.generation,
+                    },
+                    created_ns: now,
+                    up: Mutex::new(candidate.up),
+                    down: Mutex::new(candidate.down),
+                    requests: Mutex::default(),
+                    echo: std::sync::OnceLock::new(),
+                });
+                if let Ok(mut peers) = self.peers.write() {
+                    let Peers { by_key, current } = &mut *peers;
+                    by_key.retain(|_, p| {
+                        current
+                            .get(&p.participant)
+                            .is_some_and(|c| Arc::ptr_eq(c, p))
+                            || now.saturating_sub(p.created_ns) < ttl
+                    });
+                    by_key.insert(candidate.up_key_id, peer);
+                }
+                Ok(msg2)
             }
             Err(err) => {
+                info!(status = ?err.status, "handshake refused: {}", err.message);
+                Err(err)
+            }
+        };
+        Self::reply(query, codec::encode_handshake_reply(&reply)).await;
+    }
+
+    /// Opens a `ctl` request under its sender's `k_up`.
+    fn open_ctl(&self, mut raw: Vec<u8>) -> Result<(Arc<Peer>, Vec<u8>), CtlError> {
+        let unauthenticated = |why: String| CtlError::new(CtlStatus::Unauthenticated, why);
+        let header = Header::parse(&raw).map_err(|_| unauthenticated(UNSEALED.into()))?;
+        let peer = self
+            .peers
+            .read()
+            .ok()
+            .and_then(|p| p.by_key.get(&header.key_id).cloned())
+            .ok_or_else(|| {
+                unauthenticated(format!(
+                    "key {} is unknown or superseded: attach again",
+                    header.key_id
+                ))
+            })?;
+        let body = lock(&peer.up)
+            .open(&self.keys.ctl(), &mut raw)
+            .map_err(|err| unauthenticated(format!("the request failed to open: {err}")))?
+            .body
+            .to_vec();
+        Ok((peer, body))
+    }
+
+    async fn on_ctl(&mut self, query: Query) {
+        let raw = query
+            .payload()
+            .map(|p| p.to_bytes().into_owned())
+            .unwrap_or_default();
+        let (peer, body) = match self.open_ctl(raw) {
+            Ok(opened) => opened,
+            Err(err) => {
+                // Unauthenticated: a plain refusal, a hint only.
                 info!(status = ?err.status, "ctl refused: {}", err.message);
-                (Err(err), Vec::new())
+                let reply = CtlReply {
+                    result: Err(err),
+                    state: self.snapshot(),
+                    leases: Vec::new(),
+                    request_id: 0,
+                };
+                Self::reply(query, codec::encode_reply(&reply)).await;
+                return;
+            }
+        };
+        let request = codec::decode_request(&body);
+        let request_id = request.as_ref().map_or(0, |r| r.request_id);
+        let admitted = match lock(&peer.requests).admit(request_id) {
+            Admit::Done(reply) => Some(reply.clone()),
+            Admit::Expired => Some(Vec::new()),
+            Admit::Execute => None,
+        };
+        let encoded = match admitted {
+            // A retry of an answered request: the same reply, sealed afresh.
+            Some(cached) if !cached.is_empty() => cached,
+            Some(_) => self.answer(
+                Err(CtlError::new(
+                    CtlStatus::Expired,
+                    format!("request {request_id} is below the reply window: re-read the state"),
+                )),
+                Vec::new(),
+                request_id,
+            ),
+            None => {
+                let outcome = match request {
+                    Ok(request) => self.execute(&peer, request).await,
+                    Err(err) => Some((
+                        Err(CtlError::new(CtlStatus::InvalidRequest, err)),
+                        Vec::new(),
+                    )),
+                };
+                // A verb a candidate may not send yet is dropped unanswered.
+                let Some((result, leases)) = outcome else {
+                    return;
+                };
+                let encoded = self.answer(result, leases, request_id);
+                lock(&peer.requests).complete(request_id, encoded.clone());
+                encoded
             }
         };
         // Ticks go out before the reply: a `Ready` that completed a step
         // returns after the step is published.
         self.publish_ticks().await;
-        let reply = CtlReply {
+        let sealed = lock(&peer.down).seal(Kind::CtlReply, &self.keys.ctl(), &encoded);
+        match sealed {
+            Ok(sealed) => Self::reply(query, sealed).await,
+            Err(err) => warn!(participant = %peer.participant, %err, "reply not sealed"),
+        }
+    }
+
+    /// Applies a verb from `peer`. `None`: a candidate sent something other
+    /// than `Attach`, which is dropped.
+    async fn execute(
+        &mut self,
+        peer: &Arc<Peer>,
+        request: crate::wire::Request,
+    ) -> Option<(Result<(), CtlError>, Vec<Lease>)> {
+        let now = self.now();
+        if request.from != peer.participant {
+            return Some((
+                Err(CtlError::new(
+                    CtlStatus::Unauthenticated,
+                    format!(
+                        "sealed under {}'s keys but sent as {}",
+                        peer.participant, request.from
+                    ),
+                )),
+                Vec::new(),
+            ));
+        }
+        let in_effect = self
+            .peers
+            .read()
+            .ok()
+            .and_then(|p| p.current.get(&peer.participant).cloned())
+            .is_some_and(|current| Arc::ptr_eq(&current, peer));
+        if !in_effect {
+            if !matches!(request.command, Command::Attach { .. }) {
+                return None;
+            }
+            let Identity { device, generation } = &peer.identity;
+            if let Err(err) = self
+                .auth
+                .may_take_effect(&peer.participant, device, *generation)
+            {
+                return Some((Err(err), Vec::new()));
+            }
+        }
+        debug!(from = %request.from, command = ?request.command, "ctl");
+        let result = self.authority.apply_from(request, &peer.identity, now);
+        match result {
+            Ok(Accepted { leases, events }) => {
+                if !in_effect {
+                    self.take_effect(peer);
+                }
+                self.record(events).await;
+                Some((Ok(()), leases))
+            }
+            Err(err) => {
+                info!(status = ?err.status, "ctl refused: {}", err.message);
+                Some((Err(err), Vec::new()))
+            }
+        }
+    }
+
+    /// `peer`'s `Attach` was accepted: it is the generation in effect, and
+    /// every older one of its participant is dropped.
+    fn take_effect(&mut self, peer: &Arc<Peer>) {
+        let Identity { device, generation } = &peer.identity;
+        self.auth
+            .take_effect(&peer.participant, device, *generation);
+        if let Ok(mut peers) = self.peers.write() {
+            peers.by_key.retain(|_, p| {
+                p.participant != peer.participant || p.identity.generation >= *generation
+            });
+            peers.current.insert(peer.participant.clone(), peer.clone());
+        }
+    }
+
+    /// The encoded reply: the result and the snapshot right after it.
+    fn answer(&self, result: Result<(), CtlError>, leases: Vec<Lease>, request_id: u64) -> Vec<u8> {
+        codec::encode_reply(&CtlReply {
             result,
             state: self.snapshot(),
             leases,
-        };
-        Self::reply(query, codec::encode_reply(&reply)).await;
+            request_id,
+        })
     }
 
-    async fn on_state_query(&self, query: Query) {
-        Self::reply(query, codec::encode_state(&self.snapshot())).await;
+    async fn on_state_query(&mut self, query: Query) {
+        if let Some(signed) = self.sign_state(&self.snapshot()) {
+            Self::reply(query, signed).await;
+        }
+    }
+
+    /// The snapshot as a `Signed` broadcast (§8.7).
+    fn sign_state(&mut self, snapshot: &AuthoritySnapshot) -> Option<Vec<u8>> {
+        self.signer
+            .sign(
+                SignedKind::AuthorityState,
+                &self.keys.host_state(),
+                &codec::encode_state(snapshot),
+            )
+            .map_err(|err| warn!(%err, "authority state not signed"))
+            .ok()
     }
 
     /// Replies ride the query's priority and congestion control (Zenoh 1.x
@@ -926,19 +1253,31 @@ impl HostActor {
             info!(session = %self.config.session, "{event}");
             match &event {
                 AuthorityEvent::Attached { participant, .. } => {
-                    self.declare_echo(participant).await;
+                    let generation = self.declare_echo(participant).await;
                     let offset = self.config.offset;
-                    self.links
-                        .entry(participant.clone())
-                        .or_insert_with(|| Link {
-                            estimator: OffsetEstimator::new(offset),
-                            stats: LinkStats::new(offset.window),
-                        });
+                    // A new generation is a new process, on its own clock.
+                    if self
+                        .links
+                        .get(participant)
+                        .is_none_or(|link| link.generation != generation)
+                    {
+                        self.links.insert(
+                            participant.clone(),
+                            Link {
+                                generation,
+                                estimator: OffsetEstimator::new(offset),
+                                stats: LinkStats::new(offset.window),
+                            },
+                        );
+                    }
                 }
                 AuthorityEvent::Detached { participant, .. } => {
                     self.links.remove(participant);
-                    if let Ok(mut echoes) = self.echoes.write() {
-                        echoes.remove(participant);
+                    // Detaching ends the generation: its keys go with it.
+                    if let Ok(mut peers) = self.peers.write()
+                        && let Some(peer) = peers.current.remove(participant)
+                    {
+                        peers.by_key.retain(|_, p| !Arc::ptr_eq(p, &peer));
                     }
                 }
                 _ => {}
@@ -953,7 +1292,16 @@ impl HostActor {
 
     async fn publish_ticks(&mut self) {
         for tick in self.authority.take_ticks() {
-            if let Err(err) = self.ticks.put(codec::encode_tick(&tick)).await {
+            let signed = self.signer.sign(
+                SignedKind::VirtualTick,
+                &self.keys.host_tick(),
+                &codec::encode_tick(&tick),
+            );
+            let sent = match signed {
+                Ok(signed) => self.ticks.put(signed).await.map_err(|err| err.to_string()),
+                Err(err) => Err(err.to_string()),
+            };
+            if let Err(err) = sent {
                 warn!(%err, "tick publish failed");
             }
         }
@@ -981,26 +1329,34 @@ impl HostActor {
             .collect()
     }
 
-    async fn declare_echo(&self, id: &ParticipantId) {
-        if self.echoes.read().is_ok_and(|e| e.contains_key(id)) {
-            return;
-        }
-        match self
-            .transport
-            .control()
-            .declare_publisher(self.keys.heartbeat_echo(id))
-            .priority(CONTROL_PRIORITY)
-            .congestion_control(HEARTBEAT_CONGESTION)
-            .express(true)
-            .await
-        {
-            Ok(publisher) => {
-                if let Ok(mut echoes) = self.echoes.write() {
-                    echoes.insert(id.clone(), publisher);
+    /// Declares the echo publisher of `id`'s generation in effect, and
+    /// returns that generation.
+    async fn declare_echo(&self, id: &ParticipantId) -> u32 {
+        let Some(peer) = self
+            .peers
+            .read()
+            .ok()
+            .and_then(|p| p.current.get(id).cloned())
+        else {
+            return 0;
+        };
+        if peer.echo.get().is_none() {
+            match self
+                .transport
+                .control()
+                .declare_publisher(self.keys.heartbeat_echo(id))
+                .priority(CONTROL_PRIORITY)
+                .congestion_control(HEARTBEAT_CONGESTION)
+                .express(true)
+                .await
+            {
+                Ok(publisher) => {
+                    let _ = peer.echo.set(publisher);
                 }
+                Err(err) => warn!(%id, %err, "echo publisher"),
             }
-            Err(err) => warn!(%id, %err, "echo publisher"),
         }
+        peer.identity.generation
     }
 
     /// Heartbeats renew leases without a structural change; while any lease
@@ -1019,9 +1375,11 @@ impl HostActor {
     async fn publish(&mut self) {
         self.last_publish_ns = self.now();
         let snapshot = self.snapshot();
-        let bytes = codec::encode_state(&snapshot);
+        let signed = self.sign_state(&snapshot);
         self.snapshot_tx.send_replace(snapshot);
-        if let Err(err) = self.publisher.put(bytes).await {
+        if let Some(signed) = signed
+            && let Err(err) = self.publisher.put(signed).await
+        {
             warn!(%err, "authority publish failed");
         }
     }

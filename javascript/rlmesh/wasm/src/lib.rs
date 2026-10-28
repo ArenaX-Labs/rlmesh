@@ -629,9 +629,12 @@ impl ControlSession {
         let epoch = self.state.as_ref().map(|s| s.epoch);
         let id = self.next_request;
         self.next_request = self.next_request.wrapping_add(1);
+        // The gateway seals the verb under the browser's keys with an id of
+        // its own; this one names the frame.
         let body = codec::encode_request(&Request {
             from,
             epoch,
+            request_id: u64::from(id),
             command,
         });
         self.pending.insert(id, pending);

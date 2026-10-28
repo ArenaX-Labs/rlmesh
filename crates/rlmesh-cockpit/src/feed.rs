@@ -82,6 +82,10 @@ impl Feed {
         let clock = participant.clock().clone();
 
         // Heartbeats (control class) and reports (data class).
+        // TODO: heartbeats are sealed to the host since session auth (design
+        // §8.2), so none decodes here and the health, heartbeat-age, queue
+        // and heard-rate columns stay empty; have the host relay its
+        // per-participant link health to observers, then drop this.
         let heartbeats = participant
             .transport()
             .control()

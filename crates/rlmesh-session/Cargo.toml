@@ -29,12 +29,14 @@ clap = { workspace = true, features = ["derive"], optional = true }
 # zune-jpeg (the workspace's existing pair, as in rlmesh-adapters).
 image = { workspace = true, features = ["jpeg"] }
 jpeg-encoder = { workspace = true }
+# Where an embedded host leaves its address key for local joiners, and
+# where recordings go by default.
+dirs = { workspace = true }
 futures = { workspace = true, optional = true }
-# Session recordings (§13), feature `record`; `dirs` for their default
-# directory.
-dirs = { workspace = true, optional = true }
+# Session recordings (§13), feature `record`.
 mcap = { workspace = true, optional = true }
-rand = { workspace = true, optional = true }
+# The OS RNG: host keys and handshake ephemerals.
+rand = { workspace = true }
 # The sans-IO core (the wire, the spec, authority, clock offsets, input
 # cache, schedule, virtual clock, stream rules), re-exported unchanged.
 rlmesh-session-core = { workspace = true }
@@ -51,6 +53,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"], optio
 # `rsa`, RUSTSEC-2023-0071) and no pubkey auth (also `rsa`). `unstable` is
 # for per-publisher reliability, the only way Zenoh 1.10 sets it (§10.2).
 zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-stream", "unstable"] }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
@@ -76,7 +79,6 @@ gateway = [
   "dep:blake3",
   "dep:clap",
   "dep:futures",
-  "dep:rand",
   "dep:rustls",
   "dep:serde_json",
   "dep:tokio-rustls",
@@ -85,7 +87,7 @@ gateway = [
   "tokio/net",
 ]
 # MCAP recording of a session (`record`).
-record = ["dep:dirs", "dep:mcap", "dep:serde_json"]
+record = ["dep:mcap", "dep:serde_json"]
 # QUIC links (one stream per Zenoh priority, so one connection can carry
 # every class across NAT); needs TLS certificates.
 quic = ["zenoh/transport_quic"]

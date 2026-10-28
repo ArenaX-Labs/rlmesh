@@ -7,15 +7,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use rlmesh_session::auth::{self, Credential, HostIdentity, Link, ReplyOutcome};
+use rlmesh_session::crypto::{Rng, RngError, StaticKeypair, signed};
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{
-    ChannelId, ClockMode, ContractMode, CtlStatus, Encoding, Epoch, FenceError, Fingerprint,
-    HistoryQuery, Mode, ParticipantId, Plan, PriorityClass, ReasonCode, Role, Sample, SessionId,
-    TenantId, VirtualTick, Watermark,
+    ChannelId, ClockMode, Command, ContractMode, CtlError, CtlReply, CtlStatus, Encoding, Epoch,
+    FenceError, Fingerprint, HistoryQuery, Mode, ParticipantId, Plan, PriorityClass, ReasonCode,
+    Request, Role, Sample, SessionId, TenantId, VirtualTick, Watermark,
 };
 use rlmesh_session::{
     ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
@@ -141,6 +143,7 @@ impl World {
         );
         config.clock = MonotonicClock::with_anchor(self.anchor, shift_ns).shared();
         config.heartbeat_period = Duration::from_millis(20);
+        config.credential = Some(self.host.credential());
         config
     }
 
@@ -217,7 +220,7 @@ async fn arm_seen_by(by: &Participant, others: &[&Participant]) {
 
 fn status(err: SessionError) -> CtlStatus {
     match err {
-        SessionError::Rejected(err) => err.status,
+        SessionError::Rejected(err) | SessionError::Unverified(err) => err.status,
         other => panic!("expected a refusal, got {other}"),
     }
 }
@@ -227,6 +230,136 @@ async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     while !done() {
         assert!(started.elapsed() < WAIT, "timed out waiting for {what}");
         tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// The OS RNG, for the hand-rolled handshakes.
+struct Os;
+
+impl Rng for Os {
+    fn fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), RngError> {
+        use rand::TryRng;
+        rand::rngs::SysRng
+            .try_fill_bytes(dest)
+            .map_err(|_| RngError)
+    }
+}
+
+/// The first reply to a query on `key`, as bytes.
+async fn ask(transport: &Transport, key: &str, payload: Option<Vec<u8>>) -> Vec<u8> {
+    let mut get = transport.control().get(key).timeout(WAIT);
+    if let Some(payload) = payload {
+        get = get.payload(payload);
+    }
+    let reply = get
+        .await
+        .expect("query")
+        .recv_async()
+        .await
+        .expect("a reply");
+    reply
+        .result()
+        .expect("an ok reply")
+        .payload()
+        .to_bytes()
+        .into_owned()
+}
+
+/// A participant built from the wire up, as a board runs one: the
+/// handshake on `hs`, then an [`auth::Link`] sealing verbs with the request
+/// ids it picks. The SDK never sends these (a retry with a fresh seq, a
+/// second process under a live name).
+struct Raw {
+    transport: Transport,
+    ctl: String,
+    link: Link,
+    generation: u32,
+}
+
+impl World {
+    /// Runs the handshake as `id` with `credential`: the refusal, or a
+    /// candidate not yet attached.
+    async fn handshake(&self, id: &str, credential: &Credential) -> Result<Raw, CtlStatus> {
+        let transport = self.transport().await;
+        let keys = self.host.keys();
+        wait_for_host(&transport, keys, WAIT).await.expect("host");
+        // The host instance, unverified: a wrong one only fails the handshake.
+        let state = ask(&transport, &keys.host_state(), None).await;
+        let instance = signed::peek(&state).expect("signed").header.host_instance;
+        let id = ParticipantId::new(id).expect("id");
+        let (initiator, hello) = credential
+            .start(
+                &mut Os,
+                self.tenant.as_str(),
+                &self.session.to_string(),
+                instance,
+                &id,
+            )
+            .expect("msg 1");
+        let reply = ask(
+            &transport,
+            &keys.handshake(),
+            Some(codec::encode_handshake_request(&hello)),
+        )
+        .await;
+        let msg2 = codec::decode_handshake_reply(&reply)
+            .expect("decode")
+            .map_err(|refusal| refusal.status)?;
+        let attached = auth::finish(initiator, &msg2).expect("msg 2");
+        Ok(Raw {
+            transport,
+            ctl: keys.ctl(),
+            generation: attached.accept.generation,
+            link: Link::new(id, attached),
+        })
+    }
+
+    /// [`Self::handshake`] with the host's credential, then `Attach`.
+    async fn raw(&self, id: &str, role: Role) -> Raw {
+        let mut raw = self
+            .handshake(id, &self.host.credential())
+            .await
+            .expect("handshake");
+        let reply = raw.call(1, attach(id, role)).await;
+        reply.result.expect("attached");
+        raw
+    }
+}
+
+fn attach(name: &str, role: Role) -> Command {
+    Command::Attach {
+        name: name.into(),
+        roles: vec![role],
+        priority: PriorityClass::Operator,
+        protocol_minor: 0,
+        supports: Vec::new(),
+        requires: Vec::new(),
+        workflow_edition: String::new(),
+        workflow_editions: Vec::new(),
+    }
+}
+
+impl Raw {
+    /// Seals `command` as request `request_id` under a fresh seq.
+    fn seal(&mut self, request_id: u64, command: Command) -> Vec<u8> {
+        self.link
+            .resend(&self.ctl, request_id, None, &command)
+            .expect("seal")
+    }
+
+    /// Sends sealed bytes: the host's answer, or its plain refusal.
+    async fn send(&mut self, request_id: u64, sealed: Vec<u8>) -> Result<CtlReply, CtlError> {
+        let mut reply = ask(&self.transport, &self.ctl, Some(sealed)).await;
+        match self.link.reply(&self.ctl, &mut reply, request_id) {
+            Ok(ReplyOutcome::Answer(reply)) => Ok(*reply),
+            Ok(ReplyOutcome::Hint(refusal)) => Err(refusal),
+            other => panic!("not an answer: {other:?}"),
+        }
+    }
+
+    async fn call(&mut self, request_id: u64, command: Command) -> CtlReply {
+        let sealed = self.seal(request_id, command);
+        self.send(request_id, sealed).await.expect("an answer")
     }
 }
 
@@ -1368,4 +1501,206 @@ async fn publishers_and_controllers_report_their_counters_to_observers() {
             .iter()
             .any(|r| r.participant.as_str() == "cockpit")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_handshakes_keys_reach_the_host_and_only_its_signature_reaches_a_view() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let policy = world.policy().await;
+    let host_static = *world.host.credential().host_static();
+
+    // A device key the host never enrolled, and a stale address (another
+    // host's static key): no handshake, so no attach.
+    let stranger = Credential::new(StaticKeypair::generate(&mut Os).expect("key"), host_static);
+    let other = HostIdentity::generate(&mut Os).expect("identity");
+    for credential in [stranger, other.local_credential()] {
+        let mut config = world.config("intruder", vec![Role::Controller], PriorityClass::Safety, 0);
+        config.credential = Some(credential);
+        let err = Participant::attach(world.transport().await, config)
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(status(err), CtlStatus::Unauthenticated);
+    }
+
+    // An unsealed verb (any old build, or anyone on the network) is
+    // refused, and nothing changes.
+    let transport = world.transport().await;
+    let keys = world.host.keys();
+    let forged = Request {
+        from: robot.id().clone(),
+        epoch: None,
+        request_id: 1,
+        command: Command::Arm,
+    };
+    let reply = ask(
+        &transport,
+        &keys.ctl(),
+        Some(codec::encode_request(&forged)),
+    )
+    .await;
+    let reply = codec::decode_reply(&reply).expect("a plain refusal");
+    assert_eq!(
+        reply.result.expect_err("refused").status,
+        CtlStatus::Unauthenticated
+    );
+    assert_eq!(world.host.snapshot().mode, Mode::Disarmed);
+
+    // A captured sealed verb replayed as is: its seq is spent.
+    let mut twin = world.raw("twin", Role::Observer).await;
+    let arm = twin.seal(2, Command::Arm);
+    assert!(
+        twin.send(2, arm.clone())
+            .await
+            .expect("answer")
+            .result
+            .is_ok()
+    );
+    let armed = world.host.snapshot();
+    let replayed = twin.send(2, arm).await;
+    assert_eq!(
+        replayed.expect_err("replayed").status,
+        CtlStatus::Unauthenticated
+    );
+    assert_eq!(world.host.snapshot().revision, armed.revision);
+
+    // Anyone can answer `ctl` or publish on `host/state`: an unsealed reply
+    // and an unsigned snapshot never reach a view.
+    let mut fake = armed.clone();
+    fake.mode = Mode::Estop;
+    fake.revision += 1_000;
+    let rogue = transport
+        .control()
+        .declare_queryable(keys.ctl())
+        .callback({
+            let fake = CtlReply {
+                result: Ok(()),
+                state: fake.clone(),
+                leases: Vec::new(),
+                request_id: 0,
+            };
+            move |query| {
+                let _ = zenoh::Wait::wait(
+                    query.reply(query.key_expr().clone(), codec::encode_reply(&fake)),
+                );
+            }
+        })
+        .await
+        .expect("rogue");
+    transport
+        .control()
+        .put(keys.host_state(), codec::encode_state(&fake))
+        .await
+        .expect("forged state");
+    let disarmed = policy.disarm().await.expect("the host's own reply");
+    assert_eq!(disarmed.mode, Mode::Disarmed);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    for p in [&robot, &policy] {
+        let view = p.authority().expect("view");
+        assert_eq!(view.mode, Mode::Disarmed, "{}", p.id());
+        assert!(view.revision < fake.revision);
+    }
+    drop(rogue);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
+    // Hand-rolled participants send no heartbeats: keep them present.
+    let world = World::start_with(|c| c.presence_grace = Duration::from_secs(30)).await;
+    let _robot = world.robot().await;
+    let policy = world.policy().await;
+    let arm = channel(&policy, "arm");
+
+    // A retry keeps its request id and takes a fresh seq: the host answers
+    // it from its reply cache (a second Arm would be refused: already
+    // ARMED). Below the window, an id is never applied.
+    let mut twin = world.raw("twin", Role::Observer).await;
+    let first = twin.call(2, Command::Arm).await;
+    assert!(first.result.is_ok());
+    let retried = twin.call(2, Command::Arm).await;
+    assert_eq!(retried, first, "the cached reply, sealed afresh");
+    assert_eq!(world.host.snapshot().epoch, first.state.epoch);
+    let refused = twin.call(70, Command::Arm).await;
+    assert_eq!(
+        refused.result.expect_err("armed").status,
+        CtlStatus::InvalidTransition
+    );
+    let expired = twin.call(2, Command::Arm).await;
+    assert_eq!(
+        expired.result.expect_err("expired").status,
+        CtlStatus::Expired
+    );
+
+    // A controller's new process: the old one's lease ends as a detached
+    // holder's (ACTIVE goes SAFE), and the old process is no longer heard.
+    policy
+        .wait_for("the armed epoch", WAIT, |s| s.epoch == first.state.epoch)
+        .await
+        .expect("view");
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
+    let old = world
+        .host
+        .snapshot()
+        .participant(policy.id())
+        .expect("policy")
+        .generation;
+    let mut restarted = world
+        .handshake("policy", &world.host.credential())
+        .await
+        .expect("handshake");
+    assert!(restarted.generation > old);
+    let reply = restarted.call(1, attach("policy", Role::Controller)).await;
+    reply.result.expect("attached");
+    assert_eq!(reply.state.mode, Mode::Safe);
+    assert!(
+        reply.state.ended.iter().any(|e| {
+            e.lease.token == lease.token && e.reason.code == ReasonCode::HolderDetached
+        })
+    );
+    let entry = reply.state.participant(policy.id()).expect("policy");
+    assert_eq!(
+        (entry.generation, entry.device.as_str()),
+        (restarted.generation, "local")
+    );
+    assert_eq!(
+        status(policy.disarm().await.expect_err("superseded")),
+        CtlStatus::Unauthenticated
+    );
+
+    // A robot's new process: a new epoch voids every lease, and ACTIVE
+    // becomes ARMED (never more).
+    let rearmed = twin.call(71, Command::Arm).await.state;
+    let binding = rearmed
+        .binding(policy.id())
+        .expect("its binding")
+        .fingerprint;
+    let granted = restarted
+        .call(
+            2,
+            Command::GrantLease {
+                channels: vec![arm],
+                release: Vec::new(),
+                binding,
+                ttl_ns: Some(30_000_000_000),
+            },
+        )
+        .await;
+    granted.result.expect("granted");
+    assert_eq!(granted.state.mode, Mode::Active);
+    let mut robot = world
+        .handshake("robot", &world.host.credential())
+        .await
+        .expect("handshake");
+    let swapped = robot.call(1, attach("robot", Role::Embodiment)).await;
+    swapped.result.expect("attached");
+    let swapped = swapped.state;
+    assert_eq!(
+        (swapped.mode, swapped.epoch),
+        (Mode::Armed, rearmed.epoch.next())
+    );
+    assert!(swapped.leases.is_empty());
+    assert!(swapped.ended.iter().any(|e| {
+        e.lease.token == granted.leases[0].token && e.reason.code == ReasonCode::VoidedByEpoch
+    }));
 }

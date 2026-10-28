@@ -41,7 +41,7 @@ struct World {
     session: SessionId,
     url: String,
     stop: Arc<AtomicBool>,
-    _host: SessionHost,
+    host: SessionHost,
     _robot: std::thread::JoinHandle<()>,
 }
 
@@ -72,6 +72,7 @@ impl World {
             PriorityClass::Scripted,
         );
         pc.clock = SystemMonotonicClock.shared();
+        pc.credential = Some(host.credential());
         let embodiment = Participant::attach(open(base).await, pc).await.unwrap();
         let robot = Arc::new(
             Robot::declare(embodiment, ROBOT, EdgeConfig::default())
@@ -100,6 +101,7 @@ impl World {
             open(base).await,
             tenant.clone(),
             session,
+            host.credential(),
             PriorityClass::Operator,
         )
         .await
@@ -120,7 +122,7 @@ impl World {
             session,
             url: format!("ws://{addr}"),
             stop,
-            _host: host,
+            host,
             _robot: spin,
         }
     }
@@ -255,6 +257,7 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
     let request = Request {
         from: me.clone(),
         epoch: Some(state.epoch),
+        request_id: 7,
         command: Command::GrantLease {
             channels: vec![arm],
             release: Vec::new(),
@@ -282,6 +285,7 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
     let forged = Request {
         from: stranger,
         epoch: None,
+        request_id: 8,
         command: Command::Disarm,
     };
     control
@@ -317,13 +321,14 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
 
 impl World {
     async fn observer(&self) -> Participant {
-        let config = ParticipantConfig::new(
+        let mut config = ParticipantConfig::new(
             self.tenant.clone(),
             self.session,
             ParticipantId::new("test-observer").unwrap(),
             vec![Role::Observer],
             PriorityClass::Scripted,
         );
+        config.credential = Some(self.host.credential());
         Participant::attach(open(self.base).await, config)
             .await
             .unwrap()

@@ -280,6 +280,11 @@ pub struct ParticipantInfo {
     pub present: bool,
     /// Why it is absent ([`ReasonCode::RobotLost`]).
     pub left: Option<Reason>,
+    /// The device its handshake authenticated.
+    pub device: String,
+    /// The process attached under this id: rises with every handshake that
+    /// takes effect.
+    pub generation: u32,
 }
 
 impl ParticipantInfo {
@@ -691,6 +696,8 @@ pub struct Request {
     /// The epoch the sender believes current; lease grants and tick verbs
     /// enforce it.
     pub epoch: Option<Epoch>,
+    /// Rising per participant generation from 1; a retry keeps it.
+    pub request_id: u64,
     /// The verb.
     pub command: Command,
 }
@@ -728,6 +735,13 @@ pub enum CtlStatus {
     /// A lease requested before every stream of the requester's binding
     /// installed a plan that includes its contract.
     NotReady,
+    /// No valid handshake: unknown, superseded or forged keys.
+    Unauthenticated,
+    /// The sender's device may not do this.
+    NotAuthorized,
+    /// A request id below the host's reply window: never applied, and its
+    /// first outcome is unknown.
+    Expired,
 }
 
 /// A refused control verb.
@@ -759,4 +773,34 @@ pub struct CtlReply {
     pub state: AuthoritySnapshot,
     /// The leases granted, one per part (`GrantLease`).
     pub leases: Vec<Lease>,
+    /// The request this answers.
+    pub request_id: u64,
+}
+
+/// msg 1 of the handshake, on `hs`: Noise IK with an empty payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandshakeRequest {
+    /// The participant id it attaches as.
+    pub participant: ParticipantId,
+    /// The Noise message.
+    pub noise: Vec<u8>,
+}
+
+/// msg 2's payload: what the host issues a participant generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandshakeAccept {
+    /// The generation, rising per host instance.
+    pub generation: u32,
+    /// The device the initiator's static key belongs to.
+    pub device: String,
+    /// The highest class the device may attach at.
+    pub max_priority: PriorityClass,
+    /// The host's Ed25519 key, which signs `host/state` and `host/tick`.
+    pub host_sign_key: [u8; 32],
+    /// The host instance, which those broadcasts carry.
+    pub host_instance: u64,
+    /// The id of `k_up` (participant to host).
+    pub up_key_id: u32,
+    /// The id of `k_down` (host to participant).
+    pub down_key_id: u32,
 }

@@ -18,6 +18,16 @@
 //! joined. A session is named (`bench-3`, [`DEFAULT_SESSION`]) or a UUID; a
 //! name identifies its [`SessionId::named`]. The tenant is fixed
 //! ([`TENANT`]) and never part of an address.
+//!
+//! **The key.** A session hosted in a process (an embedded host) draws its
+//! own keys, and the address it hands out carries the credential, as a
+//! Jupyter URL carries its token: `127.0.0.1:7447/bench-3#{local
+//! secret}.{host key}` (each 32 bytes, base32: [`AddressKey`]), and a
+//! participant address appends `/{participant}` after it. Holding the
+//! address is the invite (design §2): its holder attaches as device
+//! `local`. A process joining a host on this machine without the key finds
+//! it where the host left it for this user ([`AddressKey`] files, 0600), so
+//! two scripts still meet by name.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -25,13 +35,16 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::str::FromStr;
 use std::time::Duration;
 
+use rlmesh_session_core::auth::{Credential, HostIdentity};
+use zeroize::Zeroizing;
+
 use crate::clock::SystemMonotonicClock;
 use crate::error::SessionError;
 use crate::host::HostConfig;
 use crate::participant::{Participant, ParticipantConfig};
 use crate::server::SessionServer;
 use crate::transport::{Transport, TransportConfig, TransportTuning, open_local_listeners};
-use crate::wire::{ParticipantId, PriorityClass, Role, SessionId, TenantId};
+use crate::wire::{CtlError, CtlStatus, ParticipantId, PriorityClass, Role, SessionId, TenantId};
 
 /// The well-known port a session host listens on (control class; the other
 /// classes follow it), unless [`PORT_VAR`] names another.
@@ -83,8 +96,149 @@ impl fmt::Display for HostName {
     }
 }
 
-/// A parsed address: a session address has no participant.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The key an embedded host's address carries (`#{secret}.{host}`): its
+/// local secret, from which a holder derives the `local` device's key, and
+/// its static public key. A secret: never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AddressKey {
+    secret: Zeroizing<[u8; 32]>,
+    host: [u8; 32],
+}
+
+impl fmt::Debug for AddressKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AddressKey(..)")
+    }
+}
+
+/// RFC 4648 base32, lowercase, unpadded: 52 characters for 32 bytes.
+const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+
+fn base32(bytes: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(52);
+    let (mut acc, mut bits) = (0_u32, 0_u32);
+    for &b in bytes {
+        acc = (acc << 8) | u32::from(b);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(char::from(BASE32[((acc >> bits) & 31) as usize]));
+        }
+    }
+    if bits > 0 {
+        out.push(char::from(BASE32[((acc << (5 - bits)) & 31) as usize]));
+    }
+    out
+}
+
+fn unbase32(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 52 {
+        return None;
+    }
+    let mut out = [0_u8; 32];
+    let (mut acc, mut bits, mut at) = (0_u32, 0_u32, 0);
+    for c in text.bytes() {
+        let value = BASE32.iter().position(|&b| b == c.to_ascii_lowercase())?;
+        acc = (acc << 5) | u32::try_from(value).ok()?;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            *out.get_mut(at)? = (acc >> bits) as u8;
+            at += 1;
+        }
+    }
+    // The 4 padding bits of the last character are zero.
+    (at == 32 && acc & ((1 << bits) - 1) == 0).then_some(out)
+}
+
+impl AddressKey {
+    /// The key of `identity`'s address.
+    pub fn of(identity: &HostIdentity) -> Self {
+        Self {
+            secret: Zeroizing::new(*identity.local_secret()),
+            host: *identity.static_public(),
+        }
+    }
+
+    /// The credential of its holder (device `local`).
+    pub fn credential(&self) -> Credential {
+        Credential::local(&self.secret, self.host)
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        let (secret, host) = text.split_once('.')?;
+        Some(Self {
+            secret: Zeroizing::new(unbase32(secret)?),
+            host: unbase32(host)?,
+        })
+    }
+}
+
+impl FromStr for AddressKey {
+    type Err = SessionError;
+
+    /// `{secret}.{host key}`, as an address carries it after `#`.
+    fn from_str(text: &str) -> Result<Self, SessionError> {
+        Self::parse(text.trim()).ok_or_else(|| invalid(text, "not {secret}.{host key}"))
+    }
+}
+
+impl fmt::Display for AddressKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", base32(&self.secret), base32(&self.host))
+    }
+}
+
+/// The environment variable a launcher passes the keys of the host it
+/// starts in (a sandbox container) through, as [`launch_identity`] makes
+/// them: the workload spec of design §10. [`host_at`] hosts under them.
+pub const HOST_IDENTITY_VAR: &str = "RLMESH_HOST_IDENTITY";
+
+/// Fresh keys for a host another process will run (a container): the text
+/// to pass it in [`HOST_IDENTITY_VAR`] (`{static}.{sign}.{local}`, each
+/// base32; a secret), and the key of the address its participants join by.
+pub fn launch_identity() -> Result<(Zeroizing<String>, AddressKey), SessionError> {
+    let mut secrets = Zeroizing::new([[0_u8; 32]; 3]);
+    for secret in secrets.iter_mut() {
+        rlmesh_session_core::crypto::Rng::fill_bytes(&mut crate::host::OsRng, secret)
+            .map_err(|err| SessionError::Config(err.to_string()))?;
+    }
+    let text = Zeroizing::new(secrets.iter().map(base32).collect::<Vec<_>>().join("."));
+    let [mut noise, mut sign, mut local] = *secrets;
+    let identity = HostIdentity::from_secrets(&mut noise, &mut sign, &mut local);
+    Ok((text, AddressKey::of(&identity)))
+}
+
+/// The host keys [`HOST_IDENTITY_VAR`] passes this process, if any.
+fn launched_identity() -> Result<Option<HostIdentity>, SessionError> {
+    let Ok(text) = std::env::var(HOST_IDENTITY_VAR) else {
+        return Ok(None);
+    };
+    let text = Zeroizing::new(text);
+    let bad = || {
+        SessionError::Config(format!(
+            "{HOST_IDENTITY_VAR} is not {{static}}.{{sign}}.{{local}}"
+        ))
+    };
+    let mut parts = text.trim().split('.').map(unbase32);
+    let (Some(Some(noise)), Some(Some(sign)), Some(Some(local)), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(bad());
+    };
+    let (mut noise, mut sign, mut local) = (
+        Zeroizing::new(noise),
+        Zeroizing::new(sign),
+        Zeroizing::new(local),
+    );
+    Ok(Some(HostIdentity::from_secrets(
+        &mut noise, &mut sign, &mut local,
+    )))
+}
+
+/// A parsed address: a session address has no participant. Its `Display`
+/// and `Debug` leave the key out (`#…`); [`Address::invite`] has it.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Address {
     /// The host (`None`: the local host, by the hosting rule).
     pub host: Option<HostName>,
@@ -92,6 +246,8 @@ pub struct Address {
     pub session: Option<String>,
     /// The participant (a session address names none).
     pub participant: Option<String>,
+    /// The key it carries, if any (`#...`).
+    pub key: Option<AddressKey>,
 }
 
 /// Where the hosting rule puts a session.
@@ -111,7 +267,20 @@ pub enum Placement {
 }
 
 fn invalid(text: &str, why: impl fmt::Display) -> SessionError {
+    let text = redact(text);
     SessionError::Config(format!("address {text:?}: {why}"))
+}
+
+/// `text` with its key, if any, left out: what logs and errors show. The
+/// key is a credential (it attaches as device `local`).
+fn redact(text: &str) -> String {
+    match text.split_once('#') {
+        Some((before, rest)) => {
+            let after = &rest[rest.find('/').unwrap_or(rest.len())..];
+            format!("{before}#…{after}")
+        }
+        None => text.to_string(),
+    }
 }
 
 /// Whether a segment names a host rather than a session.
@@ -166,6 +335,7 @@ fn lockstep_upgrade(text: &str, rest: &str) -> SessionError {
         [base, robot] => format!("{base}/{robot}"),
         _ => "[host/][session/]participant".to_string(),
     };
+    let text = redact(text);
     SessionError::Config(format!(
         "address {text:?}: lockstep:// addresses are gone (a robot's clock is declared, not \
          addressed); use {new:?}"
@@ -192,7 +362,15 @@ impl Address {
         if let Some(rest) = trimmed.strip_prefix("lockstep://") {
             return Err(lockstep_upgrade(text, rest));
         }
-        let body = trimmed.strip_prefix(SCHEME).unwrap_or(trimmed);
+        let (body, key) = split_key(trimmed.strip_prefix(SCHEME).unwrap_or(trimmed));
+        let key = match key {
+            Some(key) => Some(
+                AddressKey::parse(key)
+                    .ok_or_else(|| invalid(text, "the key after # is not {secret}.{host key}"))?,
+            ),
+            None => None,
+        };
+        let body = body.as_str();
         let mut segments: Vec<&str> = if body.is_empty() {
             Vec::new()
         } else {
@@ -247,6 +425,7 @@ impl Address {
             host,
             session: session.map(str::to_string),
             participant: name.map(str::to_string),
+            key,
         })
     }
 
@@ -267,9 +446,12 @@ impl Address {
         let base = match self.placement() {
             Placement::Local => SocketAddr::from((Ipv4Addr::LOCALHOST, well_known_port()?)),
             Placement::Host(base) => joinable(base),
-            Placement::Join(host, port) => resolve(&self.to_string(), &host, port)?,
+            Placement::Join(host, port) => resolve(&self.text(false), &host, port)?,
         };
-        SessionAddress::new(base, self.session_name())
+        Ok(SessionAddress {
+            key: self.key.clone(),
+            ..SessionAddress::new(base, self.session_name())?
+        })
     }
 
     /// Where the hosting rule puts the session.
@@ -297,8 +479,10 @@ pub fn session_id(name: &str) -> SessionId {
     name.parse().unwrap_or_else(|_| SessionId::named(name))
 }
 
-impl fmt::Display for Address {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Address {
+    /// Its text, the key in full (`full`) or left out. The key follows the
+    /// session (or the host, for the default session).
+    fn text(&self, full: bool) -> String {
         let mut segments = Vec::new();
         if let Some(host) = &self.host {
             segments.push(host.to_string());
@@ -306,18 +490,61 @@ impl fmt::Display for Address {
         if let Some(session) = &self.session {
             segments.push(session.clone());
         }
+        if let Some(key) = &self.key {
+            let key = if full { key.to_string() } else { "…".into() };
+            match segments.last_mut() {
+                Some(last) => *last = format!("{last}#{key}"),
+                None => segments.push(format!("#{key}")),
+            }
+        }
         if let Some(name) = &self.participant {
             segments.push(name.clone());
         }
-        f.write_str(&segments.join("/"))
+        segments.join("/")
+    }
+
+    /// The address with its key: the invite one process hands another (a
+    /// credential, since its holder attaches as device `local`).
+    pub fn invite(&self) -> String {
+        self.text(true)
+    }
+}
+
+impl fmt::Display for Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text(false))
+    }
+}
+
+impl fmt::Debug for Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Address").field(&self.text(false)).finish()
+    }
+}
+
+/// `text` without its key, and the key: it runs from `#` to the next `/`
+/// (base32 has none), so a participant name appended to a keyed session
+/// address still parses.
+fn split_key(text: &str) -> (String, Option<&str>) {
+    match text.split_once('#') {
+        Some((before, rest)) => {
+            let (key, after) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            (format!("{before}{after}"), Some(key))
+        }
+        None => (text.to_string(), None),
     }
 }
 
 /// Whether `text` is a v2 address (a session or participant address) rather
 /// than a v1 endpoint (`host:port`, a bare port, or a `scheme://` URL). An
-/// old `lockstep://` address counts as v2, so it meets its upgrade error.
+/// old `lockstep://` address counts as v2, so it meets its upgrade error,
+/// and a keyed `host:port#key` is v2.
 pub fn is_v2_address(text: &str) -> bool {
-    let text = text.trim();
+    let (text, key) = split_key(text.trim());
+    if key.is_some() {
+        return true;
+    }
+    let text = text.as_str();
     if text.starts_with(SCHEME) || text.starts_with("lockstep://") {
         return true;
     }
@@ -330,8 +557,10 @@ pub fn is_v2_address(text: &str) -> bool {
     }
 }
 
-/// Where a session's host listens: an address resolved to a socket.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where a session's host listens: an address resolved to a socket. Its
+/// `Display` and `Debug` leave the key out (`#…`), for logs, titles and
+/// errors; [`SessionAddress::invite`] has it.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SessionAddress {
     /// The host's control-class listener; the other classes follow it.
     pub base: SocketAddr,
@@ -341,22 +570,59 @@ pub struct SessionAddress {
     pub name: String,
     /// The session.
     pub session: SessionId,
+    /// The key its host's address carries (`None`: found at join, for a
+    /// host in this process or one that left its key for this user).
+    pub key: Option<AddressKey>,
 }
 
 impl SessionAddress {
-    /// The session `name` (or UUID) at `base`, in the local tenant.
+    /// The session `name` (or UUID) at `base`, in the local tenant, without
+    /// a key.
     pub fn new(base: SocketAddr, name: &str) -> Result<Self, SessionError> {
         Ok(Self {
             base,
             tenant: TenantId::new(TENANT)?,
             name: name.to_string(),
             session: session_id(name),
+            key: None,
         })
     }
 
-    /// The participant address of `participant` in this session.
-    pub fn participant(&self, participant: &str) -> String {
-        format!("{self}/{participant}")
+    /// The credential its participants attach with: see [`credential`].
+    pub fn credential(&self) -> Result<Credential, SessionError> {
+        credential(self.base, self.key.as_ref())
+    }
+
+    /// The address with its key: the invite one process hands another (a
+    /// launcher, a sandbox, a printed address). A credential: its holder
+    /// attaches as device `local`.
+    pub fn invite(&self) -> String {
+        self.text(true)
+    }
+
+    /// The participant address of `participant` in this session, with the
+    /// key: an invite, as [`Self::invite`].
+    pub fn participant_invite(&self, participant: &str) -> String {
+        format!("{}/{participant}", self.invite())
+    }
+
+    /// Its text, the key in full (`full`) or left out.
+    fn text(&self, full: bool) -> String {
+        let host = HostName {
+            name: self.base.ip().to_string(),
+            port: Some(self.base.port()),
+        };
+        let mut text = if self.name == DEFAULT_SESSION {
+            host.to_string()
+        } else {
+            format!("{host}/{}", self.name)
+        };
+        match &self.key {
+            Some(key) if full => text.push_str(&format!("#{key}")),
+            Some(_) => text.push_str("#…"),
+            None => {}
+        }
+        text
     }
 }
 
@@ -388,15 +654,15 @@ impl FromStr for SessionAddress {
 
 impl fmt::Display for SessionAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let host = HostName {
-            name: self.base.ip().to_string(),
-            port: Some(self.base.port()),
-        };
-        if self.name == DEFAULT_SESSION {
-            write!(f, "{host}")
-        } else {
-            write!(f, "{host}/{}", self.name)
-        }
+        f.write_str(&self.text(false))
+    }
+}
+
+impl fmt::Debug for SessionAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SessionAddress")
+            .field(&self.text(false))
+            .finish()
     }
 }
 
@@ -475,6 +741,7 @@ impl SessionAddress {
         config.host_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
         config.workflow_edition = workflow_edition;
         config.workflow_editions = workflow_editions;
+        config.credential = Some(self.credential()?);
         Participant::attach(transport, config)
             .await
             .map_err(|err| match err {
@@ -490,7 +757,7 @@ impl SessionAddress {
 /// A session reached by the hosting rule: its address, and the host when
 /// this process hosts it (kept with this value, stopped by [`Self::close`]).
 pub struct Placed {
-    /// Where participants join.
+    /// Where participants join, with the key when this process hosts it.
     pub address: SessionAddress,
     hosted: Option<(SessionServer, Transport)>,
 }
@@ -513,10 +780,7 @@ impl Placed {
     /// Stops the host, if this process runs it (participants see it leave).
     pub async fn close(&mut self) -> Result<(), SessionError> {
         if let Some((host, transport)) = self.hosted.take() {
-            local_hosts()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&self.address.base);
+            forget_local_host(&self.address);
             host.shutdown().await;
             transport.close().await?;
         }
@@ -531,10 +795,7 @@ impl Drop for Placed {
         let Some((host, transport)) = self.hosted.take() else {
             return;
         };
-        local_hosts()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.address.base);
+        forget_local_host(&self.address);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 host.shutdown().await;
@@ -544,13 +805,14 @@ impl Drop for Placed {
     }
 }
 
-/// The transports of the session hosts this process runs, by the address
-/// participants join them at. A participant joining one rides its sessions
-/// instead of a loopback link: a link has a lease, which a starved process
-/// can let lapse, and then loses the host it is running itself.
-fn local_hosts() -> &'static std::sync::Mutex<HashMap<SocketAddr, Transport>> {
-    static HOSTS: std::sync::OnceLock<std::sync::Mutex<HashMap<SocketAddr, Transport>>> =
-        std::sync::OnceLock::new();
+/// The session hosts this process runs, by the address participants join
+/// them at: the transport and the key. A participant joining one rides its
+/// sessions instead of a loopback link: a link has a lease, which a starved
+/// process can let lapse, and then loses the host it is running itself.
+type LocalHosts = HashMap<SocketAddr, (Transport, AddressKey)>;
+
+fn local_hosts() -> &'static std::sync::Mutex<LocalHosts> {
+    static HOSTS: std::sync::OnceLock<std::sync::Mutex<LocalHosts>> = std::sync::OnceLock::new();
     HOSTS.get_or_init(Default::default)
 }
 
@@ -559,7 +821,87 @@ fn local_host(base: SocketAddr) -> Option<Transport> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&base)
-        .map(Transport::ridden)
+        .map(|(transport, _)| Transport::ridden(transport))
+}
+
+/// The credential of a participant of the host at `base`: `key` (an
+/// address's), else the key of a host on this machine (one this process
+/// runs, or one that left its key for this user).
+pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credential, SessionError> {
+    key.cloned()
+        .or_else(|| local_key(base))
+        .map(|key| key.credential())
+        .ok_or_else(|| {
+            SessionError::Rejected(CtlError::new(
+                CtlStatus::Unauthenticated,
+                format!(
+                    "no key for the session at {base}: join with the address its host printed \
+                     (it ends in #key)"
+                ),
+            ))
+        })
+}
+
+/// The key of a host on this machine: one this process runs, or the file
+/// one left for this user ([`key_file`]).
+fn local_key(base: SocketAddr) -> Option<AddressKey> {
+    if let Some((_, key)) = local_hosts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&base)
+    {
+        return Some(key.clone());
+    }
+    if !base.ip().is_loopback() {
+        return None;
+    }
+    let text = std::fs::read_to_string(key_file(base.port())?).ok()?;
+    AddressKey::parse(text.trim())
+}
+
+/// Where an embedded host on `port` leaves its key for this user's other
+/// processes (as Jupyter leaves its connection files): the user's runtime
+/// directory, else their cache directory.
+// TODO: rlmeshd's local.key (step 11) replaces these files for the
+// daemon's sessions; embedded hosts keep them.
+fn key_file(port: u16) -> Option<std::path::PathBuf> {
+    let dir = dirs::runtime_dir().or_else(dirs::cache_dir)?;
+    Some(dir.join("rlmesh").join("hosts").join(port.to_string()))
+}
+
+/// Leaves `key` for this user's processes joining a host on `port`: the
+/// directory 0700 and the file 0600, written whole (renamed into place).
+fn leave_key(port: u16, key: &AddressKey) -> std::io::Result<()> {
+    let path = key_file(port).ok_or_else(|| std::io::Error::other("no home directory"))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no directory"))?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)?;
+    let partial = dir.join(format!(".{port}.{}", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(&partial)?, key.to_string().as_bytes())?;
+    std::fs::rename(&partial, &path)
+}
+
+/// This process stopped hosting at `address`: forget its transport, and
+/// remove the key file it left, unless another host has replaced it.
+fn forget_local_host(address: &SessionAddress) {
+    local_hosts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&address.base);
+    if let (Some(path), Some(key)) = (key_file(address.base.port()), &address.key)
+        && std::fs::read_to_string(&path).is_ok_and(|text| text.trim() == key.to_string())
+    {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Whether a session host answers on `base` (its control listener accepts).
@@ -568,7 +910,10 @@ fn listening(base: SocketAddr) -> bool {
 }
 
 /// Hosts session `name` in this process on `base` (port 0: OS-assigned),
-/// and every other session of [`TENANT`] its participants name.
+/// and every other session of [`TENANT`] its participants name, under fresh
+/// keys (or the ones its launcher passed in [`HOST_IDENTITY_VAR`]): the
+/// returned address carries them, and on a named port they are also left
+/// for this user's other processes.
 pub async fn host_at(
     base: SocketAddr,
     name: &str,
@@ -602,17 +947,25 @@ async fn serve_at(
     lease_grace: Duration,
     #[cfg(feature = "record")] rolling: Option<crate::record::Rolling>,
 ) -> Result<Placed, SessionError> {
+    // Only a port someone can name is worth a key file: an OS-assigned one
+    // is reached by the address this returns.
+    let named_port = base.port() != 0;
     let (transport, base) = if base.port() == 0 {
         open_local_listeners(base.ip()).await?
     } else {
         let transport = Transport::open(&TransportConfig::per_class_tcp(Some(base), None)?).await?;
         (transport, base)
     };
-    let address = SessionAddress::new(joinable(base), name)?;
+    let mut address = SessionAddress::new(joinable(base), name)?;
     let mut config = HostConfig::new(address.tenant.clone(), address.session);
     config.clock = SystemMonotonicClock.shared();
     config.lease_grace = lease_grace.max(Duration::from_millis(1));
     config.health_log = None;
+    if let Some(identity) = launched_identity()? {
+        config.identity = std::sync::Arc::new(identity);
+    }
+    let key = AddressKey::of(&config.identity);
+    address.key = Some(key.clone());
     #[cfg(feature = "record")]
     let host = match rolling {
         Some(rolling) => SessionServer::start_recording(transport.clone(), config, rolling).await?,
@@ -620,10 +973,13 @@ async fn serve_at(
     };
     #[cfg(not(feature = "record"))]
     let host = SessionServer::start(transport.clone(), config).await?;
+    if named_port && let Err(err) = leave_key(address.base.port(), &key) {
+        tracing::warn!(%err, "the session's key was not left for local joiners: share its address");
+    }
     local_hosts()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(address.base, transport.clone());
+        .insert(address.base, (transport.clone(), key));
     Ok(Placed {
         address,
         hosted: Some((host, transport)),
@@ -639,14 +995,18 @@ async fn serve_at(
 pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, SessionError> {
     let name = address.session_name();
     let join = |base: SocketAddr| -> Result<Placed, SessionError> {
+        let base = joinable(base);
         Ok(Placed {
-            address: SessionAddress::new(joinable(base), name)?,
+            address: SessionAddress {
+                key: address.key.clone().or_else(|| local_key(base)),
+                ..SessionAddress::new(base, name)?
+            },
             hosted: None,
         })
     };
     let base = match address.placement() {
         Placement::Join(host, port) => {
-            return join(resolve(&address.to_string(), &host, port)?);
+            return join(resolve(&address.text(false), &host, port)?);
         }
         Placement::Local => {
             let base = SocketAddr::from((Ipv4Addr::LOCALHOST, well_known_port()?));
@@ -685,6 +1045,7 @@ mod tests {
             host,
             session: session.map(str::to_string),
             participant: name.map(str::to_string),
+            key: None,
         }
     }
 
@@ -850,11 +1211,74 @@ mod tests {
         let base: SocketAddr = "127.0.0.1:7447".parse().expect("addr");
         let default = SessionAddress::new(base, DEFAULT_SESSION).expect("default");
         assert_eq!(default.to_string(), "127.0.0.1:7447");
-        assert_eq!(default.participant("cartpole"), "127.0.0.1:7447/cartpole");
+        assert_eq!(
+            default.participant_invite("cartpole"),
+            "127.0.0.1:7447/cartpole"
+        );
         let named = SessionAddress::new(base, "bench-3").expect("named");
         assert_eq!(named.to_string(), "127.0.0.1:7447/bench-3");
         let back: SessionAddress = named.to_string().parse().expect("parse");
         assert_eq!(back, named);
+    }
+
+    #[test]
+    fn a_keyed_address_carries_its_key_through_a_participant_name() {
+        let config = HostConfig::new(TenantId::new(TENANT).expect("tenant"), SessionId::new());
+        let key = AddressKey::of(&config.identity);
+        let base: SocketAddr = "127.0.0.1:7447".parse().expect("addr");
+        for name in [DEFAULT_SESSION, "bench-3"] {
+            let session = SessionAddress {
+                key: Some(key.clone()),
+                ..SessionAddress::new(base, name).expect("session")
+            };
+            let text = session.invite();
+            assert!(text.ends_with(&format!("#{key}")), "{text}");
+            assert!(is_v2_address(&text), "{text}");
+            assert_eq!(text.parse::<SessionAddress>().expect("parse"), session);
+            // Scripts append the participant: the key stays with its session.
+            let invite = session.participant_invite("arm1");
+            let participant = Address::participant(&invite).expect("parse");
+            assert_eq!(participant.participant.as_deref(), Some("arm1"));
+            assert_eq!(participant.joining().expect("joining"), session);
+            assert_eq!(participant.invite(), invite);
+            // Display and Debug, for logs, titles and errors, leave it out.
+            let secret = key.to_string();
+            let secret = secret.split('.').next().expect("secret");
+            for shown in [
+                session.to_string(),
+                format!("{session:?}"),
+                participant.to_string(),
+                format!("{participant:?}"),
+            ] {
+                assert!(!shown.contains(secret) && shown.contains("#…"), "{shown}");
+            }
+        }
+        assert_eq!(
+            key.credential().device_public(),
+            &config.identity.local_public(),
+            "a holder derives the local device's key"
+        );
+        assert!(format!("{key:?}").len() < 20, "never logged");
+        // A launcher's keys: the host it starts hosts under them.
+        let (text, launched) = launch_identity().expect("keys");
+        let mut parts = text.split('.').map(|p| unbase32(p).expect("base32"));
+        let (mut a, mut b, mut c) = (
+            parts.next().expect("static"),
+            parts.next().expect("sign"),
+            parts.next().expect("local"),
+        );
+        assert_eq!(
+            AddressKey::of(&HostIdentity::from_secrets(&mut a, &mut b, &mut c)),
+            launched
+        );
+        let err = Address::session("127.0.0.1:7447#nope").expect_err("bad key");
+        assert!(err.to_string().contains("#"), "{err}");
+        // Errors never show a key, well-formed or not.
+        let secret = key.to_string();
+        let secret = secret.split('.').next().expect("secret");
+        let malformed = format!("127.0.0.1:7447/bench 3#{key}");
+        let err = Address::session(&malformed).expect_err("a bad name");
+        assert!(!err.to_string().contains(secret), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -912,8 +1336,12 @@ mod tests {
         let mut host = place(&Address::session(":0").expect("parse"), grace)
             .await
             .expect("host");
-        let join = |base: SocketAddr, name: &str| {
-            let session = SessionAddress::new(base, name).expect("session");
+        // A host this process placed needs no key in the address.
+        let join = |base: SocketAddr, name: &str, key: Option<AddressKey>| {
+            let session = SessionAddress {
+                key,
+                ..SessionAddress::new(base, name).expect("session")
+            };
             async move {
                 session
                     .join(
@@ -926,10 +1354,10 @@ mod tests {
             }
         };
         let base = host.address.base;
-        let bench = join(base, "bench-3")
+        let bench = join(base, "bench-3", None)
             .await
             .expect("a new session starts for its first participant");
-        let lab = join(base, "robot-lab")
+        let lab = join(base, "robot-lab", None)
             .await
             .expect("and another beside it");
         let server = &host.hosted.as_ref().expect("hosted here").0;
@@ -956,14 +1384,13 @@ mod tests {
             .await
             .expect("listen");
         let only = SessionAddress::new(base, "only").expect("session");
-        let single = SessionHost::start(
-            transport.clone(),
-            HostConfig::new(only.tenant.clone(), only.session),
-        )
-        .await
-        .expect("single host");
+        let config = HostConfig::new(only.tenant.clone(), only.session);
+        let key = AddressKey::of(&config.identity);
+        let single = SessionHost::start(transport.clone(), config)
+            .await
+            .expect("single host");
         let started = std::time::Instant::now();
-        let Err(err) = join(base, "elsewhere").await else {
+        let Err(err) = join(base, "elsewhere", Some(key)).await else {
             panic!("not served");
         };
         assert!(

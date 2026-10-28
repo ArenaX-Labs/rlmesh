@@ -12,6 +12,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
 from ._client import Transport, normalize_bind_address
+from ._client._endpoint import redact_address
 from ._editions import serve_options_declaring
 from ._load_native import load_native
 from ._upgrade import refuse_v1_address
@@ -391,7 +392,7 @@ class EnvServer:
         self._server.shutdown()
 
     def __repr__(self) -> str:
-        return f"EnvServer(address={self.address!r})"
+        return f"EnvServer(address={redact_address(self.address)!r})"
 
     def __enter__(self) -> EnvServer:
         return self

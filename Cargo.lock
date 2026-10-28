@@ -5722,6 +5722,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zenoh",
+ "zeroize",
 ]
 
 [[package]]

@@ -343,6 +343,7 @@ fn grant(
     ));
     let granted = lease(channel, "web-1", token, expires_ns);
     let reply = CtlReply {
+        request_id: 0,
         result: Ok(()),
         state: snapshot(
             revision,
@@ -514,6 +515,7 @@ fn refusals_and_verbs_answer_with_the_host_state() {
         }
     ));
     let reply = CtlReply {
+        request_id: 0,
         result: Err(CtlError::new(CtlStatus::LeaseBusy, "held by safety")),
         state: snapshot(2, Vec::new()),
         leases: Vec::new(),

@@ -156,6 +156,25 @@ pub fn sandbox_session_ports() -> PyResult<u16> {
     super::docker::free_session_ports().map_err(|err| PyRuntimeError::new_err(err.to_string()))
 }
 
+/// Fresh keys for the session host a prebuilt container runs: the value of
+/// `RLMESH_HOST_IDENTITY` to start it with (a secret) and the key its
+/// address carries (`127.0.0.1:{port}#{key}/{name}`).
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def sandbox_host_identity() -> tuple[str, str]: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn sandbox_host_identity() -> PyResult<(String, String)> {
+    let (identity, key) = rlmesh_session::address::launch_identity()
+        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    Ok((identity.to_string(), key.to_string()))
+}
+
 struct SandboxStartResult {
     requested_source: String,
     resolved_source: String,

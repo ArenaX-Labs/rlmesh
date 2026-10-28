@@ -3,6 +3,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use rlmesh_session::address::{HOST_IDENTITY_VAR, launch_identity};
 use serde::Serialize;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -111,7 +112,12 @@ pub async fn run_container_async(
     let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
     let bootstrap_json = render_bootstrap_json(spec)?;
     let host_port = free_session_ports()?;
+    // The container hosts its session under keys made here, so this process
+    // knows the address's key (design §10: the workload spec). The value
+    // rides docker's own environment, never its argv.
+    let (identity, key) = launch_identity()?;
     let output = Command::new("docker")
+        .env(HOST_IDENTITY_VAR, identity.as_str())
         .args(docker_run_args(
             &container_name,
             &artifact.image_id,
@@ -130,7 +136,7 @@ pub async fn run_container_async(
     }
 
     let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let address = format!("127.0.0.1:{host_port}/{ENV_NAME}");
+    let address = format!("127.0.0.1:{host_port}#{key}/{ENV_NAME}");
     if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
         let hint = spec.rlmesh_package.skew_hint();
         let report = startup_failure_report(&container_id, &container_name, &err, hint.as_deref());
@@ -757,6 +763,9 @@ fn docker_run_args(
         format!("RLMESH_ADDRESS=0.0.0.0:{host_port}"),
         "--env".to_string(),
         format!("RLMESH_NAME={ENV_NAME}"),
+        // Its value comes from docker's environment (`run_container_async`).
+        "--env".to_string(),
+        HOST_IDENTITY_VAR.to_string(),
         "--name".to_string(),
         container_name.to_string(),
         "-p".to_string(),
@@ -1144,6 +1153,11 @@ mod tests {
         );
         assert!(args.iter().any(|arg| arg == "RLMESH_ADDRESS=0.0.0.0:40000"));
         assert!(args.iter().any(|arg| arg == "RLMESH_NAME=env"));
+        // The host's keys are passed by name: their value is never argv.
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--env", "RLMESH_HOST_IDENTITY"])
+        );
     }
 
     #[test]

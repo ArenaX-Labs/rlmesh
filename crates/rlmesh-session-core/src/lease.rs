@@ -639,6 +639,7 @@ mod tests {
             matches!(verb, Command::GrantLease { ref channels, .. } if channels == &[ChannelId(3)])
         );
         let reply = CtlReply {
+            request_id: 0,
             result: Ok(()),
             state: snapshot(5, 0, Mode::Active, vec![lease("web-1", 9, 1_000 * MS)]),
             leases: vec![lease("web-1", 9, 1_000 * MS)],
@@ -814,6 +815,7 @@ mod tests {
         let mut client = LeaseClient::new(me(), ChannelId(3), 0);
         client.request(Fingerprint::from(7), None, 0);
         let reply = CtlReply {
+            request_id: 0,
             result: Err(CtlError::new(CtlStatus::LeaseBusy, "held by safety")),
             state: snapshot(5, 0, Mode::Active, Vec::new()),
             leases: Vec::new(),
@@ -838,6 +840,7 @@ mod tests {
         };
         let both = vec![lease("web-1", 9, 1_000 * MS), other.clone()];
         let reply = CtlReply {
+            request_id: 0,
             result: Ok(()),
             state: snapshot(5, 0, Mode::Active, both.clone()),
             leases: both,

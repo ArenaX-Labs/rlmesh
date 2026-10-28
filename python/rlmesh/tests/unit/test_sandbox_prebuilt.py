@@ -17,8 +17,9 @@ from rlmesh._sandbox import session as sandbox
 
 @pytest.fixture(autouse=True)
 def _session_ports(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Containers publish on 40000-40003 and serve at once."""
+    """Containers publish on 40000-40003, under keys ``k``, and serve at once."""
     monkeypatch.setattr(sandbox, "_sandbox_session_ports", lambda: 40000)
+    monkeypatch.setattr(sandbox, "_sandbox_host_identity", lambda: ("secret", "k"))
     monkeypatch.setattr(_model, "wait_serving", lambda *_args: None)
 
 
@@ -168,8 +169,11 @@ def test_start_prebuilt_container_injects_binding_and_serves_in_a_session(
     # It hosts a session on all its interfaces and serves in it as env.
     assert "RLMESH_ADDRESS=0.0.0.0:40000" in run_cmd
     assert "RLMESH_NAME=env" in run_cmd
+    # Its keys pass by name (never argv), and the address carries their key.
+    assert run_cmd[run_cmd.index("RLMESH_HOST_IDENTITY") - 1] == "-e"
+    assert not any("secret" in a for a in run_cmd)
     assert info.container_id == "container-9"
-    assert info.address == "127.0.0.1:40000/env"
+    assert info.address == "127.0.0.1:40000#k/env"
     assert info.resolved_source == "docker://libero:latest"
 
 

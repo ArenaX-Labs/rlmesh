@@ -3,12 +3,13 @@
 //! ```text
 //! rlmesh/v2/{tenant}/server                                    multi-session host (queryable)
 //! rlmesh/v2/{tenant}/s/{session}/host                          host liveliness
-//! rlmesh/v2/{tenant}/s/{session}/host/state                    authority snapshot (queryable) + updates
-//! rlmesh/v2/{tenant}/s/{session}/host/tick                     virtual-mode ticks (§11.3)
-//! rlmesh/v2/{tenant}/s/{session}/ctl                           control verbs (query/reply)
+//! rlmesh/v2/{tenant}/s/{session}/host/state                    authority snapshot (queryable) + updates, signed
+//! rlmesh/v2/{tenant}/s/{session}/host/tick                     virtual-mode ticks (§11.3), signed
+//! rlmesh/v2/{tenant}/s/{session}/hs                            the attach handshake (query/reply)
+//! rlmesh/v2/{tenant}/s/{session}/ctl                           control verbs (query/reply, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}               participant liveliness
-//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb            heartbeats (participant -> host)
-//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb/echo       heartbeat echoes (host -> participant)
+//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb            heartbeats (participant -> host, sealed)
+//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb/echo       heartbeat echoes (host -> participant, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/report        observer telemetry (§8.10)
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}           samples
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}/_applied  applied samples
@@ -86,6 +87,12 @@ impl SessionKeys {
     /// Virtual-mode ticks, published by the host.
     pub fn host_tick(&self) -> String {
         format!("{}/host/tick", self.prefix)
+    }
+
+    /// The attach handshake (query/reply): the only request that isn't
+    /// sealed.
+    pub fn handshake(&self) -> String {
+        format!("{}/hs", self.prefix)
     }
 
     /// Control verbs (query/reply).
@@ -227,6 +234,7 @@ mod tests {
             keys.history(&ur, "arm"),
             keys.host_state(),
             keys.host_tick(),
+            keys.handshake(),
             keys.ctl(),
         ] {
             // Concrete keys: no empty chunks, no wildcards.

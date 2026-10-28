@@ -37,7 +37,9 @@ impl ErrorKind {
     /// The kind of `err`.
     pub fn of(err: &SessionError) -> Self {
         match err {
-            SessionError::Rejected(refusal) => Self::Refused(status_name(refusal.status)),
+            SessionError::Rejected(refusal) | SessionError::Unverified(refusal) => {
+                Self::Refused(status_name(refusal.status))
+            }
             SessionError::NoReply(_) | SessionError::Timeout(..) => Self::Timeout,
             SessionError::InvalidValue { .. }
             | SessionError::UnknownPart(_)

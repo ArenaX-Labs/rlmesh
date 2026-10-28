@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { inspect } from 'node:util';
 import { afterEach, beforeEach, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as rlmesh from '../../dist/node.js';
@@ -347,4 +348,11 @@ test('publish checks fields, dtypes and sizes', async () => {
   const robotNs = robot.nowNs();
   const hrtime = process.hrtime.bigint();
   assert.ok(hrtime >= robotNs && hrtime - robotNs < 1_000_000n, "the robot's clock is process.hrtime's");
+});
+
+test("the session's key is in the host's address, never in what inspecting shows", async () => {
+  const key = host.address.split('#')[1];
+  assert.ok(key && key.length > 52);
+  const policy = new rlmesh.Policy(HOLD, { session: host });
+  for (const shown of [inspect(host), inspect(policy), String(host), String(policy)]) assert.ok(!shown.includes(key), shown);
 });

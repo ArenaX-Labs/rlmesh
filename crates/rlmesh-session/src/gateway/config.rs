@@ -9,13 +9,15 @@
 //! most unless `--max-priority` raises it.
 //!
 //! The session is the address its host prints (`--address
-//! 127.0.0.1:7447/<session>`), or its parts (`--connect` with `--session`
-//! or `--session-file`).
+//! 127.0.0.1:7447/<session>#<key>`), or its parts: `--connect` with
+//! `--session` or `--session-file`, either `<session>#<key>` or the bare
+//! session of a host on this machine that left its key for this user.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use crate::SessionAddress;
+use crate::address::AddressKey;
 use crate::wire::{PriorityClass, SessionId, TenantId};
 use clap::Parser;
 
@@ -27,7 +29,8 @@ use crate::gateway::security::{self, Origins, Policy};
 #[derive(Clone, Debug, Parser)]
 #[command(name = "rlmesh-gateway", version, about)]
 pub struct Args {
-    /// The session's address as its host prints it: `{ip}:{port}[/{session}]`.
+    /// The session's address as its host prints it:
+    /// `{ip}:{port}[/{session}]#{key}`.
     #[arg(long, conflicts_with_all = ["connect", "session", "session_file"])]
     pub address: Option<String>,
     /// The session host's per-class TCP base (class i on this port + i:
@@ -42,15 +45,16 @@ pub struct Args {
     /// The tenant namespace.
     #[arg(long, default_value = "local")]
     pub tenant: String,
-    /// The session: its name or UUID.
+    /// The session: its name or UUID, and `#<key>` (its host's address
+    /// key) unless the host left it for this user.
     #[arg(
         long,
         conflicts_with = "session_file",
         required_unless_present_any = ["session_file", "address"]
     )]
     pub session: Option<String>,
-    /// Read the session id from this file (as a robot's `--session-file`
-    /// writes it).
+    /// Read the session (as `--session` takes it) from this file, as a
+    /// robot's `--session-file` writes it.
     #[arg(long)]
     pub session_file: Option<PathBuf>,
     /// The address to serve on. Anything but loopback needs a token.
@@ -102,6 +106,8 @@ pub struct Config {
     pub tenant: TenantId,
     /// The session.
     pub session: SessionId,
+    /// The key `--address` carries.
+    pub key: Option<AddressKey>,
     /// Where to serve.
     pub bind: IpAddr,
     /// The port.
@@ -194,9 +200,17 @@ impl Config {
                 let base = args
                     .connect
                     .ok_or("pass --address, or --connect with --session or --session-file")?;
+                let (session, key) = match session.split_once('#') {
+                    Some((session, key)) => (
+                        session.to_string(),
+                        Some(key.parse::<AddressKey>().map_err(|e| e.to_string())?),
+                    ),
+                    None => (session, None),
+                };
                 SessionAddress {
                     // The platform's tenant is configuration, not address.
                     tenant: TenantId::new(args.tenant).map_err(|e| e.to_string())?,
+                    key,
                     ..SessionAddress::new(base, &session).map_err(|e| e.to_string())?
                 }
             }
@@ -214,6 +228,7 @@ impl Config {
             zenoh_listen,
             tenant: address.tenant,
             session: address.session,
+            key: address.key,
             bind: args.bind,
             port: args.port,
             static_dir: args.static_dir,
