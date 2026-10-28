@@ -203,14 +203,18 @@ mod tests {
 
     use super::*;
 
-    /// A counter's bytes: distinct keys, nothing random.
-    struct Counter(u8);
+    /// SplitMix64: a fixed stream that never repeats a key.
+    struct SplitMix(u64);
 
-    impl Rng for Counter {
+    impl Rng for SplitMix {
         fn fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), RngError> {
-            for b in dest {
-                self.0 = self.0.wrapping_add(1);
-                *b = self.0;
+            for chunk in dest.chunks_mut(8) {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                chunk.copy_from_slice(&z.to_le_bytes()[..chunk.len()]);
             }
             Ok(())
         }
@@ -232,7 +236,7 @@ mod tests {
             clock += 10;
             clock
         };
-        let timing = run(&mut now, &mut Counter(0)).unwrap();
+        let timing = run(&mut now, &mut SplitMix(0)).unwrap();
         assert_eq!(
             timing,
             Timing {

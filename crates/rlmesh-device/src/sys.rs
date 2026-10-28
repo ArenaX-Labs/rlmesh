@@ -4,7 +4,7 @@
 #![allow(unsafe_code)] // The C library's allocator.
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::ffi::c_void;
+use core::ffi::{c_char, c_int, c_void};
 
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut c_void;
@@ -12,6 +12,7 @@ unsafe extern "C" {
     fn memalign(align: usize, size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
     fn abort() -> !;
+    fn printf(format: *const c_char, ...) -> c_int;
 }
 
 /// `malloc` aligns to 4 on ESP-IDF; a wider alignment goes to `memalign`,
@@ -58,9 +59,23 @@ unsafe impl GlobalAlloc for CAlloc {
 #[global_allocator]
 static ALLOC: CAlloc = CAlloc;
 
-/// A panic resets the board through the C library's `abort` (ESP-IDF prints
-/// a backtrace, then restarts), and the restart stops every output.
+/// A panic prints where it happened (no message: formatting one would pull
+/// `core::fmt` into flash), then resets the board through the C library's
+/// `abort` (ESP-IDF prints a backtrace, then restarts), which stops every
+/// output.
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    if let Some(at) = info.location() {
+        let file = at.file();
+        // SAFETY: `%.*s` reads exactly `len` bytes of `file`.
+        unsafe {
+            printf(
+                c"rlmesh-device panicked at %.*s:%u\n".as_ptr(),
+                c_int::try_from(file.len()).unwrap_or(0),
+                file.as_ptr(),
+                at.line(),
+            );
+        }
+    }
     unsafe { abort() }
 }

@@ -21,16 +21,19 @@ need their own build of the library.
 
 ## Building
 
-The precompiled library isn't checked in. Build it once with Espressif's
-Rust toolchain (`espup install`), which stages it into `src/`:
+The precompiled library isn't checked in. Building it needs Espressif's
+Rust toolchain (`espup install`), a nightly toolchain
+(`rustup toolchain install nightly`) and the `esp32:esp32` Arduino core
+(for its binutils). The task stages the library into `src/`:
 
 ```sh
 mise run build:esp32
 ```
 
-The task also compiles each example with `arduino-cli` (pass
-`ARDUINO_CLI` for a binary off `PATH`) when the `esp32:esp32` core is
-installed.
+It also compiles each example with `arduino-cli` when that's available
+(pass `ARDUINO_CLI` for a binary off `PATH`). The library keeps the
+firmware's own `memcpy`, `memset` and math in IRAM: the task fails if the
+archive exports any C name but its own.
 
 ## Timing
 
@@ -50,7 +53,7 @@ a core. Flash it, and open the Serial Monitor at 115200.
 
 - **Randomness.** The ESP32's hardware RNG is cryptographic only with the
   radio on. Start Wi-Fi before anything draws keys.
-- **Flash.** The crypto adds about 230 KB to a Wi-Fi sketch. With the
+- **Flash.** The crypto adds about 205 KB to a Wi-Fi sketch. With the
   default partition table that leaves little room. Choose a larger app
   partition (Tools → Partition Scheme, such as "Huge APP").
 - **Panics.** A fault in the Rust core calls `abort()`, so the board

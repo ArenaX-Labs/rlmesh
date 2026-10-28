@@ -19,12 +19,39 @@ fi
 # need a newer cargo than the fork ships, and -Zbuild-std a nightly one. The
 # fork trails the workspace's MSRV, hence --ignore-rust-version.
 esp_rustc="$(rustup which --toolchain esp rustc)"
-echo "==> rlmesh-device for $target"
-RUSTC="$esp_rustc" cargo +nightly build -q --ignore-rust-version -p rlmesh-device \
+if ! rustup which --toolchain nightly cargo >/dev/null 2>&1; then
+  echo "no nightly toolchain: \`rustup toolchain install nightly\`" >&2
+  exit 1
+fi
+echo "==> rlmesh-device for $target ($("$esp_rustc" --version), $(cargo +nightly --version))"
+RUSTC="$esp_rustc" cargo +nightly build --ignore-rust-version -p rlmesh-device \
   --no-default-features --profile device --target "$target" -Zbuild-std=core,alloc
+built="${CARGO_TARGET_DIR:-target}/$target/device/librlmesh_device.a"
 
+# -Zbuild-std links compiler_builtins, whose weak memcpy, memset, strlen,
+# libm and libgcc helpers would replace the firmware's for the whole image:
+# ESP-IDF keeps its own in IRAM, for code that runs with the flash cache
+# off. Every C-level name but the ABI's is made local to the archive, so
+# the Rust code links against the firmware's instead.
+tools="$(ls -d "$HOME"/.arduino15/packages/esp32/tools/esp-x32/*/bin 2>/dev/null | tail -1)"
+PATH="${tools:+$tools:}$PATH"
+nm=xtensa-esp32-elf-nm
+objcopy=xtensa-esp32-elf-objcopy
+if ! command -v "$nm" >/dev/null || ! command -v "$objcopy" >/dev/null; then
+  echo "no $nm or $objcopy: install the esp32:esp32 Arduino core" >&2
+  exit 1
+fi
+c_names() { "$nm" -g --defined-only "$1" 2>/dev/null | awk 'NF == 3 { print $3 }' | grep -v '^_R\|^_ZN\|^rlmesh_device_' | sort -u || true; }
 mkdir -p "$lib/src/esp32"
-cp "target/$target/device/librlmesh_device.a" "$lib/src/esp32/"
+staged="$lib/src/esp32/librlmesh_device.a"
+names="${CARGO_TARGET_DIR:-target}/$target/device/c-names.txt"
+c_names "$built" >"$names"
+"$objcopy" --localize-symbols="$names" "$built" "$staged"
+leaked="$(c_names "$staged")"
+if [ -n "$leaked" ]; then
+  echo "librlmesh_device.a still exports: $(echo "$leaked" | tr '\n' ' ')" >&2
+  exit 1
+fi
 cp crates/rlmesh-device/include/rlmesh_device.h "$lib/src/"
 
 cli="${ARDUINO_CLI:-arduino-cli}"
@@ -45,9 +72,15 @@ for example in "$lib"/examples/*/; do
     cat "$log" >&2
     exit 1
   fi
-  if grep -n "$lib/\(src\|examples\)/.*warning" "$log"; then
+  if grep -nE "$lib/(src|examples)/.*warning" "$log"; then
     echo "the library warns on $fqbn" >&2
     exit 1
   fi
-  grep -E '^(Sketch uses|Global variables)' "$log"
+  grep -E '^(Sketch uses|Global variables)' "$log" || true
+  # The firmware's own memcpy, in IRAM (0x40080000..0x400A0000), not one
+  # from the archive.
+  if ! "$nm" "$out/$name/$name.ino.elf" | awk '$3 == "memcpy" && $1 >= "40080000" && $1 < "400a0000" { ok = 1 } END { exit !ok }'; then
+    echo "memcpy isn't ESP-IDF's IRAM copy in $name" >&2
+    exit 1
+  fi
 done
