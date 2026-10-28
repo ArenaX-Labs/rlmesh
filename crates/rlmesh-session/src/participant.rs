@@ -43,13 +43,13 @@ use std::time::Duration;
 
 use crate::spec::{BindError, Binding, Policy, RunOptions};
 use crate::wire::codec;
-use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
+use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION, VIEW_DEVICE};
 use crate::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlError, CtlReply,
     CtlStatus, EdgeMode, Epoch, EstopSignal, Fingerprint, Health, Heartbeat, HeartbeatEcho,
     HistoryQuery, KeysAck, Lease, LeaseToken, LockstepRequest, LockstepResponse, Mode, PartSpec,
     ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample, SampleBatch, SessionId,
-    SessionKeys, StreamSpec, TenantId, TimingSample, VirtualTick, Watermark,
+    SessionKeys, StreamSpec, TenantId, TimingSample, ViewReply, VirtualTick, Watermark,
 };
 use rlmesh_session_core::auth::{self, Credential, KeyError, StreamWindows};
 use rlmesh_session_core::auth::{Link, LinkError, ReplyOutcome};
@@ -690,6 +690,9 @@ impl Sealer {
 
 struct Shared {
     transport: Transport,
+    /// A robot that asked for its device view (`view.device`): the host
+    /// answers its verbs with the view, not the state.
+    takes_view: bool,
     /// This process's link to the host (its keys, request ids and the
     /// host's broadcast floor), set once the handshake completes. One lock:
     /// a seq is allocated and its message sealed under it.
@@ -929,6 +932,39 @@ impl Shared {
                 continue;
             };
             let mut bytes = sample.payload().to_bytes().into_owned();
+            if self.takes_view {
+                let outcome =
+                    lock(link).reply_view(key, &mut bytes, request_id, self.clock.now_ns());
+                match outcome {
+                    Ok(ReplyOutcome::Answer(reply)) => {
+                        // The reply carries the view, not the state: read
+                        // the state the verb left.
+                        let state = self.fetch_state().await?;
+                        let ViewReply {
+                            result,
+                            leases,
+                            request_id,
+                            keys,
+                            assignment,
+                            run,
+                            ..
+                        } = *reply;
+                        return Ok(CtlReply {
+                            result,
+                            state,
+                            leases,
+                            request_id,
+                            keys,
+                            assignment,
+                            run,
+                        });
+                    }
+                    Ok(ReplyOutcome::Hint(refusal)) => hint = Some(refusal),
+                    Ok(ReplyOutcome::Other(_)) => {}
+                    Err(err) => debug!(participant = %self.id, %err, "ctl reply dropped"),
+                }
+                continue;
+            }
             let outcome = lock(link).reply(key, &mut bytes, request_id, self.clock.now_ns());
             match outcome {
                 Ok(ReplyOutcome::Answer(reply)) => {
@@ -948,6 +984,20 @@ impl Shared {
             link: self.link.clone(),
             work: self.key_work.clone(),
         }
+    }
+
+    /// The host's current snapshot, queried and verified (a newer
+    /// publication that overtook it stands).
+    async fn fetch_state(&self) -> Result<AuthoritySnapshot, SessionError> {
+        let key = self.keys.host_state();
+        let signed = ask(self.transport.control(), &key, None, self.ctl_timeout).await?;
+        if let Some(snapshot) = self.verify_state(&key, &signed) {
+            self.observe(snapshot);
+        }
+        self.view
+            .borrow()
+            .clone()
+            .ok_or(SessionError::NoReply(self.ctl_timeout))
     }
 
     /// Verifies a `host/state` broadcast, received on `key`.
@@ -1150,6 +1200,8 @@ impl Participant {
         let (keys_changed, _) = watch::channel(0);
         let shared = Arc::new(Shared {
             transport: transport.clone(),
+            takes_view: config.roles.contains(&Role::Embodiment)
+                && config.supports.iter().any(|f| f == VIEW_DEVICE),
             link: Arc::default(),
             key_work,
             keys_changed,

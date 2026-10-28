@@ -12,6 +12,7 @@ use blake2::{Blake2s256, Digest};
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
+use rlmesh_session_core::auth::open_view;
 use rlmesh_session_core::crypto::handshake::{self, IkInitiator, IkResponder};
 use rlmesh_session_core::crypto::pairing::{
     self, DaemonCommit, LaptopCommit, PairInitiator, PairResponder, commitment, sas,
@@ -19,7 +20,14 @@ use rlmesh_session_core::crypto::pairing::{
 use rlmesh_session_core::crypto::sealed::{Kind, KindSet, SealReceiver, SealSender, Security};
 use rlmesh_session_core::crypto::signed::{SignedKind, SignedReceiver, SignedSender};
 use rlmesh_session_core::crypto::{Key, Rng, RngError, StaticKeypair};
+use rlmesh_session_core::spec::normalise;
+use rlmesh_session_core::wire::version::SPEC_VERSION;
+use rlmesh_session_core::wire::{
+    ChannelId, ClockMapping, ClockMode, Demand, DeviceView, Epoch, Fingerprint, LastStop, Lease,
+    LeaseToken, Member, Mode, ParticipantId, Plan, PriorityClass, ReasonCode, ViewGrid, codec,
+};
 use serde_json::{Value, json};
+use std::time::Duration;
 
 const REGENERATE: &str = "RLMESH_REGENERATE_CRYPTO_VECTORS";
 const IK: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
@@ -138,7 +146,8 @@ rlmesh_session_core::crypto, except k_up/k_down and the XX split, which come fro
 with snow's own primitives; the same test cross-checks every vector with chacha20poly1305, ed25519-dalek, \
 blake2 and snow directly. Sealed: nonce = kind || 3 zero bytes || seq u64 LE; AAD encrypted = header || \
 lp(keyexpr), integrity-only = header || lp(keyexpr) || body with an empty plaintext. Signed: signature over \
-lp(\"rlmesh/v2 signed\") || header || lp(keyexpr) || body. IK: Noise_IK_25519_ChaChaPoly_BLAKE2s; k_up and \
+lp(\"rlmesh/v2 signed\") || header || lp(keyexpr) || body; signed_view is a DeviceView (kind 22, scene \
+design §3.4) whose body is the protobuf rlmesh.session.v2.DeviceView. IK: Noise_IK_25519_ChaChaPoly_BLAKE2s; k_up and \
 k_down are the raw split (first = initiator to responder); sealed_up and sealed_down are one Sealed each way \
 under them, sealed by the crate. Pairing: Noise_XX_25519_ChaChaPoly_BLAKE2s with prologue \
 lp(\"rlmesh/v2 pair\") || exchange and empty payloads; key 1 = laptop to daemon (first split output).";
@@ -212,6 +221,111 @@ fn signed_vector() -> Value {
         "seq": 5,
         "keyexpr": keyexpr,
         "body": hex(body),
+        "message": hex(&message),
+    })
+}
+
+/// eye-l's view: one commandable part (`gaze`, channel 1, applied 2) leased
+/// by `tracker` under binding 7 at a 20 ms grid.
+fn device_view() -> DeviceView {
+    let eye = ParticipantId::new("eye-l").expect("id");
+    let tracker = ParticipantId::new("tracker").expect("id");
+    let mut parts = normalise(
+        &eye,
+        SPEC_VERSION,
+        r#"{"gaze": {"kind": "joints", "hz": 100, "count": 2, "fields": ["pos"],
+                     "command": "position"}}"#,
+    )
+    .expect("map");
+    parts[0].channel = ChannelId(1);
+    parts[0].applied_channel = Some(ChannelId(2));
+    let clock = |participant: &ParticipantId, offset_ns| ClockMapping {
+        participant: participant.clone(),
+        offset_ns,
+        error_ns: 250_000,
+        rtt_ns: 400_000,
+        sample_ns: 1_000_000_000,
+        drift_bound_ppm: 100.0,
+    };
+    DeviceView {
+        robot: eye.clone(),
+        epoch: Epoch(3),
+        revision: 12,
+        mode: Mode::Active,
+        mode_reason: ReasonCode::FirstLease,
+        last_stop: LastStop {
+            epoch: Epoch(2),
+            revision: 9,
+        },
+        host_ns: 1_250_000_000,
+        clock_mode: ClockMode::Wall,
+        tick_ns: 0,
+        generation: 4,
+        parts,
+        leases: vec![Lease {
+            channel: ChannelId(1),
+            holder: tracker.clone(),
+            priority: PriorityClass::Model,
+            token: LeaseToken(5),
+            ttl_ns: 250_000_000,
+            granted_ns: 1_000_000_000,
+            expires_ns: 1_500_000_000,
+            binding: Fingerprint::from(7),
+            key_id: 9,
+        }],
+        clocks: vec![clock(&eye, -5_000), clock(&tracker, 12_000)],
+        grids: vec![ViewGrid {
+            binding: Fingerprint::from(7),
+            channel: ChannelId(1),
+            dt: Duration::from_millis(20),
+        }],
+        demands: vec![Demand {
+            channel: ChannelId(2),
+            revision: 1,
+            plan: Plan::Every,
+            retain: Duration::ZERO,
+            acked: 1,
+        }],
+        members: vec![
+            Member {
+                id: eye,
+                generation: 4,
+            },
+            Member {
+                id: tracker,
+                generation: 2,
+            },
+        ],
+        closing: None,
+    }
+}
+
+fn signed_view_vector() -> Value {
+    let secret = fixed("signed host ed25519 secret");
+    let host_instance = 0x1122_3344_5566_7788;
+    let keyexpr = "rlmesh/v2/acme/s/demo/host/view/eye-l";
+    let body = codec::encode_view(&device_view());
+    let mut tx = SignedSender::new(&secret, host_instance);
+    for _ in 0..2 {
+        tx.sign(
+            SignedKind::AuthorityState,
+            "rlmesh/v2/acme/s/demo/host/state",
+            b"",
+        )
+        .expect("sign");
+    }
+    let message = tx
+        .sign(SignedKind::DeviceView, keyexpr, &body)
+        .expect("sign");
+    json!({
+        "inputs": { "secret": "signed host ed25519 secret" },
+        "secret": hex(&secret),
+        "public": hex(&tx.verifying_key()),
+        "host_instance": host_instance,
+        "kind": SignedKind::DeviceView.as_u8(),
+        "seq": 3,
+        "keyexpr": keyexpr,
+        "body": hex(&body),
         "message": hex(&message),
     })
 }
@@ -393,6 +507,7 @@ fn generate() -> Value {
         "about": ABOUT,
         "sealed": [sealed_vector(true), sealed_vector(false)],
         "signed": signed_vector(),
+        "signed_view": signed_view_vector(),
         "ik": ik_vector(),
         "pairing": pairing_vector(),
     })
@@ -467,8 +582,21 @@ fn sealed_vectors_match_chacha20poly1305_directly() {
 }
 
 #[test]
-fn the_signed_vector_verifies_with_ed25519_dalek_directly() {
-    let v = &load()["signed"];
+fn the_signed_vectors_verify_with_ed25519_dalek_directly() {
+    let vectors = load();
+    for name in ["signed", "signed_view"] {
+        check_signed(&vectors[name]);
+    }
+    // The view decodes on its own path, and only as the key's robot's.
+    let v = &vectors["signed_view"];
+    let public = unhex32(&v["public"]);
+    let host_instance = int(&v["host_instance"]);
+    let mut rx = SignedReceiver::new(&public, host_instance).expect("receiver");
+    let view = open_view(&mut rx, text(&v["keyexpr"]), &unhex(&v["message"])).expect("a view");
+    assert_eq!(view, device_view());
+}
+
+fn check_signed(v: &Value) {
     let secret = unhex32(&v["secret"]);
     let public = unhex32(&v["public"]);
     let message = unhex(&v["message"]);

@@ -113,4 +113,4 @@ pub use scene::{
 };
 pub use tick::{Step, TickState, VirtualTick};
 pub use timing::EndpointTiming;
-pub use view::{AuthorityView, DeviceView, Member, ViewGrid};
+pub use view::{AuthorityView, DeviceView, Member, ViewGrid, ViewReply};

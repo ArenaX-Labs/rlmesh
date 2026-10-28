@@ -20,10 +20,14 @@ pub const PROTOCOL_MINOR: u32 = 0;
 /// The kind table version a declaration is written against.
 pub const SPEC_VERSION: u32 = 1;
 
+/// A robot's `Attach.supports` asks for its device view, which a host
+/// listing it publishes on `host/view/{robot}` (scene design §3.4).
+pub const VIEW_DEVICE: &str = "view.device";
+
 /// Features this build implements as a host: behaviour added in later
 /// minors. `auth.sealed`: participants attach through the handshake and
-/// seal their control traffic (design §8.8).
-pub const FEATURES: &[&str] = &["auth.sealed"];
+/// seal their control traffic (design §8.8); [`VIEW_DEVICE`].
+pub const FEATURES: &[&str] = &["auth.sealed", VIEW_DEVICE];
 
 /// The features in `required` that `supported` lacks (empty: compatible).
 pub fn missing_features<'a>(required: &'a [String], supported: &[String]) -> Vec<&'a str> {
@@ -46,6 +50,6 @@ mod tests {
             missing_features(&["merge.blend".into(), "frame.fixed".into()], &supported),
             vec!["merge.blend"]
         );
-        assert_eq!(FEATURES, ["auth.sealed"]);
+        assert_eq!(FEATURES, ["auth.sealed", "view.device"]);
     }
 }

@@ -60,10 +60,12 @@ use std::time::Duration;
 
 use crate::wire::codec;
 use crate::wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
+use crate::wire::version::VIEW_DEVICE;
 use crate::wire::{
     Applied, AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
-    Epoch, HeartbeatEcho, HistoryQuery, IssuedKey, Lease, LeaseToken, ParticipantId, Role,
-    SampleBatch, SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec, TenantId,
+    DeviceView, Epoch, HeartbeatEcho, HistoryQuery, IssuedKey, Lease, LeaseToken, ParticipantId,
+    Role, SampleBatch, SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec, TenantId,
+    ViewReply,
 };
 use bytes::Bytes;
 use rlmesh_session_core::auth::issuer::{
@@ -382,6 +384,7 @@ impl SessionHost {
         let handshakes = control.declare_queryable(keys.handshake()).await?;
         let ctl = control.declare_queryable(keys.ctl()).await?;
         let state = control.declare_queryable(keys.host_state()).await?;
+        let views = control.declare_queryable(keys.host_views()).await?;
         let presence = control
             .liveliness()
             .declare_subscriber(keys.participants())
@@ -435,6 +438,7 @@ impl SessionHost {
             peers,
             auth,
             signer,
+            views: BTreeMap::new(),
             last_publish_ns: 0,
             keys: keys.clone(),
             config,
@@ -459,7 +463,13 @@ impl SessionHost {
             let cancel = cancel.clone();
             async move {
                 actor
-                    .run(cancel, hb_rx, access_rx, (handshakes, ctl, state), presence)
+                    .run(
+                        cancel,
+                        hb_rx,
+                        access_rx,
+                        (handshakes, ctl, state, views),
+                        presence,
+                    )
                     .await;
                 // Withdraw presence first, so participants stop talking to a
                 // host that no longer answers, then the rest.
@@ -1010,8 +1020,11 @@ struct HostActor {
     transport: Transport,
     peers: SharedPeers,
     auth: HostAuth,
-    /// Signs `host/state` and `host/tick`: one publication counter.
+    /// Signs `host/state`, `host/tick` and `host/view/*`: one publication
+    /// counter.
     signer: SignedSender,
+    /// The device view last published to each robot that asked for one.
+    views: BTreeMap<ParticipantId, DeviceView>,
     /// Host clock at the last snapshot publish.
     last_publish_ns: i64,
     keys: SessionKeys,
@@ -1069,7 +1082,7 @@ impl HostActor {
         cancel: CancellationToken,
         mut heartbeats: mpsc::Receiver<(ParticipantId, crate::wire::Heartbeat, i64)>,
         mut access: mpsc::UnboundedReceiver<AccessChange>,
-        (handshakes, ctl, state): (Queries, Queries, Queries),
+        (handshakes, ctl, state, views): (Queries, Queries, Queries, Queries),
         presence: zenoh::pubsub::Subscriber<Fifo<zenoh::sample::Sample>>,
     ) {
         let interval = |period: Duration| {
@@ -1099,6 +1112,10 @@ impl HostActor {
                 },
                 query = state.recv_async() => match query {
                     Ok(query) => self.on_state_query(query).await,
+                    Err(_) => break,
+                },
+                query = views.recv_async() => match query {
+                    Ok(query) => self.on_view_query(query).await,
                     Err(_) => break,
                 },
                 Some((id, heartbeat, t2)) = heartbeats.recv() => {
@@ -1356,6 +1373,7 @@ impl HostActor {
             // A retry of an answered request: the same reply, sealed afresh.
             Some(cached) if !cached.is_empty() => cached,
             Some(_) => self.answer(
+                &peer.participant,
                 Err(CtlError::new(
                     CtlStatus::Expired,
                     format!("request {request_id} is below the reply window: re-read the state"),
@@ -1382,7 +1400,7 @@ impl HostActor {
                     }
                     Outcome::Reply(result, leases, keys) => (result, leases, keys),
                 };
-                let encoded = self.answer(result, leases, keys, request_id);
+                let encoded = self.answer(&peer.participant, result, leases, keys, request_id);
                 lock(&peer.requests).complete(request_id, encoded.clone());
                 encoded
             }
@@ -1668,11 +1686,12 @@ impl HostActor {
             return;
         };
         let request_id = waiting.request.request_id;
+        let to = &waiting.peer.participant;
         let encoded = match outcome {
-            Ok((leases, keys)) => self.answer(Ok(()), leases, keys, request_id),
+            Ok((leases, keys)) => self.answer(to, Ok(()), leases, keys, request_id),
             Err(err) => {
                 info!(status = ?err.status, "grant refused: {}", err.message);
-                self.answer(Err(err), Vec::new(), Vec::new(), request_id)
+                self.answer(to, Err(err), Vec::new(), Vec::new(), request_id)
             }
         };
         lock(&waiting.peer.requests).complete(request_id, encoded.clone());
@@ -1884,14 +1903,29 @@ impl HostActor {
     /// caller's keys.
     fn answer(
         &self,
+        to: &ParticipantId,
         result: Result<(), CtlError>,
         leases: Vec<Lease>,
         keys: Vec<IssuedKey>,
         request_id: u64,
     ) -> Vec<u8> {
+        let state = self.snapshot();
+        // A robot that takes its device view gets it in place of the state
+        // (scene design §3.4): a board never decodes the state.
+        if asks_for_view(&state, to) {
+            return codec::encode_view_reply(&ViewReply {
+                result,
+                view: Some(DeviceView::of(&state, to)),
+                leases,
+                request_id,
+                keys,
+                assignment: None,
+                run: None,
+            });
+        }
         codec::encode_reply(&CtlReply {
             result,
-            state: self.snapshot(),
+            state,
             leases,
             request_id,
             keys,
@@ -1904,6 +1938,61 @@ impl HostActor {
         if let Some(signed) = self.sign_state(&self.snapshot()) {
             Self::reply(query, signed).await;
         }
+    }
+
+    /// Answers a robot's recovery query on `host/view/{robot}` with its
+    /// current view, if it asked for views.
+    async fn on_view_query(&mut self, query: Query) {
+        let Some(robot) = self.keys.view_of(query.key_expr().as_str()) else {
+            return;
+        };
+        let snapshot = self.snapshot();
+        if !asks_for_view(&snapshot, &robot) {
+            return;
+        }
+        if let Some(signed) = self.sign_view(&DeviceView::of(&snapshot, &robot)) {
+            Self::reply(query, signed).await;
+        }
+    }
+
+    /// A robot's view as a `Signed` broadcast (kind 22).
+    fn sign_view(&mut self, view: &DeviceView) -> Option<Vec<u8>> {
+        self.signer
+            .sign(
+                SignedKind::DeviceView,
+                &self.keys.host_view(&view.robot),
+                &codec::encode_view(view),
+            )
+            .map_err(|err| warn!(robot = %view.robot, %err, "device view not signed"))
+            .ok()
+    }
+
+    /// The views of every robot that asked for one whose content changed
+    /// since the last published (a renewal moves a lease's expiry), signed.
+    fn views_due(&mut self, snapshot: &AuthoritySnapshot) -> Vec<(ParticipantId, Vec<u8>)> {
+        self.views.retain(|robot, _| asks_for_view(snapshot, robot));
+        let mut due = Vec::new();
+        for robot in snapshot.roster.iter().map(|p| &p.id) {
+            if !asks_for_view(snapshot, robot) {
+                continue;
+            }
+            let view = DeviceView::of(snapshot, robot);
+            let unchanged = self.views.get(robot).is_some_and(|last| {
+                *last
+                    == DeviceView {
+                        host_ns: last.host_ns,
+                        ..view.clone()
+                    }
+            });
+            if unchanged {
+                continue;
+            }
+            if let Some(signed) = self.sign_view(&view) {
+                due.push((robot.clone(), signed));
+                self.views.insert(robot.clone(), view);
+            }
+        }
+        due
     }
 
     /// The snapshot as a `Signed` broadcast (§8.7).
@@ -2107,13 +2196,37 @@ impl HostActor {
         self.last_publish_ns = self.now();
         let snapshot = self.snapshot();
         let signed = self.sign_state(&snapshot);
+        let views = self.views_due(&snapshot);
         self.snapshot_tx.send_replace(snapshot);
         if let Some(signed) = signed
             && let Err(err) = self.publisher.put(signed).await
         {
             warn!(%err, "authority publish failed");
         }
+        for (robot, signed) in views {
+            let sent = self
+                .transport
+                .control()
+                .put(self.keys.host_view(&robot), signed)
+                .priority(CONTROL_PRIORITY)
+                .congestion_control(CONTROL_CONGESTION)
+                .express(true)
+                .await;
+            if let Err(err) = sent {
+                // Sent again with the next publish.
+                self.views.remove(&robot);
+                warn!(%robot, %err, "device view publish failed");
+            }
+        }
     }
+}
+
+/// Whether `robot` is an embodiment in `snapshot`'s roster that asked for its
+/// device view (`Attach.supports`).
+fn asks_for_view(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> bool {
+    snapshot.participant(robot).is_some_and(|p| {
+        p.has_role(Role::Embodiment) && p.supports.iter().any(|f| f == VIEW_DEVICE)
+    })
 }
 
 /// Whether a liveliness token on `key` is declared: a participant that left

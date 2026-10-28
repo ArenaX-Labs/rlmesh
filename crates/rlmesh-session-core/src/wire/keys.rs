@@ -5,6 +5,7 @@
 //! rlmesh/v2/{tenant}/s/{session}/host                          host liveliness
 //! rlmesh/v2/{tenant}/s/{session}/host/state                    authority snapshot (queryable) + updates, signed
 //! rlmesh/v2/{tenant}/s/{session}/host/tick                     virtual-mode ticks (§11.3), signed
+//! rlmesh/v2/{tenant}/s/{session}/host/view/{robot}             a robot's device view (queryable) + updates, signed
 //! rlmesh/v2/{tenant}/s/{session}/hs                            the attach handshake (query/reply)
 //! rlmesh/v2/{tenant}/s/{session}/ctl                           control verbs (query/reply, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}               participant liveliness
@@ -89,6 +90,24 @@ impl SessionKeys {
     /// Virtual-mode ticks, published by the host.
     pub fn host_tick(&self) -> String {
         format!("{}/host/tick", self.prefix)
+    }
+
+    /// One robot's device view: queryable, and published when it changes.
+    pub fn host_view(&self, robot: &ParticipantId) -> String {
+        format!("{}/host/view/{robot}", self.prefix)
+    }
+
+    /// Every robot's device view (the host's queryable).
+    pub fn host_views(&self) -> String {
+        format!("{}/host/view/*", self.prefix)
+    }
+
+    /// The robot a `host/view/{robot}` key names.
+    pub fn view_of(&self, key: &str) -> Option<ParticipantId> {
+        let robot = key
+            .strip_prefix(&self.prefix)?
+            .strip_prefix("/host/view/")?;
+        ParticipantId::new(robot).ok()
     }
 
     /// The attach handshake (query/reply): the only request that isn't
@@ -241,6 +260,8 @@ mod tests {
             Some((ur.clone(), "left/wrist/cam"))
         );
         assert_eq!(keys.history_of(&keys.data(&ur, "arm")), None);
+        assert_eq!(keys.view_of(&keys.host_view(&ur)), Some(ur.clone()));
+        assert_eq!(keys.view_of(&keys.host_state()), None);
         assert_eq!(
             keys.lockstep(&ur),
             format!("rlmesh/v2/acme/s/{session}/l/ur10e")

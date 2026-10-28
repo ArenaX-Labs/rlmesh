@@ -35,7 +35,7 @@ use crate::prelude::*;
 use crate::wire::codec;
 use crate::wire::error::WireError;
 use crate::wire::{
-    ActionChunk, AuthoritySnapshot, ChannelId, EstopSignal, IssuedKey, KeyDelivery, KeyPurpose,
+    ActionChunk, AuthorityView, ChannelId, EstopSignal, IssuedKey, KeyDelivery, KeyPurpose,
     KeysAck, LeaseToken, LockstepRequest, LockstepResponse, ParticipantId, Sample, Security,
 };
 
@@ -325,22 +325,20 @@ impl Keyring {
         }
     }
 
-    /// Takes an authority snapshot, if newer than the last: drops lease
+    /// Takes an authority snapshot or a device view, if newer than the
+    /// last: drops lease
     /// keys whose token ended (or never appeared within [`UNSEEN_TTL_NS`]),
     /// and every key once a newer generation of this participant took over.
     /// An older snapshot (a delayed broadcast, a cached reply) changes
     /// nothing.
-    pub fn observe(&mut self, snapshot: &AuthoritySnapshot, now_ns: i64) {
-        let order = (snapshot.revision, snapshot.host_ns);
+    pub fn observe(&mut self, snapshot: &impl AuthorityView, now_ns: i64) {
+        let order = (snapshot.revision(), snapshot.host_ns());
         if self.observed.is_some_and(|last| order <= last) {
             return;
         }
         self.observed = Some(order);
         if let Some(me) = &self.me
-            && snapshot
-                .roster
-                .iter()
-                .any(|p| &p.id == me && p.generation > self.generation)
+            && snapshot.generation(me).is_some_and(|g| g > self.generation)
         {
             let gone = &mut self.gone;
             gone.extend(
@@ -352,7 +350,7 @@ impl Keyring {
             self.held.clear();
             return;
         }
-        let live: BTreeSet<LeaseToken> = snapshot.leases.iter().map(|l| l.token).collect();
+        let live: BTreeSet<LeaseToken> = snapshot.leases().iter().map(|l| l.token).collect();
         let gone = &mut self.gone;
         self.held.retain(|id, held| {
             if held.scope.purpose.rotates() {
@@ -362,8 +360,8 @@ impl Keyring {
             let current = if held.scope.purpose == KeyPurpose::Estop {
                 let sender = held.scope.sender.as_ref();
                 sender
-                    .and_then(|s| snapshot.participant(s))
-                    .is_some_and(|p| p.generation == held.scope.generation)
+                    .and_then(|s| snapshot.generation(s))
+                    .is_some_and(|g| g == held.scope.generation)
             } else {
                 live.contains(&held.scope.token)
             };

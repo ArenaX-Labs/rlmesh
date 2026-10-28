@@ -20,10 +20,12 @@ use rlmesh_session::participant::{query_authority, wait_for_host};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::codec;
+use rlmesh_session::wire::version::VIEW_DEVICE;
 use rlmesh_session::wire::{
-    ChannelId, ClockMode, Command, ContractMode, CtlError, CtlReply, CtlStatus, Encoding, Epoch,
-    EstopSignal, FenceError, Fingerprint, HistoryQuery, Mode, ParticipantId, Plan, PriorityClass,
-    ReasonCode, Request, Role, Sample, SessionId, TenantId, VirtualTick, Watermark,
+    AuthorityView, ChannelId, ClockMode, Command, ContractMode, CtlError, CtlReply, CtlStatus,
+    Encoding, Epoch, EstopSignal, FenceError, Fingerprint, HistoryQuery, Mode, ParticipantId, Plan,
+    PriorityClass, ReasonCode, Request, Role, Sample, SessionId, TenantId, ViewReply, VirtualTick,
+    Watermark,
 };
 use rlmesh_session::{
     ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
@@ -385,6 +387,16 @@ impl Raw {
     async fn call(&mut self, request_id: u64, command: Command) -> CtlReply {
         let sealed = self.seal(request_id, command);
         self.send(request_id, sealed).await.expect("an answer")
+    }
+
+    /// [`Self::call`] as a robot that takes its device view reads replies.
+    async fn call_view(&mut self, request_id: u64, command: Command) -> ViewReply {
+        let sealed = self.seal(request_id, command);
+        let mut reply = ask(&self.transport, &self.ctl, Some(sealed)).await;
+        match self.link.reply_view(&self.ctl, &mut reply, request_id, 0) {
+            Ok(ReplyOutcome::Answer(reply)) => *reply,
+            other => panic!("not an answer: {other:?}"),
+        }
     }
 }
 
@@ -1916,6 +1928,127 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     assert!(swapped.ended.iter().any(|e| {
         e.lease.token == granted.leases[0].token && e.reason.code == ReasonCode::VoidedByEpoch
     }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_robot_that_asks_gets_its_signed_view_and_one_that_does_not_gets_none() {
+    let world = World::start().await;
+    let keys = world.host.keys();
+    // Anyone can read the views; the eye's link holds the host's key.
+    let eye = world.raw("eye", Role::Observer).await;
+    let views = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _sub = eye
+        .transport
+        .control()
+        .declare_subscriber(keys.host_views())
+        .callback({
+            let views = views.clone();
+            move |sample| {
+                let key = sample.key_expr().to_string();
+                let msg = sample.payload().to_bytes().into_owned();
+                views.lock().expect("views").push((key, msg));
+            }
+        })
+        .await
+        .expect("subscribe");
+
+    let mut config = world.config("robot", vec![Role::Embodiment], PriorityClass::Scripted, 0);
+    config.supports.push(VIEW_DEVICE.into());
+    let robot = Participant::attach(world.transport().await, config)
+        .await
+        .expect("attach");
+    robot.declare_parts(&raw_camera()).await.expect("declare");
+    let twin = world
+        .join("twin", vec![Role::Embodiment], PriorityClass::Scripted, 0)
+        .await;
+    twin.declare_parts(&raw_camera()).await.expect("declare");
+    let policy = world.policy().await;
+    let arm = channel(&policy, "arm");
+    policy.arm().await.expect("arm");
+    let lease = policy.grant_lease(arm, None).await.expect("grant");
+
+    // Every view verifies in order, and one comes to show the lease with
+    // its holder's clock.
+    let mut verifier = eye.link.host_verifier();
+    let mut latest = None;
+    wait_until("the robot's view of the lease", || {
+        for (key, msg) in views.lock().expect("views").drain(..) {
+            assert_eq!(
+                key,
+                keys.host_view(&robot_id()),
+                "only the robot that asked"
+            );
+            let view = auth::open_view(&mut verifier, &key, &msg).expect("a signed view");
+            latest = Some((view, msg.len()));
+        }
+        latest.as_ref().is_some_and(|(view, _)| {
+            view.lease(arm).map(|l| l.token) == Some(lease.token)
+                && view.clock(policy.id()).is_some()
+        })
+    })
+    .await;
+    let (view, size) = latest.expect("a view");
+    assert_eq!(view.robot, robot_id());
+    assert_eq!(view.parts.len(), 4, "its own parts only");
+    eprintln!("signed device view of a 4-part robot under one lease: {size} bytes");
+    assert!(size < 1024, "{size} bytes");
+
+    // Recovery by query: the robot's view, and none for the twin.
+    let key = keys.host_view(&robot_id());
+    let recovered = auth::open_view(
+        &mut eye.link.host_verifier(),
+        &key,
+        &ask(&eye.transport, &key, None).await,
+    )
+    .expect("a signed view");
+    assert_eq!(recovered.lease(arm).map(|l| l.token), Some(lease.token));
+    let replies = eye
+        .transport
+        .control()
+        .get(keys.host_view(twin.id()))
+        .timeout(Duration::from_secs(1))
+        .await
+        .expect("query");
+    while let Ok(reply) = replies.recv_async().await {
+        assert!(
+            reply.result().is_err(),
+            "no view for a robot that didn't ask"
+        );
+    }
+
+    // Its ctl replies carry its view in place of the state, read without
+    // the state's decoder.
+    let mut board = world
+        .handshake("board", &world.host.credential())
+        .await
+        .expect("handshake");
+    let mut hello = attach("board", Role::Embodiment);
+    if let Command::Attach { supports, .. } = &mut hello {
+        supports.push(VIEW_DEVICE.into());
+    }
+    let attached = board.call_view(1, hello).await;
+    attached.result.expect("attached");
+    assert_eq!(
+        attached.view.map(|v| v.robot.to_string()),
+        Some("board".into())
+    );
+    let declare = Command::DeclareParts {
+        spec_version: rlmesh_session::wire::version::SPEC_VERSION,
+        // Sensors only: the session is ACTIVE.
+        robot_json: r#"{"cam": {"kind": "camera", "width": 64, "height": 48, "hz": 10}}"#.into(),
+        seal: Vec::new(),
+        board_id: None,
+    };
+    let declared = board.call_view(2, declare).await;
+    declared.result.expect("declared");
+    let view = declared.view.expect("its view");
+    assert!(view.parts.len() == 1 && view.parts[0].owner.as_str() == "board");
+    let sealed = board.seal(3, Command::GetKeys);
+    let mut reply = ask(&board.transport, &board.ctl, Some(sealed)).await;
+    assert!(
+        board.link.reply(&board.ctl, &mut reply, 3, 0).is_err(),
+        "no state for the full decoder"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
