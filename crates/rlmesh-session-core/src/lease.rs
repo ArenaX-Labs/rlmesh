@@ -1,8 +1,8 @@
 //! The holder's side of a lease (§9.7), sans-IO: every participant that
 //! commands a part tracks its lease here. The browser binding holds one
-//! [`LeaseClient`] per part; the native controller holds its binding's
-//! parts together as a [`LeaseGroup`] (one all-or-none request, one client
-//! per part).
+//! [`LeaseClient`] per part; the native controller and the lockstep driver
+//! hold their parts together as a [`LeaseGroup`] (one all-or-none request,
+//! one client per part).
 //!
 //! The host is the only authority: this client never grants, renews or
 //! extends anything on its own. It turns the host's answers into a local

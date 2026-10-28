@@ -336,7 +336,7 @@ struct Shared {
 }
 
 impl Shared {
-    /// Keeps the newest snapshot, and notes leases this participant lost.
+    /// Keeps the newest snapshot.
     fn observe(&self, snapshot: AuthoritySnapshot) {
         let id = &self.id;
         self.view.send_if_modified(|view| {
@@ -346,24 +346,10 @@ impl Shared {
             {
                 return false;
             }
-            if let Some(old) = view.as_ref() {
-                for lease in old.leases.iter().filter(|l| &l.holder == id) {
-                    match snapshot.lease(lease.channel) {
-                        Some(now) if now.token == lease.token => {}
-                        Some(now) => info!(
-                            participant = %id,
-                            "lease {} {} lost to {} ({})",
-                            lease.channel, lease.token, now.holder, now.token
-                        ),
-                        None => info!(
-                            participant = %id,
-                            "lease {} {} ended", lease.channel, lease.token
-                        ),
-                    }
-                }
-                if old.mode != snapshot.mode {
-                    debug!(participant = %id, "mode {} -> {}", old.mode, snapshot.mode);
-                }
+            if let Some(old) = view.as_ref()
+                && old.mode != snapshot.mode
+            {
+                debug!(participant = %id, "mode {} -> {}", old.mode, snapshot.mode);
             }
             self.epoch.store(snapshot.epoch.0, Ordering::Relaxed);
             self.view_local_ns
