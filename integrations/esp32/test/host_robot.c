@@ -1,11 +1,11 @@
 /* The board's loop on Linux: the device robot over rlmesh_zenoh, against a
- * real session host (`rlmesh host`), with Linux's clock and randomness where a
+ * real session host (rlmesh-device's test host), with Linux's clock and randomness where a
  * board has esp_timer and its RNG. Passes once the robot has joined, had 20
  * heartbeats echoed and published samples under its delivered stream key.
  *
  *   host_robot <host:port#secret.hostkey> [seconds]
  *
- * The address is what `rlmesh host` prints, for its default session. */
+ * The address is what a host prints, with its key, for its default session. */
 
 #include <stdio.h>
 #include <stdlib.h>

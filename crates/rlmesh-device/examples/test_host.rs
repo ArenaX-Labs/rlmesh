@@ -1,16 +1,12 @@
-//! A session host for `mise run test:esp32:host` and a board on the LAN:
-//! the default session of tenant `local` on free ports of `[ip]` (default
-//! 127.0.0.1; a LAN address for a board), printing its address with its key
-//! (as `rlmesh host` does), until killed:
+//! A session host for `mise run test:esp32:host`: the default session of
+//! tenant `local` on free loopback ports, printing its address with its key
+//! (as `rlmesh host` does), until killed.
 //!
-//! ```sh
-//! cargo run -p rlmesh-device --example test_host -- 192.168.1.20
-//! ```
-//!
-//! Its links are not gated: an embedded host's are (Zenoh `usrpwd`), which
-//! zenoh-pico can't present (until the host takes ungated LAN links, as its
-//! design says). Session traffic is still authenticated and sealed by the
-//! handshake. For tests only.
+//! Its links are not gated. A loopback embedded host gates them (Zenoh
+//! `usrpwd`, keyed by the session), which zenoh-pico can't present; a board
+//! on the LAN joins `rlmesh host --insecure` instead, whose LAN links are
+//! plain. Session traffic is authenticated and sealed by the handshake
+//! either way. For tests only.
 
 #![allow(clippy::print_stdout)]
 
@@ -23,12 +19,9 @@ use rlmesh_session::{HostConfig, SessionHost};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    let ip = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "127.0.0.1".into())
-        .parse()
-        .expect("an IP address");
-    let (transport, base) = open_local_listeners(ip).await.expect("listeners");
+    let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        .await
+        .expect("listeners");
     let config = HostConfig::new(
         TenantId::new(TENANT).expect("tenant"),
         session_id(DEFAULT_SESSION),
