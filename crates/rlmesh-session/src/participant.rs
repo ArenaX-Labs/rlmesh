@@ -46,10 +46,10 @@ use crate::wire::codec;
 use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use crate::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlError, CtlReply,
-    CtlStatus, Epoch, Fingerprint, Health, Heartbeat, HeartbeatEcho, HistoryQuery, KeysAck, Lease,
-    LeaseToken, LockstepRequest, LockstepResponse, Mode, PartSpec, ParticipantId, PriorityClass,
-    Reason, ReasonCode, Role, Sample, SampleBatch, SessionId, SessionKeys, StreamSpec, TenantId,
-    TimingSample, VirtualTick, Watermark,
+    CtlStatus, EdgeMode, Epoch, EstopSignal, Fingerprint, Health, Heartbeat, HeartbeatEcho,
+    HistoryQuery, KeysAck, Lease, LeaseToken, LockstepRequest, LockstepResponse, Mode, PartSpec,
+    ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample, SampleBatch, SessionId,
+    SessionKeys, StreamSpec, TenantId, TimingSample, VirtualTick, Watermark,
 };
 use rlmesh_session_core::auth::{self, Credential, KeyError, StreamWindows};
 use rlmesh_session_core::auth::{Link, LinkError, ReplyOutcome};
@@ -106,6 +106,10 @@ pub struct ParticipantConfig {
     pub workflow_edition: String,
     /// Every workflow edition it runs.
     pub workflow_editions: Vec<String>,
+    /// An embodiment's e-stop latch carried from its previous session
+    /// ([`Participant::local_estop`]): it attaches latched, and the session
+    /// starts in ESTOP (design §6).
+    pub estop: Option<Reason>,
     /// What it attaches with: its device's key and the host's static key
     /// (`SessionHost::credential` in-process; a session address's key
     /// otherwise). Required.
@@ -137,6 +141,7 @@ impl ParticipantConfig {
             requires: Vec::new(),
             workflow_edition: String::new(),
             workflow_editions: Vec::new(),
+            estop: None,
             credential: None,
         }
     }
@@ -270,14 +275,15 @@ impl ManualView {
 pub(crate) struct LocalLatch {
     latched: AtomicBool,
     latches: AtomicU64,
-    /// Why it latched last.
-    reason: Mutex<String>,
+    /// Why it latched last: `ESTOP_LOCAL` (its own stop) or
+    /// `ESTOP_SIGNAL` (a member's signal), and by whom.
+    reason: Mutex<Reason>,
 }
 
 impl LocalLatch {
-    /// Latches it for `reason`: which latch this is. Counted first, so a
-    /// clear that sees the flag also sees the count.
-    fn latch(&self, reason: String) -> u64 {
+    /// Latches it for `reason`: which latch this is. The reason, then the
+    /// count, then the flag, so whoever sees the flag also sees both.
+    fn latch(&self, reason: Reason) -> u64 {
         let mut last = lock(&self.reason);
         *last = reason;
         let seq = self.latches.fetch_add(1, Ordering::SeqCst) + 1;
@@ -287,7 +293,7 @@ impl LocalLatch {
 
     /// Clears it: how many latches came before, and why the last one
     /// latched.
-    fn clear(&self) -> (u64, String) {
+    fn clear(&self) -> (u64, Reason) {
         let last = lock(&self.reason);
         self.latched.store(false, Ordering::SeqCst);
         (self.latches.load(Ordering::SeqCst), last.clone())
@@ -302,6 +308,16 @@ impl LocalLatch {
     pub(crate) fn latches(&self) -> u64 {
         self.latches.load(Ordering::SeqCst)
     }
+
+    /// The code of the last latch.
+    pub(crate) fn code(&self) -> ReasonCode {
+        lock(&self.reason).code
+    }
+
+    /// Why it is latched, while it is.
+    fn reason(&self) -> Option<Reason> {
+        self.is_latched().then(|| lock(&self.reason).clone())
+    }
 }
 
 /// What a robot process tells the host about its own stops, in order.
@@ -313,11 +329,32 @@ enum Report {
         code: ReasonCode,
         reason: String,
     },
-    /// It latched a local e-stop, its `seq`th.
-    Estop { reason: String, seq: u64 },
+    /// It latched an e-stop, its `seq`th: its own (`ESTOP_LOCAL`), or a
+    /// member's signal (`ESTOP_SIGNAL`, from `origin`).
+    Estop {
+        reason: String,
+        seq: u64,
+        code: ReasonCode,
+        origin: Option<ParticipantId>,
+    },
     /// It cleared the latch, after `after` latches, the last for
     /// `reason`.
-    Clear { after: u64, reason: String },
+    Clear { after: u64, reason: Reason },
+}
+
+impl Report {
+    /// The report of latch `seq`, for `reason`.
+    fn estop(reason: &Reason, seq: u64) -> Self {
+        let origin = (reason.code == ReasonCode::EstopSignal)
+            .then(|| ParticipantId::new(&reason.by).ok())
+            .flatten();
+        Self::Estop {
+            reason: reason.detail.clone(),
+            seq,
+            code: reason.code,
+            origin,
+        }
+    }
 }
 
 /// Keeps a robot process's stop reports in DESIGN §6's order whatever order
@@ -335,19 +372,26 @@ impl StopOrder {
     fn plan(&mut self, report: Report) -> Vec<Report> {
         match report {
             Report::Estop { seq, .. } if seq <= self.estops => Vec::new(),
-            Report::Estop { reason, seq } => {
+            Report::Estop {
+                reason,
+                seq,
+                code,
+                origin,
+            } => {
                 self.estops = seq;
-                vec![Report::Estop { reason, seq }]
+                vec![Report::Estop {
+                    reason,
+                    seq,
+                    code,
+                    origin,
+                }]
             }
             // The latch's own report hasn't gone out: the clear sends it,
             // with its reason.
             Report::Clear { after, reason } if after > self.estops => {
                 self.estops = after;
                 vec![
-                    Report::Estop {
-                        reason: reason.clone(),
-                        seq: after,
-                    },
+                    Report::estop(&reason, after),
                     Report::Clear { after, reason },
                 ]
             }
@@ -723,6 +767,35 @@ impl Shared {
             .unwrap_or_default()
     }
 
+    /// Latches this robot process's e-stop for `reason`, and queues its
+    /// report to the host.
+    fn latch(&self, reason: Reason) {
+        let seq = self.estop.latch(reason.clone());
+        let _ = self.reports.send(Report::estop(&reason, seq));
+    }
+
+    /// A member's e-stop signal on `key`: latched at once (`ESTOP_SIGNAL`,
+    /// `by` its sender), when its `k_estop` verifies it.
+    fn on_estop_signal(&self, key: &str, payload: &zenoh::bytes::ZBytes) {
+        let Some(link) = self.link.get() else {
+            return;
+        };
+        let opened = lock(link).open_estop_signal(key, payload.to_bytes().into_owned());
+        match opened {
+            Ok((by, signal)) => {
+                warn!(participant = %self.id, %by, reason = %signal.reason, "e-stop signal latched");
+                self.latch(Reason {
+                    code: ReasonCode::EstopSignal,
+                    by: by.to_string(),
+                    detail: signal.reason,
+                    at_ns: self.clock.now_ns(),
+                    ..Reason::default()
+                });
+            }
+            Err(err) => debug!(participant = %self.id, %err, "e-stop signal dropped"),
+        }
+    }
+
     /// Whether this participant's generation ended: the view lists a newer
     /// one under its id, or none at all.
     fn generation_ended(&self) -> bool {
@@ -964,6 +1037,8 @@ pub struct Participant {
     // Dropped in order: the watch on the host goes before this token, whose
     // loss can stop the session (and with it the host's token).
     _host: zenoh::pubsub::Subscriber<()>,
+    /// A robot process's e-stop signal subscription.
+    _estops: Option<zenoh::pubsub::Subscriber<()>>,
     _liveliness: zenoh::liveliness::LivelinessToken,
     _state: zenoh::pubsub::Subscriber<()>,
     _echo: zenoh::pubsub::Subscriber<()>,
@@ -1225,6 +1300,7 @@ impl Participant {
             _echo: echo,
             _keys: deliveries,
             _host: host,
+            _estops: None,
         };
         shared
             .ctl(Command::Attach {
@@ -1236,8 +1312,26 @@ impl Participant {
                 requires: config.requires.clone(),
                 workflow_edition: config.workflow_edition.clone(),
                 workflow_editions: config.workflow_editions.clone(),
+                estop: config.estop.clone(),
             })
             .await?;
+        // A robot process latches every member's e-stop signal at once,
+        // with or without a host.
+        if config.roles.contains(&Role::Embodiment) {
+            if let Some(reason) = config.estop.clone() {
+                shared.latch(reason);
+            }
+            let subscriber = control
+                .declare_subscriber(keys.estops())
+                .callback({
+                    let shared = shared.clone();
+                    move |sample| {
+                        shared.on_estop_signal(sample.key_expr().as_str(), sample.payload())
+                    }
+                })
+                .await?;
+            participant._estops = Some(subscriber);
+        }
 
         let publisher = control
             .declare_publisher(keys.heartbeat(&config.id))
@@ -1370,19 +1464,81 @@ impl Participant {
         Ok(self.shared.ctl(Command::Disarm).await?.0)
     }
 
-    /// Emergency stop (accepted from anyone).
-    pub async fn estop(
-        &self,
-        reason: impl Into<String>,
-    ) -> Result<AuthoritySnapshot, SessionError> {
-        Ok(self
-            .shared
-            .ctl(Command::Estop {
-                reason: reason.into(),
+    /// Emergency stop (design §6): publishes this member's e-stop signal,
+    /// which every robot edge latches directly (`ESTOP_SIGNAL`), and tells
+    /// the host (`Estop`) in the background. Returns once the signal is
+    /// out; a missing host reply is only a warning. The confirmation is
+    /// each robot's `_applied` mode: [`Self::wait_for_estop`].
+    ///
+    /// # Errors
+    /// [`SessionError::Key`] once this process is no longer attached (its
+    /// key ended): only the robot's own stop is left.
+    pub async fn estop(&self, reason: impl Into<String>) -> Result<(), SessionError> {
+        let shared = &self.shared;
+        let reason = reason.into();
+        let key = shared.keys.estop(&shared.id);
+        let signal = EstopSignal {
+            reason: reason.clone(),
+            sent_ns: shared.clock.now_ns(),
+        };
+        let link = shared.link.get().ok_or(SessionError::Closed)?;
+        let sealed = lock(link).estop_signal(&key, &signal).map_err(|err| {
+            SessionError::Key(format!(
+                "this process is no longer attached ({err}): use the robot's stop"
+            ))
+        })?;
+        shared
+            .transport
+            .control()
+            .put(&key, sealed)
+            .priority(CONTROL_PRIORITY)
+            .congestion_control(CONTROL_CONGESTION)
+            .express(true)
+            .await?;
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            let estop = Command::Estop {
+                reason,
                 code: ReasonCode::EstopRemote,
-            })
-            .await?
-            .0)
+                origin: None,
+            };
+            if let Err(err) = shared.ctl(estop).await {
+                warn!(participant = %shared.id, %err, "the host did not answer the e-stop; the signal stands");
+            }
+        });
+        Ok(())
+    }
+
+    /// Waits until every robot's edge applies ESTOP (its first commandable
+    /// part's `_applied` mode): what [`Self::estop`] confirms by.
+    ///
+    /// # Errors
+    /// [`SessionError::Timeout`]; a subscription's error.
+    pub async fn wait_for_estop(&self, timeout: Duration) -> Result<(), SessionError> {
+        let view = self.authority().ok_or(SessionError::Closed)?;
+        let mut robots: Vec<&ParticipantId> = Vec::new();
+        let mut applied = Vec::new();
+        for part in view.parts.iter().filter(|p| p.command.is_some()) {
+            if !robots.contains(&&part.owner) {
+                robots.push(&part.owner);
+                let options = SubscribeOptions::default();
+                let path = part.path.as_str();
+                applied.push(self.subscribe_applied(&part.owner, path, options).await?);
+            }
+        }
+        let stopped = |s: &SampleSubscriber| {
+            s.latest()
+                .and_then(|f| f.received.sample.applied)
+                .is_some_and(|a| a.mode == EdgeMode::Estop)
+        };
+        let started = tokio::time::Instant::now();
+        while !applied.iter().all(stopped) {
+            if started.elapsed() >= timeout {
+                return Err(SessionError::Timeout(timeout, "every robot's ESTOP".into()));
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        Ok(())
     }
 
     /// Releases a latched e-stop: an embodiment's local clear.
@@ -1874,9 +2030,19 @@ impl Participant {
     /// `Estop{ESTOP_LOCAL}` to the host, retrying, in order with the other
     /// reports.
     pub fn latch_estop(&self, reason: impl Into<String>) {
-        let reason = reason.into();
-        let seq = self.shared.estop.latch(reason.clone());
-        let _ = self.shared.reports.send(Report::Estop { reason, seq });
+        self.shared.latch(Reason {
+            code: ReasonCode::EstopLocal,
+            by: self.shared.id.to_string(),
+            detail: reason.into(),
+            at_ns: self.shared.clock.now_ns(),
+            ..Reason::default()
+        });
+    }
+
+    /// Why this robot process's e-stop is latched, while it is: what a
+    /// process carries into its next session ([`ParticipantConfig::estop`]).
+    pub fn local_estop(&self) -> Option<Reason> {
+        self.shared.estop.reason()
     }
 
     /// Clears the local e-stop latch: the only way to, since no wire path
@@ -2269,9 +2435,15 @@ async fn send_stop(shared: &Shared, report: &Report, cancel: &CancellationToken)
                     code: *code,
                 }
             }
-            Report::Estop { reason, .. } => Command::Estop {
+            Report::Estop {
+                reason,
+                code,
+                origin,
+                ..
+            } => Command::Estop {
                 reason: reason.clone(),
-                code: ReasonCode::EstopLocal,
+                code: *code,
+                origin: origin.clone(),
             },
             Report::Clear { .. } => Command::Clear,
         };
@@ -2378,23 +2550,35 @@ mod tests {
 
     #[test]
     fn stop_reports_keep_estop_before_clear_and_retry_through_spoofed_refusals() {
-        let estop = |seq| Report::Estop {
-            reason: "button".into(),
-            seq,
+        // The latch is a member's signal.
+        let latch = Reason {
+            code: ReasonCode::EstopSignal,
+            by: "eye".into(),
+            detail: "button".into(),
+            ..Reason::default()
         };
+        let estop = |seq| Report::estop(&latch, seq);
         let clear = |after| Report::Clear {
             after,
-            reason: "button".into(),
+            reason: latch.clone(),
         };
         // A latch whose report was queued after the clear that followed
-        // it: the clear sends its Estop first, with the latch's reason,
-        // and the late one nothing.
+        // it: the clear sends its Estop first, with the latch's own
+        // reason, and the late one nothing.
         let mut order = StopOrder::default();
         let sent: Vec<Report> = [clear(1), estop(1), estop(2), clear(2)]
             .into_iter()
             .flat_map(|r| order.plan(r))
             .collect();
-        assert_eq!(sent[0], estop(1));
+        assert!(
+            matches!(&sent[0], Report::Estop {
+                reason,
+                code: ReasonCode::EstopSignal,
+                origin: Some(by),
+                ..
+            } if reason == "button" && by.as_str() == "eye"),
+            "{sent:?}"
+        );
         let kinds: Vec<&str> = sent
             .iter()
             .map(|r| match r {

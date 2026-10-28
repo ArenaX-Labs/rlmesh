@@ -247,6 +247,7 @@ fn the_timeline_follows_leases_epochs_preemption_and_estop() {
         Command::Estop {
             reason: "test".into(),
             code: ReasonCode::EstopRemote,
+            origin: None,
         },
     )
     .expect("estop");

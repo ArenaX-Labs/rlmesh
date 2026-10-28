@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::participant::{LocalLatch, Sealer};
-use crate::wire::{ActionChunk, ChannelId, ChunkRef, ClockMode, ReasonCode};
+use crate::wire::{ActionChunk, ChannelId, ChunkRef, ClockMode};
 use crate::{
     AuthorityView, Clock, EdgeReport, Participant, SafeReporter, SamplePublisher, TrafficClass,
 };
@@ -56,10 +56,11 @@ impl Shared {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A latch cleared since the last look still stops and fences.
         let latches = self.latch.latches();
+        let code = self.latch.code();
         if self.latches_seen.swap(latches, Ordering::SeqCst) != latches {
-            core.set_local_estop(Some(ReasonCode::EstopLocal));
+            core.set_local_estop(Some(code));
         }
-        core.set_local_estop(self.latch.is_latched().then_some(ReasonCode::EstopLocal));
+        core.set_local_estop(self.latch.is_latched().then_some(code));
         core
     }
 

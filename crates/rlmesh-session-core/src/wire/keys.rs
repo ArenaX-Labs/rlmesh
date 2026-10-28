@@ -12,6 +12,7 @@
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb/echo       heartbeat echoes (host -> participant, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/report        observer telemetry (§8.10)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/keys          key deliveries (host -> participant, sealed)
+//! rlmesh/v2/{tenant}/s/{session}/estop/{participant}           e-stop signals (member -> every edge, signed)
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}           samples
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}/_applied  applied samples
 //! rlmesh/v2/{tenant}/s/{session}/c/{robot}/{path...}           action chunks
@@ -177,6 +178,16 @@ impl SessionKeys {
         let rest = key.strip_prefix(&self.prefix)?.strip_prefix("/p/")?;
         let id = rest.split('/').next()?;
         ParticipantId::new(id).ok()
+    }
+
+    /// A participant's e-stop signals.
+    pub fn estop(&self, id: &ParticipantId) -> String {
+        format!("{}/estop/{id}", self.prefix)
+    }
+
+    /// Every participant's e-stop signals.
+    pub fn estops(&self) -> String {
+        format!("{}/estop/*", self.prefix)
     }
 
     /// The robot and stream path a `h/{robot}/{path...}` key names.

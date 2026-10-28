@@ -10,7 +10,9 @@ use bytes::Bytes;
 use rlmesh_session::auth::{self, Credential, Device, HostIdentity, Link, ReplyOutcome};
 use rlmesh_session::authority::DeviceAccess;
 use rlmesh_session::crypto::sealed::Header;
-use rlmesh_session::crypto::{Rng, RngError, StaticKeypair, signed};
+use rlmesh_session::crypto::{
+    Key, Kind, KindSet, Rng, RngError, SealSender, Security, StaticKeypair, signed,
+};
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
 use rlmesh_session::spec::{Policy, RunOptions};
@@ -18,8 +20,8 @@ use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::codec;
 use rlmesh_session::wire::{
     ChannelId, ClockMode, Command, ContractMode, CtlError, CtlReply, CtlStatus, Encoding, Epoch,
-    FenceError, Fingerprint, HistoryQuery, Mode, ParticipantId, Plan, PriorityClass, ReasonCode,
-    Request, Role, Sample, SessionId, TenantId, VirtualTick, Watermark,
+    EstopSignal, FenceError, Fingerprint, HistoryQuery, Mode, ParticipantId, Plan, PriorityClass,
+    ReasonCode, Request, Role, Sample, SessionId, TenantId, VirtualTick, Watermark,
 };
 use rlmesh_session::{
     ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
@@ -356,6 +358,7 @@ fn attach(name: &str, role: Role) -> Command {
         requires: Vec::new(),
         workflow_edition: String::new(),
         workflow_editions: Vec::new(),
+        estop: None,
     }
 }
 
@@ -669,13 +672,47 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
     arm_seen_by(&operator, &[&policy]).await;
     policy.grant_lease(arm, None).await.expect("grant");
 
-    let stopped = policy.estop("test button").await.expect("estop");
-    assert_eq!(stopped.mode, Mode::Estop);
-    assert!(stopped.estop_latched && stopped.leases.is_empty());
-    robot
-        .wait_for("robot sees ESTOP", WAIT, |s| s.mode == Mode::Estop)
+    // A signal forged under a made-up key, or sealed by a non-member, is
+    // dropped at the edge.
+    let key = world.host.keys().estop(policy.id());
+    let signal = codec::encode_estop_signal(&EstopSignal {
+        reason: "forged".into(),
+        sent_ns: 0,
+    });
+    for key_id in [1, 9_999] {
+        let mut forger = SealSender::new(
+            key_id,
+            Key::from_bytes([7; 32]),
+            KindSet::ALL,
+            Security::Sign,
+        );
+        let sealed = forger.seal(Kind::EstopSignal, &key, &signal).expect("seal");
+        let put = operator.transport().control().put(&key, sealed).await;
+        put.expect("put");
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!robot.estop_latched(), "never latched");
+
+    // A member's signal: the robot's edge latches it by itself, by the
+    // policy, and the host goes ESTOP.
+    policy.estop("test button").await.expect("estop");
+    wait_until("the robot latched the signal", || robot.estop_latched()).await;
+    let latch = robot.local_estop().expect("latched");
+    assert_eq!(
+        (latch.code, latch.by.as_str()),
+        (ReasonCode::EstopSignal, "policy")
+    );
+    let stopped = operator
+        .wait_for("ESTOP", WAIT, |s| s.mode == Mode::Estop && s.estop_latched)
         .await
-        .expect("update");
+        .expect("the host latched");
+    assert!(stopped.leases.is_empty());
+    assert_eq!(stopped.mode_reason.by, "policy");
+    // The host authenticated the policy itself only for its own Estop.
+    assert_eq!(
+        stopped.mode_reason.verified,
+        stopped.mode_reason.code == ReasonCode::EstopRemote
+    );
 
     for refused in [operator.arm().await, operator.disarm().await] {
         assert_eq!(
@@ -692,9 +729,14 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
         CtlStatus::Forbidden
     );
 
-    let cleared = robot.clear().await.expect("local clear");
+    // The robot's local clear: its Estop reaches the host first, then the
+    // Clear, so the host ends ESTOP and unlatched.
+    robot.clear_estop();
+    let cleared = operator
+        .wait_for("the local clear", WAIT, |s| !s.estop_latched)
+        .await
+        .expect("cleared");
     assert_eq!(cleared.mode, Mode::Estop);
-    assert!(!cleared.estop_latched);
     operator.disarm().await.expect("disarm");
     let armed = operator.arm().await.expect("arm");
     assert_eq!(armed.mode, Mode::Armed);

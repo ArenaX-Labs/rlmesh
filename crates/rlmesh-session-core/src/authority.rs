@@ -610,6 +610,7 @@ impl Authority {
                 requires,
                 workflow_edition,
                 workflow_editions,
+                estop,
             } => {
                 if roles.is_empty() {
                     return Err(CtlError::new(
@@ -662,6 +663,16 @@ impl Authority {
                         hint_ns: None,
                     },
                 );
+                // A robot carries its latch into a new session (§6): it
+                // starts in ESTOP.
+                if let Some(latch) = estop.filter(|_| roles.contains(&Role::Embodiment)) {
+                    let code = match latch.code {
+                        ReasonCode::EstopSignal => ReasonCode::EstopSignal,
+                        _ => ReasonCode::EstopLocal,
+                    };
+                    let by = ParticipantId::new(&latch.by).unwrap_or_else(|_| from.clone());
+                    self.latch_estop(code, &by, &from, latch.detail, &mut applied.events);
+                }
                 applied.events.push(AuthorityEvent::Attached {
                     participant: from,
                     roles,
@@ -784,31 +795,24 @@ impl Authority {
             Command::ReleaseLease { channels, token } => {
                 self.release(&from, &channels, token, &mut applied.events)?;
             }
-            Command::Estop { reason, code } => {
+            Command::Estop {
+                reason,
+                code,
+                origin,
+            } => {
                 // Accepted from every member (the host authenticated it):
-                // refusing an e-stop is never safer.
-                if self.mode != Mode::Estop || !self.estop_latched {
-                    // An edge reports its own latch; any other e-stop came
-                    // through the host. Not verified until senders are
-                    // authenticated.
-                    let code = match code {
-                        ReasonCode::EstopLocal | ReasonCode::EstopSignal => code,
-                        _ => ReasonCode::EstopRemote,
-                    };
-                    let why = self.reason(code, &from, &reason);
-                    self.revoke_all(ReasonCode::VoidedByEstop, &why, &mut applied.events);
-                    self.estop_latched = true;
-                    applied.events.push(AuthorityEvent::EstopLatched {
-                        by: from.clone(),
-                        reason,
-                    });
-                    if self.mode == Mode::Estop {
-                        // Cleared but not yet disarmed: latched again.
-                        self.mode_reason = why;
-                    } else {
-                        self.set_mode(Mode::Estop, why, &mut applied.events);
-                    }
-                }
+                // refusing an e-stop is never safer. An edge reports its own
+                // latch; any other e-stop came through the host.
+                let code = match code {
+                    ReasonCode::EstopLocal | ReasonCode::EstopSignal => code,
+                    _ => ReasonCode::EstopRemote,
+                };
+                // An edge reporting a signal it latched names its sender,
+                // whom only the edge authenticated.
+                let by = origin
+                    .filter(|_| code == ReasonCode::EstopSignal)
+                    .unwrap_or_else(|| from.clone());
+                self.latch_estop(code, &by, &from, reason, &mut applied.events);
             }
             Command::Clear => {
                 let info = self.require_attached(&from)?;
@@ -1023,6 +1027,37 @@ impl Authority {
         self.needed.retain(|(p, _), _| p != id);
         self.recompute_demands(events);
         self.barrier_gone(id, self.now_ns);
+    }
+
+    /// Latches ESTOP for `by`'s stop, which `from` sent (`verified` when
+    /// they are one: the host authenticated the stop's sender itself).
+    fn latch_estop(
+        &mut self,
+        code: ReasonCode,
+        by: &ParticipantId,
+        from: &ParticipantId,
+        reason: String,
+        events: &mut Vec<AuthorityEvent>,
+    ) {
+        if self.mode == Mode::Estop && self.estop_latched {
+            return;
+        }
+        let why = Reason {
+            verified: by == from,
+            ..self.reason(code, by, &reason)
+        };
+        self.revoke_all(ReasonCode::VoidedByEstop, &why, events);
+        self.estop_latched = true;
+        events.push(AuthorityEvent::EstopLatched {
+            by: by.clone(),
+            reason,
+        });
+        if self.mode == Mode::Estop {
+            // Cleared but not yet disarmed: latched again.
+            self.mode_reason = why;
+        } else {
+            self.set_mode(Mode::Estop, why, events);
+        }
     }
 
     /// `id` leaves the roster with its parts, binding and leases (`code`).
@@ -2293,6 +2328,7 @@ mod tests {
             requires: Vec::new(),
             workflow_edition: String::new(),
             workflow_editions: Vec::new(),
+            estop: None,
         }
     }
 
@@ -3018,6 +3054,7 @@ mod tests {
         let estop = Command::Estop {
             reason: "button".into(),
             code: ReasonCode::Unspecified,
+            origin: None,
         };
         f.run("viewer", estop, 7).expect("estop");
         assert_eq!(f.auth.mode_reason().code, ReasonCode::EstopRemote);
@@ -3168,6 +3205,7 @@ mod tests {
             Command::Estop {
                 reason: "red button".into(),
                 code: ReasonCode::EstopRemote,
+                origin: None,
             },
             1,
         )
@@ -3186,6 +3224,7 @@ mod tests {
             Command::Estop {
                 reason: "again".into(),
                 code: ReasonCode::EstopLocal,
+                origin: None,
             },
             2,
         )
@@ -3209,6 +3248,7 @@ mod tests {
         let local = Command::Estop {
             reason: "button".into(),
             code: ReasonCode::EstopLocal,
+            origin: None,
         };
         f.run("robot", local, 4).expect("relatch");
         assert!(f.auth.estop_latched());
@@ -3235,6 +3275,7 @@ mod tests {
             requires,
             workflow_edition: String::new(),
             workflow_editions: Vec::new(),
+            estop: None,
         };
         assert_eq!(
             Fixture::status(f.run("future", future(vec!["merge.blend".into()]), 0)),

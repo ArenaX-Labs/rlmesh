@@ -576,6 +576,16 @@ pub struct Watermark {
     pub seq: u64,
 }
 
+/// A member's e-stop signal (design §6), published on
+/// `estop/{participant}` under its `k_estop`: every robot edge latches it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EstopSignal {
+    /// Why.
+    pub reason: String,
+    /// The sender's clock.
+    pub sent_ns: i64,
+}
+
 /// A control verb.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -598,6 +608,9 @@ pub enum Command {
         workflow_edition: String,
         /// Every workflow edition it runs.
         workflow_editions: Vec<String>,
+        /// An embodiment's e-stop latch from its previous session (design
+        /// §6): the session starts in ESTOP with this reason.
+        estop: Option<Reason>,
     },
     /// Leave, releasing leases and removing owned parts.
     Detach,
@@ -665,6 +678,8 @@ pub enum Command {
         /// [`ReasonCode::EstopLocal`] or [`ReasonCode::EstopSignal`] when an
         /// edge reports its own latch; anything else is a remote e-stop.
         code: ReasonCode,
+        /// [`ReasonCode::EstopSignal`]: whose signal the edge latched.
+        origin: Option<ParticipantId>,
     },
     /// An embodiment's local clear of a latched e-stop.
     Clear,
