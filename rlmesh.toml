@@ -188,3 +188,12 @@ version = "0.2.0-alpha.0"
 role = "core"
 publish = true
 
+[[artifact]]
+id = "cargo:rlmesh-tether"
+ecosystem = "cargo"
+name = "rlmesh-tether"
+manifest = "crates/rlmesh-tether/Cargo.toml"
+version = "0.2.0-alpha.0"
+role = "core"
+publish = true
+

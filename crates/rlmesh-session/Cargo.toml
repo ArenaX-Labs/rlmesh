@@ -43,6 +43,8 @@ rlmesh-session-core = { workspace = true }
 rustls = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
+# A paired machine's host files (`~/.config/rlmesh/hosts/{host id}.toml`).
+toml = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { workspace = true, optional = true }
 tokio-util = { workspace = true }

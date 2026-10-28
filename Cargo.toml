@@ -38,6 +38,7 @@ rlmesh-proto = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-proto" }
 rlmesh-session = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-session", default-features = false }
 rlmesh-session-core = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-session-core" }
 rlmesh-spaces = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-spaces" }
+rlmesh-tether = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-tether" }
 rlmesh-wasm = { version = "=0.2.0-alpha.0", path = "javascript/rlmesh/wasm" }
 
 # Protocol / Transport

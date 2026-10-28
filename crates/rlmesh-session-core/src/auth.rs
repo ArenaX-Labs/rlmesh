@@ -20,7 +20,9 @@
 //!   `k_obs`, a stream's `k_stream`. A [`Link`] holds its participant's
 //!   [`Keyring`], installs what the host delivers (`KeyDelivery`, the keys a
 //!   reply carries), and seals and opens chunks, samples, history and
-//!   lockstep under them.
+//!   lockstep under them;
+//! - machine pairing's exchanges ([`pairing`], §3): rlmeshd's pending
+//!   exchanges and the owner's approval, and the laptop's side.
 //!
 //! What a participant sends under its keys, the host accepts only from the
 //! generation in effect: a handshake makes a candidate, and the candidate
@@ -35,6 +37,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub mod address;
 pub mod issuer;
 pub mod keyring;
+pub mod pairing;
 
 pub use address::AddressKey;
 pub use issuer::KeyIssuer;
@@ -43,7 +46,7 @@ pub use keyring::{KeyError, Keyring, StreamWindows};
 use crate::authority::Access;
 use crate::crypto::StaticKeypair;
 use crate::crypto::handshake::{self, HandshakeError, IkInitiator, IkResponder};
-use crate::crypto::lp::kdf;
+use crate::crypto::lp::{hash_labelled, kdf};
 use crate::crypto::sealed::{HEADER_LEN, Header, TAG_LEN};
 use crate::crypto::{
     Kind, OpenError, Rng, RngError, SealError, SealReceiver, SealSender, SignedError,
@@ -64,6 +67,8 @@ use crate::wire::{
 pub const LOCAL_DEVICE: &str = "local";
 /// The `kdf` label of the `local` device's static key.
 pub const LOCAL_LABEL: &[u8] = b"rlmesh/v2 local x25519";
+/// The label of a host id's hash ([`HostIdentity::host_id`]).
+pub const HOST_ID_LABEL: &[u8] = b"rlmesh/v2 host id";
 
 /// The `local` device's static private key from an embedded host's local
 /// secret: `kdf(local secret, "rlmesh/v2 local x25519")`.
@@ -746,6 +751,16 @@ impl HostIdentity {
     /// The static X25519 public key participants handshake with.
     pub fn static_public(&self) -> &[u8; 32] {
         self.noise.public()
+    }
+
+    /// The host id (design §3): `rlm-` and 6 hex digits of
+    /// `BLAKE2s(lp("rlmesh/v2 host id") ‖ static key ‖ signing key)`. A
+    /// name for files and messages only: whoever pairs or is provisioned
+    /// keeps the static key itself.
+    pub fn host_id(&self) -> String {
+        let digest = hash_labelled(HOST_ID_LABEL, &[self.noise.public(), &self.sign_public])
+            .unwrap_or_else(|_| unreachable!("a short label"));
+        format!("rlm-{:02x}{:02x}{:02x}", digest[0], digest[1], digest[2])
     }
 
     /// The local secret an embedded host's address carries.

@@ -111,8 +111,9 @@ const CANDIDATE_TTL: Duration = Duration::from_secs(10);
 const UNSEALED: &str = "this session requires authenticated participants (feature auth.sealed): \
                         attach through the handshake with the session's address";
 
-/// The operating system's RNG: host keys and handshake ephemerals.
-pub(crate) struct OsRng;
+/// The operating system's RNG: host keys, handshake ephemerals and
+/// pairing nonces.
+pub struct OsRng;
 
 impl Rng for OsRng {
     fn fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), RngError> {

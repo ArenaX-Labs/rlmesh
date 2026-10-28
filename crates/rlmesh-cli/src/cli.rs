@@ -51,8 +51,12 @@ pub enum Command {
     /// devices of its device table.
     Daemon(DaemonArgs),
     /// List and change the devices and robot pins of this machine's
-    /// rlmeshd; it applies a change at once.
+    /// rlmeshd, and provision boards over USB; it applies a change at once.
+    #[command(visible_alias = "device")]
     Devices(DevicesArgs),
+    /// Pair this machine with a robot's rlmeshd (shows a code to type on
+    /// the robot), or, on the robot, approve a machine by its code.
+    Pair(PairArgs),
     /// Run an env or model image and check it the way the platform's probe
     /// does: handshake, describe, conformance, reproducibility, and an env's
     /// preview clip (exits 1 on a failed check).
@@ -532,6 +536,54 @@ pub enum DevicesCommand {
     Unpin {
         /// The robot name.
         robot: String,
+    },
+    /// Provision a networked board (an ESP32) plugged in over USB: give it
+    /// this rlmeshd's key, id and addresses, enroll its key as a board and
+    /// pin its robot name to it. Run it on the robot's machine, with
+    /// rlmeshd running; the board keeps its key when provisioned again.
+    Provision {
+        /// The board's serial port (`/dev/ttyUSB0`, `/dev/ttyACM0`).
+        #[arg(long, value_name = "TTY")]
+        port: std::path::PathBuf,
+        /// The robot name compiled into the board's sketch.
+        #[arg(long, value_name = "ROBOT")]
+        name: String,
+        /// The highest class it may attach and lease at (default: model,
+        /// or what it already has).
+        #[arg(long, value_name = "CLASS")]
+        max: Option<String>,
+    },
+}
+
+/// Flags for `rlmesh pair`.
+#[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+pub struct PairArgs {
+    /// The robot's host (`robot.local`, `10.0.0.5:7447`).
+    #[arg(value_name = "HOST", required = true)]
+    pub host: Option<String>,
+    /// The name this machine pairs as (default: its host name).
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+    #[command(subcommand)]
+    pub command: Option<PairCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PairCommand {
+    /// On the robot: list the machines waiting, and approve the one
+    /// showing CODE (typed, or asked for).
+    Approve {
+        /// The 6-digit code the machine shows.
+        code: Option<String>,
+        /// The highest class it may attach and lease at: observer,
+        /// scripted, model or operator (default operator).
+        #[arg(long, value_name = "CLASS")]
+        max: Option<String>,
+        /// rlmeshd's state directory (default: `rlmesh/daemon` in the user
+        /// state directory).
+        #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
+        state_dir: Option<std::path::PathBuf>,
     },
 }
 
