@@ -72,8 +72,11 @@ fn options(title: String) -> eframe::NativeOptions {
     }
 }
 
-fn replay(args: &Args, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let me = ParticipantId::new(&args.id)?;
+fn replay(_: &Args, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Not a participant of the recording (its cockpit is likely `cockpit`):
+    // replayed inputs are already session time, so no clock mapping of
+    // `me` may apply to them.
+    let me = ParticipantId::new("_replay")?;
     let replay = Replay::open(path, me, ModelConfig::default())?;
     eframe::run_native(
         "rlmesh-cockpit",

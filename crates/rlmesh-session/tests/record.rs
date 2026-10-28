@@ -334,7 +334,8 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
         let messages = read(file).expect("a complete segment");
         assert!(
             matches!(messages[0].message, Recorded::Authority(_)),
-            "{file:?} opens with the authority snapshot"
+            "{file:?} opens with the authority snapshot, not {:?}",
+            messages[0].message
         );
     }
     server.shutdown().await;
@@ -370,14 +371,18 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     };
     let collected =
         collect(&rolling, world.session, "test set", &episode, started).expect("collected");
+    // Collecting it again keeps the same links, never copying over them.
+    collect(&rolling, world.session, "test set", &episode, started).expect("again");
     robot.estop("test").await.expect("estop");
     publish_ft(&robot, 500).await;
     let stats = recorder.finish().await.expect("finish");
     assert!(stats.segments >= 3, "{stats:?}");
-    assert_eq!(
-        segments(dir.path(), world.session),
-        [stats.path],
-        "only the newest is kept"
+    // The purge spares the open segment and the one just closed (another
+    // session's could still be open).
+    let rolling_kept = segments(dir.path(), world.session);
+    assert!(
+        rolling_kept.len() <= 2 && rolling_kept.last() == Some(&stats.path),
+        "{rolling_kept:?}"
     );
 
     // Both incidents outlive the purge, the e-stop's with the segments

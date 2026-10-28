@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -89,6 +90,8 @@ pub struct RecordStats {
     /// Messages not written while rolling capture was paused for disk
     /// space.
     pub paused_drops: u64,
+    /// Messages dropped because the disk fell [`QUEUE_BYTES`] behind.
+    pub overflow_drops: u64,
     /// MCAP messages written.
     pub messages: u64,
     /// MCAP channels opened.
@@ -96,7 +99,8 @@ pub struct RecordStats {
     /// Payload bytes written (envelopes).
     pub bytes: u64,
     /// Messages whose `log_time` was raised to their channel's previous one
-    /// (the recorder's session clock stepped back on a remapping).
+    /// (the recorder's session clock stepped back on a remapping) or to the
+    /// file's first.
     pub log_time_clamped: u64,
 }
 
@@ -138,6 +142,38 @@ enum Entry {
     Finish {
         metadata: Metadata,
     },
+}
+
+/// How many payload bytes may wait for the writer: past it, messages are
+/// dropped and counted, so a disk slower than the session never grows the
+/// host's memory without bound.
+pub const QUEUE_BYTES: usize = 256 << 20;
+
+/// The writer's queue (see [`QUEUE_BYTES`]).
+#[derive(Clone)]
+struct Tx {
+    tx: mpsc::Sender<Entry>,
+    queued: Arc<AtomicUsize>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl Tx {
+    fn send(&self, entry: Entry) -> Result<(), mpsc::SendError<Entry>> {
+        if let Entry::Message { data, topic, .. } = &entry {
+            let len = data.len();
+            if self.queued.fetch_add(len, Ordering::Relaxed) + len > QUEUE_BYTES {
+                self.queued.fetch_sub(len, Ordering::Relaxed);
+                if self.dropped.fetch_add(1, Ordering::Relaxed) == 0 {
+                    warn!(
+                        topic = topic.name,
+                        "recording fell behind: dropping messages"
+                    );
+                }
+                return Ok(());
+            }
+        }
+        self.tx.send(entry)
+    }
 }
 
 /// Stamps recorder-side receipt times (session time).
@@ -204,7 +240,7 @@ struct Misses {
 /// its sequence, or `None` to skip it.
 async fn subscribe_envelopes(
     participant: &Arc<Participant>,
-    tx: &mpsc::Sender<Entry>,
+    tx: &Tx,
     stamp: &Stamp,
     class: TrafficClass,
     key: String,
@@ -239,7 +275,7 @@ async fn subscribe_envelopes(
 /// A session recording in progress: see the crate docs.
 pub struct Recorder {
     participant: Arc<Participant>,
-    tx: mpsc::Sender<Entry>,
+    tx: Tx,
     writer: Option<JoinHandle<Result<RecordStats, RecordError>>>,
     watcher: Option<tokio::task::JoinHandle<Subscriptions>>,
     cancel: tokio::sync::watch::Sender<bool>,
@@ -304,9 +340,17 @@ impl Recorder {
 
     async fn start_with(participant: Arc<Participant>, sink: Sink) -> Result<Self, RecordError> {
         let (tx, rx) = mpsc::channel();
+        let tx = Tx {
+            tx,
+            queued: Arc::default(),
+            dropped: Arc::default(),
+        };
         let writer = std::thread::Builder::new()
             .name("rlmesh-record".into())
-            .spawn(move || write_loop(sink, &rx))
+            .spawn({
+                let tx = tx.clone();
+                move || write_loop(sink, &rx, &tx)
+            })
             .map_err(|source| RecordError::Io {
                 path: PathBuf::new(),
                 source,
@@ -484,7 +528,7 @@ impl Recorder {
 /// [`Recorder::tee`]). Cheap to clone.
 #[derive(Clone)]
 pub struct SampleTee {
-    tx: mpsc::Sender<Entry>,
+    tx: Tx,
     stamp: Stamp,
     topics: Arc<Mutex<LaneTopics>>,
 }
@@ -550,7 +594,7 @@ impl Drop for Recorder {
 /// cancelled; returns the subscriptions so the caller drops them.
 async fn watch_parts(
     participant: Arc<Participant>,
-    tx: mpsc::Sender<Entry>,
+    tx: Tx,
     stamp: Stamp,
     mut cancelled: tokio::sync::watch::Receiver<bool>,
 ) -> Subscriptions {
@@ -615,13 +659,7 @@ async fn watch_parts(
     }
 }
 
-fn on_chunk(
-    tx: &mpsc::Sender<Entry>,
-    stamp: &Stamp,
-    topic: &Arc<Topic>,
-    log_time: i64,
-    data: Bytes,
-) {
+fn on_chunk(tx: &Tx, stamp: &Stamp, topic: &Arc<Topic>, log_time: i64, data: Bytes) {
     let Ok(chunk) = codec::decode_chunk(data.clone()) else {
         debug!(topic = topic.name, "undecodable chunk");
         return;
@@ -637,7 +675,7 @@ fn on_chunk(
 
 async fn subscribe_stream(
     participant: &Arc<Participant>,
-    tx: &mpsc::Sender<Entry>,
+    tx: &Tx,
     stamp: &Stamp,
     snapshot: &AuthoritySnapshot,
     stream: StreamSpec,
@@ -776,7 +814,11 @@ fn ns(t: i64) -> u64 {
     u64::try_from(t).unwrap_or(0)
 }
 
-fn write_loop(mut sink: Sink, rx: &mpsc::Receiver<Entry>) -> Result<RecordStats, RecordError> {
+fn write_loop(
+    mut sink: Sink,
+    rx: &mpsc::Receiver<Entry>,
+    queue: &Tx,
+) -> Result<RecordStats, RecordError> {
     let mut stats = RecordStats::default();
     let mut metadata = Metadata::new();
     let mut authority_seen = false;
@@ -789,6 +831,7 @@ fn write_loop(mut sink: Sink, rx: &mpsc::Receiver<Entry>) -> Result<RecordStats,
                 sequence,
                 data,
             } => {
+                queue.queued.fetch_sub(data.len(), Ordering::Relaxed);
                 // Heartbeats and reports before the first snapshot are
                 // skipped, so a recording opens with the authority.
                 authority_seen |= topic.key == TopicKey::Authority;
@@ -819,6 +862,7 @@ fn write_loop(mut sink: Sink, rx: &mpsc::Receiver<Entry>) -> Result<RecordStats,
             }
         }
     }
+    stats.overflow_drops = queue.dropped.load(Ordering::Relaxed);
     match sink {
         Sink::File(segment) => segment.finish(&metadata, &mut stats)?,
         Sink::Rolling(rolling) => {
@@ -854,6 +898,11 @@ struct Segment {
     schemas: BTreeMap<&'static str, u16>,
     /// MCAP channel and its newest log time, by topic.
     channels: BTreeMap<TopicKey, (u16, u64)>,
+    /// The first message's log time: none is written before it, so the
+    /// snapshot a segment opens with reads back first. (A sample's log time
+    /// is its receipt, which can precede the stamp the recorder's own
+    /// snapshot subscriber gives the snapshot that declared its part.)
+    floor: Option<u64>,
 }
 
 impl Segment {
@@ -873,6 +922,7 @@ impl Segment {
             started,
             schemas: BTreeMap::new(),
             channels: BTreeMap::new(),
+            floor: None,
         })
     }
 
@@ -903,8 +953,9 @@ impl Segment {
             }
         };
         let mut log_time = ns(m.log_time);
-        if log_time < last_log {
-            log_time = last_log;
+        let floor = *self.floor.get_or_insert(log_time);
+        if log_time < last_log.max(floor) {
+            log_time = last_log.max(floor);
             stats.log_time_clamped += 1;
         }
         self.channels.insert(m.topic.key, (channel_id, log_time));
@@ -1023,9 +1074,21 @@ impl RollingSink {
                 self.retry_at = m.log_time.saturating_add(segment);
             }
         }
-        match &mut self.current {
-            Some(current) => current.write(&m, stats)?,
-            None => stats.paused_drops += 1,
+        let written = match &mut self.current {
+            Some(current) => current.write(&m, stats),
+            None => {
+                stats.paused_drops += 1;
+                Ok(())
+            }
+        };
+        if let Err(err) = written {
+            // The segment stays readable up to the failed write (a full
+            // disk, most likely); capture retries next period.
+            warn!(%err, "recording paused: a segment write failed");
+            self.current = None;
+            self.pause(true);
+            self.retry_at = m.log_time.saturating_add(segment);
+            stats.paused_drops += 1;
         }
         if m.topic.key == TopicKey::Authority {
             self.authority = Some(m);
@@ -1040,7 +1103,9 @@ impl RollingSink {
             current.finish(&Metadata::new(), stats)?;
         }
         purge(&self.rolling);
-        if free_bytes(&self.dir).is_some_and(|free| free < self.rolling.min_free_bytes) {
+        // The root, which outlives the session directory the purge may
+        // just have removed.
+        if free_bytes(&self.rolling.dir).is_some_and(|free| free < self.rolling.min_free_bytes) {
             if !self.paused {
                 warn!(dir = %self.dir.display(), "recording paused: less than {} bytes free", self.rolling.min_free_bytes);
             }
@@ -1075,7 +1140,9 @@ impl RollingSink {
         }
         self.keeping.retain(|(until, _)| log_time < *until);
         for (_, incident) in &self.keeping {
-            link_into(&path, incident);
+            if let Err(err) = link_into(&path, incident) {
+                warn!(%err, incident = %incident.display(), "segment not kept");
+            }
         }
         self.current = Some(segment);
         Ok(())
@@ -1193,8 +1260,9 @@ fn file_name(name: &str) -> String {
         .collect()
 }
 
-/// Hard-links `session`'s rolling segments written since `since` into a
-/// new `dir`.
+/// Hard-links `session`'s rolling segments that hold anything since
+/// `since` into a new `dir`: each segment is named for when it opened, so
+/// it covers until the next one opened (the newest, until now).
 fn link_since(
     rolling: &Rolling,
     session: SessionId,
@@ -1206,40 +1274,55 @@ fn link_since(
         let path = path.to_path_buf();
         move |source| RecordError::Io { path, source }
     };
-    let segments: Vec<PathBuf> = std::fs::read_dir(&source)
+    let mut segments: Vec<(u128, PathBuf)> = std::fs::read_dir(&source)
         .map_err(io(&source))?
         .flatten()
-        .filter(|f| {
-            f.path().extension().is_some_and(|e| e == "mcap")
-                && f.metadata()
-                    .and_then(|m| m.modified())
-                    .is_ok_and(|modified| modified >= since)
+        .filter_map(|f| {
+            let path = f.path();
+            let opened = path.file_stem()?.to_str()?.parse().ok()?;
+            path.extension()
+                .is_some_and(|e| e == "mcap")
+                .then_some((opened, path))
         })
-        .map(|f| f.path())
         .collect();
-    if segments.is_empty() {
+    segments.sort();
+    let since = unix_ms(since);
+    let covering: Vec<&PathBuf> = segments
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| segments.get(i + 1).is_none_or(|(next, _)| *next > since))
+        .map(|(_, (_, path))| path)
+        .collect();
+    std::fs::create_dir_all(dir).map_err(io(dir))?;
+    let mut linked = 0;
+    for segment in covering {
+        match link_into(segment, dir) {
+            Ok(()) => linked += 1,
+            Err(err) => warn!(%err, segment = %segment.display(), "segment not kept"),
+        }
+    }
+    if linked == 0 {
+        let _ = std::fs::remove_dir(dir);
         return Err(RecordError::Io {
             path: source,
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "no recent segments"),
         });
     }
-    std::fs::create_dir_all(dir).map_err(io(dir))?;
-    for segment in &segments {
-        link_into(segment, dir);
-    }
     Ok(())
 }
 
-/// Hard-links `segment` into `dir` (copies it where links are refused).
-fn link_into(segment: &Path, dir: &Path) {
+/// Hard-links `segment` into `dir`, or copies it where links are refused;
+/// a link already there is kept (never copied over: it is the same file).
+fn link_into(segment: &Path, dir: &Path) -> std::io::Result<()> {
     let Some(name) = segment.file_name() else {
-        return;
+        return Ok(());
     };
     let target = dir.join(name);
-    if std::fs::hard_link(segment, &target).is_err()
-        && let Err(err) = std::fs::copy(segment, &target)
-    {
-        warn!(%err, segment = %segment.display(), "could not keep a segment");
+    match std::fs::hard_link(segment, &target) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(_) if !target.exists() => std::fs::copy(segment, &target).map(drop),
+        Err(err) => Err(err),
     }
 }
 
@@ -1269,7 +1352,13 @@ fn purge(rolling: &Rolling) {
     segments.sort();
     let mut total: u64 = segments.iter().map(|(_, len, _)| len).sum();
     let now = std::time::SystemTime::now();
+    // A segment written within the last period may be another session's
+    // open one: never removed.
+    let open = now.checked_sub(rolling.segment).unwrap_or(now);
     for (modified, len, path) in segments {
+        if modified >= open {
+            break;
+        }
         let old = now
             .duration_since(modified)
             .is_ok_and(|age| age > rolling.max_age);
@@ -1510,9 +1599,17 @@ pub struct RecordedMessage {
 /// not decode ([`summarize`] counts those). A file cut short (the recorder
 /// crashed or lost power) yields what was written before the cut.
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordedMessage>, RecordError> {
+    let path = path.as_ref();
     let mut out = Vec::new();
-    for file in mcap_files(path.as_ref())? {
-        out.extend(read_file(&file)?);
+    for file in mcap_files(path)? {
+        match read_file(&file) {
+            Ok(messages) => out.extend(messages),
+            // A segment still being written may hold no finished chunk yet.
+            Err(err) if path.is_dir() => {
+                warn!(%err, file = %file.display(), "segment skipped");
+            }
+            Err(err) => return Err(err),
+        }
     }
     out.sort_by_key(|m| m.log_ns);
     Ok(out)
@@ -1599,6 +1696,7 @@ pub struct DecodedSample {
     /// When the recorder received it (session time).
     pub log_ns: i64,
     /// Its fields, in declared order; a JPEG frame decoded to raw RGB.
+    /// None for an `_applied` tick that dispatched nothing.
     pub fields: Vec<Field>,
 }
 
@@ -1631,7 +1729,10 @@ pub fn decode_samples(messages: &[RecordedMessage]) -> Vec<DecodedSample> {
         let Some(spec) = streams.get(&sample.channel) else {
             continue;
         };
-        let fields = if matches!(spec.encoding, Encoding::Jpeg { .. }) {
+        let fields = if sample.applied.is_some_and(|a| !a.present) {
+            // An edge tick that dispatched nothing (hold, safe, e-stop).
+            Vec::new()
+        } else if matches!(spec.encoding, Encoding::Jpeg { .. }) {
             let Ok(rgb) = crate::media::decode_payload(spec, &sample.payload) else {
                 debug!(channel = %spec.channel, "undecodable frame");
                 continue;

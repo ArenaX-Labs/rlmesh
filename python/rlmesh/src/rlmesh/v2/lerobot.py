@@ -25,7 +25,6 @@ format that package writes::
 from __future__ import annotations
 
 import argparse
-import collections
 import importlib
 import json
 import os
@@ -101,13 +100,15 @@ def _names(topic: str, fields: _Fields) -> list[str]:
     return names
 
 
-def _frames(take: _Take, fps: float) -> Iterator[dict[str, _Fields]]:
+def _frames(take: _Take, fps: int) -> Iterator[dict[str, _Fields]]:
     """The newest fields per topic at each frame time of ``take``."""
     step = round(1e9 / fps)
     at = take.start_ns
     latest: dict[str, _Fields] = {}
     for segment in sorted(take.dir.glob("*.mcap")):
         # One segment at a time: a minute of decoded camera frames at most.
+        # TODO: that is gigabytes for 1080p cameras; stream the decoded
+        # samples from the binding when such takes get exported.
         for topic, log_ns, fields in V2Recorder.samples(os.fspath(segment)):
             while at < log_ns and at <= take.end_ns:
                 if latest:
@@ -141,7 +142,7 @@ def export(
     out: str | os.PathLike[str],
     *,
     repo_id: str,
-    fps: float = 30.0,
+    fps: int = 30,
     state: Sequence[str] | None = None,
     include_failed: bool = False,
 ) -> int:
@@ -150,13 +151,20 @@ def export(
     takes = _takes(Path(dataset), include_failed)
     if not takes:
         raise ValueError(f"no episodes to export under {dataset}")
-    # The features are every stream the first take's last frame holds (its
+    # The features are every stream the first take holds, as last seen with
+    # a value (an `_applied` tick that dispatched nothing has none).
     # first may precede some streams' first sample).
-    tail = collections.deque(_frames(takes[0], fps), maxlen=1)
-    if not tail:
+    last: dict[str, _Fields] = {}
+    for frame in _frames(takes[0], fps):
+        last.update((t, f) for t, f in frame.items() if f)
+    if not last:
         raise ValueError(f"{takes[0].dir} holds no samples")
-    last = tail[0]
     states, actions, cameras = _layout(last, state)
+    if not states or not actions:
+        raise ValueError(
+            "a LeRobot dataset needs a state and an action: "
+            f"state {states}, action {actions} (the `_applied` streams)"
+        )
     features: dict[str, dict[str, Any]] = {
         "observation.state": {
             "dtype": "float32",
@@ -178,7 +186,7 @@ def export(
     robots = sorted({topic.split("/", 1)[0] for topic in last})
     written: Any = lerobot.LeRobotDataset.create(
         repo_id,
-        round(fps),
+        fps,
         features=features,
         root=out,
         robot_type="+".join(robots),
@@ -189,7 +197,9 @@ def export(
     for take in takes:
         frames = 0
         for frame in _frames(take, fps):
-            if any(t not in frame for t in wanted):
+            # Frames before every stream's first sample, or while an edge
+            # dispatches nothing, are left out.
+            if any(not frame.get(t) for t in wanted):
                 continue
             row: dict[str, Any] = {
                 "observation.state": np.concatenate(
@@ -223,7 +233,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--repo-id", required=True, help="the dataset's Hub id, user/name"
     )
-    parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
         "--state",
         nargs="+",

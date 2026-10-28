@@ -102,6 +102,11 @@ impl SessionServer {
         let hosts: Hosts = Arc::default();
         #[cfg(feature = "record")]
         let recorders: Recorders = Arc::default();
+        // Only a recording server's own recorder is not a member.
+        #[cfg(feature = "record")]
+        let recording = rolling.is_some();
+        #[cfg(not(feature = "record"))]
+        let recording = false;
         #[cfg(feature = "record")]
         let record = {
             let (transport, config) = (transport.clone(), config.clone());
@@ -153,7 +158,7 @@ impl SessionServer {
             async move {
                 let mut present: HashMap<SessionId, HashSet<String>> = HashMap::new();
                 while let Some((joined, session, key)) = changes.recv().await {
-                    if key.rsplit('/').next() == Some(RECORDER) {
+                    if recording && key.rsplit('/').next() == Some(RECORDER) {
                         continue;
                     }
                     let members = present.entry(session).or_default();

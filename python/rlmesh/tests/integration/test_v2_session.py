@@ -438,7 +438,7 @@ def test_a_recorder_writes_the_session_to_mcap_and_reads_it_back(
         )
     )
     [episode] = lerobot._takes(take.parent, include_failed=False)
-    frames = list(lerobot._frames(episode, fps=30.0))
+    frames = list(lerobot._frames(episode, fps=30))
     assert len(frames) > 1
     states, actions, cameras = lerobot._layout(frames[-1], None)
     assert "ur10e/arm" in states and actions == ["ur10e/arm/_applied"]
