@@ -16,6 +16,7 @@
 extern crate alloc;
 
 pub mod ffi;
+pub mod robot;
 #[cfg(all(not(feature = "std"), target_os = "none"))]
 mod sys;
 pub mod timing;
