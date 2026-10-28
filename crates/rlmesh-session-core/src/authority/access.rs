@@ -98,6 +98,11 @@ impl Access {
         self.devices.insert(device.into(), access);
     }
 
+    /// Removes `device`'s entry: it may do nothing from now on.
+    pub fn remove(&mut self, device: &str) {
+        self.devices.remove(device);
+    }
+
     /// `device`'s entry, if it has one.
     pub fn get(&self, device: &str) -> Option<&DeviceAccess> {
         self.devices.get(device)

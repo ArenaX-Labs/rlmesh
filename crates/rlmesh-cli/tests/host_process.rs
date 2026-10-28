@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rlmesh_session::SessionAddress;
-use rlmesh_session::address::{DEFAULT_SESSION, TENANT, session_id};
+use rlmesh_session::address::{AddressKey, DEFAULT_SESSION, TENANT, session_id};
+use rlmesh_session::auth::Credential;
+use rlmesh_session::auth::address::base32;
+use rlmesh_session::crypto::StaticKeypair;
 use rlmesh_session::media::synthetic_frame;
 use rlmesh_session::record::{Recorded, read};
 use rlmesh_session::spec::apply::Value;
@@ -482,4 +485,142 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
         observation.value("prompt"),
         Some(&Value::Text("put the cup on the plate".into()))
     );
+}
+
+/// rlmeshd in its own process, on every interface, its state in `state`;
+/// killed on drop.
+struct Daemon {
+    child: Child,
+    base: std::net::SocketAddr,
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Daemon {
+    /// Spawns it on `base`'s port (`None`: free ones) and waits for its
+    /// first line.
+    fn spawn(state: &std::path::Path, base: Option<std::net::SocketAddr>) -> Self {
+        for _ in 0..16 {
+            let base = base
+                .unwrap_or_else(|| free_local_base("0.0.0.0".parse().expect("ip")).expect("ports"));
+            let mut child = Command::new(env!("CARGO_BIN_EXE_rlmeshd"))
+                .arg("--listen")
+                .arg(base.to_string())
+                .env("RLMESH_STATE_DIR", state)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .expect("spawn rlmeshd");
+            let mut line = String::new();
+            BufReader::new(child.stdout.take().expect("stdout"))
+                .read_line(&mut line)
+                .expect("its first line");
+            if line.starts_with("rlmeshd on") {
+                return Self { child, base };
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        panic!("rlmeshd never found free ports");
+    }
+
+    /// Attaches as `id` with `credential`, linked as a LAN client is: no
+    /// password.
+    async fn join(&self, id: &str, credential: Credential) -> Result<Participant, SessionError> {
+        let local = std::net::SocketAddr::from(([127, 0, 0, 1], self.base.port()));
+        let transport = Transport::open(
+            &TransportConfig::per_class_tcp(None, Some(local))
+                .expect("config")
+                .with_tuning(TransportTuning {
+                    client: true,
+                    connect_timeout: Some(WAIT),
+                    ..TransportTuning::default()
+                }),
+        )
+        .await
+        .expect("a link with no password");
+        let mut config = ParticipantConfig::new(
+            TenantId::new(TENANT).expect("tenant"),
+            session_id(DEFAULT_SESSION),
+            ParticipantId::new(id).expect("id"),
+            vec![Role::Observer],
+            PriorityClass::Model,
+        );
+        config.heartbeat_period = Duration::from_millis(20);
+        config.credential = Some(credential);
+        Participant::attach(transport, config).await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rlmeshd_keeps_its_identity_admits_its_table_over_the_lan_and_revokes_at_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = tempfile::tempdir().expect("tempdir");
+    let daemon = Daemon::spawn(state.path(), None);
+    let mode = |file: &str| {
+        std::fs::metadata(state.path().join(file))
+            .expect(file)
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!((mode("host.key"), mode("local.key")), (0o600, 0o600));
+    let local_key = || std::fs::read_to_string(state.path().join("local.key")).expect("local.key");
+    let first = local_key();
+
+    // A laptop the table admits at model, and a restart that keeps the
+    // host's keys and reads the table.
+    let laptop = StaticKeypair::from_private(&mut [5; 32]);
+    std::fs::write(
+        state.path().join("devices.toml"),
+        format!(
+            "[devices.laptop]\npublic_key = \"{}\"\nmax_priority = \"model\"\n",
+            base32(laptop.public())
+        ),
+    )
+    .expect("devices.toml");
+    let base = daemon.base;
+    drop(daemon);
+    let daemon = Daemon::spawn(state.path(), Some(base));
+    assert_eq!(local_key(), first, "the same identity");
+    let host_static = *first
+        .trim()
+        .parse::<AddressKey>()
+        .expect("an address key")
+        .credential()
+        .host_static();
+
+    let eye = daemon
+        .join("eye", Credential::new(laptop, host_static))
+        .await
+        .expect("admitted by devices.toml");
+    let stranger = StaticKeypair::from_private(&mut [6; 32]);
+    let refused = daemon
+        .join("intruder", Credential::new(stranger, host_static))
+        .await
+        .err()
+        .expect("an unknown device");
+    assert_eq!(
+        refused.refusal().map(|e| e.status),
+        Some(CtlStatus::Unauthenticated),
+        "{refused}"
+    );
+
+    // Revoked on the robot: detached at once.
+    let revoked = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
+        .args(["devices", "revoke", "laptop"])
+        .env("RLMESH_STATE_DIR", state.path())
+        .status()
+        .expect("rlmesh devices");
+    assert!(revoked.success());
+    eye.wait_for("the laptop gone", WAIT, |s| {
+        s.participant(eye.id()).is_none()
+    })
+    .await
+    .expect("detached");
 }

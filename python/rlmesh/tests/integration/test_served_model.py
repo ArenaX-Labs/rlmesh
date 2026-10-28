@@ -554,6 +554,7 @@ def test_horizon_defaults_use_rust_selection_and_preserve_action_bytes(
 
 SERVE_IN_ITS_OWN_PROCESS = """
 import sys, rlmesh
+from rlmesh.v2 import Host
 
 class Policy(rlmesh.Model):
     workflow_edition = "2026.10"
@@ -561,7 +562,10 @@ class Policy(rlmesh.Model):
     def predict(self, observation):
         return 1
 
-Policy().serve(sys.argv[1], name="policy")
+# The host's address, with its key, is the invite the driver joins by.
+host = Host(sys.argv[1])
+print(host.address, flush=True)
+Policy().serve(host.address, name="policy")
 """
 
 DRIVE_MANY_ROUTES = """
@@ -601,10 +605,16 @@ def test_many_routes_of_one_process_drive_a_model_another_process_hosts(
     import sys
 
     session = f"127.0.0.1:{session_port}"
-    host = subprocess.Popen([sys.executable, "-c", SERVE_IN_ITS_OWN_PROCESS, session])
+    host = subprocess.Popen(
+        [sys.executable, "-c", SERVE_IN_ITS_OWN_PROCESS, session],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
     try:
+        assert host.stdout is not None
+        address = host.stdout.readline().strip()
         driver = subprocess.run(
-            [sys.executable, "-c", DRIVE_MANY_ROUTES, f"{session}/policy"],
+            [sys.executable, "-c", DRIVE_MANY_ROUTES, f"{address}/policy"],
             capture_output=True,
             text=True,
             timeout=120,

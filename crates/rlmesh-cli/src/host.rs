@@ -1,7 +1,7 @@
 //! `rlmesh host`: v2 sessions hosted in the foreground, so participants on
 //! this machine (or, listening beyond loopback, others) join instead of
 //! hosting their own. It prints its address with its key (`…#key`): the
-//! invite for other machines; this user's processes find the key alone.
+//! invite for every other process.
 
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -54,7 +54,7 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write) -> Result<()> {
 }
 
 #[cfg(unix)]
-async fn shutdown_signal() -> std::io::Result<()> {
+pub(crate) async fn shutdown_signal() -> std::io::Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate())?;
     tokio::select! {
@@ -65,6 +65,6 @@ async fn shutdown_signal() -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-async fn shutdown_signal() -> std::io::Result<()> {
+pub(crate) async fn shutdown_signal() -> std::io::Result<()> {
     tokio::signal::ctrl_c().await
 }

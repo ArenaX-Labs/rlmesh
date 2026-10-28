@@ -95,6 +95,8 @@ pub enum DetachReason {
     Lost,
     /// Its device's entry changed: it re-attaches under the new one.
     AccessChanged,
+    /// Its device was revoked.
+    Revoked,
 }
 
 /// Something the authority state did, for publication, logging and evidence.
@@ -1131,6 +1133,32 @@ impl Authority {
             self.revision += 1;
         }
         (events, detached)
+    }
+
+    /// The owner revoked `device` (design §4, §8.5): its entry goes, and
+    /// every participant of it is detached (`REVOKED`), robots it embodies
+    /// too. Returns what it caused and who it detached.
+    pub fn revoke(
+        &mut self,
+        device: &str,
+        now_ns: i64,
+    ) -> (Vec<AuthorityEvent>, Vec<ParticipantId>) {
+        self.now_ns = now_ns;
+        self.config.access.remove(device);
+        let members: Vec<ParticipantId> = self
+            .roster
+            .values()
+            .filter(|p| p.device == device && p.present)
+            .map(|p| p.id.clone())
+            .collect();
+        let mut events = Vec::new();
+        for id in &members {
+            self.detach(id, ReasonCode::Revoked, DetachReason::Revoked, &mut events);
+        }
+        if !events.is_empty() {
+            self.revision += 1;
+        }
+        (events, members)
     }
 
     /// A new process attached as `id` (a new generation, §8.3): the old one

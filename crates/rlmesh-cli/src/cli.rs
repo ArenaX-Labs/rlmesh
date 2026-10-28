@@ -46,6 +46,13 @@ pub enum Command {
     /// Host v2 sessions on this machine until Ctrl-C: the default session,
     /// and any other a participant names. Prints the address it listens on.
     Host(HostArgs),
+    /// Run rlmeshd in the foreground (also installed as `rlmeshd`): v2
+    /// sessions on the LAN under this machine's host identity, admitting the
+    /// devices of its device table.
+    Daemon(DaemonArgs),
+    /// List and change the devices and robot pins of this machine's
+    /// rlmeshd; it applies a change at once.
+    Devices(DevicesArgs),
     /// Run an env or model image and check it the way the platform's probe
     /// does: handshake, describe, conformance, reproducibility, and an env's
     /// preview clip (exits 1 on a failed check).
@@ -455,6 +462,77 @@ pub struct HostArgs {
     /// rlmeshd's.
     #[arg(long)]
     pub insecure: bool,
+}
+
+/// Flags for `rlmesh daemon`.
+#[derive(Args, Debug)]
+pub struct DaemonArgs {
+    /// Keep the host's keys and device table here (default: `rlmesh/daemon`
+    /// in the user state directory).
+    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
+    pub state_dir: Option<std::path::PathBuf>,
+    /// Listen here (this port and the next three) instead of every
+    /// interface on the well-known port (`RLMESH_PORT`, else 7447).
+    #[arg(long, value_name = "ADDR")]
+    pub listen: Option<std::net::SocketAddr>,
+}
+
+/// Flags for `rlmesh devices`.
+#[derive(Args, Debug)]
+pub struct DevicesArgs {
+    /// rlmeshd's state directory (default: `rlmesh/daemon` in the user
+    /// state directory).
+    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR", global = true)]
+    pub state_dir: Option<std::path::PathBuf>,
+    #[command(subcommand)]
+    pub command: DevicesCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DevicesCommand {
+    /// List the devices with their entries, and the robot pins.
+    Ls,
+    /// Change a paired device's entry; its participants re-attach under it.
+    Allow {
+        /// The device.
+        device: String,
+        /// The highest class it may attach and lease at: observer, scripted,
+        /// model or operator.
+        #[arg(long, value_name = "CLASS")]
+        max: Option<String>,
+        /// The parts it may lease and read: globs over `{robot}/{path}`,
+        /// comma-separated.
+        #[arg(long, value_name = "GLOBS", value_delimiter = ',')]
+        parts: Option<Vec<String>>,
+        /// The verbs it may send besides estop: arm, disarm, comma-separated.
+        #[arg(long, value_name = "VERBS", value_delimiter = ',')]
+        verbs: Option<Vec<String>>,
+    },
+    /// Remove a device: it is detached at once, and its robot pins stay.
+    Revoke {
+        /// The device.
+        device: String,
+    },
+    /// Pin a robot name to another device (or board); its embodiment is
+    /// detached, and an active session goes SAFE.
+    Move {
+        /// The robot name.
+        robot: String,
+        /// The device that embodies it from now on (`local`: this machine).
+        #[arg(long, value_name = "DEVICE")]
+        to: String,
+        /// The tethered board behind that device, 16 hex digits.
+        #[arg(long, value_name = "ID", conflicts_with = "no_board_id")]
+        board_id: Option<String>,
+        /// The robot has no board behind the device any more.
+        #[arg(long)]
+        no_board_id: bool,
+    },
+    /// Remove a robot name's pin; its embodiment is detached.
+    Unpin {
+        /// The robot name.
+        robot: String,
+    },
 }
 
 /// Flags for `rlmesh describe`.

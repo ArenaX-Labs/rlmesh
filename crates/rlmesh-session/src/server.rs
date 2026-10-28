@@ -15,7 +15,7 @@
 //! [`RECORDER`]. It never counts as a member: the session still stops when
 //! its last other participant leaves, after the recorder has finished.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -23,6 +23,7 @@ use tracing::{info, warn};
 use zenoh::Wait;
 use zenoh::sample::SampleKind;
 
+use crate::auth::Device;
 use crate::error::SessionError;
 use crate::host::{HostConfig, SessionHost, token_declared};
 #[cfg(feature = "record")]
@@ -30,12 +31,17 @@ use crate::participant::{Participant, ParticipantConfig};
 #[cfg(feature = "record")]
 use crate::record::{Recorder, Rolling};
 use crate::transport::Transport;
-use crate::wire::SessionId;
 use crate::wire::keys::{session_of, session_server, tenant_participants};
+use crate::wire::{AuthoritySnapshot, ParticipantId, SessionId};
 #[cfg(feature = "record")]
-use crate::wire::{ParticipantId, PriorityClass, Role};
+use crate::wire::{PriorityClass, Role};
 
 type Hosts = Arc<Mutex<HashMap<SessionId, SessionHost>>>;
+
+/// The devices and pins every session starts with ([`HostConfig::devices`],
+/// [`HostConfig::pins`]); changed only while the hosts are locked, so a
+/// session starts with the table every other one has.
+type Table = Arc<std::sync::Mutex<(Vec<Device>, BTreeMap<ParticipantId, String>)>>;
 
 /// The id the server's own recorder joins each session as.
 pub const RECORDER: &str = "_recorder";
@@ -50,6 +56,7 @@ type Presence = (bool, SessionId, String);
 /// [`SessionServer::shutdown`], which waits for them.
 pub struct SessionServer {
     hosts: Hosts,
+    table: Table,
     #[cfg(feature = "record")]
     recorders: Recorders,
     _server: zenoh::query::Queryable<()>,
@@ -100,6 +107,10 @@ impl SessionServer {
         #[cfg(feature = "record")] rolling: Option<Rolling>,
     ) -> Result<Self, SessionError> {
         let hosts: Hosts = Arc::default();
+        let table: Table = Arc::new(std::sync::Mutex::new((
+            config.devices.clone(),
+            config.pins.clone(),
+        )));
         #[cfg(feature = "record")]
         let recorders: Recorders = Arc::default();
         // Only a recording server's own recorder is not a member.
@@ -153,6 +164,7 @@ impl SessionServer {
         let (presence, mut changes) = tokio::sync::mpsc::unbounded_channel::<Presence>();
         tokio::spawn({
             let hosts = hosts.clone();
+            let table = table.clone();
             #[cfg(feature = "record")]
             let recorders = recorders.clone();
             let control = control.clone();
@@ -174,8 +186,14 @@ impl SessionServer {
                     }
                     let mut hosts = hosts.lock().await;
                     if !empty && !hosts.contains_key(&session) {
+                        let (devices, pins) = table
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone();
                         let config = HostConfig {
                             session,
+                            devices,
+                            pins,
                             ..config.clone()
                         };
                         match SessionHost::start(transport.clone(), config).await {
@@ -226,6 +244,7 @@ impl SessionServer {
             .await?;
         Ok(Self {
             hosts,
+            table,
             #[cfg(feature = "record")]
             recorders,
             _server: server,
@@ -236,6 +255,36 @@ impl SessionServer {
     /// The sessions it hosts.
     pub async fn sessions(&self) -> Vec<SessionId> {
         self.hosts.lock().await.keys().copied().collect()
+    }
+
+    /// Every session's latest authority snapshot.
+    pub async fn snapshots(&self) -> Vec<AuthoritySnapshot> {
+        self.hosts
+            .lock()
+            .await
+            .values()
+            .map(SessionHost::snapshot)
+            .collect()
+    }
+
+    /// Replaces the devices and pins every session accepts, now and from
+    /// now on (rlmeshd's `devices.toml`, design §4): a device gone is
+    /// revoked, a new one admitted, a changed entry or pin applied (see
+    /// [`SessionHost`]'s `set_access`, `admit`, `revoke` and `pin`).
+    pub async fn set_devices(&self, devices: Vec<Device>, pins: BTreeMap<ParticipantId, String>) {
+        let hosts = self.hosts.lock().await;
+        let (old, old_pins) = std::mem::replace(
+            &mut *self
+                .table
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            (devices.clone(), pins.clone()),
+        );
+        for (session, host) in hosts.iter() {
+            if let Err(err) = apply(host, (&old, &old_pins), (&devices, &pins)).await {
+                warn!(%session, %err, "device table not applied");
+            }
+        }
     }
 
     /// Stops every session (participants see their hosts leave).
@@ -252,6 +301,38 @@ impl SessionServer {
             host.shutdown().await;
         }
     }
+}
+
+/// Changes `host`'s device table from `old` to `new`: revocations first, so a
+/// key moved to another id is free when it is admitted.
+async fn apply(
+    host: &SessionHost,
+    (old, old_pins): (&[Device], &BTreeMap<ParticipantId, String>),
+    (new, pins): (&[Device], &BTreeMap<ParticipantId, String>),
+) -> Result<(), SessionError> {
+    for was in old {
+        match new.iter().find(|d| d.id == was.id) {
+            Some(now) if now.public == was.public => {
+                if now.access != was.access {
+                    host.set_access(&now.id, now.access.clone()).await?;
+                }
+            }
+            _ => host.revoke(&was.id).await?,
+        }
+    }
+    for now in new {
+        if !old.iter().any(|d| d.id == now.id && d.public == now.public) {
+            host.admit(now.clone()).await?;
+        }
+    }
+    let robots: std::collections::BTreeSet<&ParticipantId> =
+        old_pins.keys().chain(pins.keys()).collect();
+    for robot in robots {
+        if old_pins.get(robot) != pins.get(robot) {
+            host.pin(robot, pins.get(robot).map(String::as_str)).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Finishes `session`'s recorder, if it has one, so its last segment is

@@ -25,9 +25,9 @@
 //! secret}.{host key}` (each 32 bytes, base32: [`AddressKey`]), and a
 //! participant address appends `/{participant}` after it. Holding the
 //! address is the invite (design §2): its holder attaches as device
-//! `local`. A process joining a host on this machine without the key finds
-//! it where the host left it for this user ([`AddressKey`] files, 0600), so
-//! two scripts still meet by name.
+//! `local`. A process joining a host on this machine without the key uses
+//! rlmeshd's ([`LOCAL_KEY`] in [`daemon_dir`], 0600), so this user's
+//! scripts meet by name at the daemon.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -628,29 +628,25 @@ impl SessionAddress {
         // routes slowed and hung. The price: two participants that both join
         // one host reach each other through it rather than directly.
         let deadline = tokio::time::Instant::now() + host_timeout;
+        // A host on this machine not up yet brings its key when it is (one
+        // this process runs, or rlmeshd's).
+        while self.credential().is_err()
+            && self.base.ip().is_loopback()
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let transport = match local_host(self.base) {
             Some(transport) => transport,
-            None => {
-                // A host on this machine not up yet leaves its key when it
-                // is: its links need the password the key derives.
-                let mut link = self.link_auth();
-                while link.is_none()
-                    && self.base.ip().is_loopback()
-                    && tokio::time::Instant::now() < deadline
-                {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    link = self.link_auth();
-                }
-                open_client(self.base, link, deadline)
-                    .await
-                    .map_err(|err| match err {
-                        SessionError::Zenoh(_) => SessionError::Timeout(
-                            host_timeout,
-                            format!("the session host at {}", self.base),
-                        ),
-                        other => other,
-                    })?
-            }
+            None => open_client(self.base, self.link_auth(), deadline)
+                .await
+                .map_err(|err| match err {
+                    SessionError::Zenoh(_) => SessionError::Timeout(
+                        host_timeout,
+                        format!("the session host at {}", self.base),
+                    ),
+                    other => other,
+                })?,
         };
         let mut config = ParticipantConfig::new(
             self.tenant.clone(),
@@ -748,73 +744,76 @@ fn local_host(base: SocketAddr) -> Option<Transport> {
 
 /// The credential of a participant of the host at `base`: `key` (an
 /// address's), else the key of a host on this machine (one this process
-/// runs, or one that left its key for this user).
+/// runs, or rlmeshd's).
 pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credential, SessionError> {
     key.cloned()
-        .or_else(|| local_key(base))
+        .or_else(|| hosted_key(base))
+        .or_else(|| base.ip().is_loopback().then(daemon_key).flatten())
         .map(|key| key.credential())
         .ok_or_else(|| {
             SessionError::Rejected(CtlError::new(
                 CtlStatus::Unauthenticated,
                 format!(
                     "no key for the session at {base}: join with the address its host printed \
-                     (it ends in #key)"
+                     (it ends in #key), or run rlmeshd on this machine"
                 ),
             ))
         })
 }
 
 /// What a link to the host at `base` presents (design §5): on loopback, the
-/// password `key` derives, else the key of a host on this machine's; on the
-/// LAN, nothing.
+/// password `key` derives, else the key of a host this process runs; on
+/// the LAN, and to rlmeshd (a LAN host), nothing.
 pub fn link_auth(base: SocketAddr, key: Option<&AddressKey>) -> Option<LinkAuth> {
     if !base.ip().is_loopback() {
         return None;
     }
-    let key = key.cloned().or_else(|| local_key(base))?;
+    let key = key.cloned().or_else(|| hosted_key(base))?;
     Some(LinkAuth {
         password: key.link_password(),
         dictionary: None,
     })
 }
 
-/// The key of a host on this machine: one this process runs, or the file
-/// one left for this user ([`key_file`]).
-fn local_key(base: SocketAddr) -> Option<AddressKey> {
-    if let Some((_, key)) = local_hosts()
+/// The key of a host this process runs at `base`.
+fn hosted_key(base: SocketAddr) -> Option<AddressKey> {
+    local_hosts()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&base)
-    {
-        return Some(key.clone());
+        .map(|(_, key)| key.clone())
+}
+
+/// The variable that names rlmeshd's state directory ([`daemon_dir`]).
+pub const STATE_DIR_VAR: &str = "RLMESH_STATE_DIR";
+
+/// The file in [`daemon_dir`] that holds the key of rlmeshd's device
+/// `local`: its address key (`{local secret}.{host key}`, [`AddressKey`]),
+/// 0600. This user's processes on its machine attach as `local` with it
+/// (design §2).
+pub const LOCAL_KEY: &str = "local.key";
+
+/// Where rlmeshd keeps its identity and device table (design §3):
+/// [`STATE_DIR_VAR`], else `rlmesh/daemon` in the user's state directory
+/// (`$XDG_STATE_HOME`, `~/.local/state`), or their local data directory
+/// where there is none.
+pub fn daemon_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os(STATE_DIR_VAR) {
+        return Some(dir.into());
     }
-    if !base.ip().is_loopback() {
-        return None;
-    }
-    let text = std::fs::read_to_string(key_file(base.port())?).ok()?;
+    let dir = dirs::state_dir().or_else(dirs::data_local_dir)?;
+    Some(dir.join("rlmesh").join("daemon"))
+}
+
+/// rlmeshd's `local` key, when this user can read it.
+fn daemon_key() -> Option<AddressKey> {
+    let text = Zeroizing::new(std::fs::read_to_string(daemon_dir()?.join(LOCAL_KEY)).ok()?);
     text.parse().ok()
-}
-
-/// Where an embedded host on `port` leaves its key for this user's other
-/// processes (as Jupyter leaves its connection files): the user's runtime
-/// directory, else their cache directory.
-// TODO: rlmeshd's local.key (step 11) replaces these files for the
-// daemon's sessions; embedded hosts keep them.
-fn key_file(port: u16) -> Option<std::path::PathBuf> {
-    let dir = dirs::runtime_dir().or_else(dirs::cache_dir)?;
-    Some(dir.join("rlmesh").join("hosts").join(port.to_string()))
-}
-
-/// Leaves `key` for this user's processes joining a host on `port`: the
-/// directory 0700 and the file 0600, written whole (renamed into place).
-fn leave_key(port: u16, key: &AddressKey) -> std::io::Result<()> {
-    let path = key_file(port).ok_or_else(|| std::io::Error::other("no home directory"))?;
-    write_private(&path, key.to_string().as_bytes())
 }
 
 /// Writes `contents` to `path` for this user only: the directory 0700 and
 /// the file 0600, written whole (renamed into place).
-fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+pub fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| std::io::Error::other("no directory"))?;
@@ -836,18 +835,12 @@ fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()>
     std::fs::rename(&partial, path)
 }
 
-/// This process stopped hosting at `address`: forget its transport, and
-/// remove the key file it left, unless another host has replaced it.
+/// This process stopped hosting at `address`: forget its transport.
 fn forget_local_host(address: &SessionAddress) {
     local_hosts()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&address.base);
-    if let (Some(path), Some(key)) = (key_file(address.base.port()), &address.key)
-        && std::fs::read_to_string(&path).is_ok_and(|text| text.trim() == key.to_string())
-    {
-        let _ = std::fs::remove_file(path);
-    }
 }
 
 /// Whether a session host answers on `base` (its control listener accepts).
@@ -902,8 +895,7 @@ async fn open_client(
 /// Hosts session `name` in this process on `base` (port 0: OS-assigned),
 /// and every other session of [`TENANT`] its participants name, under fresh
 /// keys (or the ones its launcher passed in [`HOST_IDENTITY_VAR`]): the
-/// returned address carries them, and on a named port they are also left
-/// for this user's other processes.
+/// returned address carries them, the invite for other processes.
 ///
 /// It listens on loopback only (design §12 decision 9) unless `insecure`,
 /// or a launcher passed its keys (a sandbox's container, whose published
@@ -957,9 +949,6 @@ async fn serve_at(
              this host, pass insecure (Host(insecure=True), rlmesh host --insecure)"
         )));
     }
-    // Only a port someone can name is worth a key file: an OS-assigned one
-    // is reached by the address this returns.
-    let named_port = base.port() != 0;
     let mut config = HostConfig::new(TenantId::new(TENANT)?, session_id(name));
     let launched = match launched {
         Some(identity) => {
@@ -984,9 +973,6 @@ async fn serve_at(
     };
     #[cfg(not(feature = "record"))]
     let host = SessionServer::start(transport.clone(), config).await?;
-    if named_port && let Err(err) = leave_key(address.base.port(), &key) {
-        tracing::warn!(%err, "the session's key was not left for local joiners: share its address");
-    }
     local_hosts()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1000,7 +986,7 @@ async fn serve_at(
 /// Opens a host's per-class listeners on `base` (port 0: free local
 /// ports), every link gated by `password` (Zenoh `usrpwd`, design §5) when
 /// there is one.
-async fn open_listeners(
+pub async fn open_listeners(
     base: SocketAddr,
     password: Option<&zeroize::Zeroizing<String>>,
 ) -> Result<(Transport, SocketAddr), SessionError> {
@@ -1045,8 +1031,9 @@ async fn open_listeners(
 /// Writes the `user:password` file a gated host's Zenoh reads at open; the
 /// caller removes it right after.
 fn dictionary(password: &zeroize::Zeroizing<String>) -> Result<std::path::PathBuf, SessionError> {
-    let dir = key_file(0)
-        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+    let dir = dirs::runtime_dir()
+        .or_else(dirs::cache_dir)
+        .map(|dir| dir.join("rlmesh"))
         .ok_or_else(|| SessionError::Config("no directory for the link gate".into()))?;
     static OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1071,7 +1058,7 @@ pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, S
         let base = joinable(base);
         Ok(Placed {
             address: SessionAddress {
-                key: address.key.clone().or_else(|| local_key(base)),
+                key: address.key.clone().or_else(|| hosted_key(base)),
                 ..SessionAddress::new(base, name)?
             },
             hosted: None,

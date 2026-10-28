@@ -2,6 +2,8 @@ mod auth;
 mod check;
 mod cli;
 mod container;
+mod daemon;
+mod devices;
 mod doctor;
 mod eval_run;
 mod host;
@@ -79,6 +81,8 @@ pub async fn run_cli_in(
         | Command::CheckImage(_)
         | Command::Describe(_)
         | Command::Host(_)
+        | Command::Daemon(_)
+        | Command::Devices(_)
         | Command::Eval(cli::EvalArgs {
             command: cli::EvalCommand::Run(_) | cli::EvalCommand::Report(_),
         })
@@ -182,6 +186,8 @@ pub async fn run_cli_in(
         Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),
         Command::Describe(args) => check::describe(&args, stdout, stderr),
         Command::Host(args) => host::host(&args, stdout).await.map(|()| 0),
+        Command::Daemon(args) => daemon::daemon(&args, stdout, stderr).await.map(|()| 0),
+        Command::Devices(args) => devices::devices(&args, stdout).map(|()| 0),
         Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
         Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),
     };

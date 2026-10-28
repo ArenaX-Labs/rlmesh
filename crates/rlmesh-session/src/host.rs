@@ -191,9 +191,15 @@ pub struct HostConfig {
     /// address's key) attach as device `local`.
     pub identity: Arc<HostIdentity>,
     /// The devices besides `local` it accepts, each with its entry (design
-    /// §4); none by default. Change an entry at runtime with
-    /// [`SessionHost::set_access`].
+    /// §4); none by default. Change them at runtime with
+    /// [`SessionHost::set_access`], [`SessionHost::admit`] and
+    /// [`SessionHost::revoke`].
     pub devices: Vec<Device>,
+    /// Robot name → the device its pin names (rlmeshd's `[robots.*]`,
+    /// design §4); none by default, so a name binds to its first
+    /// embodiment's device for the host instance. Change one at runtime with
+    /// [`SessionHost::pin`].
+    pub pins: BTreeMap<ParticipantId, String>,
 }
 
 impl HostConfig {
@@ -226,6 +232,7 @@ impl HostConfig {
             virtual_clock: None,
             seal: SealPolicy::None,
             devices: Vec::new(),
+            pins: BTreeMap::new(),
         }
     }
 
@@ -275,6 +282,7 @@ impl std::fmt::Debug for HostConfig {
             .field("virtual_clock", &self.virtual_clock)
             .field("seal", &self.seal)
             .field("devices", &self.devices)
+            .field("pins", &self.pins)
             .finish_non_exhaustive()
     }
 }
@@ -292,12 +300,21 @@ pub struct SessionHost {
     task: Option<JoinHandle<()>>,
 }
 
-/// A runtime change of one device's entry, and who is told it applied.
-type AccessChange = (
-    String,
-    DeviceAccess,
-    oneshot::Sender<Result<(), SessionError>>,
-);
+/// A runtime change of the device table, and who is told it applied.
+type AccessChange = (Change, oneshot::Sender<Result<(), SessionError>>);
+
+/// One change of the device table (design §4, §8.5).
+#[derive(Debug)]
+enum Change {
+    /// A device's new entry.
+    Access(String, DeviceAccess),
+    /// A device it accepts from now on.
+    Admit(Device),
+    /// A device it no longer accepts.
+    Revoke(String),
+    /// A robot name's new pin, or none.
+    Pin(ParticipantId, Option<String>),
+}
 
 impl SessionHost {
     /// Declares the host's queryables, subscribers and liveliness token, and
@@ -337,6 +354,9 @@ impl SessionHost {
         );
         for device in &config.devices {
             auth.enroll(device.public, device.id.clone());
+        }
+        for (robot, device) in &config.pins {
+            auth.pin(robot, Some(device));
         }
         let signer = config.identity.signer(host_instance);
 
@@ -471,9 +491,53 @@ impl SessionHost {
     /// `local`, which may do everything); [`SessionError::Closed`] once the
     /// host stopped.
     pub async fn set_access(&self, device: &str, access: DeviceAccess) -> Result<(), SessionError> {
+        self.change(Change::Access(device.to_string(), access))
+            .await
+    }
+
+    /// Accepts `device` from now on, with its entry: a device enrolled
+    /// while the host runs.
+    ///
+    /// # Errors
+    /// [`SessionError::Config`] for `local` or a device it knows already
+    /// (change that one with [`Self::set_access`]); [`SessionError::Closed`]
+    /// once the host stopped.
+    pub async fn admit(&self, device: Device) -> Result<(), SessionError> {
+        self.change(Change::Admit(device)).await
+    }
+
+    /// Revokes `device` (design §4, §8.5): its handshakes are refused from
+    /// now on, every participant of it is detached (`REVOKED`), robots it
+    /// embodies too, and every stream key it could read rotates. The names
+    /// it is bound to stay bound.
+    ///
+    /// # Errors
+    /// As [`Self::set_access`].
+    pub async fn revoke(&self, device: &str) -> Result<(), SessionError> {
+        self.change(Change::Revoke(device.to_string())).await
+    }
+
+    /// Pins robot name `robot` to `device`, or unpins it (`None`), checked
+    /// at every handshake (design §4). A moved or removed pin detaches the
+    /// robot's current embodiment as lost (`ROBOT_LOST`: an ACTIVE session
+    /// goes SAFE); a first pin to the device that embodies it changes
+    /// nothing.
+    ///
+    /// # Errors
+    /// [`SessionError::Closed`] once the host stopped.
+    pub async fn pin(
+        &self,
+        robot: &ParticipantId,
+        device: Option<&str>,
+    ) -> Result<(), SessionError> {
+        self.change(Change::Pin(robot.clone(), device.map(str::to_string)))
+            .await
+    }
+
+    async fn change(&self, change: Change) -> Result<(), SessionError> {
         let (done, applied) = oneshot::channel();
         self.access
-            .send((device.to_string(), access, done))
+            .send((change, done))
             .map_err(|_| SessionError::Closed)?;
         applied.await.map_err(|_| SessionError::Closed)?
     }
@@ -1043,8 +1107,17 @@ impl HostActor {
                 Some((id, heartbeat, t2)) = heartbeats.recv() => {
                     self.on_heartbeat(id, heartbeat, t2);
                 }
-                Some((device, entry, done)) = access.recv() => {
-                    let _ = done.send(self.set_access(&device, entry).await);
+                Some((change, done)) = access.recv() => {
+                    let applied = match change {
+                        Change::Access(device, entry) => self.set_access(&device, entry).await,
+                        Change::Admit(device) => self.admit(device).await,
+                        Change::Revoke(device) => self.revoke(&device).await,
+                        Change::Pin(robot, device) => {
+                            self.pin(&robot, device.as_deref()).await;
+                            Ok(())
+                        }
+                    };
+                    let _ = done.send(applied);
                 }
                 sample = presence.recv_async() => match sample {
                     Ok(sample) => self.on_presence(&sample),
@@ -1697,6 +1770,44 @@ impl HostActor {
         }
         let (events, detached) = self.authority.set_access(device, entry, self.now());
         info!(%device, ?detached, "device entry changed");
+        self.access_changed(events).await;
+        Ok(())
+    }
+
+    /// Accepts a new device: see [`SessionHost::admit`].
+    async fn admit(&mut self, device: Device) -> Result<(), SessionError> {
+        if device.id == LOCAL_DEVICE || self.authority.config().access.get(&device.id).is_some() {
+            return Err(SessionError::Config(format!(
+                "device {} is local or known already",
+                device.id
+            )));
+        }
+        self.auth.enroll(device.public, device.id.clone());
+        let (events, _) = self
+            .authority
+            .set_access(&device.id, device.access, self.now());
+        info!(device = %device.id, "device admitted");
+        self.access_changed(events).await;
+        Ok(())
+    }
+
+    /// Revokes a device: see [`SessionHost::revoke`].
+    async fn revoke(&mut self, device: &str) -> Result<(), SessionError> {
+        if self.authority.config().access.get(device).is_none() {
+            return Err(SessionError::Config(format!(
+                "device {device} has no entry on this host"
+            )));
+        }
+        self.auth.unenroll(device);
+        let (events, detached) = self.authority.revoke(device, self.now());
+        info!(%device, ?detached, "device revoked");
+        self.access_changed(events).await;
+        Ok(())
+    }
+
+    /// The device table changed: the stores see it, and every stream key a
+    /// device can no longer read rotates.
+    async fn access_changed(&mut self, events: Vec<AuthorityEvent>) {
         let access = self.authority.config().access.clone();
         if let Ok(mut shared) = self.store.access.write() {
             *shared = access.clone();
@@ -1706,7 +1817,23 @@ impl HostActor {
         if let Err(err) = self.auth.issuer().reauthorize(&mut OsRng, &access, now) {
             warn!(%err, "stream keys");
         }
-        Ok(())
+    }
+
+    /// Pins a robot name: see [`SessionHost::pin`].
+    async fn pin(&mut self, robot: &ParticipantId, device: Option<&str>) {
+        let before = self.auth.pin(robot, device);
+        let embodied = self
+            .authority
+            .participant(robot)
+            .filter(|p| p.present && p.has_role(Role::Embodiment))
+            .map(|p| p.device.clone());
+        info!(%robot, ?device, "pin changed");
+        if let Some(embodied) = embodied
+            && (before.is_some() || device != Some(embodied.as_str()))
+        {
+            let events = self.authority.participant_lost(robot, self.now());
+            self.record(events).await;
+        }
     }
 
     /// `peer`'s `Attach` was accepted: it is the generation in effect, and

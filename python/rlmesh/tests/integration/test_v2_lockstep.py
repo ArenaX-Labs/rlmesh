@@ -538,7 +538,7 @@ server.shutdown()
 """
 
 
-def test_two_processes_meet_by_name_the_first_hosting(
+def test_a_second_process_joins_the_first_by_its_printed_address(
     monkeypatch: pytest.MonkeyPatch, session_port: int
 ) -> None:
     import subprocess
@@ -560,7 +560,8 @@ def test_two_processes_meet_by_name_the_first_hosting(
         # The address carries the host's key (``#...``), as an invite.
         host, rest = printed.split("#", 1)
         assert host == f"127.0.0.1:{port}" and rest.endswith("/cartpole"), printed
-        remote = rlmesh.numpy.RemoteEnv("cartpole")
+        # The printed address is the invite: it carries the key.
+        remote = rlmesh.numpy.RemoteEnv(printed)
         try:
             obs, _ = remote.reset(seed=0)
             assert obs.shape == (4,)
