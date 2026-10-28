@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   int seconds = argc > 2 ? atoi(argv[2]) : 15;
-  rlmesh_device_robot_config_t config = {argv[1], "eyes", kMap, 50, fill_random};
+  rlmesh_device_robot_config_t config = {argv[1], NULL, NULL, 0, "eyes", kMap, 50, fill_random};
   rlmesh_device_robot_t* robot = NULL;
   int rc = rlmesh_device_robot_new(&config, &robot);
   if (rc != RLMESH_DEVICE_OK) {

@@ -48,7 +48,22 @@ exports any C name but its own, or if the linked `memcpy` runs from flash.
 
 ## Joining a session
 
-On the computer, run a host on its LAN address:
+A board joins its **home**, the `rlmesh daemon` it was provisioned for, as
+its own device. Provision it once over USB, on the daemon's computer, with
+the board running a sketch that answers (`examples/Robot`) and the Serial
+Monitor closed:
+
+```sh
+rlmesh devices provision --port /dev/ttyUSB0 --name eyes
+```
+
+- **The device key:** the board makes it on first boot, after Wi-Fi starts (the RNG needs the radio), and keeps it in NVS.
+- **The exchange:** provisioning reads the public key and checks the name compiled into the sketch, then writes the home's key, id and addresses to NVS (tether spec §14). It enrolls the key with the daemon and pins the robot to it.
+- **Afterwards:** the board joins at once, and on every boot after. Provisioning again keeps the device; a full flash erase makes a new one.
+- **At rest:** anyone with the board in hand can read its key from flash; revoke the device (`rlmesh devices revoke`) if one goes missing.
+
+For a one-off host instead, run one on the computer's LAN address and put
+the address it prints in `kAddress`:
 
 ```sh
 rlmesh host --insecure --listen 192.168.1.20:7447
@@ -59,9 +74,8 @@ handshake and sealing still decide who joins. A host on a LAN address takes
 the board's plain TCP links (a loopback host gates its links with a key
 zenoh-pico can't present).
 
-It prints the session's address with its key (`192.168.1.20:7447#…`). Put
-that, your Wi-Fi and the robot's map in `examples/Robot`, flash it, and
-open the Serial Monitor at 115200:
+Put your Wi-Fi and the robot's map in `examples/Robot`, flash it, and open
+the Serial Monitor at 115200:
 
 ```cpp
 rlmesh::Robot robot;
@@ -95,7 +109,7 @@ void loop() {
 
 - **Commands:** `tick()` is the edge of session-core, as on any robot: an action under the lease, a hold, or the part's declared safe behaviour (`t.safe`) when the lease, the host or the commands lapse. It tells the host when it goes safe on its own account, and publishes what it applied.
 - **Samples:** `publish()` returns `RLMESH_DEVICE_ERR_NOT_READY` until the robot runs and its stream key has arrived.
-- **E-stop:** the board latches every member's e-stop signal at once, with or without the host. `robot.estop()` latches its own (an e-stop pin: `kEstopPin` in the example). Only `robot.clearEstop()`, a local action with the button released, clears it; the host then stays in ESTOP until disarmed and armed. A latch carries into the board's next session.
+- **E-stop:** the board latches every member's e-stop signal at once, with or without the host. `robot.estop()` latches its own (an e-stop pin: `kEstopPin` in the example). Only `robot.clearEstop()`, a local action with the button released (the example: hold BOOT for 2 s), clears it; the host then stays in ESTOP until disarmed and armed. A latch carries into the board's next session.
 - **Starting over:** any failure (no reply, a refusal, nothing from the host for 5 s) starts over from the handshake after a second.
 - **The address's key is a secret.** Anyone holding it can join the session.
 - **Ports:** the host listens on four consecutive ports, one per traffic class. The board opens a session to each one it uses (control, and its parts' classes), when it first uses it.

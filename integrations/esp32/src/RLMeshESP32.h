@@ -12,6 +12,8 @@
 #error "RLMeshESP32 runs on the classic ESP32 (ESP32-WROOM-32) and the ESP32-C6 so far"
 #endif
 
+#include <Stream.h>
+
 #include "rlmesh_device.h"
 
 // The transport (rlmesh_zenoh.h): opaque here, so a sketch never sees
@@ -36,6 +38,35 @@ inline int timing(rlmesh_device_timing_t& out) {
 
 }  // namespace esp32
 
+// The board's identity and its home host (tether spec §14), kept in NVS:
+// a device key it makes on first boot, and the record `rlmesh devices
+// provision` writes over USB.
+class Provisioning {
+ public:
+  Provisioning() = default;
+  Provisioning(const Provisioning&) = delete;
+  Provisioning& operator=(const Provisioning&) = delete;
+  ~Provisioning();
+
+  // Loads the device key, making it on first boot, and the record, for
+  // robot `name`. Start Wi-Fi first: the RNG is cryptographic only with the
+  // radio on. False if NVS fails.
+  bool begin(const char* name);
+  // Answers the daemon on `port` (the USB serial port): call it every loop.
+  // True on the call that stored a new record.
+  bool poll(Stream& port);
+  bool provisioned() const { return recordLen_ > 0; }
+  // The public key the daemon enrolls.
+  void publicKey(uint8_t out[32]) const;
+
+ private:
+  friend class Robot;
+  uint8_t key_[32] = {};
+  uint8_t record_[252] = {};
+  size_t recordLen_ = 0;
+  rlmesh_device_provision_t* responder_ = nullptr;
+};
+
 // The board as a robot in a session, over Wi-Fi. Start Wi-Fi first.
 class Robot {
  public:
@@ -50,6 +81,10 @@ class Robot {
   // without its key, or a map the host would refuse; joining itself goes on
   // in poll().
   bool begin(const char* address, const char* name, const char* robotJson,
+             uint32_t heartbeatMs = 50);
+  // Joins the home host `provisioning` holds, as its own device (session
+  // "default" on the record's first address). False when not provisioned.
+  bool begin(const Provisioning& provisioning, const char* name, const char* robotJson,
              uint32_t heartbeatMs = 50);
   // Runs the robot: call it every loop().
   void poll();
@@ -89,6 +124,8 @@ class Robot {
   uint32_t transportFailures() const;
 
  private:
+  bool start(const rlmesh_device_robot_config_t& config);
+
   rlmesh_device_robot_t* robot_ = nullptr;
   struct rlmesh_zenoh_t* zenoh_ = nullptr;
 };

@@ -1,18 +1,22 @@
 // The board joins an RLMesh session over Wi-Fi as robot "eyes": two hobby
-// servos (pan on GPIO 18, tilt on 19) driven by whoever holds the lease. Run
-// a host on the computer, listening on its LAN address:
-//
-//   rlmesh host --listen 192.168.1.20:7447
-//
-// and paste the address it prints below. Open the Serial Monitor at 115200.
+// servos (pan on GPIO 18, tilt on 19) driven by whoever holds the lease.
 // Power the servos separately, not from the board's 3.3 V.
+//
+// Its home is the `rlmesh daemon` it was provisioned for. With the board on
+// USB, on the daemon's computer (close the Serial Monitor first):
+//
+//   rlmesh devices provision --port /dev/ttyUSB0 --name eyes
+//
+// It joins as soon as it is provisioned, and on every boot after. For a
+// one-off host instead, run `rlmesh host --insecure --listen <lan-ip>:7447`
+// and paste the address it prints into kAddress.
 
 #include <RLMeshESP32.h>
 #include <WiFi.h>
 
 const char* kSsid = "your-wifi";
 const char* kPassword = "your-password";
-const char* kAddress = "192.168.1.20:7447#paste-the-address-rlmesh-host-printed";
+const char* kAddress = "";  // empty: the provisioned home
 
 const char kMap[] =
     "{\"eyes\":{\"kind\":\"joints\",\"names\":[\"pan\",\"tilt\"],\"fields\":[\"pos\"],"
@@ -23,8 +27,13 @@ const int kPanPin = 18;
 const int kTiltPin = 19;
 // An e-stop button, or -1 for none: normally closed, between this pin and
 // GND, so a press or a cut wire reads high. It latches the board's e-stop;
-// type "clear" in the Serial Monitor, with the button released, to clear it.
+// hold the BOOT button for 2 s, with the e-stop released, to clear it.
 const int kEstopPin = -1;
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+const int kBootPin = 9;
+#else
+const int kBootPin = 0;
+#endif
 const uint32_t kPeriodUs = 20000;  // the map's 50 Hz
 
 const char* const kPhases[] = {"reading the host", "handshake", "attaching",
@@ -39,8 +48,10 @@ const char* const kFaults[] = {
     "internal error",
 };
 
+rlmesh::Provisioning provisioning;
 rlmesh::Robot robot;
 int eyes = -1;
+uint32_t bootHeldSince = 0;
 float target[2] = {0, 0};  // radians: pan, tilt
 uint8_t lastPhase = 255;
 uint32_t lastReport = 0;
@@ -60,6 +71,7 @@ void setup() {
   writeServo(kPanPin, 0);
   writeServo(kTiltPin, 0);
   if (kEstopPin >= 0) pinMode(kEstopPin, INPUT_PULLUP);
+  pinMode(kBootPin, INPUT_PULLUP);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(kSsid, kPassword);
@@ -69,9 +81,21 @@ void setup() {
     Serial.print('.');
   }
   Serial.printf(" %s\n", WiFi.localIP().toString().c_str());
-  if (!robot.begin(kAddress, "eyes", kMap)) {
+  // After Wi-Fi: a first boot draws the device key from the RNG.
+  if (!provisioning.begin("eyes")) Serial.println("NVS failed: no device key");
+  join();
+}
+
+void join() {
+  // A latch outlives a new home: the next robot starts latched.
+  bool latched = robot.estopLatched();
+  bool ok = kAddress[0] != '\0' ? robot.begin(kAddress, "eyes", kMap)
+                                : robot.begin(provisioning, "eyes", kMap);
+  if (latched) robot.estop("e-stop latched before a new home");
+  if (!ok && kAddress[0] != '\0') {
     Serial.println("check kAddress: it is what `rlmesh host` printed, ending in #key");
-    return;
+  } else if (!ok) {
+    Serial.println("not provisioned: rlmesh devices provision --port <this port> --name eyes");
   }
   eyes = robot.part("eyes");
 }
@@ -96,24 +120,37 @@ void report() {
   }
 }
 
-// The e-stop button, every loop: it latches at once, session or not.
+// The e-stop button, every loop: it latches at once, session or not. BOOT
+// held for 2 s clears it, with the e-stop released.
 void estopButton() {
   bool pressed = kEstopPin >= 0 && digitalRead(kEstopPin) == HIGH;
   if (pressed && !robot.estopLatched()) {
     robot.estop("e-stop button");
     Serial.println("e-stop latched");
   }
-  if (Serial.available() && Serial.readStringUntil('\n').startsWith("clear")) {
+  bool boot = digitalRead(kBootPin) == LOW;
+  if (!boot) {
+    bootHeldSince = 0;
+  } else if (bootHeldSince == 0) {
+    bootHeldSince = millis();
+  } else if (millis() - bootHeldSince > 2000 && robot.estopLatched()) {
     if (pressed) {
       Serial.println("release the e-stop button first");
     } else {
       robot.clearEstop();
       Serial.println("e-stop cleared: disarm and arm the session to drive again");
     }
+    bootHeldSince = 0;
   }
 }
 
 void loop() {
+  // The daemon provisions over this port at any time; a new home is joined
+  // at once.
+  if (provisioning.poll(Serial)) {
+    Serial.println("provisioned");
+    join();
+  }
   robot.poll();
   estopButton();
   report();

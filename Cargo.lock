@@ -5651,8 +5651,10 @@ dependencies = [
  "bytes",
  "rlmesh-session",
  "rlmesh-session-core",
+ "rlmesh-tether",
  "tokio",
  "zenoh",
+ "zeroize",
 ]
 
 [[package]]

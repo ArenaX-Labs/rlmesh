@@ -26,6 +26,18 @@ pub struct Address {
     pub name: Option<String>,
 }
 
+/// A base address, `host:port` (an IPv6 host keeps its brackets, as a
+/// Zenoh locator wants it), or `None`. Four consecutive ports follow the
+/// base, one per traffic class.
+pub fn host_port(text: &str) -> Option<(String, u16)> {
+    let (host, port) = text.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    if host.is_empty() || port == 0 || port > u16::MAX - 3 {
+        return None;
+    }
+    Some((host.to_string(), port))
+}
+
 /// Parses `text`, or `None` when it isn't an address with its key.
 pub fn parse(text: &str) -> Option<Address> {
     let (place, keyed) = text.trim().split_once('#')?;
@@ -40,14 +52,9 @@ pub fn parse(text: &str) -> Option<Address> {
         Some(_) => return None,
         None => (place, DEFAULT_SESSION),
     };
-    let (host, port) = hostport.rsplit_once(':')?;
-    let port: u16 = port.parse().ok()?;
-    // Four consecutive ports, one per traffic class.
-    if host.is_empty() || port == 0 || port > u16::MAX - 3 {
-        return None;
-    }
+    let (host, port) = host_port(hostport)?;
     Some(Address {
-        host: host.to_string(),
+        host,
         port,
         session: session.to_string(),
         key: key.parse().ok()?,

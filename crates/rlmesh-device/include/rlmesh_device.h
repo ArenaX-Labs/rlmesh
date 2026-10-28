@@ -66,8 +66,15 @@ typedef struct rlmesh_device_robot rlmesh_device_robot_t;
 
 typedef struct rlmesh_device_robot_config_t {
   /* The address the host printed, with its key:
-   * "{host}:{port}[/{session}]#{secret}.{host key}[/{name}]". */
+   * "{host}:{port}[/{session}]#{secret}.{host key}[/{name}]". NULL for a
+   * provisioned board, which joins session "default" on its record's first
+   * address as its own device. */
   const char* address;
+  /* A provisioned board's device key (32 bytes) and stored record (tether spec
+   * §14), with address NULL. */
+  const uint8_t* device_key;
+  const uint8_t* record;
+  size_t record_len;
   /* This robot's name; NULL takes the address's. */
   const char* name;
   /* The robot's map, as authored JSON. */
@@ -212,6 +219,38 @@ int rlmesh_device_robot_publish(rlmesh_device_robot_t* robot, uint8_t part, uint
                                 const uint8_t* value, size_t len, uint64_t now_us);
 int rlmesh_device_robot_status(const rlmesh_device_robot_t* robot,
                                rlmesh_device_robot_status_t* out);
+
+/* USB provisioning (tether spec §14): the board keeps a device key it makes on
+ * first boot (32 random bytes from a cryptographic RNG) and the record the
+ * daemon sends; the responder answers the daemon over the serial port. */
+typedef struct rlmesh_device_provision rlmesh_device_provision_t;
+
+#define RLMESH_DEVICE_PROVISION_NONE 0
+/* Write *data to the serial port. */
+#define RLMESH_DEVICE_PROVISION_REPLY 1
+/* Store *data as the record (one atomic write), then call
+ * rlmesh_device_provision_stored. */
+#define RLMESH_DEVICE_PROVISION_STORE 2
+
+/* The public key of a device key: what the daemon enrolls. */
+int rlmesh_device_key_public(const uint8_t* device_key, uint8_t* public_key);
+/* Whether record (len bytes) is a valid provisioning record: 1 or 0. */
+int rlmesh_device_record_valid(const uint8_t* record, size_t len);
+/* A responder for robot name with device_key (32 bytes), holding record (NULL
+ * or 0 when not provisioned). arch as in the tether's HELLO: 3 RISC-V, 4
+ * Xtensa. */
+int rlmesh_device_provision_new(const char* name, const uint8_t* device_key, uint8_t arch,
+                                const uint8_t* record, size_t record_len,
+                                rlmesh_device_provision_t** out);
+void rlmesh_device_provision_free(rlmesh_device_provision_t* p);
+/* One byte from the serial port: RLMESH_DEVICE_PROVISION_NONE, or _REPLY /
+ * _STORE with *data and *len set (valid until the next call on p). */
+int rlmesh_device_provision_push(rlmesh_device_provision_t* p, uint8_t byte, const uint8_t** data,
+                                 size_t* len);
+/* The record from _STORE was stored (ok non-zero) or not: *data and *len are
+ * the reply to write. */
+int rlmesh_device_provision_stored(rlmesh_device_provision_t* p, int ok, const uint8_t** data,
+                                   size_t* len);
 
 #ifdef __cplusplus
 }

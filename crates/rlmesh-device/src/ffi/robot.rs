@@ -14,15 +14,27 @@ use super::{
     CRng, RLMESH_DEVICE_ERR_ARG, RLMESH_DEVICE_ERR_CONFIG, RLMESH_DEVICE_ERR_INVALID,
     RLMESH_DEVICE_ERR_NOT_READY, RLMESH_DEVICE_OK, Random,
 };
+use rlmesh_session_core::auth::Credential;
+use rlmesh_session_core::crypto::StaticKeypair;
+use zeroize::Zeroizing;
+
 use crate::address;
+use crate::provision::Record;
 use crate::robot::{Action, Config, Fault, Phase, PublishError, Robot};
 
 /// `rlmesh_device_robot_config_t`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RlmeshDeviceRobotConfig {
-    /// The address the host printed, with its key.
+    /// The address the host printed, with its key; null for a provisioned
+    /// board.
     pub address: *const c_char,
+    /// A provisioned board's device key (32 bytes), with `address` null.
+    pub device_key: *const u8,
+    /// Its stored provisioning record (tether spec §14).
+    pub record: *const u8,
+    /// The record's length.
+    pub record_len: usize,
     /// This robot's name; null takes the address's.
     pub name: *const c_char,
     /// The robot's map, as authored JSON.
@@ -154,6 +166,61 @@ unsafe fn text<'a>(p: *const c_char) -> Option<&'a str> {
     unsafe { CStr::from_ptr(p) }.to_str().ok()
 }
 
+/// Where a robot joins, and as which device.
+struct Target {
+    host: String,
+    port: u16,
+    session: String,
+    credential: Credential,
+    name: Option<String>,
+}
+
+/// The target of `address` (device `local`), or of a provisioned board's
+/// device key and record (session `default` on the record's first
+/// address).
+///
+/// # Safety
+/// The config's key and record are null or valid for their lengths.
+unsafe fn target(address: Option<&str>, c: &RlmeshDeviceRobotConfig) -> Result<Target, c_int> {
+    if let Some(address) = address {
+        let address = address::parse(address).ok_or(RLMESH_DEVICE_ERR_CONFIG)?;
+        return Ok(Target {
+            host: address.host,
+            port: address.port,
+            session: address.session,
+            credential: address.key.credential(),
+            name: address.name,
+        });
+    }
+    if c.device_key.is_null() {
+        return Err(RLMESH_DEVICE_ERR_ARG);
+    }
+    // SAFETY: per the contract: 32 bytes, and `record_len` bytes.
+    let (key, record) = unsafe {
+        (
+            core::slice::from_raw_parts(c.device_key, 32),
+            bytes(c.record, c.record_len),
+        )
+    };
+    let record = record
+        .and_then(Record::parse)
+        .ok_or(RLMESH_DEVICE_ERR_CONFIG)?;
+    let (host, port) = record
+        .addresses
+        .first()
+        .and_then(|a| address::host_port(a))
+        .ok_or(RLMESH_DEVICE_ERR_CONFIG)?;
+    let mut private = Zeroizing::new([0_u8; 32]);
+    private.copy_from_slice(key);
+    Ok(Target {
+        host,
+        port,
+        session: String::from(address::DEFAULT_SESSION),
+        credential: Credential::new(StaticKeypair::from_private(&mut private), record.host_key),
+        name: None,
+    })
+}
+
 /// A new robot, joining on the first `rlmesh_device_robot_next`. The
 /// config's strings are copied.
 ///
@@ -172,20 +239,22 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
     let c = unsafe { &*config };
     // SAFETY: per the contract.
     let (address, name, json) = unsafe { (text(c.address), text(c.name), text(c.robot_json)) };
-    let (Some(address), Some(json), Some(random)) = (address, json, c.random) else {
+    let (Some(json), Some(random)) = (json, c.random) else {
         return RLMESH_DEVICE_ERR_ARG;
     };
-    let Some(address) = address::parse(address) else {
-        return RLMESH_DEVICE_ERR_CONFIG;
+    // SAFETY: per the contract.
+    let target = match unsafe { target(address, c) } {
+        Ok(target) => target,
+        Err(rc) => return rc,
     };
-    let Some(name) = name.map(String::from).or(address.name) else {
+    let Some(name) = name.map(String::from).or(target.name) else {
         return RLMESH_DEVICE_ERR_ARG;
     };
     // A session's name (`default`) or its UUID.
-    let session = address
+    let session = target
         .session
         .parse::<SessionId>()
-        .unwrap_or_else(|_| SessionId::named(&address.session));
+        .unwrap_or_else(|_| SessionId::named(&target.session));
     let (Ok(tenant), Ok(name)) = (TenantId::new(address::TENANT), ParticipantId::new(name)) else {
         return RLMESH_DEVICE_ERR_CONFIG;
     };
@@ -193,20 +262,20 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
         tenant,
         session,
         name,
-        key: address.key,
+        credential: target.credential,
         robot_json: json.into(),
         heartbeat_ms: c.heartbeat_ms,
     }) else {
         return RLMESH_DEVICE_ERR_CONFIG;
     };
-    let mut host = address.host.into_bytes();
+    let mut host = target.host.into_bytes();
     host.push(0);
     let robot = Box::new(DeviceRobot {
         robot,
         rng: CRng(random),
         queue: VecDeque::new(),
         host,
-        port: address.port,
+        port: target.port,
         key: Vec::new(),
         payload: Vec::new(),
         value: Vec::new(),
@@ -723,6 +792,9 @@ mod tests {
     fn config(address: &[u8], name: Option<&CStr>, map: &CStr) -> RlmeshDeviceRobotConfig {
         RlmeshDeviceRobotConfig {
             address: address.as_ptr().cast(),
+            device_key: core::ptr::null(),
+            record: core::ptr::null(),
+            record_len: 0,
             name: name.map_or(core::ptr::null(), CStr::as_ptr),
             robot_json: map.as_ptr(),
             heartbeat_ms: 50,
@@ -821,6 +893,45 @@ mod tests {
         unsafe { rlmesh_device_robot_status(robot, &mut status) };
         assert_eq!(status.estop, 0);
         unsafe { rlmesh_device_robot_free(robot) };
+    }
+
+    #[test]
+    fn a_provisioned_board_joins_its_records_first_address() {
+        use rlmesh_tether::provision::{self, Addresses, Prov, Provision};
+        let p = Prov::Provision(Provision {
+            flags: 0,
+            host_key: [9; 32],
+            host_id: b"rlm-3f9a2c",
+            addresses: Addresses::new(&[b"[fe80::1]:7447", b"10.0.0.9:7447"]).unwrap(),
+        });
+        let mut record = [0; 252];
+        let n = provision::payload(&p, &mut record).unwrap();
+        let key = [5_u8; 32];
+        let mut config = config(b"\0", Some(c"eyes"), MAP);
+        config.address = core::ptr::null();
+        config.device_key = key.as_ptr();
+        config.record = record.as_ptr();
+        config.record_len = n;
+        let mut robot = core::ptr::null_mut();
+        assert_eq!(
+            unsafe { rlmesh_device_robot_new(&config, &mut robot) },
+            RLMESH_DEVICE_OK
+        );
+        let mut port = 0;
+        let host = unsafe { CStr::from_ptr(rlmesh_device_robot_host(robot, &mut port)) };
+        assert_eq!((host.to_str().unwrap(), port), ("[fe80::1]", 7447));
+        unsafe { rlmesh_device_robot_free(robot) };
+        // A record that isn't one, and no key at all.
+        config.record_len = 3;
+        assert_eq!(
+            unsafe { rlmesh_device_robot_new(&config, &mut robot) },
+            RLMESH_DEVICE_ERR_CONFIG
+        );
+        config.device_key = core::ptr::null();
+        assert_eq!(
+            unsafe { rlmesh_device_robot_new(&config, &mut robot) },
+            RLMESH_DEVICE_ERR_ARG
+        );
     }
 
     #[test]
