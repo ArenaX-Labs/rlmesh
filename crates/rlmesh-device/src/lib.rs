@@ -17,6 +17,7 @@ extern crate alloc;
 
 pub mod address;
 pub mod ffi;
+pub mod provision;
 pub mod robot;
 #[cfg(all(not(feature = "std"), target_os = "none"))]
 mod sys;

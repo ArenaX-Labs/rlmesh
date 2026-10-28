@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use bytes::Bytes;
 use rlmesh_session_core::auth::keyring::KeyError;
-use rlmesh_session_core::auth::{self, AddressKey, Link, LinkError, ReplyOutcome};
+use rlmesh_session_core::auth::{self, Credential, Link, LinkError, ReplyOutcome};
 use rlmesh_session_core::crypto::Rng;
 use rlmesh_session_core::crypto::handshake::IkInitiator;
 use rlmesh_session_core::crypto::signed;
@@ -72,8 +72,9 @@ pub struct Config {
     pub session: SessionId,
     /// This robot's participant id and display name.
     pub name: ParticipantId,
-    /// The key from the session's address.
-    pub key: AddressKey,
+    /// Its device key and the host's static key: from the address's key
+    /// (device `local`), or provisioned (tether spec §14).
+    pub credential: Credential,
     /// The robot's map, as authored JSON.
     pub robot_json: String,
     /// The heartbeat period.
@@ -802,7 +803,7 @@ impl Robot {
 
     fn start(&mut self, host_instance: u64, rng: &mut dyn Rng, now_us: u64) {
         let session = self.config.session.to_string();
-        let started = self.config.key.credential().start(
+        let started = self.config.credential.start(
             rng,
             self.config.tenant.as_str(),
             &session,

@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot};
 use rlmesh_session::address::AddressKey;
-use rlmesh_session::auth::HostIdentity;
+use rlmesh_session::auth::{Credential, Device, HostIdentity};
+use rlmesh_session::authority::DeviceAccess;
+use rlmesh_session::crypto::StaticKeypair;
 use rlmesh_session::crypto::{Rng, RngError};
 use rlmesh_session::transport::{TrafficClass, Transport, TransportConfig, open_local_listeners};
 use rlmesh_session::wire::{
@@ -78,12 +80,18 @@ struct World {
 
 impl World {
     async fn start() -> Self {
+        Self::start_with(Vec::new()).await
+    }
+
+    /// A host that knows `devices` besides `local`.
+    async fn start_with(devices: Vec<Device>) -> Self {
         let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
             .await
             .expect("host transport");
         let tenant = TenantId::new("test").expect("tenant");
         let session = SessionId::new();
-        let config = HostConfig::new(tenant.clone(), session);
+        let mut config = HostConfig::new(tenant.clone(), session);
+        config.devices = devices;
         let identity = config.identity.clone();
         let host = SessionHost::start(transport, config).await.expect("host");
         Self {
@@ -108,11 +116,15 @@ impl World {
     }
 
     fn robot(&self, key: AddressKey) -> Robot {
+        self.robot_as(key.credential())
+    }
+
+    fn robot_as(&self, credential: Credential) -> Robot {
         Robot::new(Config {
             tenant: self.tenant.clone(),
             session: self.session,
             name: ParticipantId::new("eyes").expect("id"),
-            key,
+            credential,
             robot_json: MAP.to_owned(),
             heartbeat_ms: 50,
         })
@@ -447,5 +459,58 @@ async fn a_board_with_another_hosts_key_is_refused() {
             .roster
             .iter()
             .any(|p| p.id.as_str() == "eyes")
+    );
+}
+
+/// A board provisioned for the host (tether spec §14) joins with its own
+/// device key, under the access the daemon enrolled it with; an unenrolled
+/// key may do nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_provisioned_board_joins_with_its_device_key() {
+    let private = [0x42_u8; 32];
+    let board = Device {
+        id: "board-eyes".into(),
+        public: rlmesh_device::provision::public_key(&private),
+        access: DeviceAccess::new(Some(PriorityClass::Model)),
+    };
+    let world = World::start_with(vec![board]).await;
+    let host_static = *world.identity.static_public();
+    let credential = |key: [u8; 32]| {
+        let mut key = key;
+        Credential::new(StaticKeypair::from_private(&mut key), host_static)
+    };
+    let robot = world.robot_as(credential(private));
+    let robot = drive(
+        &world,
+        robot,
+        Duration::from_secs(10),
+        Arc::default(),
+        |r| r.phase() == Phase::Running,
+    )
+    .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    let snapshot = world.host.snapshot();
+    let eyes = snapshot
+        .roster
+        .iter()
+        .find(|p| p.id.as_str() == "eyes")
+        .expect("the host lists the board");
+    assert_eq!(eyes.device, "board-eyes");
+
+    let world = World::start().await;
+    let robot = world.robot_as(credential(private));
+    let robot = drive(
+        &world,
+        robot,
+        Duration::from_secs(10),
+        Arc::default(),
+        |r| r.fault().is_some(),
+    )
+    .await;
+    assert_ne!(robot.phase(), Phase::Running, "an unenrolled key joined");
+    assert!(
+        matches!(robot.fault(), Some(Fault::Refused(..) | Fault::Handshake)),
+        "{:?}",
+        robot.fault()
     );
 }

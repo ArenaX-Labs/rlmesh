@@ -8,7 +8,9 @@ use rlmesh_session_core::crypto::{Rng, RngError};
 
 use crate::timing::{self, TimingError};
 
+mod provision;
 mod robot;
+pub use provision::*;
 pub use robot::*;
 
 /// Success.

@@ -10,8 +10,23 @@ namespace rlmesh {
 
 bool Robot::begin(const char* address, const char* name, const char* robotJson,
                   uint32_t heartbeatMs) {
+  rlmesh_device_robot_config_t config = {address, nullptr,   nullptr,     0,
+                                         name,    robotJson, heartbeatMs, &esp32::fillRandom};
+  return start(config);
+}
+
+bool Robot::begin(const Provisioning& provisioning, const char* name, const char* robotJson,
+                  uint32_t heartbeatMs) {
   end();
-  rlmesh_device_robot_config_t config = {address, name, robotJson, heartbeatMs, &esp32::fillRandom};
+  if (!provisioning.provisioned()) return false;
+  rlmesh_device_robot_config_t config = {
+      nullptr, provisioning.key_, provisioning.record_, provisioning.recordLen_,
+      name,    robotJson,         heartbeatMs,          &esp32::fillRandom};
+  return start(config);
+}
+
+bool Robot::start(const rlmesh_device_robot_config_t& config) {
+  end();
   if (rlmesh_device_robot_new(&config, &robot_) != RLMESH_DEVICE_OK) {
     robot_ = nullptr;
     return false;
