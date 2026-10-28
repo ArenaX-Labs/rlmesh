@@ -21,6 +21,8 @@ crate-type = ["staticlib", "rlib"]
 # Not `workspace = true`: that entry keeps the default features (std), and a
 # member can't turn them off.
 rlmesh-session-core = { version = "=0.2.0-alpha.0", path = "../rlmesh-session-core", default-features = false }
+# A sample's payload type (session-core's `Sample`).
+bytes = { version = "1.9", default-features = false }
 
 [dev-dependencies]
 # The robot against a real host, over Zenoh on loopback.

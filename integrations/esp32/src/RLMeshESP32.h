@@ -45,15 +45,34 @@ class Robot {
   ~Robot() { end(); }
 
   // Joins the session at `address`, as `rlmesh host` prints it
-  // ("192.168.1.20:7447#secret.hostkey", its default session), as robot
-  // `name` with the map `robotJson` (authored JSON, kept by the caller
-  // only for this call). Returns false on a bad address or no session to
-  // the host; joining itself goes on in poll().
+  // ("192.168.1.20:7447#secret.hostkey"), as robot `name` with the map
+  // `robotJson` (authored JSON, copied). Returns false on an address
+  // without its key, or a map the host would refuse; joining itself goes on
+  // in poll().
   bool begin(const char* address, const char* name, const char* robotJson,
              uint32_t heartbeatMs = 50);
   // Runs the robot: call it every loop().
   void poll();
   void end();
+
+  // The index of the part at `path` in the map, which tick() and publish()
+  // take, or -1.
+  int part(const char* path) const;
+  // One control tick of `part`'s command group, at the part's control rate:
+  // true with `out` filled (valid until the next call) when there is an
+  // action to dispatch, a safe behaviour to run, or a handover. It also
+  // publishes what was applied.
+  bool tick(int part, rlmesh_device_tick_t& out);
+  // The robot switched its control mode for a handover: the group may
+  // dispatch again.
+  void handoverDone(int part);
+  // Publishes a sample of `part`, its dense value captured now:
+  // RLMESH_DEVICE_OK, or _ERR_NOT_READY before the robot runs.
+  int publish(int part, const void* value, size_t len);
+  template <typename T>
+  int publish(int part, const T& value) {
+    return publish(part, &value, sizeof value);
+  }
 
   rlmesh_device_robot_status_t status() const;
   bool running() const { return status().phase == 4; }

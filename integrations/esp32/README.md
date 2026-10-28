@@ -7,9 +7,9 @@ library. This library adds the board's clock and randomness, and its
 network: [zenoh-pico](https://github.com/eclipse-zenoh/zenoh-pico) at the
 version of the host's Zenoh.
 
-> **Work in progress.** A board joins a session, declares its parts and
-> heartbeats (`examples/Robot`), all sealed. Commands and samples come
-> next.
+> **Work in progress.** A board joins a session, declares its parts, takes
+> commands and publishes samples, all sealed or signed per part
+> (`examples/Robot`). Lockstep, history and a board e-stop come next.
 
 For a board without a network (a Nano, Uno or UNO R4 on a USB cable), see
 [RLMeshTether](../arduino).
@@ -59,15 +59,23 @@ open the Serial Monitor at 115200:
 
 ```cpp
 rlmesh::Robot robot;
+int eyes;
 
 void setup() {
   WiFi.begin(ssid, password);  // first: the RNG needs the radio on
   // ... wait for WL_CONNECTED
   robot.begin(address, "eyes", robotJson);
+  eyes = robot.part("eyes");
 }
 
 void loop() {
   robot.poll();  // every loop
+  // At the part's control rate:
+  rlmesh_device_tick_t t;
+  if (robot.tick(eyes, t) && t.has_action) {
+    // t.value: the action, in the part's dense command layout
+  }
+  robot.publish(eyes, state);  // its dense sample layout
 }
 ```
 
@@ -75,13 +83,15 @@ void loop() {
   - the board reads the host's signed state;
   - it runs the handshake with the address's key;
   - it attaches and declares its parts, sealed;
-  - it heartbeats.
+  - it takes the keys the host delivers.
 
   `robot.status()` says where it is, and why it last started over.
 
+- **Commands:** `tick()` is the edge of session-core, as on any robot: an action under the lease, a hold, or the part's declared safe behaviour (`t.safe`) when the lease, the host or the commands lapse. It tells the host when it goes safe on its own account, and publishes what it applied.
+- **Samples:** `publish()` returns `RLMESH_DEVICE_ERR_NOT_READY` until the robot runs and its stream key has arrived.
 - **Starting over:** any failure (no reply, a refusal, no heartbeat echo for 3 s) starts over from the handshake after a second.
 - **The address's key is a secret.** Anyone holding it can join the session.
-- **Ports:** the board connects to the host's first port only; the host listens on four.
+- **Ports:** the host listens on four consecutive ports, one per traffic class. The board opens a session to each one it uses (control, and its parts' classes), when it first uses it.
 
 The Rust side of this (`crates/rlmesh-device`'s `robot`) is tested against
 a real host. `mise run test:esp32:host` runs this library's transport
@@ -106,7 +116,7 @@ a core. Flash it, and open the Serial Monitor at 115200.
 
 - **Randomness.** The ESP32's hardware RNG is cryptographic only with the
   radio on. Start Wi-Fi before anything draws keys.
-- **Flash.** `examples/Robot` is about 1.3 MB (1.4 MB on the C6), past the
+- **Flash.** `examples/Robot` is about 1.6 MB (1.7 MB on the C6), past the
   default app partition. Choose a larger one (Tools → Partition Scheme,
   "Huge APP"). The crypto alone adds about 205 KB to a Wi-Fi sketch (189 KB
   on the C6).
