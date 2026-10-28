@@ -450,6 +450,11 @@ pub struct HostArgs {
     /// Do not record.
     #[arg(long, conflicts_with = "record_dir")]
     pub no_record: bool,
+    /// Listen beyond loopback anyway (`--listen 0.0.0.0:…`): anyone who can
+    /// reach it can try this host. Sessions for other machines are
+    /// rlmeshd's.
+    #[arg(long)]
+    pub insecure: bool,
 }
 
 /// Flags for `rlmesh describe`.

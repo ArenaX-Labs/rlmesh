@@ -269,6 +269,7 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
         "127.0.0.1:0".parse().unwrap(),
         "bench",
         Duration::from_secs(1),
+        false,
     )
     .await
     .unwrap();
@@ -513,6 +514,7 @@ async fn predicts_from_several_sessions_coalesce_into_one_handler_call() {
             "127.0.0.1:0".parse().unwrap(),
             &format!("run{i}"),
             Duration::from_secs(1),
+            false,
         )
         .await
         .unwrap();
@@ -932,6 +934,7 @@ async fn drivers_inviting_a_model_into_one_session_at_once_get_one_answer_per_pr
         "127.0.0.1:0".parse().unwrap(),
         "bench",
         Duration::from_secs(1),
+        false,
     )
     .await
     .unwrap();

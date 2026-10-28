@@ -104,10 +104,17 @@ class Host:
     hosts the session here when nothing listens there. Participants
     (robots, policies, operators) connect to its ``address``, in this
     process or another. Use it as a context manager, or ``close()``.
+
+    It listens on loopback only: an address on another interface is refused
+    unless ``insecure=True`` (sessions other machines join are rlmeshd's).
+    On loopback every link presents the password the address's key derives;
+    a host bound beyond it gates no link, and only the handshake admits.
     """
 
-    def __init__(self, address: str = ":0", *, lease_grace_ms: int = 250) -> None:
-        self._native: V2Host = V2Host(address, lease_grace_ms)
+    def __init__(
+        self, address: str = ":0", *, lease_grace_ms: int = 250, insecure: bool = False
+    ) -> None:
+        self._native: V2Host = V2Host(address, lease_grace_ms, insecure)
 
     @property
     def address(self) -> str:

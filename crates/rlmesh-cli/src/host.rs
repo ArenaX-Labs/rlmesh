@@ -30,9 +30,16 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write) -> Result<()> {
     };
     let placed = match &recordings {
         Some(dir) => {
-            address::host_recording_at(base, DEFAULT_SESSION, LEASE_GRACE, Rolling::new(dir)).await
+            address::host_recording_at(
+                base,
+                DEFAULT_SESSION,
+                LEASE_GRACE,
+                args.insecure,
+                Rolling::new(dir),
+            )
+            .await
         }
-        None => address::host_at(base, DEFAULT_SESSION, LEASE_GRACE).await,
+        None => address::host_at(base, DEFAULT_SESSION, LEASE_GRACE, args.insecure).await,
     };
     let mut placed =
         placed.with_context(|| format!("could not listen on {base} (is a host already there?)"))?;

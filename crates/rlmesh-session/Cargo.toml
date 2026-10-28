@@ -52,7 +52,13 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"], optio
 # One Zenoh session per traffic class: no `transport_multilink` (it pulls
 # `rsa`, RUSTSEC-2023-0071) and no pubkey auth (also `rsa`). `unstable` is
 # for per-publisher reliability, the only way Zenoh 1.10 sets it (§10.2).
-zenoh = { workspace = true, features = ["transport_tcp", "transport_unixsock-stream", "unstable"] }
+# `auth_usrpwd`: the loopback link gate (design §5).
+zenoh = { workspace = true, features = [
+  "auth_usrpwd",
+  "transport_tcp",
+  "transport_unixsock-stream",
+  "unstable",
+] }
 zeroize = { workspace = true }
 
 [dev-dependencies]

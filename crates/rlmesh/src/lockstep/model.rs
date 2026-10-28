@@ -1117,7 +1117,7 @@ impl<H: ModelHandler + 'static> Joins<H> {
         });
         let joins = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(err) = answer_in(joins.clone(), participant, address.base, cancel).await {
+            if let Err(err) = answer_in(joins.clone(), participant, address.clone(), cancel).await {
                 warn!(%err, session = %address, "model left an invited session");
             }
             #[cfg(test)]
@@ -1142,17 +1142,17 @@ impl<H: ModelHandler + 'static> Joins<H> {
     }
 }
 
-/// Answers on `participant`'s session (hosted at `base`) until `cancel`
+/// Answers on `participant`'s session (at `session`) until `cancel`
 /// fires, then leaves it. Boxed: an invitation answered there serves the
 /// invited session with this same future.
 fn answer_in<H: ModelHandler + 'static>(
     joins: Arc<Joins<H>>,
     participant: Participant,
-    base: std::net::SocketAddr,
+    session: SessionAddress,
     cancel: CancellationToken,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), GymError>> + Send>> {
     Box::pin(async move {
-        let lockstep = lockstep_session(participant.transport(), base).await?;
+        let lockstep = lockstep_session(participant.transport(), &session).await?;
         let key = participant.keys().model(&joins.name);
         info!(model = %joins.name, %key, "model serving");
         let served = serve_zenoh(lockstep.clone(), key, joins, cancel).await;
@@ -1382,7 +1382,7 @@ impl ModelBinding {
             shutdown: shutdown.clone(),
             sessions: std::sync::Mutex::default(),
         });
-        answer_in(joins, participant, self.session.base, shutdown).await
+        answer_in(joins, participant, self.session.clone(), shutdown).await
     }
 }
 
@@ -1457,7 +1457,7 @@ impl ModelConnection {
         let participant = session
             .join(id, vec![Role::Controller], PriorityClass::Model, timeout)
             .await?;
-        let lockstep_session = lockstep_session(participant.transport(), session.base).await?;
+        let lockstep_session = lockstep_session(participant.transport(), session).await?;
         let link = ModelLink::new(lockstep_session.clone(), participant.keys().model(model));
         link.wait_ready(timeout).await.map_err(|err| match err {
             GymError::Timeout(_) => GymError::Session(SessionError::Config(format!(
@@ -2057,6 +2057,7 @@ mod rejoin_tests {
             "127.0.0.1:0".parse().unwrap(),
             "bench",
             Duration::from_secs(1),
+            false,
         )
         .await
         .unwrap();

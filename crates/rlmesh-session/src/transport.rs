@@ -237,7 +237,32 @@ pub struct TransportTuning {
     /// yet before it fails; `None` fails at once, as Zenoh clients do.
     /// Peers always keep dialing in the background.
     pub connect_timeout: Option<Duration>,
+    /// The embedded host's link gate (Zenoh `usrpwd`, design §5).
+    pub link: Option<LinkAuth>,
 }
+
+/// The `usrpwd` gate of an embedded host's links (design §5): the password
+/// comes from the session's key ([`crate::auth::address::link_password`]),
+/// so only its holders link to the host at all.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LinkAuth {
+    /// The password this side presents.
+    pub password: zeroize::Zeroizing<String>,
+    /// A host's `user:password` file, which every link it accepts must
+    /// match. Zenoh reads it at open: the caller may delete it then.
+    pub dictionary: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for LinkAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LinkAuth")
+            .field("dictionary", &self.dictionary)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The `usrpwd` user every link of an embedded host presents.
+pub const LINK_USER: &str = "rlmesh";
 
 impl Default for TransportTuning {
     fn default() -> Self {
@@ -248,6 +273,7 @@ impl Default for TransportTuning {
             tls: None,
             client: false,
             connect_timeout: None,
+            link: None,
         }
     }
 }
@@ -383,6 +409,26 @@ pub fn zenoh_config(
             wait.as_micros().to_string(),
         )?;
     }
+    if let Some(link) = &tuning.link {
+        set(
+            &mut config,
+            "transport/auth/usrpwd/user",
+            format!("{LINK_USER:?}"),
+        )?;
+        let password = zeroize::Zeroizing::new(format!("{:?}", link.password.as_str()));
+        set(
+            &mut config,
+            "transport/auth/usrpwd/password",
+            password.to_string(),
+        )?;
+        if let Some(dictionary) = &link.dictionary {
+            set(
+                &mut config,
+                "transport/auth/usrpwd/dictionary_file",
+                format!("{:?}", dictionary.display().to_string()),
+            )?;
+        }
+    }
     if let Some(tls) = &tuning.tls {
         let path = |p: &PathBuf| format!("{:?}", p.display().to_string());
         set(
@@ -411,6 +457,8 @@ pub struct Transport {
     sessions: [zenoh::Session; 4],
     shared: bool,
     client: bool,
+    /// The link gate it presented, if any ([`Self::link`]).
+    link: Option<LinkAuth>,
     /// The sessions of a session host this process runs, which its own
     /// participants ride (see [`Self::is_in_process`]).
     in_process: bool,
@@ -441,6 +489,7 @@ impl Transport {
                 debug!(zid = %session.zid(), "transport open (shared)");
                 Ok(Self {
                     client: config.tuning.client,
+                    link: config.tuning.link.clone(),
                     ..Self::from_session(session)
                 })
             }
@@ -458,6 +507,7 @@ impl Transport {
                     sessions,
                     shared: false,
                     client: config.tuning.client,
+                    link: config.tuning.link.clone(),
                     in_process: false,
                 })
             }
@@ -470,6 +520,7 @@ impl Transport {
             sessions: [session.clone(), session.clone(), session.clone(), session],
             shared: true,
             client: false,
+            link: None,
             in_process: false,
         }
     }
@@ -497,6 +548,12 @@ impl Transport {
     /// Whether it joined as a Zenoh client (see [`TransportTuning::client`]).
     pub fn is_client(&self) -> bool {
         self.client
+    }
+
+    /// The link gate it opened with ([`TransportTuning::link`]): what
+    /// another link of this participant to its host presents.
+    pub fn link(&self) -> Option<&LinkAuth> {
+        self.link.as_ref()
     }
 
     /// The session of `class`.
@@ -623,6 +680,7 @@ mod tests {
             drop_wait: Some(Duration::from_micros(50)),
             client: false,
             connect_timeout: None,
+            link: None,
         };
         let endpoints = Endpoints {
             listen: vec!["tcp/127.0.0.1:0".into()],
