@@ -277,6 +277,9 @@ async fn pin_first_embodiments(
     crate::devices::edit(dir, |table| {
         for (robot, device) in new {
             let _ = writeln!(stderr, "rlmeshd: pinned robot {robot} to {device}");
+            // TODO: a tethered robot's first embodiment pins its device
+            // alone, since authority state doesn't carry board_id; record the
+            // declared board once the bridge sends one (scene step 10).
             table.robots.entry(robot).or_insert(Pin {
                 device,
                 board_id: None,

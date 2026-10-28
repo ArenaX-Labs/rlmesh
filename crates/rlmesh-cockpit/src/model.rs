@@ -48,7 +48,7 @@ impl Verb {
 #[derive(Clone, Debug)]
 pub enum Input {
     /// A newer authority snapshot.
-    Authority(AuthoritySnapshot),
+    Authority(Box<AuthoritySnapshot>),
     /// A sample of a part's stream or of an `_applied` stream.
     Sample {
         /// The sample.
@@ -293,7 +293,7 @@ impl Model {
     /// Takes in one input received (or happening) at `now_ns`.
     pub fn ingest(&mut self, input: Input, now_ns: i64) {
         match input {
-            Input::Authority(snapshot) => self.on_authority(snapshot, now_ns),
+            Input::Authority(snapshot) => self.on_authority(*snapshot, now_ns),
             Input::Sample {
                 sample,
                 receive_ns,

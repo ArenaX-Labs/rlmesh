@@ -13,6 +13,7 @@ use crate::wire::contract::{ActionGrid, Demand, StreamContract};
 use crate::wire::ids::{ChannelId, Epoch, Fingerprint, LeaseToken, ParticipantId, SessionId};
 use crate::wire::key::{IssuedKey, KeysAck};
 use crate::wire::part::{PartSpec, StreamSpec};
+use crate::wire::scene::{Assignment, HostStarted, LobbyWait, Place, RunState, SceneInfo};
 
 /// What a participant does in a session. One participant may hold several.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -147,6 +148,10 @@ pub enum ReasonCode {
     Revoked,
     /// The owner changed the holder's device entry.
     AccessChanged,
+    /// A scene's run ended (a stop).
+    SceneEnded,
+    /// A scene's run failed.
+    SceneFailed,
 }
 
 impl ReasonCode {
@@ -181,6 +186,8 @@ impl ReasonCode {
             Self::HolderDetached => "HOLDER_DETACHED",
             Self::Revoked => "REVOKED",
             Self::AccessChanged => "ACCESS_CHANGED",
+            Self::SceneEnded => "SCENE_ENDED",
+            Self::SceneFailed => "SCENE_FAILED",
         }
     }
 }
@@ -456,6 +463,12 @@ pub struct AuthoritySnapshot {
     pub ended: Vec<LeaseEnd>,
     /// The last entry into SAFE, DISARMED or ESTOP.
     pub last_stop: LastStop,
+    /// Where each placed robot's parts appear in the scene's view.
+    // TODO: always empty until the host carries places (scene step 5).
+    pub places: Vec<Place>,
+    /// The scene this session runs, when a daemon started it.
+    // TODO: always `None` until the host carries a scene (scene step 5).
+    pub scene: Option<Box<SceneInfo>>,
 }
 
 impl AuthoritySnapshot {
@@ -626,6 +639,9 @@ pub enum Command {
         robot_json: String,
         /// The part paths this robot process can seal (§8.8).
         seal: Vec<String>,
+        /// A tethered board's id (tether spec §7), checked against the
+        /// robot's pin.
+        board_id: Option<[u8; 8]>,
     },
     /// A controller's binding. A changed fingerprint voids the controller's
     /// leases and re-issues them under fresh tokens.
@@ -680,6 +696,8 @@ pub enum Command {
         code: ReasonCode,
         /// [`ReasonCode::EstopSignal`]: whose signal the edge latched.
         origin: Option<ParticipantId>,
+        /// When the edge latched it, on the sender's clock (0: not given).
+        at_ns: i64,
     },
     /// An embodiment's local clear of a latched e-stop.
     Clear,
@@ -710,6 +728,35 @@ pub enum Command {
     KeysAck(KeysAck),
     /// Every key issued to the sender's generation, in the reply (§8.5).
     GetKeys,
+    /// A waiting robot or satellite asks the home daemon for its next
+    /// order (scene design §3.3); answered with [`CtlReply::assignment`].
+    LobbyWait(LobbyWait),
+    /// Run a scene; answered with [`CtlReply::run`].
+    RunScene {
+        /// The scene file.
+        scene_toml: String,
+        /// Wait for an explicit arm (`--arm manual`).
+        manual_arm: bool,
+    },
+    /// A run's state, once its version passes `after` (a long poll).
+    SceneStatus {
+        /// The run.
+        run: String,
+        /// The last version the caller saw.
+        after: u64,
+    },
+    /// Stop a run.
+    StopScene {
+        /// The run.
+        run: String,
+    },
+    /// A satellite's answer to a host order.
+    HostStarted(HostStarted),
+    /// The explicit arm after a rejoin, or for `arm = "manual"`.
+    ArmScene {
+        /// The run.
+        run: String,
+    },
 }
 
 /// A verb from a participant.
@@ -766,6 +813,10 @@ pub enum CtlStatus {
     /// A request id below the host's reply window: never applied, and its
     /// first outcome is unknown.
     Expired,
+    /// A robot claimed by another run.
+    RobotBusy,
+    /// A member or satellite isn't there within the wait.
+    NotPresent,
 }
 
 /// A refused control verb.
@@ -802,6 +853,10 @@ pub struct CtlReply {
     /// Keys for the caller (a grant's, or `GetKeys`'), sealed with the
     /// reply.
     pub keys: Vec<IssuedKey>,
+    /// A `LobbyWait`'s order.
+    pub assignment: Option<Assignment>,
+    /// A run's state (`RunScene`, `SceneStatus`, `StopScene`, `ArmScene`).
+    pub run: Option<RunState>,
 }
 
 /// msg 1 of the handshake, on `hs`: Noise IK with an empty payload.

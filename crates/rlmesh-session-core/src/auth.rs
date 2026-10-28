@@ -829,6 +829,17 @@ pub struct Candidate {
     pub down: SealSender,
 }
 
+/// A robot name's pin (design §4, tether spec §7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pin {
+    /// The device that embodies it, checked at every handshake.
+    pub device: String,
+    /// The tethered board behind that device, checked at every
+    /// `DeclareParts`; `None` leaves the board unchecked (a native board, or
+    /// a tethered one pinned by its device alone).
+    pub board_id: Option<[u8; 8]>,
+}
+
 /// One host instance's handshakes: see the module docs.
 #[derive(Debug)]
 pub struct HostAuth {
@@ -840,9 +851,9 @@ pub struct HostAuth {
     devices: BTreeMap<[u8; 32], String>,
     /// Participant id → the device it is bound to, for this host instance.
     names: BTreeMap<ParticipantId, String>,
-    /// Robot name → the device its pin names (rlmeshd's, design §4): the
-    /// binding, checked at every handshake.
-    pins: BTreeMap<ParticipantId, String>,
+    /// Robot name → its pin (rlmeshd's, design §4): the device, checked at
+    /// every handshake, and the board, at every declare.
+    pins: BTreeMap<ParticipantId, Pin>,
     /// Participant id → the generation in effect.
     current: BTreeMap<ParticipantId, u32>,
     last_generation: u32,
@@ -893,19 +904,48 @@ impl HostAuth {
         self.devices.retain(|_, id| id != device);
     }
 
-    /// Pins robot name `robot` to `device` (`None`: unpins it, and the name
-    /// binds to its next embodiment's device again): the pin it had.
-    pub fn pin(&mut self, robot: &ParticipantId, device: Option<&str>) -> Option<String> {
-        match device {
-            Some(device) => {
-                self.names.insert(robot.clone(), device.to_string());
-                self.pins.insert(robot.clone(), device.to_string())
+    /// Pins robot name `robot` (`None`: unpins it, and the name binds to
+    /// its next embodiment's device again): the pin it had.
+    pub fn pin(&mut self, robot: &ParticipantId, pin: Option<Pin>) -> Option<Pin> {
+        match pin {
+            Some(pin) => {
+                self.names.insert(robot.clone(), pin.device.clone());
+                self.pins.insert(robot.clone(), pin)
             }
             None => {
                 self.names.remove(robot);
                 self.pins.remove(robot)
             }
         }
+    }
+
+    /// Whether `robot`, embodied by `device`, may declare its parts from
+    /// the board `board_id` (tether spec §7): its pin names no board, or
+    /// this one.
+    ///
+    /// # Errors
+    /// `NOT_AUTHORIZED` for another board, or none.
+    pub fn check_board(
+        &self,
+        robot: &ParticipantId,
+        device: &str,
+        board_id: Option<&[u8; 8]>,
+    ) -> Result<(), CtlError> {
+        let Some(want) = self.pins.get(robot).and_then(|p| p.board_id.as_ref()) else {
+            return Ok(());
+        };
+        if board_id == Some(want) {
+            return Ok(());
+        }
+        let hex = |id: &[u8; 8]| id.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let got = board_id.map_or_else(|| "none".to_string(), hex);
+        Err(refused(
+            CtlStatus::NotAuthorized,
+            format!(
+                "board on {device} is {got}, expected {robot}'s {}",
+                hex(want)
+            ),
+        ))
     }
 
     /// The instance these handshakes are bound to.
@@ -992,6 +1032,7 @@ impl HostAuth {
         match self
             .pins
             .get(participant)
+            .map(|p| &p.device)
             .or_else(|| self.names.get(participant))
         {
             Some(bound) if bound != device => Err(refused(
@@ -1172,6 +1213,8 @@ mod tests {
             leases: Vec::new(),
             request_id,
             keys: Vec::new(),
+            assignment: None,
+            run: None,
         };
         let mut sealed = candidate
             .down
@@ -1309,6 +1352,44 @@ mod tests {
         assert_eq!(err.status, CtlStatus::NotAuthorized);
         assert!(err.message.contains("belongs to device local"), "{err}");
         handshake(&identity, &mut auth, &laptop, "cockpit").expect("another name is free");
+    }
+
+    #[test]
+    fn a_pin_with_a_board_refuses_another_board_at_declare() {
+        let (_, mut auth) = host();
+        let skull = pid("skull");
+        let board = [0xb0, 0xb1, 0, 0xb3, 0xb4, 0, 0, 0xb7];
+        auth.pin(
+            &skull,
+            Some(Pin {
+                device: "rig-pi".into(),
+                board_id: Some(board),
+            }),
+        );
+        assert!(auth.check_board(&skull, "rig-pi", Some(&board)).is_ok());
+        for other in [Some(&[1; 8]), None] {
+            let err = auth
+                .check_board(&skull, "rig-pi", other)
+                .expect_err("refused");
+            assert_eq!(err.status, CtlStatus::NotAuthorized);
+        }
+        let err = auth
+            .check_board(&skull, "rig-pi", Some(&[1; 8]))
+            .expect_err("refused");
+        assert_eq!(
+            err.message,
+            "board on rig-pi is 0101010101010101, expected skull's b0b100b3b40000b7"
+        );
+        // A pin without a board, and an unpinned name, check none.
+        auth.pin(
+            &skull,
+            Some(Pin {
+                device: "rig-pi".into(),
+                board_id: None,
+            }),
+        );
+        assert!(auth.check_board(&skull, "rig-pi", Some(&[1; 8])).is_ok());
+        assert!(auth.check_board(&pid("eye-l"), "eye-l", None).is_ok());
     }
 
     #[test]

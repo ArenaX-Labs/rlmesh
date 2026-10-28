@@ -233,6 +233,10 @@ enum ReasonCode {
   REASON_REVOKED = 29;
   // The owner changed the device's entry.
   REASON_ACCESS_CHANGED = 30;
+  // A scene's run ended (a stop) or failed: its mode change, its lease
+  // endings and its closing (scene design §4.2).
+  REASON_SCENE_ENDED = 31;
+  REASON_SCENE_FAILED = 32;
 }
 
 message Reason {
@@ -296,6 +300,87 @@ message AuthorityState {
   // The latest lease endings, oldest first (a bounded ring).
   repeated LeaseEnd ended = 20;
   LastStop last_stop = 21;
+  // Where each placed robot's parts appear in the scene's view, with its
+  // static pose (scene design §5).
+  repeated Place places = 22;
+  // The scene this session runs, when a daemon started it.
+  SceneInfo scene = 23;
+}
+
+// One robot's place in a scene's view: its parts under `from` appear at
+// `at`, and `pose` is the pose of its frame `frame` in the scene frame
+// `world` (REP-103, z up).
+message Place {
+  string robot = 1;
+  string at = 2;
+  // A path in the robot's map; empty: its root.
+  string from = 3;
+  // Empty: `base`.
+  string frame = 4;
+  Pose pose = 5;
+}
+
+// Metres, and a unit quaternion (x, y, z, w).
+message Pose {
+  repeated double xyz = 1;
+  repeated double quat_xyzw = 2;
+}
+
+message SceneInfo {
+  string run = 1;
+  string name = 2;
+  // The scene fingerprint (8 bytes).
+  bytes fingerprint = 3;
+  // Set once the run is ending: robots detach and return to the lobby.
+  Reason closing = 4;
+  // Host session clock; set while a member is lost (0: none).
+  int64 rejoin_until_ns = 5;
+}
+
+// One robot's slice of the authority state (scene design §3.4): what its
+// edge reads, on `host/view/{robot}` (Signed kind 22), for a robot that
+// asked for it in `Attach.supports` ("view.device").
+message DeviceView {
+  // Whose view; equals the key's {robot}.
+  string robot = 1;
+  uint64 epoch = 2;
+  uint64 revision = 3;
+  Mode mode = 4;
+  // The code only; the full Reason stays in AuthorityState.
+  ReasonCode mode_reason = 5;
+  // The tether latch-release anchor (safety design §7).
+  LastStop last_stop = 6;
+  int64 host_ns = 7;
+  ClockMode clock_mode = 8;
+  uint64 tick_ns = 9;
+  // This robot's current generation; 0: not attached.
+  uint32 generation = 10;
+  // Its own parts only, host-normalised.
+  repeated PartSpec parts = 11;
+  // On its channels: a token gone from here has ended.
+  repeated Lease leases = 12;
+  // Its own and each current lease holder's.
+  repeated ClockMapping clocks = 13;
+  // The action grid of each leased channel under its lease's binding.
+  repeated ViewGrid grids = 14;
+  // The publication plans of its streams.
+  repeated Demand demands = 15;
+  // Every present participant generation.
+  repeated Member members = 16;
+  // Set once the run is ending: detach and return to the lobby.
+  Reason closing = 17;
+}
+
+message ViewGrid {
+  // The binding fingerprint (8 bytes).
+  bytes binding = 1;
+  uint32 channel = 2;
+  uint64 dt_ns = 3;
+}
+
+message Member {
+  string id = 1;
+  uint32 generation = 2;
 }
 
 // One NTP-style exchange: t1 and t4 in the participant's clock, t2 and t3 in
@@ -522,6 +607,9 @@ message DeclareParts {
   // The part paths this robot process can seal (default none): what its
   // runtime can do, so it stays out of the map and its fingerprint.
   repeated string seal = 3;
+  // A tethered board's id (8 bytes, tether spec §7); empty for none. The
+  // host refuses a declare whose board isn't the one the robot's pin names.
+  bytes board_id = 4;
 }
 
 // Controller -> host.
@@ -562,6 +650,8 @@ message Estop {
   ReasonCode code = 2;
   // REASON_ESTOP_SIGNAL: the participant whose signal the edge latched.
   string origin = 3;
+  // When the edge latched it, on the sender's clock (0: not given).
+  int64 at_ns = 4;
 }
 
 // A member's e-stop, published on estop/{participant} (control class,
@@ -634,12 +724,23 @@ message CtlRequest {
     DeclareParts declare_parts = 18;
     EnterSafe enter_safe = 19;
     DeclareBinding declare_binding = 20;
+    // 21-23 are reserved below.
     DemandAck demand_ack = 24;
     Ready ready = 25;
     Decided decided = 26;
     KeysAck keys_ack = 27;
     GetKeys get_keys = 28;
+    // The lobby and scenes (scene design §3.3, §4).
+    LobbyWait lobby_wait = 29;
+    RunScene run_scene = 30;
+    SceneStatus scene_status = 31;
+    StopScene stop_scene = 32;
+    HostStarted host_started = 33;
+    ArmScene arm_scene = 34;
   }
+  // The spec's Reset, EndEpisode and Mark (§10.5), not built yet: the
+  // change that adds them takes these numbers.
+  reserved 21 to 23;
 }
 
 enum CtlStatus {
@@ -677,6 +778,10 @@ enum CtlStatus {
   // A request id below the host's reply window: never applied, and its
   // first outcome is unknown.
   CTL_STATUS_EXPIRED = 19;
+  // A robot claimed by another run.
+  CTL_STATUS_ROBOT_BUSY = 20;
+  // A member or satellite isn't there within the wait.
+  CTL_STATUS_NOT_PRESENT = 21;
 }
 
 message CtlReply {
@@ -691,6 +796,10 @@ message CtlReply {
   // Keys for the caller: a lease holder's from the grant that minted its
   // token, or every key issued to its generation (`GetKeys`).
   repeated Key keys = 6;
+  // A `LobbyWait`'s order.
+  Assignment assignment = 7;
+  // A run's state (`RunScene`, `SceneStatus`, `StopScene`, `ArmScene`).
+  RunState run = 8;
 }
 
 // The level of a key's configured kinds (chunks, samples, applied entries,
@@ -846,6 +955,159 @@ message PairInfo {
   bytes host_key = 2;
   string host_id = 3;
   repeated string addresses = 4;
+}
+
+// The lobby and scenes (scene design §3, §4): verbs in the home daemon's
+// `_lobby` session, sealed like any other.
+
+// A waiting robot or satellite -> the home daemon: answered with an
+// `Assignment` once there is an order for it (a long poll; a retry keeps
+// the request id).
+message LobbyWait {
+  // The run that just failed for this participant, and why.
+  string run = 1;
+  CtlError last = 2;
+}
+
+message Assignment {
+  oneof order {
+    Join join = 1;
+    HostOrder host = 2;
+    ServeOrder serve = 3;
+    StopOrder stop = 4;
+  }
+}
+
+// A robot's order: join `session` at `addresses` (base ports) with an IK
+// handshake against `host_key`.
+message Join {
+  string run = 1;
+  string session = 2;
+  // Equals the robot's own name; it refuses otherwise.
+  string robot = 3;
+  repeated string addresses = 4;
+  bytes host_key = 5;
+  string host_id = 6;
+  // The handshake prologue's tenant.
+  string tenant = 7;
+}
+
+// A satellite's order to host a scene's session.
+message HostOrder {
+  string run = 1;
+  string session = 2;
+  string scene_toml = 3;
+  repeated DeviceRecord devices = 4;
+  repeated RobotPin pins = 5;
+}
+
+// A satellite's order to serve a catalog model as a scene member.
+message ServeOrder {
+  string run = 1;
+  string member = 2;
+  string model = 3;
+  string session = 4;
+  repeated string addresses = 5;
+  bytes host_key = 6;
+}
+
+// A satellite's order to close what it runs for `run`.
+message StopOrder {
+  string run = 1;
+  Reason reason = 2;
+}
+
+// A satellite -> the home daemon: the scene host is up, or why not.
+message HostStarted {
+  string run = 1;
+  bytes host_key = 2;
+  repeated string addresses = 3;
+  CtlError error = 4;
+}
+
+// A member's device, as the home daemon's table has it.
+message DeviceRecord {
+  string id = 1;
+  bytes public_key = 2;
+  // UNSPECIFIED: observer only.
+  PriorityClass max_priority = 3;
+  repeated string parts = 4;
+  repeated string verbs = 5;
+}
+
+// A robot name's pin: the device that embodies it and, for a tethered
+// board, its board id (8 bytes; empty for none).
+message RobotPin {
+  string robot = 1;
+  string device = 2;
+  bytes board_id = 3;
+}
+
+message RunScene {
+  string scene_toml = 1;
+  bool manual_arm = 2;
+}
+
+// Answered once the run's state version passes `after`.
+message SceneStatus {
+  string run = 1;
+  uint64 after = 2;
+}
+
+message StopScene {
+  string run = 1;
+}
+
+// The explicit arm after a rejoin, or for `arm = "manual"`.
+message ArmScene {
+  string run = 1;
+}
+
+enum RunStage {
+  RUN_STAGE_UNSPECIFIED = 0;
+  RUN_STAGE_CHECKING = 1;
+  RUN_STAGE_HOSTING = 2;
+  RUN_STAGE_ASSIGNING = 3;
+  RUN_STAGE_DECLARING = 4;
+  RUN_STAGE_BINDING = 5;
+  RUN_STAGE_ARMING = 6;
+  RUN_STAGE_RUNNING = 7;
+  RUN_STAGE_ENDING = 8;
+  RUN_STAGE_ENDED = 9;
+  RUN_STAGE_FAILED = 10;
+  RUN_STAGE_REJOINING = 11;
+}
+
+enum MemberStage {
+  MEMBER_STAGE_UNSPECIFIED = 0;
+  MEMBER_STAGE_WAITING = 1;
+  MEMBER_STAGE_ASSIGNED = 2;
+  MEMBER_STAGE_JOINED = 3;
+  MEMBER_STAGE_DECLARED = 4;
+  MEMBER_STAGE_BOUND = 5;
+  MEMBER_STAGE_LOST = 6;
+  MEMBER_STAGE_RETURNED = 7;
+}
+
+message MemberState {
+  string name = 1;
+  MemberStage stage = 2;
+  CtlError error = 3;
+}
+
+message RunState {
+  string run = 1;
+  // Rises with every change.
+  uint64 version = 2;
+  RunStage stage = 3;
+  repeated MemberState members = 4;
+  CtlError error = 5;
+  // The scene host's session, addresses and key, once it is up.
+  string session = 6;
+  repeated string addresses = 7;
+  bytes host_key = 8;
+  // The scene fingerprint (8 bytes).
+  bytes scene_fingerprint = 9;
 }
 
 // Virtual mode, host -> participants on `host/tick` (§11.3).

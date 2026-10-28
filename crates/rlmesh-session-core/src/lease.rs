@@ -631,6 +631,8 @@ mod tests {
             mode_reason: Reason::default(),
             ended: Vec::new(),
             last_stop: LastStop::default(),
+            places: Vec::new(),
+            scene: None,
         }
     }
 
@@ -645,6 +647,8 @@ mod tests {
             state: snapshot(5, 0, Mode::Active, vec![lease("web-1", 9, 1_000 * MS)]),
             leases: vec![lease("web-1", 9, 1_000 * MS)],
             keys: Vec::new(),
+            assignment: None,
+            run: None,
         };
         assert!(client.on_reply(&reply, clock, MS));
     }
@@ -822,6 +826,8 @@ mod tests {
             state: snapshot(5, 0, Mode::Active, Vec::new()),
             leases: Vec::new(),
             keys: Vec::new(),
+            assignment: None,
+            run: None,
         };
         assert!(!client.on_reply(&reply, None, MS));
         assert!(
@@ -848,6 +854,8 @@ mod tests {
             state: snapshot(5, 0, Mode::Active, both.clone()),
             leases: both,
             keys: Vec::new(),
+            assignment: None,
+            run: None,
         };
         assert!(group.on_reply(&reply, None, MS));
         assert!(group.holds_all(2 * MS));

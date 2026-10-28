@@ -26,7 +26,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use rlmesh_session::address::write_private;
 use rlmesh_session::auth::address::unbase32;
-use rlmesh_session::auth::{Device, LOCAL_DEVICE};
+use rlmesh_session::auth::{Device, LOCAL_DEVICE, Pin as HostPin};
 use rlmesh_session::authority::{DeviceAccess, Verb};
 use rlmesh_session::wire::{ParticipantId, PriorityClass};
 use serde::{Deserialize, Serialize};
@@ -82,9 +82,8 @@ pub struct Entry {
 pub struct Pin {
     /// The device that embodies it.
     pub device: String,
-    /// A tethered board's id behind that device, 16 hex digits.
-    // TODO: the host checks only the device; it checks board_id once
-    // DeclareParts carries it (the tether bridge, tether spec §7).
+    /// A tethered board's id behind that device, 16 hex digits: the host
+    /// refuses a `DeclareParts` from another board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board_id: Option<String>,
 }
@@ -99,6 +98,18 @@ pub fn class(name: &str) -> Result<Option<PriorityClass>> {
         "safety" => bail!("safety is reserved for the robot's own machine (local)"),
         other => bail!("max_priority {other:?}: observer, scripted, model or operator"),
     })
+}
+
+/// A board id from its 16 hex digits.
+fn board_id(hex: &str) -> Option<[u8; 8]> {
+    if hex.len() != 16 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut id = [0; 8];
+    for (i, byte) in id.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(id)
 }
 
 fn verb(name: &str) -> Result<Verb> {
@@ -144,7 +155,7 @@ impl Table {
 
     /// What a host takes from it: the devices with their entries, and the
     /// pins.
-    pub fn host(&self) -> Result<(Vec<Device>, BTreeMap<ParticipantId, String>)> {
+    pub fn host(&self) -> Result<(Vec<Device>, BTreeMap<ParticipantId, HostPin>)> {
         let mut devices: Vec<Device> = Vec::new();
         for (id, entry) in &self.devices {
             let device = || format!("{DEVICES}: device {id}");
@@ -166,12 +177,22 @@ impl Table {
         let mut pins = BTreeMap::new();
         for (robot, pin) in &self.robots {
             let name = ParticipantId::new(robot).with_context(|| format!("{DEVICES}: {robot}"))?;
-            if let Some(id) = &pin.board_id
-                && !(id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()))
-            {
-                bail!("{DEVICES}: robot {robot}: board_id {id:?} is not 16 hex digits");
-            }
-            pins.insert(name, pin.device.clone());
+            let board_id = pin
+                .board_id
+                .as_ref()
+                .map(|id| {
+                    board_id(id).with_context(|| {
+                        format!("{DEVICES}: robot {robot}: board_id {id:?} is not 16 hex digits")
+                    })
+                })
+                .transpose()?;
+            pins.insert(
+                name,
+                HostPin {
+                    device: pin.device.clone(),
+                    board_id,
+                },
+            );
         }
         Ok((devices, pins))
     }

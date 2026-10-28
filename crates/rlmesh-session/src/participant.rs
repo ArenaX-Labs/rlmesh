@@ -336,6 +336,8 @@ enum Report {
         seq: u64,
         code: ReasonCode,
         origin: Option<ParticipantId>,
+        /// When it latched, on this process's clock.
+        at_ns: i64,
     },
     /// It cleared the latch, after `after` latches, the last for
     /// `reason`.
@@ -353,6 +355,7 @@ impl Report {
             seq,
             code: reason.code,
             origin,
+            at_ns: reason.at_ns,
         }
     }
 }
@@ -377,6 +380,7 @@ impl StopOrder {
                 seq,
                 code,
                 origin,
+                at_ns,
             } => {
                 self.estops = seq;
                 vec![Report::Estop {
@@ -384,6 +388,7 @@ impl StopOrder {
                     seq,
                     code,
                     origin,
+                    at_ns,
                 }]
             }
             // The latch's own report hasn't gone out: the clear sends it,
@@ -1501,6 +1506,7 @@ impl Participant {
                 reason,
                 code: ReasonCode::EstopRemote,
                 origin: None,
+                at_ns: 0,
             };
             if let Err(err) = shared.ctl(estop).await {
                 warn!(participant = %shared.id, %err, "the host did not answer the e-stop; the signal stands");
@@ -1564,6 +1570,7 @@ impl Participant {
                 spec_version: SPEC_VERSION,
                 robot_json: robot_json.to_string(),
                 seal,
+                board_id: None,
             })
             .await?
             .0;
@@ -2439,11 +2446,13 @@ async fn send_stop(shared: &Shared, report: &Report, cancel: &CancellationToken)
                 reason,
                 code,
                 origin,
+                at_ns,
                 ..
             } => Command::Estop {
                 reason: reason.clone(),
                 code: *code,
                 origin: origin.clone(),
+                at_ns: *at_ns,
             },
             Report::Clear { .. } => Command::Clear,
         };

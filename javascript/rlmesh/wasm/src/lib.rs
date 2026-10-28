@@ -1040,6 +1040,7 @@ impl ControlSession {
                     reason: reason.to_string(),
                     code: ReasonCode::EstopRemote,
                     origin: None,
+                    at_ns: 0,
                 },
                 "estop",
             ),

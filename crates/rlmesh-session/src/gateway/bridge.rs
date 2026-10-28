@@ -697,6 +697,8 @@ impl BrowserLink {
             state,
             leases,
             keys: Vec::new(),
+            assignment: None,
+            run: None,
         };
         Outbound::Binary(Bytes::from(frame::with_id(
             frame::REPLY,
