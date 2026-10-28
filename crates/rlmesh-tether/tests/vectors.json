@@ -1,0 +1,1610 @@
+{
+  "cobs_decode": [
+    {
+      "name": "a 254 block, pinned form (no code byte after it)",
+      "results": [
+        {
+          "ok": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe"
+        }
+      ],
+      "rx_max": 256,
+      "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe00"
+    },
+    {
+      "name": "a 254 block, trailing 0x01 variant",
+      "results": [
+        {
+          "ok": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe"
+        }
+      ],
+      "rx_max": 256,
+      "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe0100"
+    },
+    {
+      "name": "a 254 block, pinned form, at exactly rx_max 254",
+      "results": [
+        {
+          "ok": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe"
+        }
+      ],
+      "rx_max": 254,
+      "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe00"
+    },
+    {
+      "name": "a 254 block, trailing 0x01 variant, at exactly rx_max 254",
+      "results": [
+        {
+          "ok": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe"
+        }
+      ],
+      "rx_max": 254,
+      "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe0100"
+    },
+    {
+      "name": "two 254 blocks, trailing 0x01 variant",
+      "results": [
+        {
+          "ok": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe"
+        }
+      ],
+      "rx_max": 512,
+      "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe0100"
+    },
+    {
+      "name": "empty frames between delimiters are skipped",
+      "results": [
+        {
+          "ok": "1122"
+        }
+      ],
+      "rx_max": 256,
+      "wire": "00000311220000"
+    },
+    {
+      "name": "a lone code byte decodes to an empty frame",
+      "results": [
+        {
+          "ok": ""
+        }
+      ],
+      "rx_max": 256,
+      "wire": "0100"
+    },
+    {
+      "name": "all zeros",
+      "results": [
+        {
+          "ok": "0000000000"
+        }
+      ],
+      "rx_max": 256,
+      "wire": "01010101010100"
+    },
+    {
+      "name": "a truncated block, then a good frame",
+      "results": [
+        {
+          "error": "truncated"
+        },
+        {
+          "ok": "1122"
+        }
+      ],
+      "rx_max": 256,
+      "wire": "05aabb0003112200"
+    },
+    {
+      "name": "rx_max decoded bytes fit",
+      "results": [
+        {
+          "ok": "0102030405060708090a0b0c0d0e0f10"
+        }
+      ],
+      "rx_max": 16,
+      "wire": "110102030405060708090a0b0c0d0e0f1000"
+    },
+    {
+      "name": "one byte over rx_max overflows, then a good frame",
+      "results": [
+        {
+          "error": "overflow"
+        },
+        {
+          "ok": "09"
+        }
+      ],
+      "rx_max": 16,
+      "wire": "120102030405060708090a0b0c0d0e0f101100020900"
+    },
+    {
+      "name": "an implied zero over rx_max overflows (decoded bytes count)",
+      "results": [
+        {
+          "error": "overflow"
+        },
+        {
+          "ok": "09"
+        }
+      ],
+      "rx_max": 16,
+      "wire": "110102030405060708090a0b0c0d0e0f100100020900"
+    },
+    {
+      "name": "257 decoded bytes overflow a 256 buffer, then a good frame",
+      "results": [
+        {
+          "error": "overflow"
+        },
+        {
+          "ok": "09"
+        }
+      ],
+      "rx_max": 256,
+      "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe04ff010200020900"
+    },
+    {
+      "name": "overflow and truncation in one frame: overflow wins",
+      "results": [
+        {
+          "error": "overflow"
+        },
+        {
+          "ok": "09"
+        }
+      ],
+      "rx_max": 16,
+      "wire": "200102030405060708090a0b0c0d0e0f101112131400020900"
+    },
+    {
+      "name": "an unterminated frame yields nothing yet",
+      "results": [],
+      "rx_max": 256,
+      "wire": "031122"
+    }
+  ],
+  "cobs_encode": [
+    {
+      "decoded": "",
+      "encoded": "01",
+      "name": "empty"
+    },
+    {
+      "decoded": "00",
+      "encoded": "0101",
+      "name": "one zero"
+    },
+    {
+      "decoded": "0000000000",
+      "encoded": "010101010101",
+      "name": "all zeros"
+    },
+    {
+      "decoded": "001122",
+      "encoded": "01031122",
+      "name": "leading zero"
+    },
+    {
+      "decoded": "11000000",
+      "encoded": "0211010101",
+      "name": "trailing zeros"
+    },
+    {
+      "decoded": "11220033",
+      "encoded": "0311220233",
+      "name": "zero in the middle"
+    },
+    {
+      "decoded": "11223344",
+      "encoded": "0511223344",
+      "name": "no zeros"
+    },
+    {
+      "decoded": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfd",
+      "encoded": "fe0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfd",
+      "name": "run of 253"
+    },
+    {
+      "decoded": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe",
+      "encoded": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe",
+      "name": "run of 254 ends exactly at a block"
+    },
+    {
+      "decoded": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "encoded": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe02ff",
+      "name": "run of 255"
+    },
+    {
+      "decoded": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe00",
+      "encoded": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe0101",
+      "name": "a zero after a 254 block"
+    },
+    {
+      "decoded": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe",
+      "encoded": "01ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe",
+      "name": "a 254 block after a zero"
+    },
+    {
+      "decoded": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe",
+      "encoded": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe",
+      "name": "two 254 blocks"
+    }
+  ],
+  "crc": [
+    {
+      "crc16": 65535,
+      "crc32": 0,
+      "data": "",
+      "name": "empty"
+    },
+    {
+      "crc16": 10673,
+      "crc32": 3421780262,
+      "data": "313233343536373839",
+      "name": "catalogue check \"123456789\""
+    },
+    {
+      "crc16": 57840,
+      "crc32": 3523407757,
+      "data": "00",
+      "name": "one zero byte"
+    },
+    {
+      "crc16": 16317,
+      "crc32": 688229491,
+      "data": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "name": "256 bytes 0x00..0xFF"
+    }
+  ],
+  "frames": [
+    {
+      "name": "a good frame",
+      "results": [
+        {
+          "frame": {
+            "payload": "03",
+            "seq": 1,
+            "type": 133
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "06850103641f00"
+    },
+    {
+      "name": "a bad CRC, then a good frame",
+      "results": [
+        {
+          "error": "crc"
+        },
+        {
+          "frame": {
+            "payload": "03",
+            "seq": 1,
+            "type": 133
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "06850103641e0006850103641f00"
+    },
+    {
+      "name": "a corrupted payload byte, then a good frame",
+      "results": [
+        {
+          "error": "crc"
+        },
+        {
+          "frame": {
+            "payload": "03",
+            "seq": 1,
+            "type": 133
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "06850183641f0006850103641f00"
+    },
+    {
+      "name": "a truncated block, then a good frame",
+      "results": [
+        {
+          "error": "truncated"
+        },
+        {
+          "frame": {
+            "payload": "03",
+            "seq": 1,
+            "type": 133
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "05aabb0006850103641f00"
+    },
+    {
+      "name": "a 17-byte frame overflows rx_max 16, then a good frame",
+      "results": [
+        {
+          "error": "overflow"
+        },
+        {
+          "frame": {
+            "payload": "03",
+            "seq": 1,
+            "type": 133
+          }
+        }
+      ],
+      "rx_max": 16,
+      "wire": "0483020101023c0b1111111111111111f02f0006850103641f00"
+    },
+    {
+      "name": "ATTACH (16 bytes decoded) fits rx_max 16",
+      "results": [
+        {
+          "frame": {
+            "payload": "010203040506070802010100",
+            "seq": 0,
+            "type": 130
+          }
+        }
+      ],
+      "rx_max": 16,
+      "wire": "02820c010203040506070802010103ae4c00"
+    },
+    {
+      "name": "a frame under 5 decoded bytes, then a good frame",
+      "results": [
+        {
+          "error": "size"
+        },
+        {
+          "frame": {
+            "payload": "03",
+            "seq": 1,
+            "type": 133
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "02850362f90006850103641f00"
+    },
+    {
+      "name": "a lone code byte is an empty frame, then a good frame",
+      "results": [
+        {
+          "error": "size"
+        },
+        {
+          "frame": {
+            "payload": "03",
+            "seq": 1,
+            "type": 133
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "010006850103641f00"
+    },
+    {
+      "name": "the largest frame (256 decoded bytes)",
+      "results": [
+        {
+          "frame": {
+            "payload": "010000006162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e",
+            "seq": 4,
+            "type": 2
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "040204010101fb6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e7ffc00"
+    },
+    {
+      "name": "257 decoded bytes overflow, then a good frame",
+      "results": [
+        {
+          "error": "overflow"
+        },
+        {
+          "frame": {
+            "payload": "03",
+            "seq": 1,
+            "type": 133
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "ff0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfe04ff01020006850103641f00"
+    },
+    {
+      "name": "line noise and empty frames, then a good frame",
+      "results": [
+        {
+          "error": "truncated"
+        },
+        {
+          "frame": {
+            "payload": "03",
+            "seq": 1,
+            "type": 133
+          }
+        }
+      ],
+      "rx_max": 256,
+      "wire": "00003742000006850103641f00"
+    }
+  ],
+  "messages": [
+    {
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6579652d31",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO",
+      "seq": 0,
+      "wire": "020106524c4d5401050101b0b103b3b40104b7010201085802efbeaddefa024009056579652d3106c900"
+    },
+    {
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, empty name",
+      "seq": 1,
+      "wire": "080101524c4d5401050101b0b103b3b40104b7010201085802efbeaddefa024001039aea00"
+    },
+    {
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6162636465666768696a6b6c6d6e6f707172737475767778797a616263646566",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, 32-byte name",
+      "seq": 2,
+      "wire": "080102524c4d5401050101b0b103b3b40104b7010201085802efbeaddefa024024206162636465666768696a6b6c6d6e6f707172737475767778797a616263646566451700"
+    },
+    {
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "c593696c2dc3bc",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, multi-byte UTF-8 name",
+      "seq": 3,
+      "wire": "080103524c4d5401050101b0b103b3b40104b7010201085802efbeaddefa02400b07c593696c2dc3bc366000"
+    },
+    {
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 1,
+        "gen": 7,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6e",
+        "rx_max": 16,
+        "type": "HELLO",
+        "watchdog_ms": 20
+      },
+      "name": "HELLO, lowest rx_max and watchdog_ms, e-stop latched",
+      "seq": 4,
+      "wire": "080104524c4d5401050101b0b103b3b4010db7010207015802efbeadde14021005016e16a900"
+    },
+    {
+      "msg": {
+        "arch": 4,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6e",
+        "rx_max": 256,
+        "type": "HELLO",
+        "watchdog_ms": 5000
+      },
+      "name": "HELLO, highest rx_max and watchdog_ms",
+      "seq": 5,
+      "wire": "080105524c4d5401050104b0b103b3b40104b7010201095802efbeadde88130601016eb25100"
+    },
+    {
+      "msg": {
+        "boot": 513,
+        "data": "6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e",
+        "offset": 0,
+        "type": "MAP"
+      },
+      "name": "MAP, the largest slice (a 256-byte frame)",
+      "seq": 6,
+      "wire": "050206010201fb6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e68aa00"
+    },
+    {
+      "msg": {
+        "boot": 513,
+        "data": "",
+        "offset": 600,
+        "type": "MAP"
+      },
+      "name": "MAP, empty slice past the end",
+      "seq": 7,
+      "wire": "09020701025802045d00"
+    },
+    {
+      "dense_len": {
+        "0": 8
+      },
+      "msg": {
+        "part": 0,
+        "t_us": 16909060,
+        "type": "STATE",
+        "value": "0000c03f000080be"
+      },
+      "name": "STATE, two f32",
+      "seq": 8,
+      "wire": "03030805040302010103c03f010580bea08c00"
+    },
+    {
+      "dense_len": {
+        "2": 247
+      },
+      "msg": {
+        "part": 2,
+        "t_us": 4294967295,
+        "type": "STATE",
+        "value": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6"
+      },
+      "name": "STATE, the largest sample (a 256-byte frame)",
+      "seq": 9,
+      "wire": "08030902fffffffff90102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f623ef00"
+    },
+    {
+      "msg": {
+        "bad": 65535,
+        "boot": 513,
+        "flags": 7,
+        "gen": 7,
+        "lost": 0,
+        "reset": 3,
+        "t_us": 1000000,
+        "type": "STATUS"
+      },
+      "name": "STATUS, every flag",
+      "seq": 10,
+      "wire": "08040a01020707030106ffff40420f032d9000"
+    },
+    {
+      "msg": {
+        "code": 0,
+        "level": 0,
+        "text": "",
+        "type": "NOTE"
+      },
+      "name": "NOTE, empty text",
+      "seq": 11,
+      "wire": "03050b010374c800"
+    },
+    {
+      "msg": {
+        "code": 9,
+        "level": 2,
+        "text": "6162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f70717273747576",
+        "type": "NOTE"
+      },
+      "name": "NOTE, 48-byte text",
+      "seq": 12,
+      "wire": "37050c02096162636465666768696a6b6c6d6e6f707172737475767778797a6162636465666768696a6b6c6d6e6f70717273747576735600"
+    },
+    {
+      "msg": {
+        "code": 3,
+        "level": 1,
+        "text": "fffe41c080",
+        "type": "NOTE"
+      },
+      "name": "NOTE, text that isn't UTF-8 (accepted: only HELLO.name is checked)",
+      "seq": 13,
+      "wire": "0c050d0103fffe41c080a28500"
+    },
+    {
+      "msg": {
+        "boot": 513,
+        "max": 1,
+        "offset": 0,
+        "type": "GET_MAP"
+      },
+      "name": "GET_MAP, max 1",
+      "seq": 0,
+      "wire": "02810301020104014eb500"
+    },
+    {
+      "msg": {
+        "boot": 513,
+        "max": 248,
+        "offset": 248,
+        "type": "GET_MAP"
+      },
+      "name": "GET_MAP, max 248",
+      "seq": 1,
+      "wire": "0681010102f804f82bc400"
+    },
+    {
+      "msg": {
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 1,
+        "gen": 255,
+        "type": "ATTACH"
+      },
+      "name": "ATTACH, clear e-stop",
+      "seq": 2,
+      "wire": "058202b0b103b3b40108b70102ff01c14f00"
+    },
+    {
+      "dense_len": {
+        "0": 8
+      },
+      "msg": {
+        "flags": 1,
+        "gen": 7,
+        "part": 0,
+        "ttl_ms": 60,
+        "type": "COMMAND",
+        "value": "0000803f00000000"
+      },
+      "name": "COMMAND, hold",
+      "seq": 3,
+      "wire": "0483030703013c010103803f01010103c49100"
+    },
+    {
+      "dense_len": {
+        "1": 7
+      },
+      "msg": {
+        "flags": 0,
+        "gen": 7,
+        "part": 1,
+        "ttl_ms": 65535,
+        "type": "COMMAND",
+        "value": "01020300050607"
+      },
+      "name": "COMMAND, a 16-byte frame (the smallest rx_max)",
+      "seq": 4,
+      "wire": "058304070106ffff01020306050607285200"
+    },
+    {
+      "msg": {
+        "gen": 7,
+        "part": 255,
+        "type": "SAFE"
+      },
+      "name": "SAFE, every part",
+      "seq": 254,
+      "wire": "0784fe07ff3dec00"
+    },
+    {
+      "msg": {
+        "gen": 7,
+        "part": 0,
+        "type": "SAFE"
+      },
+      "name": "SAFE, one part",
+      "seq": 255,
+      "wire": "0484ff0703fdc500"
+    },
+    {
+      "msg": {
+        "gen": 7,
+        "type": "PING"
+      },
+      "name": "PING",
+      "seq": 0,
+      "wire": "02850407d16c00"
+    },
+    {
+      "msg": {
+        "gen": 7,
+        "type": "DETACH"
+      },
+      "name": "DETACH",
+      "seq": 1,
+      "wire": "06860107b00600"
+    }
+  ],
+  "pack": [
+    {
+      "aligned": "0000c03f00000000000080be00000000",
+      "dense": "0000c03f000080be",
+      "fields": "pan: f32, tilt: f32",
+      "lens": [4, 4],
+      "name": "two f32 fields: aligned 16, dense 8",
+      "offsets": [0, 8]
+    },
+    {
+      "aligned": "0000003f0000000007000000000000000100000000000000",
+      "dense": "0000003f0701",
+      "fields": "pos: f32, id: u8, on: bool",
+      "lens": [4, 1, 1],
+      "name": "mixed f32, u8 and bool",
+      "offsets": [0, 8, 16]
+    },
+    {
+      "aligned": "0000803f0000004000004040000080bf000000c0000040c0aa55000000000000",
+      "dense": "0000803f0000004000004040000080bf000000c0000040c0aa55",
+      "fields": "pos: f32[2][3], id: u8[2]",
+      "lens": [24, 2],
+      "name": "a 2-D shape, then a u8 pair",
+      "offsets": [0, 24]
+    },
+    {
+      "aligned": "000000000000f43f000040400000000000000000000004c0",
+      "dense": "000000000000f43f0000404000000000000004c0",
+      "fields": "x: f64, k: f32, y: f64",
+      "lens": [8, 4, 8],
+      "name": "f64 fields around an f32",
+      "offsets": [0, 8, 16]
+    },
+    {
+      "aligned": "cdcccc3dcdcc4c3e9a99993e0000000000000000000000000e0f000000000000",
+      "dense": "cdcccc3dcdcc4c3e9a99993e000e0f",
+      "fields": "pos: f32[3], on: bool, id: u8[2]",
+      "lens": [12, 1, 2],
+      "name": "f32[3], bool, u8[2]",
+      "offsets": [0, 16, 24]
+    }
+  ],
+  "rejections": [
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "direction",
+      "name": "COMMAND heard by the bridge (an echoing adapter)",
+      "payload": "0100003c0001020304",
+      "receiver": "bridge",
+      "type": 131
+    },
+    {
+      "error": "direction",
+      "name": "STATUS heard by the board",
+      "payload": "00000000000000000000000000",
+      "receiver": "board",
+      "type": 4
+    },
+    {
+      "error": "direction",
+      "name": "HELLO heard by the board",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00400003657965",
+      "receiver": "board",
+      "type": 1
+    },
+    {
+      "error": "direction",
+      "name": "PING heard by the bridge",
+      "payload": "01",
+      "receiver": "bridge",
+      "type": 133
+    },
+    {
+      "error": "unknown_type",
+      "name": "type 0x06 at the bridge",
+      "payload": "00",
+      "receiver": "bridge",
+      "type": 6
+    },
+    {
+      "error": "unknown_type",
+      "name": "type 0x00 at the bridge",
+      "payload": "00",
+      "receiver": "bridge",
+      "type": 0
+    },
+    {
+      "error": "unknown_type",
+      "name": "type 0x7F at the bridge",
+      "payload": "00",
+      "receiver": "bridge",
+      "type": 127
+    },
+    {
+      "error": "unknown_type",
+      "name": "type 0x80 at the board",
+      "payload": "00",
+      "receiver": "board",
+      "type": 128
+    },
+    {
+      "error": "unknown_type",
+      "name": "type 0x87 at the board",
+      "payload": "00",
+      "receiver": "board",
+      "type": 135
+    },
+    {
+      "error": "unknown_type",
+      "name": "type 0xFF at the board",
+      "payload": "00",
+      "receiver": "board",
+      "type": 255
+    },
+    {
+      "error": "magic",
+      "name": "HELLO, bad magic",
+      "payload": "524c4d5801000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00400003657965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "magic",
+      "name": "HELLO, shorter than the magic",
+      "payload": "524c4d",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "length",
+      "name": "HELLO, the magic alone",
+      "payload": "524c4d54",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "length",
+      "name": "HELLO, magic and version alone",
+      "payload": "524c4d5401",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "version",
+      "name": "HELLO, a future version, short",
+      "payload": "524c4d540278797a",
+      "receiver": "bridge",
+      "type": 1,
+      "version": 2
+    },
+    {
+      "error": "version",
+      "name": "HELLO, a future version, full length",
+      "payload": "524c4d5402000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00400003657965",
+      "receiver": "bridge",
+      "type": 1,
+      "version": 2
+    },
+    {
+      "error": "version",
+      "name": "HELLO, version 0",
+      "payload": "524c4d5400000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00400003657965",
+      "receiver": "bridge",
+      "type": 1,
+      "version": 0
+    },
+    {
+      "error": "length",
+      "name": "HELLO, name_len past the payload",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00400004657965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "length",
+      "name": "HELLO, a byte after the name",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa0040000365796578",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "length",
+      "name": "HELLO, 30 bytes (no name_len)",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa004000",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "range",
+      "name": "HELLO, name_len 33",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa004000216162636465666768696a6b6c6d6e6f707172737475767778797a61626364656667",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "reserved",
+      "name": "HELLO, reserved flag bit 1",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200025802efbeaddefa00400003657965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "reserved",
+      "name": "HELLO, reserved flag bit 7",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200815802efbeaddefa00400003657965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "reserved",
+      "name": "HELLO, a reserved bit is reported before a range",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200025802efbeaddefa00080003657965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "range",
+      "name": "HELLO, rx_max 15",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa000f0003657965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "range",
+      "name": "HELLO, rx_max 257",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00010103657965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "range",
+      "name": "HELLO, watchdog_ms 19",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeadde1300400003657965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "range",
+      "name": "HELLO, watchdog_ms 5001",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeadde8913400003657965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "range",
+      "name": "HELLO, a range is reported before UTF-8",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeadde0000400003ff7965",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "utf8",
+      "name": "HELLO, name 0xFF",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa0040000261ff",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "utf8",
+      "name": "HELLO, name with an overlong NUL (C0 80)",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00400002c080",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "utf8",
+      "name": "HELLO, name with a surrogate (ED A0 80)",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00400003eda080",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "utf8",
+      "name": "HELLO, name ending mid-character (E2 82)",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa0040000361e282",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "utf8",
+      "name": "HELLO, name above U+10FFFF (F4 90 80 80)",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00400004f4908080",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "utf8",
+      "name": "HELLO, name with a lone continuation byte",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa0040000180",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "utf8",
+      "name": "HELLO, name with an overlong 3-byte form (E0 80 AF)",
+      "payload": "524c4d5401000101b0b1b2b3b4b5b6b7010200005802efbeaddefa00400003e080af",
+      "receiver": "bridge",
+      "type": 1
+    },
+    {
+      "error": "length",
+      "name": "MAP, 3 bytes",
+      "payload": "000000",
+      "receiver": "bridge",
+      "type": 2
+    },
+    {
+      "error": "length",
+      "name": "MAP, a 249-byte slice",
+      "payload": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "receiver": "bridge",
+      "type": 2
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "length",
+      "name": "STATE, empty",
+      "payload": "",
+      "receiver": "bridge",
+      "type": 3
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "length",
+      "name": "STATE, one byte short",
+      "payload": "0000000000000000",
+      "receiver": "bridge",
+      "type": 3
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "length",
+      "name": "STATE, one byte long",
+      "payload": "00000000000000000000",
+      "receiver": "bridge",
+      "type": 3
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "unknown_part",
+      "name": "STATE, an unknown part",
+      "payload": "030000000001020304",
+      "receiver": "bridge",
+      "type": 3
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "unknown_part",
+      "name": "STATE, 1 byte with an unknown part",
+      "payload": "09",
+      "receiver": "bridge",
+      "type": 3
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "unknown_part",
+      "name": "STATE, 4 bytes with an unknown part",
+      "payload": "09000000",
+      "receiver": "bridge",
+      "type": 3
+    },
+    {
+      "error": "length",
+      "name": "STATUS, 12 bytes",
+      "payload": "000000000000000000000000",
+      "receiver": "bridge",
+      "type": 4
+    },
+    {
+      "error": "length",
+      "name": "STATUS, 14 bytes",
+      "payload": "0000000000000000000000000000",
+      "receiver": "bridge",
+      "type": 4
+    },
+    {
+      "error": "reserved",
+      "name": "STATUS, reserved flag bit 3",
+      "payload": "00000008000000000000000000",
+      "receiver": "bridge",
+      "type": 4
+    },
+    {
+      "error": "length",
+      "name": "NOTE, 1 byte",
+      "payload": "00",
+      "receiver": "bridge",
+      "type": 5
+    },
+    {
+      "error": "length",
+      "name": "NOTE, 49 bytes of text",
+      "payload": "414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141",
+      "receiver": "bridge",
+      "type": 5
+    },
+    {
+      "error": "length",
+      "name": "GET_MAP, 4 bytes",
+      "payload": "00000000",
+      "receiver": "board",
+      "type": 129
+    },
+    {
+      "error": "length",
+      "name": "GET_MAP, 6 bytes",
+      "payload": "000000000100",
+      "receiver": "board",
+      "type": 129
+    },
+    {
+      "error": "range",
+      "name": "GET_MAP, max 0",
+      "payload": "0000000000",
+      "receiver": "board",
+      "type": 129
+    },
+    {
+      "error": "range",
+      "name": "GET_MAP, max 249",
+      "payload": "00000000f9",
+      "receiver": "board",
+      "type": 129
+    },
+    {
+      "error": "length",
+      "name": "ATTACH, 11 bytes",
+      "payload": "0000000000000000000000",
+      "receiver": "board",
+      "type": 130
+    },
+    {
+      "error": "length",
+      "name": "ATTACH, 13 bytes",
+      "payload": "00000000000000000000000000",
+      "receiver": "board",
+      "type": 130
+    },
+    {
+      "error": "reserved",
+      "name": "ATTACH, reserved flag bit 1",
+      "payload": "000000000000000000000002",
+      "receiver": "board",
+      "type": 130
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "length",
+      "name": "COMMAND, 4 bytes",
+      "payload": "0100003c",
+      "receiver": "board",
+      "type": 131
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "unknown_part",
+      "name": "COMMAND, an unknown part",
+      "payload": "0105003c0001020304",
+      "receiver": "board",
+      "type": 131
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "length",
+      "name": "COMMAND, one byte short",
+      "payload": "0100003c00010203",
+      "receiver": "board",
+      "type": 131
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "length",
+      "name": "COMMAND, one byte long",
+      "payload": "0100003c000102030405",
+      "receiver": "board",
+      "type": 131
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "reserved",
+      "name": "COMMAND, reserved flag bit 1",
+      "payload": "0100023c0001020304",
+      "receiver": "board",
+      "type": 131
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "unknown_part",
+      "name": "COMMAND, an unknown part is reported before a reserved bit",
+      "payload": "0105023c0001020304",
+      "receiver": "board",
+      "type": 131
+    },
+    {
+      "dense_len": {
+        "0": 4
+      },
+      "error": "length",
+      "name": "COMMAND, a length is reported before a reserved bit",
+      "payload": "0100023c00010203",
+      "receiver": "board",
+      "type": 131
+    },
+    {
+      "error": "length",
+      "name": "SAFE, 1 byte",
+      "payload": "01",
+      "receiver": "board",
+      "type": 132
+    },
+    {
+      "error": "length",
+      "name": "SAFE, 3 bytes",
+      "payload": "010000",
+      "receiver": "board",
+      "type": 132
+    },
+    {
+      "error": "length",
+      "name": "PING, empty",
+      "payload": "",
+      "receiver": "board",
+      "type": 133
+    },
+    {
+      "error": "length",
+      "name": "PING, 2 bytes",
+      "payload": "0100",
+      "receiver": "board",
+      "type": 133
+    },
+    {
+      "error": "length",
+      "name": "DETACH, empty",
+      "payload": "",
+      "receiver": "board",
+      "type": 134
+    },
+    {
+      "error": "length",
+      "name": "DETACH, 2 bytes",
+      "payload": "0100",
+      "receiver": "board",
+      "type": 134
+    }
+  ],
+  "schema": 1,
+  "write_rejections": [
+    {
+      "error": "range",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6162636465666768696a6b6c6d6e6f707172737475767778797a61626364656667",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, a 33-byte name"
+    },
+    {
+      "error": "utf8",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "ff",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, a non-UTF-8 name"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6e",
+        "rx_max": 15,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, rx_max 15"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6e",
+        "rx_max": 257,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, rx_max 257"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6e",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 19
+      },
+      "name": "HELLO, watchdog_ms 19"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6e",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 5001
+      },
+      "name": "HELLO, watchdog_ms 5001"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 2,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6e",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, a reserved flag"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 2,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "6e",
+        "rx_max": 8,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, a reserved bit is reported before a range"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 2,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "ff",
+        "rx_max": 64,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, a reserved bit is reported before UTF-8"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "arch": 1,
+        "board_id": "b0b100b3b40000b7",
+        "boot": 513,
+        "flags": 0,
+        "gen": 0,
+        "lib_version": 256,
+        "map_crc": 3735928559,
+        "map_len": 600,
+        "name": "ff",
+        "rx_max": 8,
+        "type": "HELLO",
+        "watchdog_ms": 250
+      },
+      "name": "HELLO, a range is reported before UTF-8"
+    },
+    {
+      "error": "length",
+      "msg": {
+        "boot": 0,
+        "data": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "offset": 0,
+        "type": "MAP"
+      },
+      "name": "MAP, a 249-byte slice"
+    },
+    {
+      "error": "length",
+      "msg": {
+        "part": 0,
+        "t_us": 0,
+        "type": "STATE",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "name": "STATE, over a frame"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "bad": 0,
+        "boot": 0,
+        "flags": 8,
+        "gen": 0,
+        "lost": 0,
+        "reset": 0,
+        "t_us": 0,
+        "type": "STATUS"
+      },
+      "name": "STATUS, a reserved flag"
+    },
+    {
+      "error": "length",
+      "msg": {
+        "code": 0,
+        "level": 0,
+        "text": "41414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141",
+        "type": "NOTE"
+      },
+      "name": "NOTE, 49 bytes of text"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "boot": 0,
+        "max": 0,
+        "offset": 0,
+        "type": "GET_MAP"
+      },
+      "name": "GET_MAP, max 0"
+    },
+    {
+      "error": "range",
+      "msg": {
+        "boot": 0,
+        "max": 249,
+        "offset": 0,
+        "type": "GET_MAP"
+      },
+      "name": "GET_MAP, max 249"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "board_id": "0000000000000000",
+        "boot": 0,
+        "flags": 2,
+        "gen": 1,
+        "type": "ATTACH"
+      },
+      "name": "ATTACH, a reserved flag"
+    },
+    {
+      "error": "reserved",
+      "msg": {
+        "flags": 2,
+        "gen": 1,
+        "part": 0,
+        "ttl_ms": 60,
+        "type": "COMMAND",
+        "value": "00000000"
+      },
+      "name": "COMMAND, a reserved flag"
+    },
+    {
+      "error": "length",
+      "msg": {
+        "flags": 0,
+        "gen": 1,
+        "part": 0,
+        "ttl_ms": 60,
+        "type": "COMMAND",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "name": "COMMAND, over a frame"
+    }
+  ]
+}

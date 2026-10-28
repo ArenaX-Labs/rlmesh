@@ -12,6 +12,9 @@
 //!   it), renewal and loss from authority snapshots, and fenced chunks.
 //! - [`virtual_clock`]: the virtual-mode tick barrier (§11.3).
 //! - [`clock`]: NTP-style offset estimation with an error bound.
+//! - [`crypto`]: the safety layer's envelopes and handshakes (`Sealed`,
+//!   `Signed`, replay windows, the IK handshake and pairing), with the
+//!   caller's randomness.
 //! - [`cache`]: a controller's input cache and history windows (§8.8).
 //! - [`schedule`]: policy starts and slowdown reporting (§8.9, §8.10), and
 //!   the start grid's phase alignment.
@@ -119,6 +122,7 @@ mod float {
 pub mod authority;
 pub mod cache;
 pub mod clock;
+pub mod crypto;
 pub mod edge;
 pub mod lease;
 pub mod schedule;
