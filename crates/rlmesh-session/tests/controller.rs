@@ -10,7 +10,9 @@ use rlmesh_session::edge::{EdgeConfig, EdgeMode, Robot};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
-use rlmesh_session::wire::{DType, LeaseToken, PriorityClass, Role, SessionId, TenantId};
+use rlmesh_session::wire::{
+    DType, LeaseToken, PriorityClass, ReasonCode, Role, SessionId, TenantId,
+};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
     Predictor, RunError, SessionHost, SkipReason, SystemMonotonicClock, Transport, TransportConfig,
@@ -357,6 +359,32 @@ async fn a_failing_model_stops_sending_and_lets_go_of_the_robot() {
     assert!(err.to_string().contains("expected [5, 6]"), "{err}");
     stop.store(true, Ordering::Relaxed);
     robot_loop.join().expect("robot loop");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_stops_with_session_lost_when_its_robot_is_lost() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let model = world.controller("model", PriorityClass::Model).await;
+    let (stop, log): (_, Log) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
+    let run = run_in_thread(&model, 1.5);
+    wait_until("the robot driven by the policy", || driven_to(&log, 1.5)).await;
+    // The robot process dies: no detach, its heartbeats just stop.
+    stop.store(true, Ordering::Relaxed);
+    robot_loop.join().expect("robot loop");
+    let robot = Arc::try_unwrap(robot).ok().expect("the only handle");
+    let transport = robot.participant().transport().clone();
+    drop(robot);
+    transport.close().await.expect("close");
+    let (result, _) = tokio::task::spawn_blocking(move || run.join().expect("run thread"))
+        .await
+        .expect("join");
+    assert!(
+        matches!(result, Err(RunError::Lost(ref r)) if r.code == ReasonCode::RobotLost),
+        "{result:?}"
+    );
+    assert!(!model.holds());
 }
 
 /// A camera offered faster than its `send` ceiling, read by a bound policy

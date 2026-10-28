@@ -868,7 +868,7 @@ channels, samples, action chunks, leases, epochs and the edge runtime.
      frees, step 6).
    - A preflight query (`quiescent(host)`) lets the host refuse or defer a
      reload; unload notifications are only a fallback. A host shutdown is a
-     participant detach: the session host sees its liveliness end, its
+     participant detach: the session host sees its heartbeats end, its
      leases lapse and the edge falls back, so an Editor reload is a clean
      detach, not a fault.
 8. **No implicit process-wide changes.** The core installs no process-wide

@@ -75,6 +75,12 @@ export class StartSkipped extends SessionException {
   stale: string[] = [];
   gaps: string[] = [];
 }
+/** The session is gone for a policy's run: its robot's heartbeats lapsed or the host is gone. */
+export class SessionLost extends SessionException {
+  override name = 'SessionLost';
+  /** `robot_lost` or `host_lost`. */
+  reason = '';
+}
 /** The host did not answer in time. */
 export class SessionTimeout extends SessionException {
   override name = 'SessionTimeout';
@@ -197,6 +203,9 @@ function rethrow(e: unknown): never {
       out = Object.assign(new StartSkipped(message), {
         reason: kind.reason, waiting: kind.waiting, stale: kind.stale, gaps: kind.gaps,
       });
+      break;
+    case 'SessionLost':
+      out = Object.assign(new SessionLost(message), { reason: kind.reason });
       break;
     case 'TimeoutError':
       out = new SessionTimeout(message);

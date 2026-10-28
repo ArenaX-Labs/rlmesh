@@ -1311,6 +1311,8 @@ fn participant_to_pb(p: &ParticipantInfo) -> pb::ParticipantInfo {
         requires: p.requires.clone(),
         workflow_edition: p.workflow_edition.clone(),
         workflow_editions: p.workflow_editions.clone(),
+        present: p.present,
+        left: p.left.as_ref().map(reason_to_pb),
     }
 }
 
@@ -1326,6 +1328,8 @@ fn participant_from_pb(p: pb::ParticipantInfo) -> Result<ParticipantInfo, WireEr
         requires: p.requires,
         workflow_edition: p.workflow_edition,
         workflow_editions: p.workflow_editions,
+        present: p.present,
+        left: p.left.map(reason_from_pb),
     })
 }
 
@@ -1984,6 +1988,14 @@ mod tests {
                 requires: vec!["merge.blend".into()],
                 workflow_edition: "2026.06".into(),
                 workflow_editions: vec!["2026.06".into()],
+                present: false,
+                left: Some(Reason {
+                    code: ReasonCode::RobotLost,
+                    by: "op".into(),
+                    at_ns: 10,
+                    revision: 8,
+                    ..Reason::default()
+                }),
             }],
             leases: vec![Lease {
                 channel: ChannelId(1),

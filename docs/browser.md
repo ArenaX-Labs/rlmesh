@@ -69,7 +69,7 @@ answers with the participant id. From then on:
   freshness against `max_age`). Capture and publish times convert to the
   browser's clock through the host's mappings.
 - **A disconnect ends the participant.** When the control socket closes,
-  the gateway drops the participant; the host sees its liveliness go and
+  the gateway drops the participant; the host sees its heartbeats stop and
   ends its leases (SAFE when one was active). The client reports the lease
   as revoked (`cause: 'disconnected'`) and never resumes it: the reconnect
   is a new participant, and `arm()` then `lease()` take control again.
@@ -100,7 +100,7 @@ A robot that detaches takes its parts with it: the page gets a `robot`
 event (`{robot, present: false}`), its leases end (`cause: 'robot_left'`)
 and its subscriptions close; when it declares again, `robot` reports it
 back. When the session's host is gone for 2 s, the session has ended: the
-gateway closes every socket with `4410`, the page gets one `ended` event
+gateway closes every socket with `4410` (reason `host_lost: ...`), the page gets one `ended` event
 (its leases end with `cause: 'session_ended'`), and `rlmesh-gateway`, which
 serves one session, exits. The gateway takes the session as its host
 prints it, `--address {ip}:{port}[/{session}]`, or as `--connect`

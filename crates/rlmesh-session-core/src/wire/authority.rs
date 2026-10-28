@@ -275,6 +275,11 @@ pub struct ParticipantInfo {
     pub workflow_edition: String,
     /// Every workflow edition it runs.
     pub workflow_editions: Vec<String>,
+    /// Its heartbeats arrive. A robot whose heartbeats lapsed stays in the
+    /// roster, absent, while its parts remain.
+    pub present: bool,
+    /// Why it is absent ([`ReasonCode::RobotLost`]).
+    pub left: Option<Reason>,
 }
 
 impl ParticipantInfo {

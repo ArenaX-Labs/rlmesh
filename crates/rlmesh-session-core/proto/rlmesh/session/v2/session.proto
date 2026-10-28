@@ -67,6 +67,11 @@ message ParticipantInfo {
   // The workflow edition it declares (empty: none) and every one it runs.
   string workflow_edition = 9;
   repeated string workflow_editions = 10;
+  // Its heartbeats arrive. A robot whose heartbeats lapsed stays in the
+  // roster, absent, while its parts remain.
+  bool present = 12;
+  // Why it is absent (REASON_ROBOT_LOST).
+  Reason left = 13;
 }
 
 // A time-bounded grant of command authority over one commandable part,

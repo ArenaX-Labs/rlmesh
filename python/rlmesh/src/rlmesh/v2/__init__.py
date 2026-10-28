@@ -46,6 +46,7 @@ except ImportError as exc:  # pragma: no cover - import guard
 from .._rlmesh import (
     BindingRefused,
     SessionException,
+    SessionLost,
     SessionRefused,
     StartSkipped,
     Tensor,
@@ -81,6 +82,7 @@ __all__ = [
     "Recorder",
     "Robot",
     "SessionException",
+    "SessionLost",
     "SessionRefused",
     "StartSkipped",
     "parse_address",
@@ -729,7 +731,9 @@ class Policy:
         after a preemption ends, and released when the run returns. If
         ``predict`` raises, the policy stops sending, releases its leases
         (the robot holds, then goes safe) and the exception propagates.
-        Stops after ``duration`` seconds or on :meth:`stop`.
+        Raises :class:`SessionLost` (``reason`` ``robot_lost`` or
+        ``host_lost``) when the robot's heartbeats lapse or the host is
+        gone. Stops after ``duration`` seconds or on :meth:`stop`.
         """
         native = self._bound()
 
