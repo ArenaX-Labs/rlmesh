@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use rlmesh_session::auth::{self, Credential, HostIdentity, Link, ReplyOutcome};
+use rlmesh_session::auth::{self, Credential, Device, HostIdentity, Link, ReplyOutcome};
+use rlmesh_session::authority::DeviceAccess;
 use rlmesh_session::crypto::sealed::Header;
 use rlmesh_session::crypto::{Rng, RngError, StaticKeypair, signed};
 use rlmesh_session::media::{decode_image, synthetic_frame};
@@ -1868,4 +1869,97 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     assert!(swapped.ended.iter().any(|e| {
         e.lease.token == granted.leases[0].token && e.reason.code == ReasonCode::VoidedByEpoch
     }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_devices_entry_bounds_its_class_verbs_and_reads_and_a_change_detaches_it() {
+    let laptop = StaticKeypair::generate(&mut Os).expect("key");
+    let public = *laptop.public();
+    let world = World::start_with(|c| {
+        c.devices.push(Device {
+            id: "laptop".into(),
+            public,
+            access: DeviceAccess::new(Some(PriorityClass::Model)),
+        });
+    })
+    .await;
+    let robot = world.robot().await;
+    let ft = robot.publisher("ft").await.expect("publisher");
+    let credential = Credential::new(laptop, *world.host.credential().host_static());
+    let as_laptop = |id: &str, roles: Vec<Role>, priority| {
+        let mut config = world.config(id, roles, priority, 0);
+        config.credential = Some(credential.clone());
+        config
+    };
+
+    // Above its cap, and a verb it lacks: NOT_AUTHORIZED.
+    let config = as_laptop("spy", vec![Role::Controller], PriorityClass::Operator);
+    let err = Participant::attach(world.transport().await, config)
+        .await
+        .err()
+        .expect("above its cap");
+    assert_eq!(status(err), CtlStatus::NotAuthorized);
+    let config = as_laptop("eye", vec![Role::Observer], PriorityClass::Model);
+    let eye = Participant::attach(world.transport().await, config)
+        .await
+        .expect("within its cap");
+    assert_eq!(
+        status(eye.arm().await.expect_err("no arm verb")),
+        CtlStatus::NotAuthorized
+    );
+
+    // It reads the robot's streams, as a local observer does.
+    let local = world
+        .join("local", vec![Role::Observer], PriorityClass::Scripted, 0)
+        .await;
+    let options = SubscribeOptions::default;
+    let eye_ft = eye
+        .subscribe(&robot_id(), "ft", options())
+        .await
+        .expect("subscribe");
+    let local_ft = local
+        .subscribe(&robot_id(), "ft", options())
+        .await
+        .expect("subscribe");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut value = 0.0;
+    let mut publish_until = async |what: &str, received: u64| {
+        let started = Instant::now();
+        while local_ft.stats().received < received {
+            assert!(started.elapsed() < WAIT, "timed out waiting for {what}");
+            value += 1.0;
+            ft.publish(robot.clock().now_ns(), ft_payload(value))
+                .expect("publish");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    publish_until("the first samples", 5).await;
+    assert!(eye_ft.stats().received > 0, "the laptop reads ur10e");
+
+    // Its entry narrows to another robot: it is detached, and the stream
+    // key rotates past it, so the robot's later samples are the local
+    // observer's alone.
+    let mut narrowed = DeviceAccess::new(Some(PriorityClass::Model));
+    narrowed.parts = vec!["ur5/**".into()];
+    world
+        .host
+        .set_access("laptop", narrowed)
+        .await
+        .expect("changed");
+    let roster = world.host.snapshot();
+    assert!(roster.participant(eye.id()).is_none(), "detached");
+    assert!(roster.participant(robot.id()).is_some());
+    assert_eq!(
+        status(eye.disarm().await.expect_err("its keys are gone")),
+        CtlStatus::Unauthenticated
+    );
+    let seen = local_ft.stats().received;
+    publish_until("the rotation", seen + 30).await;
+    let stale = eye_ft.stats().received;
+    publish_until("later samples", seen + 50).await;
+    assert_eq!(
+        eye_ft.stats().received,
+        stale,
+        "the old reader reads nothing new"
+    );
 }

@@ -282,7 +282,8 @@ pub fn encode_handshake_accept(accept: &HandshakeAccept) -> Vec<u8> {
     pb::HandshakeAccept {
         generation: accept.generation,
         device: accept.device.clone(),
-        max_priority: priority_to_pb(accept.max_priority) as i32,
+        // Unspecified: observer only.
+        max_priority: accept.max_priority.map_or(0, |p| priority_to_pb(p) as i32),
         host_sign_key: Bytes::copy_from_slice(&accept.host_sign_key),
         host_instance: accept.host_instance,
         up_key_id: accept.up_key_id,
@@ -297,7 +298,10 @@ pub fn decode_handshake_accept(buf: &[u8]) -> Result<HandshakeAccept, WireError>
     Ok(HandshakeAccept {
         generation: accept.generation,
         device: accept.device,
-        max_priority: priority_from_pb(accept.max_priority)?,
+        max_priority: match accept.max_priority {
+            0 => None,
+            raw => Some(priority_from_pb(raw)?),
+        },
         host_sign_key: accept.host_sign_key[..].try_into().map_err(|_| {
             WireError::malformed("handshake accept", "host_sign_key is not 32 bytes")
         })?,
@@ -2553,7 +2557,7 @@ mod tests {
         let accept = HandshakeAccept {
             generation: 2,
             device: "local".into(),
-            max_priority: PriorityClass::Safety,
+            max_priority: Some(PriorityClass::Safety),
             host_sign_key: [7; 32],
             host_instance: 0xfeed,
             up_key_id: 3,

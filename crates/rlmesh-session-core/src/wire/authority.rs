@@ -805,8 +805,9 @@ pub struct HandshakeAccept {
     pub generation: u32,
     /// The device the initiator's static key belongs to.
     pub device: String,
-    /// The highest class the device may attach at.
-    pub max_priority: PriorityClass,
+    /// The highest class the device may attach at (`None`: observer
+    /// only).
+    pub max_priority: Option<PriorityClass>,
     /// The host's Ed25519 key, which signs `host/state` and `host/tick`.
     pub host_sign_key: [u8; 32],
     /// The host instance, which those broadcasts carry.
