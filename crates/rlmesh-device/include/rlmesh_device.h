@@ -50,8 +50,8 @@ typedef struct rlmesh_device_timing_t {
 int rlmesh_device_timing(rlmesh_device_now_us_fn now_us, rlmesh_device_random_fn random,
                          rlmesh_device_timing_t* out);
 
-/* A config field is invalid: a tenant, session or name that isn't one, a zero
- * heartbeat period. */
+/* A config field is invalid: a tenant or name that isn't one, a zero heartbeat
+ * period. */
 #define RLMESH_DEVICE_ERR_CONFIG (-4)
 
 /* The board as a robot in a session. It holds no network: the platform's
@@ -62,7 +62,7 @@ typedef struct rlmesh_device_robot rlmesh_device_robot_t;
 typedef struct rlmesh_device_robot_config_t {
   /* The session's tenant ("local" for an embedded host). */
   const char* tenant;
-  /* The session's id, a hyphenated UUID. */
+  /* The session's name ("default") or its id, a hyphenated UUID. */
   const char* session;
   /* This robot's name. */
   const char* name;

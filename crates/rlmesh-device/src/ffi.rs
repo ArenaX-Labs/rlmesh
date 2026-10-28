@@ -23,8 +23,8 @@ pub const RLMESH_DEVICE_ERR_ARG: c_int = -1;
 pub const RLMESH_DEVICE_ERR_RNG: c_int = -2;
 /// The crypto failed where it can't (a bug, or memory corrupted).
 pub const RLMESH_DEVICE_ERR_CRYPTO: c_int = -3;
-/// A config field is invalid: a tenant, session or name that isn't one, a
-/// zero heartbeat period.
+/// A config field is invalid: a tenant or name that isn't one, a zero
+/// heartbeat period.
 pub const RLMESH_DEVICE_ERR_CONFIG: c_int = -4;
 
 /// The platform's microsecond clock.
@@ -110,7 +110,7 @@ pub unsafe extern "C" fn rlmesh_device_timing(
 pub struct RlmeshDeviceRobotConfig {
     /// The session's tenant (`local` for an embedded host).
     pub tenant: *const c_char,
-    /// The session's id, a hyphenated UUID.
+    /// The session's name (`default`) or its id, a hyphenated UUID.
     pub session: *const c_char,
     /// This robot's name.
     pub name: *const c_char,
@@ -252,11 +252,11 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
     else {
         return RLMESH_DEVICE_ERR_ARG;
     };
-    let (Ok(tenant), Ok(session), Ok(name)) = (
-        TenantId::new(tenant),
-        session.parse::<SessionId>(),
-        ParticipantId::new(name),
-    ) else {
+    // A session's name (`default`) or its UUID, as in an address.
+    let session = session
+        .parse::<SessionId>()
+        .unwrap_or_else(|_| SessionId::named(session));
+    let (Ok(tenant), Ok(name)) = (TenantId::new(tenant), ParticipantId::new(name)) else {
         return RLMESH_DEVICE_ERR_CONFIG;
     };
     if c.heartbeat_ms == 0 {
@@ -552,11 +552,11 @@ mod tests {
         assert_eq!(rc, RLMESH_DEVICE_ERR_ARG);
     }
 
-    fn config(session: &core::ffi::CStr, heartbeat_ms: u32) -> RlmeshDeviceRobotConfig {
+    fn config(tenant: &core::ffi::CStr, heartbeat_ms: u32) -> RlmeshDeviceRobotConfig {
         static KEY: [u8; 32] = [7; 32];
         RlmeshDeviceRobotConfig {
-            tenant: c"local".as_ptr(),
-            session: session.as_ptr(),
+            tenant: tenant.as_ptr(),
+            session: c"default".as_ptr(),
             name: c"eyes".as_ptr(),
             secret: KEY.as_ptr(),
             host_key: KEY.as_ptr(),
@@ -566,12 +566,12 @@ mod tests {
         }
     }
 
-    const SESSION: &core::ffi::CStr = c"0192d4e0-7c1a-7b3e-8f00-000000000001";
+    const TENANT: &core::ffi::CStr = c"local";
 
     #[test]
     fn a_robot_through_the_c_abi_asks_for_its_subscriptions_then_the_host() {
         let mut robot = core::ptr::null_mut();
-        let rc = unsafe { rlmesh_device_robot_new(&config(SESSION, 50), &mut robot) };
+        let rc = unsafe { rlmesh_device_robot_new(&config(TENANT, 50), &mut robot) };
         assert_eq!(rc, RLMESH_DEVICE_OK);
         let mut kinds = Vec::new();
         let mut keys = Vec::new();
@@ -622,12 +622,11 @@ mod tests {
     #[test]
     fn a_robot_config_is_checked() {
         let mut robot = core::ptr::null_mut();
-        let bad_session = c"not-a-uuid";
-        let rc = unsafe { rlmesh_device_robot_new(&config(bad_session, 50), &mut robot) };
+        let rc = unsafe { rlmesh_device_robot_new(&config(c"not/a/tenant", 50), &mut robot) };
         assert_eq!(rc, RLMESH_DEVICE_ERR_CONFIG);
-        let rc = unsafe { rlmesh_device_robot_new(&config(SESSION, 0), &mut robot) };
+        let rc = unsafe { rlmesh_device_robot_new(&config(TENANT, 0), &mut robot) };
         assert_eq!(rc, RLMESH_DEVICE_ERR_CONFIG);
-        let mut missing = config(SESSION, 50);
+        let mut missing = config(TENANT, 50);
         missing.secret = core::ptr::null();
         let rc = unsafe { rlmesh_device_robot_new(&missing, &mut robot) };
         assert_eq!(rc, RLMESH_DEVICE_ERR_ARG);

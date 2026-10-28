@@ -89,7 +89,7 @@ RLMesh aims to feel familiar in every language: the same nouns and constructs (`
 - [Unreal Engine](integrations/unreal/RLMesh): serve actors as RLMesh environments.
 - [Unity](integrations/unity): Experimental `com.rlmesh.unity` package with main-thread callbacks and reload preflight. Unity support is not yet verified on IL2CPP.
 - [Arduino](integrations/arduino): `RLMeshTether`, which makes a board without a network (Nano, Uno, Mega, UNO R4) an RLMesh robot over a USB cable to a computer.
-- [ESP32](integrations/esp32): `RLMeshESP32`, an ESP32 on Wi-Fi as an RLMesh robot. Work in progress: it measures the session's crypto on the board so far.
+- [ESP32](integrations/esp32): `RLMeshESP32`, an ESP32 on Wi-Fi as an RLMesh robot. Work in progress: a board joins a session and declares its parts; commands and samples come next.
 
 ## Status
 
