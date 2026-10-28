@@ -31,7 +31,7 @@ compilers=("${CXX:-g++}")
 if [ -z "${CXX:-}" ] && command -v zig >/dev/null; then compilers+=("zig c++"); fi
 
 warn=(-Wall -Wextra -Werror -pedantic -Wshadow -Wconversion)
-board=(-std=gnu++11 -Os -fno-exceptions -fno-rtti -nostdinc++)
+board=(-std=gnu++11 -Os -fno-exceptions -fno-rtti -nostdinc++ -fno-stack-protector)
 sources=("$lib"/src/rlmesh_tether/*.cpp)
 
 # Succeeds only when `$cxx "$@"` builds the probe `$2` and running it fails
