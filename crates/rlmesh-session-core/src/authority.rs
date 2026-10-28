@@ -40,6 +40,12 @@
 //! - ESTOP is accepted from anyone (refusing an e-stop is never safer) and
 //!   latches; only an embodiment's local clear releases the latch, and then a
 //!   disarm and an arm (a fresh epoch) are needed.
+//! - **Reasons** (DESIGN §7): every mode change records a structured
+//!   [`Reason`] (`mode_reason`), every lease ending goes into a bounded ring
+//!   of [`LeaseEnd`]s, and `last_stop` marks the last entry into SAFE,
+//!   DISARMED or ESTOP, so clients never infer why. An embodiment's
+//!   `EnterSafe` takes ACTIVE, ARMED and DISARMED to SAFE; SAFE and ESTOP
+//!   stay and record its reason.
 //! - In **virtual** clock mode the authority also runs the tick barrier
 //!   ([`crate::virtual_clock`]); the ticks it emits are drained with
 //!   [`Authority::take_ticks`].
@@ -47,7 +53,7 @@
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use core::fmt;
 
 use crate::spec::contract;
@@ -57,8 +63,8 @@ use crate::wire::tick::VirtualTick;
 use crate::wire::version::{PROTOCOL_MINOR, missing_features};
 use crate::wire::{
     AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command, CtlError,
-    CtlStatus, Demand, Epoch, FenceError, Fingerprint, Lease, LeaseToken, Mode, ParticipantId,
-    ParticipantInfo, PriorityClass, Request, Role, SessionId,
+    CtlStatus, Demand, Epoch, FenceError, Fingerprint, LastStop, Lease, LeaseEnd, LeaseToken, Mode,
+    ParticipantId, ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, SessionId,
 };
 
 use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
@@ -67,6 +73,8 @@ use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
 const MAX_REPLAN_HZ: f64 = 10_000.0;
 /// The longest action period a binding declares.
 const MAX_ACTION_DT: core::time::Duration = core::time::Duration::from_secs(60);
+/// Lease endings the snapshot keeps.
+const ENDED: usize = 16;
 
 /// Why a participant left the roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,17 +83,6 @@ pub enum DetachReason {
     Requested,
     /// Its liveliness token went away (crash, network loss).
     LivelinessLost,
-}
-
-/// Why a lease ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LeaseEnd {
-    /// The holder released it (or detached, or rebound without the part).
-    Released,
-    /// The holder's heartbeats stopped for longer than the lease's ttl.
-    Lapsed,
-    /// The host took it back (disarm, e-stop, SAFE, part removal).
-    Revoked(&'static str),
 }
 
 /// Something the authority state did, for publication, logging and evidence.
@@ -116,7 +113,15 @@ pub enum AuthorityEvent {
         /// The epoch after the change.
         epoch: Epoch,
         /// Why.
-        reason: String,
+        reason: Reason,
+    },
+    /// A stopped mode (SAFE or ESTOP) recorded a later cause without
+    /// changing.
+    ModeReason {
+        /// The mode.
+        mode: Mode,
+        /// The cause.
+        reason: Reason,
     },
     /// A lease was granted on a free part.
     LeaseGranted {
@@ -143,7 +148,7 @@ pub enum AuthorityEvent {
         /// The lease.
         lease: Lease,
         /// Why.
-        reason: LeaseEnd,
+        reason: Reason,
     },
     /// An e-stop latched.
     EstopLatched {
@@ -218,6 +223,7 @@ impl fmt::Display for AuthorityEvent {
                 epoch,
                 reason,
             } => write!(f, "mode {from} -> {to} at {epoch} ({reason})"),
+            Self::ModeReason { mode, reason } => write!(f, "mode {mode} stays ({reason})"),
             Self::LeaseGranted { lease } => write!(
                 f,
                 "lease {} granted to {} ({:?}) token {} binding {}",
@@ -242,7 +248,7 @@ impl fmt::Display for AuthorityEvent {
             ),
             Self::LeaseEnded { lease, reason } => write!(
                 f,
-                "lease {} of {} token {} ended ({reason:?})",
+                "lease {} of {} token {} ended ({reason})",
                 lease.channel, lease.holder, lease.token
             ),
             Self::EstopLatched { by, reason } => write!(f, "ESTOP latched by {by}: {reason}"),
@@ -316,6 +322,12 @@ pub struct Authority {
     revision: u64,
     mode: Mode,
     estop_latched: bool,
+    mode_reason: Reason,
+    /// The latest lease endings, oldest first.
+    ended: VecDeque<LeaseEnd>,
+    last_stop: LastStop,
+    /// The host clock of the call in progress, for the reasons it records.
+    now_ns: i64,
     roster: BTreeMap<ParticipantId, ParticipantInfo>,
     leases: BTreeMap<ChannelId, Lease>,
     /// Declared parts by stream id.
@@ -353,6 +365,14 @@ impl Authority {
             revision: 0,
             mode: Mode::Disarmed,
             estop_latched: false,
+            mode_reason: Reason::default(),
+            ended: VecDeque::with_capacity(ENDED),
+            // A fresh session is stopped (DISARMED) in its first epoch.
+            last_stop: LastStop {
+                epoch: Epoch::FIRST,
+                revision: 0,
+            },
+            now_ns: 0,
             roster: BTreeMap::new(),
             leases: BTreeMap::new(),
             parts: BTreeMap::new(),
@@ -396,6 +416,16 @@ impl Authority {
     /// Whether an e-stop is latched.
     pub fn estop_latched(&self) -> bool {
         self.estop_latched
+    }
+
+    /// Why the mode is what it is.
+    pub fn mode_reason(&self) -> &Reason {
+        &self.mode_reason
+    }
+
+    /// The last entry into SAFE, DISARMED or ESTOP.
+    pub fn last_stop(&self) -> LastStop {
+        self.last_stop
     }
 
     /// The lease on `channel`.
@@ -472,11 +502,15 @@ impl Authority {
             bindings: self.bindings.values().cloned().collect(),
             contract: self.contract.clone(),
             demands: self.demands.values().cloned().collect(),
+            mode_reason: self.mode_reason.clone(),
+            ended: self.ended.iter().cloned().collect(),
+            last_stop: self.last_stop,
         }
     }
 
     /// Applies a verb. Accepted verbs that change state bump the revision.
     pub fn apply(&mut self, request: Request, now_ns: i64) -> Result<Applied, CtlError> {
+        self.now_ns = now_ns;
         let mut applied = Applied::default();
         let from = request.from;
         match request.command {
@@ -528,7 +562,8 @@ impl Authority {
             }
             Command::Detach => {
                 self.require_attached(&from)?;
-                self.end_leases_of(&from, LeaseEnd::Released, &mut applied.events);
+                let why = self.reason(ReasonCode::HolderDetached, &from, "");
+                self.end_leases_of(&from, &why, &mut applied.events);
                 let owned: Vec<ChannelId> = self
                     .parts
                     .values()
@@ -545,7 +580,7 @@ impl Authority {
                     participant: from.clone(),
                     reason: DetachReason::Requested,
                 });
-                self.settle_after_release("holder detached", &mut applied.events);
+                self.settle_after_release(&from, "holder detached", &mut applied.events);
                 self.barrier_gone(&from, now_ns);
             }
             Command::Arm => {
@@ -556,7 +591,8 @@ impl Authority {
                         if let Some(clock) = &mut self.clock {
                             clock.reset(self.epoch, now_ns);
                         }
-                        self.set_mode(Mode::Armed, format!("armed by {from}"), &mut applied.events);
+                        let why = self.reason(ReasonCode::Armed, &from, "");
+                        self.set_mode(Mode::Armed, why, &mut applied.events);
                     }
                     Mode::Estop if self.estop_latched => {
                         return Err(CtlError::new(
@@ -589,12 +625,9 @@ impl Authority {
                         ));
                     }
                     _ => {
-                        self.revoke_all("disarm", &mut applied.events);
-                        self.set_mode(
-                            Mode::Disarmed,
-                            format!("disarmed by {from}"),
-                            &mut applied.events,
-                        );
+                        let why = self.reason(ReasonCode::Disarmed, &from, "");
+                        self.revoke_all(ReasonCode::VoidedByDisarm, &why, &mut applied.events);
+                        self.set_mode(Mode::Disarmed, why, &mut applied.events);
                     }
                 }
             }
@@ -648,22 +681,31 @@ impl Authority {
             Command::ReleaseLease { channels, token } => {
                 self.release(&from, &channels, token, &mut applied.events)?;
             }
-            Command::Estop { reason } => {
+            Command::Estop { reason, code } => {
                 // Accepted from anyone: refusing an e-stop is never safer.
                 // TODO(auth): restrict to authorised participants and log
                 // unauthorised attempts as evidence.
                 if self.mode != Mode::Estop || !self.estop_latched {
-                    self.revoke_all("estop", &mut applied.events);
+                    // An edge reports its own latch; any other e-stop came
+                    // through the host. Not verified until senders are
+                    // authenticated.
+                    let code = match code {
+                        ReasonCode::EstopLocal | ReasonCode::EstopSignal => code,
+                        _ => ReasonCode::EstopRemote,
+                    };
+                    let why = self.reason(code, &from, &reason);
+                    self.revoke_all(ReasonCode::VoidedByEstop, &why, &mut applied.events);
                     self.estop_latched = true;
                     applied.events.push(AuthorityEvent::EstopLatched {
                         by: from.clone(),
-                        reason: reason.clone(),
+                        reason,
                     });
-                    self.set_mode(
-                        Mode::Estop,
-                        format!("estop by {from}: {reason}"),
-                        &mut applied.events,
-                    );
+                    if self.mode == Mode::Estop {
+                        // Cleared but not yet disarmed: latched again.
+                        self.mode_reason = why;
+                    } else {
+                        self.set_mode(Mode::Estop, why, &mut applied.events);
+                    }
                 }
             }
             Command::Clear => {
@@ -682,11 +724,12 @@ impl Authority {
                     ));
                 }
                 self.estop_latched = false;
+                self.mode_reason = self.reason(ReasonCode::EstopCleared, &from, "");
                 applied
                     .events
                     .push(AuthorityEvent::EstopCleared { by: from });
             }
-            Command::EnterSafe { reason } => {
+            Command::EnterSafe { reason, code } => {
                 let info = self.require_attached(&from)?;
                 if !info.has_role(Role::Embodiment) {
                     return Err(CtlError::new(
@@ -694,8 +737,22 @@ impl Authority {
                         "only an embodiment's edge reports a fallback",
                     ));
                 }
-                // Outside ACTIVE there is nothing to stop: a no-op.
-                self.enter_safe(&format!("{from} fell back: {reason}"), &mut applied.events);
+                let why = self.reason(code, &from, &reason);
+                match self.mode {
+                    // A device fault between episodes is visible at once,
+                    // and the next drive needs an arm.
+                    Mode::Active | Mode::Armed | Mode::Disarmed => {
+                        self.revoke_all(ReasonCode::VoidedBySafe, &why, &mut applied.events);
+                        self.set_mode(Mode::Safe, why, &mut applied.events);
+                    }
+                    Mode::Safe | Mode::Estop => {
+                        self.mode_reason = why.clone();
+                        applied.events.push(AuthorityEvent::ModeReason {
+                            mode: self.mode,
+                            reason: why,
+                        });
+                    }
+                }
             }
             Command::Ready { tick, watermarks } => {
                 self.require_tick_verb(&from, request.epoch)?;
@@ -734,6 +791,7 @@ impl Authority {
     /// Lapses leases whose holder stopped heartbeating (ACTIVE goes SAFE),
     /// and ends a virtual run whose barrier stalled.
     pub fn expire(&mut self, now_ns: i64) -> Vec<AuthorityEvent> {
+        self.now_ns = now_ns;
         let mut events = Vec::new();
         let lapsed: Vec<ChannelId> = self
             .leases
@@ -741,23 +799,25 @@ impl Authority {
             .filter(|lease| now_ns > lease.expires_ns)
             .map(|lease| lease.channel)
             .collect();
+        let mut first = None;
         for channel in &lapsed {
             if let Some(lease) = self.leases.remove(channel) {
-                events.push(AuthorityEvent::LeaseEnded {
-                    lease,
-                    reason: LeaseEnd::Lapsed,
-                });
+                let why = self.reason(ReasonCode::HeartbeatLapse, &lease.holder, "");
+                first.get_or_insert_with(|| why.clone());
+                self.end(lease, why, &mut events);
             }
         }
-        if !lapsed.is_empty() {
-            self.enter_safe("lease lapsed", &mut events);
+        if let Some(why) = first {
+            self.enter_safe(why, &mut events);
         }
         if let Some(tick) = self.clock.as_mut().and_then(|c| c.check_timeout(now_ns)) {
             events.push(AuthorityEvent::BarrierTimeout { tick });
-            self.enter_safe(
+            let why = self.reason(
+                ReasonCode::Unspecified,
+                "",
                 &format!("virtual barrier timed out at tick {tick}"),
-                &mut events,
             );
+            self.enter_safe(why, &mut events);
         }
         if !events.is_empty() {
             self.revision += 1;
@@ -768,19 +828,21 @@ impl Authority {
     /// The participant's liveliness token went away: it is gone, and any
     /// lease it held lapses. Its parts and binding stay for a reconnect.
     pub fn participant_lost(&mut self, id: &ParticipantId, now_ns: i64) -> Vec<AuthorityEvent> {
+        self.now_ns = now_ns;
         let mut events = Vec::new();
         if self.roster.remove(id).is_none() {
             return events;
         }
         let before = events.len();
-        self.end_leases_of(id, LeaseEnd::Lapsed, &mut events);
+        let why = self.reason(ReasonCode::HolderLost, id, "");
+        self.end_leases_of(id, &why, &mut events);
         let lapsed = events.len() > before;
         events.push(AuthorityEvent::Detached {
             participant: id.clone(),
             reason: DetachReason::LivelinessLost,
         });
         if lapsed {
-            self.enter_safe("lease holder lost", &mut events);
+            self.enter_safe(why, &mut events);
         }
         self.needed.retain(|(p, _), _| p != id);
         self.recompute_demands(&mut events);
@@ -935,10 +997,8 @@ impl Authority {
                 }
             }
             if let Some(lease) = self.leases.remove(id) {
-                events.push(AuthorityEvent::LeaseEnded {
-                    lease,
-                    reason: LeaseEnd::Revoked("part removed"),
-                });
+                let why = self.reason(ReasonCode::PartRemoved, owner, "");
+                self.end(lease, why, events);
             }
         }
         events.push(AuthorityEvent::PartsRemoved {
@@ -1038,12 +1098,14 @@ impl Authority {
                         ..previous.clone()
                     };
                     self.leases.insert(channel, lease.clone());
+                    let why = self.reason(ReasonCode::Rebound, &from, "");
+                    self.record_end(&previous, why, Some(&lease));
                     events.push(AuthorityEvent::LeaseRebound { previous, lease });
                 }
-                None => events.push(AuthorityEvent::LeaseEnded {
-                    lease: previous,
-                    reason: LeaseEnd::Released,
-                }),
+                None => {
+                    let why = self.reason(ReasonCode::Released, &from, "rebound without the part");
+                    self.end(previous, why, events);
+                }
             }
         }
         events.push(AuthorityEvent::BindingDeclared {
@@ -1051,9 +1113,9 @@ impl Authority {
             fingerprint: record.fingerprint,
         });
         self.needed.retain(|(p, _), _| p != &from);
-        self.bindings.insert(from, record);
+        self.bindings.insert(from.clone(), record);
         self.recompute_demands(events);
-        self.settle_after_release("rebound without its parts", events);
+        self.settle_after_release(&from, "rebound without its parts", events);
         Ok(())
     }
 
@@ -1402,10 +1464,8 @@ impl Authority {
         let expires_ns = now_ns.saturating_add_unsigned(ttl_ns);
         for channel in &grant.release {
             if let Some(lease) = self.leases.remove(channel) {
-                events.push(AuthorityEvent::LeaseEnded {
-                    lease,
-                    reason: LeaseEnd::Released,
-                });
+                let why = self.reason(ReasonCode::Released, from, "");
+                self.end(lease, why, events);
             }
         }
         let needs_token = grant
@@ -1435,10 +1495,14 @@ impl Authority {
                 binding: grant.binding,
             };
             events.push(match self.leases.insert(*channel, lease.clone()) {
-                Some(previous) => AuthorityEvent::LeasePreempted {
-                    previous,
-                    by: lease.clone(),
-                },
+                Some(previous) => {
+                    let why = self.reason(ReasonCode::Preempted, from, "");
+                    self.record_end(&previous, why, Some(&lease));
+                    AuthorityEvent::LeasePreempted {
+                        previous,
+                        by: lease.clone(),
+                    }
+                }
                 None => AuthorityEvent::LeaseGranted {
                     lease: lease.clone(),
                 },
@@ -1446,15 +1510,17 @@ impl Authority {
             granted.push(lease);
         }
         for (peer, by) in preempted {
-            if let (Some(previous), Some(by)) = (self.leases.remove(&peer), self.leases.get(&by)) {
-                events.push(AuthorityEvent::LeasePreempted {
-                    previous,
-                    by: by.clone(),
-                });
+            if let (Some(previous), Some(by)) =
+                (self.leases.remove(&peer), self.leases.get(&by).cloned())
+            {
+                let why = self.reason(ReasonCode::Preempted, from, "");
+                self.record_end(&previous, why, Some(&by));
+                events.push(AuthorityEvent::LeasePreempted { previous, by });
             }
         }
         if self.mode == Mode::Armed && !self.leases.is_empty() {
-            self.set_mode(Mode::Active, format!("lease granted to {from}"), events);
+            let why = self.reason(ReasonCode::FirstLease, from, "");
+            self.set_mode(Mode::Active, why, events);
         }
         Ok(granted)
     }
@@ -1501,13 +1567,11 @@ impl Authority {
         }
         for channel in channels {
             if let Some(lease) = self.leases.remove(channel) {
-                events.push(AuthorityEvent::LeaseEnded {
-                    lease,
-                    reason: LeaseEnd::Released,
-                });
+                let why = self.reason(ReasonCode::Released, from, "");
+                self.end(lease, why, events);
             }
         }
-        self.settle_after_release("last lease released", events);
+        self.settle_after_release(from, "last lease released", events);
         Ok(())
     }
 
@@ -1567,23 +1631,64 @@ impl Authority {
         }
     }
 
-    fn set_mode(&mut self, to: Mode, reason: String, events: &mut Vec<AuthorityEvent>) {
+    /// A reason for a change landing in this call's revision.
+    fn reason(&self, code: ReasonCode, by: impl fmt::Display, detail: &str) -> Reason {
+        Reason {
+            code,
+            by: by.to_string(),
+            detail: detail.to_string(),
+            at_ns: self.now_ns,
+            revision: self.revision + 1,
+            verified: false,
+        }
+    }
+
+    /// Changes the mode and records why; an entry into SAFE, DISARMED or
+    /// ESTOP moves `last_stop` (never lowered: epochs and revisions only
+    /// grow).
+    fn set_mode(&mut self, to: Mode, reason: Reason, events: &mut Vec<AuthorityEvent>) {
         if self.mode == to {
             return;
+        }
+        if matches!(to, Mode::Safe | Mode::Disarmed | Mode::Estop) {
+            self.last_stop = LastStop {
+                epoch: self.epoch,
+                revision: self.revision + 1,
+            };
         }
         events.push(AuthorityEvent::ModeChanged {
             from: self.mode,
             to,
             epoch: self.epoch,
-            reason,
+            reason: reason.clone(),
         });
         self.mode = to;
+        self.mode_reason = reason;
+    }
+
+    /// Keeps a lease ending in the snapshot's ring.
+    fn record_end(&mut self, lease: &Lease, reason: Reason, by: Option<&Lease>) {
+        if self.ended.len() == ENDED {
+            self.ended.pop_front();
+        }
+        self.ended.push_back(LeaseEnd {
+            lease: lease.clone(),
+            reason,
+            by: by.cloned(),
+        });
+    }
+
+    /// A lease ended (not by a preemption or a rebinding, which have
+    /// events of their own).
+    fn end(&mut self, lease: Lease, reason: Reason, events: &mut Vec<AuthorityEvent>) {
+        self.record_end(&lease, reason.clone(), None);
+        events.push(AuthorityEvent::LeaseEnded { lease, reason });
     }
 
     fn end_leases_of(
         &mut self,
         id: &ParticipantId,
-        reason: LeaseEnd,
+        reason: &Reason,
         events: &mut Vec<AuthorityEvent>,
     ) {
         let channels: Vec<ChannelId> = self
@@ -1594,36 +1699,41 @@ impl Authority {
             .collect();
         for channel in channels {
             if let Some(lease) = self.leases.remove(&channel) {
-                events.push(AuthorityEvent::LeaseEnded {
-                    lease,
-                    reason: reason.clone(),
-                });
+                self.end(lease, reason.clone(), events);
             }
         }
     }
 
-    fn revoke_all(&mut self, why: &'static str, events: &mut Vec<AuthorityEvent>) {
+    /// Ends every lease with `code`, carrying who and why from `cause`.
+    fn revoke_all(&mut self, code: ReasonCode, cause: &Reason, events: &mut Vec<AuthorityEvent>) {
         for (_, lease) in core::mem::take(&mut self.leases) {
-            events.push(AuthorityEvent::LeaseEnded {
-                lease,
-                reason: LeaseEnd::Revoked(why),
-            });
+            let why = Reason {
+                code,
+                ..cause.clone()
+            };
+            self.end(lease, why, events);
         }
     }
 
     /// ACTIVE with no lease left drops back to ARMED.
-    fn settle_after_release(&mut self, reason: &str, events: &mut Vec<AuthorityEvent>) {
+    fn settle_after_release(
+        &mut self,
+        by: &ParticipantId,
+        detail: &str,
+        events: &mut Vec<AuthorityEvent>,
+    ) {
         if self.mode == Mode::Active && self.leases.is_empty() {
-            self.set_mode(Mode::Armed, reason.to_string(), events);
+            let why = self.reason(ReasonCode::LastRelease, by, detail);
+            self.set_mode(Mode::Armed, why, events);
         }
     }
 
     /// A lapse while ACTIVE takes the whole session to SAFE and revokes every
     /// other lease: re-arming (a fresh epoch) is the way back.
-    fn enter_safe(&mut self, reason: &str, events: &mut Vec<AuthorityEvent>) {
+    fn enter_safe(&mut self, reason: Reason, events: &mut Vec<AuthorityEvent>) {
         if self.mode == Mode::Active {
-            self.revoke_all("safe", events);
-            self.set_mode(Mode::Safe, reason.to_string(), events);
+            self.revoke_all(ReasonCode::VoidedBySafe, &reason, events);
+            self.set_mode(Mode::Safe, reason, events);
         }
     }
 }
@@ -2446,6 +2556,20 @@ mod tests {
         f.release("operator", &human, 9).expect("release");
         let again = f.grant("policy", "cmd1", 10).expect("model again");
         assert!(again.token > human.token);
+        // The snapshot says why each lease ended, and who took it.
+        let ended = f.auth.snapshot(Vec::new(), 10).ended;
+        let why: Vec<_> = ended
+            .iter()
+            .map(|e| (e.lease.token, e.reason.code, e.by.as_ref().map(|b| b.token)))
+            .collect();
+        assert_eq!(
+            why,
+            [
+                (model.token, ReasonCode::Preempted, Some(human.token)),
+                (human.token, ReasonCode::Released, None),
+            ]
+        );
+        assert_eq!(f.auth.mode_reason().code, ReasonCode::FirstLease);
     }
 
     #[test]
@@ -2461,23 +2585,70 @@ mod tests {
     }
 
     #[test]
-    fn an_embodiments_fallback_takes_the_session_safe() {
+    fn an_embodiments_fallback_goes_safe_from_any_mode_and_estop_records_it() {
         let mut f = Fixture::new();
-        let safe = |reason: &str| Command::EnterSafe {
-            reason: reason.into(),
+        let safe = |code| Command::EnterSafe {
+            reason: "board link".into(),
+            code,
         };
-        f.run("robot", safe("idle"), 0).expect("no-op");
-        assert_eq!(f.auth.mode(), Mode::Disarmed);
-        f.run("operator", Command::Arm, 0).expect("arm");
-        f.grant("policy", "cmd1", 0).expect("lease");
+        let stopped_now = |f: &Fixture| {
+            assert_eq!(
+                f.auth.last_stop(),
+                LastStop {
+                    epoch: f.auth.epoch(),
+                    revision: f.auth.revision()
+                }
+            );
+        };
+        // Between episodes too: DISARMED and ARMED go SAFE, so a device
+        // fault is visible at once and the next drive needs an arm.
+        f.run("robot", safe(ReasonCode::DeviceWatchdog), 1)
+            .expect("from DISARMED");
+        assert_eq!(f.auth.mode(), Mode::Safe);
+        let reason = f.auth.mode_reason();
         assert_eq!(
-            Fixture::status(f.run("policy", safe("not mine"), 1)),
+            (reason.code, reason.by.as_str(), reason.revision),
+            (ReasonCode::DeviceWatchdog, "robot", f.auth.revision())
+        );
+        stopped_now(&f);
+        f.run("operator", Command::Arm, 2).expect("arm");
+        assert_eq!(f.auth.last_stop().epoch.next(), f.auth.epoch(), "kept");
+        f.run("robot", safe(ReasonCode::DeviceWatchdog), 3)
+            .expect("from ARMED");
+        assert_eq!(f.auth.mode(), Mode::Safe);
+        stopped_now(&f);
+        f.run("operator", Command::Arm, 4).expect("arm");
+        f.grant("policy", "cmd1", 4).expect("lease");
+        assert_eq!(
+            Fixture::status(f.run("policy", safe(ReasonCode::QueueDry), 5)),
             CtlStatus::Forbidden
         );
-        f.run("robot", safe("queue dry past hold_max"), 2)
-            .expect("enter safe");
+        f.run("robot", safe(ReasonCode::QueueDry), 6)
+            .expect("from ACTIVE");
         assert_eq!(f.auth.mode(), Mode::Safe);
+        stopped_now(&f);
         assert!(f.auth.lease(f.ch("cmd1")).is_none(), "SAFE revokes leases");
+        let ended = f.auth.snapshot(Vec::new(), 6).ended;
+        assert_eq!(
+            ended.last().map(|e| (e.reason.code, e.reason.by.as_str())),
+            Some((ReasonCode::VoidedBySafe, "robot"))
+        );
+        // ESTOP stays ESTOP and records the cause; recording is no new stop.
+        let estop = Command::Estop {
+            reason: "button".into(),
+            code: ReasonCode::Unspecified,
+        };
+        f.run("viewer", estop, 7).expect("estop");
+        assert_eq!(f.auth.mode_reason().code, ReasonCode::EstopRemote);
+        stopped_now(&f);
+        let stop = f.auth.last_stop();
+        f.run("robot", safe(ReasonCode::DeviceWatchdog), 8)
+            .expect("recorded");
+        assert_eq!(
+            (f.auth.mode(), f.auth.mode_reason().code, f.auth.last_stop()),
+            (Mode::Estop, ReasonCode::DeviceWatchdog, stop)
+        );
+        assert!(f.auth.estop_latched());
     }
 
     #[test]
@@ -2498,8 +2669,14 @@ mod tests {
         assert_eq!(f.auth.mode(), Mode::Safe);
         assert!(events.iter().any(|e| matches!(
             e,
-            AuthorityEvent::LeaseEnded { lease, reason: LeaseEnd::Lapsed } if lease.token == a.token
+            AuthorityEvent::LeaseEnded { lease, reason }
+                if lease.token == a.token && reason.code == ReasonCode::HeartbeatLapse
         )));
+        let reason = f.auth.mode_reason();
+        assert_eq!(
+            (reason.code, reason.by.as_str()),
+            (ReasonCode::HeartbeatLapse, "policy")
+        );
         assert!(f.auth.lease(f.ch("cmd2")).is_none());
         assert_eq!(
             Fixture::status(f.grant("policy", "cmd1", 260)),
@@ -2534,10 +2711,7 @@ mod tests {
         let applied = f.run("robot", Command::Detach, 1).expect("detach");
         assert!(applied.events.iter().any(|e| matches!(
             e,
-            AuthorityEvent::LeaseEnded {
-                reason: LeaseEnd::Revoked("part removed"),
-                ..
-            }
+            AuthorityEvent::LeaseEnded { reason, .. } if reason.code == ReasonCode::PartRemoved
         )));
         assert_eq!(f.auth.parts().count(), 0);
         assert!(f.auth.snapshot(Vec::new(), 1).contract.is_empty());
@@ -2555,6 +2729,7 @@ mod tests {
             "stranger",
             Command::Estop {
                 reason: "red button".into(),
+                code: ReasonCode::EstopRemote,
             },
             1,
         )
@@ -2572,6 +2747,7 @@ mod tests {
             "operator",
             Command::Estop {
                 reason: "again".into(),
+                code: ReasonCode::EstopLocal,
             },
             2,
         )
@@ -2589,6 +2765,16 @@ mod tests {
             Fixture::status(f.run("operator", Command::Clear, 3)),
             CtlStatus::Forbidden
         );
+        f.run("robot", Command::Clear, 4).expect("local clear");
+        assert_eq!(f.auth.mode_reason().code, ReasonCode::EstopCleared);
+        // A local latch reported while cleared latches again, as the edge's.
+        let local = Command::Estop {
+            reason: "button".into(),
+            code: ReasonCode::EstopLocal,
+        };
+        f.run("robot", local, 4).expect("relatch");
+        assert!(f.auth.estop_latched());
+        assert_eq!(f.auth.mode_reason().code, ReasonCode::EstopLocal);
         f.run("robot", Command::Clear, 4).expect("local clear");
         assert_eq!(
             Fixture::status(f.run("operator", Command::Arm, 5)),

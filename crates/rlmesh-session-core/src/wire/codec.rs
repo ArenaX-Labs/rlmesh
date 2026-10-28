@@ -42,7 +42,8 @@ use prost::encoding::encode_varint;
 use crate::wire::action::{ActionChunk, ChunkRef, InputRange};
 use crate::wire::authority::{
     AuthoritySnapshot, BindingRecord, ClockMapping, ClockMode, Command, CtlError, CtlReply,
-    CtlStatus, Lease, Mode, ParticipantInfo, PriorityClass, Request, Role, Watermark,
+    CtlStatus, LastStop, Lease, LeaseEnd, Mode, ParticipantInfo, PriorityClass, Reason, ReasonCode,
+    Request, Role, Watermark,
 };
 use crate::wire::contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 use crate::wire::error::WireError;
@@ -1119,6 +1120,122 @@ fn applied_from_pb(a: pb::Applied) -> Result<Applied, WireError> {
     })
 }
 
+/// Every code with its wire value, so both directions read one table.
+const REASON_CODES: [(ReasonCode, pb::ReasonCode); 28] = [
+    (ReasonCode::Unspecified, pb::ReasonCode::ReasonUnspecified),
+    (ReasonCode::Armed, pb::ReasonCode::ReasonArmed),
+    (ReasonCode::Disarmed, pb::ReasonCode::ReasonDisarmed),
+    (ReasonCode::FirstLease, pb::ReasonCode::ReasonFirstLease),
+    (ReasonCode::LastRelease, pb::ReasonCode::ReasonLastRelease),
+    (ReasonCode::EstopRemote, pb::ReasonCode::ReasonEstopRemote),
+    (ReasonCode::EstopLocal, pb::ReasonCode::ReasonEstopLocal),
+    (ReasonCode::EstopSignal, pb::ReasonCode::ReasonEstopSignal),
+    (ReasonCode::EstopCleared, pb::ReasonCode::ReasonEstopCleared),
+    (ReasonCode::HolderLost, pb::ReasonCode::ReasonHolderLost),
+    (
+        ReasonCode::HeartbeatLapse,
+        pb::ReasonCode::ReasonHeartbeatLapse,
+    ),
+    (ReasonCode::QueueDry, pb::ReasonCode::ReasonQueueDry),
+    (
+        ReasonCode::EdgeLeaseLapsed,
+        pb::ReasonCode::ReasonEdgeLeaseLapsed,
+    ),
+    (
+        ReasonCode::HandoverTimeout,
+        pb::ReasonCode::ReasonHandoverTimeout,
+    ),
+    (
+        ReasonCode::DeviceWatchdog,
+        pb::ReasonCode::ReasonDeviceWatchdog,
+    ),
+    (ReasonCode::RobotLost, pb::ReasonCode::ReasonRobotLost),
+    (ReasonCode::HostLost, pb::ReasonCode::ReasonHostLost),
+    (ReasonCode::Released, pb::ReasonCode::ReasonReleased),
+    (ReasonCode::Preempted, pb::ReasonCode::ReasonPreempted),
+    (ReasonCode::Rebound, pb::ReasonCode::ReasonRebound),
+    (ReasonCode::VoidedBySafe, pb::ReasonCode::ReasonVoidedBySafe),
+    (
+        ReasonCode::VoidedByEstop,
+        pb::ReasonCode::ReasonVoidedByEstop,
+    ),
+    (
+        ReasonCode::VoidedByDisarm,
+        pb::ReasonCode::ReasonVoidedByDisarm,
+    ),
+    (
+        ReasonCode::VoidedByEpoch,
+        pb::ReasonCode::ReasonVoidedByEpoch,
+    ),
+    (ReasonCode::PartRemoved, pb::ReasonCode::ReasonPartRemoved),
+    (
+        ReasonCode::HolderDetached,
+        pb::ReasonCode::ReasonHolderDetached,
+    ),
+    (ReasonCode::Revoked, pb::ReasonCode::ReasonRevoked),
+    (
+        ReasonCode::AccessChanged,
+        pb::ReasonCode::ReasonAccessChanged,
+    ),
+];
+
+fn reason_code_to_pb(code: ReasonCode) -> i32 {
+    REASON_CODES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map_or(0, |(_, pb)| *pb as i32)
+}
+
+/// A code this peer does not know yet (a newer minor's) reads as
+/// unspecified: reasons explain, they never gate.
+fn reason_code_from_pb(raw: i32) -> ReasonCode {
+    REASON_CODES
+        .iter()
+        .find(|(_, pb)| *pb as i32 == raw)
+        .map_or(ReasonCode::Unspecified, |(c, _)| *c)
+}
+
+fn reason_to_pb(r: &Reason) -> pb::Reason {
+    pb::Reason {
+        code: reason_code_to_pb(r.code),
+        by: r.by.clone(),
+        detail: r.detail.clone(),
+        at_ns: r.at_ns,
+        revision: r.revision,
+        verified: r.verified,
+    }
+}
+
+fn reason_from_pb(r: pb::Reason) -> Reason {
+    Reason {
+        code: reason_code_from_pb(r.code),
+        by: r.by,
+        detail: r.detail,
+        at_ns: r.at_ns,
+        revision: r.revision,
+        verified: r.verified,
+    }
+}
+
+fn lease_end_to_pb(e: &LeaseEnd) -> pb::LeaseEnd {
+    pb::LeaseEnd {
+        lease: Some(lease_to_pb(&e.lease)),
+        reason: Some(reason_to_pb(&e.reason)),
+        by: e.by.as_ref().map(lease_to_pb),
+    }
+}
+
+fn lease_end_from_pb(e: pb::LeaseEnd) -> Result<LeaseEnd, WireError> {
+    Ok(LeaseEnd {
+        lease: lease_from_pb(
+            e.lease
+                .ok_or_else(|| WireError::malformed("lease end", "no lease"))?,
+        )?,
+        reason: e.reason.map(reason_from_pb).unwrap_or_default(),
+        by: e.by.map(lease_from_pb).transpose()?,
+    })
+}
+
 fn priority_to_pb(priority: PriorityClass) -> pb::PriorityClass {
     match priority {
         PriorityClass::Scripted => pb::PriorityClass::Scripted,
@@ -1392,6 +1509,12 @@ fn state_to_pb(s: &AuthoritySnapshot) -> pb::AuthorityState {
             .map(|(robot, fp)| (robot.to_string(), Bytes::copy_from_slice(fp.as_bytes())))
             .collect(),
         demands: s.demands.iter().map(demand_to_pb).collect(),
+        mode_reason: Some(reason_to_pb(&s.mode_reason)),
+        ended: s.ended.iter().map(lease_end_to_pb).collect(),
+        last_stop: Some(pb::LastStop {
+            epoch: s.last_stop.epoch.0,
+            revision: s.last_stop.revision,
+        }),
     }
 }
 
@@ -1423,6 +1546,12 @@ fn state_from_pb(s: pb::AuthorityState) -> Result<AuthoritySnapshot, WireError> 
             })
             .collect::<Result<_, WireError>>()?,
         demands: collect(s.demands, demand_from_pb)?,
+        mode_reason: s.mode_reason.map(reason_from_pb).unwrap_or_default(),
+        ended: collect(s.ended, lease_end_from_pb)?,
+        last_stop: s.last_stop.map_or_else(LastStop::default, |l| LastStop {
+            epoch: Epoch(l.epoch),
+            revision: l.revision,
+        }),
     })
 }
 
@@ -1551,12 +1680,14 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             channels: channels(release),
             token: token.0,
         }),
-        Command::Estop { reason } => Verb::Estop(pb::Estop {
+        Command::Estop { reason, code } => Verb::Estop(pb::Estop {
             reason: reason.clone(),
+            code: reason_code_to_pb(*code),
         }),
         Command::Clear => Verb::Clear(pb::Clear {}),
-        Command::EnterSafe { reason } => Verb::EnterSafe(pb::EnterSafe {
+        Command::EnterSafe { reason, code } => Verb::EnterSafe(pb::EnterSafe {
             reason: reason.clone(),
+            code: reason_code_to_pb(*code),
         }),
         Command::Ready { tick, watermarks } => Verb::Ready(pb::Ready {
             tick: *tick,
@@ -1621,9 +1752,15 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
             channels: ids(rl.channels),
             token: LeaseToken(rl.token),
         },
-        Verb::Estop(e) => Command::Estop { reason: e.reason },
+        Verb::Estop(e) => Command::Estop {
+            reason: e.reason,
+            code: reason_code_from_pb(e.code),
+        },
         Verb::Clear(_) => Command::Clear,
-        Verb::EnterSafe(e) => Command::EnterSafe { reason: e.reason },
+        Verb::EnterSafe(e) => Command::EnterSafe {
+            reason: e.reason,
+            code: reason_code_from_pb(e.code),
+        },
         Verb::Ready(ready) => Command::Ready {
             tick: ready.tick,
             watermarks: ready
@@ -1916,6 +2053,38 @@ mod tests {
                     acked: 1,
                 },
             ],
+            mode_reason: Reason {
+                code: ReasonCode::FirstLease,
+                by: "op".into(),
+                detail: String::new(),
+                at_ns: 6,
+                revision: 8,
+                verified: false,
+            },
+            ended: vec![LeaseEnd {
+                lease: Lease {
+                    channel: ChannelId(1),
+                    holder: pid("model"),
+                    priority: PriorityClass::Model,
+                    token: LeaseToken(3),
+                    ttl_ns: 5,
+                    granted_ns: 2,
+                    expires_ns: 7,
+                    binding: Fingerprint::from(76),
+                },
+                reason: Reason {
+                    code: ReasonCode::Preempted,
+                    by: "op".into(),
+                    at_ns: 6,
+                    revision: 8,
+                    ..Reason::default()
+                },
+                by: None,
+            }],
+            last_stop: LastStop {
+                epoch: Epoch(2),
+                revision: 5,
+            },
         }
     }
 
@@ -2004,9 +2173,11 @@ mod tests {
             },
             Command::Estop {
                 reason: "red button".into(),
+                code: ReasonCode::EstopLocal,
             },
             Command::EnterSafe {
                 reason: "queue dry".into(),
+                code: ReasonCode::DeviceWatchdog,
             },
             Command::Ready {
                 tick: 7,

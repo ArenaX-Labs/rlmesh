@@ -430,8 +430,8 @@ impl Timeline {
 mod tests {
     use super::*;
     use rlmesh_session::wire::{
-        ChannelId, ClockMode, Epoch, Fingerprint, LeaseToken, ParticipantId, ParticipantInfo,
-        PriorityClass, Role, SessionId,
+        ChannelId, ClockMode, Epoch, Fingerprint, LastStop, LeaseToken, ParticipantId,
+        ParticipantInfo, PriorityClass, Reason, Role, SessionId,
     };
 
     fn pid(s: &str) -> ParticipantId {
@@ -471,6 +471,9 @@ mod tests {
             bindings: vec![],
             contract: BTreeMap::new(),
             demands: vec![],
+            mode_reason: Reason::default(),
+            ended: vec![],
+            last_stop: LastStop::default(),
         }
     }
 

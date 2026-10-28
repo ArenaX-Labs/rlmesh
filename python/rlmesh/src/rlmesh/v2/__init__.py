@@ -341,6 +341,11 @@ class Robot:
         """The session mode (``disarmed``, ``armed``, ``active``, ``safe``, ``estop``)."""
         return self._native.mode
 
+    @property
+    def mode_reason(self) -> str:
+        """Why the mode is what it is (``robot_lost``, ``estop_local``, ...; ``unspecified`` before any change)."""
+        return self._native.mode_reason
+
     def publish(
         self,
         path: str,

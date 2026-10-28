@@ -12,8 +12,8 @@ use bytes::Bytes;
 use rlmesh_session::edge::{Edge, EdgeConfig, EdgeMode, EdgeTick, Rejection};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::{
-    ChannelId, Fingerprint, InputRange, Lease, Mode, ParticipantId, PriorityClass, Role, SessionId,
-    TenantId,
+    ChannelId, Fingerprint, InputRange, Lease, Mode, ParticipantId, PriorityClass, ReasonCode,
+    Role, SessionId, TenantId,
 };
 use rlmesh_session::{
     ChunkDraft, HostConfig, Participant, ParticipantConfig, SessionHost, SubscribeOptions,
@@ -431,6 +431,19 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_takes_the_session_s
         .await
         .expect("SAFE");
     assert!(snapshot.lease(cmd).is_none(), "SAFE revokes the lease");
+    // Every observer sees why, without inferring it.
+    let reason = &snapshot.mode_reason;
+    assert_eq!(
+        (reason.code, reason.by.as_str()),
+        (ReasonCode::QueueDry, robot.id().as_str())
+    );
+    assert!(
+        snapshot
+            .ended
+            .iter()
+            .any(|e| { e.lease.token == lease.token && e.reason.code == ReasonCode::VoidedBySafe })
+    );
+    assert_eq!(snapshot.last_stop.epoch, snapshot.epoch);
     stop.store(true, Ordering::Relaxed);
     ticker.join().expect("ticker");
     let stats = edge.stats();

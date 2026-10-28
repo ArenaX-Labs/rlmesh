@@ -308,6 +308,21 @@ impl LeaseClient {
         epoch: Epoch,
         token: LeaseToken,
     ) -> Option<String> {
+        let held = snapshot
+            .lease(self.channel)
+            .is_some_and(|now| now.token == token && now.holder == self.me);
+        if held && snapshot.epoch == epoch {
+            return None;
+        }
+        // The host says why (DESIGN §7); older hosts leave it to inference.
+        if let Some(end) = snapshot
+            .ended
+            .iter()
+            .rev()
+            .find(|e| e.lease.channel == self.channel && e.lease.token == token)
+        {
+            return Some(end.reason.to_string());
+        }
         if snapshot.epoch != epoch {
             return Some(format!("epoch {} began", snapshot.epoch));
         }
@@ -568,7 +583,9 @@ impl LeaseGroup {
 mod tests {
     use alloc::collections::BTreeMap;
 
-    use crate::wire::{ClockMode, CtlStatus, PriorityClass, SessionId};
+    use crate::wire::{
+        ClockMode, CtlStatus, LastStop, LeaseEnd, PriorityClass, Reason, ReasonCode, SessionId,
+    };
 
     use super::*;
 
@@ -610,6 +627,9 @@ mod tests {
             bindings: Vec::new(),
             contract: BTreeMap::new(),
             demands: Vec::new(),
+            mode_reason: Reason::default(),
+            ended: Vec::new(),
+            last_stop: LastStop::default(),
         }
     }
 
@@ -735,6 +755,24 @@ mod tests {
         assert_eq!(
             change,
             Some(LeaseChange::Revoked("lapsed: the session is SAFE".into()))
+        );
+
+        // A host that says why is taken at its word.
+        let mut told = LeaseClient::new(me(), ChannelId(3), 0);
+        granted(&mut told, None);
+        let mut ended = snapshot(6, 1, Mode::Safe, Vec::new());
+        ended.ended.push(LeaseEnd {
+            lease: lease("web-1", 9, 1_000 * MS),
+            reason: Reason {
+                code: ReasonCode::HeartbeatLapse,
+                by: "web-1".into(),
+                ..Reason::default()
+            },
+            by: None,
+        });
+        assert_eq!(
+            told.on_snapshot(&ended, None, 10 * MS),
+            Some(LeaseChange::Revoked("HEARTBEAT_LAPSE by web-1".into()))
         );
 
         let mut epoch = LeaseClient::new(me(), ChannelId(3), 0);

@@ -767,8 +767,8 @@ impl EdgeCore {
 mod tests {
     use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
     use crate::wire::{
-        ClockMapping, Command, Fingerprint, InputRange, Lease, PriorityClass, Request, Role,
-        SessionId,
+        ClockMapping, Command, Fingerprint, InputRange, Lease, PriorityClass, ReasonCode, Request,
+        Role, SessionId,
     };
     use crate::{Authority, AuthorityConfig, VirtualConfig};
 
@@ -1340,6 +1340,7 @@ mod tests {
             "operator",
             Command::Estop {
                 reason: "test".into(),
+                code: ReasonCode::EstopRemote,
             },
         );
         f.publish(MS);

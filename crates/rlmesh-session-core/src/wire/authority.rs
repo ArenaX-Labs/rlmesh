@@ -85,6 +85,173 @@ pub enum ClockMode {
     Lockstep,
 }
 
+/// Why a mode changed, an edge or the host went SAFE, or a lease ended: one
+/// code for all three.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ReasonCode {
+    /// None given.
+    #[default]
+    Unspecified,
+    /// Armed.
+    Armed,
+    /// Disarmed.
+    Disarmed,
+    /// The first lease went ACTIVE.
+    FirstLease,
+    /// The last lease ended: back to ARMED.
+    LastRelease,
+    /// A `ctl` `Estop` through the host.
+    EstopRemote,
+    /// `robot.estop()` or a hardware input at the edge.
+    EstopLocal,
+    /// An e-stop signal latched at the edge.
+    EstopSignal,
+    /// The embodiment cleared the latch.
+    EstopCleared,
+    /// The lease holder's heartbeats lapsed.
+    HolderLost,
+    /// The holder was silent past its lease's ttl.
+    HeartbeatLapse,
+    /// Edge: no valid action within `hold_max`.
+    QueueDry,
+    /// Edge: the lease expired by the edge's clock.
+    EdgeLeaseLapsed,
+    /// Edge: a group handover took longer than `hold_max`.
+    HandoverTimeout,
+    /// A device watchdog (a tethered board's link) fired.
+    DeviceWatchdog,
+    /// An embodiment's heartbeats lapsed.
+    RobotLost,
+    /// The session host is gone (participant side only).
+    HostLost,
+    /// The holder released the lease.
+    Released,
+    /// A higher class took it.
+    Preempted,
+    /// Re-issued under a new binding.
+    Rebound,
+    /// Ended when the session went SAFE.
+    VoidedBySafe,
+    /// Ended by an e-stop.
+    VoidedByEstop,
+    /// Ended by a disarm.
+    VoidedByDisarm,
+    /// Ended by a new epoch (arm, reset).
+    VoidedByEpoch,
+    /// Its part was removed.
+    PartRemoved,
+    /// Its holder detached.
+    HolderDetached,
+    /// The owner revoked the holder's device.
+    Revoked,
+    /// The owner changed the holder's device entry.
+    AccessChanged,
+}
+
+impl ReasonCode {
+    /// The name, without the wire's `REASON_` prefix (`ROBOT_LOST`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "UNSPECIFIED",
+            Self::Armed => "ARMED",
+            Self::Disarmed => "DISARMED",
+            Self::FirstLease => "FIRST_LEASE",
+            Self::LastRelease => "LAST_RELEASE",
+            Self::EstopRemote => "ESTOP_REMOTE",
+            Self::EstopLocal => "ESTOP_LOCAL",
+            Self::EstopSignal => "ESTOP_SIGNAL",
+            Self::EstopCleared => "ESTOP_CLEARED",
+            Self::HolderLost => "HOLDER_LOST",
+            Self::HeartbeatLapse => "HEARTBEAT_LAPSE",
+            Self::QueueDry => "QUEUE_DRY",
+            Self::EdgeLeaseLapsed => "EDGE_LEASE_LAPSED",
+            Self::HandoverTimeout => "HANDOVER_TIMEOUT",
+            Self::DeviceWatchdog => "DEVICE_WATCHDOG",
+            Self::RobotLost => "ROBOT_LOST",
+            Self::HostLost => "HOST_LOST",
+            Self::Released => "RELEASED",
+            Self::Preempted => "PREEMPTED",
+            Self::Rebound => "REBOUND",
+            Self::VoidedBySafe => "VOIDED_BY_SAFE",
+            Self::VoidedByEstop => "VOIDED_BY_ESTOP",
+            Self::VoidedByDisarm => "VOIDED_BY_DISARM",
+            Self::VoidedByEpoch => "VOIDED_BY_EPOCH",
+            Self::PartRemoved => "PART_REMOVED",
+            Self::HolderDetached => "HOLDER_DETACHED",
+            Self::Revoked => "REVOKED",
+            Self::AccessChanged => "ACCESS_CHANGED",
+        }
+    }
+}
+
+impl fmt::Display for ReasonCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A structured reason: the code, who caused it and when.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reason {
+    /// What happened.
+    pub code: ReasonCode,
+    /// The participant that caused it (empty: none).
+    pub by: String,
+    /// A human detail (empty: none).
+    pub detail: String,
+    /// Host session clock (the participant's clock for
+    /// [`ReasonCode::HostLost`]).
+    pub at_ns: i64,
+    /// The revision the change landed in.
+    pub revision: u64,
+    /// The host authenticated the sender itself.
+    pub verified: bool,
+}
+
+impl Reason {
+    /// A reason with `code` and nothing else.
+    pub fn new(code: ReasonCode) -> Self {
+        Self {
+            code,
+            ..Self::default()
+        }
+    }
+}
+
+impl fmt::Display for Reason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.code)?;
+        if !self.by.is_empty() {
+            write!(f, " by {}", self.by)?;
+        }
+        if !self.detail.is_empty() {
+            write!(f, ": {}", self.detail)?;
+        }
+        Ok(())
+    }
+}
+
+/// One lease that ended, as the snapshot's ring keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeaseEnd {
+    /// The lease.
+    pub lease: Lease,
+    /// Why.
+    pub reason: Reason,
+    /// The lease that preempted or re-issued it.
+    pub by: Option<Lease>,
+}
+
+/// The host's last entry into SAFE, DISARMED or ESTOP. Never lowered: a
+/// snapshot showing `epoch ≥ E` proves the host stopped at or after epoch E.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LastStop {
+    /// The epoch it happened in.
+    pub epoch: Epoch,
+    /// The revision it landed in.
+    pub revision: u64,
+}
+
 /// One roster entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParticipantInfo {
@@ -270,6 +437,12 @@ pub struct AuthoritySnapshot {
     pub contract: BTreeMap<ParticipantId, Fingerprint>,
     /// The publication plan of every stream some binding has a contract on.
     pub demands: Vec<Demand>,
+    /// Why the mode is what it is.
+    pub mode_reason: Reason,
+    /// The latest lease endings, oldest first.
+    pub ended: Vec<LeaseEnd>,
+    /// The last entry into SAFE, DISARMED or ESTOP.
+    pub last_stop: LastStop,
 }
 
 impl AuthoritySnapshot {
@@ -474,13 +647,20 @@ pub enum Command {
     Estop {
         /// Why.
         reason: String,
+        /// [`ReasonCode::EstopLocal`] or [`ReasonCode::EstopSignal`] when an
+        /// edge reports its own latch; anything else is a remote e-stop.
+        code: ReasonCode,
     },
     /// An embodiment's local clear of a latched e-stop.
     Clear,
-    /// An embodiment's edge fell back on its own account: ACTIVE goes SAFE.
+    /// An embodiment fell back on its own account (its edge, or a device
+    /// watchdog): ACTIVE, ARMED and DISARMED go SAFE; SAFE and ESTOP record
+    /// why.
     EnterSafe {
         /// Why.
         reason: String,
+        /// The cause.
+        code: ReasonCode,
     },
     /// Virtual mode: an embodiment published tick `tick`'s samples.
     Ready {

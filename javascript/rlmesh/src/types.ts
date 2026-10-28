@@ -77,6 +77,8 @@ export interface SessionState {
   revision: number;
   epoch: number;
   mode: Mode;
+  /** Why the mode is what it is (`robot_lost`, `estop_local`, ...; `unspecified` before any change). */
+  mode_reason: string;
   estop_latched: boolean;
 }
 
@@ -84,6 +86,7 @@ export interface SessionState {
 export interface Status {
   path: string;
   mode: Mode;
+  mode_reason: string;
   epoch: number;
   estop_latched: boolean;
   /** The lease holder's participant id (`''`: none). */

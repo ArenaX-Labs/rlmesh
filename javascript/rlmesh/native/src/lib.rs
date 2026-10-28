@@ -33,7 +33,7 @@ use rlmesh_session::record::{RecordError, Recorder};
 use rlmesh_session::sdk::{self, BindPolicyError, EmbeddedHost, ErrorKind};
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{BindError, RunOptions};
-use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass};
+use rlmesh_session::wire::{Encoding, PartSpec, PriorityClass, ReasonCode};
 use rlmesh_session::{
     Clock, Controller, ControllerError, Observation, ObserveError, Predictor, RunError, RunEvent,
     SendError, Sent, SessionAddress, SessionError, SkipReason, Snapshot, SystemMonotonicClock,
@@ -680,7 +680,11 @@ impl NativeRobot {
     pub fn report_safe(&self, reason: String) -> Result<()> {
         let robot = self.robot()?;
         let participant = robot.participant();
-        participant.report_safe(participant.authority_view().epoch(), reason);
+        participant.report_safe(
+            participant.authority_view().epoch(),
+            ReasonCode::DeviceWatchdog,
+            reason,
+        );
         Ok(())
     }
 
@@ -693,6 +697,18 @@ impl NativeRobot {
             .participant()
             .authority()
             .map_or_else(|| "disarmed".into(), |v| v.mode.to_string().to_lowercase()))
+    }
+
+    /// Why the session mode is what it is (`robot_lost`, `estop_local`, ...;
+    /// `unspecified` before any change).
+    #[napi(getter)]
+    pub fn mode_reason(&self) -> Result<String> {
+        Ok(sdk::reason_name(
+            self.robot()?
+                .participant()
+                .authority_view()
+                .with(|v| v.map_or(ReasonCode::Unspecified, |v| v.mode_reason.code)),
+        ))
     }
 
     /// Now on this robot's clock (`process.hrtime.bigint()`).

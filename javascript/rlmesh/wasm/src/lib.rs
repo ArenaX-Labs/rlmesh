@@ -42,7 +42,7 @@ use rlmesh_session_core::stream::{SampleStats, check_sample, is_stale};
 use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, Command, CtlReply, Epoch, Health, Heartbeat,
-    LeaseToken, Mode, ParticipantId, Request, Sample, StreamSpec, TimingSample,
+    LeaseToken, Mode, ParticipantId, ReasonCode, Request, Sample, StreamSpec, TimingSample,
 };
 use wasm_bindgen::prelude::*;
 
@@ -681,6 +681,7 @@ impl ControlSession {
             set(&ev, "structural", structural);
             set(&ev, "epoch", s.epoch.0 as f64);
             set(&ev, "mode", decl::mode_name(s.mode));
+            set(&ev, "mode_reason", decl::reason_name(s.mode_reason.code));
             set(&ev, "estop_latched", s.estop_latched);
             set(&ev, "session", s.session.to_string());
         }
@@ -927,7 +928,7 @@ impl ControlSession {
     }
 
     /// The host's view of the commandable part at `path`: `{path, mode,
-    /// epoch, holder, priority, token, ours, bound}`.
+    /// mode_reason, epoch, holder, priority, token, ours, bound}`.
     pub fn status(&self, path: &str) -> Result<JsValue, JsError> {
         let state = self
             .state
@@ -938,6 +939,7 @@ impl ControlSession {
         let o = Object::new();
         set(&o, "path", path);
         set(&o, "mode", decl::mode_name(state.mode));
+        set(&o, "mode_reason", decl::reason_name(state.mode_reason.code));
         set(&o, "epoch", state.epoch.0 as f64);
         set(&o, "estop_latched", state.estop_latched);
         match state.lease(part.channel) {
@@ -1033,6 +1035,7 @@ impl ControlSession {
             "estop" => (
                 Command::Estop {
                     reason: reason.to_string(),
+                    code: ReasonCode::EstopRemote,
                 },
                 "estop",
             ),

@@ -116,7 +116,7 @@ interface NativeStats {
 }
 interface NativeHost { readonly address: string; close(): Promise<void> }
 interface NativeRobot {
-  readonly name: string; readonly mode: string;
+  readonly name: string; readonly mode: string; readonly modeReason: string;
   parts(): NativePart[];
   publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
   due(path: string): NativeDue | null;
@@ -435,6 +435,11 @@ export class Robot implements AsyncDisposable {
   /** The session mode (`disarmed`, `armed`, `active`, `safe`, `estop`). */
   get mode(): string {
     return call(() => this.native.mode);
+  }
+
+  /** Why the mode is what it is (`robot_lost`, `estop_local`, ...; `unspecified` before any change). */
+  get modeReason(): string {
+    return call(() => this.native.modeReason);
   }
 
   /**

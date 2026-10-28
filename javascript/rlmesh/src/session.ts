@@ -137,7 +137,7 @@ export class Session {
   /** Every commandable part: what `lease()` accepts (when `bound`). */
   controls: ControlDecl[] = [];
   /** The session as the host's latest snapshot shows it. */
-  state: SessionState = { session: '', revision: 0, epoch: 0, mode: 'disarmed', estop_latched: false };
+  state: SessionState = { session: '', revision: 0, epoch: 0, mode: 'disarmed', mode_reason: 'unspecified', estop_latched: false };
   /** The session id (a UUIDv7). */
   sessionId = '';
   /** This connection's participant id. Changes if the control socket reconnects or its Worker restarts. */
@@ -683,7 +683,7 @@ export class Session {
       case 'status': {
         const edge = this.edges.get(ev.path);
         const st: Status = {
-          path: ev.path, mode: ev.mode, epoch: ev.epoch, estop_latched: ev.estop_latched, holder: ev.holder, priority: ev.priority,
+          path: ev.path, mode: ev.mode, mode_reason: ev.mode_reason, epoch: ev.epoch, estop_latched: ev.estop_latched, holder: ev.holder, priority: ev.priority,
           token: ev.token, ours: ev.ours, bound: ev.bound, ...(edge ? { edge } : {}),
         };
         this.statusByPath.set(st.path, st);

@@ -594,7 +594,7 @@ impl BrowserLink {
                     .await
                     .map(|_| Vec::new())
                     .map_err(|e| refusal(&e)),
-                Command::Estop { reason } => p
+                Command::Estop { reason, .. } => p
                     .estop(reason)
                     .await
                     .map(|_| Vec::new())

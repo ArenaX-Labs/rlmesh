@@ -205,7 +205,9 @@ impl Edge {
         if let Some((epoch, cause)) = tick.report {
             let channel = tick.channel.map(|c| c.to_string()).unwrap_or_default();
             info!(%channel, %cause, "edge fell back on its own account");
-            shared.reporter.report(epoch, format!("{channel}: {cause}"));
+            shared
+                .reporter
+                .report(epoch, cause.code(), format!("{channel}: {cause}"));
         }
         tick
     }

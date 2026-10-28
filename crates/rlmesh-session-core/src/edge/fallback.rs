@@ -41,7 +41,7 @@ use crate::prelude::*;
 
 use core::fmt;
 
-use crate::wire::{EdgeMode, Epoch, LeaseToken, Mode};
+use crate::wire::{EdgeMode, Epoch, LeaseToken, Mode, ReasonCode};
 
 use crate::edge::queue::{ActionQueue, Delivery, QueuedAction};
 
@@ -80,6 +80,18 @@ impl SafeCause {
             self,
             Self::QueueDry | Self::LeaseLapsed | Self::HandoverTimeout
         )
+    }
+
+    /// Its code on the wire. [`Self::HostSafe`] has none of its own: the
+    /// host's `mode_reason` says why.
+    pub fn code(self) -> ReasonCode {
+        match self {
+            Self::QueueDry => ReasonCode::QueueDry,
+            Self::LeaseLapsed => ReasonCode::EdgeLeaseLapsed,
+            Self::HandoverTimeout => ReasonCode::HandoverTimeout,
+            Self::HostSafe => ReasonCode::Unspecified,
+            Self::Released => ReasonCode::Released,
+        }
     }
 }
 

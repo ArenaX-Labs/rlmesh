@@ -131,7 +131,7 @@ pub mod stream;
 pub mod virtual_clock;
 pub mod wire;
 
-pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, LeaseEnd};
+pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason};
 pub use cache::{Cached, InputCache, InputSnapshot, Skip, Snapshot};
 pub use clock::{OffsetEstimate, OffsetEstimator, OffsetEstimatorConfig};
 pub use lease::{LeaseChange, LeaseClient, LeaseError, LeaseGroup, LeaseState};
