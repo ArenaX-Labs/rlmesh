@@ -666,10 +666,12 @@ async fn watch_parts(
                             let log_time = stamp.now();
                             // The recorder holds no command key: it records
                             // a signed chunk's body as sent, unverified, and
-                            // can't read a sealed one.
-                            // TODO: verify recorded chunks once observers
-                            // can hold command keys (per-device read
-                            // permission, step 8).
+                            // can't read a sealed one. Read permission
+                            // doesn't change that: `k_cmd` goes only to the
+                            // robot and the host (design §8.4).
+                            // TODO: record verified chunks when the host
+                            // relays what its edges accepted (the heartbeat
+                            // relay above would carry it).
                             let data = payload_bytes(sample.payload());
                             if let Some(body) = unverified_body(&data) {
                                 on_chunk(&tx, &stamp, &topic, log_time, data.slice(body));

@@ -40,6 +40,7 @@ pub use address::AddressKey;
 pub use issuer::KeyIssuer;
 pub use keyring::{KeyError, Keyring, StreamWindows};
 
+use crate::authority::Access;
 use crate::crypto::StaticKeypair;
 use crate::crypto::handshake::{self, HandshakeError, IkInitiator, IkResponder};
 use crate::crypto::lp::kdf;
@@ -56,7 +57,7 @@ use crate::wire::tick::VirtualTick;
 use crate::wire::{
     ActionChunk, AuthoritySnapshot, Command, CtlError, CtlReply, CtlStatus, Epoch, HandshakeAccept,
     HandshakeRequest, HistoryQuery, KeysAck, LeaseToken, LockstepRequest, LockstepResponse,
-    ParticipantId, PriorityClass, Request, Sample, SampleBatch, SampleMeta,
+    ParticipantId, Request, Sample, SampleBatch, SampleMeta,
 };
 
 /// The device of every process holding an embedded host's address.
@@ -733,6 +734,19 @@ impl HostIdentity {
     }
 }
 
+/// A device the host accepts handshakes from besides `local`: its id, its
+/// static public key and its entry (design §4, §9). An embedded host takes
+/// them from its config; rlmeshd will read them from `devices.toml`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Device {
+    /// Its id (never `local`).
+    pub id: String,
+    /// Its static X25519 public key.
+    pub public: [u8; 32],
+    /// What it may do.
+    pub access: crate::authority::DeviceAccess,
+}
+
 /// A handshake the host answered: keys for one participant generation,
 /// in effect once the host accepts its sealed `Attach`.
 #[derive(Debug)]
@@ -777,12 +791,9 @@ fn refused(status: CtlStatus, message: impl core::fmt::Display) -> CtlError {
 
 impl HostAuth {
     /// Handshakes for one instance of `identity`'s host, serving `session`
-    /// of `tenant`. The device table holds `local`: every holder of the
-    /// host's address.
+    /// of `tenant`. The device table holds `local`, every holder of the
+    /// host's address, and whatever [`Self::enroll`] adds.
     pub fn new(identity: &HostIdentity, tenant: &str, session: &str, host_instance: u64) -> Self {
-        // TODO: rlmeshd's devices.toml (step 11) enrolls paired devices;
-        // until then a participant's device is whatever static key it
-        // presents, and only the address's `local` key is enrolled.
         let mut table = BTreeMap::new();
         table.insert(identity.local_public(), LOCAL_DEVICE.to_string());
         Self {
@@ -813,7 +824,8 @@ impl HostAuth {
         self.host_instance
     }
 
-    /// Answers msg 1: msg 2 and the candidate, or the refusal to send back
+    /// Answers msg 1 with the device's cap from `access`: msg 2 and the
+    /// candidate, or the refusal to send back
     /// (`UNAUTHENTICATED` for an unknown device or a message that fails to
     /// authenticate, `NOT_AUTHORIZED` for a participant id bound to another
     /// device).
@@ -825,6 +837,7 @@ impl HostAuth {
         rng: &mut dyn Rng,
         identity: &HostIdentity,
         request: &HandshakeRequest,
+        access: &Access,
     ) -> Result<(Vec<u8>, Candidate), CtlError> {
         let participant = &request.participant;
         let prologue = handshake::prologue(
@@ -862,9 +875,7 @@ impl HostAuth {
         let accept = HandshakeAccept {
             generation,
             device: device.clone(),
-            // TODO: every device may attach at any class until per-device
-            // caps land (step 8).
-            max_priority: PriorityClass::Safety,
+            max_priority: access.max_priority(&device),
             host_sign_key: self.sign_public,
             host_instance: self.host_instance,
             up_key_id,
@@ -1037,7 +1048,7 @@ mod tests {
         let (initiator, request) = credential
             .start(&mut rng, "local", "demo", 7, &pid(name))
             .expect("start");
-        let (msg2, candidate) = auth.handshake(&mut rng, identity, &request)?;
+        let (msg2, candidate) = auth.handshake(&mut rng, identity, &request, &Access::default())?;
         Ok((finish(initiator, &msg2).expect("finish"), candidate))
     }
 

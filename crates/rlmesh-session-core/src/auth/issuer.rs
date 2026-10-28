@@ -10,8 +10,11 @@
 //!   never detaches anyone and never counts as one: the step waits, and
 //!   [`KeyIssuer::pending`] says who it waits for. The host's own receivers
 //!   are one more outbox ([`KeyIssuer::host_delivery`]).
-//! - **Stream keys** (`k_stream`, one slot per part) rotate only when the
-//!   slot's sender changes (a robot's new generation): install the new
+//! - **Stream keys** (`k_stream`, one slot per part) go to the members
+//!   whose device may read the part ([`Access::may_read`]), and rotate only
+//!   when the slot's sender changes (a robot's new generation) or a device
+//!   that holds one loses read permission ([`KeyIssuer::reauthorize`]):
+//!   install the new
 //!   version at every receiver (the host first, then at most
 //!   [`INSTALL_WAIT_NS`] for the rest), send it to the robot, then retire
 //!   the older versions everywhere. A new part gets version 1 the same way,
@@ -30,6 +33,7 @@
 
 use alloc::collections::{BTreeMap, BTreeSet};
 
+use crate::authority::Access;
 use crate::crypto::{Rng, RngError};
 use crate::prelude::*;
 use crate::wire::{
@@ -65,6 +69,19 @@ pub struct GrantPart {
     pub security: Security,
 }
 
+/// One declared part's stream slot ([`KeyIssuer::sync_streams`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamSlot {
+    /// The robot that sends it.
+    pub robot: ParticipantId,
+    /// The part's path.
+    pub path: String,
+    /// The part's `channel` and `applied_channel`.
+    pub channels: Vec<ChannelId>,
+    /// Its level.
+    pub security: Security,
+}
+
 /// A grant to prepare: the parts its new token covers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GrantRequest {
@@ -80,6 +97,9 @@ pub struct GrantRequest {
     pub token: LeaseToken,
     /// The parts under that token.
     pub parts: Vec<GrantPart>,
+    /// The robots whose every part the holder's device may read: only they
+    /// get a `k_obs` for it (lockstep replies).
+    pub reads_all: Vec<ParticipantId>,
 }
 
 /// A prepared grant: its id, and the pending grants it evicted (each to be
@@ -119,6 +139,7 @@ pub struct PendingStep {
 #[derive(Clone, Debug)]
 struct Member {
     generation: u32,
+    device: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -188,7 +209,12 @@ struct Slot {
 
 #[derive(Clone, Debug)]
 struct SlotState {
+    /// The part's path (its stream's read permission).
+    path: String,
     security: Security,
+    /// The devices some version went to: a narrowing that takes one's read
+    /// permission rotates the slot.
+    readers: BTreeSet<String>,
     /// Version → key id, oldest first.
     versions: BTreeMap<u32, u32>,
     /// The robot generation the newest version is for.
@@ -298,9 +324,10 @@ impl KeyIssuer {
         }
     }
 
-    /// Generation `generation` of `participant` took effect: it gets every
-    /// stream key it receives, and a robot's streams rotate to it. Returns
-    /// the pending grants an older generation's end failed.
+    /// Generation `generation` of `participant` (on `device`) took effect:
+    /// it gets every stream key its device may read, and a robot's streams
+    /// rotate to it. Returns the pending grants an older generation's end
+    /// failed.
     ///
     /// # Errors
     /// [`CtlError`] when no key could be drawn.
@@ -309,6 +336,8 @@ impl KeyIssuer {
         rng: &mut dyn Rng,
         participant: &ParticipantId,
         generation: u32,
+        device: &str,
+        access: &Access,
         now_ns: i64,
     ) -> Result<Vec<GrantId>, CtlError> {
         let failed = match self.members.get(participant) {
@@ -316,13 +345,21 @@ impl KeyIssuer {
             Some(_) => self.detach(participant),
             None => Vec::new(),
         };
-        self.members
-            .insert(participant.clone(), Member { generation });
+        self.members.insert(
+            participant.clone(),
+            Member {
+                generation,
+                device: device.to_string(),
+            },
+        );
         let slots: Vec<Slot> = self.slots.keys().cloned().collect();
         for slot in slots {
             if &slot.robot == participant {
-                self.rotate(rng, &slot, generation, now_ns)?;
-            } else if let Some(state) = self.slots.get(&slot) {
+                self.rotate(rng, &slot, generation, access, now_ns)?;
+            } else if let Some(state) = self.slots.get_mut(&slot)
+                && access.may_read(device, &slot.robot, &state.path)
+            {
+                state.readers.insert(device.to_string());
                 let versions: Vec<u32> = state.versions.values().copied().collect();
                 for id in versions {
                     self.queue(participant, id, false);
@@ -359,18 +396,19 @@ impl KeyIssuer {
     pub fn sync_streams(
         &mut self,
         rng: &mut dyn Rng,
-        streams: &[(ParticipantId, Vec<ChannelId>, Security)],
+        streams: &[StreamSlot],
+        access: &Access,
         now_ns: i64,
     ) -> Result<(), CtlError> {
-        let wanted: BTreeMap<Slot, Security> = streams
+        let wanted: BTreeMap<Slot, (&str, Security)> = streams
             .iter()
-            .map(|(robot, channels, security)| {
+            .map(|stream| {
                 (
                     Slot {
-                        robot: robot.clone(),
-                        channels: channels.clone(),
+                        robot: stream.robot.clone(),
+                        channels: stream.channels.clone(),
                     },
-                    *security,
+                    (stream.path.as_str(), stream.security),
                 )
             })
             .collect();
@@ -395,7 +433,7 @@ impl KeyIssuer {
             let ids: Vec<u32> = state.versions.values().copied().collect();
             self.forget(&ids);
         }
-        for (slot, security) in wanted {
+        for (slot, (path, security)) in wanted {
             if self.slots.contains_key(&slot) {
                 continue;
             }
@@ -405,35 +443,58 @@ impl KeyIssuer {
             self.slots.insert(
                 slot.clone(),
                 SlotState {
+                    path: path.to_string(),
                     security,
+                    readers: BTreeSet::new(),
                     versions: BTreeMap::new(),
                     sender_generation: 0,
                     sending: None,
                     rotation: None,
                 },
             );
-            self.rotate(rng, &slot, generation, now_ns)?;
+            self.rotate(rng, &slot, generation, access, now_ns)?;
         }
         self.advance(now_ns);
         Ok(())
     }
 
-    /// Prepares `slot`'s next version for sender generation `generation`
-    /// and starts installing it. A rotation still under way is taken over:
-    /// the new one retires every older version.
+    /// Prepares `slot`'s next version for sender generation `generation`,
+    /// unless the slot already has one for it, and starts installing it at
+    /// the members `access` lets read it.
     fn rotate(
         &mut self,
         rng: &mut dyn Rng,
         slot: &Slot,
         generation: u32,
+        access: &Access,
+        now_ns: i64,
+    ) -> Result<(), CtlError> {
+        if self
+            .slots
+            .get(slot)
+            .is_none_or(|s| s.sender_generation == generation)
+        {
+            return Ok(());
+        }
+        self.next_version(rng, slot, generation, access, now_ns)
+    }
+
+    /// Draws `slot`'s next version for sender generation `generation` and
+    /// starts installing it at the members `access` lets read it. A
+    /// rotation still under way is taken over: the new one retires every
+    /// older version.
+    fn next_version(
+        &mut self,
+        rng: &mut dyn Rng,
+        slot: &Slot,
+        generation: u32,
+        access: &Access,
         now_ns: i64,
     ) -> Result<(), CtlError> {
         let Some(state) = self.slots.get(slot) else {
             return Ok(());
         };
-        if state.sender_generation == generation {
-            return Ok(());
-        }
+        let path = state.path.clone();
         let security = state.security;
         let version = state.versions.keys().last().map_or(1, |v| v + 1);
         let retire = state.versions.values().last().copied();
@@ -445,14 +506,17 @@ impl KeyIssuer {
         key.generation = generation;
         let key_id = key.key_id;
         self.keys.insert(key_id, key);
-        // TODO: every member reads every stream until per-device read
-        // permission lands (step 8): narrow the receivers to it then, and
-        // rotate a slot when a device loses it.
         let receivers: BTreeSet<ParticipantId> = self
             .members
-            .keys()
-            .filter(|m| *m != &slot.robot)
-            .cloned()
+            .iter()
+            .filter(|(m, member)| {
+                *m != &slot.robot && access.may_read(&member.device, &slot.robot, &path)
+            })
+            .map(|(m, _)| m.clone())
+            .collect();
+        let readers: BTreeSet<String> = receivers
+            .iter()
+            .filter_map(|r| self.members.get(r).map(|m| m.device.clone()))
             .collect();
         for receiver in &receivers {
             self.queue(receiver, key_id, false);
@@ -462,6 +526,7 @@ impl KeyIssuer {
         if let Some(state) = self.slots.get_mut(slot) {
             state.versions.insert(version, key_id);
             state.sender_generation = generation;
+            state.readers = readers;
             state.rotation = Some(Rotation {
                 version,
                 key_id,
@@ -471,6 +536,36 @@ impl KeyIssuer {
                 retire,
             });
         }
+        Ok(())
+    }
+
+    /// A device's entry changed: every slot a device that holds one of its
+    /// versions may no longer read rotates, once, to the members still
+    /// allowed (design §8.5). A slot is never rotated for its own sender.
+    ///
+    /// # Errors
+    /// [`CtlError`] when no key could be drawn.
+    pub fn reauthorize(
+        &mut self,
+        rng: &mut dyn Rng,
+        access: &Access,
+        now_ns: i64,
+    ) -> Result<(), CtlError> {
+        let narrowed: Vec<(Slot, u32)> = self
+            .slots
+            .iter()
+            .filter(|(slot, state)| {
+                state
+                    .readers
+                    .iter()
+                    .any(|device| !access.may_read(device, &slot.robot, &state.path))
+            })
+            .map(|(slot, state)| (slot.clone(), state.sender_generation))
+            .collect();
+        for (slot, generation) in narrowed {
+            self.next_version(rng, &slot, generation, access, now_ns)?;
+        }
+        self.advance(now_ns);
         Ok(())
     }
 
@@ -682,15 +777,21 @@ impl KeyIssuer {
     }
 
     /// Every key issued to generation `generation` of `participant` (with
-    /// `send` where it is the sender), for its `GetKeys`.
-    pub fn get_keys(&self, participant: &ParticipantId, generation: u32) -> Vec<IssuedKey> {
-        if self
+    /// `send` where it is the sender), for its `GetKeys`: stream keys only
+    /// where its device may read.
+    pub fn get_keys(
+        &self,
+        participant: &ParticipantId,
+        generation: u32,
+        access: &Access,
+    ) -> Vec<IssuedKey> {
+        let Some(member) = self
             .members
             .get(participant)
-            .is_none_or(|m| m.generation != generation)
-        {
+            .filter(|m| m.generation == generation)
+        else {
             return Vec::new();
-        }
+        };
         let mut out = Vec::new();
         let with =
             |id: &u32, send: bool| self.keys.get(id).map(|k| IssuedKey { send, ..k.clone() });
@@ -701,7 +802,7 @@ impl KeyIssuer {
                 {
                     out.extend(with(&id, true));
                 }
-            } else {
+            } else if access.may_read(&member.device, &slot.robot, &state.path) {
                 out.extend(state.versions.values().filter_map(|id| with(id, false)));
             }
         }
@@ -815,6 +916,11 @@ impl KeyIssuer {
                 self.queue(robot, key.key_id, false);
                 self.leases.insert(key.key_id, lease.clone());
                 self.keys.insert(key.key_id, key);
+            }
+            // A lockstep reply carries every part the robot publishes: only
+            // a holder that may read them all gets one (§8.6).
+            if !request.reads_all.contains(robot) {
+                continue;
             }
             let mut obs = self.draw(rng, KeyPurpose::LockstepReply, security)?;
             obs.sender = Some(robot.clone());
@@ -937,7 +1043,10 @@ impl KeyIssuer {
 mod tests {
     use super::*;
     use crate::auth::keyring::Keyring;
+    use crate::authority::DeviceAccess;
+    use crate::crypto::sealed::Header;
     use crate::crypto::test_rng::TestRng;
+    use crate::wire::Sample;
 
     fn pid(id: &str) -> ParticipantId {
         ParticipantId::new(id).expect("id")
@@ -970,8 +1079,13 @@ mod tests {
         }
     }
 
-    fn arm_stream() -> Vec<(ParticipantId, Vec<ChannelId>, Security)> {
-        vec![(pid("arm"), vec![ChannelId(1), ChannelId(2)], Security::Sign)]
+    fn arm_stream() -> Vec<StreamSlot> {
+        vec![StreamSlot {
+            robot: pid("arm"),
+            path: "j".into(),
+            channels: vec![ChannelId(1), ChannelId(2)],
+            security: Security::Sign,
+        }]
     }
 
     #[test]
@@ -981,12 +1095,19 @@ mod tests {
         let mut rings = BTreeMap::new();
         for (who, generation) in [("arm", 1), ("policy", 2)] {
             issuer
-                .attach(&mut rng, &pid(who), generation, 0)
+                .attach(
+                    &mut rng,
+                    &pid(who),
+                    generation,
+                    "local",
+                    &Access::default(),
+                    0,
+                )
                 .expect("attach");
             rings.insert(pid(who), Keyring::new(Some(pid(who)), generation));
         }
         issuer
-            .sync_streams(&mut rng, &arm_stream(), 0)
+            .sync_streams(&mut rng, &arm_stream(), &Access::default(), 0)
             .expect("sync");
         for t in 0..4 {
             exchange(&mut issuer, &mut rings, &[], t);
@@ -999,7 +1120,9 @@ mod tests {
             .collect();
 
         // The robot restarts: generation 3 takes over its slot at version 2.
-        issuer.attach(&mut rng, &pid("arm"), 3, 10).expect("attach");
+        issuer
+            .attach(&mut rng, &pid("arm"), 3, "local", &Access::default(), 10)
+            .expect("attach");
         rings.insert(pid("arm"), Keyring::new(Some(pid("arm")), 3));
         exchange(&mut issuer, &mut rings, &[], 11);
         exchange(&mut issuer, &mut rings, &[], 12);
@@ -1014,13 +1137,84 @@ mod tests {
             .collect();
         assert_eq!(policy, vec![2], "retire_through dropped version 1 ({v1:?})");
         // Recovery hands the new generation its sending key only.
-        let recovered = issuer.get_keys(&pid("arm"), 3);
+        let recovered = issuer.get_keys(&pid("arm"), 3, &Access::default());
         assert_eq!(recovered.len(), 1);
         assert!(recovered[0].send && recovered[0].version == 2);
         assert!(
-            issuer.get_keys(&pid("arm"), 1).is_empty(),
+            issuer
+                .get_keys(&pid("arm"), 1, &Access::default())
+                .is_empty(),
             "an ended generation"
         );
+    }
+
+    #[test]
+    fn a_device_losing_read_permission_rotates_the_stream_past_its_readers() {
+        let mut rng = TestRng::new(8);
+        let mut issuer = KeyIssuer::default();
+        let mut access = Access::default();
+        access.set("laptop", DeviceAccess::new(Some(PriorityClass::Model)));
+        let mut rings = BTreeMap::new();
+        for (who, generation, device) in [
+            ("arm", 1, "local"),
+            ("eye", 2, "laptop"),
+            ("policy", 3, "local"),
+        ] {
+            issuer
+                .attach(&mut rng, &pid(who), generation, device, &access, 0)
+                .expect("attach");
+            rings.insert(pid(who), Keyring::new(Some(pid(who)), generation));
+        }
+        issuer
+            .sync_streams(&mut rng, &arm_stream(), &access, 0)
+            .expect("sync");
+        for t in 0..4 {
+            exchange(&mut issuer, &mut rings, &[], t);
+        }
+        let sample = Sample {
+            channel: ChannelId(1),
+            epoch: crate::wire::Epoch(1),
+            seq: 1,
+            capture_ns: 0,
+            publish_ns: 0,
+            tick: 0,
+            payload: bytes::Bytes::from_static(b"q"),
+            applied: None,
+        };
+        let sealed = |rings: &mut BTreeMap<ParticipantId, Keyring>, seq| {
+            let sample = Sample {
+                seq,
+                ..sample.clone()
+            };
+            let ring = rings.get_mut(&pid("arm")).expect("arm");
+            ring.seal_sample("d/arm/j", &sample, false).expect("seal")
+        };
+        let read = |rings: &mut BTreeMap<ParticipantId, Keyring>, who: &str, msg: Vec<u8>| {
+            let ring = rings.get_mut(&pid(who)).expect(who);
+            ring.open_sample("d/arm/j", msg, &pid("arm"), false).is_ok()
+        };
+        let first = sealed(&mut rings, 1);
+        assert!(read(&mut rings, "eye", first.clone()) && read(&mut rings, "policy", first));
+
+        // The laptop's entry narrows to another robot: the slot rotates once,
+        // past it, and the robot's next samples are the policy's alone.
+        let mut narrowed = DeviceAccess::new(Some(PriorityClass::Model));
+        narrowed.parts = vec!["ur10e/**".into()];
+        access.set("laptop", narrowed);
+        issuer.reauthorize(&mut rng, &access, 10).expect("rotate");
+        issuer.reauthorize(&mut rng, &access, 10).expect("once");
+        for t in 11..15 {
+            exchange(&mut issuer, &mut rings, &[], t);
+        }
+        assert!(issuer.pending().is_empty());
+        let next = sealed(&mut rings, 2);
+        assert_eq!(
+            Header::parse(&next).expect("header").key_id,
+            issuer.slots.values().next().expect("slot").versions[&2]
+        );
+        assert!(!read(&mut rings, "eye", next.clone()), "the old reader");
+        assert!(read(&mut rings, "policy", next));
+        assert!(issuer.get_keys(&pid("eye"), 2, &access).is_empty());
     }
 
     #[test]
@@ -1030,17 +1224,26 @@ mod tests {
         let mut rings = BTreeMap::new();
         for (who, generation) in [("arm", 1), ("policy", 2), ("board", 3)] {
             issuer
-                .attach(&mut rng, &pid(who), generation, 0)
+                .attach(
+                    &mut rng,
+                    &pid(who),
+                    generation,
+                    "local",
+                    &Access::default(),
+                    0,
+                )
                 .expect("attach");
             rings.insert(pid(who), Keyring::new(Some(pid(who)), generation));
         }
         issuer
-            .sync_streams(&mut rng, &arm_stream(), 0)
+            .sync_streams(&mut rng, &arm_stream(), &Access::default(), 0)
             .expect("sync");
         for t in 0..4 {
             exchange(&mut issuer, &mut rings, &[], t);
         }
-        issuer.attach(&mut rng, &pid("arm"), 4, 10).expect("attach");
+        issuer
+            .attach(&mut rng, &pid("arm"), 4, "local", &Access::default(), 10)
+            .expect("attach");
         rings.insert(pid("arm"), Keyring::new(Some(pid("arm")), 4));
         // The board never acknowledges: install waits 500 ms, then the
         // sender switches; the retire stays open, naming the board.
@@ -1066,7 +1269,9 @@ mod tests {
     fn grants_are_capped_per_device_and_robot_and_a_higher_class_evicts_the_newest_lowest() {
         let mut rng = TestRng::new(7);
         let mut issuer = KeyIssuer::default();
-        issuer.attach(&mut rng, &pid("arm"), 1, 0).expect("attach");
+        issuer
+            .attach(&mut rng, &pid("arm"), 1, "local", &Access::default(), 0)
+            .expect("attach");
         let request = |holder: &str, device: &str, class, token| GrantRequest {
             holder: pid(holder),
             holder_generation: 1,
@@ -1079,6 +1284,7 @@ mod tests {
                 priority: ChannelPriority::Realtime,
                 security: Security::Sign,
             }],
+            reads_all: vec![pid("arm")],
         };
         let model = PriorityClass::Model;
         let a = issuer.prepare_grant(&mut rng, request("a", "d1", model, 1), 0);

@@ -76,6 +76,9 @@ use crate::wire::{
 
 use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
 
+pub mod access;
+pub use access::{Access, DeviceAccess, Verb};
+
 /// The highest replan rate a binding declares.
 const MAX_REPLAN_HZ: f64 = 10_000.0;
 /// The longest action period a binding declares.
@@ -90,6 +93,8 @@ pub enum DetachReason {
     Requested,
     /// Its heartbeats lapsed (crash, network loss).
     Lost,
+    /// Its device's entry changed: it re-attaches under the new one.
+    AccessChanged,
 }
 
 /// Something the authority state did, for publication, logging and evidence.
@@ -302,6 +307,8 @@ pub struct AuthorityConfig {
     /// The parts whose streams, chunks and lockstep traffic are encrypted
     /// (design §8.2); every other part is signed.
     pub seal: SealPolicy,
+    /// What each device may do (design §4); `local` may do everything.
+    pub access: Access,
 }
 
 /// Which parts a session seals (encrypts) rather than signs (§8.2, §8.8).
@@ -342,6 +349,7 @@ impl Default for AuthorityConfig {
                 .collect(),
             virtual_clock: None,
             seal: SealPolicy::None,
+            access: Access::default(),
         }
     }
 }
@@ -571,11 +579,14 @@ impl Authority {
         }
     }
 
-    /// Applies a verb from an unauthenticated sender (device `""`,
-    /// generation 0): sans-IO tests and simulations. The host applies every
-    /// verb with [`Self::apply_from`].
+    /// Applies a verb as device `local`, generation 0: sans-IO tests and
+    /// simulations. The host applies every verb with [`Self::apply_from`].
     pub fn apply(&mut self, request: Request, now_ns: i64) -> Result<Applied, CtlError> {
-        self.apply_from(request, &Identity::default(), now_ns)
+        let local = Identity {
+            device: crate::auth::LOCAL_DEVICE.into(),
+            generation: 0,
+        };
+        self.apply_from(request, &local, now_ns)
     }
 
     /// Applies a verb from `sender`. Accepted verbs that change state bump
@@ -613,6 +624,9 @@ impl Authority {
                         format!("this session (protocol minor {PROTOCOL_MINOR}) lacks {missing:?}"),
                     ));
                 }
+                self.config
+                    .access
+                    .check_attach(&sender.device, &roles, priority)?;
                 // A re-attach of the same generation (a reconnect) keeps the
                 // participant's leases; a new generation replaces the old.
                 if self
@@ -657,30 +671,16 @@ impl Authority {
             }
             Command::Detach => {
                 self.require_attached(&from)?;
-                let why = self.reason(ReasonCode::HolderDetached, &from, "");
-                self.end_leases_of(&from, &why, &mut applied.events);
-                let owned: Vec<ChannelId> = self
-                    .parts
-                    .values()
-                    .filter(|p| p.owner == from)
-                    .map(|p| p.channel)
-                    .collect();
-                self.remove_parts(&from, &owned, &mut applied.events);
-                self.contract.remove(&from);
-                self.bindings.remove(&from);
-                self.roster.remove(&from);
-                self.seen.remove(&from);
-                self.needed.retain(|(p, _), _| p != &from);
-                self.recompute_demands(&mut applied.events);
-                applied.events.push(AuthorityEvent::Detached {
-                    participant: from.clone(),
-                    reason: DetachReason::Requested,
-                });
-                self.settle_after_release(&from, "holder detached", &mut applied.events);
-                self.barrier_gone(&from, now_ns);
+                self.detach(
+                    &from,
+                    ReasonCode::HolderDetached,
+                    DetachReason::Requested,
+                    &mut applied.events,
+                );
             }
             Command::Arm => {
                 self.require_attached(&from)?;
+                self.config.access.check_verb(&sender.device, Verb::Arm)?;
                 match self.mode {
                     Mode::Disarmed | Mode::Safe => {
                         self.epoch = self.epoch.next();
@@ -712,6 +712,9 @@ impl Authority {
             }
             Command::Disarm => {
                 self.require_attached(&from)?;
+                self.config
+                    .access
+                    .check_verb(&sender.device, Verb::Disarm)?;
                 match self.mode {
                     Mode::Disarmed => {}
                     Mode::Estop if self.estop_latched => {
@@ -766,6 +769,7 @@ impl Authority {
             } => {
                 applied.leases = self.grant(
                     &from,
+                    &sender.device,
                     request.epoch,
                     &Grant {
                         channels,
@@ -781,9 +785,8 @@ impl Authority {
                 self.release(&from, &channels, token, &mut applied.events)?;
             }
             Command::Estop { reason, code } => {
-                // Accepted from anyone: refusing an e-stop is never safer.
-                // TODO(auth): restrict to authorised participants and log
-                // unauthorised attempts as evidence.
+                // Accepted from every member (the host authenticated it):
+                // refusing an e-stop is never safer.
                 if self.mode != Mode::Estop || !self.estop_latched {
                     // An edge reports its own latch; any other e-stop came
                     // through the host. Not verified until senders are
@@ -1020,6 +1023,79 @@ impl Authority {
         self.needed.retain(|(p, _), _| p != id);
         self.recompute_demands(events);
         self.barrier_gone(id, self.now_ns);
+    }
+
+    /// `id` leaves the roster with its parts, binding and leases (`code`).
+    fn detach(
+        &mut self,
+        id: &ParticipantId,
+        code: ReasonCode,
+        reason: DetachReason,
+        events: &mut Vec<AuthorityEvent>,
+    ) {
+        let why = self.reason(code, id, "");
+        self.end_leases_of(id, &why, events);
+        let owned: Vec<ChannelId> = self
+            .parts
+            .values()
+            .filter(|p| &p.owner == id)
+            .map(|p| p.channel)
+            .collect();
+        self.remove_parts(id, &owned, events);
+        self.contract.remove(id);
+        self.bindings.remove(id);
+        self.roster.remove(id);
+        self.seen.remove(id);
+        self.needed.retain(|(p, _), _| p != id);
+        self.recompute_demands(events);
+        events.push(AuthorityEvent::Detached {
+            participant: id.clone(),
+            reason,
+        });
+        self.settle_after_release(id, "holder detached", events);
+        self.barrier_gone(id, self.now_ns);
+    }
+
+    /// The owner changed `device`'s entry (design §4, §8.5, decision 17):
+    /// its participants that embody a robot keep attached and lose every
+    /// lease they hold; the others are detached, to re-attach under the new
+    /// entry. Both with `ACCESS_CHANGED`. Returns what it caused and who it
+    /// detached.
+    pub fn set_access(
+        &mut self,
+        device: &str,
+        access: DeviceAccess,
+        now_ns: i64,
+    ) -> (Vec<AuthorityEvent>, Vec<ParticipantId>) {
+        self.now_ns = now_ns;
+        self.config.access.set(device, access);
+        let mut events = Vec::new();
+        let mut detached = Vec::new();
+        let members: Vec<ParticipantId> = self
+            .roster
+            .values()
+            .filter(|p| p.device == device && p.present)
+            .map(|p| p.id.clone())
+            .collect();
+        for id in members {
+            if self.parts.values().any(|p| p.owner == id) {
+                let why = self.reason(ReasonCode::AccessChanged, &id, "");
+                self.end_leases_of(&id, &why, &mut events);
+                self.settle_after_release(&id, "its device's entry changed", &mut events);
+            } else {
+                self.detach(
+                    &id,
+                    ReasonCode::AccessChanged,
+                    DetachReason::AccessChanged,
+                    &mut events,
+                );
+                detached.push(id);
+            }
+        }
+        if !events.is_empty() {
+            self.revision += 1;
+        }
+        (events, detached)
     }
 
     /// A new process attached as `id` (a new generation, §8.3): the old one
@@ -1586,6 +1662,7 @@ impl Authority {
     fn grant(
         &mut self,
         from: &ParticipantId,
+        device: &str,
         epoch: Option<Epoch>,
         grant: &Grant,
         now_ns: i64,
@@ -1626,9 +1703,14 @@ impl Authority {
             }
         }
         for channel in &grant.channels {
-            if self.commandable(*channel).is_none() {
+            let Some(part) = self.commandable(*channel) else {
                 return Err(invalid(format!("{channel} is not a commandable part")));
-            }
+            };
+            // Before pre-emption and busy checks: a device pre-empts only
+            // with a class it is authorized for on that part.
+            self.config
+                .access
+                .check_lease(device, &part.owner, part.path.as_str(), priority)?;
         }
         let record = self.bindings.get(from).ok_or_else(|| {
             CtlError::new(

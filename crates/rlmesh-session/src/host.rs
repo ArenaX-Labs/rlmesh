@@ -66,15 +66,15 @@ use crate::wire::{
     SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec, TenantId,
 };
 use bytes::Bytes;
-use rlmesh_session_core::auth::issuer::{GrantId, GrantPart, GrantRequest, Prepared};
+use rlmesh_session_core::auth::issuer::{GrantId, GrantPart, GrantRequest, Prepared, StreamSlot};
 use rlmesh_session_core::auth::{
-    Admit, Credential, HostAuth, HostIdentity, Keyring, RequestWindow,
+    Admit, Credential, Device, HostAuth, HostIdentity, Keyring, LOCAL_DEVICE, RequestWindow,
 };
 use rlmesh_session_core::crypto::sealed::Header;
 use rlmesh_session_core::crypto::{
     Kind, Rng, RngError, SealReceiver, SealSender, SignedKind, SignedSender,
 };
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
@@ -84,7 +84,8 @@ use zenoh::query::Query;
 use zenoh::sample::SampleKind;
 
 use crate::authority::{
-    Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent, Identity, SealPolicy,
+    Access, Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent, DeviceAccess,
+    Identity, SealPolicy,
 };
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
 use crate::error::SessionError;
@@ -187,6 +188,10 @@ pub struct HostConfig {
     /// broadcasts with its Ed25519 key. Holders of its local secret (the
     /// address's key) attach as device `local`.
     pub identity: Arc<HostIdentity>,
+    /// The devices besides `local` it accepts, each with its entry (design
+    /// §4); none by default. Change an entry at runtime with
+    /// [`SessionHost::set_access`].
+    pub devices: Vec<Device>,
 }
 
 impl HostConfig {
@@ -218,6 +223,7 @@ impl HostConfig {
             history: HistoryConfig::default(),
             virtual_clock: None,
             seal: SealPolicy::None,
+            devices: Vec::new(),
         }
     }
 
@@ -234,6 +240,18 @@ impl HostConfig {
         }
         if self.virtual_clock.is_some_and(|v| v.tick_ns == 0) {
             return Err(SessionError::Config("tick_ns must be positive".into()));
+        }
+        for (i, device) in self.devices.iter().enumerate() {
+            if device.id == LOCAL_DEVICE
+                || self.devices[..i]
+                    .iter()
+                    .any(|d| d.id == device.id || d.public == device.public)
+            {
+                return Err(SessionError::Config(format!(
+                    "device {} is local or listed twice",
+                    device.id
+                )));
+            }
         }
         Ok(())
     }
@@ -254,6 +272,7 @@ impl std::fmt::Debug for HostConfig {
             .field("history", &self.history)
             .field("virtual_clock", &self.virtual_clock)
             .field("seal", &self.seal)
+            .field("devices", &self.devices)
             .finish_non_exhaustive()
     }
 }
@@ -266,9 +285,17 @@ pub struct SessionHost {
     snapshot: watch::Receiver<AuthoritySnapshot>,
     health: watch::Receiver<Vec<ParticipantHealth>>,
     events: broadcast::Sender<AuthorityEvent>,
+    access: mpsc::UnboundedSender<AccessChange>,
     cancel: CancellationToken,
     task: Option<JoinHandle<()>>,
 }
+
+/// A runtime change of one device's entry, and who is told it applied.
+type AccessChange = (
+    String,
+    DeviceAccess,
+    oneshot::Sender<Result<(), SessionError>>,
+);
 
 impl SessionHost {
     /// Declares the host's queryables, subscribers and liveliness token, and
@@ -277,6 +304,10 @@ impl SessionHost {
     pub async fn start(transport: Transport, config: HostConfig) -> Result<Self, SessionError> {
         config.validate()?;
         let keys = SessionKeys::new(&config.tenant, config.session);
+        let mut access = Access::default();
+        for device in &config.devices {
+            access.set(device.id.clone(), device.access.clone());
+        }
         let authority = Authority::new(
             config.session,
             AuthorityConfig {
@@ -286,6 +317,7 @@ impl SessionHost {
                 supports: config.supports.clone(),
                 virtual_clock: config.virtual_clock,
                 seal: config.seal.clone(),
+                access: access.clone(),
             },
         );
         let epoch = Arc::new(AtomicU64::new(authority.epoch().0));
@@ -295,12 +327,15 @@ impl SessionHost {
             .fill_bytes(&mut instance)
             .map_err(|err| SessionError::Config(err.to_string()))?;
         let host_instance = u64::from_le_bytes(instance);
-        let auth = HostAuth::new(
+        let mut auth = HostAuth::new(
             &config.identity,
             config.tenant.as_str(),
             &config.session.to_string(),
             host_instance,
         );
+        for device in &config.devices {
+            auth.enroll(device.public, device.id.clone());
+        }
         let signer = config.identity.signer(host_instance);
 
         let (hb_tx, hb_rx) = mpsc::channel(HEARTBEAT_QUEUE);
@@ -346,6 +381,7 @@ impl SessionHost {
             clock: Some(config.clock.clone()),
             rings: Arc::default(),
             peers: peers.clone(),
+            access: Arc::new(RwLock::new(access)),
         };
         let history = transport
             .session(TrafficClass::Data)
@@ -367,6 +403,7 @@ impl SessionHost {
         let (health_tx, health) = watch::channel(Vec::new());
         let (events, _) = broadcast::channel(256);
         let cancel = CancellationToken::new();
+        let (access_tx, access_rx) = mpsc::unbounded_channel();
 
         let identity = config.identity.clone();
         let mut actor = HostActor {
@@ -398,7 +435,7 @@ impl SessionHost {
             let cancel = cancel.clone();
             async move {
                 actor
-                    .run(cancel, hb_rx, (handshakes, ctl, state), presence)
+                    .run(cancel, hb_rx, access_rx, (handshakes, ctl, state), presence)
                     .await;
                 // Withdraw presence first, so participants stop talking to a
                 // host that no longer answers, then the rest.
@@ -416,9 +453,27 @@ impl SessionHost {
             snapshot,
             health,
             events,
+            access: access_tx,
             cancel,
             task: Some(task),
         })
+    }
+
+    /// Changes `device`'s entry at runtime (design §4, §8.5): its
+    /// participants that embody a robot lose every lease they hold, the
+    /// others are detached (`ACCESS_CHANGED`) and re-attach under the new
+    /// entry, and every stream key it can no longer read rotates.
+    ///
+    /// # Errors
+    /// [`SessionError::Config`] for a device the host doesn't know (or
+    /// `local`, which may do everything); [`SessionError::Closed`] once the
+    /// host stopped.
+    pub async fn set_access(&self, device: &str, access: DeviceAccess) -> Result<(), SessionError> {
+        let (done, applied) = oneshot::channel();
+        self.access
+            .send((device.to_string(), access, done))
+            .map_err(|_| SessionError::Closed)?;
+        applied.await.map_err(|_| SessionError::Closed)?
     }
 
     /// The session's keys.
@@ -758,6 +813,8 @@ struct HistoryStore {
     rings: Arc<RwLock<HashMap<StreamKey, Arc<Ring>>>>,
     /// Requesters' keys: a query is sealed under its sender's `k_up`.
     peers: SharedPeers,
+    /// Who may read what: the authority's, kept in step by the host.
+    access: Arc<RwLock<Access>>,
 }
 
 impl HistoryStore {
@@ -773,7 +830,7 @@ impl HistoryStore {
             .rings
             .read()
             .ok()
-            .and_then(|r| r.get(&(robot, path.to_string())).cloned());
+            .and_then(|r| r.get(&(robot.clone(), path.to_string())).cloned());
         let Some(ring) = ring else {
             return;
         };
@@ -793,8 +850,16 @@ impl HistoryStore {
             debug!(%key, "a history query not sealed by a member refused");
             return;
         };
-        // TODO: every member may read every stream until per-device read
-        // permission lands (step 8); check it here, before producing anything.
+        // Read permission, before producing anything.
+        let reads = self
+            .access
+            .read()
+            .is_ok_and(|a| a.may_read(&peer.identity.device, &robot, path));
+        if !reads {
+            let device = &peer.identity.device;
+            debug!(%key, %device, "a history query without read permission refused");
+            return;
+        }
         let request = match lock(&peer.up).open(key, &mut raw) {
             Ok(opened) if opened.header.kind == Kind::HistoryQuery => {
                 codec::decode_history_query(opened.body)
@@ -940,6 +1005,7 @@ impl HostActor {
         &mut self,
         cancel: CancellationToken,
         mut heartbeats: mpsc::Receiver<(ParticipantId, crate::wire::Heartbeat, i64)>,
+        mut access: mpsc::UnboundedReceiver<AccessChange>,
         (handshakes, ctl, state): (Queries, Queries, Queries),
         presence: zenoh::pubsub::Subscriber<Fifo<zenoh::sample::Sample>>,
     ) {
@@ -974,6 +1040,9 @@ impl HostActor {
                 },
                 Some((id, heartbeat, t2)) = heartbeats.recv() => {
                     self.on_heartbeat(id, heartbeat, t2);
+                }
+                Some((device, entry, done)) = access.recv() => {
+                    let _ = done.send(self.set_access(&device, entry).await);
                 }
                 sample = presence.recv_async() => match sample {
                     Ok(sample) => self.on_presence(&sample),
@@ -1104,8 +1173,12 @@ impl HostActor {
                     .map_err(|err| CtlError::new(CtlStatus::InvalidRequest, err))
             })
             .and_then(|request| {
-                self.auth
-                    .handshake(&mut OsRng, &self.config.identity, &request)
+                self.auth.handshake(
+                    &mut OsRng,
+                    &self.config.identity,
+                    &request,
+                    &self.authority.config().access,
+                )
             });
         let reply = match answer {
             Ok((msg2, candidate)) => {
@@ -1289,7 +1362,11 @@ impl HostActor {
                     .ack(&peer.participant, generation, ack, now);
             }
             Command::GetKeys => {
-                let keys = self.auth.issuer().get_keys(&peer.participant, generation);
+                let keys = self.auth.issuer().get_keys(
+                    &peer.participant,
+                    generation,
+                    &self.authority.config().access,
+                );
                 return Outcome::Reply(Ok(()), Vec::new(), keys);
             }
             Command::GrantLease { .. } | Command::DeclareBinding { .. } => {
@@ -1360,6 +1437,18 @@ impl HostActor {
                 robots.push((part.robot.clone(), generation));
             }
         }
+        let access = &self.authority.config().access;
+        let reads_all = robots
+            .iter()
+            .map(|(robot, _)| robot)
+            .filter(|robot| {
+                self.authority
+                    .parts()
+                    .filter(|p| &p.owner == *robot)
+                    .all(|p| access.may_read(&peer.identity.device, robot, p.path.as_str()))
+            })
+            .cloned()
+            .collect();
         let grant = GrantRequest {
             holder: peer.participant.clone(),
             holder_generation: peer.identity.generation,
@@ -1367,6 +1456,7 @@ impl HostActor {
             class: minted[0].priority,
             token,
             parts,
+            reads_all,
         };
         match self.auth.issuer().prepare_grant(&mut OsRng, grant, now) {
             Ok(Prepared { id, evicted }) => {
@@ -1506,23 +1596,26 @@ impl HostActor {
 
     /// Keeps one stream key slot per declared part (§8.4).
     fn sync_streams(&mut self) {
-        let streams: Vec<(ParticipantId, Vec<ChannelId>, crate::wire::Security)> = self
+        let streams: Vec<StreamSlot> = self
             .authority
             .parts()
-            .map(|part| {
-                let channels = [Some(part.channel), part.applied_channel]
+            .map(|part| StreamSlot {
+                robot: part.owner.clone(),
+                path: part.path.to_string(),
+                channels: [Some(part.channel), part.applied_channel]
                     .into_iter()
                     .flatten()
-                    .collect();
-                (
-                    part.owner.clone(),
-                    channels,
-                    self.authority.security(part.channel),
-                )
+                    .collect(),
+                security: self.authority.security(part.channel),
             })
             .collect();
         let now = self.now();
-        if let Err(err) = self.auth.issuer().sync_streams(&mut OsRng, &streams, now) {
+        let access = &self.authority.config().access;
+        if let Err(err) = self
+            .auth
+            .issuer()
+            .sync_streams(&mut OsRng, &streams, access, now)
+        {
             warn!(%err, "stream keys");
         }
     }
@@ -1585,6 +1678,27 @@ impl HostActor {
         }
     }
 
+    /// Changes `device`'s entry: see [`SessionHost::set_access`].
+    async fn set_access(&mut self, device: &str, entry: DeviceAccess) -> Result<(), SessionError> {
+        if self.authority.config().access.get(device).is_none() {
+            return Err(SessionError::Config(format!(
+                "device {device} has no entry on this host"
+            )));
+        }
+        let (events, detached) = self.authority.set_access(device, entry, self.now());
+        info!(%device, ?detached, "device entry changed");
+        let access = self.authority.config().access.clone();
+        if let Ok(mut shared) = self.store.access.write() {
+            *shared = access.clone();
+        }
+        self.record(events).await;
+        let now = self.now();
+        if let Err(err) = self.auth.issuer().reauthorize(&mut OsRng, &access, now) {
+            warn!(%err, "stream keys");
+        }
+        Ok(())
+    }
+
     /// `peer`'s `Attach` was accepted: it is the generation in effect, and
     /// every older one of its participant is dropped. It gets the stream
     /// keys it reads, and a robot's streams rotate to it.
@@ -1593,11 +1707,14 @@ impl HostActor {
         self.auth
             .take_effect(&peer.participant, device, *generation);
         let now = self.now();
-        match self
-            .auth
-            .issuer()
-            .attach(&mut OsRng, &peer.participant, *generation, now)
-        {
+        match self.auth.issuer().attach(
+            &mut OsRng,
+            &peer.participant,
+            *generation,
+            device,
+            &self.authority.config().access,
+            now,
+        ) {
             Ok(failed) => self.failed.extend(failed),
             Err(err) => warn!(participant = %peer.participant, %err, "keys"),
         }
