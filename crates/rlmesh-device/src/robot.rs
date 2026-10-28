@@ -39,8 +39,9 @@ use rlmesh_session_core::wire::{
 pub const QUERY_MS: u32 = 2000;
 /// The pause before starting over after a failure.
 pub const RETRY_MS: u32 = 1000;
-/// With no heartbeat echo for this long, the host counts as lost.
-pub const HOST_LOST_MS: u32 = 3000;
+/// With no heartbeat echo and no valid signed state for this long, the host
+/// counts as lost (scene design §3.5).
+pub const HOST_LOST_MS: u32 = 5000;
 /// `ctl` requests are resent (same id) this many times before they fail.
 const CTL_TRIES: u8 = 3;
 /// How often a robot missing keys asks for them again (`GetKeys`).
@@ -161,7 +162,7 @@ pub enum Fault {
     Handshake,
     /// The host refused a request.
     Refused(CtlStatus, String),
-    /// No heartbeat echo for [`HOST_LOST_MS`].
+    /// No heartbeat echo and no signed state for [`HOST_LOST_MS`].
     HostLost,
     /// A message failed to seal or decode (a bug, or the RNG failed), or
     /// the host's parts don't match the map.
@@ -237,7 +238,7 @@ pub struct Robot {
     fault: Option<Fault>,
     retry_at: u64,
     next_heartbeat: u64,
-    last_echo: u64,
+    last_heard: u64,
     echoes: u64,
     heartbeat_seq: u64,
     previous: Option<TimingSample>,
@@ -318,7 +319,7 @@ impl Robot {
             fault: None,
             retry_at: 0,
             next_heartbeat: 0,
-            last_echo: 0,
+            last_heard: 0,
             echoes: 0,
             heartbeat_seq: 0,
             previous: None,
@@ -449,9 +450,9 @@ impl Robot {
         }
         match self.phase {
             Phase::Retry if now_us >= self.retry_at => self.ask_host(),
-            // No echo for HOST_LOST_MS: the host is gone, or restarted
-            // under a new instance. Join again.
-            Phase::Running if now_us >= self.last_echo + u64::from(HOST_LOST_MS) * 1000 => {
+            // Nothing from the host for HOST_LOST_MS: it is gone, or
+            // restarted under a new instance. Join again.
+            Phase::Running if now_us >= self.last_heard + u64::from(HOST_LOST_MS) * 1000 => {
                 self.fail(Fault::HostLost, now_us);
             }
             Phase::Running if now_us >= self.next_heartbeat => self.heartbeat(now_us),
@@ -537,6 +538,7 @@ impl Robot {
         match sub {
             SUB_STATE => {
                 if let Ok(snapshot) = link.state(&self.keys.host_state(), payload) {
+                    self.last_heard = now_us;
                     link.observe(&snapshot, now);
                     self.observe(snapshot, now);
                 }
@@ -550,7 +552,7 @@ impl Robot {
                 let key = self.keys.heartbeat_echo(&self.config.name);
                 if let Ok(echo) = link.echo(&key, payload) {
                     self.previous = Some(echo.complete(now));
-                    self.last_echo = now_us;
+                    self.last_heard = now_us;
                     self.echoes += 1;
                 }
             }
@@ -951,7 +953,7 @@ impl Robot {
                 self.phase = Phase::Running;
                 self.fault = None;
                 self.next_heartbeat = now_us;
-                self.last_echo = now_us;
+                self.last_heard = now_us;
             }
             _ => {}
         }
