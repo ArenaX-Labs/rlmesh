@@ -19,12 +19,12 @@ import urllib.request
 from collections.abc import Iterator, Mapping
 from typing import Any
 
-__all__ = ["Client", "PlatformError", "scenario_tasks"]
+__all__ = ["Client", "ManagedError", "scenario_tasks"]
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
-class PlatformError(RuntimeError):
+class ManagedError(RuntimeError):
     """An HTTP error from the platform, with the server's message."""
 
     def __init__(self, status: int, message: str) -> None:
@@ -182,7 +182,7 @@ class Client:
                 return self._request(
                     method, path, query=query, body=body, retry_auth=False
                 )
-            raise PlatformError(error.code, _error_message(error.read())) from None
+            raise ManagedError(error.code, _error_message(error.read())) from None
         return json.loads(raw) if raw else None
 
     def _refresh_from_cli(self) -> bool:

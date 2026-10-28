@@ -5,8 +5,8 @@
 //! concurrent commands (a parallel `docker push`, a script looping over
 //! `rlmesh token`) rotate the session once instead of racing each other.
 
-use crate::auth::{discover_sign_in_endpoints, exchange_refresh_token};
-use crate::config::{Credentials, ProfileStore, ResolvedProfile, ensure_private_dir};
+use super::sign_in::{discover_sign_in_endpoints, exchange_refresh_token};
+use super::store::{Credentials, ProfileStore, ResolvedProfile, ensure_private_dir};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// A token this close to expiry is refreshed ahead of time so a request
 /// started now does not land on the server after it lapses.
-pub(crate) const REFRESH_LEEWAY: Duration = Duration::from_secs(60);
+const REFRESH_LEEWAY: Duration = Duration::from_secs(60);
 // The lock guards exactly one request (the token exchange), which the HTTP
 // client bounds at 10s connect + 30s total. The stale window must exceed
 // that worst case, and a waiter must outlast the window so it can reclaim
@@ -27,18 +27,18 @@ const LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
 const LOCK_WAIT: Duration = Duration::from_secs(90);
 const LOCK_POLL: Duration = Duration::from_millis(100);
 
-/// The one claim the CLI reads from an access token: the standard `exp`.
+/// The one claim the client reads from an access token: the standard `exp`.
 /// The payload is decoded without verifying the signature; the platform
-/// validates tokens, the CLI only schedules refreshes. Everything else
+/// validates tokens, the client only schedules refreshes. Everything else
 /// about a session (the active organization included) comes from /v1/me,
-/// so no provider-specific claim name ever leaks into the CLI.
+/// so no provider-specific claim name ever leaks into the client.
 #[derive(Deserialize, Default)]
-pub(crate) struct Claims {
+struct Claims {
     #[serde(default)]
-    pub exp: Option<u64>,
+    exp: Option<u64>,
 }
 
-pub(crate) fn decode_claims(jwt: &str) -> Option<Claims> {
+fn decode_claims(jwt: &str) -> Option<Claims> {
     let payload = jwt.split('.').nth(1)?.trim_end_matches('=');
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
@@ -46,43 +46,23 @@ pub(crate) fn decode_claims(jwt: &str) -> Option<Claims> {
     serde_json::from_slice(&bytes).ok()
 }
 
-pub(crate) fn access_token_expires_at(jwt: &str) -> Option<SystemTime> {
+fn access_token_expires_at(jwt: &str) -> Option<SystemTime> {
     let exp = decode_claims(jwt)?.exp?;
     // An absurd exp from a hostile or buggy endpoint is "unknown", not a panic.
     UNIX_EPOCH.checked_add(Duration::from_secs(exp))
 }
 
 /// False when the expiry is unknown (an opaque token): those are refreshed
-/// on every use, which is what the CLI did before it read `exp` at all.
-pub(crate) fn is_fresh_at(jwt: &str, now: SystemTime) -> bool {
+/// on every use, as the CLI did before it read `exp` at all.
+fn is_fresh_at(jwt: &str, now: SystemTime) -> bool {
     access_token_expires_at(jwt).is_some_and(|expires_at| expires_at > now + REFRESH_LEEWAY)
 }
 
-/// RFC 3339 in UTC with second precision, e.g. `2026-09-22T14:03:00Z`.
-pub(crate) fn rfc3339_utc(time: SystemTime) -> String {
-    let secs = time
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    let (days, rem) = (secs / 86_400, secs % 86_400);
-    let (hour, minute, second) = (rem / 3_600, rem % 3_600 / 60, rem % 60);
-
-    // Civil date from days since the epoch (proleptic Gregorian).
-    let z = i64::try_from(days).unwrap_or(i64::MAX / 2) + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
 /// A usable access token for the profile plus when it stops being one.
-pub(crate) struct Session {
+pub struct Session {
+    /// The profile's current tokens.
     pub credentials: Credentials,
+    /// When the access token lapses; `None` for an opaque token.
     pub expires_at: Option<SystemTime>,
 }
 
@@ -95,15 +75,18 @@ impl Session {
     }
 }
 
+/// Whether [`ensure_fresh_session`] may reuse a fresh stored token.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Refresh {
+pub enum Refresh {
     /// Reuse the stored access token while it is fresh.
     IfStale,
     /// Exchange the refresh token regardless (the stored token was rejected).
     Force,
 }
 
-pub(crate) async fn ensure_fresh_session(
+/// The profile's session with an access token fresh for at least the next
+/// minute, refreshing it (once, under the profile's lock) when needed.
+pub async fn ensure_fresh_session(
     client: &reqwest::Client,
     profiles: &mut ProfileStore,
     profile: &ResolvedProfile,
@@ -114,7 +97,7 @@ pub(crate) async fn ensure_fresh_session(
 
 /// Re-issues the session against another organization the account belongs
 /// to, using the platform's `organization_id` refresh-grant extension.
-pub(crate) async fn switch_organization(
+pub async fn switch_organization(
     client: &reqwest::Client,
     profiles: &mut ProfileStore,
     profile: &ResolvedProfile,
@@ -288,19 +271,6 @@ mod tests {
         // An exp beyond what SystemTime can hold is unknown, never a panic.
         assert!(access_token_expires_at(&jwt(r#"{"exp":18446744073709551615}"#)).is_none());
         assert!(!is_fresh_at(&jwt(r#"{"exp":18446744073709551615}"#), now));
-    }
-
-    #[test]
-    fn formats_rfc3339_utc() {
-        assert_eq!(rfc3339_utc(UNIX_EPOCH), "1970-01-01T00:00:00Z");
-        assert_eq!(
-            rfc3339_utc(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
-            "2023-11-14T22:13:20Z"
-        );
-        assert_eq!(
-            rfc3339_utc(UNIX_EPOCH + Duration::from_secs(951_782_400)),
-            "2000-02-29T00:00:00Z"
-        );
     }
 
     #[tokio::test]

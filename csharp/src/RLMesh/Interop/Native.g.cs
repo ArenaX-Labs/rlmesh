@@ -378,7 +378,7 @@ namespace RLMesh.Interop
     {
         public RLMeshBoundType type_;
 
-        [NativeTypeName("__AnonymousRecord_rlmesh_L855_C3")]
+        [NativeTypeName("__AnonymousRecord_rlmesh_L856_C3")]
         public _value_e__Union value;
 
         [StructLayout(LayoutKind.Explicit)]

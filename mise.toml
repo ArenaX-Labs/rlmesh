@@ -622,6 +622,8 @@ description = "Check the reviewed Stable Python to Rust/C/C++ parity manifest"
 run = [
   "uv run pytest tools/rlmesh_api_surface/tests -q",
   "uv run python -m rlmesh_api_surface.parity",
+  # Manifest defaults against live Python; needs no built fixtures, unlike the rest of tests/parity.
+  "uv run pytest tests/parity/test_defaults_generator.py -q",
 ]
 
 [tasks."csharp:interop:generate"]

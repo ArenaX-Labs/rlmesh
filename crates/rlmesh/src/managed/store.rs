@@ -1,5 +1,15 @@
-use crate::helpers::normalize_base_url;
-use crate::settings::Settings;
+//! The CLI's profile store: `config.toml` (profiles, the default, each
+//! profile's platform and cached identity) and the credentials, kept in the
+//! OS keychain or, without one, in an owner-only `credentials.json`.
+//!
+//! Hidden binding plumbing (R-25): the CLI drives it, `Client` reads it.
+
+// The CLI's config and credential records; `docs/reference/cli.md` documents
+// the files they serialize to.
+#![allow(missing_docs)]
+
+use super::http::normalize_base_url;
+use super::settings::Settings;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -11,7 +21,7 @@ use std::{
 };
 
 const APP_NAME: &str = "rlmesh";
-const DEFAULT_PLATFORM_URL: &str = "https://api.rlmesh.dev";
+pub(crate) const DEFAULT_PLATFORM_URL: &str = "https://api.rlmesh.dev";
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Profile {
@@ -178,6 +188,8 @@ impl ResolvedProfile {
     }
 }
 
+/// The profiles and their credentials, loaded once per process.
+#[derive(Clone)]
 pub struct ProfileStore {
     config: Config,
     config_path: PathBuf,
@@ -384,7 +396,8 @@ impl ProfileStore {
     }
 }
 
-pub struct CredentialsStore {
+#[derive(Clone)]
+struct CredentialsStore {
     file: PathBuf,
     keychain: bool,
     cached_credentials: BTreeMap<String, Credentials>,

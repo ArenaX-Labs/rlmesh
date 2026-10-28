@@ -215,6 +215,50 @@ pub mod doctor {
     pub use crate::doctor::*;
 }
 
+/// The managed platform's profile store, session refresh and sign-in
+/// discovery behind [`crate::managed::Client`], for the CLI that signs in,
+/// lists and edits profiles (R-25). One store serves both, so `rlmesh login`
+/// signs in the library too.
+#[cfg(feature = "managed")]
+pub mod managed {
+    pub use crate::managed::http::{expect_json, get_json, http_client, require_trusted_endpoint};
+    pub use crate::managed::session::{
+        Refresh, Session, ensure_fresh_session, switch_organization,
+    };
+    pub use crate::managed::settings::Settings;
+    pub use crate::managed::sign_in::{
+        SignInEndpoints, TokenDenial, TokenResponse, fetch_auth_config,
+    };
+    pub use crate::managed::store::{
+        Config, CredentialStatus, CredentialStorage, Credentials, Identity, Profile, ProfileStore,
+        ResolvedProfile,
+    };
+
+    use crate::managed::{Client, Result};
+    use std::time::SystemTime;
+
+    /// A client for the CLI: the store's `RLMESH_API_KEY` first, then the
+    /// named (or default) profile's session.
+    pub async fn connect(store: ProfileStore, profile: Option<&str>) -> Result<Client> {
+        Client::from_store(store, profile).await
+    }
+
+    /// A client on `profile`'s session, whatever `RLMESH_API_KEY` says.
+    pub async fn connect_profile(store: ProfileStore, profile: ResolvedProfile) -> Result<Client> {
+        Client::signed_in(store, profile).await
+    }
+
+    /// The bearer credential the client sends.
+    pub fn access_token(client: &Client) -> &str {
+        client.access_token()
+    }
+
+    /// When that credential lapses; `None` for an API key or an opaque token.
+    pub fn expires_at(client: &Client) -> Option<SystemTime> {
+        client.expires_at()
+    }
+}
+
 /// The runtime driver itself, for in-repo tests and the managed runner.
 #[doc(hidden)]
 pub use crate::run::runtime;

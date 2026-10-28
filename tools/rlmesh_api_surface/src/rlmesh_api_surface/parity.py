@@ -937,6 +937,8 @@ def check(
                         and (
                             target.startswith("rlmesh::binding::")
                             or target.startswith("rlmesh::serve_options::BatchOptions")
+                            # The Experimental managed-platform client.
+                            or target.startswith("rlmesh::managed::")
                             or target
                             in {
                                 "rlmesh::BatchOptions",

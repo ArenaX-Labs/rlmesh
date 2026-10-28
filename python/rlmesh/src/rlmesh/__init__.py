@@ -22,8 +22,8 @@ if _TYPE_CHECKING:
 
 from . import _rlmesh as _rlmesh
 from . import adapters as adapters
+from . import managed as managed
 from . import params as params
-from . import platform as platform
 from . import spaces as spaces
 from . import specs as specs
 from . import types as types

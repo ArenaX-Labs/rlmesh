@@ -1,12 +1,14 @@
-//! Process-level settings the CLI reads once at startup: where its files
-//! live, whether the OS keychain is used, and an API key that bypasses
-//! profiles altogether.
+//! Process-level settings the CLI and [`Client`](super::Client) read once:
+//! where the profile files live, whether the OS keychain is used, and an API
+//! key that bypasses profiles altogether.
 
-use crate::helpers::normalize_base_url;
+use super::http::normalize_base_url;
 
 use std::fmt;
 use std::path::PathBuf;
 
+/// Where the profile store lives and which credential bypasses it, read from
+/// the `RLMESH_*` environment by [`Settings::from_env`].
 #[derive(Clone)]
 pub struct Settings {
     /// Overrides the config directory (`RLMESH_CONFIG_DIR`).
@@ -48,6 +50,8 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Reads `RLMESH_CONFIG_DIR`, `RLMESH_DATA_DIR`, `RLMESH_KEYCHAIN`,
+    /// `RLMESH_API_KEY` and `RLMESH_PLATFORM_URL`; blank values are unset.
     pub fn from_env() -> Self {
         let var = |name: &str| {
             std::env::var(name)
@@ -77,6 +81,7 @@ impl Settings {
         }
     }
 
+    /// The same settings with `api_key` (and its platform) set.
     pub fn with_api_key(mut self, api_key: &str, platform_url: Option<&str>) -> Self {
         self.api_key = Some(api_key.to_owned());
         self.platform_url = platform_url.map(normalize_base_url);

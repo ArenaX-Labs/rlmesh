@@ -21,8 +21,15 @@ publish = { workspace = true }
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
+# The managed-platform client (feature `managed`).
+anyhow = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
+keyring = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["form", "json", "query"], optional = true }
+rustls = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 async-trait = { workspace = true }
-# The `lockstep` module (feature `lockstep`).
+# The `lockstep` module (feature `lockstep`) and token claims (`managed`).
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 bytes = { workspace = true }
@@ -75,7 +82,17 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [features]
-default = ["viewer"]
+default = ["managed", "viewer"]
+# The managed-platform client (`managed`), sharing the CLI's profiles.
+managed = [
+  "dep:anyhow",
+  "dep:base64",
+  "dep:dirs",
+  "dep:keyring",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:toml",
+]
 # The live terminal/HTTP viewer behind `View`.
 viewer = ["dep:crossterm", "dep:tiny_http", "image/jpeg"]
 # Serve envs and drive models over the v2 lockstep path (`lockstep://`).

@@ -74,8 +74,6 @@ def run_trace(args: argparse.Namespace) -> int:
             )
             if terminated or truncated:
                 break
-        if session is None:
-            remote.shutdown(f"fixture trace {args.scenario} complete")
     finally:
         if session is not None:
             session.close()

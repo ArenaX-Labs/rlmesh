@@ -34,7 +34,9 @@ cli = ["dep:rlmesh-cli"]
 stub-gen = ["dep:pyo3-stub-gen"]
 
 [dependencies]
-rlmesh = { workspace = true, features = ["lockstep"] }
+# No `managed`: the package has its own platform client (`rlmesh.managed`);
+# the bundled CLI (feature `cli`) brings it in for itself.
+rlmesh = { workspace = true, default-features = false, features = ["lockstep", "viewer"] }
 rlmesh-adapters = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }

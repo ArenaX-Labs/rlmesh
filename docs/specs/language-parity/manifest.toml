@@ -185,11 +185,12 @@ status = "bridge"
 ["rlmesh:BatchOptions"]
 area = "model"
 rule = ["R-4"]
-parameters = { "max_batch_size" = { "default" = "32" }, "batch_window_ms" = { "default" = "5" }, "batch_byte_budget" = { "default" = "268431360", "expression" = "256 * 1024 * 1024 - 4 * 1024" }, "max_in_flight_batches" = { "default" = "2" }, "batch_records" = { "default" = "None" } }
+parameters = { "max_batch_size" = { "default" = "None" }, "batch_window_ms" = { "default" = "None" }, "batch_byte_budget" = { "default" = "None" }, "max_in_flight_batches" = { "default" = "None" }, "batch_records" = { "default" = "None" } }
 
 ["rlmesh:BatchOptions".rust]
 status = "present"
 path = "rlmesh::serve_options::BatchOptions"
+default_skip = { "max_batch_size" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only.", "batch_window_ms" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only.", "batch_byte_budget" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only.", "max_in_flight_batches" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only." }
 params = { "max_batch_size" = "rlmesh::serve_options::BatchOptions#max_batch_size", "batch_window_ms" = "rlmesh::serve_options::BatchOptions#batch_window_ms", "batch_byte_budget" = "rlmesh::serve_options::BatchOptions#batch_byte_budget", "max_in_flight_batches" = "rlmesh::serve_options::BatchOptions#max_in_flight_batches", "batch_records" = "rlmesh::serve_options::BatchOptions#batch_records" }
 also = [
   "rlmesh::BatchOptions",
@@ -20403,6 +20404,49 @@ rust = [
   { path = "rlmesh::RunHooks::transform_action", rule = "R-25" },
   { path = "rlmesh::RunHooks::transform_observation", rule = "R-25" },
   { path = "rlmesh::recorder::RecorderCaptureOptions::record", rule = "R-25" },
+  { path = "rlmesh::managed::Client", rule = "R-25" },
+  { path = "rlmesh::managed::Client::cancel", rule = "R-25" },
+  { path = "rlmesh::managed::Client::connect", rule = "R-25" },
+  { path = "rlmesh::managed::Client::evaluation", rule = "R-25" },
+  { path = "rlmesh::managed::Client::evaluations", rule = "R-25" },
+  { path = "rlmesh::managed::Client::get", rule = "R-25" },
+  { path = "rlmesh::managed::Client::metrics", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::Clone", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::Debug", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::Default", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::profile", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::token", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::url", rule = "R-25" },
+  { path = "rlmesh::managed::Client::patch", rule = "R-25" },
+  { path = "rlmesh::managed::Client::post", rule = "R-25" },
+  { path = "rlmesh::managed::Client::preview", rule = "R-25" },
+  { path = "rlmesh::managed::Client::scores", rule = "R-25" },
+  { path = "rlmesh::managed::Client::submit", rule = "R-25" },
+  { path = "rlmesh::managed::Client::url", rule = "R-25" },
+  { path = "rlmesh::managed::Client::wait", rule = "R-25" },
+  { path = "rlmesh::managed::Error", rule = "R-25" },
+  { path = "rlmesh::managed::Error::Debug", rule = "R-25" },
+  { path = "rlmesh::managed::Error::Display", rule = "R-25" },
+  { path = "rlmesh::managed::Error::Error", rule = "R-25" },
+  { path = "rlmesh::managed::Error::message", rule = "R-25" },
+  { path = "rlmesh::managed::Error::status", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::Clone", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::Debug", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::Default", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::limit", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::q", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::status", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::tags", rule = "R-25" },
+  { path = "rlmesh::managed::Result", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::Clone", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::Debug", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::Default", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::poll", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::progress", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::timeout", rule = "R-25" },
 ]
 c = [
   { path = "RLMESH_HOST_RUNTIME_JSON", rule = "ENV-12" },
