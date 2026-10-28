@@ -82,9 +82,11 @@ jobs:
         timeout-minutes: 5
         run: mise run --skip-tools test:csharp:package
 
-      # Verify the distributable source, not just the workspace checkout.
-      # Keep this in the required job so package failures cannot pass the gate.
+      # Verify the distributable source, not just the workspace checkout. It
+      # recompiles every published crate (up to 3 minutes), so pull requests
+      # skip it: pushes to main run it, and the release workflow before it publishes.
       - name: Rust package verification
+        if: github.event_name != 'pull_request'
         run: mise run --skip-tools release:rust:package
 
       - name: C/C++ package verification (pkg-config + CMake find_package)
@@ -93,12 +95,9 @@ jobs:
           CXX: clang++
         run: mise run --skip-tools test:cxx:pkg
 
-      # `test` runs the C/C++ bindings under zig (clang, libc++). Pull requests re-run
-      # them under gcc (libstdc++), the most different toolchain; pushes to main and
-      # manual runs add real clang too.
-      - name: C/C++ bindings under gcc
-        run: CC=gcc CXX=g++ mise run --skip-tools test:cxx
-
+      # `test` runs the C/C++ bindings under zig (clang, libc++) and the C++ ones
+      # under gcc (libstdc++) too, the most different toolchain; pushes to main and
+      # manual runs add real clang.
       - name: C/C++ bindings under clang
         if: github.event_name != 'pull_request'
         run: CC=clang CXX=clang++ mise run --skip-tools test:cxx
