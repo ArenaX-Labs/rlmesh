@@ -48,13 +48,16 @@ exports any C name but its own, or if the linked `memcpy` runs from flash.
 
 ## Joining a session
 
-On the computer, run a host on its LAN address. Until `rlmesh host` takes a
-board's links (zenoh-pico can't present its loopback link gate), use the
-device crate's test host:
+On the computer, run a host on its LAN address:
 
 ```sh
-cargo run -p rlmesh-device --example test_host -- 192.168.1.20
+rlmesh host --insecure --listen 192.168.1.20:7447
 ```
+
+`--insecure` lets anyone who can reach those ports try the host; the
+handshake and sealing still decide who joins. A host on a LAN address takes
+the board's plain TCP links (a loopback host gates its links with a key
+zenoh-pico can't present).
 
 It prints the session's address with its key (`192.168.1.20:7447#…`). Put
 that, your Wi-Fi and the robot's map in `examples/Robot`, flash it, and
