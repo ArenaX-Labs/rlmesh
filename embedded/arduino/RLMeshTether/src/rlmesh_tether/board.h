@@ -38,6 +38,8 @@ const uint16_t kStatusMaxMs = 100;
 const uint8_t kNotesPerSecond = 2;
 // The link watchdog's default (§6.2).
 const uint16_t kDefaultWatchdogMs = 250;
+// The most frames one poll() acts on, so a flood can't hold it.
+const uint8_t kFramesPerPoll = 8;
 
 // One part, as the generator describes it.
 struct PartSpec {
@@ -116,43 +118,41 @@ class Board {
       onSafe_(ctx_, p, spec_.parts[p].safe, slots_[p].mode == PartMode::Estop);
     }
     // An active input is a latch, whatever was stored.
-    if (input_ && !latched_) {
-      latched_ = true;
-      hal_.latchStore();
-    }
+    bool store = input_ && !latched_;
+    latched_ = latched_ || input_;
     started_ = true;
+    // The `HELLO`'s flag reports the latch before it's stored, as `STATUS`
+    // would once attached.
     sendHello(hal_.millis());
+    if (store) hal_.latchStore();
   }
 
   // Runs the board: call it from `loop()` at least every couple of
   // milliseconds. Arms the hardware watchdog on the first call.
+  //
+  // From inside a callback it does nothing, not even feed the watchdog: a
+  // frame acted on there could safe a part the outer callback then drives.
+  // A callback that waits in `tether.delay()` past the hardware watchdog
+  // resets the board.
   void poll() {
-    if (!started_) return;
+    if (!started_ || polling_) return;
+    polling_ = true;
     if (!armed_) {
       hal_.watchdogArm();
       armed_ = true;
     }
     hal_.watchdogFeed();
-    // Timers first: a sketch that stalled past a permit or the link
-    // watchdog stops before anything buffered meanwhile is acted on.
+    // Timers before each frame: a sketch that stalled past a permit or the
+    // link watchdog stops before anything buffered meanwhile is acted on,
+    // and a stream of frames can't hold a permit or the pin unchecked.
+    for (uint8_t frames = 0; frames < kFramesPerPoll; ++frames) {
+      timers(hal_.millis());
+      if (!receiveFrame()) break;
+    }
     uint32_t now = hal_.millis();
-    sampleEstop(now);
-    if (attached_ && reached(now, lastValid_ + watchdogMs_)) {
-      safeAll(PartMode::Safe);
-      attached_ = false;
-      sendHello(now);
-    }
-    for (uint8_t p = 0; p < spec_.partCount; ++p) {
-      if (slots_[p].mode == PartMode::Driving && reached(now, slots_[p].until)) {
-        enterSafe(p, PartMode::Safe);
-      }
-    }
-    for (int b = hal_.read(); b >= 0; b = hal_.read()) {
-      receive(static_cast<uint8_t>(b));
-    }
-    now = hal_.millis();
     if (!attached_ && reached(now, nextHello_)) sendHello(now);
     if ((attached_ || latched_) && reached(now, nextStatus_)) sendStatus(now);
+    polling_ = false;
   }
 
   // Sends `part`'s dense sample, timestamped now. Only while attached, and
@@ -171,7 +171,7 @@ class Board {
     if (!started_) return false;
     uint32_t now = hal_.millis();
     // The older of the last two notes must be a second old.
-    if (notes_ >= kNotesPerSecond && !reached(now, noteAt_[0] + 1000)) return false;
+    if (notes_ >= kNotesPerSecond && now - noteAt_[0] < 1000) return false;
     if (notes_ < kNotesPerSecond) ++notes_;
     noteAt_[0] = noteAt_[1];
     noteAt_[1] = now;
@@ -200,17 +200,40 @@ class Board {
     if (counter != 0xFFFF) ++counter;
   }
 
-  void receive(uint8_t byte) {
-    switch (rx_.push(byte)) {
-      case CobsResult::None:
-        return;
-      case CobsResult::Overflow:
-      case CobsResult::Truncated:
-        bump(bad_);
-        return;
-      case CobsResult::Frame:
-        break;
+  void timers(uint32_t now) {
+    sampleEstop(now);
+    if (attached_ && reached(now, lastValid_ + watchdogMs_)) {
+      safeAll(PartMode::Safe);
+      attached_ = false;
+      sendHello(now);
     }
+    for (uint8_t p = 0; p < spec_.partCount; ++p) {
+      if (slots_[p].mode == PartMode::Driving && reached(now, slots_[p].until)) {
+        enterSafe(p, PartMode::Safe);
+      }
+    }
+  }
+
+  // Reads up to the end of one frame, valid or not, and acts on it. False
+  // when the input ran dry first.
+  bool receiveFrame() {
+    for (int b = hal_.read(); b >= 0; b = hal_.read()) {
+      switch (rx_.push(static_cast<uint8_t>(b))) {
+        case CobsResult::None:
+          continue;
+        case CobsResult::Overflow:
+        case CobsResult::Truncated:
+          bump(bad_);
+          return true;
+        case CobsResult::Frame:
+          receive();
+          return true;
+      }
+    }
+    return false;
+  }
+
+  void receive() {
     Frame f;
     Msg m;
     DenseLen lens = {&Board::commandLen, &spec_};
@@ -277,7 +300,8 @@ class Board {
       if (attached_) safeAll(PartMode::Safe);
       gen_ = a.gen;
       attached_ = true;
-      if ((a.flags & attach_flags::kClearEstop) && latched_ && !input_) {
+      // The pin is read again here: it may have been pressed since.
+      if ((a.flags & attach_flags::kClearEstop) && latched_ && !input_ && !hal_.estopActive()) {
         // Storage first, then RAM, then `STATUS` (below).
         hal_.latchClear();
         latched_ = false;
@@ -408,6 +432,7 @@ class Board {
   uint8_t seq_ = 0;
   uint8_t expected_ = 0;
   bool started_ = false;
+  bool polling_ = false;
   bool armed_ = false;
   bool attached_ = false;
   bool estop_ = false;

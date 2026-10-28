@@ -6,6 +6,7 @@
 #include <avr/eeprom.h>
 #include <avr/interrupt.h>
 #include <avr/io.h>
+#include <avr/pgmspace.h>
 #include <avr/wdt.h>
 
 #include "platform.h"
@@ -15,7 +16,11 @@ namespace {
 uint8_t* const kLatch = reinterpret_cast<uint8_t*>(E2END);
 uint8_t* const kBootCounter = reinterpret_cast<uint8_t*>(E2END - 4);
 
-// MCUSR at reset, and what Optiboot passes in r2 once it has cleared MCUSR.
+// MCUSR at reset, and what Optiboot 8 passes in r2 once it has cleared
+// MCUSR. Optiboot 4.4, the Uno's and the Nano's stock bootloader, clears it
+// and passes nothing, so the cause is unknown there. (Marking a watchdog
+// reset from the WDT interrupt would need interrupt-then-reset mode, which
+// never resets a sketch stuck with interrupts off.)
 uint8_t savedMcusr __attribute__((section(".noinit")));
 uint8_t savedR2 __attribute__((section(".noinit")));
 
@@ -85,8 +90,13 @@ uint16_t boot() {
   return uint16_t(sum - c[i] + next);
 }
 
+// MCUSR when no bootloader cleared it, else r2 from Optiboot 8 or later,
+// which keeps its version in the last word of flash (major in the high
+// byte); otherwise unknown ("other").
 uint8_t resetCause() {
-  uint8_t f = savedMcusr ? savedMcusr : savedR2;
+  uint8_t f = savedMcusr;
+  uint8_t major = pgm_read_byte(FLASHEND);
+  if (f == 0 && major >= 8 && major != 0xFF) f = savedR2;
   if (f & _BV(WDRF)) return 3;
   if (f & _BV(PORF)) return 0;
   if (f & _BV(BORF)) return 2;

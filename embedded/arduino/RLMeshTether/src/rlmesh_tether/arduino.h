@@ -95,17 +95,21 @@ class RLMeshTether {
   }
 
   // Starts the tether: every part safe, then the first `HELLO`. Call it
-  // last in setup(); the hardware watchdog arms on the first poll().
-  void begin(SafeHandler onSafe, uint16_t watchdogMs = kDefaultWatchdogMs) {
+  // last in setup(); the hardware watchdog arms on the first poll(). False,
+  // and the board stays silent, when the map header disagrees with itself.
+  bool begin(SafeHandler onSafe, uint16_t watchdogMs = kDefaultWatchdogMs) {
+    if (Map::spec().partCount != Map::kParts) return false;
     onSafe_ = onSafe;
     board_.begin(&safe, &command, this, watchdogMs);
+    return true;
   }
 
   // Call from loop() as often as possible: every callback runs from here,
   // with a budget of 2 ms for all of them.
   void poll() { board_.poll(); }
 
-  // delay() that keeps the tether running.
+  // delay() that keeps the tether running. Not from a callback: there it
+  // only waits, and the hardware watchdog isn't fed.
   void delay(uint32_t ms) {
     uint32_t start = ::millis();
     do {
@@ -114,7 +118,8 @@ class RLMeshTether {
   }
 
   // Runs `fn` every `ms`, from loop(). Each call site needs its own lambda:
-  // the timer lives with the lambda's type.
+  // the timer lives with the lambda's type, so two calls passing the same
+  // function pointer type share one.
   template <class F>
   void every(uint32_t ms, F fn) {
     static uint32_t last = 0;

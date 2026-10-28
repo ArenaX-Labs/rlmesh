@@ -38,15 +38,18 @@ conformance vectors.
 | Board                          | Watchdog | E-stop latch                         | Boot value              |
 | ------------------------------ | -------- | ------------------------------------ | ----------------------- |
 | AVR: Uno, Nano, Mega, Leonardo | WDT      | last EEPROM byte, program-only write | EEPROM counter, 4 bytes |
-| UNO R4 Minima, R4 WiFi         | `WDT.h`  | data flash 0x40101C00, blank check   | RAM, kept across resets |
+| UNO R4 Minima, R4 WiFi         | `WDT.h`  | data flash 0x40101C00, blank check   | VBATT backup registers  |
 
 Any other board fails to build instead of running without a watchdog.
 
 - **AVR:** the library uses the last 5 bytes of EEPROM.
-- **R4:** with an `estopPin`, don't use `EEPROM.h`: its emulation shares the
-  data flash.
-- **Reset cause:** read at startup. An AVR with an old bootloader may report
-  "other".
+- **R4:** the boot value uses the last 6 VBATT backup registers.
+- **R4 with an `estopPin`: don't use `EEPROM.h`.** Its emulation manages all
+  of the data flash, and could erase the latch. With it linked, the latch
+  reads as set and never clears, so the board stays e-stopped.
+- **Reset cause:** read at startup. A stock Uno or Nano bootloader (Optiboot
+  4.4) clears it before the sketch runs, so those boards report "other";
+  Optiboot 8 passes it on.
 
 ## The sketch
 
@@ -87,8 +90,11 @@ void loop() {
   one `poll()`.
 - **`onSafe`** is called once per part at `begin()`, then on each change:
   safe, e-stop, or released.
-- **Pauses:** use `tether.delay(ms)`, which keeps polling, and
-  `tether.every(ms, fn)` (one lambda per call site).
+- **Pauses:** in `loop()`, use `tether.delay(ms)`, which keeps polling,
+  and `tether.every(ms, fn)` (one lambda per call site).
+- **Never wait inside a callback.** There, `poll()` and `tether.delay()` do
+  nothing, not even feed the watchdog, so a callback that waits more than
+  500 ms resets the board.
 - **`RLMeshTether<Map, RxMax>`:** `RxMax` (16–256, default 64) is the
   largest frame the board accepts. It must fit the largest command's dense
   value plus 9.
@@ -192,7 +198,8 @@ no exceptions or RTTI, and no symbols beyond `memcpy`/`memset`.
 - every vector in `crates/rlmesh-tether/tests/vectors.json`;
 - the board runtime's tests (`test/board_test.cpp`) against a fake clock,
   port and storage: attach, permits, the generation fence, the link
-  watchdog, a stalled sketch, the e-stop and its clear, a latch that
+  watchdog, a stalled sketch, a poll() from a callback, a flood of frames,
+  the e-stop and its clear, a latch that
   survives a reset, counters, notes and the clock wrapping.
 
 **Sanitizers.** Both runners are built with whichever ones the toolchain

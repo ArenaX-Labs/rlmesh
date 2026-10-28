@@ -1,11 +1,12 @@
 // Renesas RA4M1 (UNO R4 Minima and WiFi): the core's WDT, the e-stop latch
-// in the last 1 KB block of data flash, and a boot value in RAM that
-// survives warm resets.
+// in the last 1 KB block of data flash, and a boot value in the VBATT
+// backup registers, which survive every reset but a power cycle (the DFU
+// bootloader that runs at each reset reuses all of the sketch's RAM).
 //
 // Erased data flash on the RA reads back undefined, so "clear" is the
-// flash's blank check, not a value read (§6.4). The block is the last of
-// the 8 KB the core's EEPROM emulation also uses: a sketch with an
-// `estopPin` shouldn't use EEPROM.h.
+// flash's blank check, not a value read (§6.4). The core's EEPROM emulation
+// (EEPROM.h) manages all 8 KB of data flash and may erase the block, so
+// with it linked the latch reads as set and never clears.
 
 #if defined(ARDUINO_ARCH_RENESAS_UNO)
 
@@ -19,15 +20,12 @@ namespace {
 
 const uint32_t kLatch = BSP_FEATURE_FLASH_DATA_FLASH_START + 0x1C00;
 
-// The previous boot's value while the RAM survives (a watchdog, software or
-// pin reset); at power-on the magic is gone and the value is the RAM's
-// noise.
-struct BootRecord {
-  uint32_t magic;
-  uint16_t value;
-};
-BootRecord record __attribute__((section(".noinit")));
-const uint32_t kMagic = 0x524C4D54;  // "RLMT"
+// The boot record: the last 6 backup registers, a magic then the value.
+const uint16_t kRecord = 506;
+const uint8_t kMagic[4] = {'R', 'L', 'M', 'T'};
+
+// RAM noise, mixed into the value at power-on.
+uint32_t noise __attribute__((section(".noinit")));
 
 uint8_t cause = 0xFF;
 
@@ -51,6 +49,21 @@ fsp_err_t withFlash(F op) {
 
 }  // namespace
 
+// EEPROM.h's emulation, if the sketch links it: a weak reference to its
+// accessor (at namespace scope, so it has external linkage).
+void rlmeshTetherVeeprom() __asm__("_ZN7veeprom11getInstanceEv") __attribute__((weak));
+
+namespace {
+
+// Through a volatile pointer, so the compiler can't assume a declared
+// function's address is never null.
+bool eepromLinked() {
+  void (*volatile f)() = &rlmeshTetherVeeprom;
+  return f != nullptr;
+}
+
+}  // namespace
+
 namespace rlmesh {
 namespace tether {
 namespace platform {
@@ -61,6 +74,7 @@ void watchdogFeed() { WDT.refresh(); }
 
 // Blank is clear; anything else, a failed check included, is latched.
 bool latchLoad() {
+  if (eepromLinked()) return true;
   flash_result_t result = FLASH_RESULT_NOT_BLANK;
   fsp_err_t err = withFlash(
       [&](flash_lp_instance_ctrl_t* c) { return R_FLASH_LP_BlankCheck(c, kLatch, 1, &result); });
@@ -68,6 +82,7 @@ bool latchLoad() {
 }
 
 void latchStore() {
+  if (eepromLinked()) return;
   // From RAM: the flash sequencer reads the source while it programs.
   uint8_t zero = 0;
   withFlash([&](flash_lp_instance_ctrl_t* c) {
@@ -76,22 +91,33 @@ void latchStore() {
 }
 
 void latchClear() {
+  if (eepromLinked()) return;
   withFlash([](flash_lp_instance_ctrl_t* c) { return R_FLASH_LP_Erase(c, kLatch, 1); });
 }
 
 uint16_t boot() {
-  if (record.magic == kMagic) {
-    record.value = uint16_t(record.value + 1);
+  // Access to the backup registers is behind VBTBER, which is protected.
+  R_BSP_RegisterProtectDisable(BSP_REG_PROTECT_OM_LPC_BATT);
+  R_SYSTEM->VBTBER_b.VBAE = 1;
+  R_BSP_RegisterProtectEnable(BSP_REG_PROTECT_OM_LPC_BATT);
+  volatile uint8_t* r = &R_SYSTEM->VBTBKR[kRecord];
+  bool kept = r[0] == kMagic[0] && r[1] == kMagic[1] && r[2] == kMagic[2] && r[3] == kMagic[3];
+  uint16_t value = uint16_t(r[4] | (r[5] << 8));
+  if (kept) {
+    value = uint16_t(value + 1);
   } else {
-    // Power-on: SRAM noise, mixed with how long the core took to get here.
-    uint32_t x = record.magic ^ (uint32_t(record.value) << 16) ^ micros();
+    // Power-on: the registers' and the RAM's noise, and how long the core
+    // took to get here.
+    uint32_t x = noise ^ (uint32_t(value) << 16) ^ micros();
     x ^= x >> 16;
     x *= 0x45D9F3Bu;
     x ^= x >> 16;
-    record.magic = kMagic;
-    record.value = uint16_t(x);
+    value = uint16_t(x);
+    for (uint8_t i = 0; i < 4; ++i) r[i] = kMagic[i];
   }
-  return record.value;
+  r[4] = uint8_t(value);
+  r[5] = uint8_t(value >> 8);
+  return value;
 }
 
 uint8_t resetCause() {

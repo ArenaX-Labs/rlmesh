@@ -58,12 +58,18 @@ struct FakeHal {
   bool estopPin = true;
   bool input = false;
   bool stored = false;
+  // Milliseconds the clock moves per byte read (a slow link, or slow callbacks).
+  uint32_t msPerRead = 0;
+  // Presses the e-stop after this many more reads (when positive).
+  int pressAfterReads = 0;
   std::vector<std::string> events;
 
   uint32_t millis() { return ms; }
   uint32_t micros() { return ms * 1000; }
   int read() {
     if (rx.empty()) return -1;
+    ms += msPerRead;
+    if (pressAfterReads > 0 && --pressAfterReads == 0) input = true;
     uint8_t b = rx.front();
     rx.pop_front();
     return b;
@@ -115,6 +121,10 @@ struct Rig {
   Board<FakeHal> board{hal, kSpec, slots, rx, 64};
   std::vector<std::string> calls;
   Buf lastValue;
+  // The clock at the last onSafe.
+  uint32_t safeAt = 0;
+  // Run inside onCommand, as a sketch's handler would.
+  void (*inCommand)(Rig&) = nullptr;
   uint8_t seq = 0;
   uint8_t gen = 0;
 
@@ -124,6 +134,7 @@ struct Rig {
     snprintf(s, sizeof s, "safe %u how=%u%s", part, how, estop ? " estop" : "");
     r.calls.push_back(s);
     r.hal.events.push_back(s);
+    r.safeAt = r.hal.ms;
   }
   static void onCommand(void* ctx, uint8_t part, const uint8_t* value, uint16_t len, bool hold) {
     Rig& r = *static_cast<Rig*>(ctx);
@@ -131,6 +142,7 @@ struct Rig {
     snprintf(s, sizeof s, "cmd %u%s", part, hold ? " hold" : "");
     r.calls.push_back(s);
     r.lastValue.assign(value, value + len);
+    if (r.inCommand) r.inCommand(r);
   }
 
   explicit Rig(bool begin = true) {
@@ -657,6 +669,77 @@ void timersSurviveTheClockWrapping() {
   CHECK(r.calls.size() == 2 && r.calls[1] == "safe 0 how=1");
 }
 
+void aPollFromACallbackDoesNothing() {
+  scenario = "re-entry";
+  Rig r;
+  r.attached(7);
+  // The handler waits with tether.delay(): it polls, while a DETACH waits.
+  r.inCommand = [](Rig& g) {
+    int feeds = g.hal.feeds;
+    for (int i = 0; i < 5; ++i) {
+      ++g.hal.ms;
+      g.board.poll();
+    }
+    CHECK(g.hal.feeds == feeds);  // not even the watchdog
+  };
+  r.command(0, 200);
+  r.detach();
+  r.poll();
+  // The DETACH is acted on after the handler returned, never inside it.
+  CHECK(r.calls.size() == 2 && r.calls[0] == "cmd 0" && r.calls[1] == "safe 0 how=1");
+  CHECK(!r.board.attached());
+}
+
+void aFloodCannotHoldAPermitOrThePin() {
+  scenario = "flood";
+  Rig r;
+  r.attached(7);
+  r.command(0, 30);
+  r.poll();
+  uint32_t granted = r.hal.ms;
+  r.calls.clear();
+  // PINGs arriving as fast as they are read, a millisecond a byte (7 bytes
+  // a frame): one poll() expires the permit at the first frame past 30 ms,
+  // and returns after kFramesPerPoll frames.
+  r.hal.msPerRead = 1;
+  for (int i = 0; i < 400; ++i) r.ping();
+  r.poll();
+  CHECK(r.calls.size() == 1 && r.calls[0] == "safe 0 how=1");
+  CHECK(r.safeAt == granted + 35);
+  CHECK(r.hal.rx.size() == (400 - 8) * 7);  // kFramesPerPoll
+  // The pin is sampled between frames too.
+  r.hal.pressAfterReads = 10;
+  r.poll();
+  CHECK(r.board.estopLatched() && r.hal.stored);
+}
+
+void theClearReadsThePinAgain() {
+  scenario = "clear re-reads";
+  Rig r;
+  r.attached(7);
+  r.hal.input = true;
+  r.poll();
+  r.hal.input = false;
+  r.poll();
+  // The button goes down while the clearing ATTACH is being read, after
+  // poll() sampled it: the clear reads the pin itself and refuses.
+  r.attach(8, attach_flags::kClearEstop);
+  r.hal.pressAfterReads = 3;
+  r.poll();
+  CHECK(r.board.attached() && r.board.gen() == 8);
+  CHECK(r.board.estopLatched() && r.hal.stored);
+  for (const std::string& e : r.hal.events) CHECK(e != "clear");
+}
+
+void notesSurviveALongSilence() {
+  scenario = "note wrap";
+  Rig r;
+  const uint8_t t[] = {'x'};
+  CHECK(r.board.note(0, 0, t, 1) && r.board.note(0, 0, t, 1));
+  r.hal.ms += 0x80000000u;  // 24.8 days without a note
+  CHECK(r.board.note(0, 0, t, 1));
+}
+
 }  // namespace
 
 int main() {
@@ -677,6 +760,10 @@ int main() {
   publishAndNotes();
   seqCountsEveryBoardFrame();
   timersSurviveTheClockWrapping();
+  aPollFromACallbackDoesNothing();
+  aFloodCannotHoldAPermitOrThePin();
+  theClearReadsThePinAgain();
+  notesSurviveALongSilence();
   if (failures != 0) {
     fprintf(stderr, "%d of %d board checks failed\n", failures, checks);
     return 1;
