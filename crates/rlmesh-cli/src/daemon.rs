@@ -10,6 +10,11 @@
 //! once; a robot name's first embodiment by a device allowed to pin it is
 //! written there as its pin.
 //!
+//! Its pairing endpoint (`rlmeshd/pair`, [`PairService`]) pairs machines,
+//! which the owner approves on this machine through the local channel
+//! ([`crate::pair`]), as `devices provision` enrolls boards. Its host id
+//! ([`HostIdentity::host_id`]) is in its first line.
+//!
 //! Unlike an embedded host it gates no link (`usrpwd`): Zenoh gates every
 //! listener of a router or none, and a board's zenoh-pico has no `usrpwd`,
 //! so the handshake alone admits, here as on any LAN link.
@@ -26,8 +31,9 @@ use rlmesh_session::address::{
 };
 use rlmesh_session::auth::HostIdentity;
 use rlmesh_session::auth::address::{base32, unbase32};
+use rlmesh_session::pairing::PairService;
 use rlmesh_session::server::SessionServer;
-use rlmesh_session::wire::{Role, TenantId};
+use rlmesh_session::wire::{PairInfo, Role, TenantId};
 use rlmesh_session::{HostConfig, SystemMonotonicClock};
 use zeroize::Zeroizing;
 
@@ -105,6 +111,33 @@ pub fn identity(dir: &Path) -> Result<HostIdentity> {
     Ok(identity)
 }
 
+/// The base addresses rlmeshd gives paired machines and boards: `base`,
+/// or for every interface (`0.0.0.0`) the address of the interface its
+/// default route leaves by.
+// TODO: one address per host; list every interface's when a robot is on
+// more than one network (mDNS covers the rest, scene design §3.1).
+pub fn advertised(base: SocketAddr) -> Vec<String> {
+    if !base.ip().is_unspecified() {
+        return vec![base.to_string()];
+    }
+    // A UDP connect sends nothing: it only picks the route.
+    let routed = std::net::UdpSocket::bind((base.ip(), 0))
+        .and_then(|socket| {
+            let probe: SocketAddr = if base.is_ipv4() {
+                "192.0.2.1:9".parse().map_err(std::io::Error::other)?
+            } else {
+                "[2001:db8::1]:9".parse().map_err(std::io::Error::other)?
+            };
+            socket.connect(probe)?;
+            socket.local_addr()
+        })
+        .map(|local| local.ip());
+    match routed {
+        Ok(ip) if !ip.is_unspecified() => vec![SocketAddr::new(ip, base.port()).to_string()],
+        _ => Vec::new(),
+    }
+}
+
 /// `rlmesh daemon`: hosts until SIGINT or SIGTERM.
 pub async fn daemon(
     args: &DaemonArgs,
@@ -112,7 +145,7 @@ pub async fn daemon(
     stderr: &mut impl Write,
 ) -> Result<()> {
     let dir = state_dir(args.state_dir.as_deref())?;
-    let identity = identity(&dir)?;
+    let identity = Arc::new(identity(&dir)?);
     let table = Table::read(&dir)?;
     let (devices, pins) = table.host()?;
     let base = match args.listen {
@@ -120,59 +153,100 @@ pub async fn daemon(
         None => SocketAddr::from((Ipv4Addr::UNSPECIFIED, address::well_known_port()?)),
     };
     let mut config = HostConfig::new(TenantId::new(TENANT)?, session_id(DEFAULT_SESSION));
-    config.identity = Arc::new(identity);
+    config.identity = identity.clone();
     config.devices = devices;
     config.pins = pins;
     config.clock = SystemMonotonicClock.shared();
     config.lease_grace = LEASE_GRACE;
     config.health_log = None;
-    // TODO: no pairing endpoint yet; step 12 adds `rlmeshd/pair` and its
-    // pending exchanges here.
     let (transport, base) = address::open_listeners(base, None)
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
     let server = SessionServer::start(transport.clone(), config).await?;
-    writeln!(stdout, "rlmeshd on {base}, state in {}", dir.display())?;
+    let service = Arc::new(PairService::start(&transport, identity.clone()).await?);
+    let (apply, mut applying) = tokio::sync::mpsc::channel(4);
+    #[cfg(unix)]
+    let local = crate::pair::serve_local(crate::pair::Local {
+        dir: dir.clone(),
+        service: service.clone(),
+        host: PairInfo {
+            device: String::new(),
+            host_key: *identity.static_public(),
+            host_id: identity.host_id(),
+            addresses: advertised(base),
+        },
+        apply,
+    })?;
+    #[cfg(not(unix))]
+    drop((apply, service));
+    writeln!(
+        stdout,
+        "rlmeshd on {base} as {}, state in {}",
+        identity.host_id(),
+        dir.display()
+    )?;
     stdout.flush()?;
     let mut applied = table;
     let mut refused: Option<String> = None;
     let mut shutdown = std::pin::pin!(crate::host::shutdown_signal());
     loop {
-        tokio::select! {
+        let now = tokio::select! {
             result = &mut shutdown => {
                 result?;
                 break;
             }
-            () = tokio::time::sleep(RELOAD) => {}
-        }
-        if let Err(err) = pin_first_embodiments(&dir, &server, stderr).await {
+            Some(done) = applying.recv() => Some(done),
+            () = tokio::time::sleep(RELOAD) => None,
+        };
+        if now.is_none()
+            && let Err(err) = pin_first_embodiments(&dir, &server, stderr).await
+        {
             let _ = writeln!(stderr, "rlmeshd: robot pins not written: {err:#}");
         }
-        match Table::read(&dir) {
-            Ok(table) if table != applied => {
-                // Read checked it.
-                let Ok((devices, pins)) = table.host() else {
-                    continue;
-                };
-                server.set_devices(devices, pins).await;
-                let _ = writeln!(stderr, "rlmeshd: {DEVICES} applied");
-                applied = table;
-                refused = None;
-            }
-            Ok(_) => refused = None,
-            Err(err) => {
-                // Once per broken edit, not every read.
-                let err = format!("{err:#}");
-                if refused.as_ref() != Some(&err) {
-                    let _ = writeln!(stderr, "rlmeshd: {DEVICES} not applied: {err}");
-                }
-                refused = Some(err);
-            }
+        reload(&dir, &server, &mut applied, &mut refused, stderr).await;
+        if let Some(done) = now {
+            let _ = done.send(());
         }
+    }
+    #[cfg(unix)]
+    {
+        local.abort();
+        let _ = std::fs::remove_file(dir.join(crate::pair::SOCKET));
     }
     server.shutdown().await;
     transport.close().await?;
     Ok(())
+}
+
+/// Applies `devices.toml` to every session if it changed since `applied`.
+async fn reload(
+    dir: &Path,
+    server: &SessionServer,
+    applied: &mut Table,
+    refused: &mut Option<String>,
+    stderr: &mut impl Write,
+) {
+    match Table::read(dir) {
+        Ok(table) if table != *applied => {
+            // Read checked it.
+            let Ok((devices, pins)) = table.host() else {
+                return;
+            };
+            server.set_devices(devices, pins).await;
+            let _ = writeln!(stderr, "rlmeshd: {DEVICES} applied");
+            *applied = table;
+            *refused = None;
+        }
+        Ok(_) => *refused = None,
+        Err(err) => {
+            // Once per broken edit, not every read.
+            let err = format!("{err:#}");
+            if refused.as_ref() != Some(&err) {
+                let _ = writeln!(stderr, "rlmeshd: {DEVICES} not applied: {err}");
+            }
+            *refused = Some(err);
+        }
+    }
 }
 
 /// Pins every unpinned robot name embodied by a device allowed to pin it

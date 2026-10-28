@@ -9,11 +9,15 @@ mod eval_run;
 mod host;
 pub mod image_check;
 mod manifest;
+mod pair;
 mod platform;
 mod profile;
+mod provision;
 mod publish;
 mod registry;
 mod render;
+#[cfg(unix)]
+mod sys;
 pub mod variant;
 
 use std::ffi::{OsStr, OsString};
@@ -83,6 +87,7 @@ pub async fn run_cli_in(
         | Command::Host(_)
         | Command::Daemon(_)
         | Command::Devices(_)
+        | Command::Pair(_)
         | Command::Eval(cli::EvalArgs {
             command: cli::EvalCommand::Run(_) | cli::EvalCommand::Report(_),
         })
@@ -188,6 +193,7 @@ pub async fn run_cli_in(
         Command::Host(args) => host::host(&args, stdout).await.map(|()| 0),
         Command::Daemon(args) => daemon::daemon(&args, stdout, stderr).await.map(|()| 0),
         Command::Devices(args) => devices::devices(&args, stdout).map(|()| 0),
+        Command::Pair(args) => pair::pair(&args, stdout).await.map(|()| 0),
         Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
         Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),
     };

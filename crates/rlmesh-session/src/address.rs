@@ -744,18 +744,24 @@ fn local_host(base: SocketAddr) -> Option<Transport> {
 
 /// The credential of a participant of the host at `base`: `key` (an
 /// address's), else the key of a host on this machine (one this process
-/// runs, or rlmeshd's).
+/// runs, or rlmeshd's), else this machine's key from pairing with the host
+/// ([`crate::pairing::paired_credential`]).
 pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credential, SessionError> {
     key.cloned()
         .or_else(|| hosted_key(base))
         .or_else(|| base.ip().is_loopback().then(daemon_key).flatten())
         .map(|key| key.credential())
+        .or_else(|| {
+            crate::pairing::hosts_dir()
+                .and_then(|dir| crate::pairing::paired_credential(&dir, base))
+        })
         .ok_or_else(|| {
             SessionError::Rejected(CtlError::new(
                 CtlStatus::Unauthenticated,
                 format!(
                     "no key for the session at {base}: join with the address its host printed \
-                     (it ends in #key), or run rlmeshd on this machine"
+                     (it ends in #key), run rlmeshd on this machine, or pair this machine with \
+                     the robot's (rlmesh pair HOST)"
                 ),
             ))
         })
@@ -851,6 +857,17 @@ fn listening(base: SocketAddr) -> bool {
 /// How long a link presenting the password gets, once the host listens,
 /// before [`open_client`] tries one without.
 const GATED_TRY: Duration = Duration::from_secs(1);
+
+/// Links to the host at `base` as a Zenoh client within `timeout`, with no
+/// password (a LAN host's, as rlmeshd's pairing endpoint is reached).
+pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, SessionError> {
+    open_client(base, None, tokio::time::Instant::now() + timeout)
+        .await
+        .map_err(|err| match err {
+            SessionError::Zenoh(_) => SessionError::Timeout(timeout, format!("a host at {base}")),
+            other => other,
+        })
+}
 
 /// Joins the host at `base` as a Zenoh client by `deadline`, presenting
 /// `link`. A host bound beyond loopback (`insecure`, rlmeshd's LAN listener)

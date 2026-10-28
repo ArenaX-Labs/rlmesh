@@ -55,6 +55,8 @@
 //!   reading a recording back.
 //! - [`report`]: observer telemetry (§8.10), the publisher and controller
 //!   counters an observer cannot measure itself.
+//! - [`pairing`]: machine pairing with rlmeshd (design §3), and the host
+//!   files paired machines attach with.
 //! - [`sdk`]: what the language bindings share (Python's extension, the
 //!   Node addon), so each only converts values.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
@@ -82,6 +84,7 @@ pub mod gateway;
 pub mod host;
 pub mod media;
 pub mod metrics;
+pub mod pairing;
 pub mod participant;
 #[cfg(feature = "record")]
 pub mod record;

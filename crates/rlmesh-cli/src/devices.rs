@@ -15,9 +15,11 @@
 //! board_id = "0011223344556677"
 //! ```
 //!
-//! Pairing (step 12) adds devices with their `kind` and `name`.
+//! Pairing (`rlmesh pair`, [`crate::pair`]) adds machines and provisioning
+//! (`rlmesh devices provision`, [`crate::provision`]) boards, with their
+//! `kind` and `name`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
 
@@ -40,6 +42,10 @@ const LOCK: &str = "devices.lock";
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Table {
+    /// Every device id revoked: never given to another device (design §4),
+    /// so a later pairing under the same name inherits none of its pins.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub revoked: BTreeSet<String>,
     /// Device id → its entry.
     #[serde(default)]
     pub devices: BTreeMap<String, Entry>,
@@ -83,7 +89,8 @@ pub struct Pin {
     pub board_id: Option<String>,
 }
 
-fn class(name: &str) -> Result<Option<PriorityClass>> {
+/// The class a `max_priority` names (`None`: observer).
+pub fn class(name: &str) -> Result<Option<PriorityClass>> {
     Ok(match name {
         "observer" => None,
         "scripted" => Some(PriorityClass::Scripted),
@@ -183,6 +190,53 @@ impl Table {
         })
     }
 
+    /// A device id for a new device called `name`: its characters outside
+    /// `[A-Za-z0-9._-]` replaced by `-` (`fallback` for none), and `-2`,
+    /// `-3`… after it while that is taken, or was revoked, or a pin names
+    /// it.
+    pub fn free_id(&self, name: &str, fallback: &str) -> String {
+        let base: String = name
+            .chars()
+            .take(32)
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let base = match base.trim_matches('-') {
+            "" | LOCAL_DEVICE => fallback.to_string(),
+            base => base.to_string(),
+        };
+        let mut id = base.clone();
+        let mut n = 1;
+        let taken = |id: &String| {
+            self.devices.contains_key(id)
+                || self.revoked.contains(id)
+                || self.robots.values().any(|pin| &pin.device == id)
+        };
+        while taken(&id) {
+            n += 1;
+            id = format!("{base}-{n}");
+        }
+        id
+    }
+
+    /// Revokes device `id`: its entry goes, its id is never given out
+    /// again, and its pins stay, so its robots' names can't be taken.
+    ///
+    /// # Errors
+    /// A device not in the table.
+    pub fn revoke(&mut self, id: &str) -> Result<()> {
+        self.devices
+            .remove(id)
+            .with_context(|| format!("{id} is not in {DEVICES}"))?;
+        self.revoked.insert(id.to_string());
+        Ok(())
+    }
+
     /// The table as `devices.toml` holds it.
     fn text(&self) -> Result<String> {
         Ok(toml::to_string(self)?)
@@ -261,14 +315,7 @@ pub fn devices(args: &DevicesArgs, stdout: &mut impl Write) -> Result<()> {
             }
             Ok(())
         })?,
-        DevicesCommand::Revoke { device } => edit(&dir, |table| {
-            table
-                .devices
-                .remove(device)
-                .with_context(|| format!("{device} is not in {DEVICES}"))?;
-            // Its pins stay, so its robots' names can't be taken.
-            Ok(())
-        })?,
+        DevicesCommand::Revoke { device } => edit(&dir, |table| table.revoke(device))?,
         DevicesCommand::Move {
             robot,
             to,
@@ -295,6 +342,44 @@ pub fn devices(args: &DevicesArgs, stdout: &mut impl Write) -> Result<()> {
                 .with_context(|| format!("{robot} is not pinned"))?;
             Ok(())
         })?,
+        DevicesCommand::Provision { port, name, max } => {
+            crate::provision::provision(&dir, port, name, max.as_deref(), stdout)?;
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_revoked_device_id_is_never_given_out_again_so_its_pins_go_to_no_one() {
+        let dir = tempfile::tempdir().expect("dir");
+        let key = |n: u8| rlmesh_session::auth::address::base32(&[n; 32]);
+        std::fs::write(
+            dir.path().join(DEVICES),
+            format!(
+                "[devices.laptop]\npublic_key = \"{}\"\nmax_priority = \"operator\"\n\n\
+                 [robots.eye-1]\ndevice = \"laptop\"\n",
+                key(1)
+            ),
+        )
+        .expect("devices.toml");
+        edit(dir.path(), |table| table.revoke("laptop")).expect("revoked");
+        // Read back as a restarted daemon would: another machine asking
+        // for the name gets another id, and the pin names no device.
+        let table = Table::read(dir.path()).expect("read");
+        let id = table.free_id("laptop", "machine");
+        assert_ne!(id, "laptop");
+        let (devices, pins) = table.host().expect("host");
+        assert!(devices.iter().all(|d| d.id != "laptop"));
+        assert_eq!(pins.len(), 1);
+        let pin = table.robots.get("eye-1").map(|p| p.device.as_str());
+        assert_eq!(pin, Some("laptop"));
+        // Nor does an id a pin names but no entry has (an older table).
+        let mut older = table.clone();
+        older.revoked.clear();
+        assert_ne!(older.free_id("laptop", "machine"), "laptop");
+    }
 }

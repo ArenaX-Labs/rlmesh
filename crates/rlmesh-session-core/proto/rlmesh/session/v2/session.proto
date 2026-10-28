@@ -788,6 +788,66 @@ message HandshakeAccept {
   uint32 down_key_id = 7;
 }
 
+// Machine pairing (safety design §3): every packet is a query on
+// `rlmeshd/pair`. `exchange` is 16 random bytes the laptop draws per
+// attempt. After Noise XX, `sealed` carries a `Sealed` under the XX raw
+// split (laptop -> rlmeshd key 1, rlmeshd -> laptop key 2).
+message PairRequest {
+  bytes exchange = 1;
+  oneof step {
+    bytes xx1 = 2;
+    bytes xx3 = 3;
+    bytes sealed = 4;
+  }
+}
+
+message PairReply {
+  oneof step {
+    bytes xx2 = 1;
+    bytes sealed = 2;
+    // An unauthenticated hint: busy, expired or unknown.
+    CtlError error = 3;
+  }
+}
+
+// rlmeshd -> laptop (kind 16): `C`, its commitment to `Nr`.
+message PairCommit {
+  bytes c = 1;
+}
+
+// Laptop -> rlmeshd (kind 17): `Ni`, and the name and kind it pairs as.
+message PairNonce {
+  bytes ni = 1;
+  string name = 2;
+  string kind = 3;
+}
+
+// rlmeshd -> laptop (kind 18): `Nr`.
+message PairReveal {
+  bytes nr = 1;
+}
+
+// Laptop -> rlmeshd (kind 19): answered with `PairResult` once the owner
+// approves or refuses on the robot.
+message PairWait {}
+
+// rlmeshd -> laptop (kind 19).
+message PairResult {
+  oneof r {
+    PairInfo ok = 1;
+    CtlError error = 2;
+  }
+}
+
+// What an approved machine stores: its device id, and the host's static
+// key, id and base addresses (`host:port`, class i at base + i).
+message PairInfo {
+  string device = 1;
+  bytes host_key = 2;
+  string host_id = 3;
+  repeated string addresses = 4;
+}
+
 // Virtual mode, host -> participants on `host/tick` (§11.3).
 message TickState {
   uint64 epoch = 1;

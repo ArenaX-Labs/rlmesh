@@ -17,7 +17,8 @@
 //!   plans ([`contract`]), samples, batches and history queries ([`sample`]),
 //!   timed action chunks ([`action`]), the virtual-mode tick protocol
 //!   ([`tick`]), the lockstep fast path ([`lockstep`]), served models
-//!   ([`model`]) and the endpoint timing their replies carry ([`timing`]);
+//!   ([`model`]), the endpoint timing their replies carry ([`timing`]) and
+//!   machine pairing ([`pair`]);
 //! - [`codec`]: the one module that knows the byte encoding.
 //!
 //! Every type outside [`codec`] is plain Rust: no generated code, no
@@ -63,6 +64,7 @@ pub mod key;
 pub mod keys;
 pub mod lockstep;
 pub mod model;
+pub mod pair;
 pub mod part;
 pub mod path;
 pub mod report;
@@ -94,6 +96,7 @@ pub use model::{
     ModelEpisode, ModelFault, ModelGroup, ModelHistoryRow, ModelOutcome, ModelReply, ModelRequest,
     ModelResolve, ModelResolved,
 };
+pub use pair::{PAIR_KEY, PairInfo, PairNonce, PairReply, PairRequest, PairStep};
 pub use part::{
     ChannelPriority, CommandSpec, DType, Encoding, FieldLimit, FieldSpec, Layout, MergePolicy,
     PartSpec, SendPolicy, StreamSpec,

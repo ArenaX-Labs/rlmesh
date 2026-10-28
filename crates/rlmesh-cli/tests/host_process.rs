@@ -67,11 +67,12 @@ impl HostProcess {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn the host");
-        let stdout = child.stdout.take().expect("stdout");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
         let mut line = String::new();
-        BufReader::new(stdout)
-            .read_line(&mut line)
-            .expect("address line");
+        stdout.read_line(&mut line).expect("address line");
+        // Read the rest as it comes: a closed pipe would fail the host's
+        // next line ("recording to ...") with EPIPE.
+        std::thread::spawn(move || std::io::copy(&mut stdout, &mut std::io::sink()));
         if let Ok(address) = line.trim().parse::<SessionAddress>()
             && address.base == base
             && address.key.is_some()
@@ -529,9 +530,14 @@ impl Daemon {
         panic!("rlmeshd never found free ports");
     }
 
-    /// Attaches as `id` with `credential`, linked as a LAN client is: no
-    /// password.
-    async fn join(&self, id: &str, credential: Credential) -> Result<Participant, SessionError> {
+    /// Attaches as `id` at `priority` with `credential`, linked as a LAN
+    /// client is: no password.
+    async fn join(
+        &self,
+        id: &str,
+        priority: PriorityClass,
+        credential: Credential,
+    ) -> Result<Participant, SessionError> {
         let local = std::net::SocketAddr::from(([127, 0, 0, 1], self.base.port()));
         let transport = Transport::open(
             &TransportConfig::per_class_tcp(None, Some(local))
@@ -549,7 +555,7 @@ impl Daemon {
             session_id(DEFAULT_SESSION),
             ParticipantId::new(id).expect("id"),
             vec![Role::Observer],
-            PriorityClass::Model,
+            priority,
         );
         config.heartbeat_period = Duration::from_millis(20);
         config.credential = Some(credential);
@@ -596,12 +602,20 @@ async fn rlmeshd_keeps_its_identity_admits_its_table_over_the_lan_and_revokes_at
         .host_static();
 
     let eye = daemon
-        .join("eye", Credential::new(laptop, host_static))
+        .join(
+            "eye",
+            PriorityClass::Model,
+            Credential::new(laptop, host_static),
+        )
         .await
         .expect("admitted by devices.toml");
     let stranger = StaticKeypair::from_private(&mut [6; 32]);
     let refused = daemon
-        .join("intruder", Credential::new(stranger, host_static))
+        .join(
+            "intruder",
+            PriorityClass::Model,
+            Credential::new(stranger, host_static),
+        )
         .await
         .err()
         .expect("an unknown device");
@@ -623,4 +637,86 @@ async fn rlmeshd_keeps_its_identity_admits_its_table_over_the_lan_and_revokes_at
     })
     .await
     .expect("detached");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_pairs_by_the_code_typed_on_the_robot_and_attaches_at_its_cap() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = tempfile::tempdir().expect("tempdir");
+    let daemon = Daemon::spawn(state.path(), None);
+    let robot = std::net::SocketAddr::from(([127, 0, 0, 1], daemon.base.port()));
+    // The laptop: its own config directory, and no rlmeshd of its own.
+    let laptop = tempfile::tempdir().expect("tempdir");
+    let mut pair = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
+        .args(["pair", &robot.to_string(), "--name", "laptop josh"])
+        .env("XDG_CONFIG_HOME", laptop.path())
+        .env("RLMESH_STATE_DIR", laptop.path().join("no-daemon"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("rlmesh pair");
+    let mut lines = BufReader::new(pair.stdout.take().expect("stdout")).lines();
+    let code = loop {
+        let line = lines.next().expect("the code").expect("a line");
+        if let Some(code) = line.strip_prefix("Confirm on the robot: rlmesh pair approve ") {
+            break code.to_string();
+        }
+    };
+    let approve = |code: &str| {
+        Command::new(env!("CARGO_BIN_EXE_rlmesh"))
+            .args(["pair", "approve", code])
+            .env("RLMESH_STATE_DIR", state.path())
+            .output()
+            .expect("rlmesh pair approve")
+    };
+    let enrolled =
+        || std::fs::read_to_string(state.path().join("devices.toml")).unwrap_or_default();
+
+    // A wrong code refuses and enrolls nothing.
+    let wrong = format!(
+        "{:06}",
+        (code.parse::<u32>().expect("digits") + 1) % 1_000_000
+    );
+    let refused = approve(&wrong);
+    assert!(!refused.status.success());
+    assert!(!enrolled().contains("[devices."), "{}", enrolled());
+
+    // The shown code enrolls the machine at operator, and it hears so.
+    let approved = approve(&code);
+    assert!(
+        approved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&approved.stderr)
+    );
+    assert!(
+        enrolled().contains("[devices.laptop-josh]"),
+        "{}",
+        enrolled()
+    );
+    let rest: Vec<String> = lines.map(|l| l.expect("a line")).collect();
+    assert!(pair.wait().expect("wait").success(), "{rest:?}");
+
+    // Its host file joins the robot over the LAN, at its cap.
+    let hosts = laptop.path().join("rlmesh").join("hosts");
+    let file = std::fs::read_dir(&hosts)
+        .expect("hosts")
+        .next()
+        .expect("a host file")
+        .expect("entry")
+        .path();
+    let mode = std::fs::metadata(&file).expect("file").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let credential = rlmesh_session::pairing::paired_credential(&hosts, robot)
+        .expect("the host file names this address");
+    let policy = daemon
+        .join("policy", PriorityClass::Operator, credential)
+        .await
+        .expect("admitted at operator");
+    policy
+        .wait_for("its device in the roster", WAIT, |s| {
+            s.participant(policy.id())
+                .is_some_and(|p| p.device == "laptop-josh")
+        })
+        .await
+        .expect("attached as laptop-josh");
 }
