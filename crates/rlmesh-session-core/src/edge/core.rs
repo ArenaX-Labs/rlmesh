@@ -52,7 +52,7 @@ use alloc::sync::Arc;
 use core::time::Duration;
 
 use crate::wire::{
-    ActionChunk, Applied, AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, EdgeMode, Epoch,
+    ActionChunk, Applied, AuthorityView, ChannelId, ChunkRef, ClockMode, EdgeMode, Epoch,
     FenceError, LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
 };
 use bytes::Bytes;
@@ -446,8 +446,8 @@ impl EdgeCore {
         self.fallback.set_latch(latch);
     }
 
-    fn clock(&self, view: &AuthoritySnapshot, who: &ParticipantId) -> ClockView {
-        if view.clock_mode != ClockMode::Wall {
+    fn clock<V: AuthorityView + ?Sized>(&self, view: &V, who: &ParticipantId) -> ClockView {
+        if view.clock_mode() != ClockMode::Wall {
             return ClockView {
                 offset_ns: 0,
                 error_ns: 0,
@@ -475,7 +475,11 @@ impl EdgeCore {
     /// host's expiry converted conservatively. Unmapped, it is untimeable
     /// unless the mapping is not required, in which case the remaining ttl
     /// at snapshot time counts from when the edge observed the snapshot.
-    fn lease_view(&self, view: &AuthoritySnapshot, observed_local_ns: i64) -> Option<LeaseView> {
+    fn lease_view<V: AuthorityView + ?Sized>(
+        &self,
+        view: &V,
+        observed_local_ns: i64,
+    ) -> Option<LeaseView> {
         let (member, lease) = self
             .members
             .iter()
@@ -495,7 +499,7 @@ impl EdgeCore {
         } else if self.config.require_clock_mapping {
             None
         } else {
-            Some(observed_local_ns.saturating_add(lease.expires_ns.saturating_sub(view.host_ns)))
+            Some(observed_local_ns.saturating_add(lease.expires_ns.saturating_sub(view.host_ns())))
         };
         Some(LeaseView {
             member,
@@ -506,11 +510,11 @@ impl EdgeCore {
 
     /// Validates `chunk`, received at `receive_ns` (edge clock), against the
     /// view (observed at `observed_local_ns`) and splices it.
-    pub fn accept(
+    pub fn accept<V: AuthorityView + ?Sized>(
         &mut self,
         chunk: ActionChunk,
         receive_ns: i64,
-        view: Option<&AuthoritySnapshot>,
+        view: Option<&V>,
         observed_local_ns: i64,
     ) -> Result<SpliceOutcome, Rejection> {
         let reference = chunk.reference();
@@ -528,11 +532,11 @@ impl EdgeCore {
         result
     }
 
-    fn validate_and_splice(
+    fn validate_and_splice<V: AuthorityView + ?Sized>(
         &mut self,
         chunk: ActionChunk,
         receive_ns: i64,
-        view: Option<&AuthoritySnapshot>,
+        view: Option<&V>,
         observed_local_ns: i64,
     ) -> Result<SpliceOutcome, Rejection> {
         let index = self
@@ -544,11 +548,11 @@ impl EdgeCore {
             return Err(Rejection::Estop);
         }
         let view = view.ok_or(Rejection::NoLease)?;
-        if view.mode == Mode::Estop {
+        if view.mode() == Mode::Estop {
             return Err(Rejection::Estop);
         }
         // A closing scene's run is over: no lease in it drives again.
-        if view.scene.as_ref().is_some_and(|s| s.closing.is_some()) {
+        if view.closing().is_some() {
             return Err(Rejection::NoLease);
         }
         let lease = view.check_fence(chunk.channel, chunk.lease_token, chunk.epoch)?;
@@ -617,9 +621,7 @@ impl EdgeCore {
         // else the part's control period.
         let dt_ns = match i64::try_from(chunk.dt_ns) {
             Ok(0) => view
-                .binding(&lease.holder)
-                .filter(|b| b.fingerprint == lease.binding)
-                .and_then(|b| b.grid(chunk.channel))
+                .grid(chunk.channel)
                 .map_or(member.period_ns, |dt| duration_i64(dt).max(1)),
             Ok(dt) => dt,
             Err(_) => return Err(Rejection::Malformed),
@@ -660,17 +662,17 @@ impl EdgeCore {
 
     /// One control tick at edge time `now_ns`: what to dispatch, hold, or
     /// the safe behaviour to run, and one applied sample per member.
-    pub fn tick(
+    pub fn tick<V: AuthorityView + ?Sized>(
         &mut self,
         now_ns: i64,
-        view: Option<&AuthoritySnapshot>,
+        view: Option<&V>,
         observed_local_ns: i64,
     ) -> EdgeTick {
         let tick_view = view.map(|v| TickView {
-            epoch: v.epoch,
-            mode: v.mode,
+            epoch: v.epoch(),
+            mode: v.mode(),
             lease: self.lease_view(v, observed_local_ns),
-            reason: v.mode_reason.code,
+            reason: v.mode_reason(),
         });
         let decision = self.fallback.tick(now_ns, tick_view, &mut self.queues);
         let report = decision
@@ -792,8 +794,8 @@ impl EdgeCore {
 mod tests {
     use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
     use crate::wire::{
-        ClockMapping, Command, Fingerprint, InputRange, Lease, PriorityClass, ReasonCode, Request,
-        Role, SessionId,
+        AuthoritySnapshot, ClockMapping, Command, Fingerprint, InputRange, Lease, PriorityClass,
+        ReasonCode, Request, Role, SessionId,
     };
     use crate::{Authority, AuthorityConfig, VirtualConfig};
 
