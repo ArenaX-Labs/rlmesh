@@ -763,6 +763,7 @@ impl Robot {
             reason: reason.detail.clone(),
             code: reason.code,
             origin,
+            at_ns: reason.at_ns,
         });
         self.last_code = reason.code;
         self.estop = Some(reason);
@@ -945,6 +946,8 @@ impl Robot {
                     spec_version: SPEC_VERSION,
                     robot_json: self.config.robot_json.clone(),
                     seal: self.paths.clone(),
+                    // A networked board: no tethered board id behind it.
+                    board_id: None,
                 });
             }
             (Phase::Declare, Command::DeclareParts { .. }) => {
