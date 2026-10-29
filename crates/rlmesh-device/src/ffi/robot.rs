@@ -727,7 +727,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_status(
         Some(Fault::HostLost) => (5, 0),
         Some(Fault::Internal) => (6, 0),
     };
-    let (mode, epoch) = robot.snapshot().map_or((0, 0), |s| {
+    let (mode, epoch) = robot.view().map_or((0, 0), |s| {
         let mode = match s.mode {
             Mode::Disarmed => 1,
             Mode::Armed => 2,
@@ -855,7 +855,8 @@ mod tests {
                 (RLMESH_DEVICE_QUERY, 0, 0, 0),
             ]
         );
-        assert!(keys[0].ends_with("/host/state"), "{keys:?}");
+        assert!(keys[0].ends_with("/host/view/eyes"), "{keys:?}");
+        assert!(keys[6].ends_with("/host/state"), "{keys:?}");
         assert!(keys[3].ends_with("/p/eyes/keys"), "{keys:?}");
         assert!(keys[4].ends_with("/estop/*"), "{keys:?}");
         assert_eq!(action.query_id, 1);
