@@ -57,6 +57,8 @@
 //!   counters an observer cannot measure itself.
 //! - [`pairing`]: machine pairing with rlmeshd (design §3), and the host
 //!   files paired machines attach with.
+//! - [`lobby`]: the home daemon's lobby (scene design §3): its verbs'
+//!   service, a client that runs scenes, and a robot waiting for a run.
 //! - [`scene`]: scene files (scene design §2), read and checked without
 //!   IO, and what a scene's session host carries for one run.
 //! - [`sdk`]: what the language bindings share (Python's extension, the
@@ -84,6 +86,7 @@ pub mod error;
 #[cfg(feature = "gateway")]
 pub mod gateway;
 pub mod host;
+pub mod lobby;
 pub mod media;
 pub mod metrics;
 pub mod pairing;

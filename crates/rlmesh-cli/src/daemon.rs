@@ -10,6 +10,9 @@
 //! once; a robot name's first embodiment by a device allowed to pin it is
 //! written there as its pin.
 //!
+//! It hosts the lobby, `_lobby` ([`crate::lobby`]), where robots provisioned
+//! to it or paired with it wait for a run, and runs scenes there.
+//!
 //! Its pairing endpoint (`rlmeshd/pair`, [`PairService`]) pairs machines,
 //! which the owner approves on this machine through the local channel
 //! ([`crate::pair`]), as `devices provision` enrolls boards. Its host id
@@ -39,6 +42,7 @@ use zeroize::Zeroizing;
 
 use crate::cli::DaemonArgs;
 use crate::devices::{DEVICES, Pin, Table};
+use crate::lobby::Home;
 
 /// The host's own keys in the state directory.
 pub const HOST_KEY: &str = "host.key";
@@ -162,7 +166,8 @@ pub async fn daemon(
     let (transport, base) = address::open_listeners(base, None)
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
-    let server = SessionServer::start(transport.clone(), config).await?;
+    let server = Arc::new(SessionServer::start(transport.clone(), config.clone()).await?);
+    Home::start(&server, dir.clone(), config, advertised(base)).await?;
     let service = Arc::new(PairService::start(&transport, identity.clone()).await?);
     let (apply, mut applying) = tokio::sync::mpsc::channel(4);
     #[cfg(unix)]

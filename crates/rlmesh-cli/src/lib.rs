@@ -8,6 +8,7 @@ mod doctor;
 mod eval_run;
 mod host;
 pub mod image_check;
+mod lobby;
 mod manifest;
 mod pair;
 mod platform;
@@ -89,6 +90,10 @@ pub async fn run_cli_in(
         | Command::Daemon(_)
         | Command::Devices(_)
         | Command::Scene(_)
+        | Command::Run(_)
+        | Command::Lobby(_)
+        | Command::Stop(_)
+        | Command::Arm(_)
         | Command::Pair(_)
         | Command::Eval(cli::EvalArgs {
             command: cli::EvalCommand::Run(_) | cli::EvalCommand::Report(_),
@@ -196,6 +201,10 @@ pub async fn run_cli_in(
         Command::Daemon(args) => daemon::daemon(&args, stdout, stderr).await.map(|()| 0),
         Command::Devices(args) => devices::devices(&args, stdout).map(|()| 0),
         Command::Scene(args) => scene::scene(&args, stdout),
+        Command::Run(args) => scene::run(&args, stdout).await,
+        Command::Lobby(args) => scene::lobby(&args, stdout).await.map(|()| 0),
+        Command::Stop(args) => scene::stop(&args, stdout).await,
+        Command::Arm(args) => scene::arm(&args, stdout).await.map(|()| 0),
         Command::Pair(args) => pair::pair(&args, stdout).await.map(|()| 0),
         Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
         Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),

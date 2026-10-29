@@ -18,7 +18,7 @@ use crate::spec::apply::Tensor;
 use crate::spec::bind::Dir;
 use crate::spec::policy::Allow;
 use crate::spec::{BindError, Policy, RunOptions};
-use crate::wire::{CtlStatus, DType, PriorityClass, ReasonCode, Role};
+use crate::wire::{CtlStatus, DType, MemberStage, PriorityClass, ReasonCode, Role, RunStage};
 
 /// How a binding reports a [`SessionError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +70,16 @@ fn snake(camel: &str, upper: bool) -> String {
 /// A refusal's status as bindings name it (`LEASE_BUSY`).
 pub fn status_name(status: CtlStatus) -> String {
     snake(&format!("{status:?}"), true)
+}
+
+/// A run's stage as bindings name it (`rejoining`).
+pub fn run_stage_name(stage: RunStage) -> String {
+    snake(&format!("{stage:?}"), false)
+}
+
+/// A run member's stage as bindings name it (`declared`).
+pub fn member_stage_name(stage: MemberStage) -> String {
+    snake(&format!("{stage:?}"), false)
 }
 
 /// An edge rejection's reason as bindings name it (`too_old`).

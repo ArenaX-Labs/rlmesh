@@ -57,6 +57,16 @@ pub enum Command {
     /// Check scene files against this machine's rlmeshd: its devices and
     /// robot pins.
     Scene(SceneArgs),
+    /// Run a scene on its robots' home rlmeshd and follow its stages until
+    /// it ends; Ctrl-C stops it.
+    Run(RunArgs),
+    /// List the robots waiting in the home rlmeshd's lobby.
+    Lobby(HomeArgs),
+    /// Stop a run.
+    Stop(RunIdArgs),
+    /// Arm a run that waits for an explicit arm (`--arm manual`, or after a
+    /// lost member rejoined).
+    Arm(RunIdArgs),
     /// Pair this machine with a robot's rlmeshd (shows a code to type on
     /// the robot), or, on the robot, approve a machine by its code.
     Pair(PairArgs),
@@ -580,6 +590,37 @@ pub enum SceneCommand {
         #[arg(value_name = "SCENE.TOML")]
         file: std::path::PathBuf,
     },
+}
+
+/// Where the home rlmeshd is.
+#[derive(Args, Debug)]
+pub struct HomeArgs {
+    /// The home daemon (`rig-pi.local`, `10.0.0.5:7447`; default: this
+    /// machine's).
+    #[arg(long, value_name = "HOST")]
+    pub home: Option<String>,
+}
+
+/// Flags for `rlmesh run`.
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// The scene file.
+    #[arg(value_name = "SCENE.TOML")]
+    pub file: std::path::PathBuf,
+    /// `manual`: wait for `rlmesh arm` even when the scene arms itself.
+    #[arg(long, value_name = "auto|manual", default_value = "auto")]
+    pub arm: String,
+    #[command(flatten)]
+    pub home: HomeArgs,
+}
+
+/// Flags for `rlmesh stop` and `rlmesh arm`.
+#[derive(Args, Debug)]
+pub struct RunIdArgs {
+    /// The run (`r-7k2m`), as `rlmesh run` printed it.
+    pub run: String,
+    #[command(flatten)]
+    pub home: HomeArgs,
 }
 
 /// Flags for `rlmesh pair`.

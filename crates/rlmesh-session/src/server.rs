@@ -10,6 +10,11 @@
 //! (`{tenant}/server`) tells a participant that a host here will serve its
 //! session, so one that finds only other sessions' hosts fails at once.
 //!
+//! A session started explicitly ([`SessionServer::start_session`]: the
+//! home daemon's lobby, a scene's run) is kept however its participants
+//! come and go, until [`SessionServer::stop`]; once stopped, it is never
+//! started again for a straggler.
+//!
 //! With recording on ([`SessionServer::start_recording`]), each session
 //! also gets an always-on recorder that joins as the observer
 //! [`RECORDER`]. It never counts as a member: the session still stops when
@@ -26,7 +31,6 @@ use zenoh::sample::SampleKind;
 use crate::auth::{Device, Pin};
 use crate::error::SessionError;
 use crate::host::{HostConfig, SessionHost, token_declared};
-#[cfg(feature = "record")]
 use crate::participant::{Participant, ParticipantConfig};
 #[cfg(feature = "record")]
 use crate::record::{Recorder, Rolling};
@@ -37,6 +41,10 @@ use crate::wire::{AuthoritySnapshot, ParticipantId, SessionId};
 use crate::wire::{PriorityClass, Role};
 
 type Hosts = Arc<Mutex<HashMap<SessionId, SessionHost>>>;
+
+/// The sessions started explicitly: running (`true`, never stopped for
+/// want of members) or stopped (`false`, never started again).
+type Kept = Arc<std::sync::Mutex<HashMap<SessionId, bool>>>;
 
 /// The devices and pins every session starts with ([`HostConfig::devices`],
 /// [`HostConfig::pins`]); changed only while the hosts are locked, so a
@@ -56,7 +64,15 @@ type Presence = (bool, SessionId, String);
 /// [`SessionServer::shutdown`], which waits for them.
 pub struct SessionServer {
     hosts: Hosts,
+    kept: Kept,
     table: Table,
+    transport: Transport,
+    /// What its own participants attach with.
+    own: (
+        crate::wire::TenantId,
+        Arc<dyn crate::clock::Clock>,
+        crate::auth::Credential,
+    ),
     #[cfg(feature = "record")]
     recorders: Recorders,
     _server: zenoh::query::Queryable<()>,
@@ -107,6 +123,12 @@ impl SessionServer {
         #[cfg(feature = "record")] rolling: Option<Rolling>,
     ) -> Result<Self, SessionError> {
         let hosts: Hosts = Arc::default();
+        let kept: Kept = Arc::default();
+        let own = (
+            config.tenant.clone(),
+            config.clock.clone(),
+            config.identity.local_credential(),
+        );
         let table: Table = Arc::new(std::sync::Mutex::new((
             config.devices.clone(),
             config.pins.clone(),
@@ -164,7 +186,9 @@ impl SessionServer {
         let (presence, mut changes) = tokio::sync::mpsc::unbounded_channel::<Presence>();
         tokio::spawn({
             let hosts = hosts.clone();
+            let kept = kept.clone();
             let table = table.clone();
+            let transport = transport.clone();
             #[cfg(feature = "record")]
             let recorders = recorders.clone();
             let control = control.clone();
@@ -185,7 +209,11 @@ impl SessionServer {
                         present.remove(&session);
                     }
                     let mut hosts = hosts.lock().await;
-                    if !empty && !hosts.contains_key(&session) {
+                    let explicit = kept
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .contains_key(&session);
+                    if !empty && !explicit && !hosts.contains_key(&session) {
                         let (devices, pins) = table
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -209,6 +237,7 @@ impl SessionServer {
                         }
                     } else if empty
                         && !joined
+                        && !explicit
                         && let Some(host) = hosts.remove(&session)
                     {
                         info!(%session, "session stopped: its last participant left");
@@ -244,7 +273,10 @@ impl SessionServer {
             .await?;
         Ok(Self {
             hosts,
+            kept,
             table,
+            own,
+            transport,
             #[cfg(feature = "record")]
             recorders,
             _server: server,
@@ -287,8 +319,108 @@ impl SessionServer {
         }
     }
 
+    /// Starts `config.session` now, with `config` (its devices and pins
+    /// replaced by the server's): kept until [`Self::stop`], whoever
+    /// attaches or leaves. Its authority snapshots, as they change.
+    ///
+    /// # Errors
+    /// [`SessionError::Config`] when the session is already hosted here, or
+    /// what starting it failed with.
+    pub async fn start_session(
+        &self,
+        config: HostConfig,
+    ) -> Result<tokio::sync::watch::Receiver<AuthoritySnapshot>, SessionError> {
+        let mut hosts = self.hosts.lock().await;
+        let known = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&config.session);
+        if known || hosts.contains_key(&config.session) {
+            return Err(SessionError::Config(format!(
+                "session {} is already hosted here",
+                config.session
+            )));
+        }
+        let (devices, pins) = self
+            .table
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let session = config.session;
+        let host = SessionHost::start(
+            self.transport.clone(),
+            HostConfig {
+                devices,
+                pins,
+                ..config
+            },
+        )
+        .await?;
+        let watch = host.watch();
+        self.kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session, true);
+        hosts.insert(session, host);
+        info!(%session, "session started");
+        Ok(watch)
+    }
+
+    /// Attaches `id` to `session` from this process, riding the server's
+    /// transport, as device `local` (the home daemon watching and arming
+    /// its runs).
+    ///
+    /// # Errors
+    /// What attaching failed with.
+    pub async fn attach(
+        &self,
+        session: SessionId,
+        id: ParticipantId,
+        roles: Vec<crate::wire::Role>,
+        priority: crate::wire::PriorityClass,
+    ) -> Result<Participant, SessionError> {
+        let (tenant, clock, credential) = &self.own;
+        let mut config = ParticipantConfig::new(tenant.clone(), session, id, roles, priority);
+        config.clock = clock.clone();
+        config.credential = Some(credential.clone());
+        Participant::attach(self.transport.ridden(), config).await
+    }
+
+    /// Closes the scene `session` runs (see [`SessionHost::close_scene`]).
+    ///
+    /// # Errors
+    /// [`SessionError::Closed`] when it isn't hosted here, or what closing
+    /// failed with.
+    pub async fn close_scene(
+        &self,
+        session: SessionId,
+        code: crate::wire::ReasonCode,
+        by: &str,
+        detail: &str,
+    ) -> Result<(), SessionError> {
+        let hosts = self.hosts.lock().await;
+        let host = hosts.get(&session).ok_or(SessionError::Closed)?;
+        host.close_scene(code, by, detail).await
+    }
+
+    /// Stops `session` (participants see its host leave).
+    pub async fn stop(&self, session: SessionId) {
+        self.kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session, false);
+        let host = self.hosts.lock().await.remove(&session);
+        if let Some(host) = host {
+            #[cfg(feature = "record")]
+            finish_recorder(&self.recorders, session).await;
+            host.shutdown().await;
+            info!(%session, "session stopped");
+        }
+    }
+
     /// Stops every session (participants see their hosts leave).
-    pub async fn shutdown(self) {
+    pub async fn shutdown(&self) {
         #[cfg(feature = "record")]
         {
             let sessions: Vec<SessionId> = self.recorders.lock().await.keys().copied().collect();

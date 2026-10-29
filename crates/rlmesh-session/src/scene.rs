@@ -39,7 +39,7 @@ use serde_json::json;
 use toml::{Table, Value};
 
 use crate::auth::{LOCAL_DEVICE, Pin};
-use crate::authority::{Member as HostMember, SceneConfig};
+use crate::authority::{Member as HostMember, SceneConfig, SealPolicy};
 use crate::sdk::status_name;
 use crate::spec::{canonical, view};
 use crate::wire::{
@@ -857,6 +857,33 @@ impl Scene {
             "record": self.record,
             "members": members,
         }))
+    }
+
+    /// What the scene seals: everything with `security = "seal"`, else
+    /// each robot member's `seal` parts.
+    pub fn seal(&self) -> SealPolicy {
+        if self.security == Security::Seal {
+            return SealPolicy::All;
+        }
+        let parts: Vec<String> = self
+            .members
+            .iter()
+            .flat_map(|m| match &m.role {
+                Role::Robot {
+                    seal: Seal::All, ..
+                } => vec![format!("{}/*", m.name)],
+                Role::Robot {
+                    seal: Seal::Parts(parts),
+                    ..
+                } => parts.iter().map(|p| format!("{}/{p}", m.name)).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        if parts.is_empty() {
+            SealPolicy::None
+        } else {
+            SealPolicy::Parts(parts)
+        }
     }
 
     /// What run `run`'s session host carries for it: its identity, its

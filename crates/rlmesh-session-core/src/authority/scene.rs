@@ -81,9 +81,9 @@ impl SceneConfig {
         if roles.iter().all(|r| *r == Role::Observer) {
             return Ok(());
         }
+        // The home daemon watches and arms a run as an observer: arming is
+        // its device's verb, not a role.
         let scene = &self.info.name;
-        // TODO: admit the home daemon's own `rlmeshd` participant, which
-        // arms runs as an operator (scene step 7).
         let member = self.members.get(participant).ok_or_else(|| {
             refused(format!(
                 "{participant} is not a member of scene {scene}: only its members attach, \

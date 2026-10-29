@@ -42,6 +42,9 @@ pub trait AuthorityView {
     fn grid(&self, channel: ChannelId) -> Option<Duration>;
     /// The generation of `who` (a view: present participants only).
     fn generation(&self, who: &ParticipantId) -> Option<u32>;
+    /// Why the scene run this session hosts is ending, once it is: detach
+    /// and return to the lobby.
+    fn closing(&self) -> Option<&Reason>;
 
     /// The lease on `channel`.
     fn lease(&self, channel: ChannelId) -> Option<&Lease> {
@@ -99,6 +102,9 @@ impl AuthorityView for AuthoritySnapshot {
     }
     fn generation(&self, who: &ParticipantId) -> Option<u32> {
         self.participant(who).map(|p| p.generation)
+    }
+    fn closing(&self) -> Option<&Reason> {
+        self.scene.as_ref()?.closing.as_ref()
     }
 }
 
@@ -301,6 +307,9 @@ impl AuthorityView for DeviceView {
             .iter()
             .find(|m| &m.id == who)
             .map(|m| m.generation)
+    }
+    fn closing(&self) -> Option<&Reason> {
+        self.closing.as_ref()
     }
 }
 

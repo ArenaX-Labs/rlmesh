@@ -13,6 +13,9 @@
 //! - `host` is `home` or a paired machine.
 //!
 //! Whether the machines are attached to the lobby is known only at run.
+//!
+//! `rlmesh run`, `rlmesh lobby`, `rlmesh stop` and `rlmesh arm` are clients
+//! of the home daemon's lobby ([`crate::lobby`]).
 
 use std::io::Write;
 
@@ -21,7 +24,12 @@ use rlmesh_session::auth::LOCAL_DEVICE;
 use rlmesh_session::scene::{Problem, Refusal, Role, Scene, Source};
 use rlmesh_session::wire::{CtlStatus, PriorityClass};
 
-use crate::cli::{SceneArgs, SceneCommand};
+use std::time::Duration;
+
+use rlmesh_session::lobby::{LobbyClient, home_lobby};
+use rlmesh_session::wire::{MemberState, RunStage, RunState};
+
+use crate::cli::{HomeArgs, RunArgs, RunIdArgs, SceneArgs, SceneCommand};
 use crate::devices::{DEVICES, Table};
 
 fn class_name(class: Option<PriorityClass>) -> &'static str {
@@ -193,6 +201,154 @@ pub fn scene(args: &SceneArgs, stdout: &mut impl Write) -> Result<i32> {
             Ok(1)
         }
     }
+}
+
+/// How long a client waits for the home daemon.
+const HOME_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn connect(home: &HomeArgs) -> Result<LobbyClient> {
+    let lobby = home_lobby(home.home.as_deref())?;
+    LobbyClient::connect(&lobby, HOME_TIMEOUT)
+        .await
+        .with_context(|| format!("the lobby at {}", lobby.base))
+}
+
+use rlmesh_session::sdk::{member_stage_name, run_stage_name, status_name};
+
+fn ended(stage: RunStage) -> bool {
+    matches!(stage, RunStage::Ended | RunStage::Failed)
+}
+
+/// Prints what changed from `old` to `new`: the stage, each member's
+/// stage and error, and the run's error.
+fn print_change(stdout: &mut impl Write, old: Option<&RunState>, new: &RunState) -> Result<()> {
+    if old.is_none_or(|o| o.stage != new.stage) {
+        writeln!(stdout, "{}: {}", new.run, run_stage_name(new.stage))?;
+    }
+    for member in &new.members {
+        let before: Option<&MemberState> =
+            old.and_then(|o| o.members.iter().find(|m| m.name == member.name));
+        if before != Some(member) {
+            write!(
+                stdout,
+                "  {}: {}",
+                member.name,
+                member_stage_name(member.stage)
+            )?;
+            if let Some(error) = &member.error {
+                write!(stdout, " ({})", error.message)?;
+            }
+            writeln!(stdout)?;
+        }
+    }
+    if let Some(error) = new
+        .error
+        .as_ref()
+        .filter(|_| old.is_none_or(|o| o.error.is_none()))
+    {
+        writeln!(
+            stdout,
+            "{}: [{}] {}",
+            new.run,
+            status_name(error.status),
+            error.message
+        )?;
+    }
+    Ok(())
+}
+
+/// Follows run `state` until it ends (Ctrl-C stops it on the first, and
+/// leaves on the second): 0 when it ended, 1 when it failed.
+async fn follow(lobby: &LobbyClient, mut state: RunState, stdout: &mut impl Write) -> Result<i32> {
+    let mut stopping = false;
+    let mut interrupt = std::pin::pin!(crate::host::shutdown_signal());
+    while !ended(state.stage) {
+        let next = tokio::select! {
+            next = lobby.status(&state.run, state.version, None) => next?,
+            signal = &mut interrupt => {
+                signal?;
+                if stopping {
+                    return Ok(130);
+                }
+                stopping = true;
+                interrupt.set(crate::host::shutdown_signal());
+                lobby.stop(&state.run).await?
+            }
+        };
+        print_change(stdout, Some(&state), &next)?;
+        stdout.flush()?;
+        state = next;
+    }
+    Ok(i32::from(state.stage == RunStage::Failed))
+}
+
+/// `rlmesh run`: starts the scene and follows it until it ends.
+pub async fn run(args: &RunArgs, stdout: &mut impl Write) -> Result<i32> {
+    let manual = match args.arm.as_str() {
+        "auto" => false,
+        "manual" => true,
+        other => anyhow::bail!("--arm {other}: auto or manual"),
+    };
+    let text = std::fs::read_to_string(&args.file)
+        .with_context(|| format!("reading {}", args.file.display()))?;
+    let lobby = connect(&args.home).await?;
+    let state = match lobby.run_scene(&text, manual).await {
+        Ok(state) => state,
+        Err(rlmesh_session::SessionError::Rejected(refusal)) => {
+            writeln!(
+                stdout,
+                "[{}] {}",
+                status_name(refusal.status),
+                refusal.message
+            )?;
+            return Ok(1);
+        }
+        Err(err) => return Err(err.into()),
+    };
+    print_change(stdout, None, &state)?;
+    stdout.flush()?;
+    let code = follow(&lobby, state, stdout).await;
+    let _ = lobby.close().await;
+    code
+}
+
+/// `rlmesh lobby`: the robots waiting.
+pub async fn lobby(args: &HomeArgs, stdout: &mut impl Write) -> Result<()> {
+    let lobby = connect(args).await?;
+    let waiting = lobby.fetch_waiting().await?;
+    if waiting.is_empty() {
+        writeln!(stdout, "no robots waiting at {}", lobby.lobby().base)?;
+    }
+    for robot in waiting {
+        writeln!(stdout, "{}  (from {})", robot.id, robot.device)?;
+    }
+    let _ = lobby.close().await;
+    Ok(())
+}
+
+/// `rlmesh stop`: stops a run and waits until it ended.
+pub async fn stop(args: &RunIdArgs, stdout: &mut impl Write) -> Result<i32> {
+    let lobby = connect(&args.home).await?;
+    let mut state = lobby.stop(&args.run).await?;
+    print_change(stdout, None, &state)?;
+    while !ended(state.stage) {
+        let next = lobby
+            .status(&state.run, state.version, Some(HOME_TIMEOUT))
+            .await?;
+        print_change(stdout, Some(&state), &next)?;
+        state = next;
+    }
+    let _ = lobby.close().await;
+    Ok(0)
+}
+
+/// `rlmesh arm`: arms a run waiting for it.
+pub async fn arm(args: &RunIdArgs, stdout: &mut impl Write) -> Result<()> {
+    let lobby = connect(&args.home).await?;
+    let state = lobby.arm(&args.run).await?;
+    writeln!(stdout, "{}: {}", state.run, run_stage_name(state.stage))?;
+    let _ = lobby.close().await;
+    Ok(())
 }
 
 #[cfg(test)]
