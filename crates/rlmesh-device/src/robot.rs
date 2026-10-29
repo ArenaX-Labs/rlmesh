@@ -42,6 +42,8 @@ pub const RETRY_MS: u32 = 1000;
 /// With no heartbeat echo and no valid signed state for this long, the host
 /// counts as lost (scene design §3.5).
 pub const HOST_LOST_MS: u32 = 5000;
+/// The longest pause between rounds of home addresses.
+const MAX_BACKOFF_MS: u32 = 30_000;
 /// `ctl` requests are resent (same id) this many times before they fail.
 const CTL_TRIES: u8 = 3;
 /// How often a robot missing keys asks for them again (`GetKeys`).
@@ -83,6 +85,11 @@ pub struct Config {
     /// Wait in the home's lobby for runs (scene design §3): `tenant` and
     /// `session` are then the lobby's, and each run's come with its join.
     pub lobby: bool,
+    /// The home's base addresses (`host`, first port), tried in order: the
+    /// address's one, or a provisioned board's stored ones.
+    pub homes: Vec<(String, u16)>,
+    /// The home's host id (`rlm-…`), for discovery: empty when not known.
+    pub home_id: String,
 }
 
 /// Why a [`Config`] can't make a robot.
@@ -93,6 +100,8 @@ pub enum ConfigError {
     Map(String),
     /// A zero heartbeat period.
     Heartbeat,
+    /// No home address.
+    NoHome,
 }
 
 /// What the transport is asked to do, on traffic class `class` (0 control,
@@ -235,6 +244,24 @@ pub struct Robot {
     run: Option<Join>,
     /// The lobby wait in flight: its query, request id and command.
     wait: Option<(u32, u64, Command)>,
+    /// Where it connects: one of the homes, or a run's address.
+    target: (String, u16),
+    /// The home it tries now, an index into `config.homes`.
+    home_at: usize,
+    /// The run's addresses, while joining one hosted elsewhere, and the one
+    /// tried now.
+    run_targets: Vec<(String, u16)>,
+    run_at: usize,
+    /// The handshake's keys now: the home's, or a run's host key.
+    credential: Credential,
+    /// Every home address failed in a row: the platform may look for it
+    /// (mDNS).
+    home_unreachable: bool,
+    /// The pause before the next round of homes, doubling to 30 s.
+    backoff_ms: u32,
+    /// Why it last left a run, and the view that said so (revision,
+    /// generation listed for it, its own).
+    left: Option<(Leave, u64, Option<u32>, u32)>,
     /// The map's part paths, in its order. `DeclareParts.seal` names
     /// them all: this runtime seals any part.
     paths: Vec<String>,
@@ -334,6 +361,8 @@ impl Robot {
         };
         let keys = SessionKeys::new(&tenant, session);
         let lobby = config.lobby.then(|| Lobby::new(config.name.clone()));
+        let target = config.homes.first().cloned().ok_or(ConfigError::NoHome)?;
+        let credential = config.credential.clone();
         Ok(Self {
             subscribed: alloc::vec![false; paths.len()],
             edge_of: alloc::vec![None; paths.len()],
@@ -345,6 +374,14 @@ impl Robot {
             lobby,
             run: None,
             wait: None,
+            target,
+            home_at: 0,
+            run_targets: Vec::new(),
+            run_at: 0,
+            credential,
+            home_unreachable: false,
+            backoff_ms: RETRY_MS,
+            left: None,
             phase: Phase::Host,
             out: Vec::new(),
             started: false,
@@ -386,6 +423,47 @@ impl Robot {
     /// Why it last started over, if it has.
     pub fn fault(&self) -> Option<&Fault> {
         self.fault.as_ref()
+    }
+
+    /// Where it connects now: a host and its first port (class `i` listens
+    /// on the port plus `i`).
+    pub fn host(&self) -> (&str, u16) {
+        (&self.target.0, self.target.1)
+    }
+
+    /// The home's host id, empty when not known.
+    pub fn home_id(&self) -> &str {
+        &self.config.home_id
+    }
+
+    /// Whether every home address failed in a row: time to look for it.
+    pub fn home_unreachable(&self) -> bool {
+        self.home_unreachable
+    }
+
+    /// Another address of the home, found by the platform (mDNS): tried
+    /// next, at once.
+    pub fn add_home(&mut self, host: &str, port: u16, now_us: u64) {
+        let home = (String::from(host), port);
+        let at = match self.config.homes.iter().position(|h| *h == home) {
+            Some(at) => at,
+            None => {
+                self.config.homes.push(home);
+                self.config.homes.len() - 1
+            }
+        };
+        if self.home_unreachable && self.phase == Phase::Retry {
+            self.home_unreachable = false;
+            self.home_at = at;
+            self.retry_at = now_us;
+            self.retarget_home();
+        }
+    }
+
+    /// Why it last left a run: closing, lost or superseded, with the view's
+    /// revision, the generation the view listed for it, and its own.
+    pub fn left(&self) -> Option<&(Leave, u64, Option<u32>, u32)> {
+        self.left.as_ref()
     }
 
     /// Whether it is in a run it joined from the lobby.
@@ -504,7 +582,10 @@ impl Robot {
                     key: self.keys.participant(me),
                 },
             ]);
-            self.ask_host();
+            // After a failure the retry timer asks, after its pause.
+            if self.phase != Phase::Retry {
+                self.ask_host();
+            }
         }
         match self.phase {
             Phase::Retry if now_us >= self.retry_at => self.ask_host(),
@@ -897,7 +978,7 @@ impl Robot {
 
     fn start(&mut self, host_instance: u64, rng: &mut dyn Rng, now_us: u64) {
         let session = self.session.to_string();
-        let started = self.config.credential.start(
+        let started = self.credential.start(
             rng,
             self.tenant.as_str(),
             &session,
@@ -1044,6 +1125,7 @@ impl Robot {
                 // In the lobby a robot never declares: it waits.
                 self.phase = Phase::Waiting;
                 self.fault = None;
+                self.reached_home();
                 self.next_heartbeat = now_us;
                 self.last_heard = now_us;
                 self.wait = None;
@@ -1065,6 +1147,9 @@ impl Robot {
                 }
                 self.phase = Phase::Running;
                 self.fault = None;
+                if self.run.is_none() {
+                    self.reached_home();
+                }
                 self.next_heartbeat = now_us;
                 self.last_heard = now_us;
             }
@@ -1187,6 +1272,17 @@ impl Robot {
 
     fn fail(&mut self, fault: Fault, now_us: u64) {
         let joining = self.phase != Phase::Running;
+        // Nobody answered at all: the address is wrong or down.
+        let unreachable =
+            matches!(fault, Fault::NoReply) && matches!(self.phase, Phase::Host | Phase::Handshake);
+        if self.run.is_some() && joining && unreachable && self.run_at + 1 < self.run_targets.len()
+        {
+            // The run's next address.
+            self.run_at += 1;
+            self.target = self.run_targets[self.run_at].clone();
+            self.fault = Some(fault);
+            return self.rejoin_here();
+        }
         if let Some(join) = self.run.take() {
             // A run's join that failed is reported in the next wait; a run
             // whose host went quiet is left. Either way, back to the lobby
@@ -1200,7 +1296,50 @@ impl Robot {
         self.fault = Some(fault);
         self.reset_session();
         self.phase = Phase::Retry;
-        self.retry_at = now_us + u64::from(RETRY_MS) * 1000;
+        let mut pause = RETRY_MS;
+        if unreachable && self.config.homes.len() > 1 {
+            // The home's next address, at once; after a whole round,
+            // back off (1 s doubling to 30 s) and let the platform look.
+            self.home_at = (self.home_at + 1) % self.config.homes.len();
+            pause = 0;
+            if self.home_at == 0 {
+                self.home_unreachable = true;
+                pause = self.backoff_ms;
+                self.backoff_ms = (self.backoff_ms * 2).min(MAX_BACKOFF_MS);
+            }
+            self.retarget_home();
+            self.phase = Phase::Retry;
+        } else if unreachable {
+            self.home_unreachable = true;
+            pause = self.backoff_ms;
+            self.backoff_ms = (self.backoff_ms * 2).min(MAX_BACKOFF_MS);
+        }
+        self.retry_at = now_us + u64::from(pause) * 1000;
+    }
+
+    /// Points at the home it tries now, with the home's keys: a new host
+    /// means new sessions to it.
+    fn retarget_home(&mut self) {
+        let home = self.config.homes[self.home_at % self.config.homes.len()].clone();
+        self.credential = self.config.credential.clone();
+        if home != self.target {
+            self.target = home;
+            let (tenant, session) = (self.tenant.clone(), self.session);
+            self.move_to(tenant, session);
+            self.phase = Phase::Retry;
+        }
+    }
+
+    /// It reached its home: the next round starts from here, at once.
+    fn reached_home(&mut self) {
+        self.home_unreachable = false;
+        self.backoff_ms = RETRY_MS;
+    }
+
+    /// Joins the run again at the address it now points at.
+    fn rejoin_here(&mut self) {
+        let (tenant, session) = (self.tenant.clone(), self.session);
+        self.move_to(tenant, session);
     }
 
     /// Forgets everything of the session it was in; the e-stop latch and
@@ -1294,7 +1433,11 @@ impl Robot {
             return;
         };
         let current = view.generation(&self.config.name);
-        match lobby::leave(view.closing(), current, self.generation) {
+        let leave = lobby::leave(view.closing(), current, self.generation);
+        if let Some(why) = &leave {
+            self.left = Some((why.clone(), view.revision, current, self.generation));
+        }
+        match leave {
             None => {}
             Some(Leave::Closing(_)) => self.enter_lobby(true),
             Some(Leave::Lost) => self.enter_lobby(false),
@@ -1336,6 +1479,9 @@ impl Robot {
             self.detach();
         }
         self.run = None;
+        self.run_targets.clear();
+        self.target = self.config.homes[self.home_at % self.config.homes.len()].clone();
+        self.credential = self.config.credential.clone();
         if let Ok(tenant) = TenantId::new(crate::address::TENANT) {
             self.move_to(tenant, SessionId::named(LOBBY_SESSION));
         }
@@ -1355,6 +1501,17 @@ impl Robot {
             return self.enter_lobby(false);
         };
         let session = join.session;
+        // Hosted at home, or on a satellite: its addresses, its key.
+        self.run_targets = join
+            .addresses
+            .iter()
+            .filter_map(|a| crate::address::host_port(a))
+            .collect();
+        self.run_at = 0;
+        if let Some(first) = self.run_targets.first() {
+            self.target = first.clone();
+            self.credential = self.config.credential.with_host(join.host_key);
+        }
         self.run = Some(join);
         self.move_to(tenant, session);
     }

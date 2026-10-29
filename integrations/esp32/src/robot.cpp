@@ -1,7 +1,10 @@
 // rlmesh::Robot: the device robot over zenoh-pico, on the board's clock and
 // randomness.
 
+#include <ESPmDNS.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "RLMeshESP32.h"
 #include "rlmesh_zenoh.h"
@@ -42,7 +45,28 @@ bool Robot::start(const rlmesh_device_robot_config_t& config) {
 }
 
 void Robot::poll() {
-  if (zenoh_ != nullptr) rlmesh_zenoh_poll(zenoh_);
+  if (zenoh_ == nullptr) return;
+  rlmesh_zenoh_poll(zenoh_);
+  discover();
+}
+
+// Every stored home address failed: ask mDNS for `_rlmesh._tcp`, and keep only
+// the instance whose TXT id is the stored host id (scene design §3.1). At most
+// every 30 s: a query blocks for about a second.
+void Robot::discover() {
+  const char* id = rlmesh_device_robot_home_id(robot_);
+  if (id == nullptr || id[0] == '\0' || !status().home_unreachable) return;
+  if (lastDiscovery_ != 0 && millis() - lastDiscovery_ < 30000) return;
+  lastDiscovery_ = millis();
+  if (!mdns_) mdns_ = MDNS.begin(id);
+  int found = MDNS.queryService("rlmesh", "tcp");
+  for (int i = 0; i < found; ++i) {
+    if (MDNS.txt(i, "id") != id) continue;
+    char address[64];
+    snprintf(address, sizeof address, "%s:%u", MDNS.address(i).toString().c_str(),
+             unsigned(MDNS.port(i)));
+    rlmesh_device_robot_add_home(robot_, address, esp32::nowUs());
+  }
 }
 
 void Robot::end() {

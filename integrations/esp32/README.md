@@ -76,8 +76,10 @@ rlmesh stop r-dtqh                 # eyes: returned
 
 - **In the lobby** the board is attached and heartbeating, and asks for an order every 10 s; it never declares there.
 - **Leaving a run:** when the run closes it detaches and goes back to the lobby. If the run's host loses it (a Wi-Fi drop, a reset), it goes back to the lobby too, and the home sends the same join again, so the run continues once someone arms it again. If another board takes its name, it stays safe and stops until reset.
+- **A run hosted on another machine** (a satellite daemon): the board connects to the run's addresses, in order, and handshakes with the run's own host key; if none answers, the run shows the failure and the board goes back to the lobby at home.
+- **Finding home:** the board tries each stored address in turn, then backs off (1 s doubling to 30 s). While none answers it asks mDNS for `_rlmesh._tcp` and keeps only the daemon whose TXT `id` is the one it was provisioned with; a wrong answer only fails the handshake.
 - **Its map** must be the same on every join: a rejoin with another one is refused.
-- `robot.status()` shows `in_run`, and phase 6 while it waits in the lobby.
+- `robot.status()` shows `in_run`, phase 6 while it waits in the lobby, `left` (why it last left a run) and `home_unreachable`.
 - **At rest:** anyone with the board in hand can read its key from flash; revoke the device (`rlmesh devices revoke`) if one goes missing.
 
 For a one-off host instead, run one on the computer's LAN address and put

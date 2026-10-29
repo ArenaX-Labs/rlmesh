@@ -20,6 +20,8 @@ use zeroize::Zeroizing;
 
 use crate::address;
 use crate::provision::Record;
+use rlmesh_session_core::lobby::Leave;
+
 use crate::robot::{Action, Config, Fault, Phase, PublishError, Robot};
 
 /// `rlmesh_device_robot_config_t`.
@@ -113,6 +115,12 @@ pub struct RlmeshDeviceRobotStatus {
     pub estop: u8,
     /// Whether it is in a run it joined from the lobby.
     pub in_run: u8,
+    /// Every home address failed in a row: look for the home (mDNS, by
+    /// `rlmesh_device_robot_home_id`) and give it `_add_home`.
+    pub home_unreachable: u8,
+    /// Why it last left a run: 0 never, 1 the run closed, 2 the run lost it,
+    /// 3 superseded (it stopped).
+    pub left: u8,
 }
 
 /// No part: `rlmesh_device_tick_t.part` and the handover's.
@@ -153,9 +161,10 @@ pub struct DeviceRobot {
     robot: Robot,
     rng: CRng,
     queue: VecDeque<Action>,
-    /// The host's address and base port, NUL-terminated.
+    /// Where it connects now, NUL-terminated (refreshed by each `_next`).
     host: Vec<u8>,
-    port: u16,
+    /// The home's host id, NUL-terminated.
+    home_id: Vec<u8>,
     /// The action last handed out: its key with a NUL, and its payload.
     key: Vec<u8>,
     payload: Vec<u8>,
@@ -174,15 +183,24 @@ unsafe fn text<'a>(p: *const c_char) -> Option<&'a str> {
     unsafe { CStr::from_ptr(p) }.to_str().ok()
 }
 
+/// `text` with a NUL.
+fn nul(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + 1);
+    out.extend_from_slice(text.as_bytes());
+    out.push(0);
+    out
+}
+
 /// Where a robot joins, and as which device.
 struct Target {
-    host: String,
-    port: u16,
     session: String,
     credential: Credential,
     name: Option<String>,
     /// A provisioned board waits in its home's lobby for runs.
     lobby: bool,
+    /// Every base address of the home, and its host id (empty: unknown).
+    homes: Vec<(String, u16)>,
+    home_id: String,
 }
 
 /// The target of `address` (device `local`), or of a provisioned board's
@@ -195,12 +213,12 @@ unsafe fn target(address: Option<&str>, c: &RlmeshDeviceRobotConfig) -> Result<T
     if let Some(address) = address {
         let address = address::parse(address).ok_or(RLMESH_DEVICE_ERR_CONFIG)?;
         return Ok(Target {
-            host: address.host,
-            port: address.port,
             session: address.session,
             credential: address.key.credential(),
             name: address.name,
             lobby: false,
+            homes: alloc::vec![(address.host, address.port)],
+            home_id: String::new(),
         });
     }
     if c.device_key.is_null() {
@@ -216,20 +234,23 @@ unsafe fn target(address: Option<&str>, c: &RlmeshDeviceRobotConfig) -> Result<T
     let record = record
         .and_then(Record::parse)
         .ok_or(RLMESH_DEVICE_ERR_CONFIG)?;
-    let (host, port) = record
+    let homes: Vec<(String, u16)> = record
         .addresses
-        .first()
-        .and_then(|a| address::host_port(a))
-        .ok_or(RLMESH_DEVICE_ERR_CONFIG)?;
+        .iter()
+        .filter_map(|a| address::host_port(a))
+        .collect();
+    if homes.is_empty() {
+        return Err(RLMESH_DEVICE_ERR_CONFIG);
+    }
     let mut private = Zeroizing::new([0_u8; 32]);
     private.copy_from_slice(key);
     Ok(Target {
-        host,
-        port,
         session: String::from(address::DEFAULT_SESSION),
         credential: Credential::new(StaticKeypair::from_private(&mut private), record.host_key),
         name: None,
         lobby: true,
+        homes,
+        home_id: record.host_id.clone(),
     })
 }
 
@@ -278,17 +299,19 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
         robot_json: json.into(),
         heartbeat_ms: c.heartbeat_ms,
         lobby: target.lobby,
+        homes: target.homes,
+        home_id: target.home_id,
     }) else {
         return RLMESH_DEVICE_ERR_CONFIG;
     };
-    let mut host = target.host.into_bytes();
-    host.push(0);
+    let host = nul(robot.host().0);
+    let home_id = nul(robot.home_id());
     let robot = Box::new(DeviceRobot {
         robot,
         rng: CRng(random),
         queue: VecDeque::new(),
         host,
-        port: target.port,
+        home_id,
         key: Vec::new(),
         payload: Vec::new(),
         value: Vec::new(),
@@ -334,7 +357,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_host(
     };
     if !port.is_null() {
         // SAFETY: checked non-null; valid per the contract.
-        unsafe { port.write(r.port) };
+        unsafe { port.write(r.robot.host().1) };
     }
     r.host.as_ptr().cast()
 }
@@ -381,6 +404,11 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
     }
     if r.queue.is_empty() {
         r.queue.extend(r.robot.poll(now_us));
+        // A new host (a run elsewhere, another home address) comes with a
+        // reset: the transport reads it then.
+        if r.host.split_last().map(|(_, h)| h) != Some(r.robot.host().0.as_bytes()) {
+            r.host = nul(r.robot.host().0);
+        }
     }
     let Some(action) = r.queue.pop_front() else {
         return 0;
@@ -684,6 +712,43 @@ pub unsafe extern "C" fn rlmesh_device_robot_publish(
     }
 }
 
+/// The home's host id (`rlm-…`, NUL-terminated, owned by the robot), empty
+/// when not known: what an mDNS answer's TXT `id` must equal.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_home_id(robot: *const DeviceRobot) -> *const c_char {
+    // SAFETY: per the contract.
+    match unsafe { robot.as_ref() } {
+        Some(r) => r.home_id.as_ptr().cast(),
+        None => core::ptr::null(),
+    }
+}
+
+/// Another base address of the home (`host:port`, NUL-terminated), found by
+/// the platform (mDNS): tried next, at once.
+///
+/// # Safety
+/// `robot` is null or from `rlmesh_device_robot_new`; `address` null or
+/// NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_device_robot_add_home(
+    robot: *mut DeviceRobot,
+    address: *const c_char,
+    now_us: u64,
+) -> c_int {
+    // SAFETY: per the contract.
+    let (Some(r), Some(address)) = (unsafe { robot_mut(robot) }, unsafe { text(address) }) else {
+        return RLMESH_DEVICE_ERR_ARG;
+    };
+    let Some((host, port)) = address::host_port(address) else {
+        return RLMESH_DEVICE_ERR_CONFIG;
+    };
+    r.robot.add_home(&host, port, now_us);
+    RLMESH_DEVICE_OK
+}
+
 /// The proto's `CtlStatus` number.
 fn status_code(status: CtlStatus) -> u8 {
     match status {
@@ -767,6 +832,13 @@ pub unsafe extern "C" fn rlmesh_device_robot_status(
             echoes: robot.echoes(),
             chunks_accepted: robot.chunks_accepted(),
             in_run: u8::from(robot.in_run()),
+            home_unreachable: u8::from(robot.home_unreachable()),
+            left: match robot.left().map(|l| &l.0) {
+                None => 0,
+                Some(Leave::Closing(_)) => 1,
+                Some(Leave::Lost) => 2,
+                Some(Leave::Superseded) => 3,
+            },
             estop: match robot.estop_reason().map(|r| r.code) {
                 None => 0,
                 Some(ReasonCode::EstopSignal) => 2,

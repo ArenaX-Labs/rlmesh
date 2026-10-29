@@ -140,6 +140,12 @@ typedef struct rlmesh_device_robot_status_t {
   uint8_t estop;
   /* Whether it is in a run it joined from the lobby. */
   uint8_t in_run;
+  /* Every home address failed in a row: look for the home (mDNS, TXT id ==
+   * rlmesh_device_robot_home_id) and give it rlmesh_device_robot_add_home. */
+  uint8_t home_unreachable;
+  /* Why it last left a run: 0 never, 1 the run closed, 2 the run lost it,
+   * 3 superseded (it stopped). */
+  uint8_t left;
 } rlmesh_device_robot_status_t;
 
 /* No part, in a tick. */
@@ -183,6 +189,13 @@ void rlmesh_device_robot_free(rlmesh_device_robot_t* robot);
 /* The host to connect to (owned by the robot), and in *port its first port:
  * class i listens on port + i. */
 const char* rlmesh_device_robot_host(const rlmesh_device_robot_t* robot, uint16_t* port);
+/* The home's host id ("rlm-…", owned by the robot), empty when not known: what
+ * an mDNS answer's TXT id must equal. */
+const char* rlmesh_device_robot_home_id(const rlmesh_device_robot_t* robot);
+/* Another base address of the home ("host:port"), found by mDNS: tried next,
+ * at once. */
+int rlmesh_device_robot_add_home(rlmesh_device_robot_t* robot, const char* address,
+                                 uint64_t now_us);
 /* The index of the part at path in the robot's map, or -1. */
 int rlmesh_device_robot_part(const rlmesh_device_robot_t* robot, const char* path);
 /* Runs the timers and hands out the next action: 1 with *out written, 0 when
