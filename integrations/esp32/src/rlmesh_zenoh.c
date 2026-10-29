@@ -154,7 +154,7 @@ static int query(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   z_get_options_t opts;
   z_get_options_default(&opts);
   opts.consolidation = z_query_consolidation_none();
-  opts.timeout_ms = RLMESH_DEVICE_QUERY_MS;
+  opts.timeout_ms = a->timeout_ms;
   opts.priority = Z_PRIORITY_REAL_TIME;
   opts.is_express = true;
   z_owned_bytes_t payload;
@@ -184,6 +184,15 @@ static int publish(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   opts.priority = Z_PRIORITY_REAL_TIME;
   opts.is_express = true;
   return z_put(s, z_loan(ke), z_move(payload), &opts) == Z_OK ? 0 : -1;
+}
+
+/* Drops every subscription and token: the robot moved to another session. The
+ * sessions stay: it is the same host. */
+static void reset(rlmesh_zenoh_t* z) {
+  for (uint8_t i = 0; i < z->sub_count; ++i) z_drop(z_move(z->subs[i]));
+  for (uint8_t i = 0; i < z->token_count; ++i) z_drop(z_move(z->tokens[i]));
+  z->sub_count = 0;
+  z->token_count = 0;
 }
 
 int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
@@ -235,6 +244,10 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
       case RLMESH_DEVICE_PUBLISH:
         done = publish(z, &a);
         break;
+      case RLMESH_DEVICE_RESET:
+        reset(z);
+        done = 0;
+        break;
       default:
         break;
     }
@@ -244,8 +257,7 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
 }
 
 void rlmesh_zenoh_close(rlmesh_zenoh_t* z) {
-  for (uint8_t i = 0; i < z->sub_count; ++i) z_drop(z_move(z->subs[i]));
-  for (uint8_t i = 0; i < z->token_count; ++i) z_drop(z_move(z->tokens[i]));
+  reset(z);
   /* Pending queries are dropped with their session: their droppers queue. */
   for (uint8_t c = 0; c < RLMESH_DEVICE_CLASSES; ++c) {
     if (z->open[c]) z_drop(z_move(z->sessions[c]));

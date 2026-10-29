@@ -53,6 +53,9 @@ pub const RLMESH_DEVICE_TOKEN: u8 = 2;
 pub const RLMESH_DEVICE_QUERY: u8 = 3;
 /// Publish.
 pub const RLMESH_DEVICE_PUBLISH: u8 = 4;
+/// Drop every subscription and token (the robot moves to another session
+/// on the same host).
+pub const RLMESH_DEVICE_RESET: u8 = 5;
 
 /// `rlmesh_device_action_t`: borrowed from the robot until the next call
 /// on it.
@@ -69,6 +72,8 @@ pub struct RlmeshDeviceAction {
     pub has_payload: u8,
     /// A query's id, for `_reply` and `_query_done`.
     pub query_id: u32,
+    /// How long a query waits for replies.
+    pub timeout_ms: u32,
     /// The key expression, NUL-terminated.
     pub key: *const c_char,
     /// A query's or publication's payload.
@@ -82,7 +87,8 @@ pub struct RlmeshDeviceAction {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RlmeshDeviceRobotStatus {
     /// 0 reading the host, 1 handshake, 2 attach, 3 declaring its parts, 4
-    /// running, 5 waiting to retry.
+    /// running, 5 waiting to retry, 6 waiting in the lobby for a run, 7
+    /// stopped (another process of this device took its name).
     pub phase: u8,
     /// Why it last started over: 0 never, 1 no reply, 2 the host's state
     /// unsigned, 3 the handshake failed (another host's key), 4 refused
@@ -105,6 +111,8 @@ pub struct RlmeshDeviceRobotStatus {
     /// The e-stop latch: 0 clear, 1 this robot's own stop, 2 a member's
     /// signal.
     pub estop: u8,
+    /// Whether it is in a run it joined from the lobby.
+    pub in_run: u8,
 }
 
 /// No part: `rlmesh_device_tick_t.part` and the handover's.
@@ -173,6 +181,8 @@ struct Target {
     session: String,
     credential: Credential,
     name: Option<String>,
+    /// A provisioned board waits in its home's lobby for runs.
+    lobby: bool,
 }
 
 /// The target of `address` (device `local`), or of a provisioned board's
@@ -190,6 +200,7 @@ unsafe fn target(address: Option<&str>, c: &RlmeshDeviceRobotConfig) -> Result<T
             session: address.session,
             credential: address.key.credential(),
             name: address.name,
+            lobby: false,
         });
     }
     if c.device_key.is_null() {
@@ -218,6 +229,7 @@ unsafe fn target(address: Option<&str>, c: &RlmeshDeviceRobotConfig) -> Result<T
         session: String::from(address::DEFAULT_SESSION),
         credential: Credential::new(StaticKeypair::from_private(&mut private), record.host_key),
         name: None,
+        lobby: true,
     })
 }
 
@@ -265,6 +277,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
         credential: target.credential,
         robot_json: json.into(),
         heartbeat_ms: c.heartbeat_ms,
+        lobby: target.lobby,
     }) else {
         return RLMESH_DEVICE_ERR_CONFIG;
     };
@@ -372,22 +385,24 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
     let Some(action) = r.queue.pop_front() else {
         return 0;
     };
-    let (kind, class, sub, query_id, key, payload) = match action {
+    let (kind, class, sub, query_id, timeout_ms, key, payload) = match action {
         Action::Subscribe { class, sub, key } => {
-            (RLMESH_DEVICE_SUBSCRIBE, class, sub, 0, key, None)
+            (RLMESH_DEVICE_SUBSCRIBE, class, sub, 0, 0, key, None)
         }
-        Action::Token { class, key } => (RLMESH_DEVICE_TOKEN, class, 0, 0, key, None),
+        Action::Token { class, key } => (RLMESH_DEVICE_TOKEN, class, 0, 0, 0, key, None),
         Action::Query {
             class,
             id,
+            timeout_ms,
             key,
             payload,
-        } => (RLMESH_DEVICE_QUERY, class, 0, id, key, payload),
+        } => (RLMESH_DEVICE_QUERY, class, 0, id, timeout_ms, key, payload),
         Action::Publish {
             class,
             key,
             payload,
-        } => (RLMESH_DEVICE_PUBLISH, class, 0, 0, key, Some(payload)),
+        } => (RLMESH_DEVICE_PUBLISH, class, 0, 0, 0, key, Some(payload)),
+        Action::Reset => (RLMESH_DEVICE_RESET, 0, 0, 0, 0, String::new(), None),
     };
     r.key = key.into_bytes();
     r.key.push(0);
@@ -401,6 +416,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
             sub,
             has_payload: u8::from(has_payload),
             query_id,
+            timeout_ms,
             key: r.key.as_ptr().cast(),
             payload: r.payload.as_ptr(),
             payload_len: r.payload.len(),
@@ -717,6 +733,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_status(
         Phase::Declare => 3,
         Phase::Running => 4,
         Phase::Retry => 5,
+        Phase::Waiting => 6,
+        Phase::Stopped => 7,
     };
     let (fault, refused_status) = match robot.fault() {
         None => (0, 0),
@@ -748,6 +766,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_status(
             epoch,
             echoes: robot.echoes(),
             chunks_accepted: robot.chunks_accepted(),
+            in_run: u8::from(robot.in_run()),
             estop: match robot.estop_reason().map(|r| r.code) {
                 None => 0,
                 Some(ReasonCode::EstopSignal) => 2,
@@ -811,6 +830,7 @@ mod tests {
             sub: 0,
             has_payload: 0,
             query_id: 0,
+            timeout_ms: 0,
             key: core::ptr::null(),
             payload: core::ptr::null(),
             payload_len: 0,

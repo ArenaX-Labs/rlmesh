@@ -36,8 +36,14 @@ const int kBootPin = 0;
 #endif
 const uint32_t kPeriodUs = 20000;  // the map's 50 Hz
 
-const char* const kPhases[] = {"reading the host", "handshake", "attaching",
-                               "declaring parts",  "running",   "retrying"};
+const char* const kPhases[] = {"reading the host",
+                               "handshake",
+                               "attaching",
+                               "declaring parts",
+                               "running",
+                               "retrying",
+                               "waiting in the lobby for a run",
+                               "stopped: another board has its name"};
 const char* const kFaults[] = {
     "",
     "no reply from the host",
@@ -104,7 +110,8 @@ void report() {
   rlmesh_device_robot_status_t s = robot.status();
   if (s.phase != lastPhase) {
     lastPhase = s.phase;
-    Serial.printf("%8lu ms  %s", (unsigned long)millis(), kPhases[s.phase < 6 ? s.phase : 5]);
+    Serial.printf("%8lu ms  %s%s", (unsigned long)millis(), s.in_run ? "run: " : "",
+                  kPhases[s.phase < 8 ? s.phase : 5]);
     if (s.fault != 0 && s.fault < 7) {
       Serial.printf(" (last: %s", kFaults[s.fault]);
       if (s.fault == 4) Serial.printf(", status %u", s.refused_status);
