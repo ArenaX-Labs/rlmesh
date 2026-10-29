@@ -464,10 +464,8 @@ pub struct AuthoritySnapshot {
     /// The last entry into SAFE, DISARMED or ESTOP.
     pub last_stop: LastStop,
     /// Where each placed robot's parts appear in the scene's view.
-    // TODO: always empty until the host carries places (scene step 5).
     pub places: Vec<Place>,
     /// The scene this session runs, when a daemon started it.
-    // TODO: always `None` until the host carries a scene (scene step 5).
     pub scene: Option<Box<SceneInfo>>,
 }
 

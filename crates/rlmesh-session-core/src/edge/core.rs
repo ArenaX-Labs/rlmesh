@@ -547,6 +547,10 @@ impl EdgeCore {
         if view.mode == Mode::Estop {
             return Err(Rejection::Estop);
         }
+        // A closing scene's run is over: no lease in it drives again.
+        if view.scene.as_ref().is_some_and(|s| s.closing.is_some()) {
+            return Err(Rejection::NoLease);
+        }
         let lease = view.check_fence(chunk.channel, chunk.lease_token, chunk.epoch)?;
         if lease.holder != chunk.source {
             return Err(Rejection::WrongSource);
@@ -1252,6 +1256,21 @@ mod tests {
             lease_token: human.token,
             seq: 1
         }));
+        // A closing scene's view fences every lease, before the host ends
+        // them.
+        if let Some(view) = f.snapshot.as_mut() {
+            view.scene = Some(Box::new(crate::wire::SceneInfo {
+                run: "r-7k2m".into(),
+                name: "rig".into(),
+                fingerprint: crate::wire::Fingerprint::from(7),
+                closing: Some(crate::wire::Reason::new(ReasonCode::SceneEnded)),
+                rejoin_until_ns: None,
+            }));
+        }
+        assert_eq!(
+            f.accept(f.chunk("operator", &human, 2, MS, 3), MS),
+            Err(Rejection::NoLease)
+        );
     }
 
     #[test]

@@ -64,8 +64,8 @@ use crate::wire::version::VIEW_DEVICE;
 use crate::wire::{
     Applied, AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
     DeviceView, Epoch, HeartbeatEcho, HistoryQuery, IssuedKey, Lease, LeaseToken, ParticipantId,
-    Role, SampleBatch, SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec, TenantId,
-    ViewReply,
+    ReasonCode, Role, SampleBatch, SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec,
+    TenantId, ViewReply,
 };
 use bytes::Bytes;
 use rlmesh_session_core::auth::issuer::{
@@ -89,7 +89,7 @@ use zenoh::sample::SampleKind;
 
 use crate::authority::{
     Access, Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent, DeviceAccess,
-    Identity, SealPolicy,
+    Identity, SceneConfig, SealPolicy,
 };
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
 use crate::error::SessionError;
@@ -204,6 +204,10 @@ pub struct HostConfig {
     /// embodiment's device for the host instance. Change one at runtime with
     /// [`SessionHost::pin`].
     pub pins: BTreeMap<ParticipantId, Pin>,
+    /// The scene this session runs (scene design §4): its places, its
+    /// member table and its identity. `None` by default: an ordinary
+    /// session. [`crate::scene::Scene::host`] builds one from a scene file.
+    pub scene: Option<SceneConfig>,
 }
 
 impl HostConfig {
@@ -237,6 +241,7 @@ impl HostConfig {
             seal: SealPolicy::None,
             devices: Vec::new(),
             pins: BTreeMap::new(),
+            scene: None,
         }
     }
 
@@ -287,6 +292,7 @@ impl std::fmt::Debug for HostConfig {
             .field("seal", &self.seal)
             .field("devices", &self.devices)
             .field("pins", &self.pins)
+            .field("scene", &self.scene)
             .finish_non_exhaustive()
     }
 }
@@ -318,6 +324,8 @@ enum Change {
     Revoke(String),
     /// A robot name's new pin, or none.
     Pin(ParticipantId, Option<Pin>),
+    /// The scene closes: the reason's code, who, and why.
+    Close(ReasonCode, String, String),
 }
 
 impl SessionHost {
@@ -341,6 +349,7 @@ impl SessionHost {
                 virtual_clock: config.virtual_clock,
                 seal: config.seal.clone(),
                 access: access.clone(),
+                scene: config.scene.clone(),
             },
         );
         let epoch = Arc::new(AtomicU64::new(authority.epoch().0));
@@ -539,6 +548,25 @@ impl SessionHost {
     /// [`SessionError::Closed`] once the host stopped.
     pub async fn pin(&self, robot: &ParticipantId, pin: Option<Pin>) -> Result<(), SessionError> {
         self.change(Change::Pin(robot.clone(), pin)).await
+    }
+
+    /// Closes the scene this session runs (scene design §4.2), in one
+    /// revision: DISARMED (ESTOP stays) with `code` (`SCENE_ENDED`, or
+    /// `SCENE_FAILED` with the error in `detail`) and `by`, every lease
+    /// ended with it, and `scene.closing` set in the state and every device
+    /// view, so robots detach and return to the lobby.
+    ///
+    /// # Errors
+    /// [`SessionError::Config`] outside a scene; [`SessionError::Closed`]
+    /// once the host stopped.
+    pub async fn close_scene(
+        &self,
+        code: ReasonCode,
+        by: &str,
+        detail: &str,
+    ) -> Result<(), SessionError> {
+        self.change(Change::Close(code, by.to_string(), detail.to_string()))
+            .await
     }
 
     async fn change(&self, change: Change) -> Result<(), SessionError> {
@@ -1129,6 +1157,9 @@ impl HostActor {
                         Change::Pin(robot, pin) => {
                             self.pin(&robot, pin).await;
                             Ok(())
+                        }
+                        Change::Close(code, by, detail) => {
+                            self.close_scene(code, &by, &detail).await
                         }
                     };
                     let _ = done.send(applied);
@@ -1845,6 +1876,26 @@ impl HostActor {
         if let Err(err) = self.auth.issuer().reauthorize(&mut OsRng, &access, now) {
             warn!(%err, "stream keys");
         }
+    }
+
+    /// Closes the scene: see [`SessionHost::close_scene`].
+    async fn close_scene(
+        &mut self,
+        code: ReasonCode,
+        by: &str,
+        detail: &str,
+    ) -> Result<(), SessionError> {
+        if self.config.scene.is_none() {
+            return Err(SessionError::Config("this session runs no scene".into()));
+        }
+        let events = self.authority.close_scene(code, by, detail, self.now());
+        // A disarmed session with no lease changes only `closing`.
+        if events.is_empty() {
+            self.publish().await;
+        } else {
+            self.record(events).await;
+        }
+        Ok(())
     }
 
     /// Pins a robot name: see [`SessionHost::pin`].
