@@ -2,6 +2,7 @@
 // randomness.
 
 #include <ESPmDNS.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,11 @@ bool Robot::begin(const Provisioning& provisioning, const char* name, const char
 
 bool Robot::start(const rlmesh_device_robot_config_t& config) {
   end();
+  // A hostname: letters, digits and '-'.
+  snprintf(mdnsName_, sizeof mdnsName_, "rlmesh-%s", config.name != nullptr ? config.name : "");
+  for (char* c = mdnsName_; *c != '\0'; ++c) {
+    if (!isalnum(static_cast<unsigned char>(*c))) *c = '-';
+  }
   if (rlmesh_device_robot_new(&config, &robot_) != RLMESH_DEVICE_OK) {
     robot_ = nullptr;
     return false;
@@ -58,7 +64,8 @@ void Robot::discover() {
   if (id == nullptr || id[0] == '\0' || !status().home_unreachable) return;
   if (lastDiscovery_ != 0 && millis() - lastDiscovery_ < 30000) return;
   lastDiscovery_ = millis();
-  if (!mdns_) mdns_ = MDNS.begin(id);
+  // Its own hostname: the home's id is the home's (`{id}.local`).
+  if (!mdns_) mdns_ = MDNS.begin(mdnsName_);
   int found = MDNS.queryService("rlmesh", "tcp");
   for (int i = 0; i < found; ++i) {
     if (MDNS.txt(i, "id") != id) continue;

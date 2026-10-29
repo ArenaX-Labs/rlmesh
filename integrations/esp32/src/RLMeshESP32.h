@@ -129,6 +129,7 @@ class Robot {
   void discover();
   uint32_t lastDiscovery_ = 0;
   bool mdns_ = false;
+  char mdnsName_[40] = {0};
 
   rlmesh_device_robot_t* robot_ = nullptr;
   struct rlmesh_zenoh_t* zenoh_ = nullptr;

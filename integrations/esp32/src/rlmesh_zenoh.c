@@ -23,9 +23,15 @@ typedef struct {
   uint32_t id;
 } query_t;
 
-/* Queues a copy of `data`, from zenoh-pico's read task. */
+static void count_failed(rlmesh_zenoh_t* z) {
+  z_mutex_lock(z_loan_mut(z->lock));
+  z->failed++;
+  z_mutex_unlock(z_loan_mut(z->lock));
+}
+
 /* Queues a copy of `key` (a sample's, or NULL) and `payload`, from
- * zenoh-pico's read task. */
+ * zenoh-pico's read task. Samples arrive unverified, so they queue only up to
+ * RLMESH_ZENOH_QUEUE_BYTES. */
 static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id,
                  const z_loaned_keyexpr_t* key, const z_loaned_bytes_t* payload) {
   z_owned_slice_t slice;
@@ -44,7 +50,14 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
     key_data = z_string_data(z_loan(key_text));
     key_len = z_string_len(z_loan(key_text));
   }
-  event_t* e = (event_t*)malloc(sizeof(event_t) + key_len + len);
+  size_t size = sizeof(event_t) + key_len + len;
+  bool room = true;
+  if (kind == EV_SAMPLE) {
+    z_mutex_lock(z_loan_mut(z->lock));
+    room = z->queued + size <= RLMESH_ZENOH_QUEUE_BYTES;
+    z_mutex_unlock(z_loan_mut(z->lock));
+  }
+  event_t* e = room ? (event_t*)malloc(size) : NULL;
   if (e != NULL) {
     e->next = NULL;
     e->kind = kind;
@@ -59,11 +72,14 @@ static void push(rlmesh_zenoh_t* z, uint8_t kind, uint8_t sub, uint32_t query_id
   z_mutex_lock(z_loan_mut(z->lock));
   if (e == NULL) {
     z->failed++;
-  } else if (z->tail == NULL) {
-    z->head = z->tail = e;
   } else {
-    z->tail->next = e;
-    z->tail = e;
+    if (kind == EV_SAMPLE) z->queued += size;
+    if (z->tail == NULL) {
+      z->head = z->tail = e;
+    } else {
+      z->tail->next = e;
+      z->tail = e;
+    }
   }
   z_mutex_unlock(z_loan_mut(z->lock));
 }
@@ -86,17 +102,25 @@ static void on_query_done(void* ctx) {
   free(q);
 }
 
+static void undeclare(rlmesh_zenoh_t* z);
+static void close_sessions(rlmesh_zenoh_t* z);
+
 /* The session for class `c`, opened to the robot's host on its port plus `c`
- * the first time it's needed; NULL when it can't be. */
+ * the first time it's needed; NULL when it can't be. The open sessions all
+ * reach one host: opening one to another closes them, and drops what was
+ * declared on them (the robot's Reset for the move follows). */
 static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c) {
   if (c >= RLMESH_DEVICE_CLASSES) return NULL;
   if (!z->open[c]) {
     uint16_t port = 0;
     const char* host = rlmesh_device_robot_host(z->robot, &port);
     char connect[96];
+    if (host == NULL || strlen(host) >= sizeof z->host) return NULL;
     int n = snprintf(connect, sizeof connect, "tcp/%s:%u", host, (unsigned)(port + c));
-    if (host == NULL || n <= 0 || (size_t)n >= sizeof connect || strlen(host) >= sizeof z->host) {
-      return NULL;
+    if (n <= 0 || (size_t)n >= sizeof connect) return NULL;
+    if (port != z->port || strcmp(host, z->host) != 0) {
+      undeclare(z);
+      close_sessions(z);
     }
     z_owned_config_t config;
     z_config_default(&config);
@@ -199,14 +223,19 @@ static void close_sessions(rlmesh_zenoh_t* z) {
   }
 }
 
-/* Drops every subscription and token: the robot moved to another session.
- * The sessions stay for the same host, and close for another (a run on a
- * satellite, another home address). */
-static void reset(rlmesh_zenoh_t* z) {
+/* Drops every subscription and token. */
+static void undeclare(rlmesh_zenoh_t* z) {
   for (uint8_t i = 0; i < z->sub_count; ++i) z_drop(z_move(z->subs[i]));
   for (uint8_t i = 0; i < z->token_count; ++i) z_drop(z_move(z->tokens[i]));
   z->sub_count = 0;
   z->token_count = 0;
+}
+
+/* Drops every subscription and token: the robot moved to another session.
+ * The sessions stay for the same host, and close for another (a run on a
+ * satellite, another home address). */
+static void reset(rlmesh_zenoh_t* z) {
+  undeclare(z);
   uint16_t port = 0;
   const char* host = rlmesh_device_robot_host(z->robot, &port);
   if (host == NULL || port != z->port || strcmp(host, z->host) != 0) close_sessions(z);
@@ -225,6 +254,7 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
   z_mutex_lock(z_loan_mut(z->lock));
   event_t* e = z->head;
   z->head = z->tail = NULL;
+  z->queued = 0;
   z_mutex_unlock(z_loan_mut(z->lock));
   while (e != NULL) {
     uint64_t now = z->now_us();
@@ -268,16 +298,13 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
       default:
         break;
     }
-    if (done != 0) z->failed++;
+    if (done != 0) count_failed(z);
   }
   return rc < 0 ? rc : 0;
 }
 
 void rlmesh_zenoh_close(rlmesh_zenoh_t* z) {
-  for (uint8_t i = 0; i < z->sub_count; ++i) z_drop(z_move(z->subs[i]));
-  for (uint8_t i = 0; i < z->token_count; ++i) z_drop(z_move(z->tokens[i]));
-  z->sub_count = 0;
-  z->token_count = 0;
+  undeclare(z);
   close_sessions(z);
   for (event_t* e = z->head; e != NULL;) {
     event_t* next = e->next;
