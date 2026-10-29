@@ -727,6 +727,9 @@ struct Shared {
     /// This participant's clock when the host's liveliness went away
     /// (`i64::MIN` while it is present).
     host_lost_ns: AtomicI64,
+    /// This participant's clock when the host last authenticated itself
+    /// (its handshake, then each heartbeat echo).
+    host_heard_ns: AtomicI64,
     /// The last completed exchange, sent with the next heartbeat.
     completed: Mutex<Option<TimingSample>>,
     /// The newest seq received per subscribed channel.
@@ -1224,6 +1227,7 @@ impl Participant {
             health: AtomicU8::new(health_code(Health::Ok)),
             host_present,
             host_lost_ns: AtomicI64::new(i64::MIN),
+            host_heard_ns: AtomicI64::new(i64::MIN),
             completed: Mutex::new(None),
             seen: Mutex::new(BTreeMap::new()),
             edge: Arc::new(EdgeReport::default()),
@@ -1261,6 +1265,9 @@ impl Participant {
                     };
                     let mut bytes = sample.payload().to_bytes().into_owned();
                     let echo = lock(link).echo(&key, &mut bytes);
+                    if echo.is_ok() {
+                        shared.host_heard_ns.store(t4, Ordering::Relaxed);
+                    }
                     match echo {
                         Ok(echo) => match &*lock(&shared.relay) {
                             Some(relay) => {
@@ -1346,6 +1353,9 @@ impl Participant {
         let _ = shared
             .link
             .set(Mutex::new(Link::new(config.id.clone(), attached)));
+        shared
+            .host_heard_ns
+            .store(config.clock.now_ns(), Ordering::Relaxed);
 
         let cancel = CancellationToken::new();
         let mut participant = Self {
@@ -1422,6 +1432,24 @@ impl Participant {
             .link
             .get()
             .map(|link| lock(link).accept().generation)
+    }
+
+    /// The host instance this process's handshake authenticated (scene
+    /// design §4.4: a restarted host is another instance).
+    pub fn host_instance(&self) -> Option<u64> {
+        self.shared
+            .link
+            .get()
+            .map(|link| lock(link).accept().host_instance)
+    }
+
+    /// How long since the host last authenticated itself: the handshake,
+    /// then each heartbeat echo. Its liveliness token is unsigned; this is
+    /// not.
+    pub fn host_unheard(&self) -> Duration {
+        let heard = self.shared.host_heard_ns.load(Ordering::Relaxed);
+        let ago = self.shared.clock.now_ns().saturating_sub(heard);
+        Duration::from_nanos(u64::try_from(ago).unwrap_or(0))
     }
 
     /// The session's keys.

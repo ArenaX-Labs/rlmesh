@@ -17,6 +17,7 @@ mod provision;
 mod publish;
 mod registry;
 mod render;
+mod satellite;
 mod scene;
 #[cfg(unix)]
 mod sys;

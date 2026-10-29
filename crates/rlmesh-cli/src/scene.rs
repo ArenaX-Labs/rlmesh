@@ -10,7 +10,8 @@
 //! - a controller's device (or the machine serving it) is `local` or in
 //!   the table, and its `max_priority` is within that device's cap, never
 //!   silently clamped;
-//! - `host` is `home` or a paired machine.
+//! - `host` is `home` or a paired machine with the `arm` verb, which may
+//!   be a satellite.
 //!
 //! Whether the machines are attached to the lobby is known only at run.
 //!
@@ -150,12 +151,19 @@ pub fn check(scene: &Scene, table: &Table) -> Vec<Problem> {
             }
         }
     }
-    if let Some(host) = scene.host.as_deref().filter(|h| *h != "home" && !paired(h)) {
+    if let Some(host) = scene
+        .host
+        .as_deref()
+        .filter(|h| *h != "home" && !table.may_host(h))
+    {
         refuse(
             "scene",
             "host",
-            format!("{host} is not a paired machine"),
-            format!("on {host}: rlmesh pair {home}, or host = \"home\""),
+            format!("{host} is not a paired machine with the arm verb"),
+            format!(
+                "on {host}: rlmesh pair {home}; on {home}: rlmesh devices allow {host} \
+                 --verbs arm,disarm; or host = \"home\""
+            ),
         );
     }
     problems.sort_by_key(|p| p.line.unwrap_or(usize::MAX));

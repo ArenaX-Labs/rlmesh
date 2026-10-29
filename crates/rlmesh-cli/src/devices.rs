@@ -211,6 +211,15 @@ impl Table {
         })
     }
 
+    /// Whether `device` may be a satellite (scene design §3.2, §4.4): a
+    /// paired machine (not a board or a browser) with the `arm` verb.
+    pub fn may_host(&self, device: &str) -> bool {
+        self.devices.get(device).is_some_and(|entry| {
+            matches!(entry.kind.as_deref(), None | Some("machine"))
+                && entry.access().is_ok_and(|a| a.verbs.contains(&Verb::Arm))
+        })
+    }
+
     /// A device id for a new device called `name`: its characters outside
     /// `[A-Za-z0-9._-]` replaced by `-` (`fallback` for none), and `-2`,
     /// `-3`… after it while that is taken, or was revoked, or a pin names

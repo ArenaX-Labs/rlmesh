@@ -8,22 +8,24 @@
 //! - [`LobbyClient`]: a client in the lobby (`cli.<8 hex>`, an observer):
 //!   run, follow, stop and arm scenes, and list the robots waiting.
 //! - [`wait_for_join`]: a robot process in the lobby until a run assigns it.
+//! - [`SatelliteClient`]: a satellite daemon taking its home's orders.
 //!
 //! The robot's own rules (what it reports, which order it takes, when it
 //! leaves a run) are sans-IO in [`rlmesh_session_core::lobby`], shared
 //! with boards.
 
+use std::net::ToSocketAddrs;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
 
-use crate::address::{Address, SessionAddress, session_id};
+use crate::address::{Address, SessionAddress, remember_credential, session_id};
 use crate::discovery;
 use crate::error::SessionError;
 use crate::participant::Participant;
 use crate::wire::{
-    Assignment, Command, CtlError, CtlReply, CtlStatus, Join, ParticipantId, ParticipantInfo,
-    PriorityClass, Role, RunStage, RunState,
+    Assignment, Command, CtlError, CtlReply, CtlStatus, HostStarted, Join, ParticipantId,
+    ParticipantInfo, PriorityClass, Role, RunStage, RunState, SessionId,
 };
 pub use rlmesh_session_core::lobby::{LOBBY_SESSION, Leave, Lobby, WAIT_RETRY, leave};
 
@@ -106,30 +108,80 @@ pub async fn find_home(home: Option<&str>) -> Result<SessionAddress, SessionErro
             path.display()
         )));
     }
+    let credential = crate::pairing::HostFile::read(&path)?.credential();
     // The host proves its key at an address before it is used or kept.
-    let (_, lobby) = discovery::locate(&path, |base| async move {
-        let lobby = SessionAddress::new(base, LOBBY_SESSION)?;
-        LobbyClient::connect(&lobby, discovery::ATTACH)
-            .await?
-            .close()
-            .await?;
-        Ok(lobby)
+    let (_, lobby) = discovery::locate(&path, |base| {
+        let credential = credential.clone();
+        async move {
+            let lobby = SessionAddress {
+                credential: Some(credential),
+                ..SessionAddress::new(base, LOBBY_SESSION)?
+            };
+            LobbyClient::connect(&lobby, discovery::ATTACH)
+                .await?
+                .close()
+                .await?;
+            Ok(lobby)
+        }
     })
     .await?;
     Ok(lobby)
 }
 
-/// Run `run`'s session at the home daemon whose lobby is `lobby`: where its
-/// members join (it hosts runs in-process).
-// TODO: a run hosted on a satellite (scene step 12) is at its
-// `RunState.addresses` under its `host_key`, not at the lobby's base.
-pub fn run_address(lobby: &SessionAddress, run: &RunState) -> Option<SessionAddress> {
-    let session = run.session?;
-    Some(SessionAddress {
-        name: session.to_string(),
-        session,
-        ..lobby.clone()
-    })
+/// Where a run's session is, for a member of the home daemon whose lobby
+/// is `lobby` (scene design §3.3, §4.4): at the lobby's own host when its
+/// static key is `host_key` (the home daemon hosts the run), else at the
+/// first of `addresses` that resolves (a satellite's), attached with the
+/// same device key against `host_key`, which this process keeps for the
+/// session ([`remember_credential`]).
+///
+/// # Errors
+/// No credential for the lobby, or no address of a satellite's run that
+/// resolves.
+pub fn hosted_at(
+    lobby: &SessionAddress,
+    session: SessionId,
+    addresses: &[String],
+    host_key: [u8; 32],
+) -> Result<SessionAddress, SessionError> {
+    let credential = lobby.credential()?;
+    if *credential.host_static() == host_key {
+        return Ok(SessionAddress {
+            name: session.to_string(),
+            session,
+            ..lobby.clone()
+        });
+    }
+    let base = addresses
+        .iter()
+        .find_map(|a| a.to_socket_addrs().ok()?.next())
+        .ok_or_else(|| {
+            SessionError::Config(format!("the run's host is at none of {addresses:?}"))
+        })?;
+    let address = SessionAddress {
+        tenant: lobby.tenant.clone(),
+        credential: Some(credential.with_host(host_key)),
+        ..SessionAddress::new(base, &session.to_string())?
+    };
+    remember_credential(&address, credential.with_host(host_key));
+    Ok(address)
+}
+
+/// Run `run`'s session, for a member of the home daemon whose lobby is
+/// `lobby`: [`hosted_at`] once its host is up (`None` before).
+///
+/// # Errors
+/// What [`hosted_at`] fails with.
+pub fn run_address(
+    lobby: &SessionAddress,
+    run: &RunState,
+) -> Result<Option<SessionAddress>, SessionError> {
+    match (run.session, run.host_key) {
+        (Some(session), Some(host_key)) => {
+            hosted_at(lobby, session, &run.addresses, host_key).map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// `command`'s reply, however long the host keeps it pending: past the
@@ -334,6 +386,123 @@ impl LobbyClient {
     }
 }
 
+/// A satellite daemon's id in its home's lobby: `rlmeshd.` and its device
+/// (scene design §3.2).
+pub const SATELLITE_PREFIX: &str = "rlmeshd.";
+
+/// How long a satellite goes without its home authenticating itself (a
+/// heartbeat echo) before it takes the home as lost, whatever the home's
+/// unsigned liveliness token says (scene design §4.4).
+pub const HOME_SILENT: Duration = Duration::from_secs(3);
+
+/// Resolves once `participant`'s host has gone [`HOME_SILENT`] without an
+/// authenticated echo, or its liveliness went away.
+async fn home_gone(participant: &Participant) {
+    let mut present = participant.host_present();
+    let silent = async {
+        loop {
+            let unheard = participant.host_unheard();
+            if unheard >= HOME_SILENT {
+                return;
+            }
+            tokio::time::sleep((HOME_SILENT - unheard).min(Duration::from_millis(250))).await;
+        }
+    };
+    tokio::select! {
+        _ = present.wait_for(|present| !present) => {}
+        () = silent => {}
+    }
+}
+
+/// A satellite daemon in its home daemon's lobby (scene design §4.4):
+/// `rlmeshd.<device>`, an observer that takes its home's orders one at a
+/// time and answers a host order.
+pub struct SatelliteClient {
+    participant: Participant,
+}
+
+impl SatelliteClient {
+    /// Attaches to `lobby` as the satellite of device `device`, waiting up
+    /// to `timeout` for the daemon.
+    ///
+    /// # Errors
+    /// What attaching fails with.
+    pub async fn connect(
+        lobby: &SessionAddress,
+        device: &str,
+        timeout: Duration,
+    ) -> Result<Self, SessionError> {
+        let participant = lobby
+            .join(
+                &format!("{SATELLITE_PREFIX}{device}"),
+                vec![Role::Observer],
+                PriorityClass::Scripted,
+                timeout,
+            )
+            .await?;
+        Ok(Self { participant })
+    }
+
+    /// The home daemon's next order, however long it takes;
+    /// [`SessionError::Closed`] once the home daemon is gone: its
+    /// liveliness away, or no authenticated echo for [`HOME_SILENT`].
+    ///
+    /// # Errors
+    /// A refusal (not a satellite of this home), the home lost, or what
+    /// the call failed with.
+    pub async fn next_order(&self) -> Result<Assignment, SessionError> {
+        let wait = long_poll(
+            &self.participant,
+            Command::LobbyWait(crate::wire::LobbyWait::default()),
+            None,
+        );
+        let reply = tokio::select! {
+            reply = wait => reply?,
+            () = home_gone(&self.participant) => return Err(SessionError::Closed),
+        };
+        reply.assignment.ok_or_else(|| {
+            SessionError::Rejected(CtlError::new(
+                CtlStatus::InvalidRequest,
+                "the lobby answered a wait without an order",
+            ))
+        })
+    }
+
+    /// Tells the home daemon how a host order went.
+    ///
+    /// # Errors
+    /// What the call failed with.
+    pub async fn host_started(&self, started: HostStarted) -> Result<(), SessionError> {
+        tokio::select! {
+            reply = long_poll(&self.participant, Command::HostStarted(started), None) => {
+                reply.map(drop)
+            }
+            () = home_gone(&self.participant) => Err(SessionError::Closed),
+        }
+    }
+
+    /// The home lobby's instance, as its handshake authenticated it: a
+    /// restarted home is another.
+    pub fn home_instance(&self) -> u64 {
+        self.participant.host_instance().unwrap_or_default()
+    }
+
+    /// Its lobby participant (tests stop its heartbeats, so the home's
+    /// echoes stop with its liveliness still up).
+    #[doc(hidden)]
+    pub fn participant(&self) -> &Participant {
+        &self.participant
+    }
+
+    /// Leaves the lobby.
+    ///
+    /// # Errors
+    /// What the detach failed with.
+    pub async fn close(self) -> Result<(), SessionError> {
+        self.participant.detach().await
+    }
+}
+
 /// Waits in `lobby` as robot `lobby`'s robot until a run assigns it (or
 /// `timeout`), then leaves the lobby: the [`Join`] and the run's session.
 /// The wait reports the robot's last failed join ([`Lobby::failed`]).
@@ -365,13 +534,6 @@ pub async fn wait_for_join(
         ))
     })?;
     let join = lobby.take(assignment)?;
-    // TODO: a run hosted on a satellite (scene step 12) is joined at
-    // `join.addresses` under `join.host_key`; the home daemon hosts its runs
-    // at the lobby's own address.
-    let address = SessionAddress {
-        name: join.session.to_string(),
-        session: join.session,
-        ..lobby_address.clone()
-    };
+    let address = hosted_at(lobby_address, join.session, &join.addresses, join.host_key)?;
     Ok((join, address))
 }

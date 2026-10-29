@@ -195,7 +195,9 @@ pub struct HostConfig {
     /// address's key) attach as device `local`.
     pub identity: Arc<HostIdentity>,
     /// The devices besides `local` it accepts, each with its entry (design
-    /// §4); none by default. Change them at runtime with
+    /// §4); none by default. One listed as `local` is another key of that
+    /// device, its entry unused: the home machine's on a satellite's run
+    /// (scene design §4.4). Change them at runtime with
     /// [`SessionHost::set_access`], [`SessionHost::admit`] and
     /// [`SessionHost::revoke`].
     pub devices: Vec<Device>,
@@ -266,13 +268,12 @@ impl HostConfig {
             return Err(SessionError::Config("tick_ns must be positive".into()));
         }
         for (i, device) in self.devices.iter().enumerate() {
-            if device.id == LOCAL_DEVICE
-                || self.devices[..i]
-                    .iter()
-                    .any(|d| d.id == device.id || d.public == device.public)
+            if self.devices[..i]
+                .iter()
+                .any(|d| d.id == device.id || d.public == device.public)
             {
                 return Err(SessionError::Config(format!(
-                    "device {} is local or listed twice",
+                    "device {} is listed twice",
                     device.id
                 )));
             }
@@ -343,7 +344,7 @@ impl SessionHost {
         config.validate()?;
         let keys = SessionKeys::new(&config.tenant, config.session);
         let mut access = Access::default();
-        for device in &config.devices {
+        for device in config.devices.iter().filter(|d| d.id != LOCAL_DEVICE) {
             access.set(device.id.clone(), device.access.clone());
         }
         let authority = Authority::new(
