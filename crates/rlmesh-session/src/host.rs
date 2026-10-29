@@ -89,10 +89,11 @@ use zenoh::sample::SampleKind;
 
 use crate::authority::{
     Access, Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent, DeviceAccess,
-    Identity, SceneConfig, SealPolicy,
+    Identity, SceneConfig, SealPolicy, Verb,
 };
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
 use crate::error::SessionError;
+use crate::lobby::{LobbyAnswer, LobbyReply, LobbyResult, LobbyService, is_lobby_verb};
 use crate::metrics::{LinkStats, ParticipantHealth, Report};
 use crate::transport::{
     CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, TrafficClass, Transport,
@@ -208,6 +209,10 @@ pub struct HostConfig {
     /// member table and its identity. `None` by default: an ordinary
     /// session. [`crate::scene::Scene::host`] builds one from a scene file.
     pub scene: Option<SceneConfig>,
+    /// The home daemon's lobby (scene design §3), on its `_lobby` session
+    /// only: the lobby verbs go to it. `None` by default: the session
+    /// refuses them.
+    pub lobby: Option<Arc<dyn LobbyService>>,
 }
 
 impl HostConfig {
@@ -242,6 +247,7 @@ impl HostConfig {
             devices: Vec::new(),
             pins: BTreeMap::new(),
             scene: None,
+            lobby: None,
         }
     }
 
@@ -293,6 +299,7 @@ impl std::fmt::Debug for HostConfig {
             .field("devices", &self.devices)
             .field("pins", &self.pins)
             .field("scene", &self.scene)
+            .field("lobby", &self.lobby.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -440,6 +447,7 @@ impl SessionHost {
         let (events, _) = broadcast::channel(256);
         let cancel = CancellationToken::new();
         let (access_tx, access_rx) = mpsc::unbounded_channel();
+        let (lobby_done, lobby_rx) = mpsc::unbounded_channel();
 
         let identity = config.identity.clone();
         let mut actor = HostActor {
@@ -464,6 +472,8 @@ impl SessionHost {
             host_keys,
             waiting: HashMap::new(),
             failed: Vec::new(),
+            lobby: HashMap::new(),
+            lobby_done,
         };
         actor.publish().await;
         info!(session = %actor.config.session, key = actor.keys.prefix(), "session host up");
@@ -476,6 +486,7 @@ impl SessionHost {
                         cancel,
                         hb_rx,
                         access_rx,
+                        lobby_rx,
                         (handshakes, ctl, state, views),
                         presence,
                     )
@@ -1075,6 +1086,22 @@ struct HostActor {
     waiting: HashMap<GrantId, Waiting>,
     /// Grants a participant's end failed, still to answer.
     failed: Vec<GrantId>,
+    /// Lobby verbs waiting for their answer (a long poll), by sender
+    /// generation and request id.
+    lobby: HashMap<LobbyKey, LobbyWaiting>,
+    /// Where a waiting lobby verb's answer comes back to the host task.
+    lobby_done: mpsc::UnboundedSender<(LobbyKey, LobbyResult)>,
+}
+
+/// A lobby verb: its sender, the sender's generation and the request id.
+type LobbyKey = (ParticipantId, u32, u64);
+
+/// A lobby verb waiting for its answer, and the latest query asking for it
+/// (a retry replaces it: the earlier one's caller has timed out).
+struct LobbyWaiting {
+    peer: Arc<Peer>,
+    query: Option<Query>,
+    task: tokio::task::AbortHandle,
 }
 
 /// A grant (or rebind) whose keys are on their way to its robots: the verb,
@@ -1096,6 +1123,10 @@ enum Outcome {
     Drop,
     /// A grant waiting for its robots: answered once they acknowledged.
     Deferred(GrantId),
+    /// A lobby verb, answered now.
+    Lobby(LobbyResult),
+    /// A lobby verb answered later (a long poll).
+    Later(tokio::sync::oneshot::Receiver<LobbyResult>),
 }
 
 impl Outcome {
@@ -1110,6 +1141,7 @@ impl HostActor {
         cancel: CancellationToken,
         mut heartbeats: mpsc::Receiver<(ParticipantId, crate::wire::Heartbeat, i64)>,
         mut access: mpsc::UnboundedReceiver<AccessChange>,
+        mut lobby: mpsc::UnboundedReceiver<(LobbyKey, LobbyResult)>,
         (handshakes, ctl, state, views): (Queries, Queries, Queries, Queries),
         presence: zenoh::pubsub::Subscriber<Fifo<zenoh::sample::Sample>>,
     ) {
@@ -1149,6 +1181,7 @@ impl HostActor {
                 Some((id, heartbeat, t2)) = heartbeats.recv() => {
                     self.on_heartbeat(id, heartbeat, t2);
                 }
+                Some((key, result)) = lobby.recv() => self.finish_lobby(key, result).await,
                 Some((change, done)) = access.recv() => {
                     let applied = match change {
                         Change::Access(device, entry) => self.set_access(&device, entry).await,
@@ -1390,6 +1423,19 @@ impl HostActor {
             Admit::Pending => None,
             Admit::Execute => None,
         };
+        // A retry of a lobby verb still waiting joins it.
+        let lobby_key = (
+            peer.participant.clone(),
+            peer.identity.generation,
+            request_id,
+        );
+        if admitted.is_none()
+            && let Some(waiting) = self.lobby.get_mut(&lobby_key)
+            && Arc::ptr_eq(&waiting.peer, &peer)
+        {
+            waiting.query = Some(query);
+            return;
+        }
         // A retry of a grant still waiting for its keys joins it.
         if admitted.is_none()
             && let Some(waiting) = self
@@ -1430,6 +1476,42 @@ impl HostActor {
                         return;
                     }
                     Outcome::Reply(result, leases, keys) => (result, leases, keys),
+                    Outcome::Lobby(result) => {
+                        let encoded = self.answer_lobby(&peer.participant, result, request_id);
+                        lock(&peer.requests).complete(request_id, encoded.clone());
+                        let sealed =
+                            lock(&peer.down).seal(Kind::CtlReply, &self.keys.ctl(), &encoded);
+                        match sealed {
+                            Ok(sealed) => Self::reply(query, sealed).await,
+                            Err(err) => {
+                                warn!(participant = %peer.participant, %err, "reply not sealed")
+                            }
+                        }
+                        return;
+                    }
+                    Outcome::Later(answer) => {
+                        lock(&peer.requests).begin(request_id);
+                        let done = self.lobby_done.clone();
+                        let key = lobby_key.clone();
+                        let task = tokio::spawn(async move {
+                            let result = answer.await.unwrap_or_else(|_| {
+                                Err(CtlError::new(
+                                    CtlStatus::Expired,
+                                    "the lobby dropped this request: send it again",
+                                ))
+                            });
+                            let _ = done.send((key, result));
+                        });
+                        self.lobby.insert(
+                            lobby_key,
+                            LobbyWaiting {
+                                peer: peer.clone(),
+                                query: Some(query),
+                                task: task.abort_handle(),
+                            },
+                        );
+                        return;
+                    }
                 };
                 let encoded = self.answer(&peer.participant, result, leases, keys, request_id);
                 lock(&peer.requests).complete(request_id, encoded.clone());
@@ -1477,6 +1559,11 @@ impl HostActor {
             }
         }
         debug!(from = %request.from, command = ?request.command, "ctl");
+        if is_lobby_verb(&request.command)
+            && let Some(lobby) = self.config.lobby.clone()
+        {
+            return self.lobby_verb(peer, lobby.as_ref(), request.command);
+        }
         let generation = peer.identity.generation;
         match &request.command {
             Command::KeysAck(ack) => {
@@ -1960,6 +2047,31 @@ impl HostActor {
         keys: Vec<IssuedKey>,
         request_id: u64,
     ) -> Vec<u8> {
+        self.answer_with(to, result, (leases, keys), request_id, None)
+    }
+
+    /// A lobby verb's reply: its order or its run's state.
+    fn answer_lobby(&self, to: &ParticipantId, result: LobbyResult, request_id: u64) -> Vec<u8> {
+        let (result, reply) = match result {
+            Ok(reply) => (Ok(()), Some(reply)),
+            Err(err) => (Err(err), None),
+        };
+        self.answer_with(to, result, (Vec::new(), Vec::new()), request_id, reply)
+    }
+
+    fn answer_with(
+        &self,
+        to: &ParticipantId,
+        result: Result<(), CtlError>,
+        (leases, keys): (Vec<Lease>, Vec<IssuedKey>),
+        request_id: u64,
+        lobby: Option<LobbyReply>,
+    ) -> Vec<u8> {
+        let (assignment, run) = match lobby {
+            Some(LobbyReply::Assignment(assignment)) => (Some(assignment), None),
+            Some(LobbyReply::Run(run)) => (None, Some(run)),
+            None => (None, None),
+        };
         let state = self.snapshot();
         // A robot that takes its device view gets it in place of the state
         // (scene design §3.4): a board never decodes the state.
@@ -1970,8 +2082,8 @@ impl HostActor {
                 leases,
                 request_id,
                 keys,
-                assignment: None,
-                run: None,
+                assignment,
+                run,
             });
         }
         codec::encode_reply(&CtlReply {
@@ -1980,9 +2092,47 @@ impl HostActor {
             leases,
             request_id,
             keys,
-            assignment: None,
-            run: None,
+            assignment,
+            run,
         })
+    }
+
+    /// Hands a lobby verb to the lobby: `RunScene`, `StopScene` and
+    /// `ArmScene` need the `arm` verb (scene design §3.2).
+    fn lobby_verb(&self, peer: &Peer, lobby: &dyn LobbyService, command: Command) -> Outcome {
+        if matches!(
+            command,
+            Command::RunScene { .. } | Command::StopScene { .. } | Command::ArmScene { .. }
+        ) && let Err(err) = self
+            .authority
+            .config()
+            .access
+            .check_verb(&peer.identity.device, Verb::Arm)
+        {
+            return Outcome::refused(err);
+        }
+        match lobby.handle(&peer.participant, &peer.identity.device, command) {
+            LobbyAnswer::Now(result) => Outcome::Lobby(result),
+            LobbyAnswer::Later(answer) => Outcome::Later(answer),
+        }
+    }
+
+    /// Answers a lobby verb that waited, once, if its sender is still the
+    /// generation that sent it.
+    async fn finish_lobby(&mut self, key: LobbyKey, result: LobbyResult) {
+        let Some(waiting) = self.lobby.remove(&key) else {
+            return;
+        };
+        let request_id = key.2;
+        let encoded = self.answer_lobby(&waiting.peer.participant, result, request_id);
+        lock(&waiting.peer.requests).complete(request_id, encoded.clone());
+        if let Some(query) = waiting.query {
+            let sealed = lock(&waiting.peer.down).seal(Kind::CtlReply, &self.keys.ctl(), &encoded);
+            match sealed {
+                Ok(sealed) => Self::reply(query, sealed).await,
+                Err(err) => warn!(%err, "lobby reply not sealed"),
+            }
+        }
     }
 
     async fn on_state_query(&mut self, query: Query) {
@@ -2137,6 +2287,15 @@ impl HostActor {
                 }
                 AuthorityEvent::Detached { participant, .. } => {
                     self.links.remove(participant);
+                    // Its waiting lobby verbs end with it: the lobby sees
+                    // their answers' receivers closed.
+                    self.lobby.retain(|(id, _, _), waiting| {
+                        let keep = id != participant;
+                        if !keep {
+                            waiting.task.abort();
+                        }
+                        keep
+                    });
                     let failed = self.auth.issuer().detach(participant);
                     self.failed.extend(failed);
                     // Detaching ends the generation: its keys go with it.

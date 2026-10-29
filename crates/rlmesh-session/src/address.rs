@@ -331,6 +331,10 @@ impl Address {
             ParticipantId::new(session)
                 .map_err(|_| invalid(text, "a session is a name of [A-Za-z0-9._-] or a UUID"))?;
         }
+        // `_lobby` and the like are the daemon's own (scene design §1).
+        if session.is_some_and(|s| s.starts_with('_')) {
+            return Err(invalid(text, "session names starting with _ are reserved"));
+        }
         if let Some(name) = name {
             ParticipantId::new(name).map_err(|e| invalid(text, e))?;
         }
@@ -1270,7 +1274,15 @@ mod tests {
             .expect_err("old session")
             .to_string();
         assert!(err.contains(&format!("\"127.0.0.1:7447/{id}\"")), "{err}");
-        for bad in ["", "lab:7447", "a//b", "fe80::1/x", "a/b/c", "bad name"] {
+        for bad in [
+            "",
+            "lab:7447",
+            "a//b",
+            "fe80::1/x",
+            "a/b/c",
+            "bad name",
+            "_lobby/x",
+        ] {
             assert!(Address::participant(bad).is_err(), "{bad:?}");
         }
     }

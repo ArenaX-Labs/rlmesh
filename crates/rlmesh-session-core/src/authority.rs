@@ -332,7 +332,8 @@ pub enum SealPolicy {
     None,
     /// Every part is sealed.
     All,
-    /// These parts (`{robot}/{path}`) are sealed.
+    /// These parts (`{robot}/{path}`, or `{robot}/*` for every part of
+    /// the robot) are sealed.
     Parts(Vec<String>),
 }
 
@@ -342,9 +343,10 @@ impl SealPolicy {
         match self {
             Self::None => false,
             Self::All => true,
-            Self::Parts(parts) => parts
-                .iter()
-                .any(|p| p.split_once('/') == Some((robot.as_str(), path))),
+            Self::Parts(parts) => parts.iter().any(|p| {
+                p.split_once('/')
+                    .is_some_and(|(r, p)| r == robot.as_str() && (p == path || p == "*"))
+            }),
         }
     }
 }
@@ -926,8 +928,8 @@ impl Authority {
             Command::KeysAck(_) | Command::GetKeys => {
                 self.require_attached(&from)?;
             }
-            // TODO: only the home daemon's `_lobby` will answer these (scene
-            // steps 7 and 12); a session host refuses them.
+            // The home daemon's `_lobby` host answers these before they
+            // reach the authority; every other session refuses them.
             Command::LobbyWait(_)
             | Command::RunScene { .. }
             | Command::SceneStatus { .. }
