@@ -22,7 +22,7 @@ use crate::error::SessionError;
 use crate::participant::Participant;
 use crate::wire::{
     Assignment, Command, CtlError, CtlReply, CtlStatus, Join, ParticipantId, ParticipantInfo,
-    PriorityClass, Role, RunState,
+    PriorityClass, Role, RunStage, RunState,
 };
 pub use rlmesh_session_core::lobby::{LOBBY_SESSION, Leave, Lobby, WAIT_RETRY, leave};
 
@@ -130,6 +130,22 @@ fn run_of(reply: CtlReply) -> Result<RunState, SessionError> {
     })
 }
 
+/// The runs this process stopped: their policies' runs return rather than
+/// raise when the run closes (scene design §4.2).
+fn stopped() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static STOPPED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    STOPPED.get_or_init(Default::default)
+}
+
+/// Whether this process stopped run `run`.
+pub fn stopped_here(run: &str) -> bool {
+    stopped()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(run)
+}
+
 /// A client in a home daemon's lobby.
 pub struct LobbyClient {
     participant: Participant,
@@ -194,11 +210,44 @@ impl LobbyClient {
         run_of(long_poll(&self.participant, command, timeout).await?)
     }
 
+    /// Follows run `run` until it is at `stage` (scene design §4.3:
+    /// `RUNNING` again after a rejoin), or [`SessionError::Timeout`] after
+    /// `timeout`. A run that ended or failed first is
+    /// [`SessionError::Rejected`] with its error.
+    ///
+    /// # Errors
+    /// The run ending first, the timeout, or what a call failed with.
+    pub async fn wait_until(
+        &self,
+        run: &str,
+        stage: RunStage,
+        timeout: Duration,
+    ) -> Result<RunState, SessionError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut state = self.status(run, 0, Some(timeout)).await?;
+        loop {
+            if state.stage == stage {
+                return Ok(state);
+            }
+            if matches!(state.stage, RunStage::Ended | RunStage::Failed) {
+                return Err(SessionError::Rejected(state.error.unwrap_or_else(|| {
+                    CtlError::new(CtlStatus::InvalidTransition, format!("run {run} ended"))
+                })));
+            }
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            state = self.status(run, state.version, Some(left)).await?;
+        }
+    }
+
     /// Stops run `run`; its state as the stop started.
     ///
     /// # Errors
     /// An unknown run, or what the call failed with.
     pub async fn stop(&self, run: &str) -> Result<RunState, SessionError> {
+        stopped()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run.to_string());
         let command = Command::StopScene {
             run: run.to_string(),
         };

@@ -8,6 +8,11 @@
 //! - **Places** go out in every snapshot, so every binder builds the same
 //!   view; a declaration whose placed paths collide is refused
 //!   (`INCOMPATIBLE`).
+//! - **Rejoin** (scene design §4.3): a member lost from the run is waited
+//!   for until `rejoin_until_ns` ([`SceneConfig::rejoin_ns`] after the
+//!   loss); a robot is back once it declared again, the same map as before
+//!   (`INCOMPATIBLE` otherwise), and the run arms only once every member is
+//!   back, on an explicit arm.
 //! - **Closing** ([`super::Authority::close_scene`]), in one revision: the
 //!   mode goes DISARMED (ESTOP stays), every lease ends with the reason,
 //!   and `scene.closing` (every device view's `closing`) is set.
@@ -49,6 +54,8 @@ pub struct SceneConfig {
     pub places: Vec<Place>,
     /// Its members by name.
     pub members: BTreeMap<ParticipantId, Member>,
+    /// How long a lost member is waited for (0: the run fails at once).
+    pub rejoin_ns: u64,
 }
 
 fn refused(message: String) -> CtlError {
@@ -164,6 +171,7 @@ mod tests {
                 rejoin_until_ns: None,
             },
             places: Vec::new(),
+            rejoin_ns: 0,
             members: [
                 (
                     pid("eye-l"),

@@ -14,7 +14,11 @@
 //! 6. **bind**: each controller member binds, `NOT_READY` at `wait`;
 //! 7. **arm**: by the daemon (`arm = "auto"`) once all of that is done, or on
 //!    an `ArmScene` (`manual`, `--arm manual`);
-//! 8. **run** until stopped, or a member is lost;
+//! 8. **run** until stopped, or a member is lost: the run then waits in
+//!    `REJOINING` for it (a robot gets its join again in the lobby and must
+//!    declare the same map) until the session's rejoin window closes, which
+//!    fails it, and once everyone is back it waits in `ARMING` for an
+//!    explicit arm, whatever the scene's `arm`;
 //! 9. **tear down**: the scene closes (`SCENE_ENDED`, or `SCENE_FAILED` with
 //!    the stage's error), robots detach and come back to the lobby, and the
 //!    host stops once they left (or after 2 s); the run ends once its robots
@@ -370,6 +374,7 @@ impl Home {
                 id,
                 scene,
                 manual,
+                armed: 0,
                 inbox,
                 daemon: None,
             }
@@ -496,6 +501,9 @@ struct Driver {
     id: String,
     scene: Scene,
     manual: bool,
+    /// The authority revision the run was last armed at: an older snapshot
+    /// is from before that arm.
+    armed: u64,
     inbox: mpsc::UnboundedReceiver<RunCommand>,
     daemon: Option<Participant>,
 }
@@ -520,7 +528,9 @@ fn stage_in(snapshot: &AuthoritySnapshot, scene: &Scene, m: &MemberState) -> Mem
     if !present {
         return if joined { MemberStage::Lost } else { m.stage };
     }
-    if robot && snapshot.parts.iter().any(|p| p.owner == m.name) {
+    // A robot back from a loss stays `left` until it declared again.
+    let declared = info.is_some_and(|p| p.left.is_none());
+    if robot && declared && snapshot.parts.iter().any(|p| p.owner == m.name) {
         MemberStage::Declared
     } else if !robot && snapshot.binding(&m.name).is_some() {
         MemberStage::Bound
@@ -570,10 +580,20 @@ impl Driver {
             Ok(()) => {}
             Err(outcome) => return outcome,
         }
-        if let Err(outcome) = self.arm_stage(snapshots.clone()).await {
-            return outcome;
+        let mut manual = self.manual;
+        loop {
+            if let Err(outcome) = self.arm_stage(snapshots.clone(), manual).await {
+                return outcome;
+            }
+            if let Some(outcome) = self.running(snapshots.clone()).await {
+                return outcome;
+            }
+            if let Err(outcome) = self.rejoin(snapshots.clone()).await {
+                return outcome;
+            }
+            // Back from a loss, the run arms only when asked (§4.3).
+            manual = true;
         }
-        self.running(snapshots).await
     }
 
     /// Stage 3: the run's session, hosted here, and the daemon in it.
@@ -728,16 +748,16 @@ impl Driver {
     async fn arm_stage(
         &mut self,
         mut snapshots: watch::Receiver<AuthoritySnapshot>,
+        manual: bool,
     ) -> Result<(), Outcome> {
         self.update(|s| s.stage = RunStage::Arming);
-        if !self.manual {
+        if !manual {
             return self.arm().await.map_err(Outcome::Failed);
         }
         loop {
-            if matches!(
-                snapshots.borrow_and_update().mode,
-                Mode::Armed | Mode::Active
-            ) {
+            let snapshot = snapshots.borrow_and_update().clone();
+            if matches!(snapshot.mode, Mode::Armed | Mode::Active) {
+                self.armed = snapshot.revision;
                 self.update(|s| s.stage = RunStage::Running);
                 return Ok(());
             }
@@ -760,13 +780,14 @@ impl Driver {
     }
 
     /// Arms the run's session as the daemon; `RUNNING` once armed.
-    async fn arm(&self) -> Result<(), CtlError> {
+    async fn arm(&mut self) -> Result<(), CtlError> {
         let daemon = self
             .daemon
             .as_ref()
             .ok_or_else(|| refused(CtlStatus::NotReady, "the daemon is not in the run"))?;
         match daemon.arm().await {
-            Ok(_) => {
+            Ok(armed) => {
+                self.armed = armed.revision;
                 self.update(|s| s.stage = RunStage::Running);
                 Ok(())
             }
@@ -775,34 +796,94 @@ impl Driver {
         }
     }
 
-    /// Stage 8: until stopped, or a member is lost.
-    async fn running(&mut self, mut snapshots: watch::Receiver<AuthoritySnapshot>) -> Outcome {
+    /// Stage 8: until stopped (`Some`), or a member is lost or the session
+    /// is no longer armed (`None`). A loss and its rejoin may come in one
+    /// snapshot (a watch keeps only the latest), so a session that left
+    /// ARMED and ACTIVE after the arm needs an arm again whether or not the
+    /// rejoin window was seen.
+    async fn running(
+        &mut self,
+        mut snapshots: watch::Receiver<AuthoritySnapshot>,
+    ) -> Option<Outcome> {
         loop {
             let snapshot = snapshots.borrow_and_update().clone();
             self.refresh(&snapshot);
-            // TODO: a lost member ends the run until it may rejoin (scene
-            // step 7a).
-            if let Some(lost) = self
-                .state()
-                .members
-                .iter()
-                .find(|m| m.stage == MemberStage::Lost)
-            {
-                return Outcome::Failed(refused(
-                    CtlStatus::NotPresent,
-                    format!("{} was lost", lost.name),
-                ));
+            let rejoining = snapshot
+                .scene
+                .as_ref()
+                .is_some_and(|s| s.rejoin_until_ns.is_some());
+            let disarmed = snapshot.revision >= self.armed
+                && !matches!(snapshot.mode, Mode::Armed | Mode::Active);
+            if rejoining || disarmed {
+                return None;
             }
             tokio::select! {
                 changed = snapshots.changed() => if changed.is_err() {
-                    return Outcome::Failed(refused(CtlStatus::NotReady, "the run's host stopped"));
+                    return Some(Outcome::Failed(refused(CtlStatus::NotReady, "the run's host stopped")));
                 },
                 Some(command) = self.inbox.recv() => match command {
-                    RunCommand::Stop { by } => return Outcome::Stopped(by),
+                    RunCommand::Stop { by } => return Some(Outcome::Stopped(by)),
                     RunCommand::Arm { answer } => {
                         let _ = answer.send(Err(refused(
                             CtlStatus::InvalidTransition,
                             format!("run {} is already running", self.id),
+                        )));
+                    }
+                },
+            }
+        }
+    }
+
+    /// Stage 8a (§4.3): waits for every lost member to come back (a robot
+    /// re-sent its join through the lobby, declaring its map again) until
+    /// the session's rejoin window closes, which fails the run. Back means
+    /// the host closed the window and every member is where it was: robots
+    /// declared, controllers bound.
+    async fn rejoin(
+        &mut self,
+        mut snapshots: watch::Receiver<AuthoritySnapshot>,
+    ) -> Result<(), Outcome> {
+        let mut deadline = None;
+        loop {
+            let snapshot = snapshots.borrow_and_update().clone();
+            self.refresh(&snapshot);
+            let window = snapshot.scene.as_ref().and_then(|s| s.rejoin_until_ns);
+            if window.is_none() && gathering(&self.state(), &self.robots()) == RunStage::Arming {
+                return Ok(());
+            }
+            self.update(|s| s.stage = RunStage::Rejoining);
+            // On the host's clock, as of this snapshot.
+            let left = window.map_or(self.scene.rejoin, |until| {
+                Duration::from_nanos(until.saturating_sub(snapshot.host_ns).max(0).unsigned_abs())
+            });
+            let deadline = *deadline.get_or_insert(tokio::time::Instant::now() + left);
+            tokio::select! {
+                () = tokio::time::sleep_until(deadline) => {
+                    let lost: Vec<String> = self
+                        .state()
+                        .members
+                        .iter()
+                        .filter(|m| matches!(m.stage, MemberStage::Lost | MemberStage::Joined))
+                        .map(|m| m.name.to_string())
+                        .collect();
+                    return Err(Outcome::Failed(refused(
+                        CtlStatus::NotPresent,
+                        format!(
+                            "{} did not rejoin within {} s",
+                            lost.join(", "),
+                            self.scene.rejoin.as_secs_f64()
+                        ),
+                    )));
+                }
+                changed = snapshots.changed() => if changed.is_err() {
+                    return Err(Outcome::Failed(refused(CtlStatus::NotReady, "the run's host stopped")));
+                },
+                Some(command) = self.inbox.recv() => match command {
+                    RunCommand::Stop { by } => return Err(Outcome::Stopped(by)),
+                    RunCommand::Arm { answer } => {
+                        let _ = answer.send(Err(refused(
+                            CtlStatus::NotReady,
+                            format!("run {} waits for its lost members to rejoin", self.id),
                         )));
                     }
                 },
@@ -927,10 +1008,13 @@ mod tests {
     use rlmesh_session::SystemMonotonicClock;
     use rlmesh_session::address::{self, DEFAULT_SESSION, SessionAddress};
     use rlmesh_session::auth::address::AddressKey;
+    use rlmesh_session::edge::{EdgeError, Robot};
     use rlmesh_session::lobby::{Lobby, LobbyClient, home_lobby, run_address, wait_for_join};
     use rlmesh_session::sdk;
     use rlmesh_session::spec::RunOptions;
-    use rlmesh_session::wire::TenantId;
+    use rlmesh_session::spec::apply::{Tensor, Value};
+    use rlmesh_session::wire::{DType, TenantId};
+    use rlmesh_session::{Controller, Observation, Predictor, RunError};
 
     use super::*;
 
@@ -1217,6 +1301,231 @@ mod tests {
             error.message
         );
         robot.await.expect("robot");
+        server.shutdown().await;
+    }
+
+    const ARM_CHANGED: &str = r#"{"arm": {"kind": "joints", "count": 3, "fields": ["pos"], "hz": 100,
+        "command": "position", "hold_max_ms": 100}}"#;
+
+    struct Hold;
+
+    impl Predictor for Hold {
+        type Error = String;
+
+        fn predict(&mut self, _: Observation, _: i64) -> Result<Vec<(String, Value)>, String> {
+            let hold = Tensor::from_f64(DType::F32, vec![2, 2], &[0.0; 4]);
+            Ok(vec![("arm".into(), Value::Tensor(hold))])
+        }
+    }
+
+    /// Robot `arm` from the lobby, declaring `map` and publishing its
+    /// joints; a refused join is reported in its next wait.
+    async fn joined(lobby: &SessionAddress, me: &mut Lobby, map: &str) -> Option<Arc<Robot>> {
+        let (join, address) = wait_for_join(lobby, me, "arm", Some(WAIT * 3))
+            .await
+            .expect("a join");
+        let robot = match sdk::connect_robot(&address, "arm", map, WAIT).await {
+            Ok(robot) => Arc::new(robot),
+            Err(EdgeError::Session(SessionError::Rejected(err))) => {
+                me.failed(&join.run, err);
+                return None;
+            }
+            Err(err) => panic!("{err}"),
+        };
+        let weak = Arc::downgrade(&robot);
+        tokio::spawn(async move {
+            while let Some(robot) = weak.upgrade() {
+                let now = robot.participant().clock().now_ns();
+                let _ = robot.publish("arm", now, &[&[0_u8; 8]]);
+                drop(robot);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        Some(robot)
+    }
+
+    /// Stops `robot`'s heartbeats and drops it: the host loses it.
+    fn lose(robot: Arc<Robot>) {
+        robot.participant().set_heartbeats_enabled(false);
+        drop(robot);
+    }
+
+    async fn holding(pilot: &Controller) {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while !pilot.holds() {
+            assert!(tokio::time::Instant::now() < deadline, "no lease");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    fn rejoin_scene(rejoin: &str) -> String {
+        scene("20s").replace(
+            "wait = \"20s\"\n",
+            &format!("wait = \"20s\"\nrejoin = \"{rejoin}\"\n"),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_lost_robot_rejoins_with_its_map_and_the_run_rearms_only_when_asked() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (server, lobby) = home(dir.path()).await;
+        let client = LobbyClient::connect(&lobby, WAIT).await.expect("client");
+        let mut me = Lobby::new(ParticipantId::new("arm").expect("id"));
+        let state = client
+            .run_scene(&rejoin_scene("20s"), false)
+            .await
+            .expect("run");
+        let robot = joined(&lobby, &mut me, ARM).await.expect("declared");
+        let state = until(&client, state, |s| s.stage == RunStage::Binding).await;
+        let address = run_address(&lobby, &state).expect("hosted");
+        let pilot = Arc::new(
+            sdk::bind_policy(
+                &address,
+                "pilot",
+                PILOT,
+                &RunOptions::named("pilot"),
+                PriorityClass::Model,
+                WAIT,
+            )
+            .await
+            .expect("bound"),
+        );
+        // Lost while ARMED, before its policy leased: the session goes SAFE
+        // all the same, and is never ACTIVE again until the explicit arm.
+        let state = until(&client, state, |s| s.stage == RunStage::Running).await;
+        lose(robot);
+        let state = client
+            .wait_until(&state.run, RunStage::Rejoining, WAIT)
+            .await
+            .expect("rejoining");
+        assert_eq!(stage(&state, "arm"), MemberStage::Lost);
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut modes = pilot.participant().watch();
+        let watching = tokio::spawn({
+            let active = active.clone();
+            async move {
+                while modes.changed().await.is_ok() {
+                    if modes
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|s| s.mode == Mode::Active)
+                    {
+                        active.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            }
+        });
+        let running = std::thread::spawn({
+            let pilot = pilot.clone();
+            move || pilot.run(&mut Hold, None)
+        });
+        // Attached under its name but not declared: still rejoining.
+        let (_, back) = wait_for_join(&lobby, &mut me, "arm", Some(WAIT * 3))
+            .await
+            .expect("its join again");
+        let back = back
+            .join("arm", vec![Role::Observer], PriorityClass::Scripted, WAIT)
+            .await
+            .expect("attached");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let status = client.status(&state.run, 0, Some(WAIT)).await;
+        assert_eq!(status.expect("status").stage, RunStage::Rejoining);
+        back.set_heartbeats_enabled(false);
+        drop(back);
+        assert!(
+            !running.is_finished(),
+            "ROBOT_LOST in a scene is not the end"
+        );
+        // Re-flashed with another map: refused, and the run waits on.
+        assert!(joined(&lobby, &mut me, ARM_CHANGED).await.is_none());
+        let robot = joined(&lobby, &mut me, ARM).await.expect("the same map");
+        let state = until(&client, state, |s| s.stage == RunStage::Arming).await;
+        let refusal = state
+            .members
+            .iter()
+            .find(|m| m.name.as_str() == "arm")
+            .and_then(|m| m.error.clone());
+        assert_eq!(refusal.map(|e| e.status), Some(CtlStatus::Incompatible));
+        // `arm = "auto"`, and still it waits for an explicit arm.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let state = client
+            .status(&state.run, 0, Some(WAIT))
+            .await
+            .expect("status");
+        assert_eq!(state.stage, RunStage::Arming);
+        assert!(
+            !active.load(std::sync::atomic::Ordering::SeqCst),
+            "ACTIVE before the explicit arm"
+        );
+        watching.abort();
+        let state = client.arm(&state.run).await.expect("arm");
+        assert_eq!(state.stage, RunStage::Running);
+        holding(&pilot).await;
+        // Reset and back at once, likely before its loss was seen: a new
+        // generation whose rejoin window the run may never see. SAFE all the
+        // same, and armed again on request.
+        lose(robot);
+        let restarted = joined(&lobby, &mut me, ARM).await.expect("restarted");
+        let state = until(&client, state, |s| s.stage == RunStage::Arming).await;
+        let state = client
+            .arm(&state.run)
+            .await
+            .expect("armed after the restart");
+        assert_eq!(state.stage, RunStage::Running);
+        holding(&pilot).await;
+        let robot = restarted;
+
+        client.stop(&state.run).await.expect("stop");
+        // This process stopped the run: the policy's run returns.
+        running.join().expect("thread").expect("returned");
+        let state = until(&client, state, |s| s.stage == RunStage::Ended).await;
+        assert_eq!(state.error, None);
+        drop(robot);
+        server.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_lost_robot_that_misses_the_rejoin_window_fails_the_run() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (server, lobby) = home(dir.path()).await;
+        let client = LobbyClient::connect(&lobby, WAIT).await.expect("client");
+        let mut me = Lobby::new(ParticipantId::new("arm").expect("id"));
+        let state = client
+            .run_scene(&rejoin_scene("1s"), false)
+            .await
+            .expect("run");
+        let robot = joined(&lobby, &mut me, ARM).await.expect("declared");
+        let state = until(&client, state, |s| s.stage == RunStage::Binding).await;
+        let address = run_address(&lobby, &state).expect("hosted");
+        let pilot = Arc::new(
+            sdk::bind_policy(
+                &address,
+                "pilot",
+                PILOT,
+                &RunOptions::named("pilot"),
+                PriorityClass::Model,
+                WAIT,
+            )
+            .await
+            .expect("bound"),
+        );
+        let running = std::thread::spawn({
+            let pilot = pilot.clone();
+            move || pilot.run(&mut Hold, None)
+        });
+        let state = until(&client, state, |s| s.stage == RunStage::Running).await;
+        lose(robot);
+        let state = until(&client, state, |s| s.stage == RunStage::Failed).await;
+        let error = state.error.expect("why");
+        assert!(
+            error.message.contains("arm did not rejoin within 1 s"),
+            "{}",
+            error.message
+        );
+        match running.join().expect("thread") {
+            Err(RunError::Lost(reason)) => assert_eq!(reason.code, ReasonCode::SceneFailed),
+            other => panic!("{other:?}"),
+        }
         server.shutdown().await;
     }
 }

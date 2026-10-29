@@ -329,16 +329,26 @@ pub async fn lobby(args: &HomeArgs, stdout: &mut impl Write) -> Result<()> {
 /// `rlmesh stop`: stops a run and waits until it ended.
 pub async fn stop(args: &RunIdArgs, stdout: &mut impl Write) -> Result<i32> {
     let lobby = connect(&args.home).await?;
-    let mut state = lobby.stop(&args.run).await?;
+    let state = lobby.stop(&args.run).await?;
     print_change(stdout, None, &state)?;
-    while !ended(state.stage) {
-        let next = lobby
-            .status(&state.run, state.version, Some(HOME_TIMEOUT))
-            .await?;
-        print_change(stdout, Some(&state), &next)?;
-        state = next;
-    }
+    let ended = lobby
+        .wait_until(&args.run, RunStage::Ended, HOME_TIMEOUT)
+        .await;
     let _ = lobby.close().await;
+    match ended {
+        Ok(state) => writeln!(stdout, "{}: {}", state.run, run_stage_name(state.stage))?,
+        Err(rlmesh_session::SessionError::Rejected(err)) => {
+            writeln!(
+                stdout,
+                "{}: [{}] {}",
+                args.run,
+                status_name(err.status),
+                err.message
+            )?;
+            return Ok(1);
+        }
+        Err(err) => return Err(err.into()),
+    }
     Ok(0)
 }
 

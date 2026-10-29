@@ -433,6 +433,10 @@ pub struct Authority {
     ticks: Vec<VirtualTick>,
     /// Why the scene is ending, once it is.
     closing: Option<Reason>,
+    /// Scene members lost and not back yet (a robot is back once it
+    /// declared again), and when the run stops waiting for them.
+    rejoining: BTreeSet<ParticipantId>,
+    rejoin_until_ns: Option<i64>,
 }
 
 impl Authority {
@@ -473,6 +477,8 @@ impl Authority {
             clock,
             ticks: Vec::new(),
             closing: None,
+            rejoining: BTreeSet::new(),
+            rejoin_until_ns: None,
         }
     }
 
@@ -602,6 +608,7 @@ impl Authority {
             scene: self.config.scene.as_ref().map(|s| {
                 Box::new(SceneInfo {
                     closing: self.closing.clone(),
+                    rejoin_until_ns: self.rejoin_until_ns,
                     ..s.info.clone()
                 })
             }),
@@ -677,7 +684,38 @@ impl Authority {
                     .get(&from)
                     .is_some_and(|p| p.generation != sender.generation)
                 {
+                    // A scene member's restart is its loss and rejoin
+                    // (scene design §4.3), seen or not: SAFE, waited for
+                    // until it declared again, and armed only when asked.
+                    if self
+                        .config
+                        .scene
+                        .as_ref()
+                        .is_some_and(|s| s.members.contains_key(&from))
+                    {
+                        // The old generation ends as any replaced one does,
+                        // not as a detach of the new one.
+                        let before = applied.events.len();
+                        self.lose(&from, &mut applied.events);
+                        let mut at = 0;
+                        applied.events.retain(|event| {
+                            at += 1;
+                            at <= before
+                                || !matches!(event, AuthorityEvent::Detached { participant, .. } if participant == &from)
+                        });
+                    }
                     self.replace_generation(&from, &mut applied.events);
+                }
+                // A robot back from a loss stays `left` until it declared
+                // again, whatever roles it attaches with; anyone else is
+                // back once attached.
+                let left = self
+                    .roster
+                    .get(&from)
+                    .and_then(|p| p.left.clone())
+                    .filter(|_| self.rejoining.contains(&from));
+                if left.is_none() {
+                    self.rejoined(&from);
                 }
                 self.roster.insert(
                     from.clone(),
@@ -693,7 +731,7 @@ impl Authority {
                         workflow_edition,
                         workflow_editions,
                         present: true,
-                        left: None,
+                        left,
                         device: sender.device.clone(),
                         generation: sender.generation,
                     },
@@ -734,6 +772,14 @@ impl Authority {
             Command::Arm => {
                 self.require_attached(&from)?;
                 self.config.access.check_verb(&sender.device, Verb::Arm)?;
+                if let Some(member) = self.rejoining.first() {
+                    return Err(CtlError::new(
+                        CtlStatus::NotReady,
+                        format!(
+                            "{member} has not rejoined the run: it arms once every member is back"
+                        ),
+                    ));
+                }
                 match self.mode {
                     Mode::Disarmed | Mode::Safe => {
                         self.epoch = self.epoch.next();
@@ -1050,6 +1096,17 @@ impl Authority {
         if !self.is_attached(id) {
             return;
         }
+        let scene = self
+            .config
+            .scene
+            .as_ref()
+            .filter(|s| s.members.contains_key(id));
+        let in_scene = scene.is_some();
+        if let Some(scene) = scene {
+            self.rejoining.insert(id.clone());
+            let until = self.now_ns.saturating_add_unsigned(scene.rejoin_ns);
+            self.rejoin_until_ns.get_or_insert(until);
+        }
         self.seen.remove(id);
         let before = events.len();
         let held = self.reason(ReasonCode::HolderLost, id, "");
@@ -1083,6 +1140,18 @@ impl Authority {
             if lapsed {
                 self.enter_safe(held, events);
             }
+        }
+        // In a scene's run an ARMED session goes SAFE too (scene design
+        // §4.3): once the member is back, leases would otherwise take it
+        // ACTIVE with no explicit arm.
+        if in_scene && self.mode == Mode::Armed {
+            let code = if robot {
+                ReasonCode::RobotLost
+            } else {
+                ReasonCode::HolderLost
+            };
+            let why = self.reason(code, id, "");
+            self.set_mode(Mode::Safe, why, events);
         }
         self.needed.retain(|(p, _), _| p != id);
         self.recompute_demands(events);
@@ -1278,6 +1347,14 @@ impl Authority {
         }
     }
 
+    /// `id` is back in the run: the window closes once every lost member
+    /// is.
+    fn rejoined(&mut self, id: &ParticipantId) {
+        if self.rejoining.remove(id) && self.rejoining.is_empty() {
+            self.rejoin_until_ns = None;
+        }
+    }
+
     fn require_attached(&self, id: &ParticipantId) -> Result<&ParticipantInfo, CtlError> {
         self.roster
             .get(id)
@@ -1391,6 +1468,19 @@ impl Authority {
             ));
         }
         let fingerprint = crate::spec::normalise::fingerprint(&declared);
+        // A scene's robot keeps its map for the run: bindings were made
+        // against it (scene design §4.3).
+        if self.config.scene.is_some()
+            && let Some(before) = self.contract.get(from).filter(|f| **f != fingerprint)
+        {
+            return Err(CtlError::new(
+                CtlStatus::Incompatible,
+                format!(
+                    "{from} declared another map (contract {fingerprint}, and this run's is \
+                     {before}): flash the map it ran with, or start a new run"
+                ),
+            ));
+        }
         if let Some(scene) = self.config.scene.as_ref().filter(|s| !s.places.is_empty()) {
             let mut session: Vec<PartSpec> = self
                 .parts
@@ -1465,6 +1555,10 @@ impl Authority {
         }
         self.remove_parts(from, &removed, events);
         self.contract.insert(from.clone(), fingerprint);
+        if let Some(info) = self.roster.get_mut(from) {
+            info.left = None;
+        }
+        self.rejoined(from);
         for spec in self
             .parts
             .values()
@@ -3547,6 +3641,7 @@ mod tests {
             },
             places: Vec::new(),
             members: BTreeMap::new(),
+            rejoin_ns: 0,
         });
         f.run("operator", Command::Arm, 0).expect("arm");
         f.grant("policy", "cmd1", 0).expect("lease");
@@ -3586,5 +3681,116 @@ mod tests {
                 .close_scene(ReasonCode::SceneFailed, "", "", 6)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_lost_scene_member_is_waited_for_and_back_only_with_its_map_and_an_explicit_arm() {
+        let mut f = Fixture::new();
+        let member = |device: &str| crate::authority::Member::Controller {
+            device: device.into(),
+            max_priority: PriorityClass::Operator,
+        };
+        f.auth.config.scene = Some(SceneConfig {
+            info: SceneInfo {
+                run: "r-7k2m".into(),
+                name: "rig".into(),
+                fingerprint: Fingerprint::from(7),
+                closing: None,
+                rejoin_until_ns: None,
+            },
+            places: Vec::new(),
+            members: [
+                (
+                    pid("robot"),
+                    crate::authority::Member::Robot {
+                        device: None,
+                        may_pin: vec![crate::auth::LOCAL_DEVICE.into()],
+                    },
+                ),
+                (pid("policy"), member("local")),
+            ]
+            .into(),
+            rejoin_ns: 60,
+        });
+        f.run("operator", Command::Arm, 0).expect("arm");
+        f.grant("policy", "cmd1", 0).expect("lease");
+        f.auth.participant_lost(&pid("robot"), 10);
+        let window = |f: &Fixture| {
+            f.auth
+                .snapshot(Vec::new(), 20)
+                .scene
+                .and_then(|s| s.rejoin_until_ns)
+        };
+        assert_eq!((f.auth.mode(), window(&f)), (Mode::Safe, Some(70)));
+        // Back, but not declared: still waited for, and no arm.
+        f.run(
+            "robot",
+            attach("robot", vec![Role::Embodiment], PriorityClass::Scripted),
+            20,
+        )
+        .expect("rejoin");
+        assert_eq!(window(&f), Some(70));
+        assert_eq!(
+            Fixture::status(f.run("operator", Command::Arm, 21)),
+            CtlStatus::NotReady
+        );
+        let changed = declare(&robot_map(
+            r#","extra": {"kind": "joints", "hz": 500, "count": 1, "fields": ["pos"]}"#,
+        ));
+        assert_eq!(
+            Fixture::status(f.run("robot", changed, 22)),
+            CtlStatus::Incompatible
+        );
+        f.run("robot", declare(&robot_map("")), 23)
+            .expect("the same map");
+        assert_eq!(window(&f), None);
+        assert_eq!(f.auth.mode(), Mode::Safe, "never armed on its own");
+        f.run("operator", Command::Arm, 24).expect("explicit arm");
+        // Lost again while only ARMED: SAFE all the same, and an attach
+        // under its name that isn't an embodiment doesn't bring it back.
+        f.auth.participant_lost(&pid("robot"), 30);
+        assert_eq!(f.auth.mode(), Mode::Safe);
+        f.run(
+            "robot",
+            attach("robot", vec![Role::Observer], PriorityClass::Scripted),
+            31,
+        )
+        .expect("an observer");
+        assert!(window(&f).is_some());
+        // A restart that heartbeat expiry never saw, from ACTIVE and from
+        // ARMED: the same loss, and the same explicit arm.
+        f.run(
+            "robot",
+            attach("robot", vec![Role::Embodiment], PriorityClass::Scripted),
+            32,
+        )
+        .expect("an embodiment again");
+        f.run("robot", declare(&robot_map("")), 32).expect("back");
+        let restart = |f: &mut Fixture, generation: u32, now: i64| {
+            let sender = Identity {
+                device: crate::auth::LOCAL_DEVICE.into(),
+                generation,
+            };
+            let request = Request {
+                from: pid("robot"),
+                epoch: None,
+                request_id: 0,
+                command: attach("robot", vec![Role::Embodiment], PriorityClass::Scripted),
+            };
+            f.auth.apply_from(request, &sender, now).expect("restarted");
+            assert_eq!(f.auth.mode(), Mode::Safe, "generation {generation}");
+            assert!(window(f).is_some());
+            f.run("robot", declare(&robot_map("")), now + 1)
+                .expect("the same map");
+            assert_eq!(f.auth.mode(), Mode::Safe, "never armed on its own");
+            f.run("operator", Command::Arm, now + 2)
+                .expect("explicit arm");
+        };
+        f.run("operator", Command::Arm, 33).expect("arm");
+        f.grant("policy", "cmd1", 34).expect("lease");
+        assert_eq!(f.auth.mode(), Mode::Active);
+        restart(&mut f, 1, 40);
+        assert_eq!(f.auth.mode(), Mode::Armed);
+        restart(&mut f, 2, 50);
     }
 }
