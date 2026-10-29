@@ -718,6 +718,12 @@ impl HostActor {
                     Err(_) => break,
                 },
                 _ = tick.tick() => {
+                    // A heartbeat counts from when it arrived (t2), so any
+                    // still queued behind a busy host task goes in before
+                    // leases and presence are judged.
+                    while let Ok((id, heartbeat, t2)) = heartbeats.try_recv() {
+                        self.on_heartbeat(id, heartbeat, t2);
+                    }
                     let events = self.authority.expire(self.now());
                     self.record(events).await;
                     self.publish_renewals().await;
