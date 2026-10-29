@@ -1035,7 +1035,13 @@ impl Driver {
                 .send(Ok(LobbyReply::Assignment(Assignment::Join(join.clone()))));
             if sent.is_ok() {
                 lock(&self.run.joins).insert(robot.clone(), join);
-                member(&self.run.state, &robot, |m| m.stage = MemberStage::Assigned);
+                // The robot may already be back in the lobby, returned,
+                // between the answer and this line.
+                member(&self.run.state, &robot, |m| {
+                    if m.stage != MemberStage::Returned {
+                        m.stage = MemberStage::Assigned;
+                    }
+                });
             }
         }
     }
