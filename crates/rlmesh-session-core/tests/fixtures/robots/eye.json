@@ -1,0 +1,10 @@
+{
+  "gaze": {
+    "kind": "joints",
+    "names": ["pan", "tilt"],
+    "fields": ["pos"],
+    "hz": 50,
+    "command": "position",
+    "max_action_age_ms": 100
+  }
+}

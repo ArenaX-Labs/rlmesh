@@ -1,0 +1,9 @@
+binding refused: spans on scene (2 problems)
+
+  [ambiguous] action "gaze" (kind joints, at "eyes/*/gaze") matches 2 parts:
+      eyes/left/gaze    joints 2 joints @50 Hz
+      eyes/right/gaze   joints 2 joints @50 Hz
+    fix: rlmesh.run(..., at={"gaze": "eyes/left/gaze"})
+
+  [incompatible] action "arm": ur10e is not placed in this scene's view.
+    fix: place ur10e in the scene, or bind it on its own: rlmesh.run(..., robot="ur10e")

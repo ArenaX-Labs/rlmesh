@@ -41,7 +41,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, O
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use crate::spec::{BindError, Binding, Policy, RunOptions};
+use crate::spec::{BindError, Binding, Policy, RunOptions, Target};
 use crate::wire::codec;
 use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION, VIEW_DEVICE};
 use crate::wire::{
@@ -1682,12 +1682,16 @@ impl Participant {
             .0)
     }
 
-    /// Binds `policy` against every part in this participant's view (§6.5):
-    /// the binding table, or the refusal listing every problem.
+    /// Binds `policy` against every part in this participant's view (§6.5),
+    /// or its scene's view when it carries places and `options` names no
+    /// robot (scene design §5): the binding table, or the refusal listing
+    /// every problem.
     pub fn bind(&self, policy: &Policy, options: &RunOptions) -> Result<Binding, BindError> {
         let view = self.shared.view.borrow();
-        let parts = view.as_ref().map_or(&[][..], |v| v.parts.as_slice());
-        crate::spec::bind(policy, parts, options)
+        match view.as_ref() {
+            Some(state) => crate::spec::bind_in(policy, &Target::of(state), options),
+            None => crate::spec::bind(policy, &[], options),
+        }
     }
 
     /// Declares a binding the binder produced: its fingerprint, its table,

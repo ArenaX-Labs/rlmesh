@@ -520,3 +520,18 @@ def test_publish_checks_fields_dtypes_and_sizes(host: rlmesh.Host) -> None:
         assert robot.due("arm") is None, "nothing is leased: nothing is due"
         with pytest.raises(ValueError, match="not a commandable part"):
             robot.due("wrist/ft")
+
+
+def test_frames_between_composes_two_placed_poses() -> None:
+    from rlmesh.frames import between
+
+    # The scene design's §2 rig: in the arm's frame (turned 90° about z),
+    # eye-l's frame is turned -90° and its origin reads (0.2, 0.365, 0.3).
+    eye = {
+        "at": "eyes/left",
+        "pose": {"xyz": [0.035, 0.0, 0.30], "quat_xyzw": [0, 0, 0, 1]},
+    }
+    arm = {"xyz": [0.40, -0.20, 0.0], "quat_xyzw": [0, 0, 0.7071068, 0.7071068]}
+    t = between(eye, arm)
+    assert t["xyz"] == pytest.approx([0.2, 0.365, 0.3])
+    assert t["quat_xyzw"] == pytest.approx([0, 0, -(0.5**0.5), 0.5**0.5])

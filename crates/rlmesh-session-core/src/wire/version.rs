@@ -24,10 +24,18 @@ pub const SPEC_VERSION: u32 = 1;
 /// listing it publishes on `host/view/{robot}` (scene design §3.4).
 pub const VIEW_DEVICE: &str = "view.device";
 
+/// A host listing it may carry a scene's places in its authority state,
+/// and policies that name no robot bind against their view (scene design
+/// §5, [`crate::spec::view`]). A binder that lacks it refuses to bind in a
+/// session whose state carries places, unless given `robot=`: binding robot
+/// by robot there would read the wrong paths.
+pub const SCENE_PLACES: &str = "scene.places";
+
 /// Features this build implements as a host: behaviour added in later
 /// minors. `auth.sealed`: participants attach through the handshake and
-/// seal their control traffic (design §8.8); [`VIEW_DEVICE`].
-pub const FEATURES: &[&str] = &["auth.sealed", VIEW_DEVICE];
+/// seal their control traffic (design §8.8); [`VIEW_DEVICE`];
+/// [`SCENE_PLACES`].
+pub const FEATURES: &[&str] = &["auth.sealed", VIEW_DEVICE, SCENE_PLACES];
 
 /// The features in `required` that `supported` lacks (empty: compatible).
 pub fn missing_features<'a>(required: &'a [String], supported: &[String]) -> Vec<&'a str> {
@@ -50,6 +58,6 @@ mod tests {
             missing_features(&["merge.blend".into(), "frame.fixed".into()], &supported),
             vec!["merge.blend"]
         );
-        assert_eq!(FEATURES, ["auth.sealed", "view.device"]);
+        assert_eq!(FEATURES, ["auth.sealed", "view.device", "scene.places"]);
     }
 }
