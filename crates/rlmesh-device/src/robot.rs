@@ -259,6 +259,9 @@ pub struct Robot {
     home_unreachable: bool,
     /// The pause before the next round of homes, doubling to 30 s.
     backoff_ms: u32,
+    /// The pause after a refusal (the home won't let this device wait or
+    /// attach under this name), doubling to 30 s until it joins a run.
+    refused_ms: u32,
     /// Why it last left a run, and the view that said so (revision,
     /// generation listed for it, its own).
     left: Option<(Leave, u64, Option<u32>, u32)>,
@@ -381,6 +384,7 @@ impl Robot {
             credential,
             home_unreachable: false,
             backoff_ms: RETRY_MS,
+            refused_ms: RETRY_MS,
             left: None,
             phase: Phase::Host,
             out: Vec::new(),
@@ -1147,6 +1151,7 @@ impl Robot {
                 }
                 self.phase = Phase::Running;
                 self.fault = None;
+                self.refused_ms = RETRY_MS;
                 if self.run.is_none() {
                     self.reached_home();
                 }
@@ -1293,10 +1298,17 @@ impl Robot {
             self.fault = Some(fault);
             return self.enter_lobby(false);
         }
+        // Refused (a board flashed under a name its device may not
+        // embody): it would be refused again, so back off rather than spin.
+        let refused = matches!(fault, Fault::Refused(..));
         self.fault = Some(fault);
         self.reset_session();
         self.phase = Phase::Retry;
         let mut pause = RETRY_MS;
+        if refused {
+            pause = self.refused_ms;
+            self.refused_ms = (self.refused_ms * 2).min(MAX_BACKOFF_MS);
+        }
         if unreachable && self.config.homes.len() > 1 {
             // The home's next address, at once; after a whole round,
             // back off (1 s doubling to 30 s) and let the platform look.
