@@ -622,6 +622,22 @@ impl SessionAddress {
         host_timeout: Duration,
         (workflow_edition, workflow_editions): (String, Vec<String>),
     ) -> Result<Participant, SessionError> {
+        self.join_with(id, roles, priority, host_timeout, |config| {
+            config.workflow_edition = workflow_edition;
+            config.workflow_editions = workflow_editions;
+        })
+        .await
+    }
+
+    /// [`Self::join`], its config finished by `finish`.
+    pub(crate) async fn join_with(
+        &self,
+        id: &str,
+        roles: Vec<Role>,
+        priority: PriorityClass,
+        host_timeout: Duration,
+        finish: impl FnOnce(&mut ParticipantConfig),
+    ) -> Result<Participant, SessionError> {
         // A participant joins a host another process runs as a Zenoh
         // client: its one link is to the host, which routes for it. Joined
         // as peers, they were introduced to each other by the host's gossip,
@@ -650,8 +666,7 @@ impl SessionAddress {
         );
         config.clock = SystemMonotonicClock.shared();
         config.host_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
-        config.workflow_edition = workflow_edition;
-        config.workflow_editions = workflow_editions;
+        finish(&mut config);
         config.credential = Some(self.credential()?);
         Participant::attach(transport, config)
             .await

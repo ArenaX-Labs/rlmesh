@@ -1,6 +1,7 @@
 //! What every language binding shares (Python's extension, the Node addon):
-//! the embedded host, joining as a robot, a policy or a recorder, closing
-//! them, publishing a robot's fields, a due command's fields, the run-time
+//! the embedded host, joining as a robot (directly, or from the home
+//! daemon's lobby), a policy or a recorder, closing them, running scenes,
+//! publishing a robot's fields, a due command's fields, the run-time
 //! options, the loop timer and the names errors and counters carry. A
 //! binding only converts values to and from its language.
 
@@ -14,11 +15,16 @@ use crate::address::{Address, Placed, SessionAddress, place};
 use crate::controller::{Controller, ControllerConfig, ControllerError};
 use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Rejection, Robot};
 use crate::error::SessionError;
+use crate::lobby::{Leave, Lobby, LobbyClient, home_lobby, leave, run_address, wait_for_join};
+use crate::participant::Participant;
 use crate::spec::apply::Tensor;
 use crate::spec::bind::Dir;
 use crate::spec::policy::Allow;
 use crate::spec::{BindError, Policy, RunOptions};
-use crate::wire::{CtlStatus, DType, MemberStage, PriorityClass, ReasonCode, Role, RunStage};
+use crate::wire::{
+    AuthorityView, CtlStatus, DType, MemberStage, ParticipantId, PriorityClass, ReasonCode, Role,
+    RunStage, RunState,
+};
 
 /// How a binding reports a [`SessionError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,6 +232,15 @@ impl EmbeddedHost {
         })
     }
 
+    /// A session another process hosts, joined at `address` (a run's,
+    /// from the lobby): closing it stops nothing.
+    pub fn joined(address: SessionAddress) -> Self {
+        Self {
+            address,
+            placed: tokio::sync::Mutex::new(None),
+        }
+    }
+
     /// What participants join.
     pub fn address(&self) -> &SessionAddress {
         &self.address
@@ -257,6 +272,255 @@ pub async fn connect_robot(
         )
         .await?;
     Robot::declare(participant, robot_json, EdgeConfig::default()).await
+}
+
+/// How long a robot from the lobby waits for its run's host.
+const RUN_ATTACH: Duration = Duration::from_secs(10);
+
+/// Waits in the lobby of the home daemon `home` names (`None`: this
+/// machine's) as robot `name` until a run assigns it, then joins the run and
+/// declares `robot_json`: the robot, and its run's session. A refused join
+/// (its pin, another map) is reported to the daemon by the next wait, which
+/// goes on waiting; `timeout` (`None`: none) bounds it all.
+///
+/// # Errors
+/// What waiting, attaching or declaring failed with, a refusal aside.
+pub async fn robot_from_lobby(
+    home: Option<&str>,
+    name: &str,
+    robot_json: &str,
+    timeout: Option<Duration>,
+) -> Result<(Robot, SessionAddress), EdgeError> {
+    robot_from_lobby_at(&home_lobby(home)?, name, robot_json, timeout).await
+}
+
+/// The e-stop latch of robot `name` in this process, for the lobby whose
+/// host key is `home`: one per robot process (design §6), so it outlives
+/// each run's participant until cleared locally.
+fn process_latch(home: [u8; 32], name: &str) -> Arc<crate::participant::LocalLatch> {
+    type Latches =
+        std::collections::HashMap<([u8; 32], String), Arc<crate::participant::LocalLatch>>;
+    static LATCHES: std::sync::OnceLock<std::sync::Mutex<Latches>> = std::sync::OnceLock::new();
+    LATCHES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry((home, name.to_string()))
+        .or_default()
+        .clone()
+}
+
+/// [`robot_from_lobby`] at the lobby `lobby_address`. Every run's robot
+/// shares this process's latch for the name: a stop not cleared locally
+/// starts the next run in ESTOP.
+///
+/// # Errors
+/// As [`robot_from_lobby`].
+pub async fn robot_from_lobby_at(
+    lobby_address: &SessionAddress,
+    name: &str,
+    robot_json: &str,
+    timeout: Option<Duration>,
+) -> Result<(Robot, SessionAddress), EdgeError> {
+    let home = *lobby_address.credential()?.host_static();
+    let latch = process_latch(home, name);
+    let mut lobby = Lobby::new(ParticipantId::new(name).map_err(SessionError::from)?);
+    let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
+    loop {
+        let left = deadline.map(|d| d.saturating_duration_since(tokio::time::Instant::now()));
+        let (join, address) = wait_for_join(lobby_address, &mut lobby, name, left).await?;
+        let joined = address
+            .join_with(
+                name,
+                vec![Role::Embodiment],
+                PriorityClass::Scripted,
+                RUN_ATTACH,
+                |config| config.latch = Some(latch.clone()),
+            )
+            .await;
+        let robot = match joined {
+            Ok(participant) => Robot::declare(participant, robot_json, EdgeConfig::default()).await,
+            Err(err) => Err(err.into()),
+        };
+        match robot {
+            Ok(robot) => return Ok((robot, address)),
+            Err(EdgeError::Session(SessionError::Rejected(refusal))) => {
+                lobby.failed(&join.run, refusal);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Why `participant`, a robot in a scene's run, should leave it (scene
+/// design §3.5): the run is closing, the host lost it (it waits in the lobby
+/// again, where its run re-sends its join), or another process took its
+/// name over (it stops). `None` while it is in the run, or outside a scene.
+pub fn leaving(participant: &Participant) -> Option<Leave> {
+    let mine = participant.generation()?;
+    if participant.host_lost().is_some() {
+        return Some(Leave::Lost);
+    }
+    participant.authority_view().with(|view| {
+        let view = view?;
+        view.scene.as_ref()?;
+        let current = view
+            .participant(participant.id())
+            .filter(|p| p.present)
+            .map(|p| p.generation);
+        leave(AuthorityView::closing(view), current, mine)
+    })
+}
+
+/// A [`Leave`] as bindings name it: the closing reason (`scene_ended`),
+/// `robot_lost` or `superseded`.
+pub fn leave_name(leave: &Leave) -> String {
+    match leave {
+        Leave::Closing(reason) => reason_name(reason.code),
+        Leave::Lost => reason_name(ReasonCode::RobotLost),
+        Leave::Superseded => "superseded".into(),
+    }
+}
+
+/// A run's stages, as [`run_stage_name`] names them.
+const RUN_STAGES: [RunStage; 11] = [
+    RunStage::Checking,
+    RunStage::Hosting,
+    RunStage::Assigning,
+    RunStage::Declaring,
+    RunStage::Binding,
+    RunStage::Arming,
+    RunStage::Running,
+    RunStage::Ending,
+    RunStage::Ended,
+    RunStage::Failed,
+    RunStage::Rejoining,
+];
+
+/// The run stage `name` names (`running`).
+///
+/// # Errors
+/// An unknown name, listing the known ones.
+pub fn run_stage(name: &str) -> Result<RunStage, String> {
+    RUN_STAGES
+        .into_iter()
+        .find(|s| run_stage_name(*s) == name)
+        .ok_or_else(|| {
+            let names: Vec<String> = RUN_STAGES.into_iter().map(run_stage_name).collect();
+            format!("run stage {name:?}: one of {}", names.join(", "))
+        })
+}
+
+/// A scene run this process started from the home daemon's lobby
+/// (`run_scene`, `runScene`).
+pub struct SceneRun {
+    client: LobbyClient,
+    run: String,
+}
+
+impl SceneRun {
+    /// Runs `scene_toml` at the home daemon `home` names (`None`: this
+    /// machine's), waiting up to `timeout` for it (`manual_arm`: wait for
+    /// [`Self::arm`]). A refused scene is [`SessionError::Rejected`].
+    ///
+    /// # Errors
+    /// The refusal, or what reaching the daemon failed with.
+    pub async fn start(
+        home: Option<&str>,
+        scene_toml: &str,
+        manual_arm: bool,
+        timeout: Duration,
+    ) -> Result<Self, SessionError> {
+        let client = LobbyClient::connect(&home_lobby(home)?, timeout).await?;
+        match client.run_scene(scene_toml, manual_arm).await {
+            Ok(state) => Ok(Self {
+                client,
+                run: state.run,
+            }),
+            Err(err) => {
+                let _ = client.close().await;
+                Err(err)
+            }
+        }
+    }
+
+    /// The run's id.
+    pub fn run(&self) -> &str {
+        &self.run
+    }
+
+    /// The run's state now.
+    ///
+    /// # Errors
+    /// What the call failed with.
+    pub async fn status(&self) -> Result<RunState, SessionError> {
+        self.client.status(&self.run, 0, None).await
+    }
+
+    /// Where the run's members join (its own controllers among them), once
+    /// its host is up.
+    ///
+    /// # Errors
+    /// What the call failed with.
+    pub async fn address(&self) -> Result<Option<String>, SessionError> {
+        let state = self.status().await?;
+        Ok(run_address(self.client.lobby(), &state).map(|a| a.invite()))
+    }
+
+    /// Follows the run until it is at `stage` (see
+    /// [`LobbyClient::wait_until`]).
+    ///
+    /// # Errors
+    /// The run ending first, the timeout, or what a call failed with.
+    pub async fn wait_until(
+        &self,
+        stage: RunStage,
+        timeout: Duration,
+    ) -> Result<RunState, SessionError> {
+        self.client.wait_until(&self.run, stage, timeout).await
+    }
+
+    /// Arms the run (`manual`, or after a rejoin).
+    ///
+    /// # Errors
+    /// The arm's refusal, or what the call failed with.
+    pub async fn arm(&self) -> Result<RunState, SessionError> {
+        self.client.arm(&self.run).await
+    }
+
+    /// Stops the run and waits up to `timeout` for it to end.
+    ///
+    /// # Errors
+    /// What the calls failed with.
+    pub async fn stop(&self, timeout: Duration) -> Result<RunState, SessionError> {
+        let state = self.client.stop(&self.run).await?;
+        if matches!(state.stage, RunStage::Ended | RunStage::Failed) {
+            return Ok(state);
+        }
+        match self
+            .client
+            .wait_until(&self.run, RunStage::Ended, timeout)
+            .await
+        {
+            Err(SessionError::Rejected(_)) => self.status().await,
+            other => other,
+        }
+    }
+
+    /// Stops the run unless it ended, and leaves the lobby.
+    ///
+    /// # Errors
+    /// What leaving failed with.
+    pub async fn close(self, timeout: Duration) -> Result<(), SessionError> {
+        let over = self
+            .status()
+            .await
+            .is_ok_and(|s| matches!(s.stage, RunStage::Ended | RunStage::Failed));
+        if !over {
+            let _ = self.stop(timeout).await;
+        }
+        self.client.close().await
+    }
 }
 
 /// Publishes one sample from its fields' bytes, in declaration order: a

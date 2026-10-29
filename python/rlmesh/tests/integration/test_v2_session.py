@@ -10,6 +10,11 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -535,3 +540,117 @@ def test_frames_between_composes_two_placed_poses() -> None:
     t = between(eye, arm)
     assert t["xyz"] == pytest.approx([0.2, 0.365, 0.3])
     assert t["quat_xyzw"] == pytest.approx([0, 0, -(0.5**0.5), 0.5**0.5])
+
+
+#: A two-joint arm that waits in a lobby, and a policy holding it.
+LOBBY_ARM = {
+    "arm": {
+        "kind": "joints",
+        "count": 2,
+        "fields": ["pos"],
+        "hz": 100,
+        "command": "position",
+        "hold_max_ms": 200,
+    }
+}
+LOBBY_HOLD = {
+    "hz": 20,
+    "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
+    "actions": {
+        "arm": {
+            "kind": "joints",
+            "at": "arm",
+            "command": "position",
+            "hz": 20,
+            "horizon": 2,
+        }
+    },
+}
+
+
+def _free_base() -> int:
+    """A loopback port whose next three are free too (a daemon's classes)."""
+    for _ in range(50):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            base = probe.getsockname()[1]
+        if base > 65531:
+            continue
+        try:
+            held = []
+            for offset in range(4):
+                s = socket.socket()
+                held.append(s)
+                s.bind(("127.0.0.1", base + offset))
+        except OSError:
+            continue
+        finally:
+            for s in held:
+                s.close()
+        return base
+    raise RuntimeError("no four free ports")
+
+
+@pytest.fixture
+def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """An rlmeshd on loopback, whose ``local.key`` this process attaches with."""
+    # Short: its local channel is a Unix socket in there (SUN_LEN).
+    state = tempfile.mkdtemp(prefix="rlmd-", dir="/tmp")
+    monkeypatch.setenv("RLMESH_STATE_DIR", state)
+    base = _free_base()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "rlmesh", "daemon", "--listen", f"127.0.0.1:{base}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        assert proc.stdout is not None
+        line = proc.stdout.readline()
+        assert "rlmeshd on" in line, line
+        yield f"127.0.0.1:{base}"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=WAIT)
+        shutil.rmtree(state, ignore_errors=True)
+
+
+def test_a_scene_runs_a_lobby_robot_and_a_python_policy_on_one_machine(
+    daemon: str, tmp_path: Path
+) -> None:
+    scene_file = tmp_path / "bench.toml"
+    scene_file.write_text(
+        '[scene]\nformat = 1\nname = "bench"\nwait = "20s"\n\n'
+        '[members.arm]\nrole = "robot"\n\n'
+        '[members.pilot]\nrole = "controller"\ndevice = "local"\n'
+    )
+
+    def robot() -> str | None:
+        with rlmesh.Robot.wait_in_lobby(
+            "arm", LOBBY_ARM, home=daemon, timeout=3 * WAIT
+        ) as arm:
+            while arm.leaving is None:
+                arm.publish("arm", pos=np.zeros(2, dtype=np.float32))
+                time.sleep(0.01)
+            return arm.leaving
+
+    thread, out = in_thread(robot)
+    with rlmesh.run_scene(scene_file, home=daemon) as scene:
+        assert scene.wait_until("binding", timeout=WAIT)["members"][0] == {
+            "name": "arm",
+            "stage": "declared",
+            "error": None,
+        }
+        assert scene.address is not None
+        with rlmesh.Policy(LOBBY_HOLD, session=scene.address, name="pilot") as policy:
+            policy.bind("arm")
+            assert scene.wait_until("running", timeout=WAIT)["error"] is None
+            stats = policy.run(lambda obs: {"arm": np.zeros((2, 2))}, duration=1.0)
+            assert stats["starts"] > 0
+            with pytest.raises(rlmesh.SessionRefused, match="arm is in run") as busy:
+                rlmesh.run_scene(scene_file, home=daemon)
+            assert busy.value.status == "ROBOT_BUSY"
+        assert scene.stop()["stage"] == "ended"
+    thread.join(WAIT)
+    assert not raised(out)
+    assert out == ["scene_ended"]

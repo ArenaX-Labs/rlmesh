@@ -110,6 +110,10 @@ pub struct ParticipantConfig {
     /// ([`Participant::local_estop`]): it attaches latched, and the session
     /// starts in ESTOP (design §6).
     pub estop: Option<Reason>,
+    /// The robot process's latch, when it outlives this participant (a
+    /// robot from the lobby, one run after another): it attaches latched
+    /// while it is (design §6), and its edges read the same latch.
+    pub(crate) latch: Option<Arc<LocalLatch>>,
     /// What it attaches with: its device's key and the host's static key
     /// (`SessionHost::credential` in-process; a session address's key
     /// otherwise). Required.
@@ -142,6 +146,7 @@ impl ParticipantConfig {
             workflow_edition: String::new(),
             workflow_editions: Vec::new(),
             estop: None,
+            latch: None,
             credential: None,
         }
     }
@@ -1223,7 +1228,7 @@ impl Participant {
             seen: Mutex::new(BTreeMap::new()),
             edge: Arc::new(EdgeReport::default()),
             reports,
-            estop: Arc::default(),
+            estop: config.latch.clone().unwrap_or_default(),
             binding_revision: AtomicU32::new(0),
             outlets: Mutex::new(BTreeMap::new()),
             demand_wake: Notify::new(),
@@ -1369,7 +1374,7 @@ impl Participant {
                 requires: config.requires.clone(),
                 workflow_edition: config.workflow_edition.clone(),
                 workflow_editions: config.workflow_editions.clone(),
-                estop: config.estop.clone(),
+                estop: config.estop.clone().or_else(|| shared.estop.reason()),
             })
             .await?;
         // A robot process latches every member's e-stop signal at once,
@@ -1409,6 +1414,14 @@ impl Participant {
     /// This participant's id.
     pub fn id(&self) -> &ParticipantId {
         &self.shared.id
+    }
+
+    /// The generation the host issued this process at its handshake.
+    pub fn generation(&self) -> Option<u32> {
+        self.shared
+            .link
+            .get()
+            .map(|link| lock(link).accept().generation)
     }
 
     /// The session's keys.
