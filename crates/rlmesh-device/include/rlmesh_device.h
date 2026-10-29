@@ -67,8 +67,8 @@ typedef struct rlmesh_device_robot rlmesh_device_robot_t;
 typedef struct rlmesh_device_robot_config_t {
   /* The address the host printed, with its key:
    * "{host}:{port}[/{session}]#{secret}.{host key}[/{name}]". NULL for a
-   * provisioned board, which joins session "default" on its record's first
-   * address as its own device. */
+   * provisioned board, which waits in its home's lobby (record's first
+   * address) as its own device, and joins the runs it is assigned. */
   const char* address;
   /* A provisioned board's device key (32 bytes) and stored record (tether spec
    * §14), with address NULL. */
@@ -90,9 +90,9 @@ typedef struct rlmesh_device_robot_config_t {
 #define RLMESH_DEVICE_TOKEN 2     /* declare a liveliness token on key */
 #define RLMESH_DEVICE_QUERY 3     /* query key, with payload if has_payload */
 #define RLMESH_DEVICE_PUBLISH 4   /* publish payload on key */
-
-/* How long a query waits for replies. */
-#define RLMESH_DEVICE_QUERY_MS 2000
+/* Drop every subscription and token: the robot moves to another session (the
+ * lobby, or a run) on the same host. */
+#define RLMESH_DEVICE_RESET 5
 
 /* Traffic classes: the host listens on its address's port plus the class. */
 #define RLMESH_DEVICE_CLASSES 4
@@ -107,6 +107,8 @@ typedef struct rlmesh_device_action_t {
   uint8_t has_payload;
   /* A query's id, for rlmesh_device_robot_reply and _query_done. */
   uint32_t query_id;
+  /* How long a query waits for replies, in milliseconds. */
+  uint32_t timeout_ms;
   /* NUL-terminated. */
   const char* key;
   const uint8_t* payload;
@@ -115,7 +117,8 @@ typedef struct rlmesh_device_action_t {
 
 typedef struct rlmesh_device_robot_status_t {
   /* 0 reading the host, 1 handshake, 2 attach, 3 declaring its parts,
-   * 4 running, 5 waiting to retry. */
+   * 4 running, 5 waiting to retry, 6 waiting in the lobby for a run,
+   * 7 stopped (another process of this device took its name). */
   uint8_t phase;
   /* Why it last started over: 0 never, 1 no reply, 2 the host's state
    * unsigned, 3 the handshake failed (another host's key), 4 refused
@@ -135,6 +138,8 @@ typedef struct rlmesh_device_robot_status_t {
   uint64_t chunks_accepted;
   /* The e-stop latch: 0 clear, 1 this robot's own stop, 2 a member's signal. */
   uint8_t estop;
+  /* Whether it is in a run it joined from the lobby. */
+  uint8_t in_run;
 } rlmesh_device_robot_status_t;
 
 /* No part, in a tick. */

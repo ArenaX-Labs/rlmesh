@@ -127,6 +127,7 @@ impl World {
             credential,
             robot_json: MAP.to_owned(),
             heartbeat_ms: 50,
+            lobby: false,
         })
         .expect("a valid map")
     }
@@ -216,9 +217,14 @@ async fn drive(
                     let token = transport.session(class(c)).liveliness().declare_token(key);
                     tokens.push(token.await.expect("token"));
                 }
+                Action::Reset => {
+                    subscribers.clear();
+                    tokens.clear();
+                }
                 Action::Query {
                     class: c,
                     id,
+                    timeout_ms,
                     key,
                     payload,
                 } => {
@@ -229,9 +235,7 @@ async fn drive(
                             let mut get = zenoh
                                 .get(key)
                                 .consolidation(ConsolidationMode::None)
-                                .timeout(Duration::from_millis(u64::from(
-                                    rlmesh_device::robot::QUERY_MS,
-                                )));
+                                .timeout(Duration::from_millis(u64::from(timeout_ms)));
                             if let Some(payload) = payload {
                                 get = get.payload(payload);
                             }

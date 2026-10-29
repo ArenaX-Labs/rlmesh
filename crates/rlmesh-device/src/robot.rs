@@ -26,12 +26,13 @@ use rlmesh_session_core::crypto::Rng;
 use rlmesh_session_core::crypto::handshake::IkInitiator;
 use rlmesh_session_core::crypto::signed;
 use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick};
+use rlmesh_session_core::lobby::{self, LOBBY_SESSION, Leave, Lobby, WAIT_RETRY};
 use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session_core::wire::{
-    ChannelId, ChannelPriority, Command, CtlStatus, DeviceView, Epoch, Health, Heartbeat, Mode,
-    PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample, SessionId,
-    SessionKeys, TenantId, TimingSample,
+    AuthorityView, ChannelId, ChannelPriority, Command, CtlError, CtlStatus, DeviceView, Epoch,
+    Health, Heartbeat, Join, Mode, PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode,
+    Role, Sample, SessionId, SessionKeys, TenantId, TimingSample,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -79,6 +80,9 @@ pub struct Config {
     pub robot_json: String,
     /// The heartbeat period.
     pub heartbeat_ms: u32,
+    /// Wait in the home's lobby for runs (scene design §3): `tenant` and
+    /// `session` are then the lobby's, and each run's come with its join.
+    pub lobby: bool,
 }
 
 /// Why a [`Config`] can't make a robot.
@@ -114,17 +118,23 @@ pub enum Action {
         /// The key expression.
         key: String,
     },
-    /// Query `key` (with `payload`, if any), for at most [`QUERY_MS`].
+    /// Query `key` (with `payload`, if any), for at most `timeout_ms`.
     Query {
         /// The class.
         class: u8,
         /// Names the replies.
         id: u32,
+        /// How long to wait for replies: [`QUERY_MS`], or a lobby wait's
+        /// [`WAIT_RETRY`].
+        timeout_ms: u32,
         /// The key expression.
         key: String,
         /// The query's payload.
         payload: Option<Vec<u8>>,
     },
+    /// Drop every subscription and token: the robot moves to another
+    /// session (the lobby, or a run), on the same host.
+    Reset,
     /// Publish `payload` on `key`.
     Publish {
         /// The class.
@@ -151,6 +161,11 @@ pub enum Phase {
     Running,
     /// Waiting to start over.
     Retry,
+    /// In the lobby, attached and heartbeating, waiting for a run.
+    Waiting,
+    /// Another process of this device took over its name: it stays safe
+    /// until reset.
+    Stopped,
 }
 
 /// Why the robot last started over.
@@ -210,7 +225,16 @@ pub struct Tick {
 /// The robot.
 pub struct Robot {
     config: Config,
+    /// The session it is in now: the configured one, the lobby, or a run.
+    tenant: TenantId,
+    session: SessionId,
     keys: SessionKeys,
+    /// Between runs (scene design §3): what its next wait reports.
+    lobby: Option<Lobby>,
+    /// The run it joined, while in one.
+    run: Option<Join>,
+    /// The lobby wait in flight: its query, request id and command.
+    wait: Option<(u32, u64, Command)>,
     /// The map's part paths, in its order. `DeclareParts.seal` names
     /// them all: this runtime seals any part.
     paths: Vec<String>,
@@ -299,13 +323,28 @@ impl Robot {
         // only its paths, in authored order.
         let paths = crate::map::paths(&config.robot_json)
             .ok_or_else(|| ConfigError::Map(String::from("not a JSON object of parts")))?;
-        let keys = SessionKeys::new(&config.tenant, config.session);
+        let (tenant, session) = if config.lobby {
+            (
+                TenantId::new(crate::address::TENANT)
+                    .map_err(|_| ConfigError::Map(String::from("tenant")))?,
+                SessionId::named(LOBBY_SESSION),
+            )
+        } else {
+            (config.tenant.clone(), config.session)
+        };
+        let keys = SessionKeys::new(&tenant, session);
+        let lobby = config.lobby.then(|| Lobby::new(config.name.clone()));
         Ok(Self {
             subscribed: alloc::vec![false; paths.len()],
             edge_of: alloc::vec![None; paths.len()],
             paths,
             config,
+            tenant,
+            session,
             keys,
+            lobby,
+            run: None,
+            wait: None,
             phase: Phase::Host,
             out: Vec::new(),
             started: false,
@@ -347,6 +386,11 @@ impl Robot {
     /// Why it last started over, if it has.
     pub fn fault(&self) -> Option<&Fault> {
         self.fault.as_ref()
+    }
+
+    /// Whether it is in a run it joined from the lobby.
+    pub fn in_run(&self) -> bool {
+        self.run.is_some()
     }
 
     /// Signed device views received, over every attach.
@@ -419,6 +463,9 @@ impl Robot {
     /// Runs the timers and returns what the transport should do next, in
     /// order.
     pub fn poll(&mut self, now_us: u64) -> Vec<Action> {
+        if self.phase == Phase::Stopped {
+            return core::mem::take(&mut self.out);
+        }
         if !self.started {
             self.started = true;
             let me = &self.config.name;
@@ -463,10 +510,14 @@ impl Robot {
             Phase::Retry if now_us >= self.retry_at => self.ask_host(),
             // Nothing from the host for HOST_LOST_MS: it is gone, or
             // restarted under a new instance. Join again.
-            Phase::Running if now_us >= self.last_heard + u64::from(HOST_LOST_MS) * 1000 => {
+            Phase::Running | Phase::Waiting
+                if now_us >= self.last_heard + u64::from(HOST_LOST_MS) * 1000 =>
+            {
                 self.fail(Fault::HostLost, now_us);
             }
-            Phase::Running if now_us >= self.next_heartbeat => self.heartbeat(now_us),
+            Phase::Running | Phase::Waiting if now_us >= self.next_heartbeat => {
+                self.heartbeat(now_us);
+            }
             _ => {}
         }
         self.next_ctl(now_us);
@@ -477,6 +528,9 @@ impl Robot {
     pub fn reply(&mut self, id: u32, payload: &[u8], now_us: u64, rng: &mut dyn Rng) {
         if self.pending.as_ref().is_some_and(|p| p.query == id) {
             return self.ctl_reply(payload, now_us);
+        }
+        if self.wait.as_ref().is_some_and(|w| w.0 == id) {
+            return self.wait_reply(payload, now_us);
         }
         if self.waiting != Some(id) {
             return;
@@ -532,6 +586,11 @@ impl Robot {
         if self.pending.as_ref().is_some_and(|p| p.query == id) {
             return self.ctl_unanswered(now_us);
         }
+        if self.wait.as_ref().is_some_and(|w| w.0 == id) {
+            // No order within WAIT_RETRY: the same request again, which
+            // joins the pending wait (or fetches its cached answer).
+            return self.send_wait(now_us);
+        }
         if self.waiting != Some(id) {
             return;
         }
@@ -555,6 +614,7 @@ impl Robot {
                     self.last_heard = now_us;
                     link.observe(&view, now);
                     self.observe(view, now);
+                    self.check_leave(now_us);
                 }
             }
             SUB_TICK => {
@@ -807,11 +867,22 @@ impl Robot {
     }
 
     fn query(&mut self, class: u8, key: String, payload: Option<Vec<u8>>) -> u32 {
+        self.query_for(class, key, payload, QUERY_MS)
+    }
+
+    fn query_for(
+        &mut self,
+        class: u8,
+        key: String,
+        payload: Option<Vec<u8>>,
+        timeout_ms: u32,
+    ) -> u32 {
         self.next_query = self.next_query.wrapping_add(1);
         let id = self.next_query;
         self.out.push(Action::Query {
             class,
             id,
+            timeout_ms,
             key,
             payload,
         });
@@ -825,10 +896,10 @@ impl Robot {
     }
 
     fn start(&mut self, host_instance: u64, rng: &mut dyn Rng, now_us: u64) {
-        let session = self.config.session.to_string();
+        let session = self.session.to_string();
         let started = self.config.credential.start(
             rng,
-            self.config.tenant.as_str(),
+            self.tenant.as_str(),
             &session,
             host_instance,
             &self.config.name,
@@ -953,6 +1024,10 @@ impl Robot {
         // A view participant's replies carry its view, not the state.
         if let Some(view) = reply.view {
             self.observe(view, now);
+            self.check_leave(now_us);
+            if self.phase == Phase::Stopped || self.pending.is_none() && self.link.is_none() {
+                return;
+            }
         }
         match reply.result {
             Err(refusal) if joining => {
@@ -965,6 +1040,15 @@ impl Robot {
             _ => {}
         }
         match (self.phase, &pending.command) {
+            (Phase::Attach, Command::Attach { .. }) if self.in_lobby() => {
+                // In the lobby a robot never declares: it waits.
+                self.phase = Phase::Waiting;
+                self.fault = None;
+                self.next_heartbeat = now_us;
+                self.last_heard = now_us;
+                self.wait = None;
+                self.send_wait(now_us);
+            }
             (Phase::Attach, Command::Attach { .. }) => {
                 self.phase = Phase::Declare;
                 self.queue.push_front(Command::DeclareParts {
@@ -1102,18 +1186,186 @@ impl Robot {
     }
 
     fn fail(&mut self, fault: Fault, now_us: u64) {
+        let joining = self.phase != Phase::Running;
+        if let Some(join) = self.run.take() {
+            // A run's join that failed is reported in the next wait; a run
+            // whose host went quiet is left. Either way, back to the lobby
+            // at once (scene design §3.5).
+            if joining && let Some(lobby) = self.lobby.as_mut() {
+                lobby.failed(&join.run, fault_error(&fault));
+            }
+            self.fault = Some(fault);
+            return self.enter_lobby(false);
+        }
         self.fault = Some(fault);
+        self.reset_session();
         self.phase = Phase::Retry;
+        self.retry_at = now_us + u64::from(RETRY_MS) * 1000;
+    }
+
+    /// Forgets everything of the session it was in; the e-stop latch and
+    /// the lobby's report stay.
+    fn reset_session(&mut self) {
         self.waiting = None;
         self.initiator = None;
         self.link = None;
         self.pending = None;
+        self.wait = None;
         self.queue.clear();
         self.hint = None;
         self.parts.clear();
         self.edges.clear();
         self.edge_of = alloc::vec![None; self.paths.len()];
-        self.retry_at = now_us + u64::from(RETRY_MS) * 1000;
+        self.view = None;
+    }
+
+    fn in_lobby(&self) -> bool {
+        self.lobby.is_some() && self.run.is_none()
+    }
+
+    /// Sends the lobby wait: the one in flight again (the same request id,
+    /// a fresh seq), or a new one.
+    fn send_wait(&mut self, now_us: u64) {
+        let ctl = self.keys.ctl();
+        let epoch = self.epoch();
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        let sealed = match self.wait.take() {
+            Some((_, request, command)) => link
+                .resend(&ctl, request, epoch, &command)
+                .map(|sealed| (request, command, sealed)),
+            None => {
+                let Some(lobby) = self.lobby.as_ref() else {
+                    return;
+                };
+                let command = Command::LobbyWait(lobby.wait());
+                link.request(&ctl, epoch, &command)
+                    .map(|(request, sealed)| (request, command, sealed))
+            }
+        };
+        let Ok((request, command, sealed)) = sealed else {
+            return self.fail(Fault::Internal, now_us);
+        };
+        let timeout = u32::try_from(WAIT_RETRY.as_millis()).unwrap_or(u32::MAX);
+        let query = self.query_for(CLASS_CONTROL, ctl, Some(sealed), timeout);
+        self.wait = Some((query, request, command));
+    }
+
+    /// The lobby's answer to a wait: an order for this robot, or a refusal.
+    fn wait_reply(&mut self, payload: &[u8], now_us: u64) {
+        let now = ns(now_us);
+        let ctl = self.keys.ctl();
+        let (Some(link), Some((_, request, _))) = (self.link.as_mut(), self.wait.as_ref()) else {
+            return;
+        };
+        let mut bytes = payload.to_vec();
+        let Ok(ReplyOutcome::Answer(reply)) = link.reply_view(&ctl, &mut bytes, *request, now)
+        else {
+            return;
+        };
+        self.wait = None;
+        let reply = *reply;
+        if let Some(view) = reply.view {
+            self.observe(view, now);
+        }
+        if let Err(refusal) = reply.result {
+            // A host that hosts no lobby, or refuses this robot one: try
+            // again later.
+            return self.fail(Fault::Refused(refusal.status, refusal.message), now_us);
+        }
+        let taken = match (reply.assignment, self.lobby.as_mut()) {
+            (Some(assignment), Some(lobby)) => lobby.take(assignment),
+            _ => return self.send_wait(now_us),
+        };
+        match taken {
+            Ok(join) => self.enter_run(join),
+            // Someone else's order: keep waiting.
+            Err(_) => self.send_wait(now_us),
+        }
+    }
+
+    /// Leaves the run it is in when the view says so (scene design §3.5).
+    fn check_leave(&mut self, now_us: u64) {
+        if self.run.is_none() || self.phase != Phase::Running {
+            return;
+        }
+        let Some(view) = self.view.as_ref() else {
+            return;
+        };
+        let current = view.generation(&self.config.name);
+        match lobby::leave(view.closing(), current, self.generation) {
+            None => {}
+            Some(Leave::Closing(_)) => self.enter_lobby(true),
+            Some(Leave::Lost) => self.enter_lobby(false),
+            Some(Leave::Superseded) => self.stop(),
+        }
+        let _ = now_us;
+    }
+
+    /// Detaches from the session it is in, without waiting for the answer
+    /// (the host also sees its heartbeats stop).
+    fn detach(&mut self) {
+        let ctl = self.keys.ctl();
+        let epoch = self.epoch();
+        if let Some(link) = self.link.as_mut()
+            && let Ok((_, sealed)) = link.request(&ctl, epoch, &Command::Detach)
+        {
+            self.query(CLASS_CONTROL, ctl, Some(sealed));
+        }
+    }
+
+    /// Moves to `session` of `tenant` on the same host: a new handshake,
+    /// subscriptions and generation.
+    fn move_to(&mut self, tenant: TenantId, session: SessionId) {
+        self.reset_session();
+        self.out.push(Action::Reset);
+        self.subscribed = alloc::vec![false; self.paths.len()];
+        self.keys = SessionKeys::new(&tenant, session);
+        self.tenant = tenant;
+        self.session = session;
+        self.seqs.clear();
+        // The next poll subscribes there and asks for its host.
+        self.started = false;
+        self.phase = Phase::Host;
+    }
+
+    /// Back to the lobby: detaching first when the run is closing.
+    fn enter_lobby(&mut self, detach: bool) {
+        if detach {
+            self.detach();
+        }
+        self.run = None;
+        if let Ok(tenant) = TenantId::new(crate::address::TENANT) {
+            self.move_to(tenant, SessionId::named(LOBBY_SESSION));
+        }
+    }
+
+    /// Joins the run `join` names: detaches from the lobby, then joins the
+    /// run's session (hosted at home for now: the same host and key).
+    fn enter_run(&mut self, join: Join) {
+        self.detach();
+        let Ok(tenant) = TenantId::new(&join.tenant) else {
+            if let Some(lobby) = self.lobby.as_mut() {
+                lobby.failed(
+                    &join.run,
+                    CtlError::new(CtlStatus::InvalidRequest, "the join's tenant isn't one"),
+                );
+            }
+            return self.enter_lobby(false);
+        };
+        let session = join.session;
+        self.run = Some(join);
+        self.move_to(tenant, session);
+    }
+
+    /// Superseded: another process of this device holds its name. Safe,
+    /// off the network, until reset.
+    fn stop(&mut self) {
+        self.reset_session();
+        self.out.push(Action::Reset);
+        self.run = None;
+        self.phase = Phase::Stopped;
     }
 }
 
@@ -1144,4 +1396,19 @@ fn apply_latch(edge: &mut Edge, latch: Latch) {
     }
     edge.core
         .set_local_estop(latch.latched.then_some(latch.code));
+}
+
+/// What a failed join reports to the lobby.
+fn fault_error(fault: &Fault) -> CtlError {
+    match fault {
+        Fault::Refused(status, message) => CtlError::new(*status, message.clone()),
+        Fault::Handshake | Fault::Unsigned => CtlError::new(
+            CtlStatus::Unauthenticated,
+            "the run's host failed the handshake",
+        ),
+        Fault::NoReply | Fault::HostLost => {
+            CtlError::new(CtlStatus::NotPresent, "no reply from the run's host")
+        }
+        Fault::Internal => CtlError::new(CtlStatus::InvalidRequest, "the robot failed to join"),
+    }
 }

@@ -7,10 +7,10 @@ library. This library adds the board's clock and randomness, and its
 network: [zenoh-pico](https://github.com/eclipse-zenoh/zenoh-pico) at the
 version of the host's Zenoh.
 
-> **Work in progress.** A board joins a session, declares its parts, takes
-> commands and publishes samples, all sealed or signed per part
-> (`examples/Robot`), and latches every member's e-stop. Lockstep and
-> serving history come next.
+> **Work in progress.** A board waits in its home's lobby, joins the scene
+> runs it is assigned, takes commands and publishes samples, all sealed or
+> signed per part (`examples/Robot`), and latches every member's e-stop.
+> Lockstep and serving history come next.
 
 For a board without a network (a Nano, Uno or UNO R4 on a USB cable), see
 [RLMeshTether](../arduino).
@@ -59,7 +59,25 @@ rlmesh devices provision --port /dev/ttyUSB0 --name eyes
 
 - **The device key:** the board makes it on first boot, after Wi-Fi starts (the RNG needs the radio), and keeps it in NVS.
 - **The exchange:** provisioning reads the public key and checks the name compiled into the sketch, then writes the home's key, id and addresses to NVS (tether spec §14). It enrolls the key with the daemon and pins the robot to it.
-- **Afterwards:** the board joins at once, and on every boot after. Provisioning again keeps the device; a full flash erase makes a new one.
+- **Afterwards:** the board waits in its home's lobby, at once and on every boot after. Provisioning again keeps the device; a full flash erase makes a new one.
+
+### Runs
+
+A provisioned board waits in its home's **lobby** until a scene run assigns
+it, then joins the run, declares its parts, and comes back when the run
+ends (scene design §3):
+
+```sh
+rlmesh lobby                       # eyes  (from eyes)
+rlmesh run eyes.toml --arm manual  # r-dtqh: hosting, assigning, declaring, arming
+rlmesh arm r-dtqh
+rlmesh stop r-dtqh                 # eyes: returned
+```
+
+- **In the lobby** the board is attached and heartbeating, and asks for an order every 10 s; it never declares there.
+- **Leaving a run:** when the run closes it detaches and goes back to the lobby. If the run's host loses it (a Wi-Fi drop, a reset), it goes back to the lobby too, and the home sends the same join again, so the run continues once someone arms it again. If another board takes its name, it stays safe and stops until reset.
+- **Its map** must be the same on every join: a rejoin with another one is refused.
+- `robot.status()` shows `in_run`, and phase 6 while it waits in the lobby.
 - **At rest:** anyone with the board in hand can read its key from flash; revoke the device (`rlmesh devices revoke`) if one goes missing.
 
 For a one-off host instead, run one on the computer's LAN address and put
