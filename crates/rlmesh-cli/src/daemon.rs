@@ -13,6 +13,10 @@
 //! It hosts the lobby, `_lobby` ([`crate::lobby`]), where robots provisioned
 //! to it or paired with it wait for a run, and runs scenes there.
 //!
+//! It advertises itself over mDNS as `_rlmesh._tcp.local`, with its host
+//! id and base port only ([`discovery::advertise`]), so boards and paired
+//! machines find it again when its address changes (scene design §3.1).
+//!
 //! Its pairing endpoint (`rlmeshd/pair`, [`PairService`]) pairs machines,
 //! which the owner approves on this machine through the local channel
 //! ([`crate::pair`]), as `devices provision` enrolls boards. Its host id
@@ -34,6 +38,7 @@ use rlmesh_session::address::{
 };
 use rlmesh_session::auth::HostIdentity;
 use rlmesh_session::auth::address::{base32, unbase32};
+use rlmesh_session::discovery;
 use rlmesh_session::pairing::PairService;
 use rlmesh_session::server::SessionServer;
 use rlmesh_session::wire::{PairInfo, Role, TenantId};
@@ -119,7 +124,7 @@ pub fn identity(dir: &Path) -> Result<HostIdentity> {
 /// or for every interface (`0.0.0.0`) the address of the interface its
 /// default route leaves by.
 // TODO: one address per host; list every interface's when a robot is on
-// more than one network (mDNS covers the rest, scene design §3.1).
+// more than one network (mDNS finds the others, scene design §3.1).
 pub fn advertised(base: SocketAddr) -> Vec<String> {
     if !base.ip().is_unspecified() {
         return vec![base.to_string()];
@@ -169,6 +174,12 @@ pub async fn daemon(
     let server = Arc::new(SessionServer::start(transport.clone(), config.clone()).await?);
     Home::start(&server, dir.clone(), config, advertised(base)).await?;
     let service = Arc::new(PairService::start(&transport, identity.clone()).await?);
+    // Without multicast it is found at its stored addresses only.
+    let advertised_on_lan = discovery::advertise(&identity.host_id(), base)
+        .map_err(|err| {
+            let _ = writeln!(stderr, "rlmeshd: not advertised over mDNS: {err}");
+        })
+        .ok();
     let (apply, mut applying) = tokio::sync::mpsc::channel(4);
     #[cfg(unix)]
     let local = crate::pair::serve_local(crate::pair::Local {
@@ -218,6 +229,7 @@ pub async fn daemon(
         local.abort();
         let _ = std::fs::remove_file(dir.join(crate::pair::SOCKET));
     }
+    drop(advertised_on_lan);
     server.shutdown().await;
     transport.close().await?;
     Ok(())

@@ -57,6 +57,8 @@
 //!   counters an observer cannot measure itself.
 //! - [`pairing`]: machine pairing with rlmeshd (design §3), and the host
 //!   files paired machines attach with.
+//! - [`discovery`]: rlmeshd's mDNS advertisement, and a paired machine
+//!   finding its host by id (scene design §3.1).
 //! - [`lobby`]: the home daemon's lobby (scene design §3): its verbs'
 //!   service, a client that runs scenes, and a robot waiting for a run.
 //! - [`scene`]: scene files (scene design §2), read and checked without
@@ -81,6 +83,7 @@ pub mod chunk;
 pub mod clock;
 pub mod controller;
 pub use rlmesh_session_core::crypto;
+pub mod discovery;
 pub mod edge;
 pub mod error;
 #[cfg(feature = "gateway")]

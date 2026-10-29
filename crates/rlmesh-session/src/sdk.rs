@@ -15,7 +15,7 @@ use crate::address::{Address, Placed, SessionAddress, place};
 use crate::controller::{Controller, ControllerConfig, ControllerError};
 use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Rejection, Robot};
 use crate::error::SessionError;
-use crate::lobby::{Leave, Lobby, LobbyClient, home_lobby, leave, run_address, wait_for_join};
+use crate::lobby::{Leave, Lobby, LobbyClient, find_home, leave, run_address, wait_for_join};
 use crate::participant::Participant;
 use crate::spec::apply::Tensor;
 use crate::spec::bind::Dir;
@@ -291,7 +291,7 @@ pub async fn robot_from_lobby(
     robot_json: &str,
     timeout: Option<Duration>,
 ) -> Result<(Robot, SessionAddress), EdgeError> {
-    robot_from_lobby_at(&home_lobby(home)?, name, robot_json, timeout).await
+    robot_from_lobby_at(&find_home(home).await?, name, robot_json, timeout).await
 }
 
 /// The e-stop latch of robot `name` in this process, for the lobby whose
@@ -431,7 +431,7 @@ impl SceneRun {
         manual_arm: bool,
         timeout: Duration,
     ) -> Result<Self, SessionError> {
-        let client = LobbyClient::connect(&home_lobby(home)?, timeout).await?;
+        let client = LobbyClient::connect(&find_home(home).await?, timeout).await?;
         match client.run_scene(scene_toml, manual_arm).await {
             Ok(state) => Ok(Self {
                 client,
