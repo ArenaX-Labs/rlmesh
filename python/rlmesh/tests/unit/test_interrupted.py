@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import _thread
+import threading
 import time
 from typing import Any, ClassVar
 
@@ -51,6 +52,15 @@ def test_ctrl_c_keeps_the_episodes_that_finished() -> None:
 
 
 def test_ctrl_c_in_run_routes_keeps_the_routes_that_finished() -> None:
+    ended = threading.Event()
+
+    class Ends(_TwoStepEnv):
+        def step(self, action: object) -> tuple[int, float, bool, bool, dict]:
+            result = super().step(action)
+            if result[2]:
+                ended.set()
+            return result
+
     class Interrupts(_TwoStepEnv):
         def __init__(self) -> None:
             super().__init__()
@@ -59,6 +69,8 @@ def test_ctrl_c_in_run_routes_keeps_the_routes_that_finished() -> None:
         def step(self, action: object) -> tuple[int, float, bool, bool, dict]:
             self.calls += 1
             if self.calls == 20:
+                # The other route's episode ends first, however slow the host.
+                ended.wait(30)
                 _thread.interrupt_main()
             if self.calls >= 20:
                 time.sleep(0.01)
@@ -67,7 +79,7 @@ def test_ctrl_c_in_run_routes_keeps_the_routes_that_finished() -> None:
     interrupts = Interrupts()
     servers = [
         rlmesh.EnvServer(env, f":0/interrupted-{i}")
-        for i, env in enumerate([_TwoStepEnv(), interrupts])
+        for i, env in enumerate([Ends(), interrupts])
     ]
     for server in servers:
         server.start()
