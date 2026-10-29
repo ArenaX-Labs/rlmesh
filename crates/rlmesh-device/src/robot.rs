@@ -29,9 +29,9 @@ use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick};
 use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session_core::wire::{
-    AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlStatus, DeviceView, Epoch, Health,
-    Heartbeat, Mode, PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample,
-    SessionId, SessionKeys, TenantId, TimingSample,
+    ChannelId, ChannelPriority, Command, CtlStatus, DeviceView, Epoch, Health, Heartbeat, Mode,
+    PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample, SessionId,
+    SessionKeys, TenantId, TimingSample,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -806,12 +806,6 @@ impl Robot {
         self.observed_ns = now;
     }
 
-    /// A ctl reply's state, as this robot's view of it.
-    fn observe_state(&mut self, state: &AuthoritySnapshot, now: i64) {
-        let view = DeviceView::of(state, &self.config.name);
-        self.observe(view, now);
-    }
-
     fn query(&mut self, class: u8, key: String, payload: Option<Vec<u8>>) -> u32 {
         self.next_query = self.next_query.wrapping_add(1);
         let id = self.next_query;
@@ -942,7 +936,7 @@ impl Robot {
             return;
         };
         let mut bytes = payload.to_vec();
-        let reply = match link.reply(&ctl, &mut bytes, pending.request, now) {
+        let reply = match link.reply_view(&ctl, &mut bytes, pending.request, now) {
             Ok(ReplyOutcome::Answer(reply)) => reply,
             Ok(ReplyOutcome::Hint(refusal)) => {
                 self.hint = Some(Fault::Refused(refusal.status, refusal.message));
@@ -956,7 +950,10 @@ impl Robot {
         };
         self.hint = None;
         let reply = *reply;
-        self.observe_state(&reply.state, now);
+        // A view participant's replies carry its view, not the state.
+        if let Some(view) = reply.view {
+            self.observe(view, now);
+        }
         match reply.result {
             Err(refusal) if joining => {
                 return self.fail(Fault::Refused(refusal.status, refusal.message), now_us);
