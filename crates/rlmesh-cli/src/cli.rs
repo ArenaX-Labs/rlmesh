@@ -54,6 +54,9 @@ pub enum Command {
     /// rlmeshd, and provision boards over USB; it applies a change at once.
     #[command(visible_alias = "device")]
     Devices(DevicesArgs),
+    /// Check scene files against this machine's rlmeshd: its devices and
+    /// robot pins.
+    Scene(SceneArgs),
     /// Pair this machine with a robot's rlmeshd (shows a code to type on
     /// the robot), or, on the robot, approve a machine by its code.
     Pair(PairArgs),
@@ -552,6 +555,30 @@ pub enum DevicesCommand {
         /// or what it already has).
         #[arg(long, value_name = "CLASS")]
         max: Option<String>,
+    },
+}
+
+/// Flags for `rlmesh scene`.
+#[derive(Args, Debug)]
+pub struct SceneArgs {
+    /// rlmeshd's state directory (default: `rlmesh/daemon` in the user
+    /// state directory).
+    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR", global = true)]
+    pub state_dir: Option<std::path::PathBuf>,
+    #[command(subcommand)]
+    pub command: SceneCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SceneCommand {
+    /// Check a scene file offline, as a run's first stage will: its
+    /// format, members, places and security, and its robots and
+    /// controllers against the device table and pins. Prints every problem
+    /// with its line and fix, and exits 1 if there is one.
+    Check {
+        /// The scene file.
+        #[arg(value_name = "SCENE.TOML")]
+        file: std::path::PathBuf,
     },
 }
 
