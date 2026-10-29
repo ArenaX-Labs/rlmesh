@@ -1,0 +1,9 @@
+{
+  "cam": {
+    "kind": "camera",
+    "width": 640,
+    "height": 480,
+    "hz": 30,
+    "frame": "cam_optical"
+  }
+}

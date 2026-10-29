@@ -23,6 +23,9 @@
 //!   host.
 //! - [`role`]: the binder's Gym door, which binds a v1 `ModelSpec` to a
 //!   Gym env's tagged leaves by role, with the same conversions.
+//! - [`view`](mod@view), [`frames`]: a scene's view, its placed robots'
+//!   parts in one path tree, and the one helper over its places' static
+//!   poses (scene design §5).
 //!
 //! The generic core ([`wire`](crate::wire), `rlmesh-session` and its edge)
 //! works on streams and never interprets kinds; only this module does.
@@ -36,6 +39,7 @@ pub mod canonical;
 pub mod contract;
 pub mod convert;
 pub mod explain;
+pub mod frames;
 pub mod image;
 pub mod kinds;
 pub mod normalise;
@@ -46,8 +50,9 @@ pub mod role;
 pub mod rotation;
 pub mod selector;
 pub mod units;
+pub mod view;
 
-pub use bind::{BindError, Binding, Refusal, bind};
+pub use bind::{BindError, Binding, Refusal, Target, bind, bind_in};
 pub use kinds::Kind;
 pub use normalise::normalise;
 pub use policy::{Policy, RunOptions};

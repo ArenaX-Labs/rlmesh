@@ -1,0 +1,18 @@
+binding tracker on scene: 2 inputs, 3 actions, fingerprint 1e146d343d66c70a
+replan 30 Hz
+
+  entry      dir  part        status  plan                   delivers
+  image      in   cam-1:cam   bound   none                   u8 [480, 640, 3]
+  left_gaze  in   eye-l:gaze  bound   none; names identical  f32 [2]
+  left       out  eye-l:gaze  bound   none; names identical  f32 [1, 2]
+  right      out  eye-r:gaze  bound   none; names identical  f32 [1, 2]
+  jaw        out  skull:jaw   bound   none                   f32 [1, 1]
+
+  input      contract   source  delivery  freshness
+  image      every      30 Hz   30 Hz     100 ms (derived)
+  left_gaze  latest@30  50 Hz   30 Hz     100 ms (derived)
+
+  action  grid             chunk                  valid    edge             age cap
+  left    30 Hz (default)  1 × 33.3 ms = 33.3 ms  33.3 ms  50 Hz (default)  100 ms
+  right   30 Hz (default)  1 × 33.3 ms = 33.3 ms  33.3 ms  50 Hz (default)  100 ms
+  jaw     30 Hz (default)  1 × 33.3 ms = 33.3 ms  33.3 ms  50 Hz (default)  100 ms

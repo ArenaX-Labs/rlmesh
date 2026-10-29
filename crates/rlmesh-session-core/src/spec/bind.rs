@@ -22,6 +22,12 @@
 //!    its fingerprint (BLAKE3 over the canonical table).
 //!
 //! Lease availability is not part of binding.
+//!
+//! In a scene (scene design §5), a run that names no robot binds against the
+//! view ([`crate::spec::view`]): selectors resolve from the view root, a
+//! qualified selector (`eye-l:gaze`) in that robot's own map, and actions may
+//! target any placed robot, aligned by `t0` only. Lockstep sessions keep
+//! every action on one robot.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -31,7 +37,10 @@ use core::fmt;
 use core::time::Duration;
 
 use crate::wire::part::{DType, Encoding, FieldSpec, MAX_CHUNK_BYTES, PartSpec};
-use crate::wire::{ActionGrid, ChannelId, Fingerprint, ParticipantId, StreamContract};
+use crate::wire::{
+    ActionGrid, AuthoritySnapshot, ChannelId, ClockMode, Fingerprint, ParticipantId, Place,
+    StreamContract,
+};
 use serde_json::{Value, json};
 
 use crate::spec::canonical;
@@ -49,6 +58,7 @@ use crate::spec::projection::Projection;
 use crate::spec::rotation::{self, Rotation, RotationChange};
 use crate::spec::selector::{Selector, below};
 use crate::spec::units::{self, Quantity, UnitChange};
+use crate::spec::view::{self, VIEW};
 
 /// The most capture assignments the binder enumerates.
 pub const MAX_ASSIGNMENTS: usize = 4096;
@@ -288,8 +298,10 @@ pub struct ActionRow {
 pub struct Binding {
     /// The policy.
     pub policy: String,
-    /// The robot its actions target.
+    /// The robot its actions target, or the view (`scene`).
     pub robot: ParticipantId,
+    /// The place table of the view it bound against (empty: one robot).
+    pub places: Vec<Place>,
     /// The scope.
     pub under: Option<String>,
     /// Capture values, given or inferred.
@@ -353,11 +365,17 @@ impl Binding {
 }
 
 fn table_value(b: &Binding) -> Value {
+    // A view's rows name their robot, so its fingerprint covers them.
+    let robot = |row: &mut Value, part: &Option<PartSpec>| {
+        if !b.places.is_empty() {
+            row["robot"] = json!(part.as_ref().map(|p| p.owner.as_str()));
+        }
+    };
     let inputs: Vec<Value> = b
         .inputs
         .iter()
         .map(|r| {
-            json!({
+            let mut row = json!({
                 "entry": r.entry,
                 "kind": r.kind,
                 "part": r.part.as_ref().map(|p| p.path.to_string()),
@@ -373,14 +391,16 @@ fn table_value(b: &Binding) -> Value {
                 "required": r.required,
                 "hold": r.hold,
                 "warmup": r.warmup,
-            })
+            });
+            robot(&mut row, &r.part);
+            row
         })
         .collect();
     let actions: Vec<Value> = b
         .actions
         .iter()
         .map(|r| {
-            json!({
+            let mut row = json!({
                 "entry": r.entry,
                 "kind": r.kind,
                 "part": r.part.as_ref().map(|p| p.path.to_string()),
@@ -392,7 +412,9 @@ fn table_value(b: &Binding) -> Value {
                 "horizon": r.horizon,
                 "valid_ns": u64::try_from(r.valid.as_nanos()).unwrap_or(u64::MAX),
                 "t0": match r.t0 { ChunkStart::Snapshot => "snapshot", ChunkStart::Send => "send" },
-            })
+            });
+            robot(&mut row, &r.part);
+            row
         })
         .collect();
     json!({
@@ -654,10 +676,38 @@ struct Binder<'a> {
     options: &'a RunOptions,
     robot: ParticipantId,
     parts: &'a [PartSpec],
+    /// The view's parts under their view paths, when binding a view.
+    view: Option<&'a [PartSpec]>,
+    places: &'a [Place],
+    lockstep: bool,
     scope: Vec<String>,
     run: RunCall,
     problems: Vec<Problem>,
     warnings: Vec<String>,
+}
+
+/// What a policy binds against: every robot's parts and, when the session
+/// runs a scene, its place table (scene design §5).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Target<'a> {
+    /// Every declared part.
+    pub parts: &'a [PartSpec],
+    /// Where each placed robot's parts appear in the view.
+    pub places: &'a [Place],
+    /// How session time advances: a lockstep session's actions stay on one
+    /// robot.
+    pub clock_mode: ClockMode,
+}
+
+impl<'a> Target<'a> {
+    /// What `state` offers a binder.
+    pub fn of(state: &'a AuthoritySnapshot) -> Self {
+        Self {
+            parts: &state.parts,
+            places: &state.places,
+            clock_mode: state.clock_mode,
+        }
+    }
 }
 
 /// Binds `policy` against the session's `parts` (every robot's), with the
@@ -667,6 +717,31 @@ pub fn bind(
     parts: &[PartSpec],
     options: &RunOptions,
 ) -> Result<Binding, BindError> {
+    bind_in(
+        policy,
+        &Target {
+            parts,
+            ..Target::default()
+        },
+        options,
+    )
+}
+
+/// Binds `policy` against `target` with the run-time `options`: against
+/// its view when it has places and `options` names no robot, else against
+/// one robot.
+pub fn bind_in(
+    policy: &Policy,
+    target: &Target<'_>,
+    options: &RunOptions,
+) -> Result<Binding, BindError> {
+    let parts = target.parts;
+    let view = match options.robot {
+        None if !target.places.is_empty() => {
+            Some(view::parts(parts, target.places).map_err(BindError::Options)?)
+        }
+        _ => None,
+    };
     let mut owners: Vec<&ParticipantId> = Vec::new();
     for part in parts {
         if !owners.contains(&&part.owner) {
@@ -674,6 +749,9 @@ pub fn bind(
         }
     }
     let robot = match (&options.robot, owners.as_slice()) {
+        (None, _) if view.is_some() => {
+            ParticipantId::new(VIEW).map_err(|e| BindError::Options(e.to_string()))?
+        }
         (Some(robot), _) if owners.contains(&robot) => robot.clone(),
         (Some(robot), _) => {
             return Err(BindError::Options(format!("{robot} has declared no parts")));
@@ -708,6 +786,9 @@ pub fn bind(
         options,
         robot,
         parts,
+        view: view.as_deref(),
+        places: if view.is_some() { target.places } else { &[] },
+        lockstep: target.clock_mode == ClockMode::Lockstep,
         scope: options
             .under
             .as_ref()
@@ -766,7 +847,17 @@ impl<'a> Binder<'a> {
         let scope: Vec<&str> = self.scope.iter().map(String::as_str).collect();
         let mut candidates = Vec::new();
         let mut considered = Vec::new();
-        for part in self.parts.iter().filter(|p| p.owner == slot.robot) {
+        // A qualified selector resolves in its robot's own map, view or not.
+        let qualified = slot.selector.as_ref().is_some_and(|s| s.robot.is_some());
+        let pool: Vec<&'a PartSpec> = match self.view {
+            Some(view) if !qualified => view.iter().collect(),
+            _ => self
+                .parts
+                .iter()
+                .filter(|p| p.owner == slot.robot)
+                .collect(),
+        };
+        for part in pool {
             if !Self::kind_matches(slot.entry, part) {
                 continue;
             }
@@ -1113,8 +1204,9 @@ impl<'a> Binder<'a> {
             }
         }
 
-        // Step 7: duplicate targets.
+        // Step 7: duplicate targets, and one robot per lockstep policy.
         self.duplicates(&slots, &actions);
+        self.lockstep_robots(&slots, &actions);
 
         // Contracts, one per bound input stream.
         let contracts = self.contracts(&slots, &inputs, replan);
@@ -1130,9 +1222,23 @@ impl<'a> Binder<'a> {
         if !self.problems.is_empty() {
             return Err(self.refusal());
         }
+        // A view's rows hold their parts as declared, under their own paths:
+        // what the streams' keys are made of.
+        if self.view.is_some() {
+            let declared = |part: &mut Option<PartSpec>| {
+                if let Some(p) = part
+                    && let Some(own) = self.parts.iter().find(|o| o.channel == p.channel)
+                {
+                    *p = own.clone();
+                }
+            };
+            inputs.iter_mut().for_each(|r| declared(&mut r.part));
+            actions.iter_mut().for_each(|r| declared(&mut r.part));
+        }
         let mut binding = Binding {
             policy: self.options.name.clone(),
             robot: self.robot.clone(),
+            places: self.places.to_vec(),
             under: self.options.under.as_ref().map(ToString::to_string),
             captures: chosen,
             replan_hz: replan,
@@ -2422,7 +2528,24 @@ impl<'a> Binder<'a> {
     ) -> Option<ActionRow> {
         let kind = Kind::parse(&part.kind).unwrap_or(Kind::Custom);
         let path = part.path.to_string();
-        if slot.robot != self.robot {
+        if self.view.is_some() {
+            if !self.places.iter().any(|p| p.robot == part.owner) {
+                self.incompatible(
+                    slot,
+                    format!(
+                        "{}: {} is not placed in this scene's view.",
+                        slot.name(),
+                        part.owner
+                    ),
+                    vec![format!(
+                        "    fix: place {} in the scene, or bind it on its own: rlmesh.run(..., robot={:?})",
+                        part.owner,
+                        part.owner.as_str()
+                    )],
+                );
+                return None;
+            }
+        } else if slot.robot != self.robot {
             self.incompatible(
                 slot,
                 format!(
@@ -2782,6 +2905,44 @@ impl<'a> Binder<'a> {
                     ],
                 ));
             }
+        }
+    }
+
+    /// A lockstep session steps one robot (§12): a view's actions there
+    /// target one robot (scene design §5).
+    fn lockstep_robots(&mut self, slots: &[Slot<'a>], actions: &[ActionRow]) {
+        if !self.lockstep {
+            return;
+        }
+        let mut targets = actions
+            .iter()
+            .filter_map(|a| a.part.as_ref().map(|p| (a, &p.owner)));
+        let Some((first, robot)) = targets.next() else {
+            return;
+        };
+        for (a, other) in targets.filter(|(_, o)| *o != robot) {
+            let Some(slot) = slots
+                .iter()
+                .find(|s| s.dir == Dir::Out && s.entry.name == a.entry)
+            else {
+                continue;
+            };
+            self.problems.push(problem(
+                Code::Incompatible,
+                slot,
+                format!(
+                    "{}: targets {other}, but action {:?} targets {robot}.",
+                    slot.name(),
+                    first.entry
+                ),
+                vec![
+                    "    A lockstep session steps one robot, so a policy's actions target one robot there.".into(),
+                    format!(
+                        "    fix: bind each robot on its own: rlmesh.run(..., robot={:?})",
+                        robot.as_str()
+                    ),
+                ],
+            ));
         }
     }
 

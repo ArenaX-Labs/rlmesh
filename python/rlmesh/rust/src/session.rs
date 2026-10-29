@@ -94,6 +94,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_address, m)?)?;
     m.add_function(wrap_pyfunction!(is_v2_address, m)?)?;
     m.add_function(wrap_pyfunction!(local_run_session, m)?)?;
+    m.add_function(wrap_pyfunction!(frames_between, m)?)?;
     crate::lockstep::register(m)?;
     Ok(())
 }
@@ -144,6 +145,35 @@ def is_v2_address(text: str) -> bool: ...
 #[pyfunction]
 fn is_v2_address(text: &str) -> bool {
     rlmesh_session::address::is_v2_address(text)
+}
+
+/// The static rigid transform from pose `a` to pose `b`, both in the scene
+/// frame `world` (scene design §5): `(xyz, quat_xyzw)` of `T_b←a`.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def frames_between(
+    a_xyz: typing.Sequence[float],
+    a_quat_xyzw: typing.Sequence[float],
+    b_xyz: typing.Sequence[float],
+    b_quat_xyzw: typing.Sequence[float],
+) -> tuple[list[float], list[float]]: ...
+"#
+    )
+)]
+#[pyfunction]
+fn frames_between(
+    a_xyz: [f64; 3],
+    a_quat_xyzw: [f64; 4],
+    b_xyz: [f64; 3],
+    b_quat_xyzw: [f64; 4],
+) -> ([f64; 3], [f64; 4]) {
+    let pose = |xyz, quat_xyzw| rlmesh_session::wire::Pose { xyz, quat_xyzw };
+    let t =
+        rlmesh_session::spec::frames::between(&pose(a_xyz, a_quat_xyzw), &pose(b_xyz, b_quat_xyzw));
+    (t.xyz, t.quat_xyzw)
 }
 
 /// A fresh session on this process's shared in-process host, for a run's

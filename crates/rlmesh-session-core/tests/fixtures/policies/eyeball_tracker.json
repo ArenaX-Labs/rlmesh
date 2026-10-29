@@ -1,0 +1,31 @@
+{
+  "hz": 30,
+  "inputs": {
+    "image": {
+      "kind": "camera",
+      "at": "/scene/cam"
+    },
+    "left_gaze": {
+      "kind": "joints",
+      "at": "eye-l:gaze",
+      "fields": ["pos"],
+      "names": ["pan", "tilt"]
+    }
+  },
+  "actions": {
+    "left": {
+      "kind": "joints",
+      "at": "eyes/left/gaze",
+      "names": ["pan", "tilt"]
+    },
+    "right": {
+      "kind": "joints",
+      "at": "eyes/right/gaze",
+      "names": ["pan", "tilt"]
+    },
+    "jaw": {
+      "kind": "joints",
+      "at": "skull/jaw"
+    }
+  }
+}

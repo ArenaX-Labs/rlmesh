@@ -26,7 +26,7 @@ use crate::prelude::*;
 use core::fmt;
 use core::time::Duration;
 
-use crate::wire::part::CommandSpec;
+use crate::wire::part::{CommandSpec, PartSpec};
 
 use crate::spec::bind::{Binding, Dir, NamesClash, Problem, Refusal, Status};
 use crate::spec::contract;
@@ -240,6 +240,14 @@ impl Binding {
             self.fingerprint,
             num(self.replan_hz)
         );
+        // A view's parts are qualified by their robot (`eye-l:gaze`).
+        let part = |p: &PartSpec, path: String| {
+            if self.places.is_empty() {
+                path
+            } else {
+                format!("{}:{path}", p.owner)
+            }
+        };
         let mut rows = vec![
             ["entry", "dir", "part", "status", "plan", "delivers"]
                 .map(String::from)
@@ -250,8 +258,8 @@ impl Binding {
                 r.entry.clone(),
                 Dir::In.short_name().into(),
                 match (&r.part, r.applied) {
-                    (Some(p), true) => p.path.applied(),
-                    (Some(p), false) => p.path.to_string(),
+                    (Some(p), true) => part(p, p.path.applied()),
+                    (Some(p), false) => part(p, p.path.to_string()),
                     (None, _) => "none".into(),
                 },
                 r.status.name().into(),
@@ -265,7 +273,7 @@ impl Binding {
                 Dir::Out.short_name().into(),
                 r.part
                     .as_ref()
-                    .map_or_else(|| "none".into(), |p| p.path.to_string()),
+                    .map_or_else(|| "none".into(), |p| part(p, p.path.to_string())),
                 r.status.name().into(),
                 r.plan.to_string(),
                 r.delivers.to_string(),

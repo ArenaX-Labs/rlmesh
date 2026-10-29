@@ -10,9 +10,11 @@ use std::time::Duration;
 
 use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status};
 use rlmesh_session_core::spec::policy::Allow;
-use rlmesh_session_core::spec::{Policy, RunOptions, bind, normalise};
+use rlmesh_session_core::spec::{Policy, RunOptions, Target, bind, bind_in, normalise};
 use rlmesh_session_core::wire::version::SPEC_VERSION;
-use rlmesh_session_core::wire::{ChannelId, ContractMode, PartSpec, ParticipantId};
+use rlmesh_session_core::wire::{
+    ChannelId, ClockMode, ContractMode, PartSpec, ParticipantId, Place, Pose,
+};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
@@ -761,5 +763,145 @@ fn fingerprints_follow_the_table() {
     assert_eq!(
         rlmesh_session_core::spec::canonical::fingerprint(&a.table_json()),
         a.fingerprint
+    );
+}
+
+/// The scene design's eyeball rig: two eyes, a skull and a fixed camera,
+/// each its own robot with channel ids unique across the session, placed
+/// in one view; `extra` robots join unplaced.
+fn eyeball_rig(extra: &[(&str, &str)]) -> (Vec<PartSpec>, Vec<Place>) {
+    let robots = [
+        ("eye", "eye-l"),
+        ("eye", "eye-r"),
+        ("skull", "skull"),
+        ("fixed_cam", "cam-1"),
+    ];
+    let mut parts: Vec<PartSpec> = Vec::new();
+    for (file, id) in robots.iter().chain(extra) {
+        for mut part in robot_as(file, id) {
+            let next = parts
+                .iter()
+                .map(|p| p.applied_channel.unwrap_or(p.channel).0)
+                .max();
+            part.channel = ChannelId(next.unwrap_or(0) + 1);
+            part.applied_channel = part.command.as_ref().map(|_| ChannelId(part.channel.0 + 1));
+            parts.push(part);
+        }
+    }
+    let place = |robot: &str, at: &str, frame: &str, xyz: [f64; 3], quat_xyzw: [f64; 4]| Place {
+        robot: ParticipantId::new(robot).expect("id"),
+        at: at.into(),
+        from: String::new(),
+        frame: frame.into(),
+        pose: Pose { xyz, quat_xyzw },
+    };
+    let identity = [0.0, 0.0, 0.0, 1.0];
+    let places = vec![
+        place("eye-l", "eyes/left", "", [0.035, 0.0, 0.30], identity),
+        place("eye-r", "eyes/right", "", [-0.035, 0.0, 0.30], identity),
+        place("skull", "skull", "", [0.0, 0.0, 0.22], identity),
+        place(
+            "cam-1",
+            "scene",
+            "cam_optical",
+            [0.0, -0.6, 0.5],
+            [-0.612_372_4, 0.0, 0.0, 0.790_569_4],
+        ),
+    ];
+    (parts, places)
+}
+
+#[test]
+fn one_policy_binds_across_placed_robots() {
+    let (parts, places) = eyeball_rig(&[]);
+    let target = Target {
+        parts: &parts,
+        places: &places,
+        ..Target::default()
+    };
+    let b = bind_in(
+        &policy("eyeball_tracker"),
+        &target,
+        &RunOptions::named("tracker"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(b.robot.as_str(), "scene");
+    // Rows keep each part as declared, under its own robot and path: what
+    // its stream keys and leases are made of.
+    let owners = |rows: Vec<Option<&PartSpec>>| -> Vec<String> {
+        rows.into_iter()
+            .map(|p| p.map_or("-".into(), |p| format!("{}:{}", p.owner, p.path)))
+            .collect()
+    };
+    assert_eq!(
+        owners(b.inputs.iter().map(|r| r.part.as_ref()).collect()),
+        ["cam-1:cam", "eye-l:gaze"]
+    );
+    assert_eq!(
+        owners(b.actions.iter().map(|r| r.part.as_ref()).collect()),
+        ["eye-l:gaze", "eye-r:gaze", "skull:jaw"]
+    );
+    assert_eq!(b.table_json()["actions"][1]["robot"], "eye-r");
+    golden("eyeball_tracker__eyeball_rig", &b.table());
+
+    // robot= binds that one robot as today.
+    let jaw = bind_in(
+        &Policy::parse(r#"{"hz": 30, "actions": {"jaw": {"kind": "joints", "at": "jaw"}}}"#)
+            .expect("policy"),
+        &target,
+        &RunOptions::named("jaw").robot("skull").expect("robot"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    assert!(jaw.places.is_empty() && jaw.table_json()["actions"][0].get("robot").is_none());
+}
+
+#[test]
+fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
+    let (parts, places) = eyeball_rig(&[("ur10e", "ur10e")]);
+    let mut target = Target {
+        parts: &parts,
+        places: &places,
+        ..Target::default()
+    };
+    let spans = Policy::parse(
+        r#"{"hz": 30, "actions": {
+            "gaze": {"kind": "joints", "at": "eyes/*/gaze"},
+            "arm": {"kind": "joints", "at": "ur10e:arm"}}}"#,
+    )
+    .expect("policy");
+    let refusal = match bind_in(&spans, &target, &RunOptions::named("spans")) {
+        Err(BindError::Refused(refusal)) => *refusal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        codes(&refusal),
+        [
+            (Code::Ambiguous, "gaze".into()),
+            (Code::Incompatible, "arm".into())
+        ]
+    );
+    golden("spans__eyeball_rig__refused", &refusal.to_string());
+
+    target.clock_mode = ClockMode::Lockstep;
+    let refusal = match bind_in(
+        &policy("eyeball_tracker"),
+        &target,
+        &RunOptions::named("tracker"),
+    ) {
+        Err(BindError::Refused(refusal)) => *refusal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        codes(&refusal),
+        [
+            (Code::Incompatible, "right".into()),
+            (Code::Incompatible, "jaw".into())
+        ]
+    );
+    assert!(
+        refusal
+            .to_string()
+            .contains("action \"jaw\": targets skull, but action \"left\" targets eye-l."),
+        "{refusal}"
     );
 }

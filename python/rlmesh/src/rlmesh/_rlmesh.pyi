@@ -98,6 +98,7 @@ __all__ = [
     "discrete_space_spec",
     "episode_seed",
     "eval_report",
+    "frames_between",
     "is_v2_address",
     "load_run_result",
     "local_run_session",
@@ -1253,6 +1254,8 @@ def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> Spa
 def episode_seed(base_seed: int, seed_key: str, slot: int) -> int: ...
 
 def eval_report(paths: list[str]) -> tuple[str, str]: ...
+
+def frames_between(a_xyz: typing.Sequence[float], a_quat_xyzw: typing.Sequence[float], b_xyz: typing.Sequence[float], b_quat_xyzw: typing.Sequence[float]) -> tuple[list[float], list[float]]: ...
 
 def is_v2_address(text: str) -> bool: ...
 
