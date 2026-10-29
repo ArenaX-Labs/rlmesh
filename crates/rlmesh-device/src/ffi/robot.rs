@@ -688,6 +688,8 @@ fn status_code(status: CtlStatus) -> u8 {
         CtlStatus::Unauthenticated => 17,
         CtlStatus::NotAuthorized => 18,
         CtlStatus::Expired => 19,
+        CtlStatus::RobotBusy => 20,
+        CtlStatus::NotPresent => 21,
     }
 }
 
