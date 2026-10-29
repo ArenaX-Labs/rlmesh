@@ -310,6 +310,12 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
     assert!(robot.generation() >= 1);
     // Heartbeats are echoed, sealed both ways.
     assert!(robot.echoes() >= 20, "{} echoes", robot.echoes());
+    // It asked for its device view at attach, and the host publishes it.
+    assert!(robot.view().is_some(), "the board holds its device view");
+    assert!(
+        robot.views() > 0,
+        "the host publishes the board's signed view"
+    );
 
     let snapshot = world.host.snapshot();
     assert!(

@@ -30,9 +30,9 @@ use rlmesh_session_core::spec::normalise;
 use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session_core::wire::{
-    AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlStatus, Epoch, Health, Heartbeat,
-    Mode, PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample, SessionId,
-    SessionKeys, TenantId, TimingSample,
+    AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlStatus, DeviceView, Epoch, Health,
+    Heartbeat, Mode, PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample,
+    SessionId, SessionKeys, TenantId, TimingSample,
 };
 
 /// How long a query waits for its reply before the transport gives up.
@@ -50,8 +50,9 @@ const GET_KEYS_MS: u64 = 250;
 /// The control class: the host's first port.
 pub const CLASS_CONTROL: u8 = 0;
 
-/// Subscription ids, for [`Robot::sample`]: `host/state`.
-pub const SUB_STATE: u8 = 0;
+/// Subscription ids, for [`Robot::sample`]: `host/view/{id}`, this robot's
+/// signed device view (scene design §3.4).
+pub const SUB_VIEW: u8 = 0;
 /// `host/tick`.
 pub const SUB_TICK: u8 = 1;
 /// `p/{id}/hb/echo`.
@@ -226,8 +227,12 @@ pub struct Robot {
     /// An unsealed refusal of the `ctl` request in flight: a hint, kept in
     /// case no sealed answer comes.
     hint: Option<Fault>,
-    snapshot: Option<AuthoritySnapshot>,
-    /// Local time the snapshot was observed at.
+    /// What the host says about this robot: its own signed view, or the
+    /// part of a ctl reply's state it would hold (the same).
+    view: Option<DeviceView>,
+    /// Signed views opened from `host/view/{id}`, over every attach.
+    views: u64,
+    /// Local time the view was observed at.
     observed_ns: i64,
     /// The host's parts of this robot, in the map's order.
     parts: Vec<PartSpec>,
@@ -312,7 +317,8 @@ impl Robot {
             pending: None,
             queue: VecDeque::new(),
             hint: None,
-            snapshot: None,
+            view: None,
+            views: 0,
             observed_ns: 0,
             parts: Vec::new(),
             edges: Vec::new(),
@@ -344,9 +350,14 @@ impl Robot {
         self.fault.as_ref()
     }
 
-    /// The last verified authority snapshot.
-    pub fn snapshot(&self) -> Option<&AuthoritySnapshot> {
-        self.snapshot.as_ref()
+    /// Signed device views received, over every attach.
+    pub fn views(&self) -> u64 {
+        self.views
+    }
+
+    /// The newest verified device view.
+    pub fn view(&self) -> Option<&DeviceView> {
+        self.view.as_ref()
     }
 
     /// Heartbeat echoes received, over every attach.
@@ -415,8 +426,8 @@ impl Robot {
             self.out.extend([
                 Action::Subscribe {
                     class: CLASS_CONTROL,
-                    sub: SUB_STATE,
-                    key: self.keys.host_state(),
+                    sub: SUB_VIEW,
+                    key: self.keys.host_view(me),
                 },
                 Action::Subscribe {
                     class: CLASS_CONTROL,
@@ -502,7 +513,8 @@ impl Robot {
                     roles: alloc::vec![Role::Embodiment],
                     priority: PriorityClass::Scripted,
                     protocol_minor: PROTOCOL_MINOR,
-                    supports: Vec::new(),
+                    // The device view instead of the full state.
+                    supports: alloc::vec![String::from("view.device")],
                     requires: Vec::new(),
                     workflow_edition: String::new(),
                     workflow_editions: Vec::new(),
@@ -537,11 +549,13 @@ impl Robot {
             return;
         };
         match sub {
-            SUB_STATE => {
-                if let Ok(snapshot) = link.state(&self.keys.host_state(), payload) {
+            SUB_VIEW => {
+                let key = self.keys.host_view(&self.config.name);
+                if let Ok(view) = link.open_view(&key, payload) {
+                    self.views += 1;
                     self.last_heard = now_us;
-                    link.observe(&snapshot, now);
-                    self.observe(snapshot, now);
+                    link.observe(&view, now);
+                    self.observe(view, now);
                 }
             }
             SUB_TICK => {
@@ -595,10 +609,8 @@ impl Robot {
         let latch = self.latch_now();
         let edge = self.edges.get_mut(index)?;
         apply_latch(edge, latch);
-        let tick = edge
-            .core
-            .tick(now, self.snapshot.as_ref(), self.observed_ns);
-        let epoch = self.snapshot.as_ref().map_or(Epoch(0), |s| s.epoch);
+        let tick = edge.core.tick(now, self.view.as_ref(), self.observed_ns);
+        let epoch = self.view.as_ref().map_or(Epoch(0), |s| s.epoch);
         for sample in &tick.applied {
             let Some(stream) = self
                 .parts
@@ -682,7 +694,7 @@ impl Robot {
         *seq += 1;
         let sample = Sample {
             channel: stream.channel,
-            epoch: self.snapshot.as_ref().map_or(Epoch(0), |s| s.epoch),
+            epoch: self.view.as_ref().map_or(Epoch(0), |s| s.epoch),
             seq: *seq,
             capture_ns: ns(capture_us),
             publish_ns: ns(now_us),
@@ -730,7 +742,7 @@ impl Robot {
         apply_latch(edge, latch);
         if edge
             .core
-            .accept(chunk, now, self.snapshot.as_ref(), self.observed_ns)
+            .accept(chunk, now, self.view.as_ref(), self.observed_ns)
             .is_ok()
         {
             self.accepted += 1;
@@ -779,9 +791,26 @@ impl Robot {
         }
     }
 
-    fn observe(&mut self, snapshot: AuthoritySnapshot, now: i64) {
-        self.snapshot = Some(snapshot);
+    /// Takes `view` if it is newer than the one held (a later revision, or
+    /// a later republish of the same one): views and ctl replies arrive in
+    /// any order.
+    fn observe(&mut self, view: DeviceView, now: i64) {
+        let order = |v: &DeviceView| (v.revision, v.host_ns);
+        if self
+            .view
+            .as_ref()
+            .is_some_and(|held| order(held) > order(&view))
+        {
+            return;
+        }
+        self.view = Some(view);
         self.observed_ns = now;
+    }
+
+    /// A ctl reply's state, as this robot's view of it.
+    fn observe_state(&mut self, state: &AuthoritySnapshot, now: i64) {
+        let view = DeviceView::of(state, &self.config.name);
+        self.observe(view, now);
     }
 
     fn query(&mut self, class: u8, key: String, payload: Option<Vec<u8>>) -> u32 {
@@ -822,7 +851,7 @@ impl Robot {
     }
 
     fn epoch(&self) -> Option<Epoch> {
-        self.snapshot.as_ref().map(|s| s.epoch)
+        self.view.as_ref().map(|s| s.epoch)
     }
 
     /// Sends the next queued `ctl` request when none is in flight.
@@ -834,7 +863,7 @@ impl Robot {
             // A stop the host already shows needs no report.
             if matches!(command, Command::EnterSafe { .. })
                 && self
-                    .snapshot
+                    .view
                     .as_ref()
                     .is_some_and(|s| matches!(s.mode, Mode::Safe | Mode::Estop))
             {
@@ -928,7 +957,7 @@ impl Robot {
         };
         self.hint = None;
         let reply = *reply;
-        self.observe(reply.state, now);
+        self.observe_state(&reply.state, now);
         match reply.result {
             Err(refusal) if joining => {
                 return self.fail(Fault::Refused(refusal.status, refusal.message), now_us);
@@ -968,7 +997,7 @@ impl Robot {
     /// group, and a subscription to each commandable part's commands (as
     /// the host-side `Edge::attach` does).
     fn build_edges(&mut self) -> bool {
-        let Some(view) = self.snapshot.as_ref() else {
+        let Some(view) = self.view.as_ref() else {
             return false;
         };
         let me = &self.config.name;
@@ -1042,7 +1071,7 @@ impl Robot {
         self.next_heartbeat = now_us + u64::from(self.config.heartbeat_ms) * 1000;
         self.heartbeat_seq += 1;
         let (epoch, mode) = self
-            .snapshot
+            .view
             .as_ref()
             .map_or((Epoch(0), Mode::Disarmed), |s| (s.epoch, s.mode));
         let queue_depth = self
