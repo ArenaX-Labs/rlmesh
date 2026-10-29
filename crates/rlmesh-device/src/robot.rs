@@ -180,10 +180,8 @@ pub enum Phase {
 /// Why the robot last started over.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fault {
-    /// No reply from the host.
+    /// No reply from the host (none that was its signed state).
     NoReply,
-    /// The host's state isn't signed.
-    Unsigned,
     /// The handshake failed: the address's key isn't this host's.
     Handshake,
     /// The host refused a request.
@@ -248,6 +246,9 @@ pub struct Robot {
     target: (String, u16),
     /// The home it tries now, an index into `config.homes`.
     home_at: usize,
+    /// How many of `config.homes` it was given: after them, at most the one
+    /// the platform found last.
+    stored: usize,
     /// The run's addresses, while joining one hosted elsewhere, and the one
     /// tried now.
     run_targets: Vec<(String, u16)>,
@@ -366,6 +367,7 @@ impl Robot {
         let lobby = config.lobby.then(|| Lobby::new(config.name.clone()));
         let target = config.homes.first().cloned().ok_or(ConfigError::NoHome)?;
         let credential = config.credential.clone();
+        let stored = config.homes.len();
         Ok(Self {
             subscribed: alloc::vec![false; paths.len()],
             edge_of: alloc::vec![None; paths.len()],
@@ -379,6 +381,7 @@ impl Robot {
             wait: None,
             target,
             home_at: 0,
+            stored,
             run_targets: Vec::new(),
             run_at: 0,
             credential,
@@ -446,14 +449,15 @@ impl Robot {
     }
 
     /// Another address of the home, found by the platform (mDNS): tried
-    /// next, at once.
+    /// next, at once. It replaces the one found before.
     pub fn add_home(&mut self, host: &str, port: u16, now_us: u64) {
         let home = (String::from(host), port);
         let at = match self.config.homes.iter().position(|h| *h == home) {
             Some(at) => at,
             None => {
+                self.config.homes.truncate(self.stored);
                 self.config.homes.push(home);
-                self.config.homes.len() - 1
+                self.stored
             }
         };
         if self.home_unreachable && self.phase == Phase::Retry {
@@ -622,23 +626,26 @@ impl Robot {
         }
         match self.phase {
             Phase::Host => {
-                // Unverified: a wrong instance only fails the handshake.
+                // Unverified: a wrong instance only fails the handshake. A
+                // reply that isn't a signed state is some other node's: the
+                // host's may follow, and the query's end says if none did.
                 let Ok(peeked) = signed::peek(payload) else {
-                    return self.fail(Fault::Unsigned, now_us);
+                    return;
                 };
                 self.start(peeked.header.host_instance, rng, now_us);
             }
             Phase::Handshake => {
-                self.waiting = None;
-                let Some(initiator) = self.initiator.take() else {
-                    return self.fail(Fault::Internal, now_us);
-                };
                 let msg2 = match codec::decode_handshake_reply(payload) {
                     Ok(Ok(msg2)) => msg2,
                     Ok(Err(refusal)) => {
+                        self.waiting = None;
                         return self.fail(Fault::Refused(refusal.status, refusal.message), now_us);
                     }
-                    Err(_) => return self.fail(Fault::Internal, now_us),
+                    Err(_) => return,
+                };
+                self.waiting = None;
+                let Some(initiator) = self.initiator.take() else {
+                    return self.fail(Fault::Internal, now_us);
                 };
                 let Ok(attached) = auth::finish(initiator, &msg2) else {
                     return self.fail(Fault::Handshake, now_us);
@@ -646,7 +653,11 @@ impl Robot {
                 self.generation = attached.accept.generation;
                 self.link = Some(Link::new(self.config.name.clone(), attached));
                 self.phase = Phase::Attach;
-                self.queue.push_back(Command::Attach {
+                // The host answers nothing before the attach, which carries
+                // the latch: stop reports queued until now are in it.
+                self.queue
+                    .retain(|c| !matches!(c, Command::Estop { .. } | Command::Clear));
+                self.queue.push_front(Command::Attach {
                     name: self.config.name.as_str().to_string(),
                     roles: alloc::vec![Role::Embodiment],
                     priority: PriorityClass::Scripted,
@@ -1211,9 +1222,11 @@ impl Robot {
             for &j in &members {
                 edge_of[j] = Some(edges.len());
             }
+            // Latches before it are no news to a new edge: one still held
+            // stops it all the same.
             edges.push(Edge {
                 core,
-                latches_seen: 0,
+                latches_seen: self.latches,
             });
         }
         for (i, part) in parts.iter().enumerate() {
@@ -1277,9 +1290,10 @@ impl Robot {
 
     fn fail(&mut self, fault: Fault, now_us: u64) {
         let joining = self.phase != Phase::Running;
-        // Nobody answered at all: the address is wrong or down.
-        let unreachable =
-            matches!(fault, Fault::NoReply) && matches!(self.phase, Phase::Host | Phase::Handshake);
+        // Nobody answered, or someone other than the host did: the address
+        // is wrong or down.
+        let unreachable = matches!(fault, Fault::NoReply | Fault::Handshake)
+            && matches!(self.phase, Phase::Host | Phase::Handshake);
         if self.run.is_some() && joining && unreachable && self.run_at + 1 < self.run_targets.len()
         {
             // The run's next address.
@@ -1302,7 +1316,10 @@ impl Robot {
         // embody): it would be refused again, so back off rather than spin.
         let refused = matches!(fault, Fault::Refused(..));
         self.fault = Some(fault);
-        self.reset_session();
+        // Subscriptions and the token again, too: the transport may not have
+        // reached the host to declare them.
+        let (tenant, session) = (self.tenant.clone(), self.session);
+        self.move_to(tenant, session);
         self.phase = Phase::Retry;
         let mut pause = RETRY_MS;
         if refused {
@@ -1421,10 +1438,16 @@ impl Robot {
             self.observe(view, now);
         }
         if let Err(refusal) = reply.result {
+            // The lobby dropped the wait: a new one.
+            if refusal.status == CtlStatus::Expired {
+                return self.send_wait(now_us);
+            }
             // A host that hosts no lobby, or refuses this robot one: try
             // again later.
             return self.fail(Fault::Refused(refusal.status, refusal.message), now_us);
         }
+        // The lobby takes it: a later refusal starts its backoff over.
+        self.refused_ms = RETRY_MS;
         let taken = match (reply.assignment, self.lobby.as_mut()) {
             (Some(assignment), Some(lobby)) => lobby.take(assignment),
             _ => return self.send_wait(now_us),
@@ -1571,7 +1594,7 @@ fn apply_latch(edge: &mut Edge, latch: Latch) {
 fn fault_error(fault: &Fault) -> CtlError {
     match fault {
         Fault::Refused(status, message) => CtlError::new(*status, message.clone()),
-        Fault::Handshake | Fault::Unsigned => CtlError::new(
+        Fault::Handshake => CtlError::new(
             CtlStatus::Unauthenticated,
             "the run's host failed the handshake",
         ),

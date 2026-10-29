@@ -120,10 +120,9 @@ typedef struct rlmesh_device_robot_status_t {
    * 4 running, 5 waiting to retry, 6 waiting in the lobby for a run,
    * 7 stopped (another process of this device took its name). */
   uint8_t phase;
-  /* Why it last started over: 0 never, 1 no reply, 2 the host's state
-   * unsigned, 3 the handshake failed (another host's key), 4 refused
-   * (refused_status, the proto's CtlStatus number), 5 the host lost,
-   * 6 internal. */
+  /* Why it last started over: 0 never, 1 no reply (none its signed state),
+   * 2 the handshake failed (another host's key), 3 refused (refused_status,
+   * the proto's CtlStatus number), 4 the host lost, 5 internal. */
   uint8_t fault;
   uint8_t refused_status;
   /* 0 none yet, 1 disarmed, 2 armed, 3 active, 4 safe, 5 e-stop. */

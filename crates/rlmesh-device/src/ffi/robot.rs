@@ -804,11 +804,10 @@ pub unsafe extern "C" fn rlmesh_device_robot_status(
     let (fault, refused_status) = match robot.fault() {
         None => (0, 0),
         Some(Fault::NoReply) => (1, 0),
-        Some(Fault::Unsigned) => (2, 0),
-        Some(Fault::Handshake) => (3, 0),
-        Some(Fault::Refused(status, _)) => (4, status_code(*status)),
-        Some(Fault::HostLost) => (5, 0),
-        Some(Fault::Internal) => (6, 0),
+        Some(Fault::Handshake) => (2, 0),
+        Some(Fault::Refused(status, _)) => (3, status_code(*status)),
+        Some(Fault::HostLost) => (4, 0),
+        Some(Fault::Internal) => (5, 0),
     };
     let (mode, epoch) = robot.view().map_or((0, 0), |s| {
         let mode = match s.mode {
@@ -959,11 +958,16 @@ mod tests {
             RLMESH_DEVICE_OK
         );
         assert_eq!((status.phase, status.fault, status.mode), (0, 0, 0));
-        // An unsigned state fails the attempt, and it retries later.
+        // A reply that isn't a signed state is ignored; the query's end
+        // with none fails the attempt, and it retries later.
         let rc = unsafe { rlmesh_device_robot_reply(robot, 1, b"plain".as_ptr(), 5, 10) };
         assert_eq!(rc, RLMESH_DEVICE_OK);
         unsafe { rlmesh_device_robot_status(robot, &mut status) };
-        assert_eq!((status.phase, status.fault), (5, 2));
+        assert_eq!((status.phase, status.fault), (0, 0));
+        let rc = unsafe { rlmesh_device_robot_query_done(robot, 1, 10) };
+        assert_eq!(rc, RLMESH_DEVICE_OK);
+        unsafe { rlmesh_device_robot_status(robot, &mut status) };
+        assert_eq!((status.phase, status.fault), (5, 1));
         // Not running: nothing to tick or publish.
         let mut tick = core::mem::MaybeUninit::<RlmeshDeviceTick>::uninit();
         let rc = unsafe { rlmesh_device_robot_tick(robot, 0, 10, tick.as_mut_ptr()) };

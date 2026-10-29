@@ -337,6 +337,32 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
     assert!(snapshot.clock(&id).is_some(), "the board's clock is mapped");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_board_latched_before_it_joins_still_joins_and_reports_the_latch() {
+    let world = World::start().await;
+    let mut robot = world.robot(AddressKey::of(&world.identity));
+    // Its e-stop pin held at boot: latched before it has a link.
+    robot.estop("pin held at boot", 0);
+    let robot = drive(
+        &world,
+        robot,
+        Duration::from_secs(10),
+        Arc::default(),
+        |r| r.phase() == Phase::Running,
+    )
+    .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    assert!(
+        robot.estop_reason().is_some(),
+        "the latch outlives the join"
+    );
+    let snapshot = world.host.snapshot();
+    assert!(
+        snapshot.estop_latched,
+        "the host learns the latch from the attach"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_controller_drives_the_board_and_reads_its_samples() {
     let world = World::start().await;

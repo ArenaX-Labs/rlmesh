@@ -95,6 +95,8 @@ int main(int argc, char** argv) {
   printf("joined in %.3f s, %llu echoes, %u samples, mode %u, epoch %llu, %u transport failures\n",
          joined ? (double)(joined - start) / 1e6 : -1.0, (unsigned long long)status.echoes,
          published, status.mode, (unsigned long long)status.epoch, z.failed);
+  /* A subscription or token the transport couldn't declare fails it too. */
+  if (z.failed != 0) ok = 0;
   rlmesh_zenoh_close(&z);
   rlmesh_device_robot_free(robot);
   printf(ok ? "ok\n" : "FAIL\n");

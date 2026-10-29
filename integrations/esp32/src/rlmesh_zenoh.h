@@ -27,6 +27,9 @@ extern "C" {
  * deliveries, and a commandable part's commands each. */
 #define RLMESH_ZENOH_SUBS 16
 #define RLMESH_ZENOH_TOKENS 2
+/* Bytes of samples queued for the robot at most: a sample past it is
+ * dropped (and counted in `failed`). Replies and query ends always queue. */
+#define RLMESH_ZENOH_QUEUE_BYTES (32 * 1024)
 
 struct rlmesh_zenoh_event;
 struct rlmesh_zenoh_t;
@@ -51,10 +54,11 @@ typedef struct rlmesh_zenoh_t {
   z_owned_mutex_t lock;
   struct rlmesh_zenoh_event* head;
   struct rlmesh_zenoh_event* tail;
+  size_t queued;
   rlmesh_device_robot_t* robot;
   rlmesh_device_now_us_fn now_us;
   /* Actions the transport failed to carry out, and events dropped for want
-   * of memory. */
+   * of memory or queue room. Under `lock`. */
   uint32_t failed;
 } rlmesh_zenoh_t;
 

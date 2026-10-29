@@ -47,7 +47,6 @@ const char* const kPhases[] = {"reading the host",
 const char* const kFaults[] = {
     "",
     "no reply from the host",
-    "the host's state is unsigned",
     "the handshake failed: the address's key isn't this host's",
     "refused by the host",
     "lost the host",
@@ -112,9 +111,9 @@ void report() {
     lastPhase = s.phase;
     Serial.printf("%8lu ms  %s%s", (unsigned long)millis(), s.in_run ? "run: " : "",
                   kPhases[s.phase < 8 ? s.phase : 5]);
-    if (s.fault != 0 && s.fault < 7) {
+    if (s.fault != 0 && s.fault < 6) {
       Serial.printf(" (last: %s", kFaults[s.fault]);
-      if (s.fault == 4) Serial.printf(", status %u", s.refused_status);
+      if (s.fault == 3) Serial.printf(", status %u", s.refused_status);
       Serial.print(')');
     }
     Serial.println();
