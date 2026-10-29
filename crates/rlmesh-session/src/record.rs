@@ -379,8 +379,57 @@ impl Recorder {
             let seen: Mutex<BTreeMap<ParticipantId, (Fingerprint, u32)>> =
                 Mutex::new(BTreeMap::new());
             let previous: Mutex<Option<AuthoritySnapshot>> = Mutex::new(None);
-            let tx = tx.clone();
-            let stamp = stamp.clone();
+            // Records one snapshot: a repeat of the last (the seed below
+            // and the update it raced) is skipped.
+            let record = {
+                let tx = tx.clone();
+                Arc::new(
+                    move |state: AuthoritySnapshot, data: Vec<u8>, log_time: i64| {
+                        let mut previous = previous
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if previous
+                            .as_ref()
+                            .is_some_and(|p| p.revision >= state.revision)
+                        {
+                            return;
+                        }
+                        let _ = tx.send(Entry::Message {
+                            topic: topic.clone(),
+                            log_time,
+                            publish_time: state.host_ns,
+                            sequence: state.revision,
+                            data,
+                        });
+                        if let Some(label) = previous.as_ref().and_then(|p| incident(p, &state)) {
+                            let _ = tx.send(Entry::Incident { label, log_time });
+                        }
+                        *previous = Some(state.clone());
+                        drop(previous);
+                        robots
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .extend(robot_metadata(&state));
+                        let mut seen = seen
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        for binding in &state.bindings {
+                            let current = (binding.fingerprint, binding.revision);
+                            if seen.get(&binding.participant) == Some(&current) {
+                                continue;
+                            }
+                            seen.insert(binding.participant.clone(), current);
+                            let _ = tx.send(Entry::Message {
+                                topic: bindings.clone(),
+                                log_time,
+                                publish_time: state.host_ns,
+                                sequence: u64::from(binding.revision),
+                                data: codec::encode_binding(binding),
+                            });
+                        }
+                    },
+                )
+            };
             // Only what the host signed is recorded, as its plain snapshot.
             let verifier = Mutex::new(
                 participant
@@ -388,67 +437,43 @@ impl Recorder {
                     .ok_or_else(|| RecordError::Session(SessionError::Closed))?,
             );
             let key = participant.keys().host_state();
-            participant
-                .transport()
-                .control()
-                .declare_subscriber(key.clone())
-                .callback(move |sample| {
-                    let log_time = stamp.now();
-                    let signed = sample.payload().to_bytes();
-                    let data = match verifier
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .verify(&key, &signed)
-                    {
-                        Ok(verified) => verified.body.to_vec(),
-                        Err(err) => {
-                            debug!(%err, "authority update dropped");
+            let subscriber = {
+                let (record, stamp) = (record.clone(), stamp.clone());
+                participant
+                    .transport()
+                    .control()
+                    .declare_subscriber(key.clone())
+                    .callback(move |sample| {
+                        let log_time = stamp.now();
+                        let signed = sample.payload().to_bytes();
+                        let data = match verifier
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .verify(&key, &signed)
+                        {
+                            Ok(verified) => verified.body.to_vec(),
+                            Err(err) => {
+                                debug!(%err, "authority update dropped");
+                                return;
+                            }
+                        };
+                        let Ok(state) = codec::decode_state(&data) else {
+                            debug!("undecodable authority update");
                             return;
-                        }
-                    };
-                    let Ok(state) = codec::decode_state(&data) else {
-                        debug!("undecodable authority update");
-                        return;
-                    };
-                    let _ = tx.send(Entry::Message {
-                        topic: topic.clone(),
-                        log_time,
-                        publish_time: state.host_ns,
-                        sequence: state.revision,
-                        data,
-                    });
-                    let mut previous = previous
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if let Some(label) = previous.as_ref().and_then(|p| incident(p, &state)) {
-                        let _ = tx.send(Entry::Incident { label, log_time });
-                    }
-                    *previous = Some(state.clone());
-                    drop(previous);
-                    robots
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .extend(robot_metadata(&state));
-                    let mut seen = seen
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    for binding in &state.bindings {
-                        let current = (binding.fingerprint, binding.revision);
-                        if seen.get(&binding.participant) == Some(&current) {
-                            continue;
-                        }
-                        seen.insert(binding.participant.clone(), current);
-                        let _ = tx.send(Entry::Message {
-                            topic: bindings.clone(),
-                            log_time,
-                            publish_time: state.host_ns,
-                            sequence: u64::from(binding.revision),
-                            data: codec::encode_binding(binding),
-                        });
-                    }
-                })
-                .await
-                .map_err(SessionError::from)?
+                        };
+                        record(state, data, log_time);
+                    })
+                    .await
+                    .map_err(SessionError::from)?
+            };
+            // The snapshot this participant already holds (from its attach),
+            // so a recording opens with the authority even when it starts
+            // mid-session and nothing changes for a while.
+            if let Some(state) = participant.authority() {
+                let data = codec::encode_state(&state);
+                record(state, data, stamp.now());
+            }
+            subscriber
         };
         // TODO: heartbeats are sealed to the host since session auth (design
         // §8.2), so none decodes here and recordings carry no heartbeats;
@@ -855,6 +880,10 @@ fn write_loop(
     let mut stats = RecordStats::default();
     let mut metadata = Metadata::new();
     let mut authority_seen = false;
+    // Each topic's last (log, publish) time: both come through clock
+    // offsets the host keeps re-estimating, and a refinement can step one
+    // back by its jitter, so a topic's times are held non-decreasing.
+    let mut last: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     while let Ok(entry) = rx.recv() {
         match entry {
             Entry::Message {
@@ -865,13 +894,22 @@ fn write_loop(
                 data,
             } => {
                 queue.queued.fetch_sub(data.len(), Ordering::Relaxed);
-                // Heartbeats and reports before the first snapshot are
-                // skipped, so a recording opens with the authority.
+                // Anything before the first snapshot is skipped, so a
+                // recording opens with the authority: a busy host can
+                // deliver a sample ahead of it.
                 authority_seen |= topic.key == TopicKey::Authority;
-                if !authority_seen && matches!(topic.key, TopicKey::Heartbeats | TopicKey::Reports)
-                {
+                if !authority_seen {
                     continue;
                 }
+                let (log_time, publish_time) = match last.get_mut(&topic.name) {
+                    Some(prev) => {
+                        *prev = (log_time.max(prev.0), publish_time.max(prev.1));
+                        *prev
+                    }
+                    None => *last
+                        .entry(topic.name.clone())
+                        .or_insert((log_time, publish_time)),
+                };
                 let message = Message {
                     topic,
                     log_time,
