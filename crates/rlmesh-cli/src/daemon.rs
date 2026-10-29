@@ -11,7 +11,10 @@
 //! written there as its pin.
 //!
 //! It hosts the lobby, `_lobby` ([`crate::lobby`]), where robots provisioned
-//! to it or paired with it wait for a run, and runs scenes there.
+//! to it or paired with it wait for a run, and runs scenes there. On a
+//! machine paired with other daemons it is also their satellite
+//! ([`crate::satellite`]): it waits in their lobbies and hosts the runs
+//! they order here.
 //!
 //! It advertises itself over mDNS as `_rlmesh._tcp.local`, with its host
 //! id and base port only ([`discovery::advertise`]), so boards and paired
@@ -172,7 +175,13 @@ pub async fn daemon(
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
     let server = Arc::new(SessionServer::start(transport.clone(), config.clone()).await?);
-    Home::start(&server, dir.clone(), config, advertised(base)).await?;
+    let home = Home::start(&server, dir.clone(), config, advertised(base)).await?;
+    let satellite = crate::satellite::Satellite::start(
+        server.clone(),
+        rlmesh_session::pairing::hosts_dir(),
+        &identity.host_id(),
+        advertised(base),
+    );
     let service = Arc::new(PairService::start(&transport, identity.clone()).await?);
     // Without multicast it is found at its stored addresses only.
     let advertised_on_lan = discovery::advertise(&identity.host_id(), base)
@@ -219,7 +228,7 @@ pub async fn daemon(
         {
             let _ = writeln!(stderr, "rlmeshd: robot pins not written: {err:#}");
         }
-        reload(&dir, &server, &mut applied, &mut refused, stderr).await;
+        reload(&dir, (&server, &home), &mut applied, &mut refused, stderr).await;
         if let Some(done) = now {
             let _ = done.send(());
         }
@@ -230,6 +239,9 @@ pub async fn daemon(
         let _ = std::fs::remove_file(dir.join(crate::pair::SOCKET));
     }
     drop(advertised_on_lan);
+    for task in satellite {
+        task.abort();
+    }
     server.shutdown().await;
     transport.close().await?;
     Ok(())
@@ -238,7 +250,7 @@ pub async fn daemon(
 /// Applies `devices.toml` to every session if it changed since `applied`.
 async fn reload(
     dir: &Path,
-    server: &SessionServer,
+    (server, home): (&SessionServer, &Home),
     applied: &mut Table,
     refused: &mut Option<String>,
     stderr: &mut impl Write,
@@ -250,6 +262,7 @@ async fn reload(
                 return;
             };
             server.set_devices(devices, pins).await;
+            home.devices_changed(&table);
             let _ = writeln!(stderr, "rlmeshd: {DEVICES} applied");
             *applied = table;
             *refused = None;

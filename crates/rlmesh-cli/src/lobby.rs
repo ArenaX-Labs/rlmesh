@@ -1,12 +1,17 @@
 //! The home daemon's lobby and runs (scene design §3, §4): rlmeshd hosts
 //! the session `_lobby`, where robots wait and clients run scenes, and
-//! hosts each run's session in-process.
+//! hosts each run's session in-process, or has a satellite host it
+//! (§4.4: a paired machine's rlmeshd waiting here as `rlmeshd.<device>`,
+//! [`crate::satellite`]).
 //!
 //! A run goes through its stages (§4.1), each failing with its code:
 //! 1. **check** the scene file against `devices.toml` and its pins
 //!    ([`crate::scene::check`]): `INVALID_REQUEST`, `NOT_AUTHORIZED`;
 //! 2. **claim** its robots, all or none: `ROBOT_BUSY`, naming the run;
-//! 3. **host** its session, with the scene's places and member table;
+//! 3. **host** its session, with the scene's places and member table: here,
+//!    or on the satellite `host =` names (by default the machine of the
+//!    first controller that runs rlmeshd, §4.1) through a `HostOrder`
+//!    answered by `HostStarted`;
 //! 4. **assign**: a `Join` to each robot once it waits in the lobby,
 //!    `NOT_PRESENT` at `wait`;
 //! 5. **declare**: each robot joins and declares, `NOT_PRESENT` (or the
@@ -20,36 +25,40 @@
 //!    fails it, and once everyone is back it waits in `ARMING` for an
 //!    explicit arm, whatever the scene's `arm`;
 //! 9. **tear down**: the scene closes (`SCENE_ENDED`, or `SCENE_FAILED` with
-//!    the stage's error), robots detach and come back to the lobby, and the
-//!    host stops once they left (or after 2 s); the run ends once its robots
-//!    are back (or 2 s later).
+//!    the stage's error; a `StopOrder` on a satellite), robots detach and
+//!    come back to the lobby, and the host stops once they left (or after
+//!    2 s); the run ends once its robots are back (or 2 s later).
 //!
 //! The first two answer `RunScene` itself (a refused scene has no run);
 //! the rest show in the run's state. A robot's claim is released when it is
 //! back in the lobby, or `wait` after the run ended if it never comes back.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
-use rlmesh_session::address::{TENANT, session_id};
-use rlmesh_session::auth::HostIdentity;
-use rlmesh_session::authority::Member as HostMember;
-use rlmesh_session::lobby::{LOBBY_SESSION, LobbyAnswer, LobbyReply, LobbyResult, LobbyService};
+use rlmesh_session::address::{SessionAddress, TENANT, session_id};
+use rlmesh_session::auth::address::unbase32;
+use rlmesh_session::auth::{HostIdentity, LOCAL_DEVICE, Pin};
+use rlmesh_session::authority::{Member as HostMember, Verb};
+use rlmesh_session::lobby::{
+    LOBBY_SESSION, LobbyAnswer, LobbyReply, LobbyResult, LobbyService, SATELLITE_PREFIX,
+};
 use rlmesh_session::participant::Participant;
 use rlmesh_session::scene::{Arm, Role as SceneRole, Scene, Source};
 use rlmesh_session::server::SessionServer;
 use rlmesh_session::wire::{
-    Assignment, AuthoritySnapshot, Command, CtlError, CtlStatus, Join, LobbyWait, MemberStage,
-    MemberState, Mode, ParticipantId, PriorityClass, ReasonCode, Role, RunStage, RunState,
-    SessionId,
+    Assignment, AuthoritySnapshot, Command, CtlError, CtlStatus, DeviceRecord, HostOrder,
+    HostStarted, Join, LobbyWait, MemberStage, MemberState, Mode, ParticipantId, PriorityClass,
+    Reason, ReasonCode, RobotPin, Role, RunStage, RunState, SessionId, StopOrder,
 };
 use rlmesh_session::{HostConfig, SessionError};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::devices::Table;
+use crate::devices::{DEVICES, Table};
 
 /// The id the home daemon watches and arms its runs as.
 pub const HOME: &str = "rlmeshd";
@@ -73,21 +82,39 @@ struct Run {
     /// Set when a client stops the run, before its scene closes: from then
     /// on a robot back in the lobby is returned, never sent its join again.
     stopping: AtomicBool,
+    /// Hosted on a satellite: the scene and the order it was hosted with,
+    /// whose device records and pins the satellite holds.
+    away: OnceLock<(Scene, HostOrder)>,
 }
 
 /// What a client asks of a running run.
 enum RunCommand {
-    Stop {
-        by: ParticipantId,
-    },
+    /// Stop it (a client), or fail it (the device table changed under a
+    /// satellite's run).
+    End(Outcome),
     Arm {
         answer: oneshot::Sender<LobbyResult>,
     },
 }
 
+/// What a satellite's host order is answered with: the run host's key and
+/// addresses.
+type Started = Result<([u8; 32], Vec<String>), CtlError>;
+
+/// A satellite daemon in the lobby: its pending wait, the orders it hasn't
+/// taken yet, and the host orders waiting for its `HostStarted`, by run.
+#[derive(Default)]
+struct Satellite {
+    waiter: Option<Waiter>,
+    orders: VecDeque<Assignment>,
+    started: HashMap<String, oneshot::Sender<Started>>,
+}
+
 #[derive(Default)]
 struct Rooms {
     waiting: HashMap<ParticipantId, Waiter>,
+    /// By device.
+    satellites: HashMap<String, Satellite>,
     claims: HashMap<ParticipantId, String>,
     // TODO: every run since the daemon started is kept for `SceneStatus`;
     // drop ended ones after a while if a long-lived daemon runs thousands.
@@ -100,6 +127,8 @@ pub struct Home {
     template: HostConfig,
     addresses: Vec<String>,
     server: Weak<SessionServer>,
+    /// The lobby's own authority state: who is attached.
+    lobby: OnceLock<watch::Receiver<AuthoritySnapshot>>,
     rooms: Mutex<Rooms>,
     /// Bumped whenever a robot starts waiting.
     arrivals: watch::Sender<u64>,
@@ -116,6 +145,69 @@ fn refused(status: CtlStatus, message: impl std::fmt::Display) -> CtlError {
 
 fn over(stage: RunStage) -> bool {
     matches!(stage, RunStage::Ending | RunStage::Ended | RunStage::Failed)
+}
+
+/// Run `run`'s host order for a satellite (§4.4): the scene file, its
+/// members' device records from `table` (the home machine's `local` key
+/// among them, so `safety` stays with the robots' own machine), and its
+/// robots' pins.
+fn host_order(
+    run: &str,
+    session: SessionId,
+    scene_toml: &str,
+    scene: &Scene,
+    (table, pins): (&Table, &BTreeMap<ParticipantId, Pin>),
+    template: &HostConfig,
+) -> HostOrder {
+    let mut devices = vec![DeviceRecord {
+        id: LOCAL_DEVICE.to_string(),
+        public_key: template.identity.local_public(),
+        max_priority: Some(PriorityClass::Safety),
+        parts: vec!["**".into()],
+        verbs: vec!["arm".into(), "disarm".into()],
+    }];
+    let mut robots = Vec::new();
+    for member in &scene.members {
+        let pin = pins.get(&member.name);
+        if let Some(pin) = pin {
+            robots.push(RobotPin {
+                robot: member.name.clone(),
+                device: pin.device.clone(),
+                board_id: pin.board_id,
+            });
+        }
+        let device = pin.map(|p| p.device.as_str()).or(member.device());
+        let Some((id, entry)) = device.and_then(|d| table.devices.get_key_value(d)) else {
+            continue;
+        };
+        if devices.iter().any(|d| &d.id == id) {
+            continue;
+        }
+        let (Some(public_key), Ok(access)) = (unbase32(&entry.public_key), entry.access()) else {
+            continue;
+        };
+        devices.push(DeviceRecord {
+            id: id.clone(),
+            public_key,
+            max_priority: access.max_priority,
+            parts: access.parts,
+            verbs: access
+                .verbs
+                .iter()
+                .map(|v| match v {
+                    Verb::Arm => "arm".to_string(),
+                    Verb::Disarm => "disarm".to_string(),
+                })
+                .collect(),
+        });
+    }
+    HostOrder {
+        run: run.to_string(),
+        session,
+        scene_toml: scene_toml.to_string(),
+        devices,
+        pins: robots,
+    }
 }
 
 /// A fresh run id: `r-` and four letters or digits.
@@ -148,6 +240,7 @@ impl Home {
             template,
             addresses,
             server,
+            lobby: OnceLock::new(),
             rooms: Mutex::default(),
             arrivals: watch::channel(0).0,
             me: me.clone(),
@@ -167,14 +260,53 @@ impl Home {
         addresses: Vec<String>,
     ) -> Result<Arc<Self>, SessionError> {
         let home = Self::new(dir, config.clone(), addresses, Arc::downgrade(server));
-        server
+        let lobby = server
             .start_session(HostConfig {
                 session: session_id(LOBBY_SESSION),
                 lobby: Some(home.clone()),
                 ..config
             })
             .await?;
+        let _ = home.lobby.set(lobby);
         Ok(home)
+    }
+
+    /// `devices.toml` is now `table`: a run on a satellite whose members'
+    /// device records or pins it changed fails (scene design §4.4), since
+    /// the satellite holds the ones its order carried. Runs hosted here
+    /// take the table live.
+    pub fn devices_changed(&self, table: &Table) {
+        let Ok((_, pins)) = table.host() else {
+            return;
+        };
+        let runs: Vec<Arc<Run>> = lock(&self.rooms).runs.values().cloned().collect();
+        for run in runs {
+            let Some((scene, order)) = run.away.get() else {
+                continue;
+            };
+            if over(run.state.borrow().stage) {
+                continue;
+            }
+            let now = host_order(
+                &order.run,
+                order.session,
+                &order.scene_toml,
+                scene,
+                (table, &pins),
+                &self.template,
+            );
+            if now.devices != order.devices || now.pins != order.pins {
+                run.stopping.store(true, Ordering::SeqCst);
+                let _ = run.commands.send(RunCommand::End(Outcome::Failed(refused(
+                    CtlStatus::NotAuthorized,
+                    format!(
+                        "{DEVICES} changed a member's device or pin, and run {} on a satellite \
+                         holds the old ones: run it again",
+                        order.run
+                    ),
+                ))));
+            }
+        }
     }
 
     fn identity(&self) -> &HostIdentity {
@@ -258,14 +390,9 @@ impl Home {
                 },
             ));
         }
-        // TODO: a run hosted on a satellite, or with a served member, needs
-        // satellite daemons (scene step 12); until then everything runs here.
-        if let Some(host) = scene.host.as_deref().filter(|h| *h != "home") {
-            return Err(refused(
-                CtlStatus::NotPresent,
-                format!("{host} is not attached to this lobby as a satellite: host = \"home\""),
-            ));
-        }
+        // TODO: a served member needs a catalog model that binds as a scene
+        // controller; send its ServeOrder (scene design §4.1 stage 4) once
+        // `rlmesh serve` can run one.
         if let Some(m) = scene.members.iter().find(|m| {
             matches!(
                 m.role,
@@ -276,10 +403,10 @@ impl Home {
             )
         }) {
             return Err(refused(
-                CtlStatus::NotPresent,
+                CtlStatus::Unsupported,
                 format!(
-                    "{} is served on a satellite, and none is attached to this lobby: run the \
-                     model yourself as a device member",
+                    "{} is served, and no daemon serves a catalog model as a scene controller \
+                     yet: run the model yourself as a device member",
                     m.name
                 ),
             ));
@@ -287,6 +414,7 @@ impl Home {
         let (_, pins) = table
             .host()
             .map_err(|err| refused(CtlStatus::InvalidRequest, format!("{err:#}")))?;
+        let satellite = self.placement(&scene, &table)?;
         let robots: Vec<ParticipantId> = scene
             .members
             .iter()
@@ -339,6 +467,7 @@ impl Home {
             commands,
             joins: Mutex::default(),
             stopping: AtomicBool::new(false),
+            away: OnceLock::new(),
         });
         rooms.runs.insert(id.clone(), run.clone());
         drop(rooms);
@@ -364,6 +493,18 @@ impl Home {
             lobby: None,
             ..self.template.clone()
         };
+        let satellite = satellite.map(|device| {
+            let order = host_order(
+                &id,
+                config.session,
+                scene_toml,
+                &scene,
+                (&table, &pins),
+                &self.template,
+            );
+            let _ = run.away.set((scene.clone(), order.clone()));
+            (device, order)
+        });
         tokio::spawn(
             Driver {
                 home: self
@@ -377,10 +518,120 @@ impl Home {
                 armed: 0,
                 inbox,
                 daemon: None,
+                satellite,
             }
             .drive(config),
         );
         Ok(LobbyReply::Run(state))
+    }
+
+    /// Where run `scene` is hosted (§4.1): `None` here, or the satellite
+    /// `host =` names, else the machine of its first controller that runs
+    /// rlmeshd, when every robot is pinned (only the home daemon pins at
+    /// first embodiment).
+    ///
+    /// # Errors
+    /// `NOT_PRESENT` when `host =` names a satellite not in the lobby.
+    fn placement(&self, scene: &Scene, table: &Table) -> Result<Option<String>, CtlError> {
+        match scene.host.as_deref() {
+            Some("home") => return Ok(None),
+            Some(host) if self.attached(host) => return Ok(Some(host.to_string())),
+            Some(host) => {
+                return Err(refused(
+                    CtlStatus::NotPresent,
+                    format!(
+                        "{host} is not attached to this lobby as a satellite: run rlmeshd there, \
+                         or host = \"home\""
+                    ),
+                ));
+            }
+            None => {}
+        }
+        let pinned = scene.members.iter().all(|m| {
+            !matches!(m.role, SceneRole::Robot { .. }) || table.robots.contains_key(m.name.as_str())
+        });
+        let first = scene.members.iter().find_map(|m| match m.device() {
+            Some(LOCAL_DEVICE) if matches!(m.role, SceneRole::Controller { .. }) => Some(None),
+            Some(device)
+                if matches!(m.role, SceneRole::Controller { .. })
+                    && table.may_host(device)
+                    && self.attached(device) =>
+            {
+                Some(Some(device.to_string()))
+            }
+            _ => None,
+        });
+        Ok(first.flatten().filter(|_| pinned))
+    }
+
+    /// Whether device `device`'s satellite waits in the lobby.
+    fn attached(&self, device: &str) -> bool {
+        let Ok(id) = ParticipantId::new(format!("{SATELLITE_PREFIX}{device}")) else {
+            return false;
+        };
+        self.lobby.get().is_some_and(|lobby| {
+            lobby
+                .borrow()
+                .participant(&id)
+                .is_some_and(|p| p.present && p.device == device)
+        })
+    }
+
+    /// A satellite's wait: its next order, now or once there is one. Only
+    /// a paired machine with the `arm` verb waits as a satellite, under its
+    /// own device's name.
+    fn satellite_wait(&self, from: &ParticipantId, device: &str) -> LobbyAnswer {
+        let may = Table::read(&self.dir).is_ok_and(|table| table.may_host(device));
+        if !may || from.as_str() != format!("{SATELLITE_PREFIX}{device}") {
+            return LobbyAnswer::Now(Err(refused(
+                CtlStatus::NotAuthorized,
+                format!(
+                    "{from} from {device}: a satellite is a paired machine with the arm verb, \
+                     waiting as {SATELLITE_PREFIX}{device}"
+                ),
+            )));
+        }
+        let mut rooms = lock(&self.rooms);
+        let satellite = rooms.satellites.entry(device.to_string()).or_default();
+        if let Some(order) = satellite.orders.pop_front() {
+            return LobbyAnswer::Now(Ok(LobbyReply::Assignment(order)));
+        }
+        let (answer, waited) = oneshot::channel();
+        satellite.waiter = Some(Waiter { answer });
+        LobbyAnswer::Later(waited)
+    }
+
+    /// Sends satellite `device` `order`: to its wait, else when it next
+    /// waits.
+    fn order(&self, device: &str, order: Assignment) {
+        let mut rooms = lock(&self.rooms);
+        let satellite = rooms.satellites.entry(device.to_string()).or_default();
+        let order = match satellite.waiter.take() {
+            Some(waiter) => match waiter.answer.send(Ok(LobbyReply::Assignment(order))) {
+                Ok(()) => return,
+                Err(Ok(LobbyReply::Assignment(order))) => order,
+                Err(_) => return,
+            },
+            None => order,
+        };
+        satellite.orders.push_back(order);
+    }
+
+    /// Satellite `device`'s answer to the host order of `started.run`.
+    fn host_started(&self, device: &str, started: HostStarted) -> LobbyResult {
+        let waiting = lock(&self.rooms)
+            .satellites
+            .get_mut(device)
+            .and_then(|s| s.started.remove(&started.run));
+        let Some(waiting) = waiting else {
+            return Err(refused(
+                CtlStatus::InvalidRequest,
+                format!("{device} has no host order for run {}", started.run),
+            ));
+        };
+        let run = self.run(&started.run)?;
+        let _ = waiting.send(started.result);
+        Ok(LobbyReply::Run(run.state.borrow().clone()))
     }
 
     /// The robot `robot`'s wait, if it is still waiting.
@@ -405,6 +656,9 @@ impl LobbyService for Home {
     fn handle(&self, from: &ParticipantId, device: &str, command: Command) -> LobbyAnswer {
         let now = |result| LobbyAnswer::Now(result);
         match command {
+            Command::LobbyWait(_) if from.as_str().starts_with(SATELLITE_PREFIX) => {
+                self.satellite_wait(from, device)
+            }
             Command::LobbyWait(wait) => self.wait(from, device, wait),
             Command::RunScene {
                 scene_toml,
@@ -436,7 +690,9 @@ impl LobbyService for Home {
             }
             Command::StopScene { run } => now(self.run(&run).map(|run| {
                 run.stopping.store(true, Ordering::SeqCst);
-                let _ = run.commands.send(RunCommand::Stop { by: from.clone() });
+                let _ = run
+                    .commands
+                    .send(RunCommand::End(Outcome::Stopped(from.clone())));
                 LobbyReply::Run(run.state.borrow().clone())
             })),
             Command::ArmScene { run } => match self.run(&run) {
@@ -454,11 +710,7 @@ impl LobbyService for Home {
                 }
                 Err(err) => now(Err(err)),
             },
-            // TODO: satellite daemons answer host orders from scene step 12.
-            Command::HostStarted(_) => now(Err(refused(
-                CtlStatus::Unsupported,
-                "this daemon sends no host orders: every run is hosted at home",
-            ))),
+            Command::HostStarted(started) => now(self.host_started(device, started)),
             _ => now(Err(refused(CtlStatus::InvalidRequest, "not a lobby verb"))),
         }
     }
@@ -506,6 +758,8 @@ struct Driver {
     armed: u64,
     inbox: mpsc::UnboundedReceiver<RunCommand>,
     daemon: Option<Participant>,
+    /// The satellite hosting the run, by device, and its host order.
+    satellite: Option<(String, HostOrder)>,
 }
 
 /// Each member's stage in `snapshot`, from what it had: present, declared,
@@ -596,11 +850,15 @@ impl Driver {
         }
     }
 
-    /// Stage 3: the run's session, hosted here, and the daemon in it.
+    /// Stage 3: the run's session, hosted here or on its satellite, and the
+    /// daemon in it.
     async fn host(
         &mut self,
         config: HostConfig,
     ) -> Result<watch::Receiver<AuthoritySnapshot>, CtlError> {
+        if let Some((device, order)) = self.satellite.clone() {
+            return self.host_on(&device, order).await;
+        }
         let session = config.session;
         let server = self.server()?;
         let started = async {
@@ -621,6 +879,76 @@ impl Driver {
         self.daemon = Some(daemon);
         let host_key = *self.home.identity().static_public();
         let addresses = self.home.addresses.clone();
+        self.update(|s| {
+            s.session = Some(session);
+            s.addresses = addresses;
+            s.host_key = Some(host_key);
+            s.stage = RunStage::Assigning;
+        });
+        Ok(snapshots)
+    }
+
+    /// Stage 3 on satellite `device`: its host order, its answer, and the
+    /// daemon attached there as `local`, the run's state followed through
+    /// it until the satellite's host is gone.
+    async fn host_on(
+        &mut self,
+        device: &str,
+        order: HostOrder,
+    ) -> Result<watch::Receiver<AuthoritySnapshot>, CtlError> {
+        let session = order.session;
+        let (answer, started) = oneshot::channel();
+        lock(&self.home.rooms)
+            .satellites
+            .entry(device.to_string())
+            .or_default()
+            .started
+            .insert(self.id.clone(), answer);
+        self.home.order(device, Assignment::Host(order));
+        let wait = self.scene.wait;
+        let not_started = || {
+            refused(
+                CtlStatus::NotPresent,
+                format!(
+                    "{device} did not start the run's host (waited {} s)",
+                    wait.as_secs_f64()
+                ),
+            )
+        };
+        let (host_key, addresses) = tokio::time::timeout(wait, started)
+            .await
+            .map_err(|_| not_started())?
+            .map_err(|_| not_started())??;
+        let base = addresses
+            .iter()
+            .find_map(|a| a.to_socket_addrs().ok()?.next())
+            .ok_or_else(|| {
+                refused(
+                    CtlStatus::NotReady,
+                    format!("{device} hosts the run at none of {addresses:?}"),
+                )
+            })?;
+        let address = SessionAddress {
+            credential: Some(self.home.identity().local_credential().with_host(host_key)),
+            ..SessionAddress::new(base, &session.to_string())
+                .map_err(|err| refused(CtlStatus::NotReady, err))?
+        };
+        let daemon = address
+            .join(HOME, vec![Role::Observer], PriorityClass::Scripted, wait)
+            .await
+            .map_err(|err| {
+                refused(
+                    CtlStatus::NotReady,
+                    format!("the run's host on {device}: {err}"),
+                )
+            })?;
+        let snapshots = follow(&daemon).await.map_err(|err| {
+            refused(
+                CtlStatus::NotReady,
+                format!("the run's host on {device}: {err}"),
+            )
+        })?;
+        self.daemon = Some(daemon);
         self.update(|s| {
             s.session = Some(session);
             s.addresses = addresses;
@@ -657,7 +985,7 @@ impl Driver {
                 },
                 _ = arrivals.changed() => {}
                 Some(command) = self.inbox.recv() => match command {
-                    RunCommand::Stop { by } => return Err(Outcome::Stopped(by)),
+                    RunCommand::End(outcome) => return Err(outcome),
                     RunCommand::Arm { answer } => {
                         let _ = answer.send(Err(refused(
                             CtlStatus::InvalidTransition,
@@ -683,13 +1011,23 @@ impl Driver {
             let Some(waiter) = self.home.take_waiter(&robot) else {
                 continue;
             };
+            let Some(host_key) = state.host_key else {
+                return;
+            };
+            // A satellite's run host has keys of its own and no host id:
+            // a robot finds it at the join's addresses, or through this
+            // lobby again.
+            let host_id = match self.satellite {
+                Some(_) => String::new(),
+                None => self.home.identity().host_id(),
+            };
             let join = Join {
                 run: self.id.clone(),
                 session,
                 robot: robot.clone(),
                 addresses: state.addresses.clone(),
-                host_key: *self.home.identity().static_public(),
-                host_id: self.home.identity().host_id(),
+                host_key,
+                host_id,
                 tenant: TENANT.to_string(),
             };
             let sent = waiter
@@ -766,7 +1104,7 @@ impl Driver {
                     return Err(Outcome::Failed(refused(CtlStatus::NotReady, "the run's host stopped")));
                 },
                 Some(command) = self.inbox.recv() => match command {
-                    RunCommand::Stop { by } => return Err(Outcome::Stopped(by)),
+                    RunCommand::End(outcome) => return Err(outcome),
                     RunCommand::Arm { answer } => {
                         let armed = self.arm().await;
                         let _ = answer.send(armed.clone().map(|()| LobbyReply::Run(self.state())));
@@ -822,7 +1160,7 @@ impl Driver {
                     return Some(Outcome::Failed(refused(CtlStatus::NotReady, "the run's host stopped")));
                 },
                 Some(command) = self.inbox.recv() => match command {
-                    RunCommand::Stop { by } => return Some(Outcome::Stopped(by)),
+                    RunCommand::End(outcome) => return Some(outcome),
                     RunCommand::Arm { answer } => {
                         let _ = answer.send(Err(refused(
                             CtlStatus::InvalidTransition,
@@ -879,7 +1217,7 @@ impl Driver {
                     return Err(Outcome::Failed(refused(CtlStatus::NotReady, "the run's host stopped")));
                 },
                 Some(command) = self.inbox.recv() => match command {
-                    RunCommand::Stop { by } => return Err(Outcome::Stopped(by)),
+                    RunCommand::End(outcome) => return Err(outcome),
                     RunCommand::Arm { answer } => {
                         let _ = answer.send(Err(refused(
                             CtlStatus::NotReady,
@@ -908,7 +1246,25 @@ impl Driver {
             s.stage = RunStage::Ending;
             s.error.clone_from(&error);
         });
-        if let Ok(server) = self.server() {
+        if let Some((device, _)) = self.satellite.clone() {
+            self.home.order(
+                &device,
+                Assignment::Stop(StopOrder {
+                    run: self.id.clone(),
+                    reason: Reason {
+                        by,
+                        detail,
+                        ..Reason::new(code)
+                    },
+                }),
+            );
+            if let Some(daemon) = self.daemon.take() {
+                // The satellite gives the members 2 s, then stops its host.
+                let mut present = daemon.host_present();
+                let _ = tokio::time::timeout(STRAGGLERS * 2, present.wait_for(|p| !p)).await;
+                let _ = daemon.detach().await;
+            }
+        } else if let Ok(server) = self.server() {
             if server
                 .close_scene(session, code, &by, &detail)
                 .await
@@ -975,6 +1331,35 @@ impl Driver {
     }
 }
 
+/// `daemon`'s authority state as it changes, until its host is gone.
+async fn follow(daemon: &Participant) -> Result<watch::Receiver<AuthoritySnapshot>, SessionError> {
+    let mut states = daemon.watch();
+    let mut present = daemon.host_present();
+    let held = states.borrow_and_update().clone();
+    let first = match held {
+        Some(state) => state,
+        None => daemon.fetch_authority().await?,
+    };
+    let (send, snapshots) = watch::channel(first);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                changed = states.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    if let Some(state) = states.borrow_and_update().clone() {
+                        send.send_replace(state);
+                    }
+                }
+                _ = present.wait_for(|present| !present) => return,
+                () = send.closed() => return,
+            }
+        }
+    });
+    Ok(snapshots)
+}
+
 /// The stage a run gathering its members is at: `ASSIGNING` while a robot
 /// has no join, `DECLARING` while one hasn't declared, `BINDING` while a
 /// controller hasn't bound, else ready to arm.
@@ -1007,13 +1392,18 @@ mod tests {
 
     use rlmesh_session::SystemMonotonicClock;
     use rlmesh_session::address::{self, DEFAULT_SESSION, SessionAddress};
-    use rlmesh_session::auth::address::AddressKey;
+    use rlmesh_session::auth::Credential;
+    use rlmesh_session::auth::address::{AddressKey, base32};
+    use rlmesh_session::crypto::StaticKeypair;
     use rlmesh_session::edge::{EdgeError, Robot};
-    use rlmesh_session::lobby::{Lobby, LobbyClient, home_lobby, run_address, wait_for_join};
+    use rlmesh_session::lobby::{
+        Lobby, LobbyClient, SatelliteClient, home_lobby, run_address, wait_for_join,
+    };
+    use rlmesh_session::pairing::{HostFile, Paired};
     use rlmesh_session::sdk;
     use rlmesh_session::spec::RunOptions;
     use rlmesh_session::spec::apply::{Tensor, Value};
-    use rlmesh_session::wire::{DType, TenantId};
+    use rlmesh_session::wire::{DType, PairInfo, TenantId};
     use rlmesh_session::{Controller, Observation, Predictor, RunError};
 
     use super::*;
@@ -1034,19 +1424,23 @@ mod tests {
 
     /// A home daemon in `dir` on a loopback port: its lobby's address.
     async fn home(dir: &std::path::Path) -> (Arc<SessionServer>, SessionAddress) {
-        let (server, lobby, _) = home_service(dir).await;
+        let (server, lobby, _) = home_gated(dir, true).await;
         (server, lobby)
     }
 
-    /// [`home`], and its lobby to call directly.
-    async fn home_service(
+    /// [`home`], its links gated by its key's password or (`gated` false)
+    /// by none, as rlmeshd's: paired machines link to it too. Its devices
+    /// are `devices.toml`'s.
+    async fn home_gated(
         dir: &std::path::Path,
+        gated: bool,
     ) -> (Arc<SessionServer>, SessionAddress, Arc<Home>) {
         let identity = Arc::new(crate::daemon::identity(dir).expect("identity"));
         let key = AddressKey::of(&identity);
+        let password = gated.then(|| key.link_password());
         let (transport, base) = address::open_listeners(
             SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-            Some(&key.link_password()),
+            password.as_ref(),
         )
         .await
         .expect("listeners");
@@ -1057,6 +1451,9 @@ mod tests {
         config.identity = identity;
         config.clock = SystemMonotonicClock.shared();
         config.health_log = None;
+        (config.devices, config.pins) = Table::read(dir)
+            .and_then(|table| table.host())
+            .expect("devices.toml");
         let server = Arc::new(
             SessionServer::start(transport, config.clone())
                 .await
@@ -1133,7 +1530,9 @@ mod tests {
         // Declared, but its controller hasn't bound: no arm yet.
         let state = until(&client, state, |s| s.stage == RunStage::Binding).await;
         assert_eq!(stage(&state, "arm"), MemberStage::Declared);
-        let address = run_address(&lobby, &state).expect("hosted");
+        let address = run_address(&lobby, &state)
+            .expect("credential")
+            .expect("hosted");
         let busy = client
             .run_scene(&scene("20s"), false)
             .await
@@ -1184,7 +1583,7 @@ mod tests {
     async fn a_robot_back_in_the_lobby_as_its_run_ends_is_returned_and_free_for_the_next() {
         const RUNS: usize = 8;
         let dir = tempfile::tempdir().expect("dir");
-        let (server, lobby, service) = home_service(dir.path()).await;
+        let (server, lobby, service) = home_gated(dir.path(), true).await;
         // A robot that is back in the lobby within milliseconds of seeing
         // its run close, as a board is.
         let robot = tokio::spawn({
@@ -1420,7 +1819,9 @@ mod tests {
             .expect("run");
         let robot = joined(&lobby, &mut me, ARM).await.expect("declared");
         let state = until(&client, state, |s| s.stage == RunStage::Binding).await;
-        let address = run_address(&lobby, &state).expect("hosted");
+        let address = run_address(&lobby, &state)
+            .expect("credential")
+            .expect("hosted");
         let pilot = Arc::new(
             sdk::bind_policy(
                 &address,
@@ -1539,7 +1940,9 @@ mod tests {
             .expect("run");
         let robot = joined(&lobby, &mut me, ARM).await.expect("declared");
         let state = until(&client, state, |s| s.stage == RunStage::Binding).await;
-        let address = run_address(&lobby, &state).expect("hosted");
+        let address = run_address(&lobby, &state)
+            .expect("credential")
+            .expect("hosted");
         let pilot = Arc::new(
             sdk::bind_policy(
                 &address,
@@ -1568,6 +1971,276 @@ mod tests {
         match running.join().expect("thread") {
             Err(RunError::Lost(reason)) => assert_eq!(reason.code, ReasonCode::SceneFailed),
             other => panic!("{other:?}"),
+        }
+        server.shutdown().await;
+    }
+
+    /// A `devices.toml` entry for device `id` with `key`.
+    fn device(id: &str, key: &StaticKeypair, kind: &str, max: &str) -> String {
+        format!(
+            "[devices.{id}]\npublic_key = \"{}\"\nkind = \"{kind}\"\nname = \"{id}\"\n\
+             max_priority = \"{max}\"\n\n",
+            base32(key.public())
+        )
+    }
+
+    /// `scene("20s")` hosted on `host`.
+    fn hosted_on(host: &str) -> String {
+        scene("20s").replace("wait = ", &format!("host = \"{host}\"\nwait = "))
+    }
+
+    /// rlmeshd on another machine paired with the home daemon in `home` as
+    /// device `device` (`key`): its server on its own loopback port, its
+    /// host file in `hosts`, and its satellite's tasks.
+    async fn satellite(
+        home: &std::path::Path,
+        lobby: &SessionAddress,
+        device: &str,
+        key: &StaticKeypair,
+        hosts: &std::path::Path,
+    ) -> (
+        Arc<SessionServer>,
+        SocketAddr,
+        Vec<tokio::task::JoinHandle<()>>,
+    ) {
+        let identity = crate::daemon::identity(home).expect("identity");
+        let paired = Paired {
+            info: PairInfo {
+                device: device.into(),
+                host_key: *identity.static_public(),
+                host_id: identity.host_id(),
+                addresses: Vec::new(),
+            },
+            device: key.clone(),
+        };
+        HostFile::new(&paired, &lobby.base.to_string())
+            .write(hosts)
+            .expect("host file");
+        let (transport, base) =
+            address::open_listeners(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), None)
+                .await
+                .expect("listeners");
+        let mut config = HostConfig::new(
+            TenantId::new(TENANT).expect("tenant"),
+            session_id(DEFAULT_SESSION),
+        );
+        config.health_log = None;
+        let own = config.identity.host_id();
+        let server = Arc::new(
+            SessionServer::start(transport, config)
+                .await
+                .expect("server"),
+        );
+        let tasks = crate::satellite::Satellite::start(
+            server.clone(),
+            Some(hosts.into()),
+            &own,
+            vec![base.to_string()],
+        );
+        (server, base, tasks)
+    }
+
+    /// `client` runs `text`, retried while its satellite isn't in the lobby
+    /// yet.
+    async fn run_when_attached(client: &LobbyClient, text: &str) -> RunState {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            match client.run_scene(text, false).await {
+                Ok(state) => return state,
+                Err(SessionError::Rejected(err))
+                    if err.status == CtlStatus::NotPresent
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(err) => panic!("{err}"),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_scene_hosted_on_a_satellite_runs_there_until_a_members_device_changes_at_home() {
+        let dir = tempfile::tempdir().expect("dir");
+        let hosts = tempfile::tempdir().expect("hosts");
+        let gpu = StaticKeypair::from_private(&mut [11; 32]);
+        let arm_pc = StaticKeypair::from_private(&mut [12; 32]);
+        let arm_pc_key = arm_pc.clone();
+        std::fs::write(
+            dir.path().join(crate::devices::DEVICES),
+            device("gpu-desktop", &gpu, "machine", "operator")
+                + &device("arm-pc", &arm_pc, "machine", "model")
+                + "[robots.arm]\ndevice = \"arm-pc\"\n",
+        )
+        .expect("devices.toml");
+        let (server, lobby, home) = home_gated(dir.path(), false).await;
+        let (remote, remote_base, tasks) =
+            satellite(dir.path(), &lobby, "gpu-desktop", &gpu, hosts.path()).await;
+        let client = LobbyClient::connect(&lobby, WAIT).await.expect("client");
+
+        // The arm, a robot process on arm-pc: its join takes it to the
+        // satellite, where it attaches with its own device key.
+        let home_key = *lobby.credential().expect("credential").host_static();
+        let robot_lobby = SessionAddress {
+            key: None,
+            credential: Some(Credential::new(arm_pc, home_key)),
+            ..lobby.clone()
+        };
+        let robot = tokio::spawn(async move {
+            let mut me = Lobby::new(ParticipantId::new("arm").expect("id"));
+            let (join, address) = wait_for_join(&robot_lobby, &mut me, "arm", Some(WAIT * 3))
+                .await
+                .expect("a join");
+            assert_eq!(
+                (address.base, join.addresses),
+                (remote_base, vec![remote_base.to_string()])
+            );
+            let robot = sdk::connect_robot(&address, "arm", ARM, WAIT)
+                .await
+                .expect("joined on the satellite");
+            let arm = ParticipantId::new("arm").expect("id");
+            let attached = robot
+                .participant()
+                .fetch_authority()
+                .await
+                .expect("state")
+                .participant(&arm)
+                .map(|p| p.device.clone());
+            assert_eq!(attached.as_deref(), Some("arm-pc"));
+            robot
+                .participant()
+                .wait_for("closing", WAIT * 3, |s| {
+                    s.scene.as_ref().is_some_and(|s| s.closing.is_some())
+                })
+                .await
+                .expect("closing");
+            robot.detach().await.expect("detach");
+        });
+
+        let state = run_when_attached(&client, &hosted_on("gpu-desktop")).await;
+        let state = until(&client, state, |s| s.stage == RunStage::Binding).await;
+        let session = state.session.expect("hosted");
+        assert_ne!(state.host_key, Some(home_key), "the satellite's own keys");
+        assert!(remote.sessions().await.contains(&session));
+        assert!(!server.sessions().await.contains(&session));
+        let address = run_address(&lobby, &state)
+            .expect("credential")
+            .expect("hosted");
+        let pilot = sdk::bind_policy(
+            &address,
+            "pilot",
+            PILOT,
+            &RunOptions::named("pilot"),
+            PriorityClass::Model,
+            WAIT,
+        )
+        .await
+        .expect("bound on the satellite");
+        let state = until(&client, state, |s| s.stage == RunStage::Running).await;
+
+        // arm-pc narrowed at home: the satellite holds its old record, so
+        // the run fails, and its StopOrder stops the satellite's host.
+        std::fs::write(
+            dir.path().join(crate::devices::DEVICES),
+            device("gpu-desktop", &gpu, "machine", "operator")
+                + &device("arm-pc", &arm_pc_key, "machine", "scripted")
+                + "[robots.arm]\ndevice = \"arm-pc\"\n",
+        )
+        .expect("devices.toml");
+        home.devices_changed(&Table::read(dir.path()).expect("table"));
+        let state = until(&client, state, |s| s.stage == RunStage::Failed).await;
+        let error = state.error.expect("why");
+        assert_eq!(error.status, CtlStatus::NotAuthorized, "{}", error.message);
+        drop(pilot);
+        robot.await.expect("robot");
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while remote.sessions().await.contains(&session) {
+            assert!(tokio::time::Instant::now() < deadline, "still hosted");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        for task in tasks {
+            task.abort();
+        }
+        remote.shutdown().await;
+        server.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn only_a_paired_machine_waits_as_a_satellite_and_hosts_a_run() {
+        let dir = tempfile::tempdir().expect("dir");
+        let gpu = StaticKeypair::from_private(&mut [11; 32]);
+        let eye = StaticKeypair::from_private(&mut [13; 32]);
+        let guest = StaticKeypair::from_private(&mut [14; 32]);
+        std::fs::write(
+            dir.path().join(crate::devices::DEVICES),
+            device("gpu-desktop", &gpu, "machine", "operator")
+                + &device("eye-l", &eye, "board", "operator")
+                + &device("guest", &guest, "machine", "model")
+                + "[robots.arm]\ndevice = \"local\"\n",
+        )
+        .expect("devices.toml");
+        let (server, lobby, _) = home_gated(dir.path(), false).await;
+        let home_key = *lobby.credential().expect("credential").host_static();
+        let as_device = |key: &StaticKeypair| SessionAddress {
+            key: None,
+            credential: Some(Credential::new(key.clone(), home_key)),
+            ..lobby.clone()
+        };
+        // A board, and a machine under another's name: refused at the wait.
+        for (key, name) in [(&eye, "eye-l"), (&gpu, "laptop-josh")] {
+            let refused = SatelliteClient::connect(&as_device(key), name, WAIT)
+                .await
+                .expect("attached as an observer")
+                .next_order()
+                .await
+                .expect_err("not a satellite");
+            assert!(
+                matches!(&refused, SessionError::Rejected(e) if e.status == CtlStatus::NotAuthorized),
+                "{name}: {refused}"
+            );
+        }
+        // A robot waits only from a device that may embody it: a pinned
+        // name from its pin, an unpinned one from a device that may pin it
+        // (not a guest without `arm`, nor a board under another name).
+        for (key, robot) in [(&eye, "arm"), (&guest, "skull"), (&eye, "skull")] {
+            let mut me = Lobby::new(ParticipantId::new(robot).expect("id"));
+            let refused = wait_for_join(&as_device(key), &mut me, robot, Some(WAIT))
+                .await
+                .expect_err("may not wait as it");
+            assert!(
+                matches!(&refused, SessionError::Rejected(e) if e.status == CtlStatus::NotAuthorized),
+                "{robot}: {refused}"
+            );
+        }
+        // A satellite whose home's authenticated echoes stop, its liveliness
+        // still up (an unsigned token anyone on the link can keep), counts
+        // the home gone.
+        let silenced = SatelliteClient::connect(&as_device(&gpu), "gpu-desktop", WAIT)
+            .await
+            .expect("a satellite");
+        silenced.participant().set_heartbeats_enabled(false);
+        let gone = tokio::time::timeout(
+            rlmesh_session::lobby::HOME_SILENT + Duration::from_secs(2),
+            silenced.next_order(),
+        )
+        .await
+        .expect("bounded");
+        assert!(matches!(gone, Err(SessionError::Closed)), "{gone:?}");
+        assert!(*silenced.participant().host_present().borrow());
+        // Hosted on the board: refused at check; on a machine not in the
+        // lobby: not present.
+        let client = LobbyClient::connect(&lobby, WAIT).await.expect("client");
+        for (host, status) in [
+            ("eye-l", CtlStatus::NotAuthorized),
+            ("gpu-desktop", CtlStatus::NotPresent),
+        ] {
+            let refused = client
+                .run_scene(&hosted_on(host), false)
+                .await
+                .expect_err("refused");
+            assert!(
+                matches!(&refused, SessionError::Rejected(e) if e.status == status),
+                "{host}: {refused}"
+            );
         }
         server.shutdown().await;
     }

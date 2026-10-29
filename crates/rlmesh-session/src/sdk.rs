@@ -458,13 +458,14 @@ impl SceneRun {
     }
 
     /// Where the run's members join (its own controllers among them), once
-    /// its host is up.
+    /// its host is up. On a satellite the text carries no device key: this
+    /// process joins with the one it keeps for the run.
     ///
     /// # Errors
     /// What the call failed with.
     pub async fn address(&self) -> Result<Option<String>, SessionError> {
         let state = self.status().await?;
-        Ok(run_address(self.client.lobby(), &state).map(|a| a.invite()))
+        Ok(run_address(self.client.lobby(), &state)?.map(|a| a.invite()))
     }
 
     /// Follows the run until it is at `stage` (see

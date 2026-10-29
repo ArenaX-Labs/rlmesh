@@ -97,6 +97,16 @@ impl core::fmt::Debug for Credential {
     }
 }
 
+/// Two credentials are one when they hold the same device key for the
+/// same host.
+impl PartialEq for Credential {
+    fn eq(&self, other: &Self) -> bool {
+        self.device.public() == other.device.public() && self.host_static == other.host_static
+    }
+}
+
+impl Eq for Credential {}
+
 impl Credential {
     /// A device's key pair and the host's static public key.
     pub fn new(device: StaticKeypair, host_static: [u8; 32]) -> Self {
@@ -110,6 +120,13 @@ impl Credential {
     /// secret and the host's static public key.
     pub fn local(secret: &[u8; 32], host_static: [u8; 32]) -> Self {
         Self::new(local_keypair(secret), host_static)
+    }
+
+    /// The same device's key against another host's static key: a robot's
+    /// IK with a satellite's run host, whose key its `Join` names (scene
+    /// design §3.3).
+    pub fn with_host(&self, host_static: [u8; 32]) -> Self {
+        Self::new(self.device.clone(), host_static)
     }
 
     /// The device's static public key.

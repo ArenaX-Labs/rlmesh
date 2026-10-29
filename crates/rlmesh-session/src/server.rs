@@ -66,6 +66,9 @@ pub struct SessionServer {
     hosts: Hosts,
     kept: Kept,
     table: Table,
+    /// The sessions started with their own devices and pins
+    /// ([`Self::host_session`]), which [`Self::set_devices`] leaves alone.
+    own_tables: std::sync::Mutex<HashSet<SessionId>>,
     transport: Transport,
     /// What its own participants attach with.
     own: (
@@ -275,6 +278,7 @@ impl SessionServer {
             hosts,
             kept,
             table,
+            own_tables: std::sync::Mutex::default(),
             own,
             transport,
             #[cfg(feature = "record")]
@@ -312,7 +316,12 @@ impl SessionServer {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             (devices.clone(), pins.clone()),
         );
-        for (session, host) in hosts.iter() {
+        let own_tables = self
+            .own_tables
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        for (session, host) in hosts.iter().filter(|(s, _)| !own_tables.contains(s)) {
             if let Err(err) = apply(host, (&old, &old_pins), (&devices, &pins)).await {
                 warn!(%session, %err, "device table not applied");
             }
@@ -330,6 +339,27 @@ impl SessionServer {
         &self,
         config: HostConfig,
     ) -> Result<tokio::sync::watch::Receiver<AuthoritySnapshot>, SessionError> {
+        self.start_kept(config, false).await
+    }
+
+    /// [`Self::start_session`] with `config`'s own devices and pins, which
+    /// the server's table never changes: a satellite's run, whose table is
+    /// its home daemon's (scene design §4.4).
+    ///
+    /// # Errors
+    /// As [`Self::start_session`].
+    pub async fn host_session(
+        &self,
+        config: HostConfig,
+    ) -> Result<tokio::sync::watch::Receiver<AuthoritySnapshot>, SessionError> {
+        self.start_kept(config, true).await
+    }
+
+    async fn start_kept(
+        &self,
+        config: HostConfig,
+        own_table: bool,
+    ) -> Result<tokio::sync::watch::Receiver<AuthoritySnapshot>, SessionError> {
         let mut hosts = self.hosts.lock().await;
         let known = self
             .kept
@@ -342,21 +372,26 @@ impl SessionServer {
                 config.session
             )));
         }
-        let (devices, pins) = self
-            .table
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let session = config.session;
-        let host = SessionHost::start(
-            self.transport.clone(),
+        let config = if own_table {
+            self.own_tables
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(config.session);
+            config
+        } else {
+            let (devices, pins) = self
+                .table
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             HostConfig {
                 devices,
                 pins,
                 ..config
-            },
-        )
-        .await?;
+            }
+        };
+        let session = config.session;
+        let host = SessionHost::start(self.transport.clone(), config).await?;
         let watch = host.watch();
         self.kept
             .lock()

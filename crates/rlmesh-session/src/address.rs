@@ -491,6 +491,11 @@ pub struct SessionAddress {
     /// The key its host's address carries (`None`: found at join, for a
     /// host in this process or one that left its key for this user).
     pub key: Option<AddressKey>,
+    /// What its participants attach with, ahead of the key and any found
+    /// by `base`: a paired machine's device key against the host its host
+    /// file names, or against a satellite's run host (scene design §4.4).
+    /// Never in its text.
+    pub credential: Option<Credential>,
 }
 
 impl SessionAddress {
@@ -503,11 +508,23 @@ impl SessionAddress {
             name: name.to_string(),
             session: session_id(name),
             key: None,
+            credential: None,
         })
     }
 
-    /// The credential its participants attach with: see [`credential`].
+    /// The credential its participants attach with: its own, else the one
+    /// this process was given for its session ([`remember_credential`]),
+    /// else see [`credential`].
     pub fn credential(&self) -> Result<Credential, SessionError> {
+        if let Some(credential) = self.credential.clone().or_else(|| {
+            remembered()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&(self.base, self.session))
+                .cloned()
+        }) {
+            return Ok(credential);
+        }
         credential(self.base, self.key.as_ref())
     }
 
@@ -773,6 +790,28 @@ fn local_host(base: SocketAddr) -> Option<Transport> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&base)
         .map(|(transport, _)| Transport::ridden(transport))
+}
+
+/// The credentials this process holds for sessions on hosts that aren't
+/// its home's, by base and session ([`remember_credential`]).
+type Remembered = HashMap<(SocketAddr, SessionId), Credential>;
+
+fn remembered() -> &'static std::sync::Mutex<Remembered> {
+    static REMEMBERED: std::sync::OnceLock<std::sync::Mutex<Remembered>> =
+        std::sync::OnceLock::new();
+    REMEMBERED.get_or_init(Default::default)
+}
+
+/// Keeps `credential` for `address`'s session in this process, so its text
+/// (which never carries a device key) joins with it too: a satellite's run,
+/// whose address a binding passes to its controller as text.
+// TODO: kept until the process exits; forget ended runs if a long-lived
+// process runs thousands of satellite-hosted scenes.
+pub fn remember_credential(address: &SessionAddress, credential: Credential) {
+    remembered()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((address.base, address.session), credential);
 }
 
 /// The credential of a participant of the host at `base`: `key` (an
