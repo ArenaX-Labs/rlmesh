@@ -64,7 +64,7 @@ struct Script {
   int steps = 0, env_closes = 0, model_closes = 0, ends = 0, starts = 0;
   int64_t reset_seed = -1, reset_trial = -1;
   bool dict_action = false;
-  bool cancel_step = false;
+  bool cancel_step = false, held = false;
   std::optional<ext::CancelToken> cancel;
 };
 struct Counter {
@@ -87,6 +87,7 @@ struct Counter {
     s->reset_trial = trial_index(options).value_or(-1);
     ++s->starts;
     s->steps = 0;
+    s->held = false;
     return {0, {}};
   }
   StepResult step(std::optional<Value>) {
@@ -95,8 +96,10 @@ struct Counter {
     if (s->cancel_step) {
       s->cancel_step = false;
       s->cancel->cancel();
+      s->held = true;
     }
-    return {s->steps, 1.0, s->steps >= 2, false, {}};
+    // A cancelled episode never ends, so the run's cancel lands in it.
+    return {s->steps, 1.0, s->steps >= 2 && !s->held, false, {}};
   }
   void close() { ++s->env_closes; }
 };

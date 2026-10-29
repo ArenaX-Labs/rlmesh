@@ -5,7 +5,10 @@ rules = ["R-18"]
 operation = "cancel_run"
 languages = ["rust", "c", "cpp"]
 why = "Python serves a local env on a host thread, where a KeyboardInterrupt the env raises is an env failure; Ctrl-C itself interrupts the caller."
-expect = { error = "KeyboardInterrupt", episode_ends = 1, run_ends = 1, partial_episodes = 1, reusable = true }
+# The env fires the token mid-episode and holds that episode open, so the run
+# always fails inside it: it ends the open episode, and on_run_end gets only
+# completed episodes (none).
+expect = { error = "KeyboardInterrupt", episode_ends = 1, run_ends = 1, partial_episodes = 0, reusable = true }
 
 [[scenario]]
 id = "cancel_idle_rearms"

@@ -27,7 +27,7 @@
 typedef struct Script {
   int steps, env_closes, model_closes, episode_ends, run_ends, partial;
   int cancel_step, starts, warnings, prepares;
-  bool cancel_in_make;
+  bool cancel_in_make, held;
   RLMeshSpace *space;
   RLMeshExtCancelToken *cancel;
   RLMeshErrorClass failure;
@@ -118,6 +118,7 @@ static RLMeshStatus reset(void *ud, const int64_t *seed,
   (void)info;
   ++s->starts;
   s->steps = 0;
+  s->held = false;
   return rlmesh_value_int(0, obs);
 }
 static RLMeshStatus step(void *ud, const RLMeshValue *action, RLMeshValue **obs,
@@ -131,9 +132,11 @@ static RLMeshStatus step(void *ud, const RLMeshValue *action, RLMeshValue **obs,
   if (s->cancel_step) {
     s->cancel_step = 0;
     OK(rlmesh_ext_cancel_token_cancel(s->cancel));
+    s->held = true;
   }
   *reward = 1;
-  *terminated = s->steps >= 2;
+  /* A cancelled episode never ends, so the run's cancel lands in it. */
+  *terminated = s->steps >= 2 && !s->held;
   *truncated = false;
   return rlmesh_value_int(s->steps, obs);
 }
