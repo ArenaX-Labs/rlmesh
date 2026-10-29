@@ -1,8 +1,8 @@
 //! A board as a robot in a session, sans-IO: the board's transport
 //! (zenoh-pico) carries out the [`Action`]s it asks for and hands back what
 //! arrives. The protocol is session-core's: the handshake and sealing are
-//! its [`Link`], the command edge its [`EdgeCore`], the map its
-//! [`normalise`]; this only puts them in the participant's order.
+//! its [`Link`], the command edge its [`EdgeCore`]; the host normalises the
+//! map. This only puts them in the participant's order.
 //!
 //! The order (design §8.3): subscribe to the host's state, ticks, this
 //! robot's heartbeat echo and key deliveries; read the host instance from
@@ -26,7 +26,6 @@ use rlmesh_session_core::crypto::Rng;
 use rlmesh_session_core::crypto::handshake::IkInitiator;
 use rlmesh_session_core::crypto::signed;
 use rlmesh_session_core::edge::{EdgeConfig, EdgeCore, EdgeTick};
-use rlmesh_session_core::spec::normalise;
 use rlmesh_session_core::wire::codec;
 use rlmesh_session_core::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session_core::wire::{
@@ -85,7 +84,8 @@ pub struct Config {
 /// Why a [`Config`] can't make a robot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
-    /// The map doesn't normalise: the host would refuse it.
+    /// The map isn't a JSON object of parts with valid paths (the host
+    /// checks the rest at `DeclareParts`).
     Map(String),
     /// A zero heartbeat period.
     Heartbeat,
@@ -295,11 +295,10 @@ impl Robot {
         if config.heartbeat_ms == 0 {
             return Err(ConfigError::Heartbeat);
         }
-        let paths: Vec<String> = normalise(&config.name, SPEC_VERSION, &config.robot_json)
-            .map_err(|err| ConfigError::Map(err.message))?
-            .iter()
-            .map(|p| p.path.to_string())
-            .collect();
+        // The host normalises the map at `DeclareParts`: the board needs
+        // only its paths, in authored order.
+        let paths = crate::map::paths(&config.robot_json)
+            .ok_or_else(|| ConfigError::Map(String::from("not a JSON object of parts")))?;
         let keys = SessionKeys::new(&config.tenant, config.session);
         Ok(Self {
             subscribed: alloc::vec![false; paths.len()],

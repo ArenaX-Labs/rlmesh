@@ -137,7 +137,7 @@ a core. Flash it, and open the Serial Monitor at 115200.
 
 - **Randomness.** The ESP32's hardware RNG is cryptographic only with the
   radio on. Start Wi-Fi before anything draws keys.
-- **Flash.** `examples/Robot` is about 1.6 MB (1.7 MB on the C6), past the
+- **Flash.** `examples/Robot` is about 1.5 MB (1.6 MB on the C6), past the
   default app partition. Choose a larger one (Tools → Partition Scheme,
   "Huge APP"). The crypto alone adds about 205 KB to a Wi-Fi sketch (189 KB
   on the C6).

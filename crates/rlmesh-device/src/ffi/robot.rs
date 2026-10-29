@@ -962,9 +962,9 @@ mod tests {
         };
         assert_eq!(rc, RLMESH_DEVICE_ERR_CONFIG);
         let rc = unsafe {
-            rlmesh_device_robot_new(&config(&addr, Some(c"eyes"), c"{\"eyes\": {}}"), &mut robot)
+            rlmesh_device_robot_new(&config(&addr, Some(c"eyes"), c"[\"eyes\"]"), &mut robot)
         };
-        assert_eq!(rc, RLMESH_DEVICE_ERR_CONFIG, "a map the host refuses");
+        assert_eq!(rc, RLMESH_DEVICE_ERR_CONFIG, "not a map of parts");
         let mut no_beat = config(&addr, Some(c"eyes"), MAP);
         no_beat.heartbeat_ms = 0;
         let rc = unsafe { rlmesh_device_robot_new(&no_beat, &mut robot) };
