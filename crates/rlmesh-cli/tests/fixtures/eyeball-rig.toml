@@ -1,0 +1,41 @@
+[scene]
+format = 1
+name = "eyeball-rig"
+home = "rig-pi.local"          # the daemon whose lobby the robots wait in (default: the one paired host)
+host = "gpu-desktop"           # "home" or a paired machine running rlmeshd (default: §8 open 1)
+security = "sign"              # session-wide default for data and chunks: "sign" | "seal"
+wait = "30s"                   # how long each stage may wait for robots, declares and bindings
+arm = "auto"                   # "auto": arm once everyone declared and bound | "manual"
+rejoin = "60s"                 # how long a run waits for a lost member before it fails (§4.3)
+record = true                  # the host daemon's recorder joins
+
+[members.eye-l]                # ESP32 on Wi-Fi, provisioned as eye-l; map: gaze (joints pan, tilt)
+role = "robot"
+place = { at = "eyes/left", pose = { xyz = [0.035, 0.0, 0.30], quat_xyzw = [0, 0, 0, 1] } }
+
+[members.skull]                # Arduino Nano on rig-pi's USB, behind the tether bridge; map: jaw
+role = "robot"
+device = "local"               # optional assertion; checked against [robots.skull] device, board_id
+place = { at = "skull", pose = { xyz = [0, 0, 0.22], quat_xyzw = [0, 0, 0, 1] } }
+
+[members.arm]                  # SO-100 arm driven by a Robot process on arm-pc; map: joints, gripper
+role = "robot"
+device = "arm-pc"
+place = { at = "arm", pose = { xyz = [0.40, -0.20, 0], quat_xyzw = [0, 0, 0.7071068, 0.7071068] } }
+
+[members.cam-1]                # fixed USB camera published by a Robot process on rig-pi; map: cam
+role = "robot"
+place = { at = "scene", frame = "cam_optical", pose = { xyz = [0, -0.6, 0.5], quat_xyzw = [-0.6123724, 0, 0, 0.7905694] } }
+seal = ["cam"]                 # per part: video is encrypted; everything else stays at the scene default
+
+[members.tracker]              # the user's script; it ran the scene and joins by itself
+role = "controller"
+device = "laptop-josh"
+max_priority = "model"
+
+[members.grasp]                # a catalog model the satellite starts
+role = "controller"
+serve = "prebuilt/smolvla/so100"
+on = "gpu-desktop"
+max_priority = "model"
+robot = "arm"                  # binds against one robot rather than the view
