@@ -4,7 +4,7 @@
 // whatever its edge says is due. The policies bind to it by kind and path, lease its parts and
 // stream timed chunks. Needs dist/node.js and the addon (`mise run test:js:native`).
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
@@ -355,4 +355,93 @@ test("the session's key is in the host's address, never in what inspecting shows
   assert.ok(key && key.length > 52);
   const policy = new rlmesh.Policy(HOLD, { session: host });
   for (const shown of [inspect(host), inspect(policy), String(host), String(policy)]) assert.ok(!shown.includes(key), shown);
+});
+
+/** A loopback port whose next three are free too (a daemon's classes). */
+async function freeBase() {
+  const { createServer } = await import('node:net');
+  const listen = (port) =>
+    new Promise((resolve) => {
+      const server = createServer();
+      server.once('error', () => resolve(null));
+      server.listen(port, '127.0.0.1', () => resolve(server));
+    });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const probe = await listen(0);
+    const base = probe.address().port;
+    await new Promise((r) => probe.close(r));
+    if (base > 65531) continue;
+    const held = await Promise.all([0, 1, 2, 3].map((i) => listen(base + i)));
+    await Promise.all(held.filter(Boolean).map((s) => new Promise((r) => s.close(r))));
+    if (held.every(Boolean)) return base;
+  }
+  throw new Error('no four free ports');
+}
+
+/** An rlmeshd on loopback, whose `local.key` this process attaches with (Python's `rlmesh daemon`). */
+async function startDaemon() {
+  const { spawn } = await import('node:child_process');
+  // Short: its local channel is a Unix socket in there.
+  const state = mkdtempSync('/tmp/rlmd-');
+  process.env.RLMESH_STATE_DIR = state;
+  const base = await freeBase();
+  const repo = new URL('../../../../', import.meta.url).pathname;
+  const proc = spawn('uv', ['run', '--no-sync', 'python', '-m', 'rlmesh', 'daemon', '--listen', `127.0.0.1:${base}`], {
+    cwd: repo,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  await new Promise((resolve, reject) => {
+    proc.stdout.once('data', (line) => (String(line).includes('rlmeshd on') ? resolve() : reject(new Error(String(line)))));
+    proc.once('exit', (code) => reject(new Error(`rlmeshd exited with ${code}`)));
+  });
+  return {
+    home: `127.0.0.1:${base}`,
+    async [Symbol.asyncDispose]() {
+      proc.kill();
+      await new Promise((r) => proc.once('exit', r));
+      delete process.env.RLMESH_STATE_DIR;
+      rmSync(state, { recursive: true, force: true });
+    },
+  };
+}
+
+test('a scene runs a lobby robot and a Node policy on one machine', async () => {
+  await using daemon = await startDaemon();
+  const dir = mkdtempSync(join(tmpdir(), 'rlmesh-scene-'));
+  const path = join(dir, 'bench.toml');
+  writeFileSync(
+    path,
+    '[scene]\nformat = 1\nname = "bench"\nwait = "20s"\n\n[members.arm]\nrole = "robot"\n\n[members.pilot]\nrole = "controller"\ndevice = "local"\n',
+  );
+  const ARM = { arm: { kind: 'joints', count: 2, fields: ['pos'], hz: 100, command: 'position', hold_max_ms: 200 } };
+  const PILOT = {
+    hz: 20,
+    inputs: { q: { kind: 'joints', at: 'arm', fields: ['pos'] } },
+    actions: { arm: { kind: 'joints', at: 'arm', command: 'position', hz: 20, horizon: 2 } },
+  };
+  const robot = (async () => {
+    await using arm = await rlmesh.Robot.waitInLobby('arm', ARM, { home: daemon.home, timeout: 3 * WAIT_MS / 1000 });
+    while (arm.leaving === null) {
+      arm.publish('arm', { pos: new Float32Array(2) });
+      await sleep(10);
+    }
+    return arm.leaving;
+  })();
+  try {
+    await using scene = await rlmesh.runScene(path, { home: daemon.home });
+    const binding = await scene.waitUntil('binding', { timeout: WAIT_MS / 1000 });
+    assert.deepEqual(binding.members[0], { name: 'arm', stage: 'declared', error: null });
+    const policy = new rlmesh.Policy(PILOT, { session: await scene.address(), name: 'pilot' });
+    await policy.bind('arm');
+    assert.equal((await scene.waitUntil('running', { timeout: WAIT_MS / 1000 })).error, null);
+    const stats = await policy.run(() => ({ arm: { data: new Float32Array(4), shape: [2, 2] } }), { duration: 1 });
+    assert.ok(stats.starts > 0, JSON.stringify(stats));
+    await assert.rejects(rlmesh.runScene(path, { home: daemon.home }), (e) => e instanceof rlmesh.SessionRefused && e.status === 'ROBOT_BUSY');
+    await policy.close();
+    assert.equal((await scene.stop()).stage, 'ended');
+    assert.equal(await robot, 'scene_ended');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

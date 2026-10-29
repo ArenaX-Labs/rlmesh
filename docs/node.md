@@ -76,6 +76,11 @@ block instead of the `finally`.
 | `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                 |
 | `with Recorder(path, session=host)`                | `const rec = await Recorder.start(path, { session: host })`   |
 | `read_recording(path)`                             | `await readRecording(path)`                                   |
+| `Robot.wait_in_lobby(name, parts, home=h)`         | `await Robot.waitInLobby(name, parts, { home: h })`           |
+| `robot.leaving`                                    | `robot.leaving`                                               |
+| `with run_scene(path, home=h) as scene`            | `await using scene = await runScene(path, { home: h })`       |
+| `scene.address`, `scene.wait_until("running")`     | `await scene.address()`, `await scene.waitUntil('running')`   |
+| `scene.arm()`, `scene.stop()`                      | `await scene.arm()`, `await scene.stop()`                     |
 | `SessionRefused`, `BindingRefused`, `StartSkipped` | the same classes; `ValueError` is `RangeError`                |
 
 The rules are R-30 in the [parity spec](specs/language-parity/rules.md).

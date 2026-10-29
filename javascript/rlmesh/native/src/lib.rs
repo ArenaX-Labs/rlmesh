@@ -546,6 +546,32 @@ pub async fn connect_robot(
     })
 }
 
+/// Waits in the lobby of the home daemon `home` names (`null`: this
+/// machine's rlmeshd) as robot `name` until a run assigns it, then joins the
+/// run and declares `robot_json`. A refused join (its pin, another map) is
+/// reported to the daemon by the next wait, which goes on waiting;
+/// `timeout_s` (`null`: none) bounds it all.
+#[napi]
+pub async fn robot_from_lobby(
+    home: Option<String>,
+    name: String,
+    robot_json: String,
+    timeout_s: Option<f64>,
+) -> Result<NativeRobot> {
+    let wait = timeout_s.map(timeout).transpose()?;
+    let (robot, _) = sdk::robot_from_lobby(home.as_deref(), &name, &robot_json, wait)
+        .await
+        .map_err(|err| match err {
+            rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
+            other => exception(other.to_string()),
+        })?;
+    Ok(NativeRobot {
+        name,
+        robot: Mutex::new(Some(Arc::new(robot))),
+        encoder: Mutex::new(None),
+    })
+}
+
 impl NativeRobot {
     fn robot(&self) -> Result<Arc<Robot>> {
         self.robot
@@ -713,6 +739,14 @@ impl NativeRobot {
         ))
     }
 
+    /// Why this robot should leave its scene's run (`scene_ended`,
+    /// `scene_failed`, `robot_lost`, `superseded`); `null` while it is in
+    /// the run, and outside a scene.
+    #[napi(getter)]
+    pub fn leaving(&self) -> Result<Option<String>> {
+        Ok(sdk::leaving(self.robot()?.participant()).map(|l| sdk::leave_name(&l)))
+    }
+
     /// Now on this robot's clock (`process.hrtime.bigint()`).
     #[napi]
     pub fn now_ns(&self) -> Result<BigInt> {
@@ -766,6 +800,158 @@ impl NativeRobot {
             return Ok(());
         };
         sdk::close_robot(robot).await.map_err(session_err)
+    }
+}
+
+/// A refusal: its status and message.
+#[napi(object)]
+pub struct RefusalInfo {
+    pub status: String,
+    pub message: String,
+}
+
+/// One member of a run.
+#[napi(object)]
+pub struct MemberInfo {
+    pub name: String,
+    pub stage: String,
+    pub error: Option<RefusalInfo>,
+}
+
+/// A run's state.
+#[napi(object)]
+pub struct RunInfo {
+    pub run: String,
+    pub version: f64,
+    pub stage: String,
+    pub members: Vec<MemberInfo>,
+    pub error: Option<RefusalInfo>,
+}
+
+fn refusal(e: &Option<rlmesh_session::wire::CtlError>) -> Option<RefusalInfo> {
+    e.as_ref().map(|e| RefusalInfo {
+        status: sdk::status_name(e.status),
+        message: e.message.clone(),
+    })
+}
+
+fn run_info(state: &rlmesh_session::wire::RunState) -> RunInfo {
+    RunInfo {
+        run: state.run.clone(),
+        // Exact below 2^53.
+        #[allow(clippy::cast_precision_loss)]
+        version: state.version as f64,
+        stage: sdk::run_stage_name(state.stage),
+        members: state
+            .members
+            .iter()
+            .map(|m| MemberInfo {
+                name: m.name.to_string(),
+                stage: sdk::member_stage_name(m.stage),
+                error: refusal(&m.error),
+            })
+            .collect(),
+        error: refusal(&state.error),
+    }
+}
+
+/// A scene run started from this process on the home daemon's lobby.
+#[napi]
+pub struct NativeScene {
+    run: String,
+    scene: tokio::sync::Mutex<Option<sdk::SceneRun>>,
+}
+
+/// Runs the scene file's text `scene_toml` on the home daemon `home` names
+/// (`null`: this machine's rlmeshd), waiting up to `timeout_s` for it
+/// (`manual_arm`: wait for `arm()`). A refused scene is `SessionRefused`
+/// with its code.
+#[napi]
+pub async fn run_scene(
+    home: Option<String>,
+    scene_toml: String,
+    manual_arm: bool,
+    timeout_s: f64,
+) -> Result<NativeScene> {
+    let wait = timeout(timeout_s)?;
+    let scene = sdk::SceneRun::start(home.as_deref(), &scene_toml, manual_arm, wait)
+        .await
+        .map_err(session_err)?;
+    Ok(NativeScene {
+        run: scene.run().to_string(),
+        scene: tokio::sync::Mutex::new(Some(scene)),
+    })
+}
+
+impl NativeScene {
+    async fn with<T>(
+        &self,
+        f: impl AsyncFnOnce(&sdk::SceneRun) -> std::result::Result<T, SessionError>,
+    ) -> Result<T> {
+        let scene = self.scene.lock().await;
+        let scene = scene
+            .as_ref()
+            .ok_or_else(|| exception(format!("run {} is closed", self.run)))?;
+        f(scene).await.map_err(session_err)
+    }
+}
+
+#[napi]
+impl NativeScene {
+    /// The run's id.
+    #[napi(getter)]
+    pub fn run(&self) -> String {
+        self.run.clone()
+    }
+
+    /// Where the run's members join, once its host is up.
+    #[napi]
+    pub async fn address(&self) -> Result<Option<String>> {
+        self.with(async |s| s.address().await).await
+    }
+
+    /// The run's state now.
+    #[napi]
+    pub async fn status(&self) -> Result<RunInfo> {
+        Ok(run_info(&self.with(async |s| s.status().await).await?))
+    }
+
+    /// Waits up to `timeout_s` for the run to be at `stage` (`running`).
+    #[napi]
+    pub async fn wait_until(&self, stage: String, timeout_s: f64) -> Result<RunInfo> {
+        let stage = sdk::run_stage(&stage).map_err(invalid)?;
+        let wait = timeout(timeout_s)?;
+        Ok(run_info(
+            &self
+                .with(async move |s| s.wait_until(stage, wait).await)
+                .await?,
+        ))
+    }
+
+    /// Arms the run (`manual`, or after a lost member rejoined).
+    #[napi]
+    pub async fn arm(&self) -> Result<RunInfo> {
+        Ok(run_info(&self.with(async |s| s.arm().await).await?))
+    }
+
+    /// Stops the run and waits up to `timeout_s` for it to end.
+    #[napi]
+    pub async fn stop(&self, timeout_s: f64) -> Result<RunInfo> {
+        let wait = timeout(timeout_s)?;
+        Ok(run_info(
+            &self.with(async move |s| s.stop(wait).await).await?,
+        ))
+    }
+
+    /// Stops the run unless it ended, and leaves the lobby. Idempotent.
+    #[napi]
+    pub async fn close(&self, timeout_s: f64) -> Result<()> {
+        let wait = timeout(timeout_s)?;
+        let taken = self.scene.lock().await.take();
+        match taken {
+            Some(scene) => scene.close(wait).await.map_err(session_err),
+            None => Ok(()),
+        }
     }
 }
 

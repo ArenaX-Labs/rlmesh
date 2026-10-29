@@ -1267,6 +1267,49 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_robot_process_carries_its_uncleared_estop_into_its_next_run() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (server, lobby) = home(dir.path()).await;
+        let client = LobbyClient::connect(&lobby, WAIT).await.expect("client");
+        let alone = scene("20s").replace(
+            "\n[members.pilot]\nrole = \"controller\"\ndevice = \"local\"\n",
+            "",
+        );
+        let from_lobby = || sdk::robot_from_lobby_at(&lobby, "arm", ARM, Some(WAIT * 3));
+        let state = client.run_scene(&alone, false).await.expect("run");
+        let (robot, _) = from_lobby().await.expect("joined");
+        let state = until(&client, state, |s| s.stage == RunStage::Running).await;
+        // Its button, then the run ends: the documented loop drops the
+        // robot and waits again, never clearing.
+        robot.estop("button");
+        client.stop(&state.run).await.expect("stop");
+        robot
+            .participant()
+            .wait_for("closing", WAIT, |s| {
+                s.scene.as_ref().is_some_and(|s| s.closing.is_some())
+            })
+            .await
+            .expect("closing");
+        robot.detach().await.expect("detach");
+        let back = tokio::spawn({
+            let lobby = lobby.clone();
+            async move { sdk::robot_from_lobby_at(&lobby, "arm", ARM, Some(WAIT * 3)).await }
+        });
+        until(&client, state, |s| s.stage == RunStage::Ended).await;
+
+        let state = client.run_scene(&alone, false).await.expect("free");
+        let (robot, _) = back.await.expect("task").expect("joined again");
+        assert!(robot.participant().estop_latched(), "the same latch");
+        let state = until(&client, state, |s| s.stage == RunStage::Failed).await;
+        let error = state.error.expect("why");
+        assert_eq!(error.status, CtlStatus::EstopLatched, "{}", error.message);
+        let mode = robot.participant().fetch_authority().await.map(|s| s.mode);
+        assert!(matches!(mode, Ok(Mode::Estop) | Err(_)), "{mode:?}");
+        drop(robot);
+        server.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_run_fails_at_its_stage_with_its_code() {
         let dir = tempfile::tempdir().expect("dir");
         let (server, lobby) = home(dir.path()).await;

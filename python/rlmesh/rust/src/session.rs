@@ -91,6 +91,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyObservation>()?;
     m.add_class::<PyRate>()?;
     m.add_class::<PyRecorder>()?;
+    m.add_class::<PyScene>()?;
     m.add_function(wrap_pyfunction!(parse_address, m)?)?;
     m.add_function(wrap_pyfunction!(is_v2_address, m)?)?;
     m.add_function(wrap_pyfunction!(local_run_session, m)?)?;
@@ -548,6 +549,46 @@ impl PyRobot {
         })
     }
 
+    /// Waits in the lobby of the home daemon `home` names (`None`: this
+    /// machine's rlmeshd) as robot `name` until a run assigns it, then joins
+    /// the run and declares `robot_json`. A refused join (its pin, another
+    /// map) is reported to the daemon by the next wait, which goes on
+    /// waiting; `timeout_s` (`None`: none) bounds it all.
+    #[staticmethod]
+    #[pyo3(signature = (home, name, robot_json, timeout_s=None))]
+    fn from_lobby(
+        py: Python<'_>,
+        home: Option<String>,
+        name: &str,
+        robot_json: String,
+        timeout_s: Option<f64>,
+    ) -> PyResult<Self> {
+        let wait = timeout_s.map(timeout).transpose()?;
+        let (robot, address) = block_on(py, async move {
+            sdk::robot_from_lobby(home.as_deref(), name, &robot_json, wait)
+                .await
+                .map_err(|err| match err {
+                    rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
+                    other => SessionException::new_err(other.to_string()),
+                })
+        })?;
+        Ok(Self {
+            name: name.to_string(),
+            robot: Mutex::new(Some(Arc::new(robot))),
+            session: EmbeddedHost::joined(address),
+        })
+    }
+
+    /// Why this robot should leave its scene's run: the run is closing (its
+    /// reason, `scene_ended` or `scene_failed`), the host lost it
+    /// (`robot_lost`: wait in the lobby again, where its run re-sends its
+    /// join), or another process took its name over (`superseded`: stop).
+    /// `None` while it is in the run, and outside a scene.
+    #[getter]
+    fn leaving(&self) -> PyResult<Option<String>> {
+        Ok(sdk::leaving(self.robot()?.participant()).map(|l| sdk::leave_name(&l)))
+    }
+
     /// The robot's participant id.
     #[getter]
     fn name(&self) -> &str {
@@ -741,6 +782,157 @@ impl PyRobot {
                 sdk::close_robot(robot).await.map_err(session_err)?;
             }
             self.session.close().await.map_err(session_err)
+        })
+    }
+}
+
+/// A run's state as a dict: `run`, `version`, `stage`, `members` (each
+/// `name`, `stage`, `error`) and `error` (each error `status`, `message`).
+fn run_state<'py>(
+    py: Python<'py>,
+    state: &rlmesh_session::wire::RunState,
+) -> PyResult<Bound<'py, PyDict>> {
+    let error =
+        |e: &Option<rlmesh_session::wire::CtlError>| -> PyResult<Option<Bound<'py, PyDict>>> {
+            e.as_ref()
+                .map(|e| {
+                    let d = PyDict::new(py);
+                    d.set_item("status", sdk::status_name(e.status))?;
+                    d.set_item("message", &e.message)?;
+                    Ok(d)
+                })
+                .transpose()
+        };
+    let d = PyDict::new(py);
+    d.set_item("run", &state.run)?;
+    d.set_item("version", state.version)?;
+    d.set_item("stage", sdk::run_stage_name(state.stage))?;
+    let members = PyList::empty(py);
+    for m in &state.members {
+        let member = PyDict::new(py);
+        member.set_item("name", m.name.as_str())?;
+        member.set_item("stage", sdk::member_stage_name(m.stage))?;
+        member.set_item("error", error(&m.error)?)?;
+        members.append(member)?;
+    }
+    d.set_item("members", members)?;
+    d.set_item("error", error(&state.error)?)?;
+    Ok(d)
+}
+
+/// A scene run started from this process on the home daemon's lobby.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Scene", frozen)]
+pub struct PyScene {
+    run: String,
+    scene: tokio::sync::Mutex<Option<sdk::SceneRun>>,
+}
+
+impl PyScene {
+    async fn with<T>(
+        &self,
+        f: impl AsyncFnOnce(&sdk::SceneRun) -> Result<T, SessionError>,
+    ) -> PyResult<T> {
+        let scene = self.scene.lock().await;
+        let scene = scene
+            .as_ref()
+            .ok_or_else(|| SessionException::new_err(format!("run {} is closed", self.run)))?;
+        f(scene).await.map_err(session_err)
+    }
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyScene {
+    /// Runs the scene file's text `scene_toml` on the home daemon `home`
+    /// names (`None`: this machine's rlmeshd), waiting up to `timeout_s` for
+    /// it (`manual_arm`: wait for `arm()`). A refused scene raises
+    /// `SessionRefused` with its code.
+    #[new]
+    #[pyo3(signature = (home, scene_toml, manual_arm=false, timeout_s=10.0))]
+    fn new(
+        py: Python<'_>,
+        home: Option<String>,
+        scene_toml: String,
+        manual_arm: bool,
+        timeout_s: f64,
+    ) -> PyResult<Self> {
+        let wait = timeout(timeout_s)?;
+        let scene = block_on(py, async move {
+            sdk::SceneRun::start(home.as_deref(), &scene_toml, manual_arm, wait)
+                .await
+                .map_err(session_err)
+        })?;
+        Ok(Self {
+            run: scene.run().to_string(),
+            scene: tokio::sync::Mutex::new(Some(scene)),
+        })
+    }
+
+    /// The run's id.
+    #[getter]
+    fn run(&self) -> &str {
+        &self.run
+    }
+
+    /// Where the run's members join, once its host is up (`None` before).
+    fn address(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        block_on(py, self.with(async |s| s.address().await))
+    }
+
+    /// The run's state now.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let state = block_on(py, self.with(async |s| s.status().await))?;
+        run_state(py, &state)
+    }
+
+    /// Waits up to `timeout_s` for the run to be at `stage` (`running`);
+    /// its state then. A run that ends first raises `SessionRefused` with
+    /// its error; the timeout raises `TimeoutError`.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn wait_until<'py>(
+        &self,
+        py: Python<'py>,
+        stage: &str,
+        timeout_s: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let stage = sdk::run_stage(stage).map_err(PyValueError::new_err)?;
+        let wait = timeout(timeout_s)?;
+        let state = block_on(
+            py,
+            self.with(async move |s| s.wait_until(stage, wait).await),
+        )?;
+        run_state(py, &state)
+    }
+
+    /// Arms the run (`manual`, or after a lost member rejoined); its state.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn arm<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let state = block_on(py, self.with(async |s| s.arm().await))?;
+        run_state(py, &state)
+    }
+
+    /// Stops the run and waits up to `timeout_s` for it to end; its state.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    #[pyo3(signature = (timeout_s=10.0))]
+    fn stop<'py>(&self, py: Python<'py>, timeout_s: f64) -> PyResult<Bound<'py, PyDict>> {
+        let wait = timeout(timeout_s)?;
+        let state = block_on(py, self.with(async move |s| s.stop(wait).await))?;
+        run_state(py, &state)
+    }
+
+    /// Stops the run unless it ended, and leaves the lobby. Idempotent.
+    #[pyo3(signature = (timeout_s=10.0))]
+    fn close(&self, py: Python<'_>, timeout_s: f64) -> PyResult<()> {
+        let wait = timeout(timeout_s)?;
+        block_on(py, async move {
+            let taken = self.scene.lock().await.take();
+            match taken {
+                Some(scene) => scene.close(wait).await.map_err(session_err),
+                None => Ok(()),
+            }
         })
     }
 }
