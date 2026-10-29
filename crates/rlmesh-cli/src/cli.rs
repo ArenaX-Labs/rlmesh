@@ -595,8 +595,9 @@ pub enum SceneCommand {
 /// Where the home rlmeshd is.
 #[derive(Args, Debug)]
 pub struct HomeArgs {
-    /// The home daemon (`rig-pi.local`, `10.0.0.5:7447`; default: this
-    /// machine's).
+    /// The home daemon (`rig-pi.local`, `10.0.0.5:7447`, or the host id
+    /// this machine paired with, `rlm-3f9a2c`, found again over mDNS when
+    /// its address changed; default: this machine's).
     #[arg(long, value_name = "HOST")]
     pub home: Option<String>,
 }

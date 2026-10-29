@@ -33,6 +33,8 @@ jpeg-encoder = { workspace = true }
 # where recordings go by default.
 dirs = { workspace = true }
 futures = { workspace = true, optional = true }
+# rlmeshd's mDNS advertisement, and finding a paired host by its id.
+mdns-sd = { workspace = true }
 # Session recordings (§13), feature `record`.
 mcap = { workspace = true, optional = true }
 # The OS RNG: host keys and handshake ephemerals.

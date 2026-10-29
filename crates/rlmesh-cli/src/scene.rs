@@ -26,7 +26,7 @@ use rlmesh_session::wire::{CtlStatus, PriorityClass};
 
 use std::time::Duration;
 
-use rlmesh_session::lobby::{LobbyClient, home_lobby};
+use rlmesh_session::lobby::{LobbyClient, find_home};
 use rlmesh_session::wire::{MemberState, RunStage, RunState};
 
 use crate::cli::{HomeArgs, RunArgs, RunIdArgs, SceneArgs, SceneCommand};
@@ -207,7 +207,7 @@ pub fn scene(args: &SceneArgs, stdout: &mut impl Write) -> Result<i32> {
 const HOME_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn connect(home: &HomeArgs) -> Result<LobbyClient> {
-    let lobby = home_lobby(home.home.as_deref())?;
+    let lobby = find_home(home.home.as_deref()).await?;
     LobbyClient::connect(&lobby, HOME_TIMEOUT)
         .await
         .with_context(|| format!("the lobby at {}", lobby.base))

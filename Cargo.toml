@@ -77,6 +77,10 @@ eframe = { version = "0.37", default-features = false, features = [
 egui = "0.37"
 # Test-only: headless rendering of the cockpit (wgpu; lavapipe without a GPU).
 egui_kittest = "0.37"
+# rlmeshd's mDNS advertisement and the lookup by host id (scene design §3.1):
+# pure Rust, both sides, Linux, macOS and Windows, and no async runtime. No
+# default features: no flume async or log.
+mdns-sd = { version = "0.21", default-features = false }
 # Session recordings (protocol v2, §13). No default features: no compression.
 mcap = { version = "0.26", default-features = false }
 # Per-episode `trajectory.parquet` (the recorder's artifact tree): the Arrow

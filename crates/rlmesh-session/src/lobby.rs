@@ -18,6 +18,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use crate::address::{Address, SessionAddress, session_id};
+use crate::discovery;
 use crate::error::SessionError;
 use crate::participant::Participant;
 use crate::wire::{
@@ -72,6 +73,7 @@ pub fn is_lobby_verb(command: &Command) -> bool {
 
 /// The lobby of the home daemon `home` names (`rig-pi.local`,
 /// `10.0.0.5:7447`; `None`: the one on this machine's well-known port).
+/// [`find_home`] also takes a host id.
 ///
 /// # Errors
 /// [`SessionError::Config`] for an address that doesn't parse.
@@ -82,6 +84,39 @@ pub fn home_lobby(home: Option<&str>) -> Result<SessionAddress, SessionError> {
         session: session_id(LOBBY_SESSION),
         ..base
     })
+}
+
+/// The lobby of the home daemon `home` names: a host id (`rlm-3f9a2c`)
+/// through this machine's host file for it (its stored addresses, then
+/// mDNS, [`discovery::locate`]), anything else as [`home_lobby`] reads it.
+///
+/// # Errors
+/// A host id this machine isn't paired with, what finding it failed with,
+/// or an address that doesn't parse.
+pub async fn find_home(home: Option<&str>) -> Result<SessionAddress, SessionError> {
+    let Some(id) = home.filter(|h| discovery::is_host_id(h)) else {
+        return home_lobby(home);
+    };
+    let dir = crate::pairing::hosts_dir()
+        .ok_or_else(|| SessionError::Config("no home directory for ~/.config/rlmesh".into()))?;
+    let path = discovery::host_file(&dir, id);
+    if !path.exists() {
+        return Err(SessionError::Config(format!(
+            "this machine is not paired with {id} (no {}): rlmesh pair HOST",
+            path.display()
+        )));
+    }
+    // The host proves its key at an address before it is used or kept.
+    let (_, lobby) = discovery::locate(&path, |base| async move {
+        let lobby = SessionAddress::new(base, LOBBY_SESSION)?;
+        LobbyClient::connect(&lobby, discovery::ATTACH)
+            .await?
+            .close()
+            .await?;
+        Ok(lobby)
+    })
+    .await?;
+    Ok(lobby)
 }
 
 /// Run `run`'s session at the home daemon whose lobby is `lobby`: where its
