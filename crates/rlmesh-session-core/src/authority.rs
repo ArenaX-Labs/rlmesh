@@ -53,6 +53,10 @@
 //!   DISARMED or ESTOP, so clients never infer why. An embodiment's
 //!   `EnterSafe` takes ACTIVE, ARMED and DISARMED to SAFE; SAFE and ESTOP
 //!   stay and record its reason.
+//! - **Scenes** ([`scene`]): a session a daemon runs for a scene admits
+//!   only its members, each from its device, publishes its places, refuses
+//!   declarations whose placed paths collide, and closes in one revision
+//!   ([`Authority::close_scene`]).
 //! - In **virtual** clock mode the authority also runs the tick barrier
 //!   ([`crate::virtual_clock`]); the ticks it emits are drained with
 //!   [`Authority::take_ticks`].
@@ -71,13 +75,16 @@ use crate::wire::version::{PROTOCOL_MINOR, missing_features};
 use crate::wire::{
     AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command, CtlError,
     CtlStatus, Demand, Epoch, FenceError, Fingerprint, LastStop, Lease, LeaseEnd, LeaseToken, Mode,
-    ParticipantId, ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, SessionId,
+    ParticipantId, ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, SceneInfo,
+    SessionId,
 };
 
 use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
 
 pub mod access;
+pub mod scene;
 pub use access::{Access, DeviceAccess, Verb};
+pub use scene::{Member, SceneConfig};
 
 /// The highest replan rate a binding declares.
 const MAX_REPLAN_HZ: f64 = 10_000.0;
@@ -311,6 +318,8 @@ pub struct AuthorityConfig {
     pub seal: SealPolicy,
     /// What each device may do (design §4); `local` may do everything.
     pub access: Access,
+    /// The scene this session runs, when a daemon started it for one.
+    pub scene: Option<SceneConfig>,
 }
 
 /// Which parts a session seals (encrypts) rather than signs (§8.2, §8.8).
@@ -352,6 +361,7 @@ impl Default for AuthorityConfig {
             virtual_clock: None,
             seal: SealPolicy::None,
             access: Access::default(),
+            scene: None,
         }
     }
 }
@@ -419,6 +429,8 @@ pub struct Authority {
     clock: Option<VirtualClock>,
     /// Virtual ticks to publish.
     ticks: Vec<VirtualTick>,
+    /// Why the scene is ending, once it is.
+    closing: Option<Reason>,
 }
 
 impl Authority {
@@ -458,6 +470,7 @@ impl Authority {
             sealed: BTreeSet::new(),
             clock,
             ticks: Vec::new(),
+            closing: None,
         }
     }
 
@@ -578,8 +591,18 @@ impl Authority {
             mode_reason: self.mode_reason.clone(),
             ended: self.ended.iter().cloned().collect(),
             last_stop: self.last_stop,
-            places: Vec::new(),
-            scene: None,
+            places: self
+                .config
+                .scene
+                .as_ref()
+                .map(|s| s.places.clone())
+                .unwrap_or_default(),
+            scene: self.config.scene.as_ref().map(|s| {
+                Box::new(SceneInfo {
+                    closing: self.closing.clone(),
+                    ..s.info.clone()
+                })
+            }),
         }
     }
 
@@ -603,6 +626,16 @@ impl Authority {
     ) -> Result<Applied, CtlError> {
         self.now_ns = now_ns;
         let mut applied = Applied::default();
+        // A closing scene is over (scene design §4.2): nothing arms it or
+        // takes a lease in it again, a grant waiting for its keys included.
+        if let Some(closing) = &self.closing
+            && matches!(request.command, Command::Arm | Command::GrantLease { .. })
+        {
+            return Err(CtlError::new(
+                CtlStatus::InvalidTransition,
+                format!("the scene's run is closing ({})", closing.code),
+            ));
+        }
         let from = request.from;
         match request.command {
             Command::Attach {
@@ -632,6 +665,9 @@ impl Authority {
                 self.config
                     .access
                     .check_attach(&sender.device, &roles, priority)?;
+                if let Some(scene) = &self.config.scene {
+                    scene.admit(&from, &sender.device, &roles, priority)?;
+                }
                 // A re-attach of the same generation (a reconnect) keeps the
                 // participant's leases; a new generation replaces the old.
                 if self
@@ -1155,6 +1191,34 @@ impl Authority {
         (events, detached)
     }
 
+    /// Closes the scene this session runs (scene design §4.2) with `code`
+    /// (`SCENE_ENDED`, or `SCENE_FAILED` with the stage's error in
+    /// `detail`), `by` whoever stopped it, in one revision: the mode goes
+    /// DISARMED (ESTOP stays), every lease ends with the reason, and
+    /// `scene.closing` is set, which tells robots to detach and return to the
+    /// lobby. Nothing happens outside a scene or once it is closing.
+    pub fn close_scene(
+        &mut self,
+        code: ReasonCode,
+        by: &str,
+        detail: &str,
+        now_ns: i64,
+    ) -> Vec<AuthorityEvent> {
+        self.now_ns = now_ns;
+        let mut events = Vec::new();
+        if self.config.scene.is_none() || self.closing.is_some() {
+            return events;
+        }
+        let why = self.reason(code, by, detail);
+        self.revoke_all(code, &why, &mut events);
+        if self.mode != Mode::Estop {
+            self.set_mode(Mode::Disarmed, why.clone(), &mut events);
+        }
+        self.closing = Some(why);
+        self.revision += 1;
+        events
+    }
+
     /// The owner revoked `device` (design §4, §8.5): its entry goes, and
     /// every participant of it is detached (`REVOKED`), robots it embodies
     /// too. Returns what it caused and who it detached.
@@ -1325,6 +1389,17 @@ impl Authority {
             ));
         }
         let fingerprint = crate::spec::normalise::fingerprint(&declared);
+        if let Some(scene) = self.config.scene.as_ref().filter(|s| !s.places.is_empty()) {
+            let mut session: Vec<PartSpec> = self
+                .parts
+                .values()
+                .filter(|p| &p.owner != from)
+                .cloned()
+                .collect();
+            session.extend(declared.iter().cloned());
+            crate::spec::view::parts(&session, &scene.places)
+                .map_err(|why| CtlError::new(CtlStatus::Incompatible, why))?;
+        }
         let current: BTreeMap<&str, &PartSpec> = self
             .parts
             .values()
@@ -3454,6 +3529,60 @@ mod tests {
         assert_eq!(
             Fixture::status(wall.run("robot", ready(0), 0)),
             CtlStatus::Unsupported
+        );
+    }
+
+    #[test]
+    fn closing_a_scene_disarms_ends_every_lease_and_reaches_the_device_view() {
+        let mut f = Fixture::new();
+        f.auth.config.scene = Some(SceneConfig {
+            info: SceneInfo {
+                run: "r-7k2m".into(),
+                name: "eyeball-rig".into(),
+                fingerprint: Fingerprint::from(7),
+                closing: None,
+                rejoin_until_ns: None,
+            },
+            places: Vec::new(),
+            members: BTreeMap::new(),
+        });
+        f.run("operator", Command::Arm, 0).expect("arm");
+        f.grant("policy", "cmd1", 0).expect("lease");
+        let revision = f.auth.revision();
+        f.auth
+            .close_scene(ReasonCode::SceneEnded, "cli.1a2b3c4d", "", 5);
+        let state = f.auth.snapshot(Vec::new(), 5);
+        assert_eq!(state.revision, revision + 1, "one revision");
+        assert_eq!(
+            (state.mode, state.mode_reason.code),
+            (Mode::Disarmed, ReasonCode::SceneEnded)
+        );
+        assert!(state.leases.is_empty());
+        assert_eq!(
+            state.ended.last().map(|e| e.reason.code),
+            Some(ReasonCode::SceneEnded)
+        );
+        let closing = |r: Option<&Reason>| r.map(|r| (r.code, r.by.clone()));
+        let want = Some((ReasonCode::SceneEnded, "cli.1a2b3c4d".to_string()));
+        assert_eq!(
+            closing(state.scene.as_ref().and_then(|s| s.closing.as_ref())),
+            want
+        );
+        let view = crate::wire::DeviceView::of(&state, &pid("robot"));
+        assert_eq!(closing(view.closing.as_ref()), want);
+        // Nothing arms it or leases in it again.
+        assert_eq!(
+            Fixture::status(f.run("operator", Command::Arm, 6)),
+            CtlStatus::InvalidTransition
+        );
+        let refused = f.grant("policy", "cmd1", 6).expect_err("closing");
+        assert!(refused.message.contains("closing"), "{}", refused.message);
+        assert_eq!(f.auth.mode(), Mode::Disarmed);
+        // Closing is once.
+        assert!(
+            f.auth
+                .close_scene(ReasonCode::SceneFailed, "", "", 6)
+                .is_empty()
         );
     }
 }

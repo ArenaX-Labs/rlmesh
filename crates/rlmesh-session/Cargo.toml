@@ -41,7 +41,8 @@ rand = { workspace = true }
 # cache, schedule, virtual clock, stream rules), re-exported unchanged.
 rlmesh-session-core = { workspace = true }
 rustls = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+# A scene's canonical form, for its fingerprint (`scene`).
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 # A paired machine's host files (`~/.config/rlmesh/hosts/{host id}.toml`).
 toml = { workspace = true }
@@ -88,14 +89,13 @@ gateway = [
   "dep:clap",
   "dep:futures",
   "dep:rustls",
-  "dep:serde_json",
   "dep:tokio-rustls",
   "dep:tower-http",
   "dep:tracing-subscriber",
   "tokio/net",
 ]
 # MCAP recording of a session (`record`).
-record = ["dep:mcap", "dep:serde_json"]
+record = ["dep:mcap"]
 # QUIC links (one stream per Zenoh priority, so one connection can carry
 # every class across NAT); needs TLS certificates.
 quic = ["zenoh/transport_quic"]

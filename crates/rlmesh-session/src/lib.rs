@@ -57,6 +57,8 @@
 //!   counters an observer cannot measure itself.
 //! - [`pairing`]: machine pairing with rlmeshd (design §3), and the host
 //!   files paired machines attach with.
+//! - [`scene`]: scene files (scene design §2), read and checked without
+//!   IO, and what a scene's session host carries for one run.
 //! - [`sdk`]: what the language bindings share (Python's extension, the
 //!   Node addon), so each only converts values.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
@@ -90,6 +92,7 @@ pub mod participant;
 pub mod record;
 pub mod report;
 pub mod sample;
+pub mod scene;
 pub mod sdk;
 pub mod server;
 pub use rlmesh_session_core::lease;

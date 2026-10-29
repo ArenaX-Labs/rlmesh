@@ -17,6 +17,7 @@ use rlmesh_session::crypto::{
 };
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
+use rlmesh_session::scene::Scene;
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::codec;
@@ -2172,5 +2173,123 @@ async fn a_devices_entry_bounds_its_class_verbs_and_reads_and_a_change_detaches_
         eye_ft.stats().received,
         stale,
         "the old reader reads nothing new"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scene_admits_its_members_binds_its_view_and_closes_into_every_device_view() {
+    const SCENE: &str = r#"
+[scene]
+format = 1
+name = "eyes"
+
+[members.eye-l]
+role = "robot"
+place = { at = "eyes/left", pose = { xyz = [0.035, 0, 0.3], quat_xyzw = [0, 0, 0, 1] } }
+
+[members.eye-r]
+role = "robot"
+place = { at = "eyes/right", pose = { xyz = [-0.035, 0, 0.3], quat_xyzw = [0, 0, 0, 1] } }
+
+[members.tracker]
+role = "controller"
+device = "local"
+"#;
+    const EYE: &str = r#"{"gaze": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"],
+        "hz": 50, "command": "position"}}"#;
+    let scene = Scene::parse(SCENE).unwrap_or_else(|refusal| panic!("{refusal}"));
+    let world = World::start_with(|c| c.scene = Some(scene.host("r-7k2m", &c.pins))).await;
+    let eye_l = ParticipantId::new("eye-l").expect("id");
+    let mut config = world.config("eye-l", vec![Role::Embodiment], PriorityClass::Scripted, 0);
+    config.supports.push(VIEW_DEVICE.into());
+    let left = Participant::attach(world.transport().await, config)
+        .await
+        .expect("attach");
+    left.declare_parts(EYE).await.expect("declare");
+    let right = world
+        .join("eye-r", vec![Role::Embodiment], PriorityClass::Scripted, 0)
+        .await;
+    right.declare_parts(EYE).await.expect("declare");
+
+    // Only members attach, but anyone may watch.
+    let rogue = Participant::attach(
+        world.transport().await,
+        world.config("rogue", vec![Role::Controller], PriorityClass::Model, 0),
+    )
+    .await
+    .err()
+    .expect("not a member");
+    assert_eq!(status(rogue), CtlStatus::NotAuthorized);
+    let cockpit = world.raw("cockpit", Role::Observer).await;
+
+    // One policy binds both placed eyes, and one grant spans them.
+    let tracker = world
+        .join("tracker", vec![Role::Controller], PriorityClass::Model, 0)
+        .await;
+    tracker
+        .wait_for("both eyes", WAIT, |s| {
+            s.parts.len() == 2 && s.places.len() == 2
+        })
+        .await
+        .expect("parts");
+    let policy = Policy::parse(
+        r#"{"hz": 30, "actions": {
+            "left": {"kind": "joints", "at": "eyes/left/gaze"},
+            "right": {"kind": "joints", "at": "eyes/right/gaze"}}}"#,
+    )
+    .expect("policy");
+    let binding = tracker
+        .bind(&policy, &RunOptions::named("tracker"))
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(binding.robot.as_str(), "scene");
+    tracker.declare_bound(&binding).await.expect("declare");
+    tracker.arm().await.expect("arm");
+    let leases = tracker
+        .grant_leases(binding.channels(), Vec::new(), None)
+        .await
+        .expect("grant");
+    let holders: Vec<ParticipantId> = leases
+        .iter()
+        .filter_map(|l| {
+            world
+                .host
+                .snapshot()
+                .part(l.channel)
+                .map(|p| p.owner.clone())
+        })
+        .collect();
+    assert_eq!(holders, [eye_l.clone(), right.id().clone()]);
+
+    world
+        .host
+        .close_scene(ReasonCode::SceneEnded, "cli.1a2b3c4d", "")
+        .await
+        .expect("close");
+    let state = world.host.snapshot();
+    assert_eq!(
+        (state.mode, state.mode_reason.code),
+        (Mode::Disarmed, ReasonCode::SceneEnded)
+    );
+    assert!(state.leases.is_empty());
+    let scene = state.scene.as_deref().expect("a scene");
+    assert_eq!(
+        (scene.run.as_str(), scene.name.as_str()),
+        ("r-7k2m", "eyes")
+    );
+    assert_eq!(
+        scene.closing.as_ref().map(|r| r.code),
+        Some(ReasonCode::SceneEnded)
+    );
+    // The robot that asked for its view reads `closing` there.
+    let key = world.host.keys().host_view(&eye_l);
+    let view = auth::open_view(
+        &mut cockpit.link.host_verifier(),
+        &key,
+        &ask(&cockpit.transport, &key, None).await,
+    )
+    .expect("a signed view");
+    assert_eq!(
+        view.closing.map(|r| (r.code, r.by)),
+        Some((ReasonCode::SceneEnded, "cli.1a2b3c4d".to_string()))
     );
 }
