@@ -30,6 +30,7 @@ struct ScriptedEnv {
     counts: Arc<Counts>,
     steps: i64,
     cancel: Option<ext::CancelToken>,
+    held: bool,
     dict_action: bool,
 }
 impl ScriptedEnv {
@@ -38,6 +39,7 @@ impl ScriptedEnv {
             counts: counts.clone(),
             steps: 0,
             cancel: None,
+            held: false,
             dict_action: false,
         }
     }
@@ -74,6 +76,7 @@ impl Env for ScriptedEnv {
         *self.counts.reset.lock().unwrap() = (seed, trial_index(options, None)?);
         self.counts.env_starts.fetch_add(1, Ordering::SeqCst);
         self.steps = 0;
+        self.held = false;
         Ok((Value::Int(0), InfoDict::new()))
     }
     fn step(&mut self, _: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
@@ -81,11 +84,13 @@ impl Env for ScriptedEnv {
         self.steps += 1;
         if let Some(cancel) = self.cancel.take() {
             cancel.cancel();
+            self.held = true;
         }
+        // A cancelled episode never ends, so the run's cancel lands in it.
         Ok((
             Value::Int(self.steps),
             1.0,
-            self.steps >= 2,
+            self.steps >= 2 && !self.held,
             false,
             InfoDict::new(),
         ))
