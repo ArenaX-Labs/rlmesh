@@ -30,7 +30,10 @@
 //!   If `predict` fails, the controller stops sending and releases its
 //!   leases; the edge holds, then goes safe. If its robot is lost
 //!   (`ROBOT_LOST`) or the host is (`HOST_LOST`), the run stops with
-//!   [`RunError::Lost`].
+//!   [`RunError::Lost`]. In a scene's run a lost robot may rejoin: the loop
+//!   keeps going without a lease (`no_lease`) and asks for its leases again
+//!   once the run is re-armed; only the run closing stops it, and a run this
+//!   process stopped returns.
 //!
 //! [`Controller::run`] and [`Controller::send`] block: call them from a
 //! plain thread, not from inside the async runtime.
@@ -44,7 +47,7 @@ use crate::spec::apply::{ApplyError, Value};
 use crate::spec::policy::ChunkStart;
 use crate::spec::{BindError, Binding, Policy, RunOptions};
 use crate::wire::{
-    ChannelId, ClockMode, InputRange, Lease, Mode, ParticipantId, Reason, RunCounters,
+    ChannelId, ClockMode, InputRange, Lease, Mode, ParticipantId, Reason, ReasonCode, RunCounters,
 };
 use bytes::Bytes;
 use tokio::sync::Notify;
@@ -647,6 +650,10 @@ impl Controller {
                 break Ok(());
             }
             if let Some(reason) = self.lost() {
+                // A run this process stopped ends its policies' runs.
+                if reason.code == ReasonCode::SceneEnded && self.stopped_here() {
+                    break Ok(());
+                }
                 break Err(RunError::Lost(reason));
             }
             let off = offset(&phase);
@@ -745,13 +752,26 @@ impl Controller {
     }
 
     /// Why the session is gone for this controller: the host, or its
-    /// robot's roster entry left absent.
+    /// robot's roster entry left absent. In a scene's run a lost robot may
+    /// rejoin (scene design §4.3): only the run closing ends it.
     pub fn lost(&self) -> Option<Reason> {
         self.participant.host_lost().or_else(|| {
             self.participant.authority_view().with(|view| {
-                let robot = view?.participant(&self.binding.robot)?;
+                let view = view?;
+                if let Some(scene) = &view.scene {
+                    return scene.closing.clone();
+                }
+                let robot = view.participant(&self.binding.robot)?;
                 (!robot.present).then(|| robot.left.clone().unwrap_or_default())
             })
+        })
+    }
+
+    /// Whether this process stopped the scene's run this controller is in.
+    fn stopped_here(&self) -> bool {
+        self.participant.authority_view().with(|view| {
+            view.and_then(|v| v.scene.as_ref())
+                .is_some_and(|scene| crate::lobby::stopped_here(&scene.run))
         })
     }
 

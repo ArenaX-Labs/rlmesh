@@ -922,6 +922,7 @@ impl Scene {
             },
             places: self.places(),
             members,
+            rejoin_ns: u64::try_from(self.rejoin.as_nanos()).unwrap_or(u64::MAX),
         }
     }
 }
