@@ -128,6 +128,8 @@ impl World {
             robot_json: MAP.to_owned(),
             heartbeat_ms: 50,
             lobby: false,
+            homes: vec![(self.base.ip().to_string(), self.base.port())],
+            home_id: String::new(),
         })
         .expect("a valid map")
     }

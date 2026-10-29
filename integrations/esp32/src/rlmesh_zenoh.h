@@ -40,6 +40,9 @@ typedef struct rlmesh_zenoh_sub_t {
 typedef struct rlmesh_zenoh_t {
   z_owned_session_t sessions[RLMESH_DEVICE_CLASSES];
   bool open[RLMESH_DEVICE_CLASSES];
+  /* The host the open sessions reach: a reset to another closes them. */
+  char host[64];
+  uint16_t port;
   z_owned_subscriber_t subs[RLMESH_ZENOH_SUBS];
   rlmesh_zenoh_sub_t sub_ctx[RLMESH_ZENOH_SUBS];
   uint8_t sub_count;

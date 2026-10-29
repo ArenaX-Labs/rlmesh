@@ -3,11 +3,14 @@
 //! without a board. It prints each phase as it reaches it, until killed.
 //!
 //! ```sh
-//! cargo run -p rlmesh-device --example lobby_board -- <home host:port> <local.key>
+//! cargo run -p rlmesh-device --example lobby_board -- <home host:port> <local.key> \
+//!     [<satellite host:port>=<its local.key> ...]
 //! ```
 //!
 //! It holds the daemon's `local.key`, so it attaches as device `local` and
 //! presents the loopback link gate; a board on the LAN holds its own key.
+//! A run on a satellite is followed there: its key file only opens that
+//! daemon's loopback gate (the run's own host key comes with the join).
 
 #![allow(clippy::print_stdout, clippy::disallowed_methods)]
 
@@ -52,17 +55,16 @@ async fn main() {
         .trim()
         .parse()
         .expect("a key");
-    let lobby = rlmesh_session::address::SessionAddress {
-        key: Some(key.clone()),
-        ..home_lobby(Some(&home)).expect("the lobby's address")
-    };
-    let transport = lobby
-        .link(
-            tokio::time::Instant::now() + Duration::from_secs(10),
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("a link to the home");
+    // The loopback gates' keys, by base address.
+    let mut gates: BTreeMap<String, AddressKey> = BTreeMap::new();
+    gates.insert(home.clone(), key.clone());
+    for extra in args {
+        let (base, file) = extra.split_once('=').expect("<host:port>=<local.key>");
+        let gate = std::fs::read_to_string(file).expect("read a satellite's local.key");
+        gates.insert(base.into(), gate.trim().parse().expect("a key"));
+    }
+    let mut transport = link(&home, &gates).await;
+    let mut linked = home.clone();
     let mut robot = Robot::new(Config {
         tenant: TenantId::new(TENANT).expect("tenant"),
         session: SessionId::new(),
@@ -71,6 +73,8 @@ async fn main() {
         robot_json: MAP.to_owned(),
         heartbeat_ms: 50,
         lobby: true,
+        homes: vec![rlmesh_device::address::host_port(&home).expect("host:port")],
+        home_id: String::new(),
     })
     .expect("a valid map");
 
@@ -83,17 +87,26 @@ async fn main() {
     let mut queries = BTreeMap::new();
     let mut last = None;
     loop {
-        let seen = (robot.phase(), robot.in_run(), robot.fault().cloned());
+        let seen = (
+            robot.phase(),
+            robot.in_run(),
+            robot.fault().cloned(),
+            robot.left().cloned(),
+        );
         if last.as_ref() != Some(&seen) {
-            let (phase, in_run, fault) = &seen;
+            let (phase, in_run, fault, left) = &seen;
             let place = if *in_run { "run" } else { "lobby" };
+            let fault = fault
+                .as_ref()
+                .map(|f| format!(" (last: {f:?})"))
+                .unwrap_or_default();
+            let left = left
+                .as_ref()
+                .map(|l| format!(" (left a run: {l:?})"))
+                .unwrap_or_default();
             println!(
-                "{:7.3} s  {place}: {phase:?}{}",
-                start.elapsed().as_secs_f64(),
-                fault
-                    .as_ref()
-                    .map(|f| format!(" (last: {f:?})"))
-                    .unwrap_or_default()
+                "{:7.3} s  {place}: {phase:?}{fault}{left}",
+                start.elapsed().as_secs_f64()
             );
             last = Some(seen);
         }
@@ -108,6 +121,14 @@ async fn main() {
                 Action::Reset => {
                     subscribers.clear();
                     tokens.clear();
+                    // A run elsewhere, or another home address: a link there.
+                    let (host, port) = robot.host();
+                    let target = format!("{host}:{port}");
+                    if target != linked {
+                        println!("          linking {target}");
+                        transport = link(&target, &gates).await;
+                        linked = target;
+                    }
                 }
                 Action::Subscribe { class: c, sub, key } => {
                     let tx = tx.clone();
@@ -183,4 +204,20 @@ async fn main() {
             next = rx.try_recv().ok();
         }
     }
+}
+
+/// A transport to the session host at `base`, through its loopback gate when
+/// `gates` holds its key.
+async fn link(base: &str, gates: &BTreeMap<String, AddressKey>) -> rlmesh_session::Transport {
+    let address = rlmesh_session::address::SessionAddress {
+        key: gates.get(base).cloned(),
+        ..home_lobby(Some(base)).expect("a base address")
+    };
+    address
+        .link(
+            tokio::time::Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("a link")
 }

@@ -125,6 +125,10 @@ class Robot {
 
  private:
   bool start(const rlmesh_device_robot_config_t& config);
+  // Looks for the home over mDNS when no stored address answers.
+  void discover();
+  uint32_t lastDiscovery_ = 0;
+  bool mdns_ = false;
 
   rlmesh_device_robot_t* robot_ = nullptr;
   struct rlmesh_zenoh_t* zenoh_ = nullptr;

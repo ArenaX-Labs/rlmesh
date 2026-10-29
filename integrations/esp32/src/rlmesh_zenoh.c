@@ -95,13 +95,17 @@ static const z_loaned_session_t* session(rlmesh_zenoh_t* z, uint8_t c) {
     const char* host = rlmesh_device_robot_host(z->robot, &port);
     char connect[96];
     int n = snprintf(connect, sizeof connect, "tcp/%s:%u", host, (unsigned)(port + c));
-    if (host == NULL || n <= 0 || (size_t)n >= sizeof connect) return NULL;
+    if (host == NULL || n <= 0 || (size_t)n >= sizeof connect || strlen(host) >= sizeof z->host) {
+      return NULL;
+    }
     z_owned_config_t config;
     z_config_default(&config);
     zp_config_insert(z_loan_mut(config), Z_CONFIG_MODE_KEY, "client");
     zp_config_insert(z_loan_mut(config), Z_CONFIG_CONNECT_KEY, connect);
     if (z_open(&z->sessions[c], z_move(config), NULL) != Z_OK) return NULL;
     z->open[c] = true;
+    strcpy(z->host, host);
+    z->port = port;
   }
   return z_loan(z->sessions[c]);
 }
@@ -186,13 +190,26 @@ static int publish(rlmesh_zenoh_t* z, const rlmesh_device_action_t* a) {
   return z_put(s, z_loan(ke), z_move(payload), &opts) == Z_OK ? 0 : -1;
 }
 
-/* Drops every subscription and token: the robot moved to another session. The
- * sessions stay: it is the same host. */
+/* Closes every class's session. Pending queries are dropped with them:
+ * their droppers queue. */
+static void close_sessions(rlmesh_zenoh_t* z) {
+  for (uint8_t c = 0; c < RLMESH_DEVICE_CLASSES; ++c) {
+    if (z->open[c]) z_drop(z_move(z->sessions[c]));
+    z->open[c] = false;
+  }
+}
+
+/* Drops every subscription and token: the robot moved to another session.
+ * The sessions stay for the same host, and close for another (a run on a
+ * satellite, another home address). */
 static void reset(rlmesh_zenoh_t* z) {
   for (uint8_t i = 0; i < z->sub_count; ++i) z_drop(z_move(z->subs[i]));
   for (uint8_t i = 0; i < z->token_count; ++i) z_drop(z_move(z->tokens[i]));
   z->sub_count = 0;
   z->token_count = 0;
+  uint16_t port = 0;
+  const char* host = rlmesh_device_robot_host(z->robot, &port);
+  if (host == NULL || port != z->port || strcmp(host, z->host) != 0) close_sessions(z);
 }
 
 int rlmesh_zenoh_open(rlmesh_zenoh_t* z, rlmesh_device_robot_t* robot,
@@ -257,11 +274,11 @@ int rlmesh_zenoh_poll(rlmesh_zenoh_t* z) {
 }
 
 void rlmesh_zenoh_close(rlmesh_zenoh_t* z) {
-  reset(z);
-  /* Pending queries are dropped with their session: their droppers queue. */
-  for (uint8_t c = 0; c < RLMESH_DEVICE_CLASSES; ++c) {
-    if (z->open[c]) z_drop(z_move(z->sessions[c]));
-  }
+  for (uint8_t i = 0; i < z->sub_count; ++i) z_drop(z_move(z->subs[i]));
+  for (uint8_t i = 0; i < z->token_count; ++i) z_drop(z_move(z->tokens[i]));
+  z->sub_count = 0;
+  z->token_count = 0;
+  close_sessions(z);
   for (event_t* e = z->head; e != NULL;) {
     event_t* next = e->next;
     free(e);
