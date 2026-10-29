@@ -1,4 +1,6 @@
 //! A C policy vtable over the facade Model and its episode store.
+//! `rlmesh_model_serve` joins the session of a participant address as the
+//! model, as Python's `Model.serve` does.
 #![allow(unsafe_code)] // FFI callbacks, borrowed contexts and ownership transfer.
 use crate::abi::{
     sizing,
@@ -224,6 +226,10 @@ pub struct RLMeshModelVtable {
     pub workflow_edition: *const c_char,
     pub load_keys: *const RLMeshLoadKey,
     pub load_keys_len: usize,
+    pub reset_options:
+        Option<unsafe extern "C" fn(*mut c_void, *const RLMeshValue, *mut *mut RLMeshValue) -> i32>,
+    pub loaded_execution_horizon:
+        Option<unsafe extern "C" fn(*mut c_void, *mut bool, *mut u32) -> i32>,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -255,6 +261,7 @@ pub struct RLMeshModelServeOptions {
     pub options: *const RLMeshServeOptions,
     pub cancel: *const RLMeshExtCancelToken,
     pub ext: *const RLMeshExtModelServeOptions,
+    pub name: *const c_char,
 }
 struct Owner {
     ptr: *mut c_void,
@@ -283,6 +290,7 @@ struct CPolicy {
     vt: RLMeshModelVtable,
     owner: Arc<Owner>,
     native_chunk: Option<u32>,
+    execution_horizon: Option<u32>,
 }
 // SAFETY: vtable pointer fields are never read after construction; strings,
 // specs and load keys have been deep-copied into the facade's PolicyDecl.
@@ -405,6 +413,12 @@ impl DynPolicy for CPolicy {
             status(unsafe { f(self.owner.ptr, &mut has, &mut value) })?;
             self.native_chunk = has.then_some(value);
         }
+        if let Some(f) = self.vt.loaded_execution_horizon {
+            let (mut has, mut value) = (false, 0);
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
+            status(unsafe { f(self.owner.ptr, &mut has, &mut value) })?;
+            self.execution_horizon = has.then_some(value);
+        }
         Ok(())
     }
     fn allow_fusion(&self) -> bool {
@@ -412,6 +426,9 @@ impl DynPolicy for CPolicy {
     }
     fn native_chunk(&self) -> Option<u32> {
         self.native_chunk
+    }
+    fn execution_horizon(&self) -> Option<u32> {
+        self.execution_horizon
     }
     fn predict(&mut self, o: Value, c: Option<&mut PredictContext<'_>>) -> rlmesh::Result<Value> {
         self.one(o, c, None)
@@ -447,6 +464,29 @@ impl DynPolicy for CPolicy {
         }
         Ok(())
     }
+    fn has_reset_options(&self) -> bool {
+        self.vt.reset_options.is_some()
+    }
+    fn reset_options(&mut self, episode: &Metadata) -> rlmesh::Result<Option<Metadata>> {
+        let Some(f) = self.vt.reset_options else {
+            return Ok(None);
+        };
+        let episode = RLMeshValue::new(Value::Dict(episode.clone()));
+        let mut out = std::ptr::null_mut();
+        let s = {
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
+            unsafe { f(self.owner.ptr, &episode, &mut out) }
+        };
+        let options = unsafe { ffi::take(out) };
+        status(s)?;
+        match options {
+            None | Some(Value::None) => Ok(None),
+            Some(Value::Dict(options)) => Ok(Some(options)),
+            Some(_) => Err(Error::Type(
+                "reset_options must leave a dict (or NULL for none)".into(),
+            )),
+        }
+    }
     fn close(&mut self) -> rlmesh::Result<()> {
         if self.owner.owned.load(Ordering::Acquire)
             && let Some(f) = self.vt.close
@@ -462,10 +502,34 @@ struct Info {
     spec: Option<RLMeshModelSpec>,
     _hook_owner: Option<Arc<Owner>>,
 }
+/// A model this process runs (a vtable's), or one served elsewhere and
+/// reached by its participant address, as Python's `Model(address)`.
 #[derive(Clone)]
 pub struct RLMeshModel {
-    pub(crate) model: Model,
-    info: Arc<Info>,
+    held: Held,
+}
+#[derive(Clone)]
+enum Held {
+    Local { model: Model, info: Arc<Info> },
+    Served(rlmesh::RemoteModel),
+}
+impl RLMeshModel {
+    /// The local model; a served one is the TypeError class for `what`.
+    pub(crate) fn local(&self, what: &str) -> Result<&Model, CapiError> {
+        match &self.held {
+            Held::Local { model, .. } => Ok(model),
+            Held::Served(served) => Err(CapiError::type_error(format!(
+                "Model('{}') is served elsewhere: {what} needs a model this process runs",
+                served.address()
+            ))),
+        }
+    }
+    pub(crate) fn target(&self) -> rlmesh::ModelTarget<'_> {
+        match &self.held {
+            Held::Local { model, .. } => model.into(),
+            Held::Served(served) => served.into(),
+        }
+    }
 }
 /// # Safety
 /// A non-NULL handle stays live for the returned reference's lifetime.
@@ -559,6 +623,7 @@ unsafe fn construct(
         vt,
         owner: Arc::clone(&owner),
         native_chunk: decl.native_chunk,
+        execution_horizon: None,
     };
     let model = new_model(Box::new(policy), decl, opts, config)?;
     let spec = match model.spec() {
@@ -575,7 +640,9 @@ unsafe fn construct(
         spec,
         _hook_owner: hook_owner,
     });
-    let handle = RLMeshModel { model, info };
+    let handle = RLMeshModel {
+        held: Held::Local { model, info },
+    };
     unsafe {
         /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
         write_out(out, Box::into_raw(Box::new(handle)))
@@ -617,6 +684,30 @@ pub unsafe extern "C" fn rlmesh_model_from_config(
     })
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_from_address(
+    address: *const c_char,
+    out: *mut *mut RLMeshModel,
+) -> RLMeshStatus {
+    guard(|| {
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let address =
+            unsafe { ffi::text(address) }?.ok_or_else(|| CapiError::invalid_arg("null address"))?;
+        let served = rlmesh::binding::model::served_model(&address)?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshModel {
+                    held: Held::Served(served),
+                })),
+            )
+        }
+    })
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_model_clone(
     model: *const RLMeshModel,
     out: *mut *mut RLMeshModel,
@@ -634,12 +725,14 @@ pub extern "C" fn rlmesh_model_clone(
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_model_close(model: *mut RLMeshModel) -> RLMeshStatus {
     guard(|| {
-        unsafe {
+        if let Held::Local { model, .. } = &unsafe {
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }?
-        .model
-        .close()?;
+        .held
+        {
+            model.close()?;
+        }
         Ok(())
     })
 }
@@ -648,15 +741,17 @@ pub unsafe extern "C" fn rlmesh_model_free(model: *mut RLMeshModel) {
     guard_value((), || {
         if !model.is_null() {
             let model = unsafe { Box::from_raw(model) };
-            if Arc::strong_count(&model.info) == 1 {
+            if let Held::Local { model, info } = &model.held
+                && Arc::strong_count(info) == 1
+            {
                 // The worker can retain an inert policy briefly after close's
                 // reply. Release C state synchronously once the callback queue
                 // drained; its later Arc drop is then a no-op. In an async or
                 // reentrant context leave ownership to the facade's teardown.
-                let closed = model.model.close().is_ok() || model.model.close().is_ok();
+                let closed = model.close().is_ok() || model.close().is_ok();
                 if closed {
-                    model.info._policy_owner.release();
-                    if let Some(owner) = &model.info._hook_owner {
+                    info._policy_owner.release();
+                    if let Some(owner) = &info._hook_owner {
                         owner.release();
                     }
                 }
@@ -672,7 +767,7 @@ pub extern "C" fn rlmesh_model_allow_fusion(model: *const RLMeshModel) -> bool {
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }
-        .is_ok_and(|m| m.model.allow_fusion())
+        .is_ok_and(|m| m.local("allow_fusion").is_ok_and(Model::allow_fusion))
     })
 }
 #[unsafe(no_mangle)]
@@ -686,8 +781,34 @@ pub extern "C" fn rlmesh_model_native_chunk(
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }?
-        .model
-        .native_chunk();
+        .local("native_chunk")
+        .map_or(None, Model::native_chunk);
+        if out.is_null() || out_has.is_null() {
+            return Err(CapiError::invalid_arg("null out"));
+        }
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_has, k.is_some())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, k.unwrap_or_default())
+        }
+    });
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_model_execution_horizon(
+    model: *const RLMeshModel,
+    out_has: *mut bool,
+    out: *mut u32,
+) {
+    let _ = guard(|| {
+        let k = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(model)
+        }?
+        .local("execution_horizon")
+        .map_or(None, Model::execution_horizon);
         if out.is_null() || out_has.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
@@ -715,8 +836,8 @@ pub extern "C" fn rlmesh_model_workflow_edition(
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }?
-        .model
-        .workflow_edition();
+        .local("workflow_edition")
+        .map_or(None, Model::workflow_edition);
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(out_has, edition.is_some())
@@ -737,7 +858,19 @@ pub extern "C" fn rlmesh_model_spec(
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             require(model)
         }?;
-        let spec = match m.model.spec() {
+        let (Ok(local), Held::Local { info, .. }) = (m.local("spec"), &m.held) else {
+            return unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                write_out(
+                    out,
+                    RLMeshSpecArg {
+                        kind: 1,
+                        spec: std::ptr::null(),
+                    },
+                )
+            };
+        };
+        let spec = match local.spec() {
             None => RLMeshSpecArg {
                 kind: 1,
                 spec: std::ptr::null(),
@@ -748,8 +881,7 @@ pub extern "C" fn rlmesh_model_spec(
             },
             Some(rlmesh::types::SpecArg::ModelSpec(_)) => RLMeshSpecArg {
                 kind: 2,
-                spec: m
-                    .info
+                spec: info
                     .spec
                     .as_ref()
                     .map_or(std::ptr::null(), std::ptr::from_ref),
@@ -768,11 +900,11 @@ pub unsafe extern "C" fn rlmesh_model_serve(
     options: *const RLMeshModelServeOptions,
 ) -> RLMeshStatus {
     guard(|| {
-        let model = &unsafe {
+        let model = unsafe {
             // SAFETY: the FFI contract supplies live handles and writable output storage.
             require(model)
         }?
-        .model;
+        .local("serve")?;
         let address =
             unsafe { ffi::text(address) }?.ok_or_else(|| CapiError::invalid_arg("null address"))?;
         let options = unsafe { sizing::read(options, "RLMeshModelServeOptions") }?;
@@ -791,9 +923,12 @@ pub unsafe extern "C" fn rlmesh_model_serve(
                 })
                 .transpose()?;
             rlmesh::ModelServeOptions {
+                name: unsafe { ffi::text(o.name) }?,
                 options: unsafe { crate::env_server::serve_options(o.options) }?,
                 cancel: unsafe { o.cancel.as_ref() }.map(|t| t.0.clone()),
                 ext,
+                // TODO: the C ABI takes the batch defaults; expose BatchOptions with the 0.2 C ABI rev.
+                batching: None,
             }
         } else {
             rlmesh::ModelServeOptions::default()
@@ -943,6 +1078,8 @@ mod tests {
             workflow_edition: null(),
             load_keys: null(),
             load_keys_len: 0,
+            reset_options: None,
+            loaded_execution_horizon: None,
         }
     }
     struct Tiny {
@@ -996,7 +1133,9 @@ mod tests {
             RLMeshStatus::Ok
         );
         let mut env = Tiny::new();
-        let model = &unsafe { &*m }.model;
+        let Ok(model) = unsafe { &*m }.local("run") else {
+            panic!("a local model")
+        };
         let result = model
             .run(
                 &mut env,
@@ -1035,7 +1174,9 @@ mod tests {
             RLMeshStatus::Ok
         );
         let mut env = Tiny::new();
-        let model = &unsafe { &*m }.model;
+        let Ok(model) = unsafe { &*m }.local("run") else {
+            panic!("a local model")
+        };
         model.run(&mut env, Default::default()).unwrap();
         assert!(p.seeds.lock().unwrap().is_empty());
         p.fail.store(true, Ordering::Relaxed);

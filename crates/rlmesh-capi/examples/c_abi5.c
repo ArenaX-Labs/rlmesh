@@ -63,7 +63,7 @@ int main(void) {
   int64_t number;
   CHECK(rlmesh_value_as_int(scalar, &number) == RLMESH_OK && number == 42);
   rlmesh_value_free(scalar);
-  CHECK(rlmesh_abi_check() && RLMESH_ABI_VERSION == 5);
+  CHECK(rlmesh_abi_check() && RLMESH_ABI_VERSION == 6);
   RLMeshModelVtable zero = {0};
   RLMeshModel* model = NULL;
   CHECK(rlmesh_model_new(&zero, NULL, NULL, &model) == RLMESH_ERR_INVALID_ARGUMENT &&
@@ -90,7 +90,7 @@ int main(void) {
   CHECK(rlmesh_model_run(model, rlmesh_address_target("tcp://127.0.0.1:1"), &rt.options, &report) ==
         RLMESH_ERR_TYPE);
   RLMeshModelServeOptions serve = {0};
-  CHECK(rlmesh_model_serve(model, "tcp://127.0.0.1:0", &serve) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(rlmesh_model_serve(model, ":0/env", &serve) == RLMESH_ERR_INVALID_ARGUMENT);
   rlmesh_model_free(model);
   RLMeshEpisodeResult episode = RLMESH_EPISODE_RESULT_INIT;
   episode.steps = 4;

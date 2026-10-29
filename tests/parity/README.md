@@ -22,9 +22,9 @@ All four scripts implement the same counter env (reset to zero, two steps per
 episode, reward one) and action-zero model. They count env/model call starts,
 closes, and episode ends. Ordinary scenarios instantiate these through each
 language's public authoring API. Remote borrowing uses an actual ephemeral
-loopback server. Rust's nested remote-model scenario binds its test endpoint
-through binding plumbing so it can keep the OS-assigned listener, with no port
-reservation race. Cancellation/drop synchronization uses channels, observable
+loopback server. A served model joins a session the runner hosts on an
+OS-assigned port (an env server at `:0/host`), as the participant `policy`,
+so no port is reserved ahead. Cancellation/drop synchronization uses channels, observable
 state and bounded completion waits, never fixed ports or sleeps. The optional
 stress worker occupies one CPU and is terminated and joined even on failure.
 
@@ -48,14 +48,12 @@ Callable defaults without a field require an explicit `default_skip` reason.
 Required keywords and native-only fields with no Python default (including
 cancellation/extensions and DLPack bridge options) are outside this comparison.
 
-C ABI 5 makes `_MIN_SIZE` equal to the full ABI-5 struct size, so its
-minimum-sized fixture supplies `_INIT` for all known fields. The remote client
+The C ABI makes `_MIN_SIZE` equal to the full struct size, so its
+minimum-sized fixture supplies `_INIT` for all known fields. The remote env
 options gained `api_key` and `tls_ca_file` after ABI 5; their `_MIN_SIZE`
-stays at the ABI-5 size, and `c_sizing_abi5_remote` checks that a struct
-sized there reads the appended fields as NULL and that a size ending inside a
-field is refused. `remote_auth.toml` serves the scripted model on a Unix
-socket in a fresh temporary directory (no port race) and masks the socket path
-or port in error text as `SOCKET` / `PORT`. Extended input,
+stays at the ABI-5 size, and `c_sizing_abi5_remote` checks that a size ending
+inside an appended field is refused. `served.toml` masks the port in error
+text as `PORT`. Extended input,
 out-struct and lent-reader cases exercise unknown appended fields without
 inventing a product field or ABI generation just for a test.
 

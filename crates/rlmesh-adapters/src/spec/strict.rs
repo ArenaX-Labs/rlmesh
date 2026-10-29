@@ -28,8 +28,8 @@ use crate::path::NodePath;
 
 use super::action::Action;
 use super::env_tags::{EnvTags, ObsLeaf, ObsNode};
-use super::frames::{Attr, FrameLaw, FrameRef, ReferenceLaw};
 use super::model::{InputNode, ModelLeaf, ModelSpec};
+use super::{Attr, FrameLaw, FrameRef, ReferenceLaw};
 
 /// Reject any bare unknown field **or** unknown leaf kind in an env spec (the
 /// PUBLISH gate: an author's own core must understand every kind and bare field).
@@ -43,6 +43,7 @@ pub fn reject_unknowns_env(tags: &EnvTags) -> Result<(), String> {
 
 /// Reject any bare unknown field **or** unknown leaf kind in a model spec.
 pub fn reject_unknowns_model(spec: &ModelSpec) -> Result<(), String> {
+    spec.timing.check()?;
     walk_input(&spec.input, &NodePath::root(), true)?;
     reject_action(&spec.output)?;
     reject_unsanctioned_roles_model(spec, RolePolicy::Passthrough)

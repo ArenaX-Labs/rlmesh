@@ -13,7 +13,8 @@ from abc import ABC
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, TypeVar, cast, final
 
 from ._authoring import EnvFactory as _EnvFactory
-from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
+from ._client import RemoteEnvBase, RemoteVectorEnvBase
+from ._client._gym import GymEnv, GymVectorEnv
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
 from ._sandbox import (
@@ -24,6 +25,7 @@ from ._sandbox import (
     SandboxVectorEnvBase,
 )
 from ._sandbox._model import SandboxModel
+from ._upgrade import RemoteModel
 from ._value_conversion import UNHANDLED, FrameworkBridge, ValueBridge
 from .spaces import Space
 from .spaces import space_from_spec as _space_from_spec
@@ -246,7 +248,7 @@ def space_from_spec(spec: SpaceSpec) -> Space[JaxValue]:
 
 
 @final
-class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue]):
+class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue], GymEnv):  # pyright: ignore[reportIncompatibleMethodOverride, reportIncompatibleVariableOverride]
     """Experimental JAX-backed remote client for one environment.
 
     Tensor leaves decode to JAX arrays while Python primitives and nested
@@ -267,7 +269,7 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue]):
 
     Examples:
         >>> from rlmesh.jax import RemoteEnv
-        >>> env = RemoteEnv("127.0.0.1:5555")  # doctest: +SKIP
+        >>> env = RemoteEnv("127.0.0.1:5555/env")  # doctest: +SKIP
         >>> observation, info = env.reset(seed=42)  # doctest: +SKIP
         >>> observation, reward, terminated, truncated, info = env.step(
         ...     0
@@ -276,38 +278,11 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
+    _gym: ClassVar[bool] = True
 
 
 @final
-class RemoteModel(RemoteModelBase[JaxValue, JaxValue]):
-    """Experimental JAX-backed handle to a served model (policy).
-
-    Bind it to an env with ``rlmesh.session(model, env)`` to get a
-    :class:`rlmesh.Session` whose ``predict`` accepts and returns JAX values,
-    driven symmetrically with the env.
-
-    Args:
-        address: Model endpoint address such as ``"tcp://127.0.0.1:5556"``.
-        host: TCP host helper used when ``address`` is omitted.
-        port: TCP port helper used when ``address`` is omitted.
-        path: Unix socket path helper used when ``address`` is omitted.
-        transport: Explicit transport selector.
-
-    Examples:
-        >>> import rlmesh
-        >>> from rlmesh.jax import RemoteEnv, RemoteModel
-        >>> env = RemoteEnv("127.0.0.1:5555")  # doctest: +SKIP
-        >>> sess = rlmesh.session(RemoteModel("127.0.0.1:5556"), env)  # doctest: +SKIP
-        >>> obs, _ = sess.reset(seed=0)  # doctest: +SKIP
-        >>> action = sess.predict(obs)  # doctest: +SKIP
-        >>> obs, reward, terminated, truncated, _ = sess.step(action)  # doctest: +SKIP
-    """
-
-    _bridge: ClassVar[ValueBridge] = _jax_bridge
-
-
-@final
-class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
+class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue], GymVectorEnv):  # pyright: ignore[reportIncompatibleMethodOverride, reportIncompatibleVariableOverride]
     """Experimental JAX-backed remote client for vectorized environments.
 
     A vector client connects one model process to an endpoint that owns
@@ -327,12 +302,13 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
 
     Examples:
         >>> from rlmesh.jax import RemoteVectorEnv
-        >>> envs = RemoteVectorEnv("127.0.0.1:5555")  # doctest: +SKIP
+        >>> envs = RemoteVectorEnv("127.0.0.1:5555/env")  # doctest: +SKIP
         >>> observations, infos = envs.reset(seed=42)  # doctest: +SKIP
         >>> envs.close()  # doctest: +SKIP
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
+    _gym: ClassVar[bool] = True
 
 
 class Model(ModelBase[_ObsT, _ActT]):
@@ -346,8 +322,8 @@ class Model(ModelBase[_ObsT, _ActT]):
 
     Generic over the observation/action types, defaulting to ``JaxValue``:
     wrapping an annotated predict callable infers them (``Model(predict)`` with
-    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``session`` a
-    ``Session[X, Y]``); subclasses and unannotated sources bind ``JaxValue``.
+    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``bind`` a
+    ``Binding[X, Y]``); subclasses and unannotated sources bind ``JaxValue``.
 
     Examples:
         >>> from rlmesh.jax import Model
@@ -358,9 +334,6 @@ class Model(ModelBase[_ObsT, _ActT]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
-    # Without this, run(address) falls back to the numpy RemoteEnv and decodes
-    # observations as ndarrays instead of JAX arrays.
-    _remote_env_cls: ClassVar[type | None] = RemoteEnv
 
 
 @final

@@ -89,6 +89,7 @@ def test_model_binding_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
         model: object,
         address: str,
         *,
+        name: str,
         binding: object = None,
         workflow_edition: str | None = None,
     ) -> None:

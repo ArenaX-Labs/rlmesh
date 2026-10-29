@@ -6,24 +6,20 @@ use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass, gen_stub_
 use pyo3_stub_gen::inventory::submit;
 use rlmesh::Error as RLMeshError;
 use rlmesh::binding::model::{
-    AdaptedModelHandler, EpisodeInfo, ModelObservation, ModelWorker, PredictFn, PredictFrames,
-    RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
+    AdaptedModelHandler, EpisodeInfo, ModelHandler, ModelObservation, PredictFn, PredictFrames,
+    RouteConfig, RouteResolver,
 };
-use rlmesh::binding::model::{ModelClient, ModelConnect};
-use rlmesh::ext::{BindAddress, ConnectAddress};
 use rlmesh_adapters::v1::Value;
-use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
+use rlmesh_spaces::{EnvContract, SpaceValue};
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::adapters::{PyCustomTransform, PyEncodings, decode_value, encode_value};
-use crate::hooks::PyRunHooks;
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::{
-    ValueBackend, batched_space_values_to_py_neutral, env_contract_to_py, extract_space_spec,
-    make_space, py_any_to_batched_space_values_with_backend, py_any_to_meta_map,
+    ValueBackend, batched_space_values_to_py_neutral, env_contract_to_py,
+    py_any_to_batched_space_values_with_backend, py_any_to_meta_map,
     py_any_to_space_value_with_backend, space_value_to_py_neutral,
 };
 use crate::telemetry::{ProfileCollector, init_tracing};
@@ -37,7 +33,7 @@ use crate::types::to_py_err;
 /// constructed model, and Python's cycle collector cannot reclaim a pyclass
 /// (no `__traverse__`), so those runtimes leaked for the process lifetime —
 /// exhausting the default macOS 256-fd limit in model-heavy test suites.
-fn model_runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn model_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -84,11 +80,24 @@ struct PyPredict {
     /// The last exception a host callback raised, kept so the in-process run
     /// re-raises the user's own exception instead of its stringified copy.
     last_error: LastPyError,
+    /// The model's `reset_options(episode)`, when it defines one.
+    reset_options_fn: Option<Py<PyAny>>,
+    /// The models this model calls from its predict (`self.inner.predict`).
+    nested: Option<Arc<crate::nested::Nested>>,
 }
 
-type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
+pub(crate) type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
 
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// Each route's result dict or exception, and the interrupt a signal raised.
+type RouteOutcomes = (Vec<Py<PyAny>>, Option<Py<PyAny>>);
+
+/// A facade call's parsed run options, and what a route adds to them.
+struct ParsedRunOptions {
+    options: rlmesh::RunOptions<'static>,
+    default_horizon: Option<u32>,
+    base_seed: Option<i64>,
+    seed_key: Option<String>,
+}
 
 impl PyPredict {
     /// A raised `ModelException` becomes a model failure carrying its
@@ -272,7 +281,11 @@ impl PredictFn for PyPredict {
                 .then(|| observation.route.episodes.first())
                 .flatten();
             let context = episode_context_dict(py, episode)?;
-            let action = self.predict_fn.call1(py, (obs, context))?;
+            // An inner model's predict answers this one episode.
+            let contract = observation.env_contract.as_ref();
+            let action = crate::nested::scoped(self.nested.as_ref(), episode, contract, || {
+                self.predict_fn.call1(py, (obs, context))
+            })?;
             let action_space = observation
                 .env_contract
                 .as_ref()
@@ -354,8 +367,11 @@ impl PredictFn for PyPredict {
             })?;
             let obs = space_value_to_py_neutral(py, lane, observation_space)?;
             // Guaranteed exactly one lane by the num_envs == 1 check above.
-            let context = episode_context_dict(py, observation.route.episodes.first())?;
-            let chunk = predict_chunk_fn.call1(py, (obs, horizon as u32, context))?;
+            let episode = observation.route.episodes.first();
+            let context = episode_context_dict(py, episode)?;
+            let chunk = crate::nested::scoped(self.nested.as_ref(), episode, contract, || {
+                predict_chunk_fn.call1(py, (obs, horizon as u32, context))
+            })?;
             let chunk = chunk.bind(py);
             let frames_len = leading_axis_len(chunk).unwrap_or(horizon);
             let frames = py_any_to_batched_space_values_with_backend(
@@ -449,6 +465,32 @@ impl PredictFn for PyPredict {
     fn on_route_release(&self, env_id: &str) -> rlmesh::Result<()> {
         self.on_route_reset(env_id)
     }
+
+    fn has_reset_options(&self) -> bool {
+        self.reset_options_fn.is_some()
+    }
+
+    fn reset_options(
+        &self,
+        episode: &EpisodeInfo,
+        trial_index: Option<u64>,
+    ) -> rlmesh::Result<Option<rlmesh_spaces::MetaMap>> {
+        let Some(reset_options) = self.reset_options_fn.as_ref() else {
+            return Ok(None);
+        };
+        Python::attach(|py| -> PyResult<Option<rlmesh_spaces::MetaMap>> {
+            let start = pyo3::types::PyDict::new(py);
+            start.set_item("episode_id", &episode.episode_id)?;
+            start.set_item("seed", episode.seed)?;
+            start.set_item("trial_index", trial_index)?;
+            let options = reset_options.call1(py, (start,))?;
+            if options.is_none(py) {
+                return Ok(None);
+            }
+            py_any_to_meta_map(options.bind(py)).map(Some)
+        })
+        .map_err(|err| self.internal(err))
+    }
 }
 
 /// The per-predict sampling seed for an episode's `predict_index`-th re-plan.
@@ -469,6 +511,76 @@ def predict_seed(episode_seed: int, predict_index: int) -> int: ...
 #[pyfunction]
 pub fn predict_seed(episode_seed: i64, predict_index: u64) -> i64 {
     rlmesh::predict_seed(episode_seed, predict_index)
+}
+
+/// The paired reset seed of episode `slot` under `base_seed` and `seed_key`.
+///
+/// Private: exported so the cross-language seed fixture checks the runtime's
+/// own derivation from Python.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def episode_seed(base_seed: int, seed_key: str, slot: int) -> int: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn episode_seed(base_seed: i64, seed_key: &str, slot: u64) -> i64 {
+    rlmesh::binding::runtime::episode_seed(base_seed, seed_key, slot)
+}
+
+/// Waits up to `timeout_s` seconds for the model at the participant address
+/// `address` to answer: ConnectionError when it does not. A sandbox's
+/// readiness check.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def model_answers(address: str, timeout_s: float) -> None: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn model_answers(py: Python<'_>, address: &str, timeout_s: f64) -> PyResult<()> {
+    let timeout = crate::session::timeout(timeout_s)?;
+    let id = format!("probe-{}", uuid::Uuid::new_v4().simple());
+    py.detach(|| {
+        model_runtime().block_on(async {
+            let connection = rlmesh::lockstep::ModelConnection::connect(address, &id, timeout)
+                .await
+                .map_err(|err| pyo3::exceptions::PyConnectionError::new_err(err.to_string()))?;
+            connection.close().await;
+            Ok(())
+        })
+    })
+}
+
+/// The describe envelope (JSON; empty when it has none) of the model at the
+/// participant address `address`, connecting for up to `timeout_s` seconds.
+/// How a sandbox env learns a served model's spec before the env is made.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def model_describe(address: str, timeout_s: float) -> str: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn model_describe(py: Python<'_>, address: &str, timeout_s: f64) -> PyResult<String> {
+    let timeout = crate::session::timeout(timeout_s)?;
+    py.detach(|| {
+        model_runtime().block_on(async {
+            let mut served = rlmesh::lockstep::ServedModel::new(address, timeout);
+            let described = served.describe().await;
+            let _ = served.on_close().await;
+            described.map_err(|err| pyo3::exceptions::PyConnectionError::new_err(err.to_string()))
+        })
+    })
 }
 
 /// The leading-axis length of a neutral chunk value: a tensor-like exposes
@@ -564,148 +676,6 @@ fn call_batched(
     })
 }
 
-/// The in-process run's report as a Python dict: `episodes` (the per-episode
-/// summaries), `telemetry` (the session metric aggregate), and `advisories`
-/// (the relay's `Advisory` objects).
-fn report_to_py(py: Python<'_>, report: &rlmesh::binding::RuntimeReport) -> PyResult<Py<PyAny>> {
-    let out = pyo3::types::PyDict::new(py);
-    out.set_item("episodes", report_episodes_to_py(py, report)?)?;
-    out.set_item("telemetry", report_telemetry_to_py(py, report)?)?;
-    let advisories = report
-        .advisories
-        .iter()
-        .map(|advisory| crate::adapters::PyAdvisory::from(advisory.clone()))
-        .collect::<Vec<_>>();
-    out.set_item("advisories", advisories)?;
-    Ok(out.into_any().unbind())
-}
-
-/// The session telemetry aggregate as a `list[dict]`: one row per
-/// (op, component, metric) with count/avg/p50/p95/p99 in the metric's unit
-/// (`ms` for durations), keys matching the SDK's `TelemetryRow` fields.
-fn report_telemetry_to_py(
-    py: Python<'_>,
-    report: &rlmesh::binding::RuntimeReport,
-) -> PyResult<Py<PyAny>> {
-    use rlmesh::binding::telemetry::Kind;
-    let rows = pyo3::types::PyList::empty(py);
-    for row in &report.telemetry.rows {
-        let entry = pyo3::types::PyDict::new(py);
-        entry.set_item("op", row.source.op)?;
-        entry.set_item("component", row.source.component)?;
-        entry.set_item("metric", row.metric.name)?;
-        entry.set_item(
-            "unit",
-            match row.metric.kind {
-                Kind::Duration => "ms",
-                Kind::Bytes => "bytes",
-                Kind::Count => "count",
-            },
-        )?;
-        entry.set_item("count", row.count)?;
-        entry.set_item("avg", row.avg)?;
-        entry.set_item("p50", row.p50)?;
-        entry.set_item("p95", row.p95)?;
-        entry.set_item("p99", row.p99)?;
-        rows.append(entry)?;
-    }
-    Ok(rows.into_any().unbind())
-}
-
-/// The in-process run's per-episode results as a Python `list[dict]` (keys
-/// matching the SDK's `EpisodeResult` fields), from the runtime report's
-/// episode summaries, each episode's own latency means included.
-fn report_episodes_to_py(
-    py: Python<'_>,
-    report: &rlmesh::binding::RuntimeReport,
-) -> PyResult<Py<PyAny>> {
-    let episodes = pyo3::types::PyList::empty(py);
-    for episode in &report.episodes {
-        let entry = pyo3::types::PyDict::new(py);
-        entry.set_item("index", episode.episode_index)?;
-        entry.set_item("env_index", episode.env_index)?;
-        entry.set_item("seed", episode.seed)?;
-        entry.set_item("trial", episode.trial_index)?;
-        entry.set_item("steps", episode.step_count)?;
-        entry.set_item("reward", episode.cumulative_reward)?;
-        entry.set_item("terminated", episode.terminated)?;
-        entry.set_item("truncated", episode.truncated)?;
-        entry.set_item("success", episode.success)?;
-        entry.set_item("duration_s", episode.duration_ms as f64 / 1000.0)?;
-        entry.set_item("predict_ms", episode.predict_ms)?;
-        entry.set_item("step_ms", episode.step_ms)?;
-        episodes.append(entry)?;
-    }
-    Ok(episodes.into_any().unbind())
-}
-
-/// Run the in-process worker loop on the facade's sync driver (RUN-8): the
-/// calling thread polls the run in segments and, between them, runs each
-/// hook and each Python signal check itself, outside any async context, so a
-/// hook's sync rlmesh calls work and SIGINT is checked on the thread that
-/// called `Model.run`. A pending signal (Ctrl-C) cancels the runtime session
-/// and re-raises the signal's exception, so a long eval aborts between
-/// operations instead of blocking SIGINT until the final episode.
-fn run_local_blocking(
-    py: Python<'_>,
-    handler: AdaptedModelHandler,
-    options: RunLocalOptions,
-    relay: Option<Py<PyAny>>,
-    last_error: &LastPyError,
-) -> PyResult<rlmesh::binding::RuntimeReport> {
-    enum RunOutcome {
-        Done(rlmesh::Result<rlmesh::binding::RuntimeReport>),
-        Signal(PyErr),
-    }
-    let cancellation = rlmesh::binding::CancellationToken::new();
-    let run_token = cancellation.clone();
-    let (jobs, mut queue) = rlmesh::binding::model::caller_jobs();
-    // A hook exception cancels the run through this same token; the relay keeps
-    // the exception so it, not the cancellation, is what the caller sees.
-    let hooks =
-        relay.map(|relay| Arc::new(PyRunHooks::new(relay, cancellation.clone(), jobs.clone())));
-    let runtime_hooks: Arc<dyn rlmesh::binding::RuntimeHooks> = match &hooks {
-        Some(hooks) => Arc::clone(hooks) as Arc<dyn rlmesh::binding::RuntimeHooks>,
-        None => Arc::new(rlmesh::binding::NoopRuntimeHooks),
-    };
-    let outcome = py.detach(|| {
-        let run = async move {
-            let run =
-                ModelWorker::new(handler).run_local_hooked_async(options, run_token, runtime_hooks);
-            let mut run = std::pin::pin!(run);
-            let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
-            poll.tick().await;
-            loop {
-                tokio::select! {
-                    result = &mut run => return RunOutcome::Done(result),
-                    _ = poll.tick() => {
-                        let checked = jobs
-                            .run(crate::client::check_signals)
-                            .await;
-                        if let Ok(Err(err)) = checked {
-                            cancellation.cancel();
-                            let _ = (&mut run).await;
-                            return RunOutcome::Signal(err);
-                        }
-                    }
-                }
-            }
-        };
-        rlmesh::binding::model::block_on_caller(run, &mut queue)
-    });
-    if let Some(err) = hooks.as_ref().and_then(|hooks| hooks.take_error()) {
-        return Err(err);
-    }
-    match outcome {
-        RunOutcome::Done(Ok(report)) => Ok(report),
-        RunOutcome::Done(Err(err)) => {
-            let raised = last_error.lock().expect("last_error lock poisoned").take();
-            Err(raised.unwrap_or_else(|| to_py_err(err)))
-        }
-        RunOutcome::Signal(err) => Err(err),
-    }
-}
-
 /// The per-route resolver the served model exposes via `route_setup`. Runs the
 /// Python `configure_fn` (which resolves the spec into a native plan + neutral
 /// host holes) off the predict lock and hands the engine a [`RouteConfig`];
@@ -775,7 +745,7 @@ impl RouteResolver for PyRouteResolver {
         })
         .await
         .map_err(|err| RLMeshError::Internal(format!("configure task panicked: {err}")))?
-        .map_err(|err| RLMeshError::Internal(err.to_string()))
+        .map_err(|err| crate::types::resolve_callback_error(&err))
     }
 }
 
@@ -805,6 +775,17 @@ pub struct PyModel {
     /// The running serves' shutdown triggers, and whether `stop_serving`
     /// fired (sticky: the model is closing, so no serve starts again).
     serving: Arc<std::sync::Mutex<Serving>>,
+    /// A served model's participant address and connect timeout: the
+    /// worker then drives that model instead of the callbacks.
+    served: Option<(String, Duration)>,
+    /// The model's `reset_options(episode)`, when it defines one.
+    reset_options_fn: Option<Py<PyAny>>,
+    /// The workers of the models this model calls from its predict, by the
+    /// Python `id` of each.
+    inners: std::sync::Mutex<Vec<(u64, Py<PyModel>)>>,
+    /// The random baseline (`RANDOM_SAMPLE`) rather than the callbacks.
+    random: bool,
+    run_gate: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -817,7 +798,27 @@ impl PyModel {
     /// Build the served engine handler: the predict hole plus, for a spec'd
     /// model, the route resolver. The engine owns the per-route adapter state and
     /// frame buffers; this layer only supplies the host (Python) callbacks.
-    fn build_handler(&self) -> AdaptedModelHandler {
+    fn build_handler(&self) -> Box<dyn ModelHandler> {
+        if self.random {
+            return Box::<rlmesh::binding::model::RandomSampleHandler>::default();
+        }
+        if let Some((address, timeout)) = &self.served {
+            return Box::new(rlmesh::lockstep::ServedModel::new(
+                address.clone(),
+                *timeout,
+            ));
+        }
+        let nested = Python::attach(|py| {
+            let inners = self.inners.lock().expect("inner models lock poisoned");
+            (!inners.is_empty()).then(|| {
+                crate::nested::Nested::new(
+                    inners
+                        .iter()
+                        .map(|(key, inner)| (*key, inner.borrow(py).build_handler()))
+                        .collect(),
+                )
+            })
+        });
         let predict = Python::attach(|py| PyPredict {
             predict_fn: self.predict_fn.clone_ref(py),
             predict_chunk_fn: self.predict_chunk_fn.as_ref().map(|cb| cb.clone_ref(py)),
@@ -833,20 +834,216 @@ impl PyModel {
             on_route_drop: self.on_route_drop.as_ref().map(|cb| cb.clone_ref(py)),
             short_warned: Default::default(),
             last_error: Arc::clone(&self.last_error),
+            reset_options_fn: self.reset_options_fn.as_ref().map(|cb| cb.clone_ref(py)),
+            nested: nested.clone(),
         });
         let resolver: Option<Arc<dyn RouteResolver>> =
             self.configure_fn.as_ref().map(|configure| {
                 let configure_fn = Python::attach(|py| configure.clone_ref(py));
                 Arc::new(PyRouteResolver { configure_fn }) as Arc<dyn RouteResolver>
             });
-        AdaptedModelHandler::new(Arc::new(predict), resolver)
+        let handler = Box::new(AdaptedModelHandler::new(Arc::new(predict), resolver));
+        match nested {
+            Some(nested) => Box::new(crate::nested::NestedHandler {
+                outer: handler,
+                nested,
+            }),
+            None => handler,
+        }
     }
+
+    /// The run options a facade call's `options` dict names, checked as
+    /// Python's keywords are.
+    fn run_options(&self, options: &Bound<'_, pyo3::types::PyDict>) -> PyResult<ParsedRunOptions> {
+        macro_rules! option {
+            ($key:literal, $ty:ty) => {
+                options
+                    .get_item($key)?
+                    .filter(|v| !v.is_none())
+                    .map(|v| v.extract::<$ty>())
+                    .transpose()?
+            };
+        }
+        let nonnegative = |name: &str, v: i128| -> PyResult<u64> {
+            u64::try_from(v).map_err(|_| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "{name} must be >= 0 and <= {}, got {v}",
+                    u64::MAX
+                ))
+            })
+        };
+        let episodes = option!("episodes", i128)
+            .map(|v| nonnegative("episodes", v))
+            .transpose()?;
+        let seeds = option!("seeds", Vec<i64>);
+        let max_episode_steps = option!("max_episode_steps", i128)
+            .map(|v| nonnegative("max_episode_steps", v))
+            .transpose()?;
+        let max_episode = option!("max_episode_seconds", f64)
+            .map(|v| {
+                if v == f64::INFINITY {
+                    return Ok(std::time::Duration::MAX);
+                }
+                std::time::Duration::try_from_secs_f64(v).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "max_episode_seconds must be > 0, got {}",
+                        if v.is_nan() {
+                            "nan".to_owned()
+                        } else {
+                            v.to_string()
+                        }
+                    ))
+                })
+            })
+            .transpose()?;
+        let execution_horizon = option!("execution_horizon", i128)
+            .map(|v| {
+                rlmesh::binding::resolve_execution_horizon(Some(v), None, None, self.native_chunk)
+                    .map_err(to_py_err)
+            })
+            .transpose()?;
+        let prefetch_lead =
+            nonnegative("prefetch_lead", option!("prefetch_lead", i128).unwrap_or(0))?;
+        let trial_index_base = nonnegative(
+            "trial_index_base",
+            option!("trial_index_base", i128).unwrap_or(0),
+        )?;
+        Ok(ParsedRunOptions {
+            options: rlmesh::RunOptions {
+                episodes,
+                seeds,
+                max_episode_steps,
+                max_episode,
+                execution_horizon,
+                prefetch_lead,
+                trial_index_base,
+                close_env: option!("close_env", bool).unwrap_or(false),
+                workflow_edition: option!("workflow_edition", String),
+                ..Default::default()
+            },
+            default_horizon: option!("default_horizon", u32),
+            base_seed: option!("base_seed", i64),
+            seed_key: option!("seed_key", String),
+        })
+    }
+
+    /// A handler for one run or binding; a run that does not hold the model
+    /// (`exclusive` false) gets a gate of its own.
+    fn prepared(&self, exclusive: bool) -> rlmesh::binding::model::PreparedModel {
+        rlmesh::binding::model::PreparedModel {
+            handler: self.build_handler(),
+            presentation: None,
+            run_gate: if exclusive {
+                self.run_gate.clone()
+            } else {
+                Arc::default()
+            },
+            run_lease: None,
+            native_chunk: self.native_chunk,
+            execution_horizon: None,
+            workflow_edition: None,
+            authored: false,
+            has_chunk: (self.served.is_none() && !self.random)
+                .then_some(self.predict_chunk_fn.is_some()),
+        }
+    }
+
+    /// Serves the model as the participant `name` in the session at
+    /// `address`, declaring `workflow_edition`, until a signal or
+    /// [`stop_serving`](Self::stop_serving).
+    #[allow(clippy::too_many_arguments)] // the serve call's settings, passed through
+    fn serve_on_session(
+        &self,
+        py: Python<'_>,
+        address: &str,
+        name: &str,
+        workflow_edition: Option<&str>,
+        batching: rlmesh::BatchOptions,
+        close: Duration,
+        envelope: Option<&str>,
+    ) -> PyResult<()> {
+        let participant = if address.trim().is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{name}", address.trim().trim_end_matches('/'))
+        };
+        // The describe envelope `rlmesh.serve` stamped for the handshake.
+        let describe = envelope.map(str::to_owned).unwrap_or_else(|| {
+            rlmesh::binding::peer_info_override()
+                .and_then(|info| info.extra.get(rlmesh::DESCRIBE_METADATA_KEY).cloned())
+                .unwrap_or_default()
+        });
+        let service = Arc::new(
+            rlmesh::lockstep::ModelService::new(self.build_handler(), describe)
+                .declaring(workflow_edition)
+                .batching(batching)
+                .map_err(to_py_err)?,
+        );
+        let serving = Arc::clone(&self.serving);
+        let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
+        // SIGTERM stops the serve gracefully, as an env server's (`docker
+        // stop`); restored when the serve returns. SIGINT stays Python's.
+        let _sigterm = rlmesh::binding::foreground_sigterm_scope(shutdown.clone());
+        py.detach(|| {
+            model_runtime().block_on(async move {
+                let binding = rlmesh::lockstep::ModelBinding::bind(&participant)
+                    .await
+                    .map_err(crate::lockstep::gym_err)?;
+                {
+                    let mut serving = serving.lock().expect("serving lock poisoned");
+                    if serving.stopped {
+                        shutdown.trigger("model closed");
+                    }
+                    serving.triggers.push(shutdown.clone());
+                }
+                crate::server::py_env_server::spawn_signal_shutdown(shutdown.clone());
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let stop = {
+                    let (shutdown, cancel) = (shutdown.clone(), cancel.clone());
+                    tokio::spawn(async move {
+                        shutdown.cancelled_owned().await;
+                        cancel.cancel();
+                    })
+                };
+                tracing::info!(address = %binding, "model serving");
+                let mut serve = std::pin::pin!(binding.serve(service, close, cancel.clone()));
+                let mut poll = crate::client::signal_poll();
+                let result = loop {
+                    tokio::select! {
+                        result = &mut serve => break result.map_err(crate::lockstep::gym_err),
+                        _ = poll.tick() => {
+                            if let Err(err) = crate::client::check_signals() {
+                                cancel.cancel();
+                                let _ = (&mut serve).await;
+                                break Err(err);
+                            }
+                        }
+                    }
+                };
+                stop.abort();
+                result
+            })
+        })
+    }
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction(module = "rlmesh._rlmesh"))]
+#[pyfunction]
+#[pyo3(signature = (explicit=None, loaded=None, timing=None, native_chunk=None))]
+pub fn resolve_execution_horizon(
+    explicit: Option<i128>,
+    loaded: Option<i128>,
+    timing: Option<i128>,
+    native_chunk: Option<u32>,
+) -> PyResult<u32> {
+    rlmesh::binding::resolve_execution_horizon(explicit, loaded, timing, native_chunk)
+        .map_err(to_py_err)
 }
 
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None, on_route_drop=None))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None, on_route_drop=None, reset_options_fn=None))]
     #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
     fn new(
         predict_fn: Py<PyAny>,
@@ -859,6 +1056,7 @@ impl PyModel {
         allow_fusion: bool,
         native_chunk: Option<u32>,
         on_route_drop: Option<Py<PyAny>>,
+        reset_options_fn: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
         init_tracing("model_worker");
         let profiler = ProfileCollector::new("model_worker");
@@ -877,7 +1075,332 @@ impl PyModel {
             profiler,
             last_error: LastPyError::default(),
             serving: Arc::default(),
+            served: None,
+            reset_options_fn,
+            inners: Default::default(),
+            random: false,
+            run_gate: Arc::default(),
         })
+    }
+
+    /// A worker that drives the model served at the participant address
+    /// `address`, waiting up to `timeout_s` seconds to reach it.
+    #[staticmethod]
+    #[pyo3(signature = (address, timeout_s=30.0))]
+    fn served(py: Python<'_>, address: &str, timeout_s: f64) -> PyResult<Self> {
+        init_tracing("model_worker");
+        Ok(Self {
+            predict_fn: py.None(),
+            predict_chunk_fn: None,
+            predict_batch_fn: None,
+            predict_chunk_batch_fn: None,
+            allow_fusion: true,
+            native_chunk: None,
+            configure_fn: None,
+            on_episode_end: None,
+            on_close: None,
+            on_route_drop: None,
+            profiler: ProfileCollector::new("model_worker"),
+            last_error: LastPyError::default(),
+            serving: Arc::default(),
+            served: Some((address.to_string(), crate::session::timeout(timeout_s)?)),
+            reset_options_fn: None,
+            inners: Default::default(),
+            random: false,
+            run_gate: Arc::default(),
+        })
+    }
+
+    /// The random baseline: samples the env's action space.
+    #[staticmethod]
+    fn random_sample(py: Python<'_>) -> Self {
+        init_tracing("model_worker");
+        Self {
+            predict_fn: py.None(),
+            predict_chunk_fn: None,
+            predict_batch_fn: None,
+            predict_chunk_batch_fn: None,
+            allow_fusion: true,
+            native_chunk: None,
+            configure_fn: None,
+            on_episode_end: None,
+            on_close: None,
+            on_route_drop: None,
+            profiler: ProfileCollector::new("model_worker"),
+            last_error: LastPyError::default(),
+            serving: Arc::default(),
+            served: None,
+            reset_options_fn: None,
+            inners: Default::default(),
+            random: true,
+            run_gate: Arc::default(),
+        }
+    }
+
+    /// Language target and presentation conversion over the shared run facade.
+    fn run_facade(
+        &self,
+        py: Python<'_>,
+        target: Py<PyAny>,
+        relay: Py<PyAny>,
+        options: &Bound<'_, pyo3::types::PyDict>,
+    ) -> PyResult<Py<PyAny>> {
+        // A served model answers each run in a session of its own and the
+        // random baseline builds a handler per run, so only an in-process
+        // model is held for the run (and its errors are the run's).
+        let exclusive = self.served.is_none() && !self.random;
+        let lease = exclusive
+            .then(|| rlmesh::binding::model::claim_run(self.run_gate.clone()))
+            .transpose()
+            .map_err(to_py_err)?;
+        let last_error = if exclusive {
+            self.last_error.clone()
+        } else {
+            LastPyError::default()
+        };
+        let parsed = self.run_options(options)?;
+        let cancel = rlmesh::ext::CancelToken::new();
+        let signal_cancel = cancel.clone();
+        last_error.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let target = crate::facade::PyEnvTarget::new(py, target, last_error.clone())?;
+        let mut hooks = crate::facade::PyFacadeHooks::new(relay, last_error.clone());
+        let mut prepared = self.prepared(exclusive);
+        prepared.presentation = Some(Box::new(hooks.clone()));
+        prepared.run_lease = lease;
+        prepared.execution_horizon = parsed.default_horizon;
+        let options = rlmesh::RunOptions {
+            cancel: Some(cancel),
+            hooks: Some(&mut hooks),
+            ..parsed.options
+        };
+        let poll = crate::facade::signal_poll(last_error.clone(), move || signal_cancel.cancel());
+        let result = py.detach(|| {
+            rlmesh::binding::model::with_caller_poll(poll, || {
+                rlmesh::binding::model::run_prepared(
+                    prepared,
+                    rlmesh::binding::model::adapted_env(Box::new(target)),
+                    options,
+                )
+            })
+        });
+        match result {
+            Ok(result) => Ok(crate::facade::result_to_py(py, &result)?
+                .into_any()
+                .unbind()),
+            Err(error) => Err(last_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .unwrap_or_else(|| to_py_err(error))),
+        }
+    }
+
+    /// `Model.run_routes`: drives every `(target, options)` route at once
+    /// and returns, per route, its result dict or the exception it failed
+    /// with, and the interrupt a signal raised, if one did.
+    fn run_routes_facade(
+        &self,
+        py: Python<'_>,
+        routes: Vec<(Py<PyAny>, Bound<'_, pyo3::types::PyDict>)>,
+    ) -> PyResult<RouteOutcomes> {
+        if rlmesh::binding::routes::in_route() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "run_routes: called from inside a running route (its env, model or hooks); \
+                 run the routes from the caller of the outer run_routes instead",
+            ));
+        }
+        let exclusive = self.served.is_none() && !self.random;
+        if exclusive && routes.len() > 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "run_routes: an in-process Model drives one route at a time, got {}; serve it \
+                 (or use a SandboxModel) and run the served model across routes",
+                routes.len()
+            )));
+        }
+        let lease = exclusive
+            .then(|| rlmesh::binding::model::claim_run(self.run_gate.clone()))
+            .transpose()
+            .map_err(to_py_err)?;
+        let cancel = rlmesh::ext::CancelToken::new();
+        let mut errors = Vec::with_capacity(routes.len());
+        let mut prepared = Vec::with_capacity(routes.len());
+        for (target, options) in routes {
+            let parsed = self.run_options(&options)?;
+            // An in-process model (the one route) stores its own raise in
+            // its `last_error`, so that is the route's error slot.
+            let error = if exclusive {
+                self.last_error.clone()
+            } else {
+                LastPyError::default()
+            };
+            error.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let target = crate::facade::PyEnvTarget::new(py, target, error.clone())?;
+            let mut model = self.prepared(exclusive);
+            model.run_lease = lease.clone();
+            model.execution_horizon = parsed.default_horizon;
+            prepared.push((
+                model,
+                rlmesh::binding::routes::Route {
+                    env: rlmesh::binding::model::adapted_env(Box::new(target)),
+                    options: rlmesh::RunOptions {
+                        cancel: Some(cancel.clone()),
+                        ..parsed.options
+                    },
+                    base_seed: parsed.base_seed,
+                    seed_key: parsed.seed_key,
+                },
+            ));
+            errors.push(error);
+        }
+        let interrupted = LastPyError::default();
+        let signal_cancel = cancel.clone();
+        let signal =
+            crate::facade::signal_poll(interrupted.clone(), move || signal_cancel.cancel());
+        // A route's own KeyboardInterrupt (its env or model raised one) is a
+        // Ctrl-C too: it stops the other routes as a signal would.
+        let (slots, route_interrupt) = (errors.clone(), interrupted.clone());
+        let poll: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            signal();
+            Python::attach(|py| {
+                let mut interrupt = route_interrupt.lock().unwrap_or_else(|e| e.into_inner());
+                if interrupt.is_some() {
+                    return;
+                }
+                let raised = slots.iter().find_map(|slot| {
+                    let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    slot.as_ref()
+                        .filter(|err| {
+                            err.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+                        })
+                        .map(|err| err.clone_ref(py))
+                });
+                if let Some(raised) = raised {
+                    *interrupt = Some(raised);
+                    cancel.cancel();
+                }
+            });
+        });
+        let results = py.detach(|| {
+            rlmesh::binding::model::with_caller_poll(poll, || {
+                rlmesh::binding::routes::run_routes_prepared(prepared)
+            })
+        });
+        // Ctrl-C cancels every route: those it cut short hold the interrupt,
+        // so the caller keeps the ones that finished before raising it. It is
+        // returned on its own too: the last route may have finished past its
+        // last cancellation check after the signal was caught.
+        let interrupt = interrupted.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let outcomes: Vec<Py<PyAny>> = results
+            .into_iter()
+            .zip(errors)
+            .map(|(result, error)| match (result, &interrupt) {
+                (Ok(result), _) => Ok(crate::facade::result_to_py(py, &result)?
+                    .into_any()
+                    .unbind()),
+                (Err(rlmesh::Error::Cancelled), Some(interrupt)) => {
+                    Ok(interrupt.clone_ref(py).into_value(py).into_any())
+                }
+                (Err(failure), _) => Ok(error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .unwrap_or_else(|| to_py_err(failure))
+                    .into_value(py)
+                    .into_any()),
+            })
+            .collect::<PyResult<_>>()?;
+        // A route's own KeyboardInterrupt the poll missed (raised as the
+        // last route finished) is the run's too.
+        let interrupt = interrupt
+            .map(|interrupt| interrupt.into_value(py).into_any())
+            .or_else(|| {
+                outcomes
+                    .iter()
+                    .find(|outcome| {
+                        outcome
+                            .bind(py)
+                            .is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>()
+                    })
+                    .map(|outcome| outcome.clone_ref(py))
+            });
+        Ok((outcomes, interrupt))
+    }
+
+    #[pyo3(signature = (target, execution_horizon=1, workflow_edition=None, close_env=false))]
+    fn bind_facade(
+        &self,
+        py: Python<'_>,
+        target: Py<PyAny>,
+        execution_horizon: u32,
+        workflow_edition: Option<String>,
+        close_env: bool,
+    ) -> PyResult<crate::bind::PyBinding> {
+        self.last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let target = crate::facade::PyEnvTarget::new(py, target, self.last_error.clone())?;
+        let model = self.prepared(true);
+        let result = py.detach(|| {
+            rlmesh::binding::model::bind_prepared(
+                model,
+                rlmesh::binding::model::adapted_env(Box::new(target)),
+                rlmesh::BindOptions {
+                    execution_horizon: Some(execution_horizon),
+                    workflow_edition,
+                    close_env,
+                    ..Default::default()
+                },
+            )
+        });
+        let binding = result.map_err(|error| {
+            self.last_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .unwrap_or_else(|| to_py_err(error))
+        })?;
+        crate::bind::PyBinding::from_binding(py, binding, self.last_error.clone())
+    }
+
+    /// Binds the model to the env at the session address `env_address`, to
+    /// step by hand.
+    #[pyo3(signature = (env_address, execution_horizon=1, workflow_edition=None))]
+    fn bind(
+        &self,
+        py: Python<'_>,
+        env_address: &str,
+        execution_horizon: u32,
+        workflow_edition: Option<String>,
+    ) -> PyResult<crate::bind::PyBinding> {
+        crate::bind::PyBinding::connect(
+            py,
+            self.prepared(true),
+            Arc::clone(&self.last_error),
+            env_address,
+            execution_horizon,
+            workflow_edition,
+        )
+    }
+
+    /// The workers of the models this model calls from its predict, by the
+    /// Python `id` of each: a run, bind or serve of this model drives them
+    /// on its episodes.
+    /// Read this served model's default through its describe envelope.
+    fn default_execution_horizon(&self, py: Python<'_>) -> PyResult<Option<u32>> {
+        let Some((address, timeout)) = &self.served else {
+            return Ok(None);
+        };
+        py.detach(|| {
+            model_runtime().block_on(rlmesh::lockstep::ServedModel::default_execution_horizon(
+                address, *timeout,
+            ))
+        })
+        .map_err(to_py_err)
+    }
+
+    fn set_inner_models(&self, inners: Vec<(u64, Py<PyModel>)>) {
+        *self.inners.lock().expect("inner models lock poisoned") = inners;
     }
 
     /// Stop every serve running on this worker (drain, then return), and any
@@ -899,22 +1422,21 @@ impl PyModel {
         prefetch_lead: u32,
         workflow_edition: Option<String>,
     ) -> PyResult<Py<PyAny>> {
-        let run_span = tracing::info_span!("rlmesh.model.run_local", env_address = env_address);
-        let _run_enter = run_span.enter();
-        let total_guard = self.profiler.start("model.run_local.total");
-
-        let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        let handler = self.build_handler();
-        let mut options = RunLocalOptions::new(env_address)
-            .execution_horizon(execution_horizon)
-            .prefetch_lead(prefetch_lead);
-        options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
-
-        let report = run_local_blocking(py, handler, options, None, &self.last_error)?;
-
-        let _ = total_guard.finish(0);
-        self.profiler.log_summary_once();
-        report_to_py(py, &report)
+        self.run_local_for_episodes(
+            py,
+            env_address,
+            1,
+            execution_horizon,
+            None,
+            None,
+            None,
+            false,
+            None,
+            prefetch_lead,
+            workflow_edition,
+            None,
+            None,
+        )
     }
 
     /// `hooks` is a relay object receiving the runtime's per-episode events as
@@ -923,8 +1445,10 @@ impl PyModel {
     /// `step(env_index, rewards, terminated, truncated, autoreset_roll, info)`,
     /// and `episode_completed(episode_id, index, env_index, seed, trial, steps,
     /// reward, terminated, truncated, success, duration_s)`. An exception it
-    /// raises aborts the run and is re-raised as-is.
-    #[pyo3(signature = (env_address, episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None, env_token=None))]
+    /// raises aborts the run and is re-raised as-is. `invite_at` is the env's
+    /// session as a model served elsewhere reaches it, when that differs from
+    /// `env_address`'s.
+    #[pyo3(signature = (env_address, episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None, invite_at=None))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
@@ -940,107 +1464,131 @@ impl PyModel {
         prefetch_lead: u32,
         workflow_edition: Option<String>,
         hooks: Option<Py<PyAny>>,
-        env_token: Option<String>,
+        invite_at: Option<String>,
     ) -> PyResult<Py<PyAny>> {
-        let run_span = tracing::info_span!(
-            "rlmesh.model.run_local_for_episodes",
-            env_address = env_address,
-            episodes
-        );
-        let _run_enter = run_span.enter();
-        let total_guard = self.profiler.start("model.run_local.total");
-
-        let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        let handler = self.build_handler();
-        let mut options = RunLocalOptions::new(env_address)
-            .for_episodes(episodes)
-            .execution_horizon(execution_horizon)
-            .prefetch_lead(prefetch_lead)
-            .episode_seeds(seeds.unwrap_or_default())
-            .close_env(close_env)
-            // The Python model outlives this run: its close() is the caller's.
-            .close_model(false)
-            .token(env_token.unwrap_or_default());
-        options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
-        if let Some(cap) = max_episode_steps {
-            options = options.max_episode_steps(cap);
+        let lease = rlmesh::binding::model::claim_run(self.run_gate.clone()).map_err(to_py_err)?;
+        let mut hooks = crate::facade::PyFacadeHooks::optional(hooks, self.last_error.clone());
+        let cancel = rlmesh::ext::CancelToken::new();
+        let signal = cancel.clone();
+        let max_episode = max_episode_seconds
+            .map(|seconds| {
+                if seconds == f64::INFINITY {
+                    return Ok(Duration::MAX);
+                }
+                Duration::try_from_secs_f64(seconds).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err("max_episode_seconds must be > 0")
+                })
+            })
+            .transpose()?;
+        let max_episode_steps = max_episode_steps
+            .map(|steps| {
+                u64::try_from(steps).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err("max_episode_steps must be >= 1")
+                })
+            })
+            .transpose()?;
+        let mut prepared = self.prepared(true);
+        prepared.presentation = Some(Box::new(hooks.clone()));
+        prepared.run_lease = Some(lease.clone());
+        let options = rlmesh::RunOptions {
+            episodes: Some(episodes),
+            seeds,
+            max_episode_steps,
+            max_episode,
+            execution_horizon: Some(execution_horizon),
+            prefetch_lead: prefetch_lead.into(),
+            trial_index_base: trial_index_base.unwrap_or(0),
+            workflow_edition,
+            close_env,
+            hooks: Some(&mut hooks),
+            cancel: Some(cancel),
+            ..Default::default()
+        };
+        let target = crate::facade::AddressTarget {
+            address: env_address.to_owned(),
+            invite_at,
+        };
+        let poll = crate::facade::signal_poll(self.last_error.clone(), move || signal.cancel());
+        self.last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let result = py
+            .detach(|| {
+                rlmesh::binding::model::with_caller_poll(poll, || {
+                    rlmesh::binding::model::run_prepared(
+                        prepared,
+                        rlmesh::binding::model::adapted_env(Box::new(target)),
+                        options,
+                    )
+                })
+            })
+            .map_err(|error| {
+                self.last_error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .unwrap_or_else(|| to_py_err(error))
+            })?;
+        let out = crate::facade::result_to_py(py, &result)?;
+        // Compatibility of this private, low-level report: runtime ordinals
+        // were one-based. Public run/hooks use the facade's zero-based records.
+        for episode in out
+            .get_item("episodes")?
+            .expect("report episodes")
+            .try_iter()?
+        {
+            let episode = episode?;
+            let index: i64 = episode.get_item("index")?.extract()?;
+            episode.set_item("index", index + 1)?;
         }
-        if let Some(cap) = max_episode_seconds {
-            options = options.max_episode_seconds(cap);
-        }
-        if let Some(base) = trial_index_base {
-            options = options.trial_index_base(base);
-        }
-
-        let report = run_local_blocking(py, handler, options, hooks, &self.last_error)?;
-
-        let _ = total_guard.finish(0);
-        self.profiler.log_summary_once();
-        report_to_py(py, &report)
+        Ok(out.into_any().unbind())
     }
 
-    #[pyo3(signature = (address, options=None))]
+    /// Serves the model as the participant `name` in the session at
+    /// `address`, until a signal or [`stop_serving`](Self::stop_serving).
+    ///
+    /// The batch settings are `rlmesh.BatchOptions`' fields; `None` takes
+    /// that field's default.
+    #[pyo3(signature = (address, name, options=None, envelope=None, max_batch_size=None, batch_window_ms=None, batch_byte_budget=None, max_in_flight_batches=None, batch_records=None))]
+    #[allow(clippy::too_many_arguments)] // each batch setting is a Python kwarg
     fn serve(
         &self,
         py: Python<'_>,
         address: &str,
+        name: &str,
         options: Option<PyServeOptions>,
+        envelope: Option<&str>,
+        max_batch_size: Option<usize>,
+        batch_window_ms: Option<u64>,
+        batch_byte_budget: Option<usize>,
+        max_in_flight_batches: Option<usize>,
+        batch_records: Option<std::path::PathBuf>,
     ) -> PyResult<()> {
+        let defaults = rlmesh::BatchOptions::default();
+        let batching = rlmesh::BatchOptions {
+            max_batch_size: max_batch_size.unwrap_or(defaults.max_batch_size),
+            batch_window_ms: batch_window_ms.unwrap_or(defaults.batch_window_ms),
+            batch_byte_budget: batch_byte_budget.unwrap_or(defaults.batch_byte_budget),
+            max_in_flight_batches: max_in_flight_batches.unwrap_or(defaults.max_in_flight_batches),
+            batch_records,
+        };
         let run_span = tracing::info_span!("rlmesh.model.serve", address = address);
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.serve.total");
-
-        let address = BindAddress::parse(address).map_err(to_py_err)?;
-        let mut options = options.map(PyServeOptions::into_rust).unwrap_or_default();
-        // Same bounded teardown as EnvServer: a signal must not wait out a
-        // client's whole session before the server stops.
-        options.drain_timeout = options.drain_timeout.or(Some(SHUTDOWN_GRACE));
-        options.close_timeout = options.close_timeout.or(Some(SHUTDOWN_GRACE));
-        let handler = self.build_handler();
-        let serving = Arc::clone(&self.serving);
-
-        // Same signal contract as EnvServer: SIGINT/SIGTERM drain and close the
-        // model; Python's own SIGINT handler still raises KeyboardInterrupt after.
-        py.detach(|| {
-            model_runtime().block_on(async move {
-                let bound = ModelWorker::new(handler)
-                    .bind_async(ServeModelOptions::new(address).serve_options(options))
-                    .await
-                    .map_err(to_py_err)?;
-                let shutdown = bound.shutdown_trigger();
-                {
-                    // The model's close() stops this serve, also when it began
-                    // before the server was bound.
-                    let mut serving = serving.lock().expect("serving lock poisoned");
-                    if serving.stopped {
-                        shutdown.trigger("model closed");
-                    }
-                    serving.triggers.push(shutdown.clone());
-                }
-                crate::server::py_env_server::spawn_signal_shutdown(shutdown.clone());
-                let mut serve = std::pin::pin!(bound.serve());
-                // A signal Python's own handler caught (before the tokio
-                // listeners were armed, or on a platform without them) is only
-                // visible through check_signals: poll it like the run loop does.
-                let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
-                poll.tick().await;
-                loop {
-                    tokio::select! {
-                        result = &mut serve => return result.map_err(to_py_err),
-                        _ = poll.tick() => {
-                            if let Err(err) = crate::client::check_signals() {
-                                shutdown.trigger("python signal");
-                                let _ = (&mut serve).await;
-                                return Err(err);
-                            }
-                        }
-                    }
-                }
-            })
-        })?;
-
+        let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
+        rlmesh::binding::check_session_model_serve(&options).map_err(to_py_err)?;
+        let close = options.close_timeout.unwrap_or(Duration::from_secs(30));
+        self.serve_on_session(
+            py,
+            address,
+            name,
+            options.workflow_edition.as_deref(),
+            batching,
+            close,
+            envelope,
+        )?;
         let _ = total_guard.finish(0);
-        self.profiler.log_summary_once();
         Ok(())
     }
 }
@@ -1050,32 +1598,25 @@ submit! {
     gen_methods_from_python! {
         r#"
 import collections.abc
+import os
 import typing
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None, reset_options_fn: collections.abc.Callable[[dict[str, typing.Any]], typing.Any] | None = None) -> None: ...
+    @staticmethod
+    def served(address: str, timeout_s: float = 30.0) -> PyModel: ...
+    def default_execution_horizon(self) -> int | None: ...
+    def set_inner_models(self, inners: list[tuple[int, PyModel]]) -> None: ...
+    @staticmethod
+    def random_sample() -> PyModel: ...
+    def bind(self, env_address: str, execution_horizon: int = 1, workflow_edition: str | None = None) -> PyBinding: ...
+    def run_facade(self, target: object, relay: object, options: dict[str, typing.Any]) -> dict[str, typing.Any]: ...
+    def run_routes_facade(self, routes: list[tuple[object, dict[str, typing.Any]]]) -> tuple[list[typing.Any], BaseException | None]: ...
+    def bind_facade(self, target: object, execution_horizon: int = 1, workflow_edition: str | None = None, close_env: bool = False) -> PyBinding: ...
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, env_token: str | None = None) -> dict[str, typing.Any]: ...
-    def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
-"#
-    }
-}
-
-#[cfg(feature = "stub-gen")]
-submit! {
-    gen_methods_from_python! {
-        r#"
-class PyModelClient:
-    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
-    def address(self) -> str: ...
-    def env_id(self) -> str: ...
-    def selected_workflow_edition(self) -> str: ...
-    def observation_space(self) -> Space: ...
-    def action_space(self) -> Space: ...
-    def reset(self, seed: int | None = None) -> None: ...
-    def predict(self, observation: Value) -> Value: ...
-    def close(self) -> None: ...
+    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
+    def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None, max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None) -> None: ...
 "#
     }
 }
@@ -1084,254 +1625,6 @@ impl Drop for PyModel {
     fn drop(&mut self) {
         self.profiler.log_summary_once();
     }
-}
-
-/// Check a `RemoteModel`'s address, timeouts, `api_key` and `tls_ca_file`
-/// as the native constructor does (RMT-P6): an address that does not parse
-/// (`invalid address: ...`), a negative or non-finite timeout, a key a
-/// header cannot carry or an unreadable CA bundle is ValueError. An explicit
-/// key for a plaintext non-loopback address warns. No network I/O.
-#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
-#[pyfunction]
-#[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, api_key=None, tls_ca_file=None))]
-pub fn check_remote_model_options(
-    address: &str,
-    connect_timeout_seconds: Option<f64>,
-    request_timeout_seconds: Option<f64>,
-    api_key: Option<String>,
-    tls_ca_file: Option<String>,
-) -> PyResult<()> {
-    let connect_timeout =
-        crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
-    let request_timeout =
-        crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
-    let mut options = rlmesh::RemoteModelOptions::default().address(address);
-    options.connect_timeout = connect_timeout;
-    options.request_timeout = request_timeout;
-    options.api_key = api_key;
-    options.tls_ca_file = tls_ca_file.map(Into::into);
-    rlmesh::RemoteModel::new(options).map_err(to_py_err)?;
-    Ok(())
-}
-
-/// The wire contract of a local env, derived as an `EnvServer` would publish
-/// it, for a served-model session that steps the env on the caller's side.
-/// A vector env (`num_envs` or `single_*` spaces) is TypeError: a served
-/// model drives a single env. No I/O.
-#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
-#[pyfunction]
-pub fn local_env_contract(py: Python<'_>, env: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let (contract, uses_vector_api) = crate::server::py_environment::derive_env_contract(env)?;
-    if uses_vector_api || contract.num_envs > 1 {
-        return Err(pyo3::exceptions::PyTypeError::new_err(
-            "a served model drives a single env (RemoteModel is single-lane); got a local \
-             vector env: pass a single env, or serve the vector env and run a local model",
-        ));
-    }
-    env_contract_to_py(py, &contract)
-}
-
-/// Client handle to a model (policy) server: the model-side mirror of
-/// `PyEnvClient`. Bound to one env contract (one route) for its lifetime; the
-/// Python layer creates one per `rlmesh.session(model, env)`.
-#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
-#[pyclass(module = "rlmesh._rlmesh")]
-pub struct PyModelClient {
-    inner: ModelClient,
-    runtime: &'static tokio::runtime::Runtime,
-    observation_space: SpaceSpec,
-    action_space: SpaceSpec,
-    address: String,
-}
-
-#[pymethods]
-impl PyModelClient {
-    #[new]
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, env_offer=None, api_key=None, tls_ca_file=None))]
-    fn new(
-        py: Python<'_>,
-        address: &str,
-        env_contract: &Bound<'_, PyAny>,
-        execution_horizon: u32,
-        connect_timeout_seconds: Option<f64>,
-        request_timeout_seconds: Option<f64>,
-        workflow_edition: Option<String>,
-        env_offer: Option<(Vec<String>, Option<String>)>,
-        api_key: Option<String>,
-        tls_ca_file: Option<String>,
-    ) -> PyResult<Self> {
-        init_tracing("model_client");
-        let contract = native_env_contract_from_py(env_contract)?;
-        // `native_env_contract_from_py` always carries both spaces.
-        let observation_space = contract.observation_space.clone().unwrap_or_default();
-        let action_space = contract.action_space.clone().unwrap_or_default();
-        let connect_timeout =
-            crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
-        let request_timeout =
-            crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
-        let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
-        // `RemoteModel` already checked these and warned (check_remote_model_options).
-        let auth = rlmesh::binding::client_auth(
-            address,
-            api_key.as_deref(),
-            tls_ca_file.as_deref().map(std::path::Path::new),
-            false,
-        )
-        .map_err(to_py_err)?;
-        // The env's handshake offer as the Python session captured it. Without
-        // one the env tier stands in as this build, UNDECLARED: it must not
-        // inherit `declared`, the runtime tier's WANT, or a refusal would print
-        // a WANT the env never sent.
-        let env_offer = env_offer.map(|(editions, preferred)| rlmesh_proto::SessionOffer {
-            editions,
-            preferred,
-        });
-        let runtime = model_runtime();
-        let address = address.to_string();
-        let mut inner = py.detach(|| {
-            runtime
-                .block_on(ModelClient::connect_with(
-                    &address,
-                    contract,
-                    ModelConnect {
-                        token: auth.token(),
-                        trust: auth.trust().clone(),
-                        env_offer,
-                        declared: declared.as_deref(),
-                        connect_timeout,
-                        request_timeout,
-                    },
-                ))
-                .map_err(to_py_err)
-        })?;
-        // Opt the served model into chunking (h > 1): pinned on ConfigureRoute and
-        // replayed open-loop by RemoteModel. 1 = no chunking.
-        inner.set_execution_horizon(execution_horizon);
-        let address = inner.address().to_string();
-        Ok(Self {
-            inner,
-            runtime,
-            observation_space,
-            action_space,
-            address,
-        })
-    }
-
-    fn address(&self) -> String {
-        self.address.clone()
-    }
-
-    /// The env (adapter) routing key this client uses with the model — a UUIDv7
-    /// minted at connect.
-    fn env_id(&self) -> String {
-        self.inner.env_id().to_string()
-    }
-
-    /// The workflow edition this session settled on: the floor across the env,
-    /// the model, and this runtime.
-    fn selected_workflow_edition(&self) -> String {
-        self.inner.selected_workflow_edition().to_string()
-    }
-
-    fn observation_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(make_space(py, &self.observation_space)?.into_any().unbind())
-    }
-
-    fn action_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(make_space(py, &self.action_space)?.into_any().unbind())
-    }
-
-    /// Begin a new episode (next predict marks a reset boundary). `seed` (the
-    /// explicit reset seed, if any) rides on every predict of the episode as
-    /// the served model's `context["episode_seed"]`.
-    #[pyo3(signature = (seed=None))]
-    fn reset(&mut self, seed: Option<i64>) {
-        self.inner.reset(seed);
-    }
-
-    fn predict(&mut self, py: Python<'_>, observation: Py<PyAny>) -> PyResult<Py<PyAny>> {
-        let value = py_any_to_space_value_with_backend(
-            py,
-            observation.bind(py),
-            &self.observation_space,
-            ValueBackend::Native,
-        )?;
-        let runtime = self.runtime;
-        let inner = &mut self.inner;
-        let action = py.detach(|| block_on_polling_signals(runtime, inner.predict(value)))?;
-        Ok(space_value_to_py_neutral(py, &action, &self.action_space)?.unbind())
-    }
-
-    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
-        let runtime = self.runtime;
-        let inner = &mut self.inner;
-        py.detach(|| block_on_polling_signals(runtime, inner.close()))
-    }
-}
-
-/// Run one model RPC on `runtime` with the GIL released, polling Python
-/// signals so Ctrl-C abandons it as it does an env call (RMT-P9). The
-/// request bound is the facade client's (RMT-4).
-fn block_on_polling_signals<T>(
-    runtime: &tokio::runtime::Runtime,
-    rpc: impl Future<Output = rlmesh::Result<T>>,
-) -> PyResult<T> {
-    runtime.block_on(async move {
-        let mut rpc = std::pin::pin!(rpc);
-        let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
-        poll.tick().await;
-        loop {
-            tokio::select! {
-                result = &mut rpc => return result.map_err(to_py_err),
-                _ = poll.tick() => {
-                    crate::client::check_signals()?;
-                }
-            }
-        }
-    })
-}
-
-/// Reconstruct a native `EnvContract` from a Python contract object (the value
-/// `RemoteEnv.env_contract` returns). Duck-typed via getattr because the pyclass
-/// `PyEnvContract` is `skip_from_py_object` and its native `inner` cannot be
-/// extracted directly. Carries `metadata` (the env's adapter tags) so the
-/// served model can resolve its adapter from the route's contract.
-fn native_env_contract_from_py(contract: &Bound<'_, PyAny>) -> PyResult<EnvContract> {
-    let id: String = contract.getattr("id")?.extract()?;
-    let num_envs: u32 = contract.getattr("num_envs")?.extract()?;
-    let render_mode: String = contract
-        .getattr("render_mode")?
-        .extract::<Option<String>>()?
-        .unwrap_or_default();
-    let observation_space = extract_space_spec(&contract.getattr("observation_space")?)
-        .ok_or_else(|| {
-            pyo3::exceptions::PyTypeError::new_err(
-                "env contract observation_space is not an RLMesh space spec",
-            )
-        })?;
-    let action_space = extract_space_spec(&contract.getattr("action_space")?).ok_or_else(|| {
-        pyo3::exceptions::PyTypeError::new_err(
-            "env contract action_space is not an RLMesh space spec",
-        )
-    })?;
-    let metadata_obj = contract.getattr("metadata")?;
-    let metadata = if metadata_obj.is_none() {
-        None
-    } else {
-        Some(py_any_to_meta_map(&metadata_obj)?)
-    };
-    Ok(EnvContract {
-        id,
-        action_space: Some(action_space),
-        observation_space: Some(observation_space),
-        metadata,
-        render_mode,
-        num_envs,
-        // The driving loop is user-owned and single-env; autoreset mode does not
-        // affect the client route, so the contract default is fine here.
-        autoreset_mode: Default::default(),
-    })
 }
 
 #[cfg(test)]
@@ -1360,6 +1653,8 @@ mod review_regressions {
                 on_close: None,
                 on_route_drop: None,
                 short_warned: Default::default(),
+                reset_options_fn: None,
+                nested: None,
                 last_error: Default::default(),
             };
             {

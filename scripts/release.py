@@ -32,12 +32,12 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
-from collections.abc import Callable
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
+import tomllib
 from bump_version import pep440
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,12 +47,12 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
 CRATE_ORDER = [
     "rlmesh-proto",
     "rlmesh-spaces",
-    "rlmesh-viewer",
+    "rlmesh-tether",
+    "rlmesh-session-core",
     "rlmesh-adapters",
+    "rlmesh-session",
     "rlmesh-cli",
-    "rlmesh-runtime",
     "rlmesh-grpc",
-    "rlmesh-sandbox",
     "rlmesh",
 ]
 
@@ -152,7 +152,8 @@ def require_workspace_version(version: str) -> None:
 
 def crate_published(crate: str, version: str) -> bool:
     """Ask the crates.io sparse index whether crate@version exists (a local
-    `cargo info` would resolve the workspace member and always say yes)."""
+    `cargo info` would resolve the workspace member and always say yes).
+    """
     # Index path scheme for names of 4+ chars; every CRATE_ORDER name qualifies.
     url = f"https://index.crates.io/{crate[:2]}/{crate[2:4]}/{crate}"
     try:

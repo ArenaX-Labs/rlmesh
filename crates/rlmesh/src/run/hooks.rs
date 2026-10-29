@@ -6,6 +6,29 @@ use super::{EpisodeResult, RunResult, StepEvent};
 use super::{FrameSources, ReadItem, RenderFn};
 use crate::{EnvContract, Error, Result, Value};
 
+/// Presentation data emitted by the core after an observation is available.
+/// The observer may draw it; episode accounting remains in the driver.
+pub struct RunFrame<'a> {
+    /// The newly available observation.
+    pub observation: &'a Value,
+    /// Zero-based episode index.
+    pub episode: i64,
+    /// The reset seed.
+    pub seed: Option<i64>,
+    /// Completed steps in this episode.
+    pub steps: i64,
+    /// Cumulative episode reward.
+    pub reward: f64,
+    /// An already-known outcome for this frame; otherwise use the last step.
+    pub outcome: Option<&'a str>,
+    /// Most recent prediction latency in milliseconds.
+    pub predict_ms: f64,
+    /// Most recent environment latency in milliseconds.
+    pub step_ms: f64,
+    /// Time since this episode started, in seconds.
+    pub elapsed_s: f64,
+}
+
 /// Observer callbacks for a run. Every default is a no-op; implement any
 /// subset.
 ///
@@ -46,6 +69,45 @@ pub trait RunHooks: Send {
         let _ = result;
         Ok(())
     }
+
+    /// Binding plumbing for Python's Experimental `RunHooks` pair (R-25):
+    /// one lane's observation before the model sees it, with its 0-based
+    /// episode and the steps that episode has taken; return a replacement of
+    /// the same space, or `None` to keep it. Runs only; a manual binding does
+    /// not call it.
+    #[doc(hidden)]
+    fn transform_observation(
+        &mut self,
+        episode: i64,
+        step: i64,
+        observation: &Value,
+    ) -> Result<Option<Value>> {
+        let _ = (episode, step, observation);
+        Ok(None)
+    }
+
+    /// Binding plumbing, as `transform_observation`: one lane's action
+    /// before the env receives it, once per env step, so a hook keeping
+    /// recent actions can delay, drop (hold the previous one) or freeze them.
+    #[doc(hidden)]
+    fn transform_action(
+        &mut self,
+        episode: i64,
+        step: i64,
+        action: &Value,
+    ) -> Result<Option<Value>> {
+        let _ = (episode, step, action);
+        Ok(None)
+    }
+
+    /// Binding plumbing for the recorder's artifact tree (R-25): a writer
+    /// the run feeds its runtime events (raw and transformed observations
+    /// and actions, step infos, telemetry), on this thread, each before the
+    /// hook it precedes. Asked once per session; runs only.
+    #[doc(hidden)]
+    fn artifacts(&mut self) -> Option<crate::recorder::artifacts::ArtifactTap> {
+        None
+    }
 }
 
 /// What a run exposes to its hooks.
@@ -62,16 +124,14 @@ pub trait RunContext: Send + Sync {
 }
 
 /// The library's context: a native run's (valid for its whole life) or a
-/// session's (failing once the session has closed).
-type RemoteRender = Arc<dyn Fn() -> Result<Value> + Send + Sync>;
+/// binding's (failing once the binding has closed).
 pub(crate) struct LibraryContext {
     contract: Mutex<Option<EnvContract>>,
     closed: std::sync::atomic::AtomicBool,
     pub(crate) id: u64,
-    busy: std::sync::atomic::AtomicBool,
-    remote_render: Mutex<Option<RemoteRender>>,
     readers: Mutex<Vec<(ReadItem, super::Reader)>>,
     advisories: Mutex<Vec<crate::adapters::Advisory>>,
+    presentation: Mutex<Option<Box<dyn crate::binding::model::Presentation>>>,
 }
 
 impl LibraryContext {
@@ -79,41 +139,42 @@ impl LibraryContext {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Arc::new(LibraryContext {
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            busy: false.into(),
-            remote_render: Mutex::new(None),
             readers: Mutex::new(Vec::new()),
+            presentation: Mutex::new(None),
             advisories: Mutex::new(Vec::new()),
             contract: Mutex::new(None),
             closed: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
+    pub(crate) fn set_presentation(
+        &self,
+        observer: Option<Box<dyn crate::binding::model::Presentation>>,
+    ) {
+        *self.presentation.lock().unwrap_or_else(|e| e.into_inner()) = observer;
+    }
+    pub(crate) fn frame(&self, frame: &RunFrame<'_>) -> Result<()> {
+        match &mut *self.presentation.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(observer) => observer.on_frame(frame),
+            None => Ok(()),
+        }
+    }
+    pub(crate) fn directive(&self) -> Result<super::runtime::RunDirective> {
+        match &mut *self.presentation.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(observer) => observer.directive(),
+            None => Ok(super::runtime::RunDirective::Continue),
+        }
+    }
+
     pub(crate) fn connect(&self, contract: EnvContract) {
         *self.contract.lock().unwrap_or_else(|err| err.into_inner()) = Some(contract);
     }
 
+    #[cfg(feature = "lockstep")]
     pub(crate) fn close(&self) {
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
-    pub(crate) fn remote_render(&self, render: Arc<dyn Fn() -> Result<Value> + Send + Sync>) {
-        *self.remote_render.lock().unwrap_or_else(|e| e.into_inner()) = Some(render);
-    }
-    pub(crate) fn busy(self: &Arc<Self>) -> Result<ContextBusy> {
-        self.busy
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            )
-            .map_err(|_| {
-                Error::Runtime(
-                    "a session operation or context render is already in progress".into(),
-                )
-            })?;
-        Ok(ContextBusy(self.clone()))
-    }
     pub(crate) fn advisories(&self) -> Vec<crate::adapters::Advisory> {
         self.advisories
             .lock()
@@ -125,56 +186,13 @@ impl LibraryContext {
     }
     pub(crate) fn render(&self) -> Result<Value> {
         self.open()?;
-        if super::read::has_local_render(self.id) {
-            return super::read::local_render(self.id);
-        }
-        if self.busy.load(std::sync::atomic::Ordering::SeqCst) && !super::read::in_dispatch(self.id)
-        {
-            return Err(Error::Runtime(
-                "render is unavailable while a session operation is in progress".into(),
-            ));
-        }
-        let _busy = if super::read::in_dispatch(self.id) {
-            None
-        } else {
-            self.busy
-                .compare_exchange(
-                    false,
-                    true,
-                    std::sync::atomic::Ordering::SeqCst,
-                    std::sync::atomic::Ordering::SeqCst,
-                )
-                .map_err(|_| {
-                    Error::Runtime(
-                        "a session operation or context render is already in progress".into(),
-                    )
-                })?;
-            Some(RenderBusy(&self.busy))
-        };
-        let render = self
-            .remote_render
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .ok_or_else(|| {
-                Error::Runtime("render is not reachable outside a local hook dispatch".into())
-            })?;
-        render()
+        super::read::local_render(self.id)
     }
     fn open(&self) -> Result<()> {
         if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(Error::Runtime("session is closed".to_string()));
+            return Err(Error::Runtime("the binding is closed".to_string()));
         }
         Ok(())
-    }
-}
-
-pub(crate) struct ContextBusy(Arc<LibraryContext>);
-impl Drop for ContextBusy {
-    fn drop(&mut self) {
-        self.0
-            .busy
-            .store(false, std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -216,15 +234,7 @@ impl RunContext for LibraryContext {
     fn frame_sources(&self) -> Result<FrameSources<'_>> {
         let contract = self.contract()?;
         let roles = super::read::image_roles(contract.as_ref())?;
-        let reachable = super::read::has_local_render(self.id)
-            || (self
-                .remote_render
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_some()
-                && (!self.busy.load(std::sync::atomic::Ordering::SeqCst)
-                    || super::read::in_dispatch(self.id)));
-        let label = if reachable {
+        let label = if super::read::has_local_render(self.id) {
             contract
                 .as_ref()
                 .and_then(|c| super::read::render_label(c, &roles))
@@ -237,12 +247,5 @@ impl RunContext for LibraryContext {
             render_label: label,
             render,
         })
-    }
-}
-
-struct RenderBusy<'a>(&'a std::sync::atomic::AtomicBool);
-impl Drop for RenderBusy<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::SeqCst)
     }
 }

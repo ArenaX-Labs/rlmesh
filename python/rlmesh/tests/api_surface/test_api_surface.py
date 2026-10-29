@@ -10,12 +10,16 @@ def test_root_namespace_is_small() -> None:
         "ENV_RESET_OPTIONS_KEY",
         "NO_ADAPTER",
         "RANDOM_SAMPLE",
+        "BatchOptions",
+        "Binding",
         "BuildInfo",
         "EnvFactory",
         "EnvServer",
         "EnvironmentException",
         "EpisodeResult",
+        "EvalReport",
         "FrameSources",
+        "Interrupted",
         "Model",
         "ModelException",
         "Param",
@@ -219,20 +223,14 @@ def test_api_key_never_appears_in_repr_or_errors() -> None:
     import pytest
     import rlmesh
 
-    for cls in (rlmesh.RemoteEnv, rlmesh.RemoteModel, rlmesh.RemoteVectorEnv):
+    for cls in (rlmesh.RemoteEnv, rlmesh.RemoteVectorEnv):
         parameters = inspect.signature(cls.__init__).parameters
         assert parameters["api_key"].default is None, cls.__name__
         assert parameters["tls_ca_file"].default is None, cls.__name__
         for name in ("token", "bearer", "auth"):
             assert name not in parameters, (cls.__name__, name)
 
-    model = rlmesh.RemoteModel("https://localhost:1", api_key="hidden-key")
-    assert "hidden-key" not in repr(model)
-    assert "hidden-key" not in str(vars(model))
     for bad in ("hidden-key\n", " hidden-key", "hidden\u00e9key"):
-        with pytest.raises(ValueError) as raised:
-            rlmesh.RemoteModel("https://localhost:1", api_key=bad)
-        assert "hidden" not in str(raised.value), str(raised.value)
         with pytest.raises(ValueError) as raised:
             rlmesh.RemoteEnv("https://localhost:1", api_key=bad)
         assert "hidden" not in str(raised.value), str(raised.value)

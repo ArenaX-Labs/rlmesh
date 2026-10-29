@@ -18,7 +18,7 @@ use super::types::{
     CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest as VectorResetRequest,
     ResetResult as VectorResetResult, StepRequest as VectorStepRequest,
 };
-use crate::binding::spaces;
+use crate::binding::spaces::{self, RenderResult};
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
 use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
 use std::collections::{BTreeMap, HashSet};
@@ -166,17 +166,16 @@ impl Conformance {
     }
 }
 
-/// Encode a step's per-lane results into the wire reply, checking every
-/// per-lane vector is `width` long.
-fn encode_step_response(
+/// Check a step's per-lane results (every per-lane vector `width` long) and
+/// its observations, folding every conformance warning into its info.
+fn finish_step(
     conformance: &Conformance,
     observation_space: &spaces::SpaceSpec,
     mut result: super::types::StepResult,
     width: usize,
     lanes: &[usize],
     mut warnings: Vec<ConformanceWarning>,
-    env_indices: Vec<u32>,
-) -> Result<ProtoStepResponse, EnvError> {
+) -> Result<super::types::StepResult, EnvError> {
     validate_count(&result.observations, width, "observations")?;
     validate_count(&result.terminated, width, "terminated values")?;
     validate_count(&result.truncated, width, "truncated values")?;
@@ -189,6 +188,37 @@ fn encode_step_response(
         &mut warnings,
     )?;
     inject_conformance_warnings(conformance.edition(), &mut result.info, warnings);
+    Ok(result)
+}
+
+/// Check a reset's per-lane observations, folding conformance warnings into
+/// its info.
+fn finish_reset(
+    conformance: &Conformance,
+    observation_space: &spaces::SpaceSpec,
+    mut result: VectorResetResult,
+    width: usize,
+    lanes: &[usize],
+) -> Result<VectorResetResult, EnvError> {
+    validate_count(&result.observations, width, "observations")?;
+    let mut warnings = Vec::new();
+    conformance.enforce_all(
+        observation_space,
+        &result.observations,
+        "observation",
+        lanes,
+        &mut warnings,
+    )?;
+    inject_conformance_warnings(conformance.edition(), &mut result.info, warnings);
+    Ok(result)
+}
+
+/// A checked step as its wire reply.
+fn step_response(
+    observation_space: &spaces::SpaceSpec,
+    result: super::types::StepResult,
+    env_indices: Vec<u32>,
+) -> Result<ProtoStepResponse, EnvError> {
     let observations = encode_batched_partial_values(&result.observations, observation_space)
         .map_err(protocol_error_to_env_error)?;
     Ok(ProtoStepResponse {
@@ -206,24 +236,11 @@ fn encode_step_response(
     })
 }
 
-/// Encode a reset's per-lane observations into the wire reply.
-fn encode_reset_response(
-    conformance: &Conformance,
+/// A checked reset as its wire reply.
+fn reset_response(
     observation_space: &spaces::SpaceSpec,
-    mut result: VectorResetResult,
-    width: usize,
-    lanes: &[usize],
+    result: VectorResetResult,
 ) -> Result<ProtoResetResponse, EnvError> {
-    validate_count(&result.observations, width, "observations")?;
-    let mut warnings = Vec::new();
-    conformance.enforce_all(
-        observation_space,
-        &result.observations,
-        "observation",
-        lanes,
-        &mut warnings,
-    )?;
-    inject_conformance_warnings(conformance.edition(), &mut result.info, warnings);
     let observations = encode_batched_partial_values(&result.observations, observation_space)
         .map_err(protocol_error_to_env_error)?;
     Ok(ProtoResetResponse {
@@ -232,22 +249,46 @@ fn encode_reset_response(
     })
 }
 
-/// Decode a wire action slab into `width` per-lane actions, conformance-checked.
+/// Decode a wire action slab into `width` per-lane actions.
 fn decode_actions(
-    conformance: &Conformance,
     action_space: &spaces::SpaceSpec,
     action: Option<&rlmesh_proto::spaces::v1::SpaceValue>,
     width: usize,
-    lanes: &[usize],
-    warnings: &mut Vec<ConformanceWarning>,
 ) -> Result<Vec<spaces::SpaceValue>, EnvError> {
     // N is authoritative; a wrong-width/count action is a client fault, so a
     // decode failure maps to InvalidAction (not Internal).
-    let actions = decode_batched_partial_values(action, action_space, width)
-        .map_err(|err| EnvError::new(EnvErrorCode::InvalidAction, err.to_string()))?;
-    validate_action_count(&actions, width)?;
-    conformance.enforce_all(action_space, &actions, "action", lanes, warnings)?;
-    Ok(actions)
+    decode_batched_partial_values(action, action_space, width)
+        .map_err(|err| EnvError::new(EnvErrorCode::InvalidAction, err.to_string()))
+}
+
+/// Check `width` per-lane actions: their count and their conformance.
+fn check_actions(
+    conformance: &Conformance,
+    action_space: &spaces::SpaceSpec,
+    actions: &[spaces::SpaceValue],
+    width: usize,
+    lanes: &[usize],
+    warnings: &mut Vec<ConformanceWarning>,
+) -> Result<(), EnvError> {
+    validate_action_count(actions, width)?;
+    conformance.enforce_all(action_space, actions, "action", lanes, warnings)
+}
+
+/// What a native op measured: its queue wait, the env call and the env's
+/// own split of it.
+struct Call {
+    queue_ns: u64,
+    call_ns: u64,
+    inner: EndpointPhases,
+}
+
+impl Call {
+    /// The wire split, with this layer's decode and encode around the call.
+    fn phases(self, decode_ns: u64, encode_ns: u64) -> EndpointPhases {
+        let mut phases = EndpointPhases::nest(decode_ns, self.call_ns, encode_ns, self.inner);
+        phases.queue_ns = self.queue_ns;
+        phases
+    }
 }
 
 /// Bridges a lockstep [`VectorEnv`] (a natively batched env such as a gym
@@ -275,6 +316,155 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
             inner: tokio::sync::Mutex::new(inner),
             conformance: Conformance::from_env(),
         }
+    }
+
+    /// Reset `lanes` (empty: the whole vector), checked and conformed.
+    async fn reset_native(
+        &self,
+        lanes: &[u32],
+        seeds: Vec<i64>,
+        options: Option<spaces::MetaMap>,
+        timeout_ms: i64,
+    ) -> Result<(VectorResetResult, Call), EnvError> {
+        let request = VectorResetRequest {
+            seeds,
+            options,
+            timeout_ms,
+            env_indices: proto_env_indices_to_native(lanes),
+        };
+        // A reset naming lanes replies only those lanes; a whole-vector reset
+        // replies full width.
+        let width = if lanes.is_empty() {
+            self.num_envs
+        } else {
+            lanes.len()
+        };
+        let lock_started = Instant::now();
+        let mut env = self.inner.lock().await;
+        let queue_ns = elapsed_ns(lock_started);
+        let call_started = Instant::now();
+        // An env that cannot reset individual sub-envs inherits the rejecting
+        // `reset_subset` default, so a partial reset fails loud here rather
+        // than silently resetting the whole vector.
+        let result = if lanes.is_empty() {
+            env.reset(request).await
+        } else {
+            env.reset_subset(request).await
+        }
+        .map_err(gym_error_to_env_error)?;
+        let call_ns = elapsed_ns(call_started);
+        let inner = env.take_last_phases();
+        drop(env);
+        let result = finish_reset(
+            &self.conformance,
+            &self.observation_space,
+            result,
+            width,
+            &[],
+        )?;
+        Ok((
+            result,
+            Call {
+                queue_ns,
+                call_ns,
+                inner,
+            },
+        ))
+    }
+
+    /// Step the whole vector, checked and conformed.
+    async fn step_native(
+        &self,
+        lanes: &[u32],
+        actions: Vec<spaces::SpaceValue>,
+        timeout_ms: i64,
+    ) -> Result<(super::types::StepResult, Call), EnvError> {
+        if !lanes.is_empty() {
+            return Err(EnvError::new(
+                EnvErrorCode::Unsupported,
+                "this environment steps its whole vector in lockstep; a step naming lanes \
+                 (StepRequest.env_indices) needs a lane endpoint",
+            ));
+        }
+        let mut warnings = Vec::new();
+        check_actions(
+            &self.conformance,
+            &self.action_space,
+            &actions,
+            self.num_envs,
+            &[],
+            &mut warnings,
+        )?;
+        let lock_started = Instant::now();
+        let mut env = self.inner.lock().await;
+        let queue_ns = elapsed_ns(lock_started);
+        let call_started = Instant::now();
+        let result = env
+            .step(VectorStepRequest {
+                actions,
+                timeout_ms,
+            })
+            .await
+            .map_err(gym_error_to_env_error)?;
+        let call_ns = elapsed_ns(call_started);
+        let inner = env.take_last_phases();
+        drop(env);
+        let result = finish_step(
+            &self.conformance,
+            &self.observation_space,
+            result,
+            self.num_envs,
+            &[],
+            warnings,
+        )?;
+        Ok((
+            result,
+            Call {
+                queue_ns,
+                call_ns,
+                inner,
+            },
+        ))
+    }
+
+    /// Render lane `lane` (`None`: the env's choice).
+    async fn render_native(
+        &self,
+        lane: Option<usize>,
+        timeout_ms: i64,
+    ) -> Result<(RenderResult, Call), EnvError> {
+        let lock_started = Instant::now();
+        let mut env = self.inner.lock().await;
+        let queue_ns = elapsed_ns(lock_started);
+        let call_started = Instant::now();
+        let result = env
+            .render(RenderRequest {
+                env_index: lane,
+                timeout_ms,
+            })
+            .await
+            .map_err(gym_error_to_env_error)?;
+        let call_ns = elapsed_ns(call_started);
+        let inner = env.take_last_phases();
+        Ok((
+            result,
+            Call {
+                queue_ns,
+                call_ns,
+                inner,
+            },
+        ))
+    }
+
+    async fn close_native(&self) -> Result<super::types::CloseResult, EnvError> {
+        self.inner
+            .lock()
+            .await
+            .close(CloseRequest {
+                wait_for_episodes: false,
+            })
+            .await
+            .map_err(gym_error_to_env_error)
     }
 }
 
@@ -305,144 +495,55 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
         req: ProtoResetRequest,
     ) -> Result<(ProtoResetResponse, EndpointPhases), EnvError> {
         let decode_started = Instant::now();
-        let request = VectorResetRequest {
-            seeds: req.seeds,
-            options: req.options.map(meta_map_from_proto),
-            // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
-            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-            env_indices: proto_env_indices_to_native(req.env_indices),
-        };
-        // A reset naming lanes replies only those lanes; a whole-vector reset
-        // replies full width.
-        let width = if request.env_indices.is_empty() {
-            self.num_envs
-        } else {
-            request.env_indices.len()
-        };
-        let partial = !request.env_indices.is_empty();
+        let options = req.options.map(meta_map_from_proto);
+        // Proto timeout_ms is uint64; native is i64.
+        let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
         let decode_ns = elapsed_ns(decode_started);
-
-        let lock_started = Instant::now();
-        let mut env = self.inner.lock().await;
-        let queue_ns = elapsed_ns(lock_started);
-        let call_started = Instant::now();
-        // An env that cannot reset individual sub-envs inherits the rejecting
-        // `reset_subset` default, so a partial reset fails loud here rather
-        // than silently resetting the whole vector.
-        let result = if partial {
-            env.reset_subset(request).await
-        } else {
-            env.reset(request).await
-        }
-        .map_err(gym_error_to_env_error)?;
-        let call_ns = elapsed_ns(call_started);
-        let inner = env.take_last_phases();
-        drop(env);
-
+        let (result, call) = self
+            .reset_native(&req.env_indices, req.seeds, options, timeout_ms)
+            .await?;
         let encode_started = Instant::now();
-        let response = encode_reset_response(
-            &self.conformance,
-            &self.observation_space,
-            result,
-            width,
-            &[],
-        )?;
-        let mut phases =
-            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
-        phases.queue_ns = queue_ns;
-        Ok((response, phases))
+        let response = reset_response(&self.observation_space, result)?;
+        Ok((response, call.phases(decode_ns, elapsed_ns(encode_started))))
     }
 
     async fn step(
         &self,
         req: ProtoStepRequest,
     ) -> Result<(ProtoStepResponse, EndpointPhases), EnvError> {
-        if !req.env_indices.is_empty() {
-            return Err(EnvError::new(
-                EnvErrorCode::Unsupported,
-                "this environment steps its whole vector in lockstep; a step naming lanes \
-                 (StepRequest.env_indices) needs a lane endpoint",
-            ));
-        }
         let decode_started = Instant::now();
-        let mut warnings = Vec::new();
-        let actions = decode_actions(
-            &self.conformance,
-            &self.action_space,
-            req.action.as_ref(),
-            self.num_envs,
-            &[],
-            &mut warnings,
-        )?;
+        let actions = if req.env_indices.is_empty() {
+            decode_actions(&self.action_space, req.action.as_ref(), self.num_envs)?
+        } else {
+            // Refused by the step itself, before any decode.
+            Vec::new()
+        };
+        // Proto timeout_ms is uint64; native is i64.
+        let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
         let decode_ns = elapsed_ns(decode_started);
-
-        let lock_started = Instant::now();
-        let mut env = self.inner.lock().await;
-        let queue_ns = elapsed_ns(lock_started);
-        let call_started = Instant::now();
-        let result = env
-            .step(VectorStepRequest {
-                actions,
-                // Proto timeout_ms is uint64; native is i64.
-                timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-            })
-            .await
-            .map_err(gym_error_to_env_error)?;
-        let call_ns = elapsed_ns(call_started);
-        let inner = env.take_last_phases();
-        drop(env);
-
+        let (result, call) = self
+            .step_native(&req.env_indices, actions, timeout_ms)
+            .await?;
         let encode_started = Instant::now();
-        let response = encode_step_response(
-            &self.conformance,
-            &self.observation_space,
-            result,
-            self.num_envs,
-            &[],
-            warnings,
-            Vec::new(),
-        )?;
-        let mut phases =
-            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
-        phases.queue_ns = queue_ns;
-        Ok((response, phases))
+        let response = step_response(&self.observation_space, result, Vec::new())?;
+        Ok((response, call.phases(decode_ns, elapsed_ns(encode_started))))
     }
 
     async fn render(
         &self,
         req: ProtoRenderRequest,
     ) -> Result<(ProtoRenderResponse, EndpointPhases), EnvError> {
-        let request = RenderRequest {
-            env_index: render_env_index(&req.env_indices)?,
-            // Proto timeout_ms is uint64; native is i64.
-            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-        };
-        let lock_started = Instant::now();
-        let mut env = self.inner.lock().await;
-        let queue_ns = elapsed_ns(lock_started);
-        let call_started = Instant::now();
-        let result = env.render(request).await.map_err(gym_error_to_env_error)?;
-        let call_ns = elapsed_ns(call_started);
-        let inner = env.take_last_phases();
-        drop(env);
-
+        let lane = render_env_index(&req.env_indices)?;
+        // Proto timeout_ms is uint64; native is i64.
+        let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
+        let (result, call) = self.render_native(lane, timeout_ms).await?;
         let encode_started = Instant::now();
         let response = render_result_to_proto(&result);
-        let mut phases = EndpointPhases::nest(0, call_ns, elapsed_ns(encode_started), inner);
-        phases.queue_ns = queue_ns;
-        Ok((response, phases))
+        Ok((response, call.phases(0, elapsed_ns(encode_started))))
     }
 
     async fn close(&self) -> Result<ProtoCloseResponse, EnvError> {
-        let result = self
-            .inner
-            .lock()
-            .await
-            .close(CloseRequest {
-                wait_for_episodes: false,
-            })
-            .await
-            .map_err(gym_error_to_env_error)?;
+        let result = self.close_native().await?;
         Ok(ProtoCloseResponse {
             final_episodes: result
                 .final_episodes
@@ -484,6 +585,161 @@ impl WireLaneAdapter {
             env_indices.iter().map(|&lane| lane as usize).collect()
         }
     }
+
+    /// Reset `lanes` (empty: every lane) side by side, checked and conformed.
+    async fn reset_native(
+        &self,
+        lanes: &[u32],
+        seeds: Vec<i64>,
+        options: Option<spaces::MetaMap>,
+        timeout_ms: i64,
+    ) -> Result<(VectorResetResult, Call), EnvError> {
+        let lanes = self.lanes_for(lanes);
+        // Each scalar lane gets its own slice of a per-lane option list, so a
+        // list that does not cover the lanes fails the whole reset here rather
+        // than per lane.
+        let lane_options = (0..lanes.len())
+            .map(|pos| lane_reset_options(options.as_ref(), pos, lanes.len()))
+            .collect::<Result<Vec<_>, EnvError>>()?;
+
+        let call_started = Instant::now();
+        let results = futures::future::join_all(lanes.iter().enumerate().map(|(pos, &lane)| {
+            let request = spaces::request::ResetRequest {
+                seed: seeds.get(pos).copied(),
+                options: lane_options[pos].clone(),
+                timeout_ms,
+            };
+            self.lanes.reset(lane, request)
+        }))
+        .await;
+        let call_ns = elapsed_ns(call_started);
+        let mut observations = Vec::with_capacity(lanes.len());
+        let mut infos = Vec::with_capacity(lanes.len());
+        let mut phases = Vec::with_capacity(lanes.len());
+        for (result, lane_phases) in gather_lane_results(results, &lanes, "reset")? {
+            observations.extend(result.observation);
+            infos.push(result.info);
+            phases.push(lane_phases);
+        }
+        let result = finish_reset(
+            &self.conformance,
+            self.lanes.observation_space(),
+            VectorResetResult {
+                observations,
+                info: batch_infos(infos, None),
+                episode_ids: Vec::new(),
+            },
+            lanes.len(),
+            &lanes,
+        )?;
+        let inner = fold_phases(phases);
+        Ok((
+            result,
+            Call {
+                queue_ns: inner.queue_ns,
+                call_ns,
+                inner,
+            },
+        ))
+    }
+
+    /// Step `lanes` (empty: every lane) side by side, checked and conformed.
+    async fn step_native(
+        &self,
+        lanes: &[u32],
+        actions: Vec<spaces::SpaceValue>,
+        timeout_ms: i64,
+    ) -> Result<(super::types::StepResult, Call), EnvError> {
+        let lanes = self.lanes_for(lanes);
+        let mut warnings = Vec::new();
+        check_actions(
+            &self.conformance,
+            self.lanes.action_space(),
+            &actions,
+            lanes.len(),
+            &lanes,
+            &mut warnings,
+        )?;
+        let call_started = Instant::now();
+        let results =
+            futures::future::join_all(lanes.iter().zip(actions).map(|(&lane, action)| {
+                self.lanes.step(
+                    lane,
+                    spaces::request::StepRequest {
+                        action: Some(action),
+                        timeout_ms,
+                    },
+                )
+            }))
+            .await;
+        let call_ns = elapsed_ns(call_started);
+        let mut result = super::types::StepResult::default();
+        let mut infos = Vec::with_capacity(lanes.len());
+        let mut done = Vec::with_capacity(lanes.len());
+        let mut phases = Vec::with_capacity(lanes.len());
+        for (step, lane_phases) in gather_lane_results(results, &lanes, "step")? {
+            result.observations.extend(step.observation);
+            result.rewards.push(step.reward);
+            result.terminated.push(step.terminated);
+            result.truncated.push(step.truncated);
+            done.push(step.terminated || step.truncated);
+            infos.push(step.info);
+            phases.push(lane_phases);
+        }
+        result.info = batch_infos(infos, Some(&done));
+        let result = finish_step(
+            &self.conformance,
+            self.lanes.observation_space(),
+            result,
+            lanes.len(),
+            &lanes,
+            warnings,
+        )?;
+        let inner = fold_phases(phases);
+        Ok((
+            result,
+            Call {
+                queue_ns: inner.queue_ns,
+                call_ns,
+                inner,
+            },
+        ))
+    }
+
+    /// Render lane `lane`.
+    async fn render_native(
+        &self,
+        lane: usize,
+        timeout_ms: i64,
+    ) -> Result<(RenderResult, Call), EnvError> {
+        let request = RenderRequest {
+            env_index: Some(lane),
+            timeout_ms,
+        };
+        let call_started = Instant::now();
+        let (result, inner) = self
+            .lanes
+            .render(lane, request)
+            .await
+            .map_err(gym_error_to_env_error)?;
+        Ok((
+            result,
+            Call {
+                queue_ns: inner.queue_ns,
+                call_ns: elapsed_ns(call_started),
+                inner,
+            },
+        ))
+    }
+
+    async fn close_native(&self) -> Result<(), EnvError> {
+        self.lanes
+            .close(CloseRequest {
+                wait_for_episodes: false,
+            })
+            .await
+            .map_err(gym_error_to_env_error)
+    }
 }
 
 #[async_trait]
@@ -517,55 +773,15 @@ impl Environment for WireLaneAdapter {
         req: ProtoResetRequest,
     ) -> Result<(ProtoResetResponse, EndpointPhases), EnvError> {
         let decode_started = Instant::now();
-        let lanes = self.lanes_for(&req.env_indices);
         let options = req.options.map(meta_map_from_proto);
         let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
         let decode_ns = elapsed_ns(decode_started);
-
-        // Each scalar lane gets its own slice of a per-lane option list, so a
-        // list that does not cover the lanes fails the whole reset here rather
-        // than per lane.
-        let lane_options = (0..lanes.len())
-            .map(|pos| lane_reset_options(options.as_ref(), pos, lanes.len()))
-            .collect::<Result<Vec<_>, EnvError>>()?;
-
-        let call_started = Instant::now();
-        let results = futures::future::join_all(lanes.iter().enumerate().map(|(pos, &lane)| {
-            let request = spaces::request::ResetRequest {
-                seed: req.seeds.get(pos).copied(),
-                options: lane_options[pos].clone(),
-                timeout_ms,
-            };
-            self.lanes.reset(lane, request)
-        }))
-        .await;
-        let call_ns = elapsed_ns(call_started);
-        let mut observations = Vec::with_capacity(lanes.len());
-        let mut infos = Vec::with_capacity(lanes.len());
-        let mut phases = Vec::with_capacity(lanes.len());
-        for (result, lane_phases) in gather_lane_results(results, &lanes, "reset")? {
-            observations.extend(result.observation);
-            infos.push(result.info);
-            phases.push(lane_phases);
-        }
-
+        let (result, call) = self
+            .reset_native(&req.env_indices, req.seeds, options, timeout_ms)
+            .await?;
         let encode_started = Instant::now();
-        let response = encode_reset_response(
-            &self.conformance,
-            self.lanes.observation_space(),
-            VectorResetResult {
-                observations,
-                info: batch_infos(infos, None),
-                episode_ids: Vec::new(),
-            },
-            lanes.len(),
-            &lanes,
-        )?;
-        let inner = fold_phases(phases);
-        let mut folded =
-            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
-        folded.queue_ns = inner.queue_ns;
-        Ok((response, folded))
+        let response = reset_response(self.lanes.observation_space(), result)?;
+        Ok((response, call.phases(decode_ns, elapsed_ns(encode_started))))
     }
 
     async fn step(
@@ -573,62 +789,16 @@ impl Environment for WireLaneAdapter {
         req: ProtoStepRequest,
     ) -> Result<(ProtoStepResponse, EndpointPhases), EnvError> {
         let decode_started = Instant::now();
-        let lanes = self.lanes_for(&req.env_indices);
-        let mut warnings = Vec::new();
-        let actions = decode_actions(
-            &self.conformance,
-            self.lanes.action_space(),
-            req.action.as_ref(),
-            lanes.len(),
-            &lanes,
-            &mut warnings,
-        )?;
+        let width = self.lanes_for(&req.env_indices).len();
+        let actions = decode_actions(self.lanes.action_space(), req.action.as_ref(), width)?;
         let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
         let decode_ns = elapsed_ns(decode_started);
-
-        let call_started = Instant::now();
-        let results =
-            futures::future::join_all(lanes.iter().zip(actions).map(|(&lane, action)| {
-                self.lanes.step(
-                    lane,
-                    spaces::request::StepRequest {
-                        action: Some(action),
-                        timeout_ms,
-                    },
-                )
-            }))
-            .await;
-        let call_ns = elapsed_ns(call_started);
-        let mut result = super::types::StepResult::default();
-        let mut infos = Vec::with_capacity(lanes.len());
-        let mut done = Vec::with_capacity(lanes.len());
-        let mut phases = Vec::with_capacity(lanes.len());
-        for (step, lane_phases) in gather_lane_results(results, &lanes, "step")? {
-            result.observations.extend(step.observation);
-            result.rewards.push(step.reward);
-            result.terminated.push(step.terminated);
-            result.truncated.push(step.truncated);
-            done.push(step.terminated || step.truncated);
-            infos.push(step.info);
-            phases.push(lane_phases);
-        }
-        result.info = batch_infos(infos, Some(&done));
-
+        let (result, call) = self
+            .step_native(&req.env_indices, actions, timeout_ms)
+            .await?;
         let encode_started = Instant::now();
-        let response = encode_step_response(
-            &self.conformance,
-            self.lanes.observation_space(),
-            result,
-            lanes.len(),
-            &lanes,
-            warnings,
-            req.env_indices,
-        )?;
-        let inner = fold_phases(phases);
-        let mut folded =
-            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
-        folded.queue_ns = inner.queue_ns;
-        Ok((response, folded))
+        let response = step_response(self.lanes.observation_space(), result, req.env_indices)?;
+        Ok((response, call.phases(decode_ns, elapsed_ns(encode_started))))
     }
 
     async fn render(
@@ -636,34 +806,156 @@ impl Environment for WireLaneAdapter {
         req: ProtoRenderRequest,
     ) -> Result<(ProtoRenderResponse, EndpointPhases), EnvError> {
         let lane = render_env_index(&req.env_indices)?.unwrap_or(0);
-        let request = RenderRequest {
-            env_index: Some(lane),
-            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-        };
-        let call_started = Instant::now();
-        let (result, inner) = self
-            .lanes
-            .render(lane, request)
-            .await
-            .map_err(gym_error_to_env_error)?;
-        let call_ns = elapsed_ns(call_started);
+        let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
+        let (result, call) = self.render_native(lane, timeout_ms).await?;
         let encode_started = Instant::now();
         let response = render_result_to_proto(&result);
-        let mut phases = EndpointPhases::nest(0, call_ns, elapsed_ns(encode_started), inner);
-        phases.queue_ns = inner.queue_ns;
-        Ok((response, phases))
+        Ok((response, call.phases(0, elapsed_ns(encode_started))))
     }
 
     async fn close(&self) -> Result<ProtoCloseResponse, EnvError> {
-        self.lanes
-            .close(CloseRequest {
-                wait_for_episodes: false,
-            })
-            .await
-            .map_err(gym_error_to_env_error)?;
+        self.close_native().await?;
         Ok(ProtoCloseResponse {
             final_episodes: Vec::new(),
         })
+    }
+}
+
+/// The lockstep path serves both adapters natively (§12.4): the same checks,
+/// conformance and env calls as their wire shells, without the v1 messages.
+#[cfg(feature = "lockstep")]
+mod served {
+    use async_trait::async_trait;
+
+    use super::{EnvError, VectorEnv, WireEnvAdapter, WireLaneAdapter};
+    use crate::EnvironmentError;
+    use crate::binding::spaces;
+    use crate::lockstep::{Reset, Served, Step};
+
+    fn failure(error: EnvError) -> EnvironmentError {
+        let class = error.debug_info.clone();
+        EnvironmentError {
+            class,
+            ..EnvironmentError::from_wire(error)
+        }
+    }
+
+    fn reset(result: super::VectorResetResult) -> Reset {
+        Reset {
+            observations: result.observations,
+            info: result.info,
+        }
+    }
+
+    fn step(result: super::super::types::StepResult) -> Step {
+        Step {
+            observations: result.observations,
+            rewards: result.rewards,
+            terminated: result.terminated,
+            truncated: result.truncated,
+            info: result.info,
+        }
+    }
+
+    fn frame(result: super::RenderResult) -> Option<Vec<u8>> {
+        result.frame.map(|frame| frame.frame)
+    }
+
+    fn contract(contract: &spaces::EnvContract, num_envs: usize) -> spaces::EnvContract {
+        spaces::EnvContract {
+            num_envs: u32::try_from(num_envs).unwrap_or(u32::MAX),
+            ..contract.clone()
+        }
+    }
+
+    #[async_trait]
+    impl<E: VectorEnv + 'static> Served for WireEnvAdapter<E> {
+        fn contract(&self) -> spaces::EnvContract {
+            contract(&self.env_contract, self.num_envs)
+        }
+
+        fn subset_step(&self) -> bool {
+            false
+        }
+
+        async fn reset(
+            &self,
+            lanes: &[u32],
+            seeds: Vec<i64>,
+            options: Option<spaces::MetaMap>,
+        ) -> Result<Reset, EnvironmentError> {
+            let (result, _) = self
+                .reset_native(lanes, seeds, options, 0)
+                .await
+                .map_err(failure)?;
+            Ok(reset(result))
+        }
+
+        async fn step(
+            &self,
+            lanes: &[u32],
+            actions: Vec<spaces::SpaceValue>,
+        ) -> Result<Step, EnvironmentError> {
+            let (result, _) = self.step_native(lanes, actions, 0).await.map_err(failure)?;
+            Ok(step(result))
+        }
+
+        async fn render(&self, lane: u32) -> Result<Option<Vec<u8>>, EnvironmentError> {
+            let (result, _) = self
+                .render_native(Some(lane as usize), 0)
+                .await
+                .map_err(failure)?;
+            Ok(frame(result))
+        }
+
+        async fn close(&self) -> Result<(), EnvironmentError> {
+            self.close_native().await.map(|_| ()).map_err(failure)
+        }
+    }
+
+    #[async_trait]
+    impl Served for WireLaneAdapter {
+        fn contract(&self) -> spaces::EnvContract {
+            contract(self.lanes.env_contract(), self.lanes.num_envs())
+        }
+
+        fn subset_step(&self) -> bool {
+            true
+        }
+
+        async fn reset(
+            &self,
+            lanes: &[u32],
+            seeds: Vec<i64>,
+            options: Option<spaces::MetaMap>,
+        ) -> Result<Reset, EnvironmentError> {
+            let (result, _) = self
+                .reset_native(lanes, seeds, options, 0)
+                .await
+                .map_err(failure)?;
+            Ok(reset(result))
+        }
+
+        async fn step(
+            &self,
+            lanes: &[u32],
+            actions: Vec<spaces::SpaceValue>,
+        ) -> Result<Step, EnvironmentError> {
+            let (result, _) = self.step_native(lanes, actions, 0).await.map_err(failure)?;
+            Ok(step(result))
+        }
+
+        async fn render(&self, lane: u32) -> Result<Option<Vec<u8>>, EnvironmentError> {
+            let (result, _) = self
+                .render_native(lane as usize, 0)
+                .await
+                .map_err(failure)?;
+            Ok(frame(result))
+        }
+
+        async fn close(&self) -> Result<(), EnvironmentError> {
+            self.close_native().await.map_err(failure)
+        }
     }
 }
 
@@ -725,6 +1017,16 @@ fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
             is_recoverable: true,
             ..EnvError::new(EnvErrorCode::Internal, message)
         },
+        // The builtin class rides in `debug_info` to the lockstep reply.
+        spaces::EnvRuntimeError::Raised {
+            class,
+            message,
+            recoverable,
+        } => EnvError {
+            is_recoverable: recoverable,
+            debug_info: Some(class),
+            ..EnvError::new(EnvErrorCode::Internal, message)
+        },
         // EnvRuntimeError is #[non_exhaustive]; treat unknown variants as internal.
         other => EnvError::new(EnvErrorCode::Internal, other.to_string()),
     }
@@ -770,10 +1072,10 @@ pub(super) fn proto_episode_metadata_to_public(
 /// Convert wire lane indices (uint32) to the native i32 representation. Lane
 /// offsets always fit i32; an unrepresentable value is clamped rather than
 /// wrapped so a foreign index is rejected loudly downstream.
-fn proto_env_indices_to_native(env_indices: Vec<u32>) -> Vec<i32> {
+fn proto_env_indices_to_native(env_indices: &[u32]) -> Vec<i32> {
     env_indices
-        .into_iter()
-        .map(|index| i32::try_from(index).unwrap_or(i32::MAX))
+        .iter()
+        .map(|&index| i32::try_from(index).unwrap_or(i32::MAX))
         .collect()
 }
 
@@ -823,7 +1125,7 @@ fn protocol_error_to_env_error(error: impl ToString) -> EnvError {
 ///
 /// The runtime sends the reserved `trial_index` option as a list in lane order
 /// when a reset restarts several lanes (see
-/// [`rlmesh_runtime::reset_options_for`]), but each lane here is a scalar env
+/// [`crate::run::runtime::reset_options_for`]), but each lane here is a scalar env
 /// that gets its own `reset`: handing it the whole list leaves
 /// `trial_index(options, None)` unable to read an ordinal. Narrow the list to
 /// this lane's element; every other key rides through unchanged. A list that
@@ -837,7 +1139,8 @@ fn lane_reset_options(
     let Some(options) = options else {
         return Ok(None);
     };
-    let Some(spaces::MetaValue::List(trials)) = options.get(rlmesh_runtime::TRIAL_INDEX_OPTION)
+    let Some(spaces::MetaValue::List(trials)) =
+        options.get(crate::run::runtime::TRIAL_INDEX_OPTION)
     else {
         return Ok(Some(options.clone()));
     };
@@ -847,14 +1150,14 @@ fn lane_reset_options(
             format!(
                 "reset option `{}` is a list of {} entries but this reset covers {lanes} lanes; \
                  send one ordinal per lane, in lane order",
-                rlmesh_runtime::TRIAL_INDEX_OPTION,
+                crate::run::runtime::TRIAL_INDEX_OPTION,
                 trials.len(),
             ),
         ));
     };
     let mut sliced = options.clone();
     sliced.insert(
-        rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+        crate::run::runtime::TRIAL_INDEX_OPTION.to_string(),
         trial.clone(),
     );
     Ok(Some(sliced))
@@ -1086,7 +1389,7 @@ mod tests {
             warned: Default::default(),
             edition: std::sync::Mutex::new(Edition::current()),
         };
-        conformance.pin(Edition::E2026_06);
+        conformance.pin(Edition::E2026_10);
         let env = DummyEnv::new();
         let out_of_range = spaces::SpaceValue::Box(
             spaces::Tensor::from_vec(
@@ -1110,7 +1413,7 @@ mod tests {
         inject_conformance_warnings(conformance.edition(), &mut info, warnings);
         assert!(
             info.unwrap().contains_key("rlmesh.conformance.warning"),
-            "2026.06 reports conformance warnings under its reserved key"
+            "2026.10 reports conformance warnings under its reserved key"
         );
     }
 
@@ -1742,7 +2045,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_env_close_timeout_detaches_the_session() {
-        use rlmesh_runtime::RuntimeEnv;
+        use crate::run::runtime::RuntimeEnv;
 
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -2106,7 +2409,7 @@ mod tests {
 
     fn trial_list(trials: &[i64]) -> spaces::MetaMap {
         [(
-            rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+            crate::run::runtime::TRIAL_INDEX_OPTION.to_string(),
             spaces::MetaValue::List(trials.iter().copied().map(spaces::MetaValue::Int).collect()),
         )]
         .into_iter()
@@ -2121,7 +2424,7 @@ mod tests {
         for (pos, expected) in [(0, 7), (1, 8), (2, 9)] {
             let sliced = lane_reset_options(Some(&options), pos, 3).unwrap().unwrap();
             assert_eq!(
-                sliced.get(rlmesh_runtime::TRIAL_INDEX_OPTION),
+                sliced.get(crate::run::runtime::TRIAL_INDEX_OPTION),
                 Some(&spaces::MetaValue::Int(expected)),
             );
             // Every other key rides through untouched.
@@ -2135,7 +2438,7 @@ mod tests {
         // A bare integer (the single-lane encoding) and a map without the key
         // are both passed on as they are.
         let scalar: spaces::MetaMap = [(
-            rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+            crate::run::runtime::TRIAL_INDEX_OPTION.to_string(),
             spaces::MetaValue::Int(4),
         )]
         .into_iter()
@@ -2209,9 +2512,11 @@ mod tests {
             .unwrap()
             .iter()
             .map(|options| {
-                options
-                    .as_ref()
-                    .and_then(|options| options.get(rlmesh_runtime::TRIAL_INDEX_OPTION).cloned())
+                options.as_ref().and_then(|options| {
+                    options
+                        .get(crate::run::runtime::TRIAL_INDEX_OPTION)
+                        .cloned()
+                })
             })
             .collect::<Vec<_>>();
         trials.sort_by_key(|trial| match trial {

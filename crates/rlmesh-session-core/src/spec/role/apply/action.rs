@@ -1,0 +1,445 @@
+//! A model action to the env's action vector.
+
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use crate::spec::apply::ApplyError;
+use crate::spec::convert;
+use crate::spec::role::apply::err;
+use crate::spec::role::apply::geometry::convert_rotation_with;
+use crate::spec::role::apply::state::{apply_affine, map_range};
+use crate::spec::role::plan::ActionPlan;
+
+impl ActionPlan {
+    /// The env action vector for one model action (`f32`, in model order).
+    pub fn apply(&self, action: &[f32]) -> Result<Vec<f32>, ApplyError> {
+        let plan = self;
+        if action.len() != plan.in_dim as usize {
+            return Err(err(format!(
+                "expected {}-dim model action, got shape ({},)",
+                plan.in_dim,
+                action.len()
+            )));
+        }
+        let mut pieces: Vec<f32> = Vec::new();
+        for segment in &plan.segments {
+            if let Some((width, value)) = segment.fill {
+                // Opaque (role-less) actuator, or an optional role no model output
+                // drives: emit the constant for each dim and read nothing from the
+                // model.
+                pieces.extend(core::iter::repeat_n(value as f32, width as usize));
+                continue;
+            }
+            let mut piece: Vec<f32> =
+                action[segment.start as usize..segment.stop as usize].to_vec();
+            if let (Some(src), Some(dst)) = (segment.src_encoding, segment.dst_encoding)
+                && src != dst
+            {
+                piece = convert_rotation_with(&piece, src, dst, None)?;
+            }
+            if let (Some(src_range), Some(dst_range)) = (segment.src_range, segment.dst_range) {
+                map_range(&mut piece, src_range, dst_range)?;
+            }
+            // Corrections after the declared formats are bridged: model-side first
+            // (the model's own output convention, in the model's own axis order),
+            // then the scatter onto the env's axes, then env-side, each one affine
+            // (scale, offset, invert, threshold); the binary snap follows, at 0.
+            apply_affine(
+                &mut piece,
+                segment.model_scale,
+                segment.model_axis_scale.as_deref(),
+                segment.model_offset,
+                segment.model_axis_offset.as_deref(),
+                segment.model_invert,
+                segment.model_threshold,
+            );
+            if let Some(factor) = segment.unit_factor {
+                for entry in &mut piece {
+                    *entry = (f64::from(*entry) * factor) as f32;
+                }
+            }
+            if let Some(sum) = segment.flip {
+                for entry in &mut piece {
+                    *entry = (sum - f64::from(*entry)) as f32;
+                }
+            }
+            if let Some(scatter) = &segment.scatter {
+                piece = scatter
+                    .iter()
+                    .map(|&model_index| piece[model_index as usize])
+                    .collect();
+            }
+            apply_affine(
+                &mut piece,
+                segment.scale,
+                segment.axis_scale.as_deref(),
+                segment.offset,
+                segment.axis_offset.as_deref(),
+                segment.invert,
+                segment.threshold,
+            );
+            if segment.binarize {
+                for entry in &mut piece {
+                    // TODO: verify intended binary-gripper behavior at raw 0.0.
+                    // No threshold on either side keeps a raw 0.0 neutral; a
+                    // thresholded boundary opens.
+                    if segment.threshold.is_some()
+                        || segment.model_threshold.is_some()
+                        || *entry != 0.0
+                    {
+                        *entry = convert::binary(f64::from(*entry), -1.0, 1.0) as f32;
+                    }
+                }
+            }
+            // Per-actuator safety clamp, last: bound this component to its declared
+            // range so a mixed-range action keeps a clamp the one global clip cannot.
+            if let Some((low, high)) = segment.clip {
+                let (low, high) = (low as f32, high as f32);
+                for entry in &mut piece {
+                    *entry = entry.clamp(low, high);
+                }
+            }
+            pieces.extend(piece);
+        }
+        if let Some((low, high)) = plan.clip {
+            let (low, high) = (low as f32, high as f32);
+            for entry in &mut pieces {
+                *entry = entry.clamp(low, high);
+            }
+        }
+        Ok(pieces)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
+
+    use core::f64;
+
+    use crate::spec::role::plan::{ActionPlan, ActionSegment};
+
+    /// The model action as the host hands it over.
+    fn numbers(values: &[f64]) -> Vec<f32> {
+        values.iter().map(|&v| v as f32).collect()
+    }
+
+    /// A single-component plan carrying the env-side scalar corrections.
+    fn one_segment(
+        scale: Option<f64>,
+        invert: bool,
+        threshold: Option<f64>,
+        binarize: bool,
+    ) -> ActionPlan {
+        ActionPlan {
+            segments: vec![ActionSegment {
+                role: Some("action/gripper".to_owned()),
+                start: 0,
+                stop: 1,
+                src_encoding: None,
+                dst_encoding: None,
+                src_range: None,
+                dst_range: None,
+                model_scale: None,
+                model_offset: None,
+                model_axis_scale: None,
+                model_axis_offset: None,
+                model_invert: false,
+                model_threshold: None,
+                scale,
+                offset: None,
+                axis_scale: None,
+                axis_offset: None,
+                invert,
+                threshold,
+                scatter: None,
+                labels: None,
+                model_labels: None,
+                binarize,
+                clip: None,
+                fill: None,
+                frame: None,
+                reference: None,
+                part: None,
+                flip: None,
+                unit_factor: None,
+            }],
+            clip: None,
+            in_dim: 1,
+        }
+    }
+
+    #[test]
+    fn per_actuator_clip_clamps_to_its_range() {
+        // Two 1-D segments with different clamp ranges: a single global clip
+        // could not bound both correctly. The per-actuator clip does.
+        let plan = ActionPlan {
+            segments: vec![
+                ActionSegment {
+                    role: Some("action/a".to_owned()),
+                    start: 0,
+                    stop: 1,
+                    src_encoding: None,
+                    dst_encoding: None,
+                    src_range: None,
+                    dst_range: None,
+                    model_scale: None,
+                    model_offset: None,
+                    model_axis_scale: None,
+                    model_axis_offset: None,
+                    model_invert: false,
+                    model_threshold: None,
+                    scale: None,
+                    offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
+                    invert: false,
+                    threshold: None,
+                    scatter: None,
+                    labels: None,
+                    model_labels: None,
+                    binarize: false,
+                    clip: Some((-1.0, 1.0)),
+                    fill: None,
+                    frame: None,
+                    reference: None,
+                    part: None,
+                    flip: None,
+                    unit_factor: None,
+                },
+                ActionSegment {
+                    role: Some("action/b".to_owned()),
+                    start: 1,
+                    stop: 2,
+                    src_encoding: None,
+                    dst_encoding: None,
+                    src_range: None,
+                    dst_range: None,
+                    model_scale: None,
+                    model_offset: None,
+                    model_axis_scale: None,
+                    model_axis_offset: None,
+                    model_invert: false,
+                    model_threshold: None,
+                    scale: None,
+                    offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
+                    invert: false,
+                    threshold: None,
+                    scatter: None,
+                    labels: None,
+                    model_labels: None,
+                    binarize: false,
+                    clip: Some((-f64::consts::FRAC_PI_2, f64::consts::FRAC_PI_2)),
+                    fill: None,
+                    frame: None,
+                    reference: None,
+                    part: None,
+                    flip: None,
+                    unit_factor: None,
+                },
+            ],
+            clip: None,
+            in_dim: 2,
+        };
+        let out = ActionPlan::apply(&plan, &numbers(&[5.0, 5.0])).unwrap();
+        let got = out;
+        assert_eq!(got[0], 1.0); // clamped to a's range
+        assert!((got[1] - (f64::consts::FRAC_PI_2 as f32)).abs() < 1e-6); // clamped to b's wider range
+    }
+
+    #[test]
+    fn opaque_fill_segment_emits_the_constant() {
+        // model[0]=0.7 maps to the roled segment; the role-less segment emits
+        // (3 × 0.5) reading nothing from the model.
+        let plan = ActionPlan {
+            segments: vec![
+                ActionSegment {
+                    role: Some("action/x".to_owned()),
+                    start: 0,
+                    stop: 1,
+                    src_encoding: None,
+                    dst_encoding: None,
+                    src_range: None,
+                    dst_range: None,
+                    model_scale: None,
+                    model_offset: None,
+                    model_axis_scale: None,
+                    model_axis_offset: None,
+                    model_invert: false,
+                    model_threshold: None,
+                    scale: None,
+                    offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
+                    invert: false,
+                    threshold: None,
+                    scatter: None,
+                    labels: None,
+                    model_labels: None,
+                    binarize: false,
+                    clip: None,
+                    fill: None,
+                    frame: None,
+                    reference: None,
+                    part: None,
+                    flip: None,
+                    unit_factor: None,
+                },
+                ActionSegment {
+                    role: None,
+                    start: 0,
+                    stop: 0,
+                    src_encoding: None,
+                    dst_encoding: None,
+                    src_range: None,
+                    dst_range: None,
+                    model_scale: None,
+                    model_offset: None,
+                    model_axis_scale: None,
+                    model_axis_offset: None,
+                    model_invert: false,
+                    model_threshold: None,
+                    scale: None,
+                    offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
+                    invert: false,
+                    threshold: None,
+                    scatter: None,
+                    labels: None,
+                    model_labels: None,
+                    binarize: false,
+                    clip: None,
+                    fill: Some((3, 0.5)),
+                    frame: None,
+                    reference: None,
+                    part: None,
+                    flip: None,
+                    unit_factor: None,
+                },
+            ],
+            clip: None,
+            in_dim: 1,
+        };
+        let out = ActionPlan::apply(&plan, &numbers(&[0.7])).unwrap();
+        let got = out;
+        assert_eq!(got, vec![0.7, 0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn model_side_corrections_apply_before_env_side() {
+        // model: scale 2 then invert; env: invert. Order is model(scale, invert)
+        // then env(invert): 0.3 -> *2 = 0.6 -> -0.6 (model) -> 0.6 (env).
+        let plan = ActionPlan {
+            segments: vec![ActionSegment {
+                role: Some("action/gripper".to_owned()),
+                start: 0,
+                stop: 1,
+                src_encoding: None,
+                dst_encoding: None,
+                src_range: None,
+                dst_range: None,
+                model_scale: Some(2.0),
+                model_offset: None,
+                model_axis_scale: None,
+                model_axis_offset: None,
+                model_invert: true,
+                model_threshold: None,
+                scale: None,
+                offset: None,
+                axis_scale: None,
+                axis_offset: None,
+                invert: true,
+                threshold: None,
+                scatter: None,
+                labels: None,
+                model_labels: None,
+                binarize: false,
+                clip: None,
+                fill: None,
+                frame: None,
+                reference: None,
+                part: None,
+                flip: None,
+                unit_factor: None,
+            }],
+            clip: None,
+            in_dim: 1,
+        };
+        let out = ActionPlan::apply(&plan, &numbers(&[0.3])).unwrap();
+        assert!((out[0] - 0.6).abs() < 1e-6);
+    }
+
+    fn apply_one(plan: &ActionPlan, value: f32) -> f32 {
+        ActionPlan::apply(plan, &[value]).unwrap()[0]
+    }
+
+    #[test]
+    fn invert_flips_the_binary_decision() {
+        let plan = one_segment(None, true, None, true);
+        assert_eq!(apply_one(&plan, 0.8), -1.0);
+        assert_eq!(apply_one(&plan, -0.8), 1.0);
+    }
+
+    #[test]
+    fn scale_multiplies_the_value() {
+        let plan = one_segment(Some(2.0), false, None, false);
+        assert_eq!(apply_one(&plan, 0.3), 0.6);
+    }
+
+    #[test]
+    fn threshold_recenters_the_binary_split() {
+        // Subtract 0.5, then snap: values above 0.5 open, below close.
+        let plan = one_segment(None, false, Some(0.5), true);
+        assert_eq!(apply_one(&plan, 0.8), 1.0);
+        assert_eq!(apply_one(&plan, 0.3), -1.0);
+    }
+
+    #[test]
+    fn binary_boundary_opens_rather_than_emitting_zero() {
+        // model output == threshold lands exactly on 0.0 after the subtract; it
+        // must snap to a definite side (open), never an undefined 0.0.
+        let plan = one_segment(None, false, Some(0.5), true);
+        assert_eq!(apply_one(&plan, 0.5), 1.0);
+    }
+
+    #[test]
+    fn model_threshold_boundary_opens() {
+        let mut plan = one_segment(None, false, None, true);
+        plan.segments[0].model_threshold = Some(0.5);
+        assert_eq!(apply_one(&plan, 0.5), 1.0);
+    }
+
+    #[test]
+    fn a_scatter_permutes_the_model_piece_between_the_two_sides_corrections() {
+        // Model [a, b, c] with model scale 2; env axis e reads model[scatter[e]],
+        // then env offset 1.
+        let mut plan = one_segment(None, false, None, false);
+        plan.in_dim = 3;
+        let segment = &mut plan.segments[0];
+        segment.stop = 3;
+        segment.model_scale = Some(2.0);
+        segment.offset = Some(1.0);
+        segment.scatter = Some(vec![2, 0, 1]);
+        let raw = numbers(&[1.0, 2.0, 3.0]);
+        assert_eq!(ActionPlan::apply(&plan, &raw).unwrap(), vec![7.0, 3.0, 5.0]);
+    }
+
+    #[test]
+    fn raw_zero_without_threshold_stays_neutral() {
+        let plan = one_segment(None, false, None, true);
+        assert_eq!(apply_one(&plan, 0.0), 0.0);
+        assert_eq!(apply_one(&plan, 0.2), 1.0);
+        assert_eq!(apply_one(&plan, -0.2), -1.0);
+    }
+
+    #[test]
+    fn corrections_apply_in_scale_invert_threshold_order() {
+        // 0.3 -> *2 = 0.6 -> invert = -0.6 -> -0.5 = -1.1 (no binarize).
+        let plan = one_segment(Some(2.0), true, Some(0.5), false);
+        assert!((apply_one(&plan, 0.3) - (-1.1)).abs() < 1e-6);
+    }
+}

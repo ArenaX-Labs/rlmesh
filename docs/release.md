@@ -15,14 +15,14 @@ git push origin HEAD --tags                 # you push; CI does the rest
 
 `release.py` refuses to proceed if the working tree is dirty, the `vX.Y.Z` tag already exists, the changelog still has `<!-- DRAFT -->` markers, or there is no `## [X.Y.Z]` changelog section.
 
-The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and ships crates.io, PyPI, the GitHub Release, and (once configured) nuget.org through trusted publishing. Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions, and the GitHub Release upload preserves already-published assets.
+The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and ships crates.io, PyPI, npm, the GitHub Release, and (once configured) nuget.org through trusted publishing. Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions, and the GitHub Release upload preserves already-published assets.
 
 ## Prerequisites
 
 - **v0.2 Unity release gate:** complete the [Unity release checklist](unity-release-checklist.md): Linux IL2CPP player smoke, Mono Editor reload, and failed-barrier reload. Unity support must not be claimed until all three pass; .NET tests and NativeAOT do not substitute for Unity verification.
 
-- Nothing local: no publish tokens. crates.io and PyPI both authenticate via OIDC trusted publishing scoped to `release.yml` and the `release` GitHub environment; the GitHub Release uses the workflow's own token.
-- One-time registry setup: a trusted publisher configured on the PyPI `rlmesh` project and on each of the nine `rlmesh*` crates (repository `ArenaX-Labs/rlmesh`, workflow `release.yml`, environment `release`), plus the `release` environment created in the repository settings (add required reviewers there if you want a manual approval gate before publish).
+- Nothing local: no publish tokens. crates.io, PyPI and npm all authenticate via OIDC trusted publishing scoped to `release.yml` and the `release` GitHub environment; the GitHub Release uses the workflow's own token.
+- One-time registry setup: a trusted publisher configured on the PyPI `rlmesh` project and on each of the eight published `rlmesh*` crates and the six npm packages (`rlmesh` and the five `@rlmesh/{platform}-{arch}`; see [npm](#npm)) (repository `ArenaX-Labs/rlmesh`, workflow `release.yml`, environment `release`), plus the `release` environment created in the repository settings (add required reviewers there if you want a manual approval gate before publish).
 - Break-glass local publish, from the tagged commit: no single host builds the full wheel matrix anymore, so first assemble `python/rlmesh/dist` from the release run's artifacts (`gh run download <run-id> -p 'wheels-*'`, then move the `.whl` files in) or build each half on its own host without re-running `release:python:prepare` in between (it wipes dist). Then `python scripts/release.py X.Y.Z --publish-crates` (needs `CARGO_REGISTRY_TOKEN`) and `--github-release` (needs `gh` auth); wheels would need a manual `twine upload`.
 
 ## Curate the changelog
@@ -60,7 +60,7 @@ RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are 
 
 ## Publish order
 
-The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-proto`, `rlmesh-spaces`, `rlmesh-viewer`, `rlmesh-adapters`, `rlmesh-cli`, `rlmesh-runtime`, `rlmesh-grpc`, `rlmesh-sandbox`, `rlmesh`), then uploads the wheels to PyPI, publishes NuGet packages when configured, then cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-proto`, `rlmesh-spaces`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cli`, `rlmesh-grpc`, `rlmesh`), then uploads the wheels to PyPI, publishes NuGet packages when configured, publishes the npm packages, then cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
 
 ## GitHub Releases
 
@@ -199,6 +199,25 @@ a stapled notarization ticket; do not use `stapler validate` as its acceptance
 test. The submitted zip and all distributions contain the same signed dylib.
 Unity/IL2CPP execution remains a separate engine integration gate; NativeAOT is
 only a supplement.
+
+## npm
+
+The Linux builder runs `build:js` (the wasm and the bundles) and
+`release:js:native` for `linux-x64`, `linux-arm64` (cargo-zigbuild, glibc 2.28,
+Node 22's own floor) and `win32-x64` (cargo-xwin); the macOS builder adds
+`darwin-arm64` and `darwin-x64`. Publish runs `release:js:package --require-all`,
+which packs one `@rlmesh/{platform}-{arch}` per addon and `rlmesh` with those
+five as exact-version optional dependencies, all at the Cargo workspace
+version. npm installs only the addon whose `os`/`cpu`/`libc` match, and
+`native.ts` loads it. `release:js:publish` publishes the platform packages
+first, skips any version already on npm, and sends a pre-release to the `next`
+dist-tag so `npm install rlmesh` keeps the last stable release.
+
+npm configures a trusted publisher per package, and only on a package that
+already exists. `rlmesh` was reserved with a placeholder `0.0.1`; before the
+first release, publish a placeholder `0.0.1` of each `@rlmesh/{platform}-{arch}`
+the same way, then add the trusted publisher (repository `ArenaX-Labs/rlmesh`,
+workflow `release.yml`, environment `release`) in each package's settings.
 
 ## Post-publish smoke
 

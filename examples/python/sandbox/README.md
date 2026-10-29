@@ -28,19 +28,15 @@ The example uses `SandboxEnv` because it requests one environment. Use `SandboxV
 
 ## Model Drives Env
 
-`rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)` is the managed sibling of `rlmesh.session(rlmesh.RemoteModel(address), env)`: it starts the policy in its own container and returns a `Session` you drive with `reset`/`predict`/`step`, so the policy executes in its own container, not in your process. In v0.1 the model container is a prebuilt image you build yourself -- see [`byo_container/model`](../byo_container/model) for the Dockerfile and entrypoint:
+`rlmesh.SandboxModel("image://<tag>")` is the managed sibling of `rlmesh.Model(address)`: it starts the policy in its own container, which hosts a session, and its `run(env)` and `bind(env)` drive it there, serving a local env in that session. The policy executes in its own container, not in your process. The model container is a prebuilt image you build yourself with rlmesh 0.2 -- see [`byo_container/model`](../byo_container/model) for the Dockerfile and entrypoint:
 
 ```python
 import rlmesh
 
-env = rlmesh.RemoteEnv("127.0.0.1:50051")
-sess = rlmesh.session(rlmesh.SandboxModel("image://my-model:latest"), env)
-obs, _ = sess.reset()
-while not sess.done:
-    action = sess.predict(obs)
-    obs, reward, terminated, truncated, _ = sess.step(action)
+with rlmesh.SandboxModel("image://my-model:latest") as model:
+    result = model.run(my_env, episodes=4)
 ```
 
 ## Local Development Notes
 
-Sandbox runs need Docker access. The generated image installs RLMesh inside the container. By default that is the published release, which matches a pip-installed host. To run these examples against this checkout instead, pass `build=SandboxBuild(rlmesh_package="local")`, which installs a wheel from `python/rlmesh/dist`. Build that wheel first with `mise run build:python:docker`, which produces the manylinux wheel the container can load. `mise run build:python` builds a host-platform wheel that will not load in the container when the host glibc is newer than the base image. To test an exact artifact or published version, pass a wheel path or a pip spec such as `rlmesh==0.1.0`.
+Sandbox runs need Docker access. The generated image installs RLMesh inside the container. By default that is the published release, which matches a pip-installed host. To run these examples against this checkout instead, pass `build=SandboxBuild(rlmesh_package="local")`, which installs a wheel from `python/rlmesh/dist`. Build that wheel first with `mise run build:python:docker`, which produces the manylinux wheel the container can load. `mise run build:python` builds a host-platform wheel that will not load in the container when the host glibc is newer than the base image. To test an exact artifact or published version, pass a wheel path or a pip spec such as `rlmesh==0.2.0a0`.

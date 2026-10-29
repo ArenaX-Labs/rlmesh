@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>RLMesh: a v2 session in the browser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: dark; --bg:#111418; --card:#1a1f26; --mut:#8b95a3; --fg:#e6e9ee; --ok:#2fbf6a; --hold:#e9b022; --bad:#e5484d; --acc:#4c8dff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid #263040; flex-wrap:wrap; }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .badge { padding:3px 10px; border-radius:999px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; }
+  .active, .driving { background: var(--ok); color:#04140a; } .armed, .idle { background:#3b4656; color:#fff; } .hold { background: var(--hold); color:#1d1500; }
+  .safe, .estop, .disarmed { background: var(--bad); color:#fff; } .unknown { background:#444; }
+  .mut { color: var(--mut); }
+  main { display:grid; grid-template-columns: minmax(320px, 640px) minmax(320px, 1fr); gap:12px; padding:12px 16px; }
+  .card { background: var(--card); border-radius:8px; padding:10px 12px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); margin:0 0 8px; font-weight:600; }
+  canvas#cam { width:100%; aspect-ratio: 4/3; background:#000; border-radius:6px; display:block; }
+  canvas#plot { width:100%; height:150px; display:block; }
+  table { border-collapse: collapse; width:100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align:right; padding:2px 6px; } th:first-child, td:first-child { text-align:left; }
+  th { color:var(--mut); font-weight:500; }
+  button { background: var(--acc); color:#fff; border:0; border-radius:6px; padding:6px 12px; font-weight:600; cursor:pointer; }
+  button.secondary { background:#2b3442; } button:disabled { opacity:.45; cursor:default; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .kv { display:grid; grid-template-columns: auto 1fr; gap:2px 12px; font-variant-numeric: tabular-nums; }
+  .sliders label { display:grid; grid-template-columns: 22px 1fr 48px; gap:6px; align-items:center; }
+  input[type=range] { width:100%; }
+  #log { font: 11px/1.35 ui-monospace, monospace; max-height: 170px; overflow:auto; white-space: pre-wrap; color:#b9c2cf; }
+  .col { display:flex; flex-direction:column; gap:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RLMesh v2 session</h1>
+  <span>session <span id="mode" class="badge unknown">…</span></span>
+  <span>arm edge <span id="edge" class="badge unknown">…</span></span>
+  <span>holder <b id="holder">-</b></span>
+  <span class="mut" id="me"></span>
+  <span class="mut" style="margin-left:auto" id="conn">connecting…</span>
+</header>
+<main>
+  <div class="col">
+    <div class="card"><h2>Camera <span class="mut" id="camInfo"></span></h2><canvas id="cam" width="640" height="480"></canvas></div>
+    <div class="card"><h2>Joint positions (last 5 s, rad)</h2><canvas id="plot" width="1200" height="300"></canvas></div>
+    <div class="card"><h2>Streams (measured in each class Worker; main = after postMessage)</h2>
+      <table id="stats"><thead><tr><th>stream</th><th>rate/s</th><th>lat p50</th><th>lat p99</th><th>p99.9</th><th>age p50</th><th>age p99</th><th>% late &gt;2ms</th><th>lost</th><th>decode µs</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+  <div class="col">
+    <div class="card"><h2>Control</h2>
+      <div class="row">
+        <button id="take">Take control</button>
+        <button id="release" class="secondary" disabled>Release</button>
+        <button id="arm" class="secondary" title="SAFE or DISARMED → ARMED, in a fresh epoch">Re-arm</button>
+        <label><input type="checkbox" id="pausehb" /> Pause heartbeats</label>
+        <button id="stale" class="secondary" title="debug: send one command with an old token">Stale-token cmd</button>
+      </div>
+      <div class="kv" style="margin-top:8px">
+        <span class="mut">lease</span><span id="lease">-</span>
+        <span class="mut">commands</span><span id="cmds">-</span>
+        <span class="mut">host</span><span id="host">-</span>
+      </div>
+      <p class="mut" style="margin:8px 0 4px">Teleop: sliders set joint targets, or hold keys Q/A W/S E/D R/F T/G Y/H U/J (joints 0–6 ±). Position chunks are sent at 100 Hz from the control Worker; the main thread only posts target changes.</p>
+      <div class="sliders" id="sliders"></div>
+    </div>
+    <div class="card"><h2>Clock (this participant → session time)</h2><div class="kv" id="clock"></div></div>
+    <div class="card"><h2>WebAssembly</h2><div class="kv" id="wasm"></div></div>
+    <div class="card"><h2>Events</h2><div id="log"></div></div>
+  </div>
+</main>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

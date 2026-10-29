@@ -1,6 +1,6 @@
 # Language parity
 
-Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (all **Approved by the user, 2026-10-19**).
+Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (all **Approved by the user, 2026-10-19**). JS (browser) binding: Experimental, 2026-10-20; a client of the v2 session, not of this surface (R-29). JS (Node) binding: Experimental, 2026-10-20; Python's `rlmesh.v2` over a native addon (R-30).
 
 RLMesh is one library in five languages: Python (the reference), Rust (the
 `rlmesh` facade crate), C (`crates/rlmesh-capi/include/rlmesh.h`), C++
@@ -18,12 +18,45 @@ Python's Stable surface
 field names. The wire contract (`crates/rlmesh-proto/proto/`) is frozen and
 this spec does not change it.
 
+## Sessions in 0.2
+
+Python 0.2 serves and dials envs and models only on v2 session addresses
+(`[host/][session/]participant`, the protocol's lockstep clock). The C ABI
+follows it in the shared Rust core, so C, C++, C#, Unity and Unreal do too:
+
+- An env server and `rlmesh_model_serve` take a participant address
+  (`:0/env`, `host:port/session/name`); with no address an env server is
+  `:0/env`, as Python's `EnvServer` is. A run, a remote env and a remote
+  model dial session addresses; a run refuses a v1 endpoint and an open
+  remote env handle with Python's errors. An env's builtin exception class
+  (`ValueError`) arrives as a Python env's does.
+- Arrays in metadata (info, reset options) travel as arrays in every
+  language: a NumPy array, an `rlmesh.Tensor` and a native `Tensor` alike
+  (COR-P10, COR-26).
+- Still v1 in the native languages, until v1 is deleted: a `tcp://` or
+  `unix://` bind or dial, and the options only that wire has (remote
+  shutdown, idle and drain timeouts, endpoint tokens, TLS and API keys).
+- C ABI 6 takes Python 0.2's names: a model bound to one env is a `Binding`
+  (`rlmesh_model_bind`, `rlmesh_bind` for `RANDOM_SAMPLE`, C++
+  `Model::bind`), stepped with `reset(seed, options)` and `step(action)` (no
+  action: the model's); a served model is a `Model` built from its
+  participant address (`rlmesh_model_from_address`, `Model::from_address`).
+  A binding has no predict, run, hooks, view or cancel token; Python's
+  `Model.bind` hooks and view have no native user yet. The area files still
+  describe 0.1's `Session` and `RemoteModel`, and their samples v1 endpoints.
+- `python/rlmesh/tests/conformance/native_gate.py` runs the Gymnasium gate's
+  rows over each language's env, model and clients against Python 0.2:
+  `test:cxx` for C++ and the Unreal plugin's game-thread env, `test:csharp`
+  for C# and the Unity host on .NET (Unity's Editor and player gates, D-44,
+  still need Unity).
+
 ## C# and the v2 protocol
 
 The RLMesh protocol is being redesigned for v2: clocked sessions, typed
 channels, timed action chunks, leases and an edge runtime, on a Zenoh data
 plane with a Rust core, every language a thin binding over the core's C ABI.
-v0.2 ships on the current wire; v2 is a clean break after it. So:
+v0.2 ships its envs and models on v2 sessions ([above](#sessions-in-02)); the
+rest of v2 is a clean break after it. So:
 
 - **The C# column is a design record.** It records how C# maps onto the v1
   surface, and why, for the v2 bindings to learn from. It is not a backlog:
@@ -49,6 +82,40 @@ v0.2 ships on the current wire; v2 is a clean break after it. So:
   [C# enforcement](language-parity/rules.md#c-enforcement)).
 - [Lessons for the v2 C ABI](#lessons-for-the-v2-c-abi) states what the
   core's C ABI must design for from day one.
+
+## JS (browser) and the v2 protocol
+
+The browser binding is the first binding of the v2 session (protocol
+generation 2), not of the v1 surface this spec maps, so it has no column in
+the area tables or the manifest. It is introduced the way C# was: labelled
+Experimental, with its constraints written down as a rule (R-29), before it
+has a Stable surface.
+
+- **What it is.** The `rlmesh` npm package (`javascript/rlmesh`, not
+  published yet) over `javascript/rlmesh/wasm` (`rlmesh-wasm`):
+  `rlmesh-session-core`, the sans-IO core every v2 binding shares, compiled
+  to `wasm32-unknown-unknown`, one instance per traffic class Worker. A page
+  has no raw TCP or UDP, so `rlmesh-gateway` bridges it to the session: each
+  browser connection is a session participant of its own, and the host
+  stays the only authority (docs: [the browser binding](../browser.md)).
+- **What it binds** (R-29): sessions, streams, leases and the session verbs
+  (`arm`, `disarm`, `estop`). It serves no environments and runs no edge.
+- **R-16 does not apply.** It is async-first: every call that waits on the
+  network returns a `Promise`, and there are no sync twins (a browser main
+  thread must not block). R-29 records this exception.
+- **Enforcement.** None of E-1 to E-3 reads it. Its own gates are the
+  browser checks (`mise run test:js`, `check:sans-io`) and the CI `browser`
+  job; a JS column joins this spec when the v2 surfaces get their parity
+  mapping. It joins [compatibility](../compatibility.md)'s list when it is
+  published.
+
+The Node binding (R-30) is the same package's other half: in Node 22+ and
+Electron's main process, `Host`, `Robot`, `Policy` and `Rate` bind
+`rlmesh-session` (its edge included) directly through a Node-API addon
+(`javascript/rlmesh/native`), one to one with Python's `rlmesh.v2` and
+async-first like the browser. Robots, edges and device loops run here, not in
+a page. Its gate is `mise run test:js:native` (docs: [the Node
+binding](../node.md)).
 
 ## How to read
 
@@ -76,16 +143,16 @@ v0.2 ships on the current wire; v2 is a clean break after it. So:
 
 ## Files
 
-| File                                       | Covers                                                                                                                            |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| [rules.md](language-parity/rules.md)       | Rules, decisions, error matrix, warnings, Python changes, shapes, known gaps, enforcement                                         |
-| [core.md](language-parity/core.md)         | `Value`, `Metadata`, error detail fields, workflow editions, describe, build info                                                 |
-| [spaces.md](language-parity/spaces.md)     | Spaces, `SpaceSpec`, space values and `Tensor`                                                                                    |
-| [env.md](language-parity/env.md)           | Env authoring and serving: `Env`, `VectorEnv`, `EnvFactory`, `Variant`, `EnvServer`, `ServeOptions`, `EnvContract`, `trial_index` |
-| [model.md](language-parity/model.md)       | Model authoring: `Policy`, `Model`, `PredictContext`, `SpecArg`, `NO_ADAPTER`                                                     |
-| [running.md](language-parity/running.md)   | `run`, `session`, `Session`, run and env targets, `RunContext`, `RunHooks`, results, `View`, `Recorder`, `RANDOM_SAMPLE`          |
-| [remote.md](language-parity/remote.md)     | `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, their options, sandbox clients                                                     |
-| [adapters.md](language-parity/adapters.md) | `EnvTags`, `ModelSpec`, `ObservationRoles`, transforms, `tag`, `resolve`, `Adapter`                                               |
+| File                                       | Covers                                                                                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| [rules.md](language-parity/rules.md)       | Rules (R-29: the browser binding; R-30: the Node binding), decisions, error matrix, warnings, Python changes, shapes, known gaps, enforcement |
+| [core.md](language-parity/core.md)         | `Value`, `Metadata`, error detail fields, workflow editions, describe, build info                                                             |
+| [spaces.md](language-parity/spaces.md)     | Spaces, `SpaceSpec`, space values and `Tensor`                                                                                                |
+| [env.md](language-parity/env.md)           | Env authoring and serving: `Env`, `VectorEnv`, `EnvFactory`, `Variant`, `EnvServer`, `ServeOptions`, `EnvContract`, `trial_index`             |
+| [model.md](language-parity/model.md)       | Model authoring: `Policy`, `Model`, `PredictContext`, `SpecArg`, `NO_ADAPTER`                                                                 |
+| [running.md](language-parity/running.md)   | `run`, `session`, `Session`, run and env targets, `RunContext`, `RunHooks`, results, `View`, `Recorder`, `RANDOM_SAMPLE`                      |
+| [remote.md](language-parity/remote.md)     | `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, their options, sandbox clients                                                                 |
+| [adapters.md](language-parity/adapters.md) | `EnvTags`, `ModelSpec`, `ObservationRoles`, transforms, `tag`, `resolve`, `Adapter`                                                           |
 
 ## Decisions accepted by the user
 
@@ -801,7 +868,7 @@ channels, samples, action chunks, leases, epochs and the edge runtime.
      frees, step 6).
    - A preflight query (`quiescent(host)`) lets the host refuse or defer a
      reload; unload notifications are only a fallback. A host shutdown is a
-     participant detach: the session host sees its liveliness end, its
+     participant detach: the session host sees its heartbeats end, its
      leases lapse and the edge falls back, so an Editor reload is a clean
      detach, not a fault.
 8. **No implicit process-wide changes.** The core installs no process-wide

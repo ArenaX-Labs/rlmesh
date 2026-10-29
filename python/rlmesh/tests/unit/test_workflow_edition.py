@@ -28,7 +28,7 @@ UNKNOWN_EDITION = "2099.01"
 EDITION = current_workflow_edition()
 
 #: The exact spelling this build offers: the sealed base on a release, the
-#: cohort (`2026.06-dev.<sha>`) on a prerelease or source build.
+#: cohort (`2026.10-dev.<sha>`) on a prerelease or source build.
 COHORT = rlmesh.build_info().workflow_edition
 
 
@@ -93,37 +93,6 @@ def test_current_workflow_edition_is_the_bare_base_on_every_build() -> None:
     assert "-" not in edition
     assert COHORT.partition("-")[0] == edition
     assert resolve_workflow_edition(call=edition) == edition
-
-
-def test_undeclared_public_session_preserves_a_legacy_binder() -> None:
-    sentinel = object()
-
-    class LegacyHandle:
-        def session(
-            self,
-            env: object,
-            *,
-            instruction: str | None,
-            close_env: bool,
-            trust_entrypoints: bool | None,
-            execution_horizon: int,
-            view: object,
-        ) -> object:
-            return sentinel
-
-    assert rlmesh.session(LegacyHandle(), "tcp://127.0.0.1:1") is sentinel
-
-
-def test_sandbox_refuses_an_invalid_call_pin_before_starting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def unexpected_serve(self: object) -> None:
-        pytest.fail("invalid edition started a container")
-
-    monkeypatch.setattr(rlmesh.SandboxModel, "serve", unexpected_serve)
-    handle = rlmesh.SandboxModel("image://unused:latest")
-    with pytest.raises(ValueError, match=UNKNOWN_EDITION):
-        rlmesh.session(handle, "tcp://127.0.0.1:1", workflow_edition=UNKNOWN_EDITION)
 
 
 class TestPrecedence:
@@ -324,7 +293,7 @@ class TestOneTimeWarning:
     def test_the_warning_names_the_env_server_construction_site(self) -> None:
         # One hop deeper than the resolver's direct callers: EnvServer.__init__.
         with pytest.warns(UserWarning, match="no workflow edition declared") as records:
-            server = rlmesh.EnvServer(_two_step_env(), "127.0.0.1:0")
+            server = rlmesh.EnvServer(_two_step_env(), ":0/env")
         server.shutdown()
         assert Path(records[0].filename) == Path(__file__)
 
@@ -424,8 +393,15 @@ class TestServeOptionsDeclaring:
         served: list[ServeOptions | None] = []
 
         class Worker:
-            def serve(self, address: str, options: ServeOptions | None) -> None:
-                _ = address
+            def serve(
+                self,
+                address: str,
+                name: str,
+                options: ServeOptions | None,
+                envelope: str,
+                **batching: object,
+            ) -> None:
+                _ = address, name, envelope, batching
                 served.append(options)
 
             def stop_serving(self) -> None:
@@ -434,7 +410,9 @@ class TestServeOptionsDeclaring:
         model = rlmesh.Model(lambda obs: obs)
         monkeypatch.setattr(model, "_install_worker", Worker)
         monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)
-        model.serve("127.0.0.1:0", options=ServeOptions(workflow_edition=EDITION))
+        model.serve(
+            "127.0.0.1:0", name="policy", options=ServeOptions(workflow_edition=EDITION)
+        )
         assert served[0] is not None
         assert served[0].workflow_edition == EDITION
 

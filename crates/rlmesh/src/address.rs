@@ -6,6 +6,16 @@ use rlmesh_grpc::helpers::{BindTarget, parse_bind_target, parse_env_connect_targ
 
 use crate::{Error, Result};
 
+/// Whether `text` is a v2 session or participant address (`cartpole`,
+/// `:0/gym`, `lab:7447/bench-3/ur10`) rather than a v1 endpoint
+/// (`host:port`, a port, `tcp://`, `unix://`, `https://`).
+pub(crate) fn is_v2(text: &str) -> bool {
+    #[cfg(feature = "lockstep")]
+    return rlmesh_session::address::is_v2_address(text);
+    #[cfg(not(feature = "lockstep"))]
+    return text.starts_with("rlmesh://") || text.starts_with("lockstep://");
+}
+
 /// A client-side address for connecting to a running server.
 ///
 /// Build one with [`ConnectAddress::parse`], or pass a `&str` directly to the
@@ -25,6 +35,10 @@ pub enum ConnectAddress {
         /// The server port.
         port: u16,
     },
+    /// A robot in a v2 session, by its participant address
+    /// (`[host/][session/]robot`; protocol v2 §12, driven only in builds
+    /// with the `lockstep` feature).
+    Lockstep(String),
 }
 
 /// A server-side address to bind a listener to.
@@ -58,6 +72,9 @@ impl ConnectAddress {
     /// recognized address (including a `unix://` path on Windows, where Unix
     /// sockets are unsupported, and an `https://` address with a path).
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
+        if is_v2(value.as_ref()) {
+            return Ok(Self::Lockstep(value.as_ref().to_string()));
+        }
         let target = parse_env_connect_target(value.as_ref()).map_err(Error::from_grpc)?;
         if let Some((host, port)) = target.tls_server() {
             return Ok(Self::Https {
@@ -79,6 +96,7 @@ impl ConnectAddress {
             Self::Unix(path) => format!("unix://{}", path.display()),
             Self::Https { host, port } if host.contains(':') => format!("https://[{host}]:{port}"),
             Self::Https { host, port } => format!("https://{host}:{port}"),
+            Self::Lockstep(value) => value.clone(),
         }
     }
 }

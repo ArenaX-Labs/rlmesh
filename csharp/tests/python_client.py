@@ -1,46 +1,35 @@
 """Drive a C#-served env through the supported Python surface."""
 
-import importlib.util
+import builtins
 import sys
-from pathlib import Path
 
-import grpc
 import rlmesh
 import rlmesh.numpy
 
 address, scenario, *expected_text = sys.argv[1:]
-if scenario == "normal":
-    # Reuse the repository's raw protobuf probe codec; no generated stubs or
-    # dependency on Python's private env-client internals is needed.
-    spec = importlib.util.spec_from_file_location(
-        "crossver", Path(__file__).resolve().parents[2] / "tests/system/crossver.py"
-    )
-    assert spec is not None and spec.loader is not None
-    codec = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = codec
-    spec.loader.exec_module(codec)
-    info = rlmesh.build_info()
-    core = codec._text(1, info.protocol_generation)
-    for edition in info.supported_workflow_editions:
-        core += codec._text(4, edition)
-    with grpc.insecure_channel(address.removeprefix("tcp://")) as channel:
-        raw = channel.unary_unary("/rlmesh.env.v1.EnvService/Handshake")(
-            codec._delimited(1, core), timeout=10
-        )
-    base = codec._message(codec._decode(raw), 1)
-    peer = codec._message(base, 2)
-    assert bool(base.get(1, [0])[0])
-    # ABI 5's host_runtime_json changes the served describe envelope only.
-    # PeerInfo still belongs to the native process; E-3's assertion that this
-    # option changes handshake language is not supported by the real ABI.
-    assert codec._string(peer, 3), "missing native PeerInfo language"
 
-    result = rlmesh.run(rlmesh.RANDOM_SAMPLE, address, episodes=3)
-    assert result is not None
+
+def remote_env() -> rlmesh.numpy.RemoteEnv:
+    return rlmesh.numpy.RemoteEnv(address)
+
+
+def random_episodes(count: int) -> None:
+    """Random episodes, each to its end."""
+    with remote_env() as env:
+        for _ in range(count):
+            env.reset()
+            done = False
+            while not done:
+                _, _, terminated, truncated, _ = env.step(env.action_space.sample())
+                done = terminated or truncated
+
+
+if scenario == "normal":
+    random_episodes(3)
 elif scenario == "dict":
     import numpy as np
 
-    with rlmesh.numpy.RemoteEnv(address) as env:
+    with remote_env() as env:
         observation, info = env.reset()
         assert info["z"] == 9 and info["a"] == 8, info
         step = env.step(0)
@@ -53,10 +42,9 @@ elif scenario == "dict":
             np.testing.assert_array_equal(
                 value["state"], np.array([5, 6], dtype=np.uint8)
             )
-    result = rlmesh.run(rlmesh.RANDOM_SAMPLE, address, episodes=2)
-    assert result is not None
+    random_episodes(2)
 else:
-    with rlmesh.numpy.RemoteEnv(address) as env:
+    with remote_env() as env:
         env.reset()
         try:
             env.step(0)
@@ -67,6 +55,12 @@ else:
                 scenario == "recoverable"
             )
             expected = expected_text[0]
-            assert str(error) == f"[INTERNAL] step failed: {expected}", str(error)
+            builtin = getattr(builtins, scenario, None)
+            if builtin is not None:
+                # The env's builtin class arrives with its own message.
+                assert isinstance(error, builtin), type(error).__mro__
+                assert str(error) == expected and error.phase == "step", str(error)
+            else:
+                assert str(error) == f"[INTERNAL] step failed: {expected}", str(error)
         else:
             raise AssertionError("expected an environment failure")

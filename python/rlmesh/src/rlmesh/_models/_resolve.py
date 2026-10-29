@@ -1,9 +1,7 @@
 """Adapter resolution from an env contract and a model spec.
 
-``resolve_adapter`` is the shared core used by both the served path (resolved
-once per route at ``ResolveAdapter``) and the local
-:class:`rlmesh._models._eval.Session`; ``reject_vector_env`` is the single-env
-guard the per-episode loop relies on.
+``resolve_adapter`` is the shared core the served path uses (resolved once
+per route at ``ResolveAdapter``).
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ if TYPE_CHECKING:
 
 # Cross-module surface: the shared resolver plus the helpers ``_eval``
 # resolves as module globals (see note in ``_connect``).
-__all__ = ["reject_vector_env", "resolve_adapter"]
+__all__ = ["resolve_adapter"]
 
 
 def resolve_adapter(
@@ -26,8 +24,7 @@ def resolve_adapter(
 ) -> Adapter | None:
     """Resolve the adapter from a model ``spec`` and an env contract.
 
-    The shared core of both the served path and the local
-    :class:`rlmesh._models._eval.Session`. On the serve path a model receives the
+    On the serve path a model receives the
     env contract once per route (the ``ResolveAdapter`` RPC), so it resolves the
     adapter there rather than at connect. Returns ``None`` for a ``NO_ADAPTER`` or
     spec-less model on an untagged env (no transform). Raises on a spec/env
@@ -69,18 +66,3 @@ def resolve_adapter(
             "resolving a spec'd adapter requires an env contract, but the env exposes none"
         )
     return resolve_from_contract(contract, spec, trust_entrypoints=trust_entrypoints)
-
-
-def reject_vector_env(contract: EnvContract | None) -> None:
-    """Reject a vectorized env before the single-env per-episode loop runs.
-
-    The loop reads scalar reward/termination, so a vector env (``num_envs > 1``)
-    would crash on array truthiness. Fail up front rather than deep in the step loop.
-    """
-    num_envs = getattr(contract, "num_envs", 1) if contract is not None else 1
-    if num_envs and num_envs > 1:
-        raise ValueError(
-            f"the session loop drives a single env, but the env reports num_envs={num_envs}; "
-            "drive a lane endpoint with Model.run(address) (the native loop), or "
-            "serve num_envs=1 for session()."
-        )

@@ -125,6 +125,11 @@ pub struct ConcatPart {
     /// unset; a constant part may not carry them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    /// The gripper polarity the checkpoint reads (`proprio/gripper_pos`):
+    /// openness (`open`) or closedness (`close`); see
+    /// `Polarity`. Omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polarity: Option<crate::spec::Polarity>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -169,6 +174,8 @@ struct ConcatPartWire {
     part: Option<String>,
     #[serde(default)]
     labels: Option<Vec<String>>,
+    #[serde(default)]
+    polarity: Option<crate::spec::Polarity>,
     // Captured instead of hard-erroring so a newer writer's field survives an
     // older reader; the publish gate rejects a bare one.
     #[serde(flatten)]
@@ -312,10 +319,11 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
                     || wire.provenance.is_some()
                     || wire.part.is_some()
                     || wire.labels.is_some()
+                    || wire.polarity.is_some()
                 {
                     return Err("a constant (role-less) state part carries only dim and \
                          fill; drop encoding/index/range/optional/post_rotate/scale/offset/\
-                         axis_scale/axis_offset/frame/provenance/part/labels"
+                         axis_scale/axis_offset/frame/provenance/part/labels/polarity"
                         .to_owned());
                 }
             }
@@ -338,6 +346,7 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             provenance: wire.provenance,
             part: wire.part,
             labels: wire.labels,
+            polarity: wire.polarity,
             unknown: wire.unknown,
         })
     }
@@ -374,6 +383,7 @@ impl<'de> Deserialize<'de> for ConcatPart {
                     part: None,
                     labels: None,
                     unknown: BTreeMap::new(),
+                    polarity: None,
                 })
             }
 

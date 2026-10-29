@@ -14,6 +14,8 @@ maturin = "1.15"
 zig = "0.17"
 # Cross-compiles the Windows (MSVC) C/C++ package from Linux; needs clang on PATH.
 "github:rust-cross/cargo-xwin" = "0.23"
+# Cross-compiles the Linux Node addons against a glibc floor (release:js:native).
+"github:rust-cross/cargo-zigbuild" = "0.24"
 
 # Markdown/TOML/YAML/JSON formatting. node only exists to run oxfmt (npm backend).
 node = "24"
@@ -73,7 +75,7 @@ description = "Install tools, Python dev dependencies, and git hooks"
 depends = ["setup:python", "setup:hooks"]
 
 [tasks."setup:python"]
-description = "Sync Python dev environment"
+description = "Sync the Python dev environment, rebuilding the in-tree extension when a source or the commit changed"
 run = "uv sync --group dev"
 
 [tasks."setup:python:release"]
@@ -101,7 +103,7 @@ run = "cargo fmt --all"
 
 [tasks."fmt:python"]
 description = "Format Python code"
-run = "uv run ruff format"
+run = "uv run --no-sync ruff format"
 
 [tasks."fmt:proto"]
 description = "Format Protobuf definitions"
@@ -130,15 +132,15 @@ run = "cargo fmt --all --check"
 
 [tasks."fmt:check:python"]
 description = "Check Python formatting"
-run = "uv run ruff format --check"
+run = "uv run --no-sync ruff format --check"
 
 [tasks."fmt:cxx"]
 description = "Format the C/C++ bindings and examples (clang-format)"
-run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/src/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
 
 [tasks."fmt:check:cxx"]
 description = "Check the C/C++ binding and example formatting"
-run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/src/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"
@@ -162,7 +164,7 @@ run = "cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
 [tasks."fix:python"]
 description = "Apply safe Python lint fixes"
-run = "uv run ruff check --fix"
+run = "uv run --no-sync ruff check --fix"
 
 # ──────────────────────────────────────────────
 # Lint (non-mutating)
@@ -178,7 +180,7 @@ run = "cargo clippy --workspace --all-targets -- -D warnings"
 
 [tasks."lint:python"]
 description = "Lint Python code"
-run = "uv run ruff check"
+run = "uv run --no-sync ruff check"
 
 [tasks."lint:proto"]
 description = "Lint Protobuf definitions"
@@ -294,6 +296,9 @@ depends = [
 # ──────────────────────────────────────────────
 # Test
 # ──────────────────────────────────────────────
+# test:python syncs the dev environment first (setup:python), which rebuilds
+# the in-tree extension after a commit; the other two wait for it, so every
+# Python process of the run loads one build, stamped like the C library.
 [tasks."test"]
 description = "Run Rust tests, Python unit/integration tests, and the C/C++ binding smoke + e2e"
 depends = ["test:rust", "test:python", "test:cxx"]
@@ -301,10 +306,11 @@ depends = ["test:rust", "test:python", "test:cxx"]
 # The single test entrypoint CI runs after `check`; run it locally for CI parity.
 [tasks."test:ci"]
 depends = ["parity:fixtures"]
-description = "Everything CI tests: test + API surface + examples + system harness + installed-wheel system profile against a freshly built local wheel"
+description = "Everything CI tests: test + API surface + perf budgets + examples + system harness + installed-wheel system profile against a freshly built local wheel"
 run = [
   "mise run test",
   "mise run test:python:api-surface",
+  "mise run test:python:perf",
   "mise run test:python:examples",
   "mise run test:system:harness",
   "mise run build:python:local",
@@ -321,6 +327,7 @@ file = "scripts/test-cxx-pkg.sh"
 # own on every platform (macOS), so its site-packages is put on PYTHONPATH.
 [tasks."test:rust"]
 description = "Run Rust workspace tests and doctests"
+wait_for = ["setup:python"]
 run = '''
 export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" &&
   cargo nextest run --workspace --all-targets -E 'not (binary(parity_fixtures) | binary(parity_defaults))' &&
@@ -335,6 +342,7 @@ run = 'mise run dev:heavy -- python scripts/dev/affected.py {{arg(name="args", v
 
 [tasks."test:python"]
 description = "Run Python unit, integration, and conformance tests plus the authoring-import guard"
+depends = ["setup:python"]
 run = "uv run pytest python/rlmesh/tests/unit python/rlmesh/tests/integration python/rlmesh/tests/conformance python/rlmesh/tests/test_no_authoring_import.py -q"
 
 [tasks."test:python:unit"]
@@ -346,8 +354,12 @@ description = "Run Python integration tests"
 run = "uv run pytest python/rlmesh/tests/integration -q"
 
 [tasks."test:python:conformance"]
-description = "Run Python adapter-spec conformance vectors (cross-engine parity gate)"
+description = "Run Python conformance gates: adapter-spec vectors (cross-engine parity) and Gymnasium (served envs behave as plain gymnasium, over gRPC and lockstep)"
 run = "uv run pytest python/rlmesh/tests/conformance -q"
+
+[tasks."test:python:perf"]
+description = "Run the Python wall-clock budgets (pytest marker perf), which the other runs leave out"
+run = "uv run pytest python/rlmesh/tests -m perf -q"
 
 [tasks."test:python:api-surface"]
 description = "Run Python API surface tests"
@@ -356,6 +368,85 @@ run = "uv run pytest python/rlmesh/tests/api_surface -q"
 [tasks."test:python:examples"]
 description = "Run the headless example programs end to end"
 run = "uv run pytest python/rlmesh/tests/examples -q"
+
+# ──────────────────────────────────────────────
+# Browser binding: javascript/rlmesh and its wasm core, javascript/rlmesh/wasm
+# ──────────────────────────────────────────────
+# Not in check, typecheck or test: those run in the `fast` CI job, which would
+# then install the wasm toolchain and node_modules on every PR. The `browser`
+# CI job runs these gates when their inputs change; `mise run test:js` is the
+# local one-shot. File tasks: setup:js, build:js, check:sans-io, test:js:wasm,
+# test:js:e2e.
+[tasks."test:js"]
+description = "Build the wasm and the JS package, then run every browser gate: wasm tests under Node, the .wasm import/size check, strict tsc, JS unit tests"
+depends = ["build:js"]
+run = [
+  "mise run test:js:wasm",
+  "mise run check:js:wasm",
+  "mise run typecheck:js",
+  "mise run test:js:unit",
+]
+
+# The real v2 codec (authority snapshots with parts, bindings, contracts and
+# demands) measures ~96 KiB gzip; the budget keeps headroom and catches a
+# dependency that drags in a runtime.
+[tasks."check:js:wasm"]
+description = "Check the built .wasm imports only wasm-bindgen glue (no env/WASI) and stays under 112 KiB gzip"
+run = "node scripts/check-wasm.mjs javascript/rlmesh/pkg/rlmesh_bg.wasm --max-gzip 114688"
+
+[tasks."typecheck:js"]
+description = "Typecheck javascript/rlmesh (and the browser example) with strict tsc --noEmit"
+depends = ["setup:js"]
+dir = "{{ config_root }}/javascript/rlmesh"
+run = "npx tsc --noEmit -p ."
+
+[tasks."test:js:unit"]
+description = "Run javascript/rlmesh's unit tests under Node (fake Workers and sockets)"
+depends = ["setup:js"]
+dir = "{{ config_root }}/javascript/rlmesh"
+run = "node test/run.mjs"
+
+# Node and Electron binding: javascript/rlmesh/native (napi-rs), wrapped by
+# javascript/rlmesh/src/native.ts. Needs no wasm toolchain.
+[tasks."build:js:native"]
+description = "Build the Node/Electron native addon (javascript/rlmesh/native, profile node) into javascript/rlmesh/dist/rlmesh.{platform}-{arch}.node"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cargo build --profile node -p rlmesh-node
+target_dir="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+for lib in "$target_dir"/node/{librlmesh_node.so,librlmesh_node.dylib,rlmesh_node.dll}; do
+  [ -f "$lib" ] && break
+done
+out="javascript/rlmesh/dist/rlmesh.$(node -p 'process.platform + "-" + process.arch').node"
+mkdir -p javascript/rlmesh/dist
+cp "$lib" "$out"
+echo "$out $(wc -c <"$out" | tr -d ' ') bytes"
+'''
+
+[tasks."test:js:native"]
+description = "Run javascript/rlmesh's native tests: a Node host, robots and policies in one session over the addon (the twin of test_v2_session.py)"
+depends = ["setup:js"]
+run = [
+  "mise run build:js:native",
+  "cd javascript/rlmesh && node build.mjs --node-only",
+  "node javascript/rlmesh/test/run.mjs --native",
+  "node examples/node/hold.mjs > /dev/null",
+]
+
+[tasks."bench:js:native"]
+description = "Benchmark the Node binding against Python's rlmesh.v2: a 1 kHz robot loop and a 50 Hz policy with a camera, in one process each (BENCH_SECONDS, default 10)"
+depends = ["setup:js"]
+run = [
+  "mise run build:js:native",
+  "cd javascript/rlmesh && node build.mjs --node-only",
+  "node javascript/rlmesh/bench/session.mjs",
+  "uv run python javascript/rlmesh/bench/session.py",
+]
+
+[tasks."demo:web"]
+description = "Run the browser example: the example robot and the gateway, serving examples/web on http://127.0.0.1:18080/ (open the #t= URL it prints)"
+run = ["mise run build:js --demo", "bash examples/web/run.sh"]
 
 [tasks."test:system:harness"]
 description = "Run system test runner and fixture tests"
@@ -384,25 +475,16 @@ run = [
 description = "Re-run the perf profile and fail on drift against the local baseline"
 run = "uv run rlmesh-system run --profile perf --kind artifact --baseline target/python-validation/perf-baseline.json --fail-on-regression"
 
-[tasks."test:crossver"]
-# Standalone entrypoint builds its own release wheels. CI and release:check
-# reuse the wheels they already built via test:crossver:installed.
-description = "Run the cross-version matrix: this tree's release wheel against the pinned published one"
-# Use the manifest's release edition rather than a local dev cohort. The
-# matrix checks the expected refusal when the fixture is still provisional.
-env = { RLMESH_RELEASE_BUILD = "1" }
-run = ["mise run build:python:local", "mise run test:crossver:installed"]
-
-[tasks."test:crossver:installed"]
-description = "Run cross-version compatibility against existing release-cohort wheels"
-run = [
-  "uv run rlmesh-system run --profile compatibility",
-  "cat target/python-validation/crossver/matrix.txt",
-]
-
 [tasks."test:system:clean"]
 description = "Remove installed-artifact system venvs, logs, and reports"
 run = "uv run rlmesh-system clean"
+
+# The cockpit (protocol v2): one live session's channels, rates, timeline and
+# arm/e-stop. ADDRESS is what `rlmesh.v2.Host.address` prints; `--replay FILE`
+# opens a recording instead.
+[tasks."cockpit"]
+description = "Open the cockpit on a running v2 session or a recording: mise run cockpit -- ADDRESS | --replay FILE"
+run = 'cargo run --release -p rlmesh-cockpit -- {{arg(name="args", var=true)}}'
 
 # ──────────────────────────────────────────────
 # Build
@@ -497,7 +579,10 @@ run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set m
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
 env = { RLMESH_RELEASE_BUILD = "1" }
-run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty'
+# Packaged together, so the facade resolves rlmesh-session from this tree.
+# Skipped: the bindings' crates (rlmesh-wasm, rlmesh-node, rlmesh-python, a
+# wasm package, an addon and a maturin wheel) and the cockpit.
+run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wasm --exclude rlmesh-node --exclude rlmesh-cockpit --exclude rlmesh-python'
 
 [tasks."release:artifacts:licenses"]
 description = "Validate release artifact license files before publishing"
@@ -513,7 +598,6 @@ run = [
   "mise run release:artifacts:licenses",
   "mise run test:system:heavy",
   "mise run test:python:floors",
-  "mise run test:crossver:installed",
 ]
 
 # ──────────────────────────────────────────────
@@ -539,6 +623,8 @@ description = "Check the reviewed Stable Python to Rust/C/C++ parity manifest"
 run = [
   "uv run pytest tools/rlmesh_api_surface/tests -q",
   "uv run python -m rlmesh_api_surface.parity",
+  # Manifest defaults against live Python; needs no built fixtures, unlike the rest of tests/parity.
+  "uv run pytest tests/parity/test_defaults_generator.py -q",
 ]
 
 [tasks."csharp:interop:generate"]

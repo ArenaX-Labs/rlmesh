@@ -1,0 +1,5 @@
+binding refused: loco_go2 on go2 (1 problem)
+
+  [not_allowed] input "gravity": base/imu publishes orientation (quat_wxyz), the model wants gravity_xyz
+    needs: rotation
+    fix: add "rotation" to allow

@@ -1,0 +1,1505 @@
+// RLMesh real-time session wire, generation 2 (the v0.2 spec, §10).
+//
+// Every message is plain protobuf, one message per Zenoh payload; the key
+// says which message it is. Samples, batches and action chunks carry their
+// values as one raw `bytes` payload, packed in the layout the host derived
+// from the part's declaration (§10.6).
+//
+// Compatibility: additive only. New fields, verbs and enum values; never
+// renumber or retype. A feature added in a protocol minor is a feature
+// string (Attach.supports/requires, AuthorityState.supports,
+// PartSpec.requires). Field numbers the spec reserves for messages not built
+// yet (episodes) are left unused.
+syntax = "proto3";
+
+package rlmesh.session.v2;
+
+// What a participant does in a session. One participant may hold several.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  // Publishes a robot's parts and consumes their commands (real, sim or twin).
+  ROLE_EMBODIMENT = 1;
+  // Produces commands (model replica, operator or scripted controller).
+  ROLE_CONTROLLER = 2;
+  // Only subscribes (twin renderer, recorder, dashboard).
+  ROLE_OBSERVER = 3;
+}
+
+// The host-owned session mode.
+enum Mode {
+  MODE_UNSPECIFIED = 0;
+  MODE_DISARMED = 1;
+  MODE_ARMED = 2;
+  MODE_ACTIVE = 3;
+  MODE_SAFE = 4;
+  // Latched: leaving it needs a local clear, then disarm, then arm.
+  MODE_ESTOP = 5;
+}
+
+// Lease arbitration class: a higher class preempts a lower one.
+enum PriorityClass {
+  PRIORITY_CLASS_UNSPECIFIED = 0;
+  PRIORITY_CLASS_SCRIPTED = 1;
+  PRIORITY_CLASS_MODEL = 2;
+  PRIORITY_CLASS_OPERATOR = 3;
+  PRIORITY_CLASS_SAFETY = 4;
+}
+
+// How session time advances (§11.2).
+enum ClockMode {
+  CLOCK_MODE_UNSPECIFIED = 0;
+  CLOCK_MODE_WALL = 1;
+  CLOCK_MODE_VIRTUAL = 2;
+  CLOCK_MODE_LOCKSTEP = 3;
+}
+
+message ParticipantInfo {
+  string id = 1;
+  string name = 2;
+  repeated Role roles = 3;
+  PriorityClass priority = 4;
+  // Host session clock when the participant (last) attached.
+  int64 attached_ns = 5;
+  uint32 protocol_minor = 6;
+  // Features it implements and features it cannot run without.
+  repeated string supports = 7;
+  repeated string requires = 8;
+  // The workflow edition it declares (empty: none) and every one it runs.
+  string workflow_edition = 9;
+  repeated string workflow_editions = 10;
+  // Its heartbeats arrive. A robot whose heartbeats lapsed stays in the
+  // roster, absent, while its parts remain.
+  bool present = 12;
+  // The device its handshake authenticated (`local` in an embedded host).
+  string device = 11;
+  // Why it is absent (REASON_ROBOT_LOST).
+  Reason left = 13;
+  // The process attached under this id: rises with every handshake that
+  // takes effect, so a process that sees a newer one knows it was replaced.
+  uint32 generation = 14;
+}
+
+// A time-bounded grant of command authority over one commandable part,
+// bound to one binding.
+message Lease {
+  uint32 channel = 1;
+  string holder = 2;
+  PriorityClass priority = 3;
+  // Unique and increasing per session: a preemption or a rebinding issues a
+  // new one, which fences the old holder's in-flight chunks.
+  uint64 token = 4;
+  uint64 ttl_ns = 5;
+  // Host session clock.
+  int64 granted_ns = 6;
+  int64 expires_ns = 7;
+  // The binding fingerprint (8 bytes) every chunk under this lease carries.
+  bytes binding = 8;
+  // The id of the lease's `k_cmd` for this part (never the key itself).
+  uint32 key_id = 9;
+}
+
+// session_ns = participant_ns + offset_ns, within ± error_ns.
+message ClockMapping {
+  string participant = 1;
+  int64 offset_ns = 2;
+  uint64 error_ns = 3;
+  double drift_bound_ppm = 4;
+  // Round trip of the sample the offset came from (the window minimum).
+  uint64 rtt_ns = 5;
+  // Host session clock of that sample.
+  int64 sample_ns = 6;
+}
+
+// How a subscriber is delivered one stream (§8.2).
+enum ContractMode {
+  CONTRACT_MODE_UNSPECIFIED = 0;
+  // The newest sample, at most delivery_hz times per second.
+  CONTRACT_MODE_LATEST = 1;
+  // Every sample, as soon as it is published; the subscriber keeps the window.
+  CONTRACT_MODE_HISTORY = 2;
+  // Every sample, as soon as it is published.
+  CONTRACT_MODE_EVERY = 3;
+}
+
+// One subscriber's delivery contract on one stream, fixed at attach.
+message StreamContract {
+  // A part's stream or a commandable part's _applied stream.
+  uint32 channel = 1;
+  ContractMode mode = 2;
+  // D.
+  double delivery_hz = 3;
+  // The deepest window on the stream; 1 is none.
+  uint32 history = 4;
+  // The effective freshness bound after precedence (§8.7); 0 for events.
+  uint64 max_age_ns = 5;
+  bool max_age_explicit = 6;
+}
+
+// The action grid a binding declared for one commanded part: a chunk with
+// dt_ns = 0 takes this dt.
+message ActionGrid {
+  uint32 channel = 1;
+  uint64 dt_ns = 2;
+}
+
+// How a publisher sends one stream.
+enum PlanKind {
+  PLAN_KIND_UNSPECIFIED = 0;
+  // Each sample immediately (any every or history contract).
+  PLAN_KIND_EVERY = 1;
+  // Was INCREMENTS: wire batching of history windows, removed.
+  reserved 2;
+  reserved "PLAN_KIND_INCREMENTS";
+  // The newest sample at latest_hz, coalescing older ones.
+  PLAN_KIND_LATEST = 3;
+}
+
+// A stream's publication plan, derived by the host from every admitted
+// contract on it. A stream with no demand publishes every sample within its
+// send ceiling.
+message Demand {
+  uint32 channel = 1;
+  // Bumps whenever the plan changes; from 1.
+  uint64 revision = 2;
+  PlanKind plan = 3;
+  // Were the INCREMENTS flush interval and caps.
+  reserved 4, 5, 6;
+  reserved "flush_ns", "max_records", "max_bytes";
+  // LATEST.
+  double latest_hz = 7;
+  // How long the publisher's ring retains samples.
+  uint64 retain_ns = 8;
+  // The newest revision the publisher acknowledged; 0 is none.
+  uint64 acked = 9;
+}
+
+// A controller's declared binding, as the host recorded it.
+message BindingRecord {
+  string participant = 1;
+  bytes fingerprint = 2;
+  uint32 revision = 3;
+  string table_json = 4;
+  // The commandable parts it may lease.
+  repeated uint32 channels = 5;
+  // Its replan rate R: in virtual mode, the ticks it is due on.
+  double replan_hz = 6;
+  // One per bound input stream.
+  repeated StreamContract contracts = 7;
+  // One per commanded part.
+  repeated ActionGrid grids = 8;
+}
+
+// Why a mode changed, the edge or the host went SAFE, or a lease ended
+// (one enum for all three, so the cockpit and the browser never infer).
+enum ReasonCode {
+  REASON_UNSPECIFIED = 0;
+  // Mode changes.
+  REASON_ARMED = 1;
+  REASON_DISARMED = 2;
+  REASON_FIRST_LEASE = 3;
+  REASON_LAST_RELEASE = 4;
+  // A ctl Estop through the host.
+  REASON_ESTOP_REMOTE = 5;
+  // robot.estop() or a hardware input at the edge.
+  REASON_ESTOP_LOCAL = 6;
+  // An e-stop signal latched at the edge.
+  REASON_ESTOP_SIGNAL = 7;
+  REASON_ESTOP_CLEARED = 8;
+  // SAFE causes (host or edge). The lease holder's heartbeats lapsed.
+  REASON_HOLDER_LOST = 10;
+  // The holder was silent past its lease's ttl.
+  REASON_HEARTBEAT_LAPSE = 11;
+  // Edge: no valid action within hold_max.
+  REASON_QUEUE_DRY = 12;
+  REASON_EDGE_LEASE_LAPSED = 13;
+  REASON_HANDOVER_TIMEOUT = 14;
+  REASON_DEVICE_WATCHDOG = 15;
+  // An embodiment's heartbeats lapsed.
+  REASON_ROBOT_LOST = 16;
+  // Participant side only, never on the host's wire.
+  REASON_HOST_LOST = 17;
+  // Lease endings.
+  REASON_RELEASED = 20;
+  REASON_PREEMPTED = 21;
+  REASON_REBOUND = 22;
+  REASON_VOIDED_BY_SAFE = 23;
+  REASON_VOIDED_BY_ESTOP = 24;
+  REASON_VOIDED_BY_DISARM = 25;
+  // Arm or reset.
+  REASON_VOIDED_BY_EPOCH = 26;
+  REASON_PART_REMOVED = 27;
+  REASON_HOLDER_DETACHED = 28;
+  // The owner revoked the device.
+  REASON_REVOKED = 29;
+  // The owner changed the device's entry.
+  REASON_ACCESS_CHANGED = 30;
+  // A scene's run ended (a stop) or failed: its mode change, its lease
+  // endings and its closing (scene design §4.2).
+  REASON_SCENE_ENDED = 31;
+  REASON_SCENE_FAILED = 32;
+}
+
+message Reason {
+  ReasonCode code = 1;
+  // The participant that caused it, when one did.
+  string by = 2;
+  string detail = 3;
+  // Host session clock (participant clock for REASON_HOST_LOST).
+  int64 at_ns = 4;
+  // The revision the change landed in.
+  uint64 revision = 5;
+  // The host authenticated the sender itself.
+  bool verified = 6;
+}
+
+// One lease that ended.
+message LeaseEnd {
+  Lease lease = 1;
+  Reason reason = 2;
+  // The preempting or rebound lease.
+  Lease by = 3;
+}
+
+// The host's last entry into SAFE, DISARMED or ESTOP; never lowered.
+message LastStop {
+  uint64 epoch = 1;
+  uint64 revision = 2;
+}
+
+// The host's authority snapshot.
+message AuthorityState {
+  string session = 1;
+  uint64 epoch = 2;
+  // Bumps on every structural change; periodic republishes keep it.
+  uint64 revision = 3;
+  Mode mode = 4;
+  bool estop_latched = 5;
+  repeated ParticipantInfo roster = 6;
+  repeated Lease leases = 7;
+  repeated ClockMapping clocks = 8;
+  // Host session clock when this snapshot was taken.
+  int64 host_ns = 9;
+  // Every declared part, host-normalised.
+  repeated PartSpec parts = 10;
+  // The host's protocol minor.
+  uint32 protocol_minor = 11;
+  // Features the host implements.
+  repeated string supports = 12;
+  ClockMode clock_mode = 13;
+  // Session time per tick (virtual and lockstep modes).
+  uint64 tick_ns = 14;
+  repeated BindingRecord bindings = 16;
+  // Robot -> its declaration fingerprint (8 bytes): BLAKE3 over the
+  // canonical form of its normalised map (§3.3).
+  map<string, bytes> contract = 17;
+  // The publication plan of every stream some binding has a contract on.
+  repeated Demand demands = 18;
+  // Why the mode is what it is (also set when a stopped mode records a later
+  // cause without changing).
+  Reason mode_reason = 19;
+  // The latest lease endings, oldest first (a bounded ring).
+  repeated LeaseEnd ended = 20;
+  LastStop last_stop = 21;
+  // Where each placed robot's parts appear in the scene's view, with its
+  // static pose (scene design §5).
+  repeated Place places = 22;
+  // The scene this session runs, when a daemon started it.
+  SceneInfo scene = 23;
+}
+
+// One robot's place in a scene's view: its parts under `from` appear at
+// `at`, and `pose` is the pose of its frame `frame` in the scene frame
+// `world` (REP-103, z up).
+message Place {
+  string robot = 1;
+  string at = 2;
+  // A path in the robot's map; empty: its root.
+  string from = 3;
+  // Empty: `base`.
+  string frame = 4;
+  Pose pose = 5;
+}
+
+// Metres, and a unit quaternion (x, y, z, w).
+message Pose {
+  repeated double xyz = 1;
+  repeated double quat_xyzw = 2;
+}
+
+message SceneInfo {
+  string run = 1;
+  string name = 2;
+  // The scene fingerprint (8 bytes).
+  bytes fingerprint = 3;
+  // Set once the run is ending: robots detach and return to the lobby.
+  Reason closing = 4;
+  // Host session clock; set while a member is lost (0: none).
+  int64 rejoin_until_ns = 5;
+}
+
+// One robot's slice of the authority state (scene design §3.4): what its
+// edge reads, on `host/view/{robot}` (Signed kind 22), for a robot that
+// asked for it in `Attach.supports` ("view.device").
+message DeviceView {
+  // Whose view; equals the key's {robot}.
+  string robot = 1;
+  uint64 epoch = 2;
+  uint64 revision = 3;
+  Mode mode = 4;
+  // The code only; the full Reason stays in AuthorityState.
+  ReasonCode mode_reason = 5;
+  // The tether latch-release anchor (safety design §7).
+  LastStop last_stop = 6;
+  int64 host_ns = 7;
+  ClockMode clock_mode = 8;
+  uint64 tick_ns = 9;
+  // This robot's current generation; 0: not attached.
+  uint32 generation = 10;
+  // Its own parts only, host-normalised.
+  repeated PartSpec parts = 11;
+  // On its channels: a token gone from here has ended.
+  repeated Lease leases = 12;
+  // Its own and each current lease holder's.
+  repeated ClockMapping clocks = 13;
+  // The action grid of each leased channel under its lease's binding.
+  repeated ViewGrid grids = 14;
+  // The publication plans of its streams.
+  repeated Demand demands = 15;
+  // Every present participant generation.
+  repeated Member members = 16;
+  // Set once the run is ending: detach and return to the lobby.
+  Reason closing = 17;
+}
+
+message ViewGrid {
+  // The binding fingerprint (8 bytes).
+  bytes binding = 1;
+  uint32 channel = 2;
+  uint64 dt_ns = 3;
+}
+
+message Member {
+  string id = 1;
+  uint32 generation = 2;
+}
+
+// One NTP-style exchange: t1 and t4 in the participant's clock, t2 and t3 in
+// the host's.
+message TimingSample {
+  uint64 seq = 1;
+  int64 t1_ns = 2;
+  int64 t2_ns = 3;
+  int64 t3_ns = 4;
+  int64 t4_ns = 5;
+}
+
+// A participant's self-reported health.
+enum Health {
+  HEALTH_UNSPECIFIED = 0;
+  HEALTH_OK = 1;
+  HEALTH_DEGRADED = 2;
+  HEALTH_UNHEALTHY = 3;
+}
+
+message ChannelSeq {
+  uint32 channel = 1;
+  uint64 seq = 2;
+}
+
+// Participant -> host, control class.
+message Heartbeat {
+  string participant = 1;
+  // The participant's view of the epoch and mode.
+  uint64 epoch = 2;
+  Mode mode = 3;
+  uint64 seq = 4;
+  // Participant clock at send.
+  int64 t1_ns = 5;
+  // The previous exchange, completed with its t4.
+  TimingSample previous = 6;
+  repeated ChannelSeq last_seq_seen = 7;
+  uint64 last_chunk_accepted = 8;
+  uint64 last_chunk_applied = 9;
+  uint32 queue_depth = 10;
+  Health health = 11;
+}
+
+// Host -> participant, control class.
+message HeartbeatEcho {
+  uint64 seq = 1;
+  int64 t1_ns = 2;
+  int64 t2_ns = 3;
+  int64 t3_ns = 4;
+  uint64 epoch = 5;
+}
+
+// Observer telemetry (§8.10): what only the measuring side knows, published
+// on p/{participant}/report, data class, a few times per second. Counters
+// are cumulative since the participant attached; observers derive rates
+// from their deltas on the sender's clock (sent_ns). Nothing acts on them.
+message ParticipantReport {
+  string participant = 1;
+  uint64 epoch = 2;
+  // Sender clock at send.
+  int64 sent_ns = 3;
+  // One per stream this participant publishes.
+  repeated PublisherCounters streams = 4;
+  // A controller runtime's counters; absent for anything else.
+  RunCounters run = 5;
+}
+
+// Publisher side of one stream: produced = published + coalesced.
+message PublisherCounters {
+  uint32 channel = 1;
+  // Samples sent (the stream's last seq).
+  uint64 published = 2;
+  // Samples the publication plan or the send ceiling coalesced.
+  uint64 coalesced = 3;
+}
+
+// A controller runtime's start and completion counters (§8.9, §8.10).
+message RunCounters {
+  uint64 starts = 1;
+  uint64 completions = 2;
+  // Skipped start slots, by reason.
+  uint64 busy_skips = 3;
+  uint64 waiting_for = 4;
+  uint64 stale_input = 5;
+  uint64 window_gap = 6;
+  uint64 decode = 7;
+  uint64 no_lease = 8;
+  uint64 chunks_sent = 9;
+  // Age of the inference in flight; 0 when none is.
+  uint64 pending_ns = 10;
+  uint64 latency_p50_ns = 11;
+  uint64 latency_p99_ns = 12;
+  // The completion rate is outside [0.8, 1.25] x the replan rate.
+  bool drifting = 13;
+}
+
+// Parts (§3, §10.5).
+
+enum ChannelPriority {
+  CHANNEL_PRIORITY_UNSPECIFIED = 0;
+  CHANNEL_PRIORITY_CONTROL = 1;
+  CHANNEL_PRIORITY_REALTIME = 2;
+  CHANNEL_PRIORITY_DATA = 3;
+  CHANNEL_PRIORITY_BULK = 4;
+}
+
+enum MergePolicy {
+  MERGE_POLICY_UNSPECIFIED = 0;
+  MERGE_POLICY_REPLACE = 1;
+  MERGE_POLICY_BLEND = 2;
+  MERGE_POLICY_RTC_PREFIX = 3;
+}
+
+// One field of a sample or an action: a dense little-endian row-major
+// tensor.
+message FieldSpec {
+  string name = 1;
+  // v1 DType codes (rlmesh-spaces); utf8 = 32.
+  uint32 dtype = 2;
+  repeated uint32 shape = 3;
+  string unit = 4;
+  // The rotation encoding, for rotation fields.
+  string rotation = 5;
+}
+
+// Bounds on one command field: (low, high) broadcast or per element, or a
+// norm bound.
+message FieldLimit {
+  string field = 1;
+  repeated double low = 2;
+  repeated double high = 3;
+  double max_norm = 4;
+}
+
+// What a commandable part accepts.
+message Command {
+  string mode = 1;
+  // One action's layout.
+  repeated FieldSpec fields = 2;
+  repeated FieldLimit limits = 3;
+  string safe_behavior = 4;
+  uint64 hold_max_ns = 5;
+  uint64 max_action_age_ns = 6;
+  // REPLACE only.
+  MergePolicy merge = 7;
+  string reference = 8;
+  string group = 9;
+  bool binary = 10;
+  // During Hold, may the edge repeat the last dispatched target? Set for
+  // position-type modes (§9.5); otherwise it runs the safe behaviour.
+  bool hold_last = 11;
+}
+
+// A part as the host normalised it, in AuthorityState.
+message PartSpec {
+  string path = 1;
+  string kind = 2;
+  // Never reused within the session.
+  uint32 channel = 3;
+  // 0 unless commandable.
+  uint32 applied_channel = 4;
+  // The sample layout, in payload order.
+  repeated FieldSpec fields = 5;
+  // Source rate; 0 for events.
+  double hz = 6;
+  string send = 7;
+  string frame = 8;
+  repeated string names = 9;
+  // "raw" | "jpeg".
+  string encoding = 10;
+  uint32 quality = 11;
+  uint64 max_age_ns = 12;
+  Command command = 13;
+  map<string, string> attrs = 14;
+  ChannelPriority priority = 15;
+  // The robot: the embodiment that declared it.
+  string owner = 16;
+  bool event = 17;
+  // Features a consumer must implement to use it.
+  repeated string requires = 18;
+  // Edge control rate; commandable parts only.
+  double control_hz = 19;
+}
+
+// Control verbs.
+
+message Attach {
+  string name = 1;
+  repeated Role roles = 2;
+  PriorityClass priority = 3;
+  // The participant's protocol minor.
+  uint32 protocol_minor = 4;
+  // Features this participant implements.
+  repeated string supports = 5;
+  // Features it cannot run without; the host refuses the attach
+  // (CTL_STATUS_INCOMPATIBLE) when it lacks one.
+  repeated string requires = 6;
+  // The workflow edition it declares (empty: none) and every one it runs,
+  // which the roster shows the driver that negotiates a run's edition.
+  string workflow_edition = 7;
+  repeated string workflow_editions = 8;
+  // An embodiment's e-stop latch carried from its previous session: the
+  // session starts in ESTOP.
+  LocalEstop estop = 9;
+}
+
+message LocalEstop {
+  bool latched = 1;
+  Reason reason = 2;
+}
+
+message Detach {}
+
+message Arm {}
+
+message Disarm {}
+
+// Embodiment -> host: the robot map; the host normalises it.
+message DeclareParts {
+  // The kind table version: 1.
+  uint32 spec_version = 1;
+  // The authored map, as JSON.
+  string robot_json = 2;
+  // The part paths this robot process can seal (default none): what its
+  // runtime can do, so it stays out of the map and its fingerprint.
+  repeated string seal = 3;
+  // A tethered board's id (8 bytes, tether spec §7); empty for none. The
+  // host refuses a declare whose board isn't the one the robot's pin names.
+  bytes board_id = 4;
+}
+
+// Controller -> host.
+message DeclareBinding {
+  // 8 bytes.
+  bytes fingerprint = 1;
+  uint32 revision = 2;
+  string table_json = 3;
+  // The parts it will command.
+  repeated uint32 channels = 4;
+  // One per bound input stream.
+  repeated StreamContract contracts = 5;
+  // Its replan rate R (virtual mode: the ticks it is due on); 0 = never due.
+  double replan_hz = 6;
+  // One per commanded part.
+  repeated ActionGrid grids = 7;
+}
+
+// All or none.
+message GrantLease {
+  repeated uint32 channels = 1;
+  // Released in the same revision (a switch within a group).
+  repeated uint32 release = 2;
+  bytes binding = 3;
+  // Zero takes the session's lease grace.
+  uint64 ttl_ns = 4;
+}
+
+message ReleaseLease {
+  repeated uint32 channels = 1;
+  uint64 token = 2;
+}
+
+message Estop {
+  string reason = 1;
+  // REASON_ESTOP_LOCAL or REASON_ESTOP_SIGNAL when an edge reports its own
+  // latch; anything else is REASON_ESTOP_REMOTE.
+  ReasonCode code = 2;
+  // REASON_ESTOP_SIGNAL: the participant whose signal the edge latched.
+  string origin = 3;
+  // When the edge latched it, on the sender's clock (0: not given).
+  int64 at_ns = 4;
+}
+
+// A member's e-stop, published on estop/{participant} (control class,
+// reliable, express) and sealed (kind 13, integrity only) under its
+// generation's k_estop: every robot edge latches it directly, host or not.
+message EstopSignal {
+  string reason = 1;
+  // The sender's clock.
+  int64 sent_ns = 2;
+}
+
+message Clear {}
+
+// An embodiment fell back on its own account (its edge, or a device
+// watchdog): ACTIVE, ARMED and DISARMED go SAFE; SAFE and ESTOP record why.
+message EnterSafe {
+  string reason = 1;
+  ReasonCode code = 2;
+}
+
+message Watermark {
+  uint32 channel = 1;
+  uint64 seq = 2;
+}
+
+// Publisher -> host: the plan of demand revision `revision` is installed.
+message DemandAck {
+  uint32 channel = 1;
+  uint64 revision = 2;
+}
+
+// One chunk, by identity.
+message ChunkRef {
+  uint32 channel = 1;
+  uint64 lease_token = 2;
+  uint64 seq = 3;
+}
+
+// Virtual mode (§11.3), embodiment -> host: tick k's samples are published.
+message Ready {
+  uint64 tick = 1;
+  // The last seq per stream.
+  repeated Watermark watermarks = 2;
+}
+
+// Virtual mode, due controller -> host: its decision for tick k.
+message Decided {
+  uint64 tick = 1;
+  repeated ChunkRef chunks = 2;
+}
+
+// A control verb, the payload of a query on `ctl`, sealed under the
+// sender's `k_up` (kind 1).
+message CtlRequest {
+  string participant = 1;
+  // The epoch the verb was issued against; zero skips the check.
+  uint64 epoch = 2;
+  // Rising per participant generation from 1; a retry keeps it, and the
+  // host answers it from its reply cache instead of applying it twice.
+  uint64 request_id = 3;
+  oneof verb {
+    Attach attach = 10;
+    Detach detach = 11;
+    Arm arm = 12;
+    Disarm disarm = 13;
+    GrantLease grant_lease = 14;
+    ReleaseLease release_lease = 15;
+    Estop estop = 16;
+    Clear clear = 17;
+    DeclareParts declare_parts = 18;
+    EnterSafe enter_safe = 19;
+    DeclareBinding declare_binding = 20;
+    // 21-23 are reserved below.
+    DemandAck demand_ack = 24;
+    Ready ready = 25;
+    Decided decided = 26;
+    KeysAck keys_ack = 27;
+    GetKeys get_keys = 28;
+    // The lobby and scenes (scene design §3.3, §4).
+    LobbyWait lobby_wait = 29;
+    RunScene run_scene = 30;
+    SceneStatus scene_status = 31;
+    StopScene stop_scene = 32;
+    HostStarted host_started = 33;
+    ArmScene arm_scene = 34;
+  }
+  // The spec's Reset, EndEpisode and Mark (§10.5), not built yet: the
+  // change that adds them takes these numbers.
+  reserved 21 to 23;
+}
+
+enum CtlStatus {
+  CTL_STATUS_UNSPECIFIED = 0;
+  CTL_STATUS_OK = 1;
+  CTL_STATUS_INVALID_REQUEST = 2;
+  CTL_STATUS_NOT_ATTACHED = 3;
+  CTL_STATUS_FORBIDDEN = 4;
+  CTL_STATUS_INVALID_TRANSITION = 5;
+  CTL_STATUS_ESTOP_LATCHED = 6;
+  CTL_STATUS_STALE_EPOCH = 7;
+  CTL_STATUS_STALE_TOKEN = 8;
+  CTL_STATUS_LEASE_BUSY = 9;
+  // 10 was PATH_CONFLICT before v0.2 froze: paths are scoped per robot, so
+  // no declaration can conflict with another owner's. Never reuse it.
+  // No such (commandable) part.
+  CTL_STATUS_UNKNOWN_PATH = 11;
+  CTL_STATUS_UNSUPPORTED = 12;
+  // The sender requires a feature (or protocol) the session lacks.
+  CTL_STATUS_INCOMPATIBLE = 13;
+  // A member of the part's command group is held by an equal or higher
+  // class (or by the requester, without releasing it).
+  CTL_STATUS_GROUP_BUSY = 14;
+  // A lease on a part outside the requester's binding.
+  CTL_STATUS_NOT_BOUND = 15;
+  // A lease requested before every stream of the binding has installed a
+  // plan that includes its contract.
+  CTL_STATUS_NOT_READY = 16;
+  // No valid handshake: the sender's keys are unknown, superseded or
+  // failed to authenticate the message.
+  CTL_STATUS_UNAUTHENTICATED = 17;
+  // The sender's device may not do this (a participant id bound to
+  // another device).
+  CTL_STATUS_NOT_AUTHORIZED = 18;
+  // A request id below the host's reply window: never applied, and its
+  // first outcome is unknown.
+  CTL_STATUS_EXPIRED = 19;
+  // A robot claimed by another run.
+  CTL_STATUS_ROBOT_BUSY = 20;
+  // A member or satellite isn't there within the wait.
+  CTL_STATUS_NOT_PRESENT = 21;
+}
+
+message CtlReply {
+  CtlStatus status = 1;
+  string message = 2;
+  // The authority snapshot right after the verb, accepted or not.
+  AuthorityState state = 3;
+  // Granted leases, one per channel.
+  repeated Lease leases = 4;
+  // The request this answers (sealed replies, kind 2 under `k_down`).
+  uint64 request_id = 5;
+  // Keys for the caller: a lease holder's from the grant that minted its
+  // token, or every key issued to its generation (`GetKeys`).
+  repeated Key keys = 6;
+  // A `LobbyWait`'s order.
+  Assignment assignment = 7;
+  // A run's state (`RunScene`, `SceneStatus`, `StopScene`, `ArmScene`).
+  RunState run = 8;
+  // A robot that asked for its device view (`Attach.supports` has
+  // "view.device") gets its view here and no `state`, so a board decodes
+  // every reply without the authority state's decoder.
+  DeviceView view = 9;
+}
+
+// The level of a key's configured kinds (chunks, samples, applied entries,
+// lockstep): integrity only, or encrypted.
+enum Security {
+  SECURITY_UNSPECIFIED = 0;
+  SECURITY_SIGN = 1;
+  SECURITY_SEAL = 2;
+}
+
+// What a delivered key is for, and so which kinds it carries.
+enum KeyPurpose {
+  KEY_PURPOSE_UNSPECIFIED = 0;
+  // `k_cmd`: chunks and lockstep requests under one token to one robot.
+  KEY_PURPOSE_COMMAND = 1;
+  // `k_obs`: a robot's lockstep replies under one token.
+  KEY_PURPOSE_LOCKSTEP_REPLY = 2;
+  // `k_stream`: one part's samples and `_applied` entries.
+  KEY_PURPOSE_STREAM = 3;
+  // `k_session_stream`: one host session stream.
+  KEY_PURPOSE_SESSION_STREAM = 4;
+  // `k_estop`: one participant generation's e-stop signals.
+  KEY_PURPOSE_ESTOP = 5;
+}
+
+// A key the host drew, with its scope. Authority state never carries one.
+message Key {
+  uint32 key_id = 1;
+  KeyPurpose purpose = 2;
+  // The only participant that may send under it (empty: the host).
+  string sender = 3;
+  string robot = 4;
+  repeated uint32 channels = 5;
+  uint64 token = 6;
+  // Rises per slot (purpose, robot, channels) of a rotating key; 0 for a
+  // fixed one.
+  uint32 version = 7;
+  bytes key = 8;
+  // The recipient sends under it.
+  bool send = 9;
+  Security security = 10;
+  // The sender's generation (0 for a host-sent key).
+  uint32 generation = 11;
+}
+
+// Host -> one participant on `p/{participant}/keys` (kind 6 under its
+// `k_down`): keys to install and keys to drop (with every older version of
+// their slot). Retried until acknowledged.
+message KeyDelivery {
+  repeated Key keys = 1;
+  repeated uint32 retire_through = 2;
+}
+
+// Participant -> host: what a delivery changed.
+message KeysAck {
+  repeated uint32 installed = 1;
+  repeated uint32 sending = 2;
+  repeated uint32 retired = 3;
+}
+
+// Participant -> host: every key issued to the caller's generation, in the
+// reply's `keys`.
+message GetKeys {}
+
+// The handshake (`hs`, the only unsealed request): Noise IK, the
+// participant as initiator. msg 1 has an empty payload.
+message HandshakeRequest {
+  string participant = 1;
+  bytes noise = 2;
+}
+
+// msg 2, or a refusal (an unauthenticated hint).
+message HandshakeReply {
+  oneof result {
+    bytes noise = 1;
+    CtlError error = 2;
+  }
+}
+
+// The refusal of a handshake.
+message CtlError {
+  CtlStatus status = 1;
+  string message = 2;
+}
+
+// msg 2's payload, authenticated by the handshake.
+message HandshakeAccept {
+  uint32 generation = 1;
+  string device = 2;
+  PriorityClass max_priority = 3;
+  // The host's Ed25519 key, which signs `host/state` and `host/tick`.
+  bytes host_sign_key = 4;
+  uint64 host_instance = 5;
+  uint32 up_key_id = 6;
+  uint32 down_key_id = 7;
+}
+
+// Machine pairing (safety design §3): every packet is a query on
+// `rlmeshd/pair`. `exchange` is 16 random bytes the laptop draws per
+// attempt. After Noise XX, `sealed` carries a `Sealed` under the XX raw
+// split (laptop -> rlmeshd key 1, rlmeshd -> laptop key 2).
+message PairRequest {
+  bytes exchange = 1;
+  oneof step {
+    bytes xx1 = 2;
+    bytes xx3 = 3;
+    bytes sealed = 4;
+  }
+}
+
+message PairReply {
+  oneof step {
+    bytes xx2 = 1;
+    bytes sealed = 2;
+    // An unauthenticated hint: busy, expired or unknown.
+    CtlError error = 3;
+  }
+}
+
+// rlmeshd -> laptop (kind 16): `C`, its commitment to `Nr`.
+message PairCommit {
+  bytes c = 1;
+}
+
+// Laptop -> rlmeshd (kind 17): `Ni`, and the name and kind it pairs as.
+message PairNonce {
+  bytes ni = 1;
+  string name = 2;
+  string kind = 3;
+}
+
+// rlmeshd -> laptop (kind 18): `Nr`.
+message PairReveal {
+  bytes nr = 1;
+}
+
+// Laptop -> rlmeshd (kind 19): answered with `PairResult` once the owner
+// approves or refuses on the robot.
+message PairWait {}
+
+// rlmeshd -> laptop (kind 19).
+message PairResult {
+  oneof r {
+    PairInfo ok = 1;
+    CtlError error = 2;
+  }
+}
+
+// What an approved machine stores: its device id, and the host's static
+// key, id and base addresses (`host:port`, class i at base + i).
+message PairInfo {
+  string device = 1;
+  bytes host_key = 2;
+  string host_id = 3;
+  repeated string addresses = 4;
+}
+
+// The lobby and scenes (scene design §3, §4): verbs in the home daemon's
+// `_lobby` session, sealed like any other.
+
+// A waiting robot or satellite -> the home daemon: answered with an
+// `Assignment` once there is an order for it (a long poll; a retry keeps
+// the request id).
+message LobbyWait {
+  // The run that just failed for this participant, and why.
+  string run = 1;
+  CtlError last = 2;
+}
+
+message Assignment {
+  oneof order {
+    Join join = 1;
+    HostOrder host = 2;
+    ServeOrder serve = 3;
+    StopOrder stop = 4;
+  }
+}
+
+// A robot's order: join `session` at `addresses` (base ports) with an IK
+// handshake against `host_key`.
+message Join {
+  string run = 1;
+  string session = 2;
+  // Equals the robot's own name; it refuses otherwise.
+  string robot = 3;
+  repeated string addresses = 4;
+  bytes host_key = 5;
+  string host_id = 6;
+  // The handshake prologue's tenant.
+  string tenant = 7;
+}
+
+// A satellite's order to host a scene's session.
+message HostOrder {
+  string run = 1;
+  string session = 2;
+  string scene_toml = 3;
+  repeated DeviceRecord devices = 4;
+  repeated RobotPin pins = 5;
+}
+
+// A satellite's order to serve a catalog model as a scene member.
+message ServeOrder {
+  string run = 1;
+  string member = 2;
+  string model = 3;
+  string session = 4;
+  repeated string addresses = 5;
+  bytes host_key = 6;
+}
+
+// A satellite's order to close what it runs for `run`.
+message StopOrder {
+  string run = 1;
+  Reason reason = 2;
+}
+
+// A satellite -> the home daemon: the scene host is up, or why not.
+message HostStarted {
+  string run = 1;
+  bytes host_key = 2;
+  repeated string addresses = 3;
+  CtlError error = 4;
+}
+
+// A member's device, as the home daemon's table has it.
+message DeviceRecord {
+  string id = 1;
+  bytes public_key = 2;
+  // UNSPECIFIED: observer only.
+  PriorityClass max_priority = 3;
+  repeated string parts = 4;
+  repeated string verbs = 5;
+}
+
+// A robot name's pin: the device that embodies it and, for a tethered
+// board, its board id (8 bytes; empty for none).
+message RobotPin {
+  string robot = 1;
+  string device = 2;
+  bytes board_id = 3;
+}
+
+message RunScene {
+  string scene_toml = 1;
+  bool manual_arm = 2;
+}
+
+// Answered once the run's state version passes `after`.
+message SceneStatus {
+  string run = 1;
+  uint64 after = 2;
+}
+
+message StopScene {
+  string run = 1;
+}
+
+// The explicit arm after a rejoin, or for `arm = "manual"`.
+message ArmScene {
+  string run = 1;
+}
+
+enum RunStage {
+  RUN_STAGE_UNSPECIFIED = 0;
+  RUN_STAGE_CHECKING = 1;
+  RUN_STAGE_HOSTING = 2;
+  RUN_STAGE_ASSIGNING = 3;
+  RUN_STAGE_DECLARING = 4;
+  RUN_STAGE_BINDING = 5;
+  RUN_STAGE_ARMING = 6;
+  RUN_STAGE_RUNNING = 7;
+  RUN_STAGE_ENDING = 8;
+  RUN_STAGE_ENDED = 9;
+  RUN_STAGE_FAILED = 10;
+  RUN_STAGE_REJOINING = 11;
+}
+
+enum MemberStage {
+  MEMBER_STAGE_UNSPECIFIED = 0;
+  MEMBER_STAGE_WAITING = 1;
+  MEMBER_STAGE_ASSIGNED = 2;
+  MEMBER_STAGE_JOINED = 3;
+  MEMBER_STAGE_DECLARED = 4;
+  MEMBER_STAGE_BOUND = 5;
+  MEMBER_STAGE_LOST = 6;
+  MEMBER_STAGE_RETURNED = 7;
+}
+
+message MemberState {
+  string name = 1;
+  MemberStage stage = 2;
+  CtlError error = 3;
+}
+
+message RunState {
+  string run = 1;
+  // Rises with every change.
+  uint64 version = 2;
+  RunStage stage = 3;
+  repeated MemberState members = 4;
+  CtlError error = 5;
+  // The scene host's session, addresses and key, once it is up.
+  string session = 6;
+  repeated string addresses = 7;
+  bytes host_key = 8;
+  // The scene fingerprint (8 bytes).
+  bytes scene_fingerprint = 9;
+}
+
+// Virtual mode, host -> participants on `host/tick` (§11.3).
+message TickState {
+  uint64 epoch = 1;
+  uint64 tick = 2;
+  repeated Watermark watermarks = 3;
+  // Controllers whose policy period falls on this tick.
+  repeated string due = 4;
+}
+
+message Step {
+  uint64 epoch = 1;
+  uint64 tick = 2;
+  // The chunks scheduled for delivery at this tick.
+  repeated ChunkRef chunks = 3;
+}
+
+message VirtualTick {
+  oneof phase {
+    TickState observe = 1;
+    Step step = 2;
+  }
+}
+
+// Data (§10.6).
+
+// What the edge did on one control tick (the `_applied` streams).
+enum EdgeMode {
+  EDGE_MODE_UNSPECIFIED = 0;
+  EDGE_MODE_IDLE = 1;
+  EDGE_MODE_DRIVING = 2;
+  EDGE_MODE_HOLD = 3;
+  EDGE_MODE_SAFE = 4;
+  EDGE_MODE_ESTOP = 5;
+}
+
+message Applied {
+  EdgeMode mode = 1;
+  bool present = 2;
+  uint64 lease_token = 3;
+  uint64 chunk_seq = 4;
+  uint32 action_index = 5;
+  // Why the edge is in its mode (Safe, Estop): its own cause, or the host's
+  // mode_reason.
+  ReasonCode reason = 6;
+}
+
+// On d/{robot}/{path} (and d/{robot}/{path}/_applied).
+message Sample {
+  uint32 channel = 1;
+  uint64 epoch = 2;
+  // Per stream, from 1; a gap is a loss.
+  uint64 seq = 3;
+  // Publisher clock (wall) or session time (virtual/lockstep).
+  int64 capture_ns = 4;
+  int64 publish_ns = 5;
+  // 0 in wall mode.
+  uint64 tick = 6;
+  // The packed fields, or one encoded image, or UTF-8.
+  bytes payload = 7;
+  // `_applied` streams only.
+  Applied applied = 8;
+}
+
+message SampleMeta {
+  uint64 seq = 1;
+  int64 capture_ns = 2;
+  uint64 tick = 3;
+  Applied applied = 4;
+}
+
+message SeqRange {
+  uint64 first = 1;
+  uint64 last = 2;
+}
+
+// History-store pages (attach, swap and gap recovery); live samples travel
+// one per Sample.
+message SampleBatch {
+  uint32 channel = 1;
+  uint64 epoch = 2;
+  int64 publish_ns = 3;
+  // One per sample, in seq order; gaps allowed.
+  repeated SampleMeta samples = 4;
+  // samples.size() x stride (one sample of an unbatchable stream).
+  bytes payload = 5;
+  // History replies: retention ran out before the requested range.
+  bool truncated = 6;
+  // History replies: seqs known missing.
+  repeated SeqRange gaps = 7;
+  // History replies: the query this page answers.
+  uint64 request_id = 8;
+}
+
+// The payload of a query on h/{robot}/{path}.
+message HistoryQuery {
+  uint64 epoch = 1;
+  // Samples with after_seq < seq <= until_seq; until_seq 0 is unbounded.
+  uint64 after_seq = 2;
+  uint64 until_seq = 3;
+  // At most this many samples (the newest of the range); 0 takes the
+  // store's cap.
+  uint32 limit = 4;
+  // Rising per participant generation; the host's pages echo it.
+  uint64 request_id = 5;
+}
+
+message InputRange {
+  uint32 channel = 1;
+  uint64 seq_first = 2;
+  uint64 seq_last = 3;
+}
+
+// On c/{robot}/{path}. Times are session time.
+message ActionChunk {
+  uint32 channel = 1;
+  uint64 epoch = 2;
+  // From the host; fences stale controllers.
+  uint64 lease_token = 3;
+  // Per lease token, increasing.
+  uint64 seq = 4;
+  // The binding fingerprint of the lease.
+  bytes binding = 5;
+  repeated InputRange based_on = 6;
+  int64 t0_ns = 7;
+  // Zero takes the action grid of the lease's binding (else the part's
+  // control period).
+  uint64 dt_ns = 8;
+  int64 replace_from_ns = 9;
+  // The whole chunk is void at and after this.
+  int64 valid_until_ns = 10;
+  uint32 count = 11;
+  // count x command stride.
+  bytes actions = 12;
+  // Sender's clock at publish.
+  int64 publish_ns = 13;
+  uint64 tick = 14;
+  // The controller that computed it; the edge checks it holds the lease.
+  string source = 15;
+}
+
+// Lockstep fast path (§12): one request/reply per step on l/{robot}.
+
+// An N-lane slab of one part: lanes x stride.
+message PartValues {
+  uint32 channel = 1;
+  bytes payload = 2;
+}
+
+message LockstepReset {
+  uint64 epoch = 1;
+  // Empty = all lanes.
+  repeated uint32 lanes = 2;
+  // Aligned with lanes when present.
+  repeated uint64 seeds = 3;
+  string options_json = 4;
+  // Minted by the driver, as v1.
+  repeated uint64 episode_ids = 5;
+  // The driver's lease token on the env's commandable parts: a reset
+  // needs the lease, like a step.
+  uint64 lease_token = 6;
+}
+
+message LockstepStep {
+  uint64 epoch = 1;
+  uint64 step = 2;
+  uint64 lease_token = 3;
+  // Empty = all lanes.
+  repeated uint32 lanes = 4;
+  repeated PartValues commands = 5;
+}
+
+// A lockstep request on `l/{robot}` (kind 11 under the lease's `k_cmd`):
+// the operation travels in the authenticated body.
+message LockstepRequest {
+  uint64 request_id = 1;
+  oneof op {
+    LockstepStep step = 2;
+    LockstepReset reset = 3;
+    // The lane whose frame to render.
+    uint32 render = 4;
+    LockstepProbe probe = 5;
+  }
+}
+
+// The route to the env is up.
+message LockstepProbe {}
+
+// The env's answer (kind 12 under the `k_obs` of the request's token).
+message LockstepResponse {
+  uint64 request_id = 1;
+  oneof result {
+    LockstepReply obs = 2;
+    // A rendered frame's PNG bytes; empty for none.
+    bytes frame = 3;
+    LockstepProbe probe = 4;
+    // The env's failure, as JSON `{code, message, recoverable}`.
+    string failure = 5;
+  }
+}
+
+message LockstepReply {
+  uint64 epoch = 1;
+  uint64 step = 2;
+  // Every published part that changed this step.
+  repeated PartValues observations = 3;
+  // f32 [N].
+  bytes reward = 4;
+  // bool [N].
+  bytes terminated = 5;
+  // bool [N].
+  bytes truncated = 6;
+  // Per lane, after autoreset.
+  repeated uint64 episode_ids = 7;
+  // Only when record_info is on.
+  string info_json = 8;
+  EndpointTiming timing = 9;
+}
+
+// What an endpoint measured answering one request, in ns (v1's endpoint
+// phases): an absent field was not measured.
+message EndpointTiming {
+  // Arrival to reply.
+  optional uint64 total_ns = 1;
+  // Decoding the request.
+  optional uint64 decode_ns = 2;
+  // The env's or model's own work, user code included.
+  optional uint64 user_ns = 3;
+  // Encoding the reply.
+  optional uint64 encode_ns = 4;
+  // Waiting before the handler ran (a lock, the authority view).
+  optional uint64 queue_ns = 5;
+  // Model: requests in flight when this one was dispatched.
+  optional uint32 in_flight = 6;
+  // Model: adapter work inside user_ns (a sub-span).
+  optional uint64 adapter_ns = 7;
+  // Model: episodes with held frame windows, and their bytes.
+  optional uint32 held_episodes = 8;
+  optional uint64 held_state_bytes = 9;
+  // Env: straggler skew across a vector env's lanes.
+  optional uint64 lane_skew_ns = 10;
+}
+
+// Served models: one request/reply on m/{model}. A driver resolves a route
+// per env, then predicts on it; values are rlmesh-spaces leaf slabs.
+
+// Leaf slabs of N rows: one per leaf of the space, row-major.
+message Leaves {
+  repeated bytes leaves = 1;
+}
+
+message ModelEpisode {
+  string id = 1;
+  optional int64 seed = 2;
+}
+
+message ModelResolve {
+  string route = 1;
+  // The env contract as JSON (spaces, metadata and tags).
+  string contract_json = 2;
+  // Actions of each chunk the driver executes before re-planning.
+  uint32 execution_horizon = 3;
+  // Whether the driver sends the steps it replayed as history.
+  bool delivers_history = 4;
+  // The workflow edition the driver pinned; empty: unpinned.
+  string workflow_edition = 5;
+  // The driver reads the route's resolve advisories; a model answers them on
+  // ModelResolved only then.
+  bool reads_advisories = 6;
+}
+
+message ModelHistoryNeeds {
+  repeated string keys = 1;
+  bool prunable = 2;
+}
+
+message ModelResolved {
+  optional uint32 native_chunk = 1;
+  // Present when the route keeps frame windows.
+  ModelHistoryNeeds history = 2;
+  // The model adds options to the resets that start its episodes.
+  bool reset_options = 3;
+  // What the route's resolve tolerated or applied, when the driver reads
+  // them (ModelResolve.reads_advisories).
+  repeated ModelAdvisory advisories = 4;
+}
+
+// One resolve advisory: "info" or "caution", and what it says.
+message ModelAdvisory {
+  string severity = 1;
+  string message = 2;
+}
+
+message ModelHistoryRow {
+  Leaves observation = 1;
+  repeated ModelEpisode episodes = 2;
+  int64 step = 3;
+}
+
+// One route's rows.
+message ModelGroup {
+  string route = 1;
+  // One per row.
+  repeated ModelEpisode episodes = 2;
+  Leaves observation = 3;
+  repeated ModelHistoryRow history = 4;
+  optional int64 step = 5;
+}
+
+message ModelPredict {
+  repeated ModelGroup groups = 1;
+}
+
+message ModelFault {
+  string code = 1;
+  string message = 2;
+  bool recoverable = 3;
+}
+
+// Frame 0 (this step), then the chunk's replay frames.
+message ModelFrames {
+  repeated Leaves frames = 1;
+}
+
+message ModelOutcome {
+  oneof outcome {
+    ModelFrames frames = 1;
+    ModelFault fault = 2;
+  }
+}
+
+// Aligned with the request's groups.
+message ModelPredicted {
+  repeated ModelOutcome outcomes = 1;
+}
+
+// Ends episodes (empty: all of the route's).
+message ModelReset {
+  string route = 1;
+  repeated string episode_ids = 2;
+}
+
+message ModelRelease {
+  string route = 1;
+}
+
+message ModelDescribe {}
+// Invites the model into the driver's session (its address), so predicts
+// stay there; Leave ends that.
+message ModelJoin {
+  string session = 1;
+}
+message ModelLeave {
+  string session = 1;
+}
+// Asks for the options the model adds to the reset that starts `episode`.
+message ModelResetOptions {
+  string route = 1;
+  ModelEpisode episode = 2;
+  optional uint64 trial_index = 3;
+}
+
+message ModelRequest {
+  oneof kind {
+    ModelResolve resolve = 1;
+    ModelPredict predict = 2;
+    ModelReset reset = 3;
+    ModelRelease release = 4;
+    ModelDescribe describe = 5;
+    ModelResetOptions reset_options = 6;
+    ModelJoin join = 7;
+    ModelLeave leave = 8;
+  }
+}
+
+message ModelDone {}
+
+message ModelReply {
+  oneof kind {
+    ModelResolved resolved = 1;
+    ModelPredicted predicted = 2;
+    ModelDone done = 3;
+    // The model's describe envelope (JSON), empty when it has none.
+    string describe_json = 4;
+    ModelFault fault = 5;
+    // The reset options (a JSON object), empty when the model adds none.
+    string options_json = 7;
+  }
+  EndpointTiming timing = 6;
+}

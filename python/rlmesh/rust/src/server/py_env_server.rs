@@ -38,6 +38,8 @@ enum BoundListener {
         listener: UnixListener,
         path: PathBuf,
     },
+    /// A v2 lockstep robot in a session (its participant address, protocol v2 §12).
+    Lockstep(Box<rlmesh::lockstep::LockstepBinding>),
 }
 
 type ServeResult = Result<(), String>;
@@ -155,6 +157,9 @@ fn construct_server(
     // Resolve the deployment token before binding, so an invalid
     // `RLMESH_ENV_ENDPOINT_TOKEN` fails construction without holding the port.
     let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
+    if address.is_some_and(rlmesh_session::address::is_v2_address) {
+        rlmesh::binding::check_session_env_serve(&options).map_err(to_py_err)?;
+    }
     let token = rlmesh::binding::env_endpoint_token().map_err(to_py_err)?;
     let shutdown = ShutdownTrigger::new();
     let id = NEXT_SERVER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -172,6 +177,34 @@ fn construct_server(
         ))
     })?;
 
+    if let Some(address) = address.filter(|a| rlmesh::lockstep::is_v2_address(a)) {
+        rlmesh::lockstep::check(env_contract.clone())
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        let binding = runtime
+            .block_on(rlmesh::lockstep::bind(address))
+            .map_err(|e| match e {
+                rlmesh::lockstep::GymError::Config(why) => {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(why)
+                }
+                other => PyErr::new::<pyo3::exceptions::PyConnectionError, _>(other.to_string()),
+            })?;
+        return Ok(PyEnvServer {
+            id,
+            address: binding.address(),
+            env_contract,
+            state: StdMutex::new(ServerState::Ready(Box::new(ServerResources {
+                env: py_env,
+                runtime,
+                listener: BoundListener::Lockstep(Box::new(binding)),
+                options,
+                token,
+                close_env_on_shutdown,
+            }))),
+            shutdown,
+        });
+    }
+    rlmesh_grpc::wire::check_proto_contract(&env_contract)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     let bind_target = match address {
         Some(address) => BindAddress::parse(address).map_err(to_py_err)?,
         None => BindAddress::Tcp {
@@ -684,7 +717,7 @@ async fn run_env_server<E>(
     close_env_on_shutdown: bool,
 ) -> ServeResult
 where
-    E: Environment + 'static,
+    E: Environment + rlmesh::lockstep::Served,
 {
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
     // Bound both teardown phases so the background serve thread always terminates
@@ -693,6 +726,7 @@ where
     let drain_timeout = Some(options.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let env = Arc::new(env);
+    let workflow_edition = options.workflow_edition.clone();
     let grpc_options = rlmesh::binding::serve_options_to_grpc(options, token);
     let service = env_service_from_shared(
         Arc::clone(&env),
@@ -701,6 +735,30 @@ where
         activity_tx,
     );
     let serve_result = match listener {
+        BoundListener::Lockstep(binding) => {
+            drop(service);
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let stop = {
+                let (shutdown, cancel) = (shutdown.clone(), cancel.clone());
+                tokio::spawn(async move {
+                    shutdown.cancelled().await;
+                    cancel.cancel();
+                })
+            };
+            let served = binding
+                .serve(
+                    Arc::clone(&env) as _,
+                    rlmesh::lockstep::ServeOptions {
+                        workflow_edition,
+                        record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
+                    },
+                    cancel,
+                )
+                .await
+                .map_err(|err| err.to_string());
+            stop.abort();
+            served
+        }
         BoundListener::Tcp(listener) => await_server_shutdown(
             rlmesh_grpc::lifecycle::server_builder()
                 .add_service(service)
@@ -776,6 +834,7 @@ fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
         BoundListener::Tcp(listener) => {
             drop(listener);
         }
+        BoundListener::Lockstep(binding) => runtime.block_on(binding.close()),
         #[cfg(unix)]
         BoundListener::Unix { listener, path } => {
             drop(listener);

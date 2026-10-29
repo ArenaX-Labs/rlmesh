@@ -1,14 +1,16 @@
-//! PyO3 wrapper over the `rlmesh-viewer` engine, fed from the Python Session loop.
+//! PyO3 wrapper over the `rlmesh::viewer` engine, fed from the Python Session loop.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh_viewer::{Backend, FrameFormat, Hud, ThreadedVideoWriter, Viewer};
+use rlmesh::recorder::VideoCodec;
+use rlmesh::recorder::video::{Encoding, ThreadedVideoWriter};
+use rlmesh::viewer::{Backend, FrameFormat, Hud, Viewer};
 
 /// Native debug viewer, built by the Python `Session` when `view=` is set and fed
 /// one decoded HWC uint8 frame (the selected camera) per step.
@@ -152,10 +154,11 @@ impl PyViewer {
     }
 }
 
-/// Native AV1 recorder: encodes HWC uint8 frames to an `.mp4` on a dedicated
-/// encoder thread (no ffmpeg), built by the Python recorder and fed one
-/// camera's frames per step. `write_frame` only copies the frame and queues
-/// it, so the eval loop overlaps env stepping with encoding.
+/// Native video recorder: encodes HWC uint8 frames to an `.mp4` on a
+/// dedicated encoder thread (AV1 in process, or H.264 through the user's
+/// ffmpeg), built by the Python recorder and fed one camera's frames per
+/// step. `write_frame` only copies the frame and queues it, so the eval loop
+/// overlaps env stepping with encoding.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "PyVideoWriter")]
 pub struct PyVideoWriter {
@@ -167,13 +170,30 @@ pub struct PyVideoWriter {
 #[pymethods]
 impl PyVideoWriter {
     #[new]
-    #[pyo3(signature = (path, width, height, fps=30, quality=60))]
-    fn new(path: String, width: u32, height: u32, fps: u32, quality: u8) -> PyResult<Self> {
-        let writer = ThreadedVideoWriter::create(Path::new(&path), width, height, fps, quality)
+    #[pyo3(signature = (path, width, height, fps=30, quality=60, codec="av1", ffmpeg=None))]
+    fn new(
+        path: String,
+        width: u32,
+        height: u32,
+        fps: u32,
+        quality: u8,
+        codec: &str,
+        ffmpeg: Option<String>,
+    ) -> PyResult<Self> {
+        let encoding = encoding(codec, quality, ffmpeg)?;
+        let writer = ThreadedVideoWriter::create(Path::new(&path), width, height, fps, &encoding)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(Self {
             inner: Mutex::new(Some(writer)),
         })
+    }
+
+    /// Raise unless `codec` can record here: H.264 needs an `ffmpeg` with
+    /// libx264 (checked once per process).
+    #[staticmethod]
+    #[pyo3(signature = (codec, ffmpeg=None))]
+    fn check_codec(codec: &str, ffmpeg: Option<String>) -> PyResult<()> {
+        encoding(codec, 60, ffmpeg).map(drop)
     }
 
     /// Queue one contiguous HWC uint8 frame (`channels` = 1/3/4) for encoding.
@@ -221,8 +241,99 @@ impl PyVideoWriter {
     }
 }
 
+fn codec(codec: &str) -> PyResult<VideoCodec> {
+    match codec {
+        "av1" => Ok(VideoCodec::Av1),
+        "h264" => Ok(VideoCodec::H264),
+        other => Err(PyValueError::new_err(format!(
+            "codec must be 'av1' or 'h264'; got {other:?}"
+        ))),
+    }
+}
+
+fn encoding(name: &str, quality: u8, ffmpeg: Option<String>) -> PyResult<Encoding> {
+    Encoding::resolve(codec(name)?, quality, ffmpeg.as_deref().map(Path::new))
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
 impl PyVideoWriter {
     fn lock(&self) -> MutexGuard<'_, Option<ThreadedVideoWriter>> {
         self.inner.lock().unwrap_or_else(|err| err.into_inner())
+    }
+}
+
+/// The Python recorder's handle on a workload's per-episode artifact tree
+/// (`episodes/epNNNNNN/`, the managed evaluation-artifacts layout). A run
+/// feeds it the native loop's events; the recorder reads back each closed
+/// episode's record to bundle its files.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "PyEpisodeArtifacts")]
+pub struct PyEpisodeArtifacts {
+    pub(crate) tap: rlmesh::binding::artifacts::ArtifactTap,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[pymethods]
+impl PyEpisodeArtifacts {
+    /// `record` is the `record` block as JSON; the ids land in each
+    /// `episode.json`.
+    #[new]
+    #[pyo3(signature = (root, record, task_id, workload_id, quality=60, codec="av1", ffmpeg=None))]
+    fn new(
+        root: String,
+        record: &str,
+        task_id: String,
+        workload_id: String,
+        quality: u8,
+        codec: &str,
+        ffmpeg: Option<String>,
+    ) -> PyResult<Self> {
+        use rlmesh::binding::artifacts::{ArtifactOptions, EpisodeArtifacts};
+        let record = serde_json::from_str(record)
+            .map_err(|e| PyValueError::new_err(format!("record: {e}")))?;
+        let options = ArtifactOptions {
+            record,
+            task_id,
+            workload_artifact_id: workload_id.clone(),
+            workload_id,
+            encoding: encoding(codec, quality, ffmpeg)?,
+            ..ArtifactOptions::default()
+        };
+        Ok(Self {
+            tap: std::sync::Arc::new(Mutex::new(EpisodeArtifacts::new(root, options))),
+        })
+    }
+
+    /// Number the next run's episodes after `offset`.
+    fn set_episode_offset(&self, offset: u32) {
+        self.lock().set_episode_offset(offset);
+    }
+
+    /// The oldest closed episode's `episode.json` not yet taken, or `None`.
+    fn take_finished(&self) -> PyResult<Option<String>> {
+        self.lock()
+            .take_finished()
+            .map(|record| serde_json::to_string(&record))
+            .transpose()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// The run's phase marks (`warmup`) as a JSON list.
+    fn phases(&self) -> PyResult<String> {
+        serde_json::to_string(self.lock().phases())
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// This machine's hardware stamp as JSON (shells out to nvidia-smi).
+    #[staticmethod]
+    fn stamp(py: Python<'_>) -> PyResult<String> {
+        py.detach(|| serde_json::to_string(&rlmesh::binding::artifacts::collect_stamp()))
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+}
+
+impl PyEpisodeArtifacts {
+    fn lock(&self) -> MutexGuard<'_, rlmesh::binding::artifacts::EpisodeArtifacts> {
+        self.tap.lock().unwrap_or_else(|err| err.into_inner())
     }
 }

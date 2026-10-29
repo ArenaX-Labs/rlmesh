@@ -1,6 +1,6 @@
-"""Built-in debug viewer wiring for the `Session` loop.
+"""Built-in debug viewer wiring for a :class:`~rlmesh.Binding`.
 
-A :class:`View` config plus the :class:`ViewerDriver` that, when a session has
+A :class:`View` config plus the :class:`ViewerDriver` that, when a binding has
 ``view=`` set, feeds the selected source to the native ``PyViewer`` (terminal +
 HTTP backends) each step. The sources are every observation image role the env
 **declares** (the first one shows by default: it rides the step response, so
@@ -84,7 +84,7 @@ def discover_frame_sources(contract: Any, client: Any) -> FrameSources:
 
 @dataclass(frozen=True)
 class View:
-    """How to show a live eval. Pass to ``run`` / ``session`` as ``view=``.
+    """How to show a live eval. Pass to ``bind`` as ``view=``.
 
     The common cases are the string shorthands ``"terminal"`` / ``"http"`` /
     ``"http:9000"`` / ``"both"``; construct a ``View`` directly only to tune.
@@ -101,20 +101,20 @@ class View:
             ``render()`` frame when it declares none.
         format: Encoding for HTTP frames, ``"jpeg"`` or ``"png"``.
         quality: JPEG quality 1..100 (ignored for PNG).
-        hold: Keep the viewer up after the session ends, showing the final frame
+        hold: Keep the viewer up after the binding closes, showing the final frame
             and HUD: ``True`` until you quit it (``q`` / ``Esc`` in the
             terminal, the quit button on the HTTP page, or Ctrl-C), a number of
             seconds to hold at most that long. ``False`` (the default) closes
-            the viewer with the session. The hold follows only a session that
-            ended normally: one closing on an error or ``KeyboardInterrupt``
+            the viewer with the binding. The hold follows only a binding that
+            closed normally: one closing on an error or ``KeyboardInterrupt``
             skips it and raises at once. An unbounded hold needs someone to
             quit it: with no interactive terminal (stdin not a tty, as in CI;
             the terminal backend also needs stdout to be one) it is skipped
             with a warning rather than blocking forever, on every backend. A
             number of seconds is bounded and holds regardless.
-        step_hz: Pace the session's env steps to at most this many per second,
+        step_hz: Pace the binding's env steps to at most this many per second,
             so a fast sim plays back at a watchable rate (set it to the env's
-            control rate for real time). The session sleeps after each
+            control rate for real time). The binding sleeps after each
             ``step`` until the next step is due; a step slower than the period
             is never sped up, and the lost time is not made up with a burst.
             ``None`` (the default) runs as fast as it can.
@@ -193,7 +193,7 @@ def resolve_view(view: object) -> View | None:
 
 
 class ViewerDriver:
-    """Drive a native ``PyViewer`` from a session.
+    """Drive a native ``PyViewer`` from a binding.
 
     Discovers the sources (render + declared image roles), then feeds the
     selected one each step.
@@ -213,7 +213,7 @@ class ViewerDriver:
         self._frame_w = 0
         self._frame_h = 0
         #: The last fed observation, its reader, and HUD fields: what a held viewer
-        #: redraws after the session ends (and on a source switch while held).
+        #: redraws after the binding closes (and on a source switch while held).
         self._last_obs: object = None
         self._last_read: Callable[[object, object], object] | None = None
         self._last_hud: dict[str, Any] | None = None
@@ -374,7 +374,7 @@ class ViewerDriver:
     def pace(self) -> float:
         """Sleep until the next step is due under :attr:`View.step_hz`.
 
-        Called by the session after each env step; returns the seconds slept
+        Called by the binding after each env step; returns the seconds slept
         (``0.0`` with pacing off) so step timings can leave the sleep out.
         Deadlines advance by one period per step, so steady pacing does not
         drift; a step that overran its period restarts the schedule from now
@@ -396,8 +396,8 @@ class ViewerDriver:
     def quit_requested(self) -> bool:
         """Whether the viewer asked to stop the run (``q`` / ``Esc``; sticky).
 
-        The session treats it as stop-early: the current episode is truncated and
-        the eval loop returns the partial :class:`~rlmesh.RunResult` -- a real
+        The binding treats it as stop-early: the current episode is truncated
+        -- a real
         Ctrl-C outside the viewer still raises ``KeyboardInterrupt``.
         """
         return self._quit
@@ -434,8 +434,8 @@ class ViewerDriver:
     def close(self, *, hold: bool = True) -> None:
         """Tear the viewer down, after the :attr:`View.hold` wait when one is set.
 
-        ``hold=False`` skips that wait: the session passes it when it is closing
-        because the run failed or was interrupted, so the error is not held back.
+        ``hold=False`` skips that wait: the binding passes it when it is closing
+        because a step failed or was interrupted, so the error is not held back.
         """
         self._disabled = True
         if self._pv is not None:

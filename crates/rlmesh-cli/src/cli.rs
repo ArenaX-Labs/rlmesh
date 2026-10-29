@@ -43,9 +43,40 @@ pub enum Command {
     /// Print a class's describe envelope, or its `dev.rlmesh.describe` label
     /// for a custom-entrypoint image build.
     Describe(DescribeArgs),
-    /// Smoke-test the terminal/HTTP renderer with synthetic frames (diagnostic).
-    #[command(hide = true)]
-    Viewtest(ViewtestArgs),
+    /// Host v2 sessions on this machine until Ctrl-C: the default session,
+    /// and any other a participant names. Prints the address it listens on.
+    Host(HostArgs),
+    /// Run rlmeshd in the foreground (also installed as `rlmeshd`): v2
+    /// sessions on the LAN under this machine's host identity, admitting the
+    /// devices of its device table.
+    Daemon(DaemonArgs),
+    /// List and change the devices and robot pins of this machine's
+    /// rlmeshd, and provision boards over USB; it applies a change at once.
+    #[command(visible_alias = "device")]
+    Devices(DevicesArgs),
+    /// Check scene files against this machine's rlmeshd: its devices and
+    /// robot pins.
+    Scene(SceneArgs),
+    /// Run a scene on its robots' home rlmeshd and follow its stages until
+    /// it ends; Ctrl-C stops it.
+    Run(RunArgs),
+    /// List the robots waiting in the home rlmeshd's lobby.
+    Lobby(HomeArgs),
+    /// Stop a run.
+    Stop(RunIdArgs),
+    /// Arm a run that waits for an explicit arm (`--arm manual`, or after a
+    /// lost member rejoined).
+    Arm(RunIdArgs),
+    /// Pair this machine with a robot's rlmeshd (shows a code to type on
+    /// the robot), or, on the robot, approve a machine by its code.
+    Pair(PairArgs),
+    /// Run an env or model image and check it the way the platform's probe
+    /// does: handshake, describe, conformance, reproducibility, and an env's
+    /// preview clip (exits 1 on a failed check).
+    Doctor(DoctorArgs),
+    /// Run a model image and sweep how many concurrent sessions it serves,
+    /// recommending `max_batch_size` (exits 1 when no size runs).
+    Bench(BenchArgs),
 }
 
 /// Shared flag selecting which named profile to act on.
@@ -240,6 +271,52 @@ pub enum EvalCommand {
     Wait(EvalIdArgs),
     /// Cancel a running evaluation.
     Cancel(EvalIdArgs),
+    /// Print per-task, per-suite and overall success of saved result bundles.
+    Report(EvalReportArgs),
+    /// Run an evaluation request on this machine, in Docker.
+    Run(EvalRunArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct EvalRunArgs {
+    /// Path to the request JSON (`-` reads stdin), the file `eval submit` takes.
+    pub request: String,
+    /// Resolve catalog names (`prebuilt/<model>/<env>`, `prebuilt/<env>`): a
+    /// local build `rlmesh-<model>-<env>:TAG` when there is one (TAG is
+    /// `latest` unless given), else the registry's image.
+    #[arg(long, value_name = "TAG", num_args = 0..=1, default_missing_value = "latest")]
+    pub catalog: Option<String>,
+    /// `docker run --gpus` for the images whose package declares a GPU, e.g. `all`.
+    #[arg(long)]
+    pub gpus: Option<String>,
+    /// A `docker run -v` mount for every container, e.g. a checkpoint store
+    /// at the path its package label names; repeatable.
+    #[arg(long = "volume", value_name = "HOST:CONTAINER")]
+    pub volumes: Vec<String>,
+    /// The most env containers alive at once: a model's workloads run in
+    /// waves of this many.
+    #[arg(long, value_name = "N", default_value_t = 16, value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_envs: u32,
+    /// The folder for the run index and one result bundle per workload.
+    #[arg(long, default_value = "rlmesh-eval")]
+    pub out: std::path::PathBuf,
+    /// Continue the run in `--out`: skip the workloads whose bundles already
+    /// hold their episodes. Refused when the plan or an image changed.
+    #[arg(long)]
+    pub resume: bool,
+    /// Print the report as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct EvalReportArgs {
+    /// Result bundles (folders or zips), or folders of bundles.
+    #[arg(required = true)]
+    pub paths: Vec<std::path::PathBuf>,
+    /// Print the report as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -324,6 +401,267 @@ pub struct CheckImageArgs {
     pub json: bool,
 }
 
+/// Flags `doctor` and `bench` share: the image and how it runs.
+#[derive(Args, Debug)]
+pub struct ProbeImageArgs {
+    /// A local image reference (`name:tag` or id).
+    pub image: String,
+    /// For a model that declares no ModelSpec: an env image whose spaces it is
+    /// checked against (run beside it, never stepped).
+    #[arg(long, value_name = "IMAGE")]
+    pub env: Option<String>,
+    /// GPUs for the container(s), as `docker run --gpus` takes them (`all`, `device=0`).
+    #[arg(long, value_name = "SPEC")]
+    pub gpus: Option<String>,
+    /// Seconds the image gets to start serving and to answer each call.
+    #[arg(long, value_name = "SECONDS", default_value_t = 120)]
+    pub timeout: u64,
+    /// Print the report as JSON, in the platform's `probe-report.json` shape.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Flags for `rlmesh doctor`.
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+    #[command(flatten)]
+    pub image: ProbeImageArgs,
+    /// Probe the image as this kind instead of the one its labels and command declare.
+    #[arg(long, value_enum)]
+    pub kind: Option<ProbeKind>,
+    /// Write `probe-report.json` and an env's preview clip here.
+    #[arg(long, value_name = "DIR", default_value = "rlmesh-doctor")]
+    pub output: std::path::PathBuf,
+}
+
+/// What `doctor` probes an image as.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeKind {
+    Env,
+    Model,
+}
+
+/// Flags for `rlmesh bench`.
+#[derive(Args, Debug)]
+pub struct BenchArgs {
+    #[command(flatten)]
+    pub image: ProbeImageArgs,
+    /// Concurrent sessions per sweep point, comma-separated and ascending.
+    #[arg(
+        long,
+        value_name = "LIST",
+        value_delimiter = ',',
+        default_value = "1,2,4,8,16,32"
+    )]
+    pub sizes: Vec<u32>,
+    /// Predicts each session times per point, after 3 untimed ones.
+    #[arg(long, value_name = "N", default_value_t = 20)]
+    pub iterations: u32,
+}
+
+/// Flags for `rlmesh host`.
+#[derive(Args, Debug)]
+pub struct HostArgs {
+    /// Listen here (this port and the next three) instead of 127.0.0.1 on
+    /// the well-known port (`RLMESH_PORT`, else 7447). Port 0: OS-assigned.
+    #[arg(long, value_name = "ADDR")]
+    pub listen: Option<std::net::SocketAddr>,
+    /// Record every session here, always on: the newest 30 minutes or
+    /// 20 GB, in one-minute MCAP segments under `rolling/{session}/`.
+    /// Default: `rlmesh/recordings` in the user data directory.
+    #[arg(long, value_name = "DIR")]
+    pub record_dir: Option<std::path::PathBuf>,
+    /// Do not record.
+    #[arg(long, conflicts_with = "record_dir")]
+    pub no_record: bool,
+    /// Listen beyond loopback anyway (`--listen 0.0.0.0:…`): anyone who can
+    /// reach it can try this host. Sessions for other machines are
+    /// rlmeshd's.
+    #[arg(long)]
+    pub insecure: bool,
+}
+
+/// Flags for `rlmesh daemon`.
+#[derive(Args, Debug)]
+pub struct DaemonArgs {
+    /// Keep the host's keys and device table here (default: `rlmesh/daemon`
+    /// in the user state directory).
+    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
+    pub state_dir: Option<std::path::PathBuf>,
+    /// Listen here (this port and the next three) instead of every
+    /// interface on the well-known port (`RLMESH_PORT`, else 7447).
+    #[arg(long, value_name = "ADDR")]
+    pub listen: Option<std::net::SocketAddr>,
+}
+
+/// Flags for `rlmesh devices`.
+#[derive(Args, Debug)]
+pub struct DevicesArgs {
+    /// rlmeshd's state directory (default: `rlmesh/daemon` in the user
+    /// state directory).
+    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR", global = true)]
+    pub state_dir: Option<std::path::PathBuf>,
+    #[command(subcommand)]
+    pub command: DevicesCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DevicesCommand {
+    /// List the devices with their entries, and the robot pins.
+    Ls,
+    /// Change a paired device's entry; its participants re-attach under it.
+    Allow {
+        /// The device.
+        device: String,
+        /// The highest class it may attach and lease at: observer, scripted,
+        /// model or operator.
+        #[arg(long, value_name = "CLASS")]
+        max: Option<String>,
+        /// The parts it may lease and read: globs over `{robot}/{path}`,
+        /// comma-separated.
+        #[arg(long, value_name = "GLOBS", value_delimiter = ',')]
+        parts: Option<Vec<String>>,
+        /// The verbs it may send besides estop: arm, disarm, comma-separated.
+        #[arg(long, value_name = "VERBS", value_delimiter = ',')]
+        verbs: Option<Vec<String>>,
+    },
+    /// Remove a device: it is detached at once, and its robot pins stay.
+    Revoke {
+        /// The device.
+        device: String,
+    },
+    /// Pin a robot name to another device (or board); its embodiment is
+    /// detached, and an active session goes SAFE.
+    Move {
+        /// The robot name.
+        robot: String,
+        /// The device that embodies it from now on (`local`: this machine).
+        #[arg(long, value_name = "DEVICE")]
+        to: String,
+        /// The tethered board behind that device, 16 hex digits.
+        #[arg(long, value_name = "ID", conflicts_with = "no_board_id")]
+        board_id: Option<String>,
+        /// The robot has no board behind the device any more.
+        #[arg(long)]
+        no_board_id: bool,
+    },
+    /// Remove a robot name's pin; its embodiment is detached.
+    Unpin {
+        /// The robot name.
+        robot: String,
+    },
+    /// Provision a networked board (an ESP32) plugged in over USB: give it
+    /// this rlmeshd's key, id and addresses, enroll its key as a board and
+    /// pin its robot name to it. Run it on the robot's machine, with
+    /// rlmeshd running; the board keeps its key when provisioned again.
+    Provision {
+        /// The board's serial port (`/dev/ttyUSB0`, `/dev/ttyACM0`).
+        #[arg(long, value_name = "TTY")]
+        port: std::path::PathBuf,
+        /// The robot name compiled into the board's sketch.
+        #[arg(long, value_name = "ROBOT")]
+        name: String,
+        /// The highest class it may attach and lease at (default: model,
+        /// or what it already has).
+        #[arg(long, value_name = "CLASS")]
+        max: Option<String>,
+    },
+}
+
+/// Flags for `rlmesh scene`.
+#[derive(Args, Debug)]
+pub struct SceneArgs {
+    /// rlmeshd's state directory (default: `rlmesh/daemon` in the user
+    /// state directory).
+    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR", global = true)]
+    pub state_dir: Option<std::path::PathBuf>,
+    #[command(subcommand)]
+    pub command: SceneCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SceneCommand {
+    /// Check a scene file offline, as a run's first stage will: its
+    /// format, members, places and security, and its robots and
+    /// controllers against the device table and pins. Prints every problem
+    /// with its line and fix, and exits 1 if there is one.
+    Check {
+        /// The scene file.
+        #[arg(value_name = "SCENE.TOML")]
+        file: std::path::PathBuf,
+    },
+}
+
+/// Where the home rlmeshd is.
+#[derive(Args, Debug)]
+pub struct HomeArgs {
+    /// The home daemon (`rig-pi.local`, `10.0.0.5:7447`, or the host id
+    /// this machine paired with, `rlm-3f9a2c`, found again over mDNS when
+    /// its address changed; default: this machine's).
+    #[arg(long, value_name = "HOST")]
+    pub home: Option<String>,
+}
+
+/// Flags for `rlmesh run`.
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// The scene file.
+    #[arg(value_name = "SCENE.TOML")]
+    pub file: std::path::PathBuf,
+    /// `manual`: wait for `rlmesh arm` even when the scene arms itself.
+    #[arg(long, value_name = "auto|manual", default_value = "auto")]
+    pub arm: String,
+    #[command(flatten)]
+    pub home: HomeArgs,
+}
+
+/// Flags for `rlmesh stop` and `rlmesh arm`.
+#[derive(Args, Debug)]
+pub struct RunIdArgs {
+    /// The run (`r-7k2m`), as `rlmesh run` printed it.
+    pub run: String,
+    #[command(flatten)]
+    pub home: HomeArgs,
+}
+
+/// Flags for `rlmesh pair`.
+#[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+pub struct PairArgs {
+    /// The robot's host (`robot.local`, `10.0.0.5:7447`).
+    #[arg(value_name = "HOST", required = true)]
+    pub host: Option<String>,
+    /// The name this machine pairs as (default: its host name).
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+    /// Pair a browser token instead: a device of its own (default cap
+    /// model), which this machine's rlmesh-gateway attaches its browser
+    /// with. Prints the token once.
+    #[arg(long)]
+    pub browser: bool,
+    #[command(subcommand)]
+    pub command: Option<PairCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PairCommand {
+    /// On the robot: list the machines and browsers waiting, and approve
+    /// the one showing CODE (typed, or asked for).
+    Approve {
+        /// The 6-digit code the machine shows.
+        code: Option<String>,
+        /// The highest class it may attach and lease at: observer,
+        /// scripted, model or operator (default operator for a machine,
+        /// model for a browser).
+        #[arg(long, value_name = "CLASS")]
+        max: Option<String>,
+        /// rlmeshd's state directory (default: `rlmesh/daemon` in the user
+        /// state directory).
+        #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
+        state_dir: Option<std::path::PathBuf>,
+    },
+}
+
 /// Flags for `rlmesh describe`.
 #[derive(Args, Debug)]
 pub struct DescribeArgs {
@@ -335,24 +673,4 @@ pub struct DescribeArgs {
     /// the platform fails a label generated off linux.
     #[arg(long)]
     pub label: bool,
-}
-
-/// Flags for the hidden `viewtest` diagnostic.
-#[derive(Args, Debug)]
-pub struct ViewtestArgs {
-    /// Serve a full-res browser view on this port instead of the terminal.
-    #[arg(long, value_name = "PORT")]
-    pub http: Option<u16>,
-    /// Drive the terminal AND the browser at once (use with --http).
-    #[arg(long)]
-    pub both: bool,
-    /// Target frames per second.
-    #[arg(long, default_value_t = 30)]
-    pub fps: u32,
-    /// Stop after this many frames.
-    #[arg(long, default_value_t = 900)]
-    pub frames: u32,
-    /// Feed only the HUD, never an image (mimics an env with no camera frames).
-    #[arg(long)]
-    pub no_frames: bool,
 }

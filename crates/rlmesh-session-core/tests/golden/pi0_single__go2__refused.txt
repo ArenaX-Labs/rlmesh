@@ -1,0 +1,22 @@
+binding refused: pi0_single on go2 (7 problems)
+
+  [unbound] input "image" (kind camera, at "/scene/cam"): no part matches; go2's camera parts: front/cam.
+    fix: if one of them is meant, rlmesh.run(..., at={"image": "front/cam"})
+
+  [unbound] input "wrist_image" (kind camera, at "wrist/cam"): no part matches; go2's camera parts: front/cam.
+    fix: if one of them is meant, rlmesh.run(..., at={"wrist_image": "front/cam"})
+
+  [unbound] input "state" (kind joints, at "arm"): no part matches; go2's joints parts: legs.
+    fix: if one of them is meant, rlmesh.run(..., at={"state": "legs"})
+
+  [unbound] input "gripper" (kind gripper, at "gripper"): go2 has no gripper part.
+    fix: this policy needs a gripper; it cannot run on go2.
+
+  [unbound] input "prompt" (kind text, at "/task"): go2 has no text part.
+    fix: this policy needs a text part; it cannot run on go2.
+
+  [unbound] action "arm" (kind joints, at "arm"): no part matches; go2's joints parts: legs.
+    fix: if one of them is meant, rlmesh.run(..., at={"arm": "legs"})
+
+  [unbound] action "gripper" (kind gripper, at "gripper"): go2 has no gripper part.
+    fix: this policy needs a gripper; it cannot run on go2.

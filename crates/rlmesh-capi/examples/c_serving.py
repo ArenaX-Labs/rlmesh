@@ -1,4 +1,4 @@
-"""Probe the C foreground/start envelopes and model signal modes over gRPC."""
+"""Probe the C env serving envelopes over gRPC and the model serve signal modes."""
 
 from __future__ import annotations
 
@@ -14,9 +14,75 @@ import tomllib
 import grpc
 
 ROOT = Path(__file__).resolve().parents[3]
-# Reuse the system harness's minimal protobuf reader, with no generated stubs.
-sys.path.insert(0, str(ROOT / "tests/system"))
-from crossver import _decode, _delimited, _message, _string, _text  # noqa: E402
+
+
+# A minimal protobuf reader and writer, so the probe needs no generated stubs.
+def _varint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _delimited(field: int, payload: bytes) -> bytes:
+    return _varint((field << 3) | 2) + _varint(len(payload)) + payload
+
+
+def _text(field: int, value: str) -> bytes:
+    return _delimited(field, value.encode())
+
+
+def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
+    value = shift = 0
+    while True:
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, pos
+        shift += 7
+
+
+def _decode(data: bytes) -> dict[int, list[bytes | int]]:
+    fields: dict[int, list[bytes | int]] = {}
+    pos = 0
+    while pos < len(data):
+        key, pos = _read_varint(data, pos)
+        field, wire = key >> 3, key & 7
+        value: bytes | int
+        if wire == 0:
+            value, pos = _read_varint(data, pos)
+        elif wire == 2:
+            length, pos = _read_varint(data, pos)
+            value, pos = data[pos : pos + length], pos + length
+        elif wire in (1, 5):
+            width = 8 if wire == 1 else 4
+            value, pos = data[pos : pos + width], pos + width
+        else:
+            raise ValueError(f"unsupported protobuf wire type {wire}")
+        fields.setdefault(field, []).append(value)
+    return fields
+
+
+def _message(
+    fields: dict[int, list[bytes | int]], field: int
+) -> dict[int, list[bytes | int]]:
+    values = fields.get(field)
+    return _decode(bytes(values[0])) if values else {}
+
+
+def _strings(fields: dict[int, list[bytes | int]], field: int) -> list[str]:
+    return [bytes(value).decode() for value in fields.get(field, [])]
+
+
+def _string(fields: dict[int, list[bytes | int]], field: int) -> str:
+    values = _strings(fields, field)
+    return values[0] if values else ""
 
 
 def read_checked(process: subprocess.Popen[str]) -> None:
@@ -31,18 +97,42 @@ def read_checked(process: subprocess.Popen[str]) -> None:
         output += chunk
 
 
+def command(process: subprocess.Popen[str], mode: str) -> None:
+    """Drive the C consumer's signal check and stop, and expect a clean exit."""
+    assert process.stdin is not None
+    if "foreground" not in mode:
+        process.stdin.write("i\n")
+        process.stdin.flush()
+        read_checked(process)
+    if mode not in {"signals", "old-signals"}:
+        process.stdin.write("q\n")
+        process.stdin.flush()
+    stdout, _ = process.communicate(timeout=15)
+    assert process.returncode == 0, (mode, stdout)
+
+
 def probe(binary: str, mode: str) -> None:
     """Run one fresh process so signal dispositions cannot leak between cases."""
+    if mode in {"no-signals", "signals", "old-signals"}:
+        # The model serves on a session the C process hosts; it waits for its
+        # own run through the served model before checking signals.
+        process = subprocess.Popen(
+            [binary, mode, ":0/host"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        try:
+            command(process, mode)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        return
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         address = f"127.0.0.1:{listener.getsockname()[1]}"
-    is_env = mode in {
-        "foreground",
-        "start",
-        "legacy-foreground",
-        "legacy-start",
-        "env-server",
-    }
     process = subprocess.Popen(
         [binary, mode, f"tcp://{address}"],
         stdin=subprocess.PIPE,
@@ -53,9 +143,7 @@ def probe(binary: str, mode: str) -> None:
     channel = grpc.insecure_channel(address)
     try:
         grpc.channel_ready_future(channel).result(timeout=15)
-        service = (
-            "rlmesh.env.v1.EnvService" if is_env else "rlmesh.model.v1.ModelService"
-        )
+        service = "rlmesh.env.v1.EnvService"
         generation = tomllib.loads((ROOT / "rlmesh.toml").read_text())["protocol"][
             "current_generation"
         ]
@@ -66,36 +154,26 @@ def probe(binary: str, mode: str) -> None:
         )(_delimited(1, _text(1, generation)), timeout=5)
         base = _message(_decode(reply), 1)
         assert base[1] == [1], base
-        if is_env:
-            peer = _message(base, 2)
-            extra = {
-                _string(_decode(bytes(v)), 1): _string(_decode(bytes(v)), 2)
-                for v in peer.get(15, [])
-            }
-            envelope = json.loads(extra["rlmesh.describe.v1"])
-            legacy = mode.startswith("legacy-")
-            language, version = ("c", "") if legacy else ("csharp", "9.0")
-            frameworks = {
-                _string(_decode(bytes(v)), 1): _string(_decode(bytes(v)), 2)
-                for v in peer.get(8, [])
-            }
-            assert _string(peer, 3) == language, peer
-            assert _string(peer, 4) == version, peer
-            assert frameworks == ({} if legacy else {"unity": "6"}), peer
-            assert envelope["runtime"]["language"] == language, envelope
-            if not legacy:
-                assert envelope["runtime"]["language_version"] == version, envelope
-                assert envelope["runtime"]["framework_versions"] == frameworks, envelope
-        assert process.stdin is not None
-        if "foreground" not in mode:
-            process.stdin.write("i\n")
-            process.stdin.flush()
-            read_checked(process)
-        if mode not in {"signals", "old-signals"}:
-            process.stdin.write("q\n")
-            process.stdin.flush()
-        stdout, _ = process.communicate(timeout=15)
-        assert process.returncode == 0, (mode, stdout)
+        peer = _message(base, 2)
+        extra = {
+            _string(_decode(bytes(v)), 1): _string(_decode(bytes(v)), 2)
+            for v in peer.get(15, [])
+        }
+        envelope = json.loads(extra["rlmesh.describe.v1"])
+        legacy = mode.startswith("legacy-")
+        language, version = ("c", "") if legacy else ("csharp", "9.0")
+        frameworks = {
+            _string(_decode(bytes(v)), 1): _string(_decode(bytes(v)), 2)
+            for v in peer.get(8, [])
+        }
+        assert _string(peer, 3) == language, peer
+        assert _string(peer, 4) == version, peer
+        assert frameworks == ({} if legacy else {"unity": "6"}), peer
+        assert envelope["runtime"]["language"] == language, envelope
+        if not legacy:
+            assert envelope["runtime"]["language_version"] == version, envelope
+            assert envelope["runtime"]["framework_versions"] == frameworks, envelope
+        command(process, mode)
     finally:
         channel.close()
         if process.poll() is None:

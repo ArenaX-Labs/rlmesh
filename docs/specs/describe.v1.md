@@ -73,11 +73,11 @@ _format_ is shared.
     "component": "rlmesh-python",
     "language": "python",
     "language_version": "3.11.8",
-    "package_version": "0.1.0",
+    "package_version": "0.2.0a0",
     "os": "linux", "os_version": "...", "arch": "x86_64",
     "framework_versions": { "numpy": "...", "torch": "..." },
     "protocol_generation": "rlmesh-wire-v1",
-    "supported_workflow_editions": ["2026.06-0.1.0", "2026.06"],
+    "supported_workflow_editions": ["2026.06-0.2.0-alpha.0", "2026.06"],
     "preferred_workflow_edition": "2026.06",
     "workflow_edition_error": "..."          # only when the declaration cannot be run
   }
@@ -129,7 +129,7 @@ _format_ is shared.
 ### Model (`kind: "model"`)
 
 Same wrapper; drops `env_spec`/`env_tags`, adds `model_spec`, `corners`, and
-`native_chunk`:
+`native_chunk` and optional `execution_horizon`:
 
 ```text
 {
@@ -139,6 +139,7 @@ Same wrapper; drops `env_spec`/`env_tags`, adds `model_spec`, `corners`, and
   "model_spec": { "input": { ... }, "output": { ... } } | null,
   "corners": ["predict", "predict_chunk_batch"],
   "native_chunk": 30,
+  "execution_horizon": 8,
   "params": { ... },
   "variants": { ... },
   "runtime": { ... }
@@ -159,6 +160,12 @@ Same wrapper; drops `env_spec`/`env_tags`, adds `model_spec`, `corners`, and
   class, so a K a model only sets while loading its weights is deliberately
   invisible here -- describe runs without weights.
 
+- `execution_horizon` is the optional checkpoint-specific value sampled once
+  after `load()`, reported for a built/served model. A type-only description
+  does not load weights or invent it. Drivers choose an explicit run override,
+  then this loaded value, then `model_spec.timing.execution`, then 1. Timing
+  defaults are omitted from the model spec when unset, preserving prior bytes.
+
 ## Best-effort / error badges
 
 Any gathered piece that fails (an env that needs a GPU to build, a `make()` that
@@ -178,7 +185,7 @@ label: the platform fails a baked `env_spec`/`model_spec` badge.
 - `kind` is a closed enum (`"env"` | `"model"`); anything else is rejected.
 - Env-only fields (`env_spec`, `env_tags`, `env_contracts`) never appear on a
   `model` envelope, and the model-only fields (`model_spec`, `corners`,
-  `native_chunk`) never appear on an `env` envelope. The builder rejects a
+  `native_chunk`, `execution_horizon`) never appear on an `env` envelope. The builder rejects a
   misplaced field by name rather than dropping it.
 - Unknown top-level fields are rejected (the key set is part of the contract).
 - `generated_at`, if present, must be RFC-3339.

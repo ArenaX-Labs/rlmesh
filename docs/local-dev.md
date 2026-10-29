@@ -67,7 +67,7 @@ mise run test:python:unit
 mise run test:python:integration
 ```
 
-On `uv run`, uv rebuilds the native extension when Rust sources change; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. Otherwise the editable install keeps loading the last in-tree build: when a source build was stamped from a commit other than the checkout's HEAD, rlmesh warns once, on first use of the native core, to run `mise run build:python:develop` (set `RLMESH_STALE_CHECK=0` to skip the check; installed wheels are never checked). See [testing](testing.md) for the full test layering.
+On `uv run` and `mise run setup:python`, uv rebuilds the native extension when Rust sources or the commit change (the commit is part of its stamp, see [dev builds](#dev-builds-and-the-dev-cohort)). `mise run test` syncs once before its Rust, Python and C/C++ suites start, so all three load one build, stamped like the C library they test against. The Python lint and format tasks run `uv run --no-sync`, so a commit's hooks never rebuild it with the tree half staged; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. Otherwise the editable install keeps loading the last in-tree build: when a source build was stamped from a commit other than the checkout's HEAD, rlmesh warns once, on first use of the native core, to run `mise run build:python:develop` (set `RLMESH_STALE_CHECK=0` to skip the check; installed wheels are never checked). See [testing](testing.md) for the full test layering.
 
 ## Worktrees and Limited Compute
 

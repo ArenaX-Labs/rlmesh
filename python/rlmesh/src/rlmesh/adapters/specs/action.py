@@ -6,9 +6,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
-from ._codec import axis_or_scalar, check_labels
+from ._codec import axis_or_scalar, check_labels, check_polarity, check_unit
 from .custom_encoding import CustomEncoding
-from .vocabularies import Frame, Reference, RotationEncoding
+from .vocabularies import Frame, Polarity, Reference, RotationEncoding
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,21 @@ class Actuator:
             name the same set; the model's output is then reordered onto the
             env's axes by name. Keyword-only and omitted from the wire when
             unset; an opaque actuator may not carry them.
+        polarity: Which way the gripper moves as this command rises
+            (``action/gripper``): ``"open"`` or ``"close"``. On a model, the
+            convention its raw output speaks; on an env, the one its simulator
+            takes (after the env's own ``invert``/``scale``). When both sides
+            declare one, the command must arrive the right way round through
+            both sides' ``invert`` and ``scale``, or resolution is refused
+            unless the model allows ``"flip_gripper"``. Keyword-only.
+        unit: The SI size (metres, or radians for a rotation) of one unit of
+            this delta command (``action/delta_eef_*``): ``0.05`` for a
+            controller whose ``1.0`` moves 5 cm, ``1.0`` for one that takes
+            metres. On a model, the unit of its raw output; on an env, the one
+            its controller takes. When both declare one, a model unit must be
+            the same step through the range map and both scales, or resolution
+            is refused unless the model allows ``"convert_units"``.
+            Keyword-only.
 
     ``scale``, ``offset``, ``invert``, and ``threshold`` declare a side's actuator
     convention. They can be set on either side and compose as literal transforms
@@ -109,12 +124,16 @@ class Actuator:
     part: str | None = field(default=None, kw_only=True)
     offset: float | Sequence[float] | None = field(default=None, kw_only=True)
     labels: Sequence[str] | None = field(default=None, kw_only=True)
+    polarity: Polarity | None = field(default=None, kw_only=True)
+    unit: float | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.dim < 1:
             raise ValueError(
                 f"Actuator {self.role!r}: dim must be >= 1, got {self.dim}"
             )
+        check_polarity("Actuator", self.role, self.polarity)
+        object.__setattr__(self, "unit", check_unit("Actuator", self.role, self.unit))
         fill = cast("object", self.fill)
         if isinstance(fill, bool) or not isinstance(fill, (int, float)):
             raise ValueError(
@@ -144,11 +163,13 @@ class Actuator:
                 or self.reference is not None
                 or self.part is not None
                 or self.labels is not None
+                or self.polarity is not None
+                or self.unit is not None
             ):
                 raise ValueError(
                     "a role-less (opaque) Actuator carries only dim and fill; "
                     "drop encoding/range/scale/offset/invert/threshold/binary/clip/"
-                    "optional/frame/reference/part/labels"
+                    "optional/frame/reference/part/labels/polarity/unit"
                 )
             return
         if self.labels is not None and len(self.labels) != self.dim:

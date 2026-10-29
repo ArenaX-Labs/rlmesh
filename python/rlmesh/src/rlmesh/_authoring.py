@@ -59,7 +59,8 @@ class EnvFactory(ABC):
     The first key holding a bool, integer, or float decides -- a number counts as
     success when non-zero -- and keys holding any other kind (a string such as
     ``"False"``, ``None``, a list) are skipped. With none of them the outcome is
-    unknown, never inferred from ``terminated``, and ``success_rate`` is ``None``.
+    unknown, never inferred from ``terminated``: ``success_rate`` counts it as a
+    failure, and is ``None`` when no episode reported an outcome.
     """
 
     tags: ClassVar[EnvTags | None] = None
@@ -79,6 +80,18 @@ class EnvFactory(ABC):
     #: the 0-based ordinal of the episode being started (see
     #: :func:`rlmesh.trial_index`); ``()`` (the default) receives none.
     reset_options: ClassVar[tuple[str, ...]] = ()
+    #: The env's camera dial: the two ``make`` params, ``(height, width)``, that
+    #: set the resolution every camera renders at. ``make`` publishes them in the
+    #: env's metadata, and a driver that knows the model binds the model's
+    #: ``Image(render=...)`` size there before the env is made (see
+    #: ``SandboxEnv(model=...)``); a param the caller passes itself still wins.
+    #: ``()`` (the default) is no dial.
+    render_params: ClassVar[tuple[str, ...]] = ()
+    #: ``True`` for an env with no episode horizon of its own: it never
+    #: truncates. ``make`` publishes the declaration in the env's metadata, and
+    #: a run against the env without ``max_episode_steps`` is refused before its
+    #: first reset rather than left to run forever.
+    requires_episode_cap: ClassVar[bool] = False
     #: The workflow edition this env was authored against -- a sticky
     #: declaration, the source-resident analogue of NixOS's ``stateVersion``:
     #: write it once and upgrading rlmesh cannot change how this env behaves.
@@ -103,6 +116,7 @@ class EnvFactory(ABC):
         # idempotently. ``tags = None`` is a no-op (a generic, un-adapted env).
         super().__init_subclass__(**kwargs)
         _check_tag_params(cls)
+        _check_render_params(cls)
         user_make = cls.__dict__.get("make")
         if user_make is None or getattr(user_make, "_rlmesh_tag_stamped", False):
             return
@@ -136,6 +150,14 @@ class EnvFactory(ABC):
                 from ._rlmesh import ENV_RESET_OPTIONS_KEY
 
                 fragment[ENV_RESET_OPTIONS_KEY] = list(cls.reset_options)
+            if cls.render_params:
+                from ._rlmesh import ENV_RENDER_PARAMS_KEY
+
+                fragment[ENV_RENDER_PARAMS_KEY] = list(cls.render_params)
+            if cls.requires_episode_cap:
+                from ._rlmesh import ENV_REQUIRES_EPISODE_CAP_KEY
+
+                fragment[ENV_REQUIRES_EPISODE_CAP_KEY] = True
             if fragment:
                 _stamp_metadata(env, fragment)
             if cls._bridge is not None and getattr(env, "_bridge", None) is None:
@@ -201,7 +223,7 @@ class EnvFactory(ABC):
         workflow_edition: str | None = None,
         **make_kwargs: Any,
     ) -> None:
-        """Host this env on ``address`` (blocking): ``prepare()`` + ``make(**make_kwargs)``, publish ``tags``.
+        """Serve this env at the participant address ``address`` (blocking): ``prepare()`` + ``make(**make_kwargs)``, publish ``tags``.
 
         The named keywords are *serving* options, forwarded to
         :func:`rlmesh.serve.serve_env` (``num_envs > 1`` fans ``make`` out into a
@@ -380,6 +402,42 @@ def _tag_branches(cls: type[EnvFactory]) -> list[dict[str, Any]]:
     ]
     branches.sort(key=lambda binding: binding != defaults)
     return branches
+
+
+def _check_render_params(cls: type[EnvFactory]) -> None:
+    """Reject a camera dial that is not two distinct ``make`` params."""
+    dial = cast("tuple[object, ...]", cls.render_params)
+    if not dial:
+        return
+    if (
+        len(dial) != 2
+        or len(set(dial)) != 2
+        or not all(isinstance(n, str) and n for n in dial)
+    ):
+        raise TypeError(
+            f"{cls.__name__}.render_params must name two distinct make params, "
+            f"(height, width); got {dial!r}"
+        )
+    parameters = inspect.signature(cls.make).parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return
+    missing = [name for name in dial if name not in parameters]
+    if missing:
+        raise TypeError(
+            f"{cls.__name__}.render_params names {missing}, which make() does not take"
+        )
+
+
+def render_binding(source: object, size: tuple[int, int] | None) -> dict[str, int]:
+    """``{height param: h, width param: w}`` for an env source's camera dial.
+
+    ``{}`` when ``size`` is ``None`` or the source declares no
+    :attr:`EnvFactory.render_params`.
+    """
+    dial = cast("tuple[str, ...]", getattr(source, "render_params", ()) or ())
+    if size is None or len(dial) != 2:
+        return {}
+    return {dial[0]: int(size[0]), dial[1]: int(size[1])}
 
 
 def _check_tag_params(cls: type[EnvFactory]) -> None:

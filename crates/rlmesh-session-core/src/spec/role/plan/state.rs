@@ -1,0 +1,129 @@
+//! Resolved instructions for one model state input.
+
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use crate::spec::role::frames::FrameRef;
+use crate::spec::role::path::NodePath;
+use crate::spec::rotation::{Matrix, Rotation};
+use crate::wire::part::DType;
+
+/// The model's own output an action-source piece reads (`source="action"`):
+/// the `[start, stop)` slice of the raw action executed at the previous step,
+/// in model order, before the actuator's affine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviousAction {
+    /// The actuator's role, for `describe`.
+    pub role: String,
+    /// The slice of the previous action it reads, `[start, stop)`.
+    pub start: u32,
+    /// The slice's end.
+    pub stop: u32,
+}
+
+/// One source slice feeding a resolved state input.
+///
+/// When `fill` is set the piece has no env source: it contributes `dim` copies
+/// of the fill value — a declared constant part, (with `absent_role`) an
+/// optional component the env did not declare, or (with `previous`) what an
+/// action-source part reads before the episode's first action.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatePiece {
+    /// Where this piece is read from in the raw observation tree (empty when
+    /// `fill` is set).
+    pub source: NodePath,
+    /// Start index of the env feature within its space leaf, set only when the
+    /// feature is one field of a flat-leaf `SplitLayout`: the leaf's runtime
+    /// values are sliced to `[src_offset, src_offset + src_dim)` before any
+    /// conversion. `None` reads the whole leaf (a non-layout state).
+    pub src_offset: Option<u32>,
+    /// Width of the env field's slice, used only when `src_offset` is set.
+    pub src_dim: Option<u32>,
+    /// The env's (native) rotation encoding.
+    pub src_encoding: Option<Rotation>,
+    /// The model's rotation encoding.
+    pub dst_encoding: Option<Rotation>,
+    /// Fixed rotation right-multiplied onto the decoded source rotation before
+    /// it is re-encoded (`R_out = R_in @ R(post_rotate)`).
+    pub post_rotate: Option<Matrix>,
+    /// Elements kept (a leading slice).
+    pub dim: Option<u32>,
+    /// The one element kept.
+    pub index: Option<u32>,
+    /// Source value range (the env feature's), mapped into `dst_range`.
+    pub src_range: Option<(f64, f64)>,
+    /// Target value range (the model component's).
+    pub dst_range: Option<(f64, f64)>,
+    /// The `flip_gripper` reflection, applied after the range map: a value `v`
+    /// becomes `flip - v` (the target range's `low + high`, else 0).
+    pub flip: Option<f64>,
+    /// Model-side affine applied after the range map: `value * scale + offset`.
+    pub scale: Option<f64>,
+    /// The model's offset.
+    pub offset: Option<f64>,
+    /// The per-axis forms, one value per output axis (in `labels` order when
+    /// labels exist). Exclusive with the scalar of the same name.
+    pub axis_scale: Option<Vec<f64>>,
+    /// The model's offset per axis.
+    pub axis_offset: Option<Vec<f64>>,
+    /// The permutation into the model's order (source index per output axis),
+    /// when both sides carry labels in different orders. `None` reads the
+    /// source as is (no labels, or an identical order).
+    pub gather: Option<Vec<u32>>,
+    /// The output axis names (the model's labels when it declared them, else
+    /// the env's), and the env leaf's own labels, for `describe`.
+    pub labels: Option<Vec<String>>,
+    /// The constant this piece contributes instead of reading the env, with
+    /// `scale`/`offset` already folded in. `None` means a real env source.
+    pub fill: Option<f64>,
+    /// The *absent* optional role a set `fill` stands in for (fabricated data
+    /// the fit report confesses, by name), or `None` for a declared constant
+    /// part.
+    pub absent_role: Option<String>,
+    /// The model output this piece reads instead of an env leaf, when the
+    /// part's `source` is `action`; `fill` is then what it reads before the
+    /// episode's first action, and `gather` reorders the actuator's axes by
+    /// label. `None` for an env-sourced or constant piece.
+    pub previous: Option<PreviousAction>,
+    /// The agreed coordinate frame this piece's values are in, when either side
+    /// declared one (`None` when both were silent). Rendered by `describe`; the
+    /// disagreement it would represent is already a resolve error.
+    pub frame: Option<FrameRef>,
+    /// The agreed provenance, when either side declared one: the env leaf's
+    /// value, else the model's declaration (its accepted values joined by
+    /// `|` when it named several). Rendered by `describe` as `#sensed`.
+    pub provenance: Option<FrameRef>,
+    /// The body part this piece was bound under, when a side declared one:
+    /// the model's own `part`, else the env leaf's. Rendered by `describe` as
+    /// `#part`; `None` when neither side named one, so every pre-`part`
+    /// summary is unchanged.
+    pub part: Option<String>,
+    /// Resolved output width of this piece, when statically known (`None` when
+    /// the env feature declares no width and nothing else fixes it). A
+    /// host-side custom encoding addresses its own slice of a multi-part state
+    /// by these widths, and `apply_state` asserts every piece against its width
+    /// so a runtime value of another width is a loud error rather than a
+    /// silently shifted layout.
+    pub width: Option<u32>,
+}
+
+/// Resolved instructions for one model state input.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatePlan {
+    /// Where this state lands in the assembled payload tree.
+    pub placement: NodePath,
+    /// The pieces concatenated, in order.
+    pub pieces: Vec<StatePiece>,
+    /// Zero-padded to this width, after the clip.
+    pub pad_to: Option<u32>,
+    /// Clamp bounds applied to the assembled vector, before `pad_to`.
+    pub clip: Option<(f64, f64)>,
+    /// Assembled width before `pad_to`, when every piece's width is known.
+    pub native_width: Option<u32>,
+    /// The delivered dtype.
+    pub dtype: DType,
+    /// The delivered shape (one `-1` inferred).
+    pub reshape: Option<Vec<i64>>,
+    /// Delivered as a list of numbers rather than an array.
+    pub list: bool,
+}

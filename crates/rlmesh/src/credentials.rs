@@ -44,6 +44,18 @@ pub fn resolve(
     tls_ca_file: Option<&Path>,
     warn: bool,
 ) -> Result<ClientAuth> {
+    // A v2 session authorizes the driver's lease; no key or certificate
+    // travels on that path.
+    if crate::address::is_v2(address) {
+        if api_key.is_some() || tls_ca_file.is_some() {
+            return Err(Error::invalid_argument(
+                "api_key and tls_ca_file are gone in rlmesh 0.2 for a session address: keys \
+                 and trusted CAs belong in the session's security config (safety steps 6 and \
+                 9), not the dial",
+            ));
+        }
+        return Ok(ClientAuth::default());
+    }
     let target =
         rlmesh_grpc::helpers::parse_env_connect_target(address).map_err(Error::from_grpc)?;
     let trust = match tls_ca_file {

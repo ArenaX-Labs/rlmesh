@@ -8,13 +8,16 @@
 //! disagreed — the tag or the space.
 
 use crate::advisory::Advisory;
-use crate::fmt::quoted;
 use crate::path::NodePath;
 use crate::space_view::{SpaceView, SpaceViewKind};
 use crate::spec::{
     Action, Actuator, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, ImageLayout,
     ObsLeaf, ObsNode, SplitLayout, UnknownFeature,
 };
+
+fn quoted(value: &str) -> String {
+    format!("{value:?}")
+}
 
 /// A validation failure while joining tags against a space.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -407,6 +410,7 @@ fn join_feature(
                 frame: state.frame.clone(),
                 provenance: state.provenance.clone(),
                 labels: state.labels.clone(),
+                polarity: state.polarity,
             })])
         }
         ObsLeaf::Split(layout) => join_split(source, layout, leaf),
@@ -505,6 +509,7 @@ fn join_split(
                 frame: field.frame.clone(),
                 provenance: field.provenance.clone(),
                 labels: field.labels.clone(),
+                polarity: field.polarity,
             }));
         }
         offset += field.dim;
@@ -769,6 +774,8 @@ mod tests {
             part: None,
             labels: None,
             reference: None,
+            polarity: None,
+            unit: None,
         }
     }
 
@@ -831,6 +838,7 @@ mod tests {
                 provenance: None,
                 part: None,
                 labels: None,
+                polarity: None,
             })),
         );
         observation.insert(
@@ -971,6 +979,7 @@ mod tests {
                 provenance: None,
                 part: None,
                 labels: None,
+                polarity: None,
             })),
         );
         let mut root = BTreeMap::new();
@@ -1012,6 +1021,7 @@ mod tests {
                     provenance: None,
                     part: None,
                     labels: None,
+                    polarity: None,
                 })),
                 ObsNode::Leaf(ObsLeaf::Text(TextTag {
                     role: "instruction".to_owned(),
@@ -1051,6 +1061,7 @@ mod tests {
                     provenance: None,
                     part: None,
                     labels: None,
+                    polarity: None,
                 })),
                 ObsNode::Leaf(ObsLeaf::State(StateTag {
                     role: "b".to_owned(),
@@ -1061,6 +1072,7 @@ mod tests {
                     provenance: None,
                     part: None,
                     labels: None,
+                    polarity: None,
                 })),
             ]),
             action: action_layout(vec![]),
@@ -1091,6 +1103,7 @@ mod tests {
                     provenance: None,
                     part: None,
                     labels: None,
+                    polarity: None,
                 }),
             ),
             action: action_layout(vec![]),
@@ -1118,6 +1131,7 @@ mod tests {
                 provenance: None,
                 part: None,
                 labels: None,
+                polarity: None,
             })),
             action: action_layout(vec![]),
         };
@@ -1185,6 +1199,7 @@ mod tests {
                         provenance: None,
                         part: None,
                         labels: None,
+                        polarity: None,
                     },
                     Field {
                         role: Some("b".to_owned()),
@@ -1196,6 +1211,7 @@ mod tests {
                         provenance: None,
                         part: None,
                         labels: None,
+                        polarity: None,
                     },
                 ],
             }),
@@ -1299,6 +1315,7 @@ mod tests {
                 provenance: None,
                 part: None,
                 labels: None,
+                polarity: None,
             }),
         );
         assert!(matches!(
@@ -1323,6 +1340,7 @@ mod tests {
                 provenance: None,
                 part: None,
                 labels: Some(labels.iter().map(|label| (*label).to_owned()).collect()),
+                polarity: None,
             })
         };
         assert!(matches!(
@@ -1358,6 +1376,7 @@ mod tests {
                 provenance: None,
                 part: None,
                 labels: None,
+                polarity: None,
             })
         };
         assert!(matches!(
@@ -1396,6 +1415,7 @@ mod tests {
                 provenance: None,
                 part: None,
                 labels: None,
+                polarity: None,
             }),
         )
         .expect("join");
@@ -1416,6 +1436,7 @@ mod tests {
             provenance: None,
             part: None,
             labels: None,
+            polarity: None,
         }
     }
 

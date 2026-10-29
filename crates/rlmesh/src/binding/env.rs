@@ -35,13 +35,13 @@ pub fn env_server_wait(
 /// borrows it).
 pub fn env_core(env: &crate::RemoteEnv) -> crate::Result<&EnvClientCore> {
     env.core_ref()
-        .ok_or_else(|| crate::Error::Runtime("RemoteEnv is in use by a session".to_string()))
+        .ok_or_else(|| crate::Error::Runtime("RemoteEnv is in use by a run".to_string()))
 }
 
 /// The core behind a [`crate::RemoteVectorEnv`].
 pub fn vector_env_core(env: &crate::RemoteVectorEnv) -> crate::Result<&EnvClientCore> {
     env.core_ref()
-        .ok_or_else(|| crate::Error::Runtime("RemoteVectorEnv is in use by a session".to_string()))
+        .ok_or_else(|| crate::Error::Runtime("RemoteVectorEnv is in use by a run".to_string()))
 }
 
 /// Python's `normalize_connect_address` (one implementation for every

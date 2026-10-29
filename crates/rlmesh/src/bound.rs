@@ -1,4 +1,4 @@
-//! Shared bind-first listener plumbing for the env and model servers.
+//! Shared bind-first listener plumbing for the v1 env servers.
 //!
 //! Binding the socket up front (rather than inside `serve`) lets callers learn
 //! the resolved address — most importantly when binding to port 0 — before the

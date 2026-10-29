@@ -18,7 +18,7 @@ from .env_tags import (
     StateTag,
     TextTag,
 )
-from .model import ModelSpec
+from .model import ModelSpec, Timing
 from .model_inputs import (
     Concat,
     ConcatPart,
@@ -83,4 +83,5 @@ __all__ = [
     "StateTag",
     "Text",
     "TextTag",
+    "Timing",
 ]

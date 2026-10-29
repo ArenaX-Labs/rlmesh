@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#MISE description="Install the browser binding's toolchain: wasm-bindgen and binaryen (javascript/mise.toml), the wasm32-unknown-unknown Rust target, and javascript/rlmesh's npm dev dependencies"
+#MISE dir="{{ config_root }}"
+
+# Scoped like the C# tools: only the browser tasks need these, so the other
+# checks (and CI jobs) never install them.
+set -euo pipefail
+
+mise trust --quiet javascript/mise.toml
+mise -C javascript install --locked "github:wasm-bindgen/wasm-bindgen" "github:WebAssembly/binaryen"
+rustup target list --installed --toolchain "$(mise current rust)" | grep -qx wasm32-unknown-unknown ||
+  rustup target add --toolchain "$(mise current rust)" wasm32-unknown-unknown
+if [ ! -d javascript/rlmesh/node_modules ]; then
+  (cd javascript/rlmesh && npm ci --no-audit --no-fund)
+fi

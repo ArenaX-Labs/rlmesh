@@ -6,6 +6,593 @@
 # mappings (or inventoried whole-options wrapper fields) to check Rust Default.
 # Restricted fixtures require languages + why; see tests/parity/README.md.
 
+["rlmesh.adapters:Actuator.polarity"]
+area = "adapters"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh.adapters:Actuator.polarity".rust]
+status = "present"
+path = "rlmesh::adapters::Actuator::polarity"
+params = {}
+
+["rlmesh.adapters:Actuator.polarity".c]
+status = "present"
+path = "RLMeshActuator::polarity"
+params = {}
+
+["rlmesh.adapters:Actuator.polarity".cpp]
+status = "present"
+path = "rlmesh::adapters::Actuator::polarity"
+params = {}
+
+["rlmesh.adapters:Actuator.unit"]
+area = "adapters"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh.adapters:Actuator.unit".rust]
+status = "present"
+path = "rlmesh::adapters::Actuator::unit"
+params = {}
+
+["rlmesh.adapters:Actuator.unit".c]
+status = "present"
+path = "RLMeshActuator::unit"
+params = {}
+
+["rlmesh.adapters:Actuator.unit".cpp]
+status = "present"
+path = "rlmesh::adapters::Actuator::unit"
+params = {}
+
+["rlmesh.adapters:Field.polarity"]
+area = "adapters"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh.adapters:Field.polarity".rust]
+status = "present"
+path = "rlmesh::adapters::Field::polarity"
+params = {}
+
+["rlmesh.adapters:Field.polarity".c]
+status = "present"
+path = "RLMeshField::polarity"
+params = {}
+
+["rlmesh.adapters:Field.polarity".cpp]
+status = "present"
+path = "rlmesh::adapters::Field::polarity"
+params = {}
+
+["rlmesh.adapters:ModelSpec.allow"]
+area = "adapters"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh.adapters:ModelSpec.allow".rust]
+status = "present"
+path = "rlmesh::adapters::ModelSpec::allow"
+params = {}
+
+["rlmesh.adapters:ModelSpec.allow".c]
+status = "present"
+path = "rlmesh_model_spec_allow"
+params = {}
+
+["rlmesh.adapters:ModelSpec.allow".cpp]
+status = "present"
+path = "rlmesh::adapters::ModelSpec::allow"
+params = {}
+
+["rlmesh.adapters:State.polarity"]
+area = "adapters"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh.adapters:State.polarity".rust]
+status = "present"
+path = "rlmesh::adapters::State::polarity"
+params = {}
+
+["rlmesh.adapters:State.polarity".c]
+status = "present"
+path = "RLMeshState::polarity"
+params = {}
+
+["rlmesh.adapters:State.polarity".cpp]
+status = "present"
+path = "rlmesh::adapters::State::polarity"
+params = {}
+
+["rlmesh.adapters:StateTag.polarity"]
+area = "adapters"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh.adapters:StateTag.polarity".rust]
+status = "present"
+path = "rlmesh::adapters::StateTag::polarity"
+params = {}
+
+["rlmesh.adapters:StateTag.polarity".c]
+status = "present"
+path = "RLMeshStateTag::polarity"
+params = {}
+
+["rlmesh.adapters:StateTag.polarity".cpp]
+status = "present"
+path = "rlmesh::adapters::StateTag::polarity"
+params = {}
+
+["rlmesh.numpy:Model.reset_options"]
+area = "model"
+rule = ["R-24"]
+parameters = { "episode" = {} }
+
+["rlmesh.numpy:Model.reset_options".rust]
+status = "bridge"
+
+["rlmesh.numpy:Model.reset_options".c]
+status = "bridge"
+
+["rlmesh.numpy:Model.reset_options".cpp]
+status = "bridge"
+
+["rlmesh.numpy:RemoteEnv.spec"]
+area = "remote"
+rule = ["R-24"]
+parameters = {}
+
+["rlmesh.numpy:RemoteEnv.spec".rust]
+status = "bridge"
+
+["rlmesh.numpy:RemoteEnv.spec".c]
+status = "bridge"
+
+["rlmesh.numpy:RemoteEnv.spec".cpp]
+status = "bridge"
+
+["rlmesh.numpy:RemoteVectorEnv.closed"]
+area = "remote"
+rule = ["R-24"]
+parameters = {}
+
+["rlmesh.numpy:RemoteVectorEnv.closed".rust]
+status = "bridge"
+
+["rlmesh.numpy:RemoteVectorEnv.closed".c]
+status = "bridge"
+
+["rlmesh.numpy:RemoteVectorEnv.closed".cpp]
+status = "bridge"
+
+["rlmesh.numpy:RemoteVectorEnv.spec"]
+area = "remote"
+rule = ["R-24"]
+parameters = {}
+
+["rlmesh.numpy:RemoteVectorEnv.spec".rust]
+status = "bridge"
+
+["rlmesh.numpy:RemoteVectorEnv.spec".c]
+status = "bridge"
+
+["rlmesh.numpy:RemoteVectorEnv.spec".cpp]
+status = "bridge"
+
+["rlmesh:BatchOptions"]
+area = "model"
+rule = ["R-4"]
+parameters = { "max_batch_size" = { "default" = "None" }, "batch_window_ms" = { "default" = "None" }, "batch_byte_budget" = { "default" = "None" }, "max_in_flight_batches" = { "default" = "None" }, "batch_records" = { "default" = "None" } }
+
+["rlmesh:BatchOptions".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions"
+default_skip = { "max_batch_size" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only.", "batch_window_ms" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only.", "batch_byte_budget" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only.", "max_in_flight_batches" = "Python's None takes Rust's BatchOptions::default(), the managed platform's values, kept in Rust only." }
+params = { "max_batch_size" = "rlmesh::serve_options::BatchOptions#max_batch_size", "batch_window_ms" = "rlmesh::serve_options::BatchOptions#batch_window_ms", "batch_byte_budget" = "rlmesh::serve_options::BatchOptions#batch_byte_budget", "max_in_flight_batches" = "rlmesh::serve_options::BatchOptions#max_in_flight_batches", "batch_records" = "rlmesh::serve_options::BatchOptions#batch_records" }
+also = [
+  "rlmesh::BatchOptions",
+  "rlmesh::serve_options::BatchOptions::Clone",
+  "rlmesh::serve_options::BatchOptions::Debug",
+  "rlmesh::serve_options::BatchOptions::Default",
+]
+rule = ["R-3"]
+
+["rlmesh:BatchOptions".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_byte_budget"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.batch_byte_budget".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::batch_byte_budget"
+params = {}
+
+["rlmesh:BatchOptions.batch_byte_budget".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_byte_budget".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_records"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.batch_records".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::batch_records"
+params = {}
+
+["rlmesh:BatchOptions.batch_records".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_records".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_window_ms"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.batch_window_ms".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::batch_window_ms"
+params = {}
+
+["rlmesh:BatchOptions.batch_window_ms".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.batch_window_ms".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.max_batch_size"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.max_batch_size".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::max_batch_size"
+params = {}
+
+["rlmesh:BatchOptions.max_batch_size".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.max_batch_size".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.max_in_flight_batches"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:BatchOptions.max_in_flight_batches".rust]
+status = "present"
+path = "rlmesh::serve_options::BatchOptions::max_in_flight_batches"
+params = {}
+
+["rlmesh:BatchOptions.max_in_flight_batches".c]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:BatchOptions.max_in_flight_batches".cpp]
+status = "exempt"
+rule = ["D-46"]
+
+["rlmesh:Binding"]
+area = "running"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:Binding".rust]
+status = "present"
+path = "rlmesh::Binding"
+params = {}
+also = ["rlmesh::Binding::Debug", "rlmesh::Binding::Drop"]
+rule = ["R-3"]
+
+["rlmesh:Binding".c]
+status = "present"
+path = "RLMeshBinding"
+params = {}
+also = ["rlmesh_binding_free"]
+rule = ["R-3"]
+
+# Individually reviewed translation helpers; additions need their own citation.
+also_rules = { "rlmesh_binding_free" = ["R-11"] }
+
+["rlmesh:Binding".cpp]
+status = "present"
+path = "rlmesh::Binding"
+params = {}
+also = ["rlmesh::Binding::Binding", "rlmesh::Binding::raw"]
+rule = ["R-3"]
+
+# Individually reviewed translation helpers; additions need their own citation.
+also_rules = { "rlmesh::Binding::Binding" = ["R-3"], "rlmesh::Binding::raw" = ["R-11"] }
+
+["rlmesh:Binding.close"]
+area = "running"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:Binding.close".rust]
+status = "present"
+path = "rlmesh::Binding::close"
+params = {}
+
+["rlmesh:Binding.close".c]
+status = "present"
+path = "rlmesh_binding_close"
+params = {}
+
+["rlmesh:Binding.close".cpp]
+status = "present"
+path = "rlmesh::Binding::close"
+params = {}
+
+["rlmesh:Binding.contract"]
+area = "running"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:Binding.contract".rust]
+status = "present"
+path = "rlmesh::Binding::contract"
+params = {}
+
+["rlmesh:Binding.contract".c]
+status = "present"
+path = "rlmesh_binding_contract"
+params = {}
+
+["rlmesh:Binding.contract".cpp]
+status = "present"
+path = "rlmesh::Binding::contract"
+params = {}
+
+["rlmesh:Binding.done"]
+area = "running"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:Binding.done".rust]
+status = "present"
+path = "rlmesh::Binding::done"
+params = {}
+
+["rlmesh:Binding.done".c]
+status = "present"
+path = "rlmesh_binding_done"
+params = {}
+
+["rlmesh:Binding.done".cpp]
+status = "present"
+path = "rlmesh::Binding::done"
+params = {}
+
+["rlmesh:Binding.frame_sources"]
+area = "running"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:Binding.frame_sources".rust]
+status = "present"
+path = "rlmesh::Binding::frame_sources"
+params = {}
+
+["rlmesh:Binding.frame_sources".c]
+status = "present"
+path = "rlmesh_binding_frame_sources"
+params = {}
+
+["rlmesh:Binding.frame_sources".cpp]
+status = "present"
+path = "rlmesh::Binding::frame_sources"
+params = {}
+
+["rlmesh:Binding.num_envs"]
+area = "running"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:Binding.num_envs".rust]
+status = "present"
+path = "rlmesh::Binding::num_envs"
+params = {}
+
+["rlmesh:Binding.num_envs".c]
+status = "present"
+path = "rlmesh_binding_num_envs"
+params = {}
+
+["rlmesh:Binding.num_envs".cpp]
+status = "present"
+path = "rlmesh::Binding::num_envs"
+params = {}
+
+["rlmesh:Binding.render"]
+area = "running"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:Binding.render".rust]
+status = "present"
+path = "rlmesh::Binding::render"
+params = {}
+
+["rlmesh:Binding.render".c]
+status = "present"
+path = "rlmesh_binding_render"
+params = {}
+
+["rlmesh:Binding.render".cpp]
+status = "present"
+path = "rlmesh::Binding::render"
+params = {}
+
+["rlmesh:Binding.render_mode"]
+area = "running"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:Binding.render_mode".rust]
+status = "present"
+path = "rlmesh::Binding::render_mode"
+params = {}
+
+["rlmesh:Binding.render_mode".c]
+status = "present"
+path = "rlmesh_binding_render_mode"
+params = {}
+
+["rlmesh:Binding.render_mode".cpp]
+status = "present"
+path = "rlmesh::Binding::render_mode"
+params = {}
+
+["rlmesh:Binding.read"]
+area = "running"
+rule = ["R-4"]
+parameters = { "observation" = {}, "item" = {} }
+
+["rlmesh:Binding.read".rust]
+status = "present"
+path = "rlmesh::Binding::read"
+params = { "observation" = "rlmesh::Binding::read#observation", "item" = "rlmesh::Binding::read#item" }
+also = [
+  "rlmesh::ReadItem",
+  "rlmesh::ReadItem::Clone",
+  "rlmesh::ReadItem::Debug",
+  "rlmesh::ReadItem::From<&str>",
+  "rlmesh::ReadItem::From<Image>",
+  "rlmesh::ReadItem::From<State>",
+  "rlmesh::ReadItem::From<String>",
+  "rlmesh::ReadItem::From<Text>",
+  "rlmesh::ReadItem::Image",
+  "rlmesh::ReadItem::PartialEq",
+  "rlmesh::ReadItem::Role",
+  "rlmesh::ReadItem::State",
+  "rlmesh::ReadItem::StructuralPartialEq",
+]
+also_rules = { "rlmesh::ReadItem::Image" = [
+  "R-3",
+], "rlmesh::ReadItem::Role" = [
+  "R-3",
+], "rlmesh::ReadItem::State" = [
+  "R-3",
+], "rlmesh::ReadItem" = [
+  "R-3",
+] }
+
+["rlmesh:Binding.read".c]
+status = "present"
+path = "rlmesh_binding_read"
+params = { "observation" = "rlmesh_binding_read#observation", "item" = "rlmesh_binding_read#item" }
+also = [
+  "RLMeshReadItem",
+  "rlmesh_read_item_free",
+  "rlmesh_read_item_image",
+  "rlmesh_read_item_role",
+  "rlmesh_read_item_state",
+  "rlmesh_read_item_text",
+]
+also_rules = { RLMeshReadItem = [
+  "R-3",
+], rlmesh_read_item_free = [
+  "R-11",
+], rlmesh_read_item_image = [
+  "R-3",
+], rlmesh_read_item_role = [
+  "R-3",
+], rlmesh_read_item_state = [
+  "R-3",
+], rlmesh_read_item_text = [
+  "R-3",
+] }
+
+["rlmesh:Binding.read".cpp]
+status = "present"
+path = "rlmesh::Binding::read"
+params = { "observation" = "rlmesh::Binding::read#observation", "item" = "rlmesh::Binding::read#item" }
+also = ["rlmesh::ReadItem", "rlmesh::ReadItem::ReadItem", "rlmesh::ReadItem::raw"]
+also_rules = { "rlmesh::ReadItem::ReadItem" = ["R-3"], "rlmesh::ReadItem::raw" = ["R-11"] }
+
+["rlmesh:Binding.reset"]
+area = "running"
+rule = ["R-4"]
+parameters = { "seed" = { "default" = "None" }, "options" = { "default" = "None" } }
+
+["rlmesh:Binding.reset".rust]
+status = "present"
+path = "rlmesh::Binding::reset"
+params = { "seed" = "rlmesh::Binding::reset#seed", "options" = "rlmesh::Binding::reset#options" }
+
+default_skip = { "seed" = "Positional or authored callable parameter, not a data field; R-7/R-12 defaults are exercised by behavioural fixtures.", "options" = "Positional or authored callable parameter, not a data field; R-7/R-12 defaults are exercised by behavioural fixtures." }
+
+returns = "Result<(Value, InfoDict)>"
+result_tuple = ["Value", "InfoDict"]
+
+["rlmesh:Binding.reset".c]
+status = "present"
+path = "rlmesh_binding_reset"
+params = { "seed" = "rlmesh_binding_reset#seed", "options" = "rlmesh_binding_reset#options" }
+
+["rlmesh:Binding.reset".cpp]
+status = "present"
+path = "rlmesh::Binding::reset"
+params = { "seed" = "rlmesh::Binding::reset#seed", "options" = "rlmesh::Binding::reset#options" }
+
+returns = "ResetResult"
+result_tuple = ["Value", "InfoDict"]
+
+["rlmesh:Binding.step"]
+area = "running"
+rule = ["R-4"]
+parameters = { "action" = { "default" = "None" } }
+
+["rlmesh:Binding.step".rust]
+status = "present"
+path = "rlmesh::Binding::step"
+params = { "action" = "rlmesh::Binding::step#action" }
+
+default_skip = { "action" = "Positional or authored callable parameter, not a data field; R-7/R-12 defaults are exercised by behavioural fixtures." }
+
+returns = "Result<(Value, f64, bool, bool, InfoDict)>"
+result_tuple = ["Value", "f64", "bool", "bool", "InfoDict"]
+
+["rlmesh:Binding.step".c]
+status = "present"
+path = "rlmesh_binding_step"
+params = { "action" = "rlmesh_binding_step#action" }
+
+["rlmesh:Binding.step".cpp]
+status = "present"
+path = "rlmesh::Binding::step"
+params = { "action" = "rlmesh::Binding::step#action" }
+
+returns = "StepResult"
+result_tuple = ["Value", "double", "bool", "bool", "InfoDict"]
+
 ["rlmesh:BuildInfo"]
 area = "core"
 rule = ["R-4"]
@@ -1055,6 +1642,7 @@ also = [
   "rlmesh::EnvironmentError::Error",
   "rlmesh::EnvironmentError::PartialEq",
   "rlmesh::EnvironmentError::StructuralPartialEq",
+  "rlmesh::EnvironmentError::class",
   "rlmesh::EnvironmentError::is_recoverable",
   "rlmesh::EnvironmentError::message",
 ]
@@ -1064,6 +1652,8 @@ rule = ["R-3"]
 also_rules = { "rlmesh::EnvironmentError::is_recoverable" = [
   "R-21",
 ], "rlmesh::EnvironmentError::message" = [
+  "R-21",
+], "rlmesh::EnvironmentError::class" = [
   "R-21",
 ] }
 
@@ -1640,9 +2230,6 @@ status = "present"
 path = "rlmesh::Model"
 params = { "source" = "rlmesh::Model::new#source", "spec" = "rlmesh::ModelOptions#spec", "on_episode_end" = "rlmesh::ModelOptions#on_episode_end", "on_close" = "rlmesh::ModelOptions#on_close", "trust_entrypoints" = "rlmesh::ModelOptions#trust_entrypoints" }
 also = [
-  "rlmesh::Corners::TrivialClone",
-  "rlmesh::prelude::Corners",
-  "rlmesh::prelude::Policy",
   "rlmesh::Corners",
   "rlmesh::Corners::Clone",
   "rlmesh::Corners::Copy",
@@ -1657,6 +2244,7 @@ also = [
   "rlmesh::Corners::PREDICT_CHUNK_BATCH",
   "rlmesh::Corners::PartialEq",
   "rlmesh::Corners::StructuralPartialEq",
+  "rlmesh::Corners::TrivialClone",
   "rlmesh::Corners::contains",
   "rlmesh::Corners::union",
   "rlmesh::Model::Clone",
@@ -1666,7 +2254,6 @@ also = [
   "rlmesh::Model::new",
   "rlmesh::Model::run_async",
   "rlmesh::Model::serve_async",
-  "rlmesh::Model::session_async",
   "rlmesh::ModelOptions",
   "rlmesh::ModelOptions::Debug",
   "rlmesh::ModelOptions::Default",
@@ -1689,9 +2276,31 @@ also = [
   "rlmesh::Policy::predict_with_context",
   "rlmesh::Policy::spec",
   "rlmesh::Policy::workflow_edition",
+  "rlmesh::RemoteModel",
+  "rlmesh::RemoteModel::Clone",
+  "rlmesh::RemoteModel::Debug",
+  "rlmesh::RemoteModel::Display",
+  "rlmesh::RemoteModel::From<&'a RemoteModel>",
+  "rlmesh::RemoteModel::address",
+  "rlmesh::RemoteModel::new",
+  "rlmesh::RemoteModelOptions",
+  "rlmesh::RemoteModelOptions::Clone",
+  "rlmesh::RemoteModelOptions::Debug",
+  "rlmesh::RemoteModelOptions::Default",
+  "rlmesh::RemoteModelOptions::address",
+  "rlmesh::RemoteModelOptions::api_key",
+  "rlmesh::RemoteModelOptions::connect_timeout",
+  "rlmesh::RemoteModelOptions::host",
+  "rlmesh::RemoteModelOptions::path",
+  "rlmesh::RemoteModelOptions::port",
+  "rlmesh::RemoteModelOptions::request_timeout",
+  "rlmesh::RemoteModelOptions::tls_ca_file",
+  "rlmesh::RemoteModelOptions::transport",
   "rlmesh::WithContext",
   "rlmesh::WithContext::Debug",
   "rlmesh::WithContext::Policy",
+  "rlmesh::prelude::Corners",
+  "rlmesh::prelude::Policy",
   "rlmesh::with_context",
 ]
 rule = ["R-3", "MDL-5"]
@@ -1718,8 +2327,6 @@ also_rules = { "rlmesh::Corners::NONE" = [
 ], "rlmesh::Model::run_async" = [
   "R-16",
 ], "rlmesh::Model::serve_async" = [
-  "R-16",
-], "rlmesh::Model::session_async" = [
   "R-16",
 ], "rlmesh::Policy" = [
   "R-12",
@@ -1753,6 +2360,46 @@ also_rules = { "rlmesh::Corners::NONE" = [
   "R-12",
 ], "rlmesh::with_context" = [
   "R-12",
+], "rlmesh::RemoteModel" = [
+  "D-4",
+], "rlmesh::RemoteModel::new" = [
+  "D-4",
+], "rlmesh::RemoteModel::address" = [
+  "D-4",
+], "rlmesh::RemoteModel::Clone" = [
+  "D-4",
+], "rlmesh::RemoteModel::Display" = [
+  "D-4",
+], "rlmesh::RemoteModel::Debug" = [
+  "D-4",
+], "rlmesh::RemoteModel::From<&'a RemoteModel>" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::address" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::host" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::port" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::path" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::transport" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::connect_timeout" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::request_timeout" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::api_key" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::tls_ca_file" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::Clone" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::Default" = [
+  "D-4",
+], "rlmesh::RemoteModelOptions::Debug" = [
+  "D-4",
 ] }
 
 default_skip = { "source" = "Positional or authored callable parameter, not a data field; R-7/R-12 defaults are exercised by behavioural fixtures." }
@@ -1763,6 +2410,7 @@ path = "RLMeshModel"
 params = { "source" = "rlmesh_model_new#vtable", "spec" = "RLMeshModelOptions#spec", "on_episode_end" = "RLMeshModelOptions#on_episode_end", "on_close" = "RLMeshModelOptions#on_close", "trust_entrypoints" = "RLMeshModelOptions#trust_entrypoints" }
 translations = { "source" = ["MDL-1"] }
 also = [
+  "rlmesh_model_from_address",
   "RLMESH_MODEL_OPTIONS_INIT",
   "RLMESH_MODEL_OPTIONS_MIN_SIZE",
   "RLMESH_MODEL_VTABLE_INIT",
@@ -1804,7 +2452,9 @@ also = [
 rule = ["R-3"]
 
 # Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "RLMeshModelOptions::free_hook_user_data" = [
+also_rules = { "rlmesh_model_from_address" = [
+  "D-4",
+], "RLMeshModelOptions::free_hook_user_data" = [
   "R-12",
 ], "RLMeshModelOptions::hook_user_data" = [
   "R-12",
@@ -1853,6 +2503,7 @@ status = "present"
 path = "rlmesh::Model"
 params = { "source" = "rlmesh::Model::Model#source", "spec" = "rlmesh::ModelOptions#spec", "on_episode_end" = "rlmesh::ModelOptions#on_episode_end", "on_close" = "rlmesh::ModelOptions#on_close", "trust_entrypoints" = "rlmesh::ModelOptions#trust_entrypoints" }
 also = [
+  "rlmesh::Model::from_address",
   "rlmesh::Model::Model",
   "rlmesh::Model::raw",
   "rlmesh::ModelOptions",
@@ -1868,7 +2519,13 @@ also = [
 rule = ["R-3"]
 
 # Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh::Model::Model" = ["R-12"], "rlmesh::Model::raw" = ["R-11"] }
+also_rules = { "rlmesh::Model::from_address" = [
+  "D-4",
+], "rlmesh::Model::Model" = [
+  "R-12",
+], "rlmesh::Model::raw" = [
+  "R-11",
+] }
 
 ["rlmesh:Model.allow_fusion"]
 area = "model"
@@ -1889,6 +2546,61 @@ params = {}
 status = "present"
 path = "rlmesh::Model::allow_fusion"
 params = {}
+
+["rlmesh:Model.bind"]
+area = "model"
+rule = ["R-4"]
+parameters = { "target" = {}, "hooks" = { "default" = "None" }, "view" = { "default" = "None" }, "execution_horizon" = { "default" = "None" }, "close_env" = { "default" = "False" }, "workflow_edition" = { "default" = "None" } }
+
+["rlmesh:Model.bind".rust]
+status = "present"
+path = "rlmesh::Model::bind"
+params = { "target" = "rlmesh::Model::bind#target", "execution_horizon" = "rlmesh::BindOptions#execution_horizon", "close_env" = "rlmesh::BindOptions#close_env", "workflow_edition" = "rlmesh::BindOptions#workflow_edition", hooks = "rlmesh::BindOptions#hooks", view = "rlmesh::BindOptions#view" }
+also = [
+  "rlmesh::BindOptions",
+  "rlmesh::BindOptions::Debug",
+  "rlmesh::BindOptions::Default",
+  "rlmesh::bind",
+]
+rule = ["R-3"]
+
+# Individually reviewed translation helpers; additions need their own citation.
+also_rules = { "rlmesh::bind" = ["D-4"] }
+
+["rlmesh:Model.bind".c]
+status = "present"
+path = "rlmesh_model_bind"
+params = { "target" = "rlmesh_model_bind#target", "execution_horizon" = "RLMeshBindOptions#execution_horizon", "close_env" = "RLMeshBindOptions#close_env", "workflow_edition" = "RLMeshBindOptions#workflow_edition", hooks = "RLMeshBindOptions#hooks", view = "RLMeshBindOptions#view" }
+also = [
+  "RLMeshBindOptions::has_execution_horizon",
+  "RLMESH_BIND_OPTIONS_INIT",
+  "RLMESH_BIND_OPTIONS_MIN_SIZE",
+  "RLMeshBindOptions::_reserved",
+  "RLMeshBindOptions::struct_size",
+  "rlmesh_bind",
+]
+rule = ["R-3"]
+
+# Individually reviewed translation helpers; additions need their own citation.
+also_rules = { "rlmesh_bind" = ["D-4"] }
+
+["rlmesh:Model.bind".cpp]
+status = "present"
+path = "rlmesh::Model::bind"
+params = { "target" = "rlmesh::Model::bind#target", "execution_horizon" = "rlmesh::BindOptions#execution_horizon", "close_env" = "rlmesh::BindOptions#close_env", "workflow_edition" = "rlmesh::BindOptions#workflow_edition", hooks = "rlmesh::BindOptions#hooks", view = "rlmesh::BindOptions#view" }
+also = [
+  "rlmesh::BindOptions::with_view",
+  "rlmesh::BindOptions",
+  "rlmesh::BindOptions::with_close_env",
+  "rlmesh::BindOptions::with_execution_horizon",
+  "rlmesh::BindOptions::with_hooks",
+  "rlmesh::BindOptions::with_workflow_edition",
+  "rlmesh::bind",
+]
+rule = ["R-3"]
+
+# Individually reviewed translation helpers; additions need their own citation.
+also_rules = { "rlmesh::BindOptions::with_view" = ["R-3"], "rlmesh::bind" = ["D-4"] }
 
 ["rlmesh:Model.close"]
 area = "model"
@@ -2192,23 +2904,50 @@ params = { "observations" = "rlmesh::Policy#observations" }
 rule = ["R-12"]
 protocol = "predict_chunk_batch"
 
+["rlmesh:Model.reset_options"]
+area = "model"
+rule = ["R-4"]
+parameters = { "episode" = {} }
+
+["rlmesh:Model.reset_options".rust]
+status = "present"
+path = "rlmesh::Policy::reset_options"
+params = { "episode" = "rlmesh::Policy::reset_options#episode" }
+also = ["rlmesh::Policy::RESET_OPTIONS"]
+
+# Individually reviewed translation helpers; additions need their own citation.
+also_rules = { "rlmesh::Policy::RESET_OPTIONS" = ["R-12"] }
+
+["rlmesh:Model.reset_options".c]
+status = "present"
+path = "RLMeshModelVtable::reset_options"
+params = { "episode" = "RLMeshModelVtable::reset_options#episode" }
+
+["rlmesh:Model.reset_options".cpp]
+status = "present"
+path = "rlmesh::Policy"
+params = { "episode" = "rlmesh::Policy#episode" }
+rule = ["R-12", "R-3"]
+protocol = "reset_options"
+
 ["rlmesh:Model.run"]
 area = "model"
 rule = ["R-4"]
-parameters = { "env_or_address" = {}, "seeds" = { "default" = "None" }, "episodes" = { "default" = "None" }, "max_episode_steps" = { "default" = "None" }, "max_episode_seconds" = { "default" = "None" }, "hooks" = { "default" = "None" }, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "1" }, "prefetch_lead" = { "default" = "0" }, "trial_index_base" = { "default" = "0" }, "workflow_edition" = { "default" = "None" } }
+parameters = { "env_or_address" = {}, "seeds" = { "default" = "None" }, "episodes" = { "default" = "None" }, "max_episode_steps" = { "default" = "None" }, "max_episode_seconds" = { "default" = "None" }, "hooks" = { "default" = "None" }, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "None" }, "prefetch_lead" = { "default" = "0" }, "trial_index_base" = { "default" = "0" }, "workflow_edition" = { "default" = "None" }, view = { default = "None" } }
 
 ["rlmesh:Model.run".rust]
 status = "present"
 path = "rlmesh::Model::run"
-params = { "env_or_address" = "rlmesh::Model::run#env_or_address", "seeds" = "rlmesh::RunOptions#seeds", "episodes" = "rlmesh::RunOptions#episodes", "max_episode_steps" = "rlmesh::RunOptions#max_episode_steps", "max_episode_seconds" = "rlmesh::RunOptions#max_episode", "hooks" = "rlmesh::RunOptions#hooks", "instruction" = "rlmesh::RunOptions#instruction", "close_env" = "rlmesh::RunOptions#close_env", "trust_entrypoints" = "rlmesh::RunOptions#trust_entrypoints", "execution_horizon" = "rlmesh::RunOptions#execution_horizon", "prefetch_lead" = "rlmesh::RunOptions#prefetch_lead", "trial_index_base" = "rlmesh::RunOptions#trial_index_base", "workflow_edition" = "rlmesh::RunOptions#workflow_edition" }
+params = { "env_or_address" = "rlmesh::Model::run#env_or_address", "seeds" = "rlmesh::RunOptions#seeds", "episodes" = "rlmesh::RunOptions#episodes", "max_episode_steps" = "rlmesh::RunOptions#max_episode_steps", "max_episode_seconds" = "rlmesh::RunOptions#max_episode", "hooks" = "rlmesh::RunOptions#hooks", "instruction" = "rlmesh::RunOptions#instruction", "close_env" = "rlmesh::RunOptions#close_env", "trust_entrypoints" = "rlmesh::RunOptions#trust_entrypoints", "execution_horizon" = "rlmesh::RunOptions#execution_horizon", "prefetch_lead" = "rlmesh::RunOptions#prefetch_lead", "trial_index_base" = "rlmesh::RunOptions#trial_index_base", "workflow_edition" = "rlmesh::RunOptions#workflow_edition", view = "rlmesh::RunOptions#view" }
 also = ["rlmesh::RunOptions", "rlmesh::RunOptions::Debug", "rlmesh::RunOptions::Default"]
 rule = ["R-3"]
 
 ["rlmesh:Model.run".c]
 status = "present"
 path = "rlmesh_model_run"
-params = { "env_or_address" = "rlmesh_model_run#env_or_address", "seeds" = "RLMeshRunOptions#seeds", "episodes" = "RLMeshRunOptions#episodes", "max_episode_steps" = "RLMeshRunOptions#max_episode_steps", "max_episode_seconds" = "RLMeshRunOptions#max_episode_seconds", "hooks" = "RLMeshRunOptions#hooks", "instruction" = "RLMeshRunOptions#instruction", "close_env" = "RLMeshRunOptions#close_env", "trust_entrypoints" = "RLMeshRunOptions#trust_entrypoints", "execution_horizon" = "RLMeshRunOptions#execution_horizon", "prefetch_lead" = "RLMeshRunOptions#prefetch_lead", "trial_index_base" = "RLMeshRunOptions#trial_index_base", "workflow_edition" = "RLMeshRunOptions#workflow_edition" }
+params = { "env_or_address" = "rlmesh_model_run#env_or_address", "seeds" = "RLMeshRunOptions#seeds", "episodes" = "RLMeshRunOptions#episodes", "max_episode_steps" = "RLMeshRunOptions#max_episode_steps", "max_episode_seconds" = "RLMeshRunOptions#max_episode_seconds", "hooks" = "RLMeshRunOptions#hooks", "instruction" = "RLMeshRunOptions#instruction", "close_env" = "RLMeshRunOptions#close_env", "trust_entrypoints" = "RLMeshRunOptions#trust_entrypoints", "execution_horizon" = "RLMeshRunOptions#execution_horizon", "prefetch_lead" = "RLMeshRunOptions#prefetch_lead", "trial_index_base" = "RLMeshRunOptions#trial_index_base", "workflow_edition" = "RLMeshRunOptions#workflow_edition", view = "RLMeshRunOptions#view" }
 also = [
+  "RLMeshRunOptions::has_execution_horizon",
   "RLMESH_RUN_OPTIONS_INIT",
   "RLMESH_RUN_OPTIONS_MIN_SIZE",
   "RLMeshRunOptions",
@@ -2225,7 +2964,7 @@ rule = ["R-3"]
 ["rlmesh:Model.run".cpp]
 status = "present"
 path = "rlmesh::Model::run"
-params = { "env_or_address" = "rlmesh::Model::run#env_or_address", "seeds" = "rlmesh::RunOptions#seeds", "episodes" = "rlmesh::RunOptions#episodes", "max_episode_steps" = "rlmesh::RunOptions#max_episode_steps", "max_episode_seconds" = "rlmesh::RunOptions#max_episode", "hooks" = "rlmesh::RunOptions#hooks", "instruction" = "rlmesh::RunOptions#instruction", "close_env" = "rlmesh::RunOptions#close_env", "trust_entrypoints" = "rlmesh::RunOptions#trust_entrypoints", "execution_horizon" = "rlmesh::RunOptions#execution_horizon", "prefetch_lead" = "rlmesh::RunOptions#prefetch_lead", "trial_index_base" = "rlmesh::RunOptions#trial_index_base", "workflow_edition" = "rlmesh::RunOptions#workflow_edition" }
+params = { "env_or_address" = "rlmesh::Model::run#env_or_address", "seeds" = "rlmesh::RunOptions#seeds", "episodes" = "rlmesh::RunOptions#episodes", "max_episode_steps" = "rlmesh::RunOptions#max_episode_steps", "max_episode_seconds" = "rlmesh::RunOptions#max_episode", "hooks" = "rlmesh::RunOptions#hooks", "instruction" = "rlmesh::RunOptions#instruction", "close_env" = "rlmesh::RunOptions#close_env", "trust_entrypoints" = "rlmesh::RunOptions#trust_entrypoints", "execution_horizon" = "rlmesh::RunOptions#execution_horizon", "prefetch_lead" = "rlmesh::RunOptions#prefetch_lead", "trial_index_base" = "rlmesh::RunOptions#trial_index_base", "workflow_edition" = "rlmesh::RunOptions#workflow_edition", view = "rlmesh::RunOptions#view" }
 also = [
   "rlmesh::RunOptions",
   "rlmesh::RunOptions::with_close_env",
@@ -2247,12 +2986,12 @@ rule = ["R-3"]
 ["rlmesh:Model.serve"]
 area = "model"
 rule = ["R-4"]
-parameters = { "address" = {}, "options" = { "default" = "None" } }
+parameters = { "address" = {}, "options" = { "default" = "None" }, name = { default = "None" }, batching = { default = "None" } }
 
 ["rlmesh:Model.serve".rust]
 status = "present"
 path = "rlmesh::Model::serve"
-params = { "address" = "rlmesh::Model::serve#address", "options" = "rlmesh::Model::serve#options" }
+params = { "address" = "rlmesh::Model::serve#address", "options" = "rlmesh::Model::serve#options", name = "rlmesh::ModelServeOptions#name", batching = "rlmesh::ModelServeOptions#batching" }
 also = [
   "rlmesh::ModelServeOptions",
   "rlmesh::ModelServeOptions::Clone",
@@ -2268,7 +3007,8 @@ also_rules = { "rlmesh::ModelServeOptions::options" = ["R-12"] }
 ["rlmesh:Model.serve".c]
 status = "present"
 path = "rlmesh_model_serve"
-params = { "address" = "rlmesh_model_serve#address", "options" = "rlmesh_model_serve#options" }
+params = { "address" = "rlmesh_model_serve#address", "options" = "rlmesh_model_serve#options", name = "RLMeshModelServeOptions#name" }
+refused = { batching = ["D-46"] }
 also = [
   "RLMESH_MODEL_SERVE_OPTIONS_INIT",
   "RLMESH_MODEL_SERVE_OPTIONS_MIN_SIZE",
@@ -2284,11 +3024,13 @@ also_rules = { "RLMeshModelServeOptions::options" = ["R-12"] }
 ["rlmesh:Model.serve".cpp]
 status = "present"
 path = "rlmesh::Model::serve"
-params = { "address" = "rlmesh::Model::serve#address", "options" = "rlmesh::Model::serve#options" }
+params = { "address" = "rlmesh::Model::serve#address", "options" = "rlmesh::Model::serve#options", name = "rlmesh::ModelServeOptions#name" }
+refused = { batching = ["D-46"] }
 also = [
   "rlmesh::ModelServeOptions",
   "rlmesh::ModelServeOptions::options",
   "rlmesh::ModelServeOptions::with_ext",
+  "rlmesh::ModelServeOptions::with_name",
   "rlmesh::ModelServeOptions::with_options",
 ]
 rule = ["R-3"]
@@ -2305,39 +3047,19 @@ also_rules = { "rlmesh::ModelServeOptions::options" = [
 ["rlmesh:Model.session"]
 area = "model"
 rule = ["R-4"]
-parameters = { "env_or_address" = {}, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "1" }, "view" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
+parameters = {}
 
 ["rlmesh:Model.session".rust]
-status = "present"
-path = "rlmesh::Model::session"
-params = { "env_or_address" = "rlmesh::Model::session#env_or_address", "instruction" = "rlmesh::SessionOptions#instruction", "close_env" = "rlmesh::SessionOptions#close_env", "trust_entrypoints" = "rlmesh::SessionOptions#trust_entrypoints", "execution_horizon" = "rlmesh::SessionOptions#execution_horizon", "view" = "rlmesh::SessionOptions#view", "workflow_edition" = "rlmesh::SessionOptions#workflow_edition" }
-also = [
-  "rlmesh::SessionOptions",
-  "rlmesh::SessionOptions::Clone",
-  "rlmesh::SessionOptions::Debug",
-  "rlmesh::SessionOptions::Default",
-]
-rule = ["R-3"]
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:Model.session".c]
-status = "present"
-path = "rlmesh_model_session"
-params = { "env_or_address" = "rlmesh_model_session#env_or_address", "instruction" = "RLMeshSessionOptions#instruction", "close_env" = "RLMeshSessionOptions#close_env", "trust_entrypoints" = "RLMeshSessionOptions#trust_entrypoints", "execution_horizon" = "RLMeshSessionOptions#execution_horizon", "view" = "RLMeshSessionOptions#view", "workflow_edition" = "RLMeshSessionOptions#workflow_edition" }
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:Model.session".cpp]
-status = "present"
-path = "rlmesh::Model::session"
-params = { "env_or_address" = "rlmesh::Model::session#env_or_address", "instruction" = "rlmesh::SessionOptions#instruction", "close_env" = "rlmesh::SessionOptions#close_env", "trust_entrypoints" = "rlmesh::SessionOptions#trust_entrypoints", "execution_horizon" = "rlmesh::SessionOptions#execution_horizon", "view" = "rlmesh::SessionOptions#view", "workflow_edition" = "rlmesh::SessionOptions#workflow_edition" }
-also = [
-  "rlmesh::SessionOptions",
-  "rlmesh::SessionOptions::with_close_env",
-  "rlmesh::SessionOptions::with_execution_horizon",
-  "rlmesh::SessionOptions::with_instruction",
-  "rlmesh::SessionOptions::with_trust_entrypoints",
-  "rlmesh::SessionOptions::with_view",
-  "rlmesh::SessionOptions::with_workflow_edition",
-]
-rule = ["R-3"]
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:Model.spec"]
 area = "model"
@@ -2865,14 +3587,29 @@ params = {}
 ["rlmesh:Recorder"]
 area = "running"
 rule = ["R-4"]
-parameters = { "result_set_id" = { "default" = "None" }, "fps" = { "default" = "30", "expression" = "DEFAULT_FPS" }, "quality" = { "default" = "60", "expression" = "DEFAULT_QUALITY" } }
+parameters = { "result_set_id" = { "default" = "None" }, "fps" = { "default" = "30", "expression" = "DEFAULT_FPS" }, "quality" = { "default" = "60", "expression" = "DEFAULT_QUALITY" }, "codec" = { "default" = "'av1'", "expression" = "DEFAULT_CODEC" }, "ffmpeg" = { "default" = "None" } }
 
 ["rlmesh:Recorder".rust]
 status = "present"
 path = "rlmesh::recorder::Recorder"
-params = { "result_set_id" = "rlmesh::recorder::RecorderOptions#result_set_id", "fps" = "rlmesh::recorder::RecorderOptions#fps", "quality" = "rlmesh::recorder::RecorderOptions#quality" }
+params = { "result_set_id" = "rlmesh::recorder::RecorderOptions#result_set_id", "fps" = "rlmesh::recorder::RecorderOptions#fps", "quality" = "rlmesh::recorder::RecorderOptions#quality", "codec" = "rlmesh::recorder::RecorderOptions#codec", "ffmpeg" = "rlmesh::recorder::RecorderOptions#ffmpeg" }
 also = [
   "rlmesh::Recorder",
+  "rlmesh::VideoCodec",
+  "rlmesh::recorder::VideoCodec",
+  "rlmesh::recorder::VideoCodec::Av1",
+  "rlmesh::recorder::VideoCodec::Clone",
+  "rlmesh::recorder::VideoCodec::Copy",
+  "rlmesh::recorder::VideoCodec::Debug",
+  "rlmesh::recorder::VideoCodec::Default",
+  "rlmesh::recorder::VideoCodec::Display",
+  "rlmesh::recorder::VideoCodec::Eq",
+  "rlmesh::recorder::VideoCodec::H264",
+  "rlmesh::recorder::VideoCodec::Hash",
+  "rlmesh::recorder::VideoCodec::PartialEq",
+  "rlmesh::recorder::VideoCodec::StructuralPartialEq",
+  "rlmesh::recorder::VideoCodec::TrivialClone",
+  "rlmesh::recorder::VideoCodec::as_str",
   "rlmesh::RecorderOptions",
   "rlmesh::recorder::RecorderOptions",
   "rlmesh::recorder::RecorderOptions::Clone",
@@ -2885,6 +3622,7 @@ rule = ["R-3"]
 status = "present"
 path = "RLMeshRecorder"
 params = { "result_set_id" = "RLMeshRecorderOptions#result_set_id", "fps" = "RLMeshRecorderOptions#fps", "quality" = "RLMeshRecorderOptions#quality" }
+refused = { codec = ["D-47"], ffmpeg = ["D-47"] }
 also = [
   "RLMESH_RECORDER_OPTIONS_INIT",
   "RLMESH_RECORDER_OPTIONS_MIN_SIZE",
@@ -2898,6 +3636,7 @@ rule = ["R-3"]
 status = "present"
 path = "rlmesh::Recorder"
 params = { "result_set_id" = "rlmesh::RecorderOptions#result_set_id", "fps" = "rlmesh::RecorderOptions#fps", "quality" = "rlmesh::RecorderOptions#quality" }
+refused = { codec = ["D-47"], ffmpeg = ["D-47"] }
 also = [
   "rlmesh::RecorderOptions",
   "rlmesh::RecorderOptions::with_fps",
@@ -2952,12 +3691,12 @@ rule = ["R-3"]
 ["rlmesh:Recorder.capture"]
 area = "running"
 rule = ["R-4"]
-parameters = { "model" = {}, "env" = {}, "task" = { "default" = "None" }, "config" = { "default" = "None" }, "cameras" = { "default" = "None" }, "session" = { "default" = "None" }, "video_info_keys" = { "default" = "('video_artifact_path', 'video_url')", "expression" = "DEFAULT_VIDEO_INFO_KEYS" }, "included_in_metrics" = { "default" = "True" } }
+parameters = { "model" = {}, "env" = {}, "task" = { "default" = "None" }, "config" = { "default" = "None" }, "cameras" = { "default" = "None" }, "session" = { "default" = "None" }, "video_info_keys" = { "default" = "('video_artifact_path', 'video_url')", "expression" = "DEFAULT_VIDEO_INFO_KEYS" }, "included_in_metrics" = { "default" = "True" }, binding = { default = "None" } }
 
 ["rlmesh:Recorder.capture".rust]
 status = "present"
 path = "rlmesh::recorder::Recorder::capture"
-params = { "model" = "rlmesh::recorder::Recorder::capture#model", "env" = "rlmesh::recorder::Recorder::capture#env", "task" = "rlmesh::recorder::RecorderCaptureOptions#task", "config" = "rlmesh::recorder::RecorderCaptureOptions#config", "cameras" = "rlmesh::recorder::RecorderCaptureOptions#cameras", "session" = "rlmesh::recorder::RecorderCaptureOptions#session", "video_info_keys" = "rlmesh::recorder::RecorderCaptureOptions#video_info_keys", "included_in_metrics" = "rlmesh::recorder::RecorderCaptureOptions#included_in_metrics" }
+params = { "model" = "rlmesh::recorder::Recorder::capture#model", "env" = "rlmesh::recorder::Recorder::capture#env", "task" = "rlmesh::recorder::RecorderCaptureOptions#task", "config" = "rlmesh::recorder::RecorderCaptureOptions#config", "cameras" = "rlmesh::recorder::RecorderCaptureOptions#cameras", "video_info_keys" = "rlmesh::recorder::RecorderCaptureOptions#video_info_keys", "included_in_metrics" = "rlmesh::recorder::RecorderCaptureOptions#included_in_metrics", binding = "rlmesh::recorder::RecorderCaptureOptions#binding" }
 also = [
   "rlmesh::RecorderCaptureOptions",
   "rlmesh::recorder::RecorderCaptureOptions",
@@ -2966,11 +3705,12 @@ also = [
   "rlmesh::recorder::RecorderCaptureOptions::Default",
 ]
 rule = ["R-3"]
+refused = { session = ["D-4"] }
 
 ["rlmesh:Recorder.capture".c]
 status = "present"
 path = "rlmesh_recorder_capture"
-params = { "model" = "rlmesh_recorder_capture#model", "env" = "rlmesh_recorder_capture#env", "task" = "RLMeshRecorderCaptureOptions#task", "config" = "RLMeshRecorderCaptureOptions#config", "cameras" = "RLMeshRecorderCaptureOptions#cameras", "session" = "RLMeshRecorderCaptureOptions#session", "video_info_keys" = "RLMeshRecorderCaptureOptions#video_info_keys", "included_in_metrics" = "RLMeshRecorderCaptureOptions#included_in_metrics" }
+params = { "model" = "rlmesh_recorder_capture#model", "env" = "rlmesh_recorder_capture#env", "task" = "RLMeshRecorderCaptureOptions#task", "config" = "RLMeshRecorderCaptureOptions#config", "cameras" = "RLMeshRecorderCaptureOptions#cameras", "video_info_keys" = "RLMeshRecorderCaptureOptions#video_info_keys", "included_in_metrics" = "RLMeshRecorderCaptureOptions#included_in_metrics", binding = "RLMeshRecorderCaptureOptions#binding" }
 rule = ["RUN-20", "R-3"]
 also = [
   "RLMESH_RECORDER_CAPTURE_OPTIONS_INIT",
@@ -2982,21 +3722,23 @@ also = [
   "RLMeshRecorderCaptureOptions::video_info_keys_len",
 ]
 translations = { video_info_keys = ["RUN-20"] }
+refused = { session = ["D-4"] }
 
 ["rlmesh:Recorder.capture".cpp]
 status = "present"
 path = "rlmesh::Recorder::capture"
-params = { "model" = "rlmesh::Recorder::capture#model", "env" = "rlmesh::Recorder::capture#env", "task" = "rlmesh::RecorderCaptureOptions#task", "config" = "rlmesh::RecorderCaptureOptions#config", "cameras" = "rlmesh::RecorderCaptureOptions#cameras", "session" = "rlmesh::RecorderCaptureOptions#session", "video_info_keys" = "rlmesh::RecorderCaptureOptions#video_info_keys", "included_in_metrics" = "rlmesh::RecorderCaptureOptions#included_in_metrics" }
+params = { "model" = "rlmesh::Recorder::capture#model", "env" = "rlmesh::Recorder::capture#env", "task" = "rlmesh::RecorderCaptureOptions#task", "config" = "rlmesh::RecorderCaptureOptions#config", "cameras" = "rlmesh::RecorderCaptureOptions#cameras", "video_info_keys" = "rlmesh::RecorderCaptureOptions#video_info_keys", "included_in_metrics" = "rlmesh::RecorderCaptureOptions#included_in_metrics", binding = "rlmesh::RecorderCaptureOptions#binding" }
 also = [
   "rlmesh::RecorderCaptureOptions",
+  "rlmesh::RecorderCaptureOptions::with_binding",
   "rlmesh::RecorderCaptureOptions::with_cameras",
   "rlmesh::RecorderCaptureOptions::with_config",
   "rlmesh::RecorderCaptureOptions::with_included_in_metrics",
-  "rlmesh::RecorderCaptureOptions::with_session",
   "rlmesh::RecorderCaptureOptions::with_task",
   "rlmesh::RecorderCaptureOptions::with_video_info_keys",
 ]
 rule = ["R-3"]
+refused = { session = ["D-4"] }
 
 ["rlmesh:Recorder.close"]
 area = "running"
@@ -3636,6 +4378,20 @@ status = "present"
 path = "rlmesh::RemoteEnv::shutdown"
 params = { "reason" = "rlmesh::RemoteEnv::shutdown#reason" }
 
+["rlmesh:RemoteEnv.spec"]
+area = "remote"
+rule = ["R-24"]
+parameters = {}
+
+["rlmesh:RemoteEnv.spec".rust]
+status = "bridge"
+
+["rlmesh:RemoteEnv.spec".c]
+status = "bridge"
+
+["rlmesh:RemoteEnv.spec".cpp]
+status = "bridge"
+
 ["rlmesh:RemoteEnv.step"]
 area = "remote"
 rule = ["R-4"]
@@ -3665,166 +4421,19 @@ result_tuple = ["Value", "double", "bool", "bool", "InfoDict"]
 ["rlmesh:RemoteModel"]
 area = "remote"
 rule = ["R-4"]
-parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "api_key" = { "default" = "None" }, "tls_ca_file" = { "default" = "None" } }
+parameters = { "args" = {}, "kwargs" = {} }
 
 ["rlmesh:RemoteModel".rust]
-status = "present"
-path = "rlmesh::RemoteModel"
-params = { "address" = "rlmesh::RemoteModelOptions#address", "host" = "rlmesh::RemoteModelOptions#host", "port" = "rlmesh::RemoteModelOptions#port", "path" = "rlmesh::RemoteModelOptions#path", "transport" = "rlmesh::RemoteModelOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteModelOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteModelOptions#request_timeout", "api_key" = "rlmesh::RemoteModelOptions#api_key", "tls_ca_file" = "rlmesh::RemoteModelOptions#tls_ca_file" }
-also = [
-  "rlmesh::RemoteModel::Clone",
-  "rlmesh::RemoteModel::Debug",
-  "rlmesh::RemoteModel::Display",
-  "rlmesh::RemoteModel::From<&'a RemoteModel>",
-  "rlmesh::RemoteModel::new",
-  "rlmesh::RemoteModel::session_async",
-  "rlmesh::RemoteModelOptions",
-  "rlmesh::RemoteModelOptions::Clone",
-  "rlmesh::RemoteModelOptions::Debug",
-  "rlmesh::RemoteModelOptions::Default",
-  "rlmesh::RemoteModelOptions::address",
-  "rlmesh::RemoteModelOptions::api_key",
-  "rlmesh::RemoteModelOptions::connect_timeout",
-  "rlmesh::RemoteModelOptions::host",
-  "rlmesh::RemoteModelOptions::path",
-  "rlmesh::RemoteModelOptions::port",
-  "rlmesh::RemoteModelOptions::request_timeout",
-  "rlmesh::RemoteModelOptions::tls_ca_file",
-  "rlmesh::RemoteModelOptions::transport",
-]
-rule = ["R-3"]
-
-# Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh::RemoteModel::new" = [
-  "R-11",
-], "rlmesh::RemoteModel::session_async" = [
-  "R-16",
-] }
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:RemoteModel".c]
-status = "present"
-path = "RLMeshRemoteModel"
-params = { "address" = "RLMeshRemoteModelOptions#address", "host" = "RLMeshRemoteModelOptions#host", "port" = "RLMeshRemoteModelOptions#port", "path" = "RLMeshRemoteModelOptions#path", "transport" = "RLMeshRemoteModelOptions#transport", "connect_timeout_seconds" = "RLMeshRemoteModelOptions#connect_timeout_seconds", "request_timeout_seconds" = "RLMeshRemoteModelOptions#request_timeout_seconds", "api_key" = "RLMeshRemoteModelOptions#api_key", "tls_ca_file" = "RLMeshRemoteModelOptions#tls_ca_file" }
-also = [
-  "RLMESH_REMOTE_MODEL_OPTIONS_INIT",
-  "RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE",
-  "RLMeshRemoteModelOptions",
-  "RLMeshRemoteModelOptions::address",
-  "RLMeshRemoteModelOptions::api_key",
-  "RLMeshRemoteModelOptions::connect_timeout_seconds",
-  "RLMeshRemoteModelOptions::has_connect_timeout_seconds",
-  "RLMeshRemoteModelOptions::has_port",
-  "RLMeshRemoteModelOptions::has_request_timeout_seconds",
-  "RLMeshRemoteModelOptions::has_transport",
-  "RLMeshRemoteModelOptions::host",
-  "RLMeshRemoteModelOptions::path",
-  "RLMeshRemoteModelOptions::port",
-  "RLMeshRemoteModelOptions::request_timeout_seconds",
-  "RLMeshRemoteModelOptions::struct_size",
-  "RLMeshRemoteModelOptions::tls_ca_file",
-  "RLMeshRemoteModelOptions::transport",
-  "rlmesh_remote_model_clone",
-  "rlmesh_remote_model_free",
-  "rlmesh_remote_model_new",
-  "rlmesh_remote_model_repr",
-  "rlmesh_remote_model_target",
-]
-rule = ["R-3"]
-
-# Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh_remote_model_clone" = [
-  "R-11",
-], "rlmesh_remote_model_free" = [
-  "R-11",
-], "rlmesh_remote_model_new" = [
-  "R-11",
-], "rlmesh_remote_model_repr" = [
-  "R-10",
-], "rlmesh_remote_model_target" = [
-  "R-3",
-] }
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:RemoteModel".cpp]
-status = "present"
-path = "rlmesh::RemoteModel"
-params = { "address" = "rlmesh::RemoteModelOptions#address", "host" = "rlmesh::RemoteModelOptions#host", "port" = "rlmesh::RemoteModelOptions#port", "path" = "rlmesh::RemoteModelOptions#path", "transport" = "rlmesh::RemoteModelOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteModelOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteModelOptions#request_timeout", "api_key" = "rlmesh::RemoteModelOptions#api_key", "tls_ca_file" = "rlmesh::RemoteModelOptions#tls_ca_file" }
-also = [
-  "rlmesh::RemoteModel::RemoteModel",
-  "rlmesh::RemoteModel::raw",
-  "rlmesh::RemoteModel::to_string",
-  "rlmesh::RemoteModelOptions",
-  "rlmesh::RemoteModelOptions::address",
-  "rlmesh::RemoteModelOptions::api_key",
-  "rlmesh::RemoteModelOptions::connect_timeout",
-  "rlmesh::RemoteModelOptions::host",
-  "rlmesh::RemoteModelOptions::path",
-  "rlmesh::RemoteModelOptions::port",
-  "rlmesh::RemoteModelOptions::raw",
-  "rlmesh::RemoteModelOptions::request_timeout",
-  "rlmesh::RemoteModelOptions::tls_ca_file",
-  "rlmesh::RemoteModelOptions::transport",
-  "rlmesh::RemoteModelOptions::with_address",
-  "rlmesh::RemoteModelOptions::with_api_key",
-  "rlmesh::RemoteModelOptions::with_connect_timeout",
-  "rlmesh::RemoteModelOptions::with_host",
-  "rlmesh::RemoteModelOptions::with_path",
-  "rlmesh::RemoteModelOptions::with_port",
-  "rlmesh::RemoteModelOptions::with_request_timeout",
-  "rlmesh::RemoteModelOptions::with_tls_ca_file",
-  "rlmesh::RemoteModelOptions::with_transport",
-]
-rule = ["R-3"]
-
-# Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh::RemoteModel::RemoteModel" = [
-  "R-3",
-], "rlmesh::RemoteModel::raw" = [
-  "R-11",
-], "rlmesh::RemoteModel::to_string" = [
-  "R-10",
-], "rlmesh::RemoteModelOptions::raw" = [
-  "R-11",
-] }
-
-["rlmesh:RemoteModel.address"]
-area = "remote"
-rule = ["R-4"]
-parameters = {}
-
-["rlmesh:RemoteModel.address".rust]
-status = "present"
-path = "rlmesh::RemoteModel::address"
-params = {}
-
-["rlmesh:RemoteModel.address".c]
-status = "present"
-path = "rlmesh_remote_model_address"
-params = {}
-
-["rlmesh:RemoteModel.address".cpp]
-status = "present"
-path = "rlmesh::RemoteModel::address"
-params = {}
-
-["rlmesh:RemoteModel.session"]
-area = "remote"
-rule = ["R-4"]
-parameters = { "env" = {}, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "1" }, "view" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
-
-["rlmesh:RemoteModel.session".rust]
-status = "present"
-path = "rlmesh::RemoteModel::session"
-params = { "env" = "rlmesh::RemoteModel::session#env", "instruction" = "rlmesh::SessionOptions#instruction", "close_env" = "rlmesh::SessionOptions#close_env", "trust_entrypoints" = "rlmesh::SessionOptions#trust_entrypoints", "execution_horizon" = "rlmesh::SessionOptions#execution_horizon", "view" = "rlmesh::SessionOptions#view", "workflow_edition" = "rlmesh::SessionOptions#workflow_edition" }
-
-["rlmesh:RemoteModel.session".c]
-status = "present"
-path = "rlmesh_remote_model_session"
-params = { "env" = "rlmesh_remote_model_session#env", "instruction" = "RLMeshSessionOptions#instruction", "close_env" = "RLMeshSessionOptions#close_env", "trust_entrypoints" = "RLMeshSessionOptions#trust_entrypoints", "execution_horizon" = "RLMeshSessionOptions#execution_horizon", "view" = "RLMeshSessionOptions#view", "workflow_edition" = "RLMeshSessionOptions#workflow_edition" }
-
-["rlmesh:RemoteModel.session".cpp]
-status = "present"
-path = "rlmesh::RemoteModel::session"
-params = { "env" = "rlmesh::RemoteModel::session#env", "instruction" = "rlmesh::SessionOptions#instruction", "close_env" = "rlmesh::SessionOptions#close_env", "trust_entrypoints" = "rlmesh::SessionOptions#trust_entrypoints", "execution_horizon" = "rlmesh::SessionOptions#execution_horizon", "view" = "rlmesh::SessionOptions#view", "workflow_edition" = "rlmesh::SessionOptions#workflow_edition" }
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:RemoteVectorEnv"]
 area = "remote"
@@ -4007,6 +4616,20 @@ params = {}
 status = "present"
 path = "rlmesh::RemoteVectorEnv::close"
 params = {}
+
+["rlmesh:RemoteVectorEnv.closed"]
+area = "remote"
+rule = ["R-24"]
+parameters = {}
+
+["rlmesh:RemoteVectorEnv.closed".rust]
+status = "bridge"
+
+["rlmesh:RemoteVectorEnv.closed".c]
+status = "bridge"
+
+["rlmesh:RemoteVectorEnv.closed".cpp]
+status = "bridge"
 
 ["rlmesh:RemoteVectorEnv.env_contract"]
 area = "remote"
@@ -4279,6 +4902,20 @@ params = {}
 status = "present"
 path = "rlmesh::RemoteVectorEnv::single_observation_space"
 params = {}
+
+["rlmesh:RemoteVectorEnv.spec"]
+area = "remote"
+rule = ["R-24"]
+parameters = {}
+
+["rlmesh:RemoteVectorEnv.spec".rust]
+status = "bridge"
+
+["rlmesh:RemoteVectorEnv.spec".c]
+status = "bridge"
+
+["rlmesh:RemoteVectorEnv.spec".cpp]
+status = "bridge"
 
 ["rlmesh:RemoteVectorEnv.step"]
 area = "remote"
@@ -4741,6 +5378,29 @@ status = "present"
 path = "rlmesh::RunResult::format_telemetry"
 params = {}
 
+["rlmesh:RunResult.load"]
+area = "running"
+rule = ["R-4"]
+parameters = { "path" = {} }
+
+["rlmesh:RunResult.load".rust]
+status = "present"
+path = "rlmesh::RunResult::load"
+params = { "path" = "rlmesh::RunResult::load#path" }
+rule = ["R-3"]
+
+["rlmesh:RunResult.load".c]
+status = "present"
+path = "rlmesh_run_result_load"
+params = { "path" = "rlmesh_run_result_load#path" }
+rule = ["R-3"]
+
+["rlmesh:RunResult.load".cpp]
+status = "present"
+path = "rlmesh::RunResult::load"
+params = { "path" = "rlmesh::RunResult::load#path" }
+rule = ["R-3"]
+
 ["rlmesh:RunResult.mean_reward"]
 area = "running"
 rule = ["R-4"]
@@ -4780,6 +5440,47 @@ params = {}
 status = "present"
 path = "rlmesh::RunResult::num_episodes"
 params = {}
+
+["rlmesh:RunResult.save"]
+area = "running"
+rule = ["R-4"]
+parameters = { "path" = {}, "model" = { "default" = "'model'" }, "env" = { "default" = "'env'" }, "config" = { "default" = "None" } }
+
+["rlmesh:RunResult.save".rust]
+status = "present"
+path = "rlmesh::RunResult::save"
+params = { "path" = "rlmesh::RunResult::save#path", "model" = "rlmesh::RunResultSaveOptions#model", "env" = "rlmesh::RunResultSaveOptions#env", "config" = "rlmesh::RunResultSaveOptions#config" }
+also = [
+  "rlmesh::RunResultSaveOptions",
+  "rlmesh::RunResultSaveOptions::Clone",
+  "rlmesh::RunResultSaveOptions::Debug",
+  "rlmesh::RunResultSaveOptions::Default",
+]
+rule = ["R-3"]
+
+["rlmesh:RunResult.save".c]
+status = "present"
+path = "rlmesh_run_result_save"
+params = { "path" = "rlmesh_run_result_save#path", "model" = "RLMeshRunResultSaveOptions#model", "env" = "RLMeshRunResultSaveOptions#env", "config" = "RLMeshRunResultSaveOptions#config" }
+also = [
+  "RLMESH_RUN_RESULT_SAVE_OPTIONS_INIT",
+  "RLMESH_RUN_RESULT_SAVE_OPTIONS_MIN_SIZE",
+  "RLMeshRunResultSaveOptions",
+  "RLMeshRunResultSaveOptions::struct_size",
+]
+rule = ["R-3"]
+
+["rlmesh:RunResult.save".cpp]
+status = "present"
+path = "rlmesh::RunResult::save"
+params = { "path" = "rlmesh::RunResult::save#path", "model" = "rlmesh::RunResultSaveOptions#model", "env" = "rlmesh::RunResultSaveOptions#env", "config" = "rlmesh::RunResultSaveOptions#config" }
+also = [
+  "rlmesh::RunResultSaveOptions",
+  "rlmesh::RunResultSaveOptions::with_config",
+  "rlmesh::RunResultSaveOptions::with_env",
+  "rlmesh::RunResultSaveOptions::with_model",
+]
+rule = ["R-3"]
 
 ["rlmesh:RunResult.success_rate"]
 area = "running"
@@ -5016,453 +5717,19 @@ params = {}
 ["rlmesh:Session"]
 area = "running"
 rule = ["R-4"]
-parameters = {}
+parameters = { "args" = {}, "kwargs" = {} }
 
 ["rlmesh:Session".rust]
-status = "present"
-path = "rlmesh::Session"
-params = {}
-also = [
-  "rlmesh::Session::Debug",
-  "rlmesh::Session::Drop",
-  "rlmesh::Session::close_async",
-  "rlmesh::Session::contract_async",
-  "rlmesh::Session::frame_sources_async",
-  "rlmesh::Session::num_envs_async",
-  "rlmesh::Session::observation_roles_async",
-  "rlmesh::Session::predict_async",
-  "rlmesh::Session::read_async",
-  "rlmesh::Session::reader_async",
-  "rlmesh::Session::reset_async",
-  "rlmesh::Session::run_async",
-  "rlmesh::Session::run_context",
-  "rlmesh::Session::run_context_async",
-  "rlmesh::Session::selected_workflow_edition_async",
-  "rlmesh::Session::step_async",
-]
-rule = ["R-3"]
-
-# Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh::Session::close_async" = [
-  "R-16",
-], "rlmesh::Session::contract_async" = [
-  "R-16",
-], "rlmesh::Session::frame_sources_async" = [
-  "R-16",
-], "rlmesh::Session::num_envs_async" = [
-  "R-16",
-], "rlmesh::Session::observation_roles_async" = [
-  "R-16",
-], "rlmesh::Session::predict_async" = [
-  "R-16",
-], "rlmesh::Session::read_async" = [
-  "R-16",
-], "rlmesh::Session::reader_async" = [
-  "R-16",
-], "rlmesh::Session::reset_async" = [
-  "R-16",
-], "rlmesh::Session::run_async" = [
-  "R-16",
-], "rlmesh::Session::run_context" = [
-  "R-3",
-], "rlmesh::Session::run_context_async" = [
-  "R-16",
-], "rlmesh::Session::selected_workflow_edition_async" = [
-  "R-16",
-], "rlmesh::Session::step_async" = [
-  "R-16",
-] }
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:Session".c]
-status = "present"
-path = "RLMeshSession"
-params = {}
-also = ["rlmesh_session_free", "rlmesh_session_run_context"]
-rule = ["R-3"]
-
-# Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh_session_free" = ["R-11"], "rlmesh_session_run_context" = ["R-3"] }
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:Session".cpp]
-status = "present"
-path = "rlmesh::Session"
-params = {}
-also = ["rlmesh::Session::Session", "rlmesh::Session::raw", "rlmesh::Session::run_context"]
-rule = ["R-3"]
-
-# Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh::Session::Session" = [
-  "R-3",
-], "rlmesh::Session::raw" = [
-  "R-11",
-], "rlmesh::Session::run_context" = [
-  "R-3",
-] }
-
-["rlmesh:Session.close"]
-area = "running"
-rule = ["R-4"]
-parameters = {}
-
-["rlmesh:Session.close".rust]
-status = "present"
-path = "rlmesh::Session::close"
-params = {}
-
-["rlmesh:Session.close".c]
-status = "present"
-path = "rlmesh_session_close"
-params = {}
-
-["rlmesh:Session.close".cpp]
-status = "present"
-path = "rlmesh::Session::close"
-params = {}
-
-["rlmesh:Session.contract"]
-area = "running"
-rule = ["R-4"]
-parameters = {}
-
-["rlmesh:Session.contract".rust]
-status = "present"
-path = "rlmesh::Session::contract"
-params = {}
-
-["rlmesh:Session.contract".c]
-status = "present"
-path = "rlmesh_session_contract"
-params = {}
-
-["rlmesh:Session.contract".cpp]
-status = "present"
-path = "rlmesh::Session::contract"
-params = {}
-
-["rlmesh:Session.done"]
-area = "running"
-rule = ["R-4"]
-parameters = {}
-
-["rlmesh:Session.done".rust]
-status = "present"
-path = "rlmesh::Session::done"
-params = {}
-
-["rlmesh:Session.done".c]
-status = "present"
-path = "rlmesh_session_done"
-params = {}
-
-["rlmesh:Session.done".cpp]
-status = "present"
-path = "rlmesh::Session::done"
-params = {}
-
-["rlmesh:Session.frame_sources"]
-area = "running"
-rule = ["R-4"]
-parameters = {}
-
-["rlmesh:Session.frame_sources".rust]
-status = "present"
-path = "rlmesh::Session::frame_sources"
-params = {}
-
-["rlmesh:Session.frame_sources".c]
-status = "present"
-path = "rlmesh_session_frame_sources"
-params = {}
-
-["rlmesh:Session.frame_sources".cpp]
-status = "present"
-path = "rlmesh::Session::frame_sources"
-params = {}
-
-["rlmesh:Session.num_envs"]
-area = "running"
-rule = ["R-4"]
-parameters = {}
-
-["rlmesh:Session.num_envs".rust]
-status = "present"
-path = "rlmesh::Session::num_envs"
-params = {}
-
-["rlmesh:Session.num_envs".c]
-status = "present"
-path = "rlmesh_session_num_envs"
-params = {}
-
-["rlmesh:Session.num_envs".cpp]
-status = "present"
-path = "rlmesh::Session::num_envs"
-params = {}
-
-["rlmesh:Session.observation_roles"]
-area = "running"
-rule = ["R-4"]
-parameters = {}
-
-["rlmesh:Session.observation_roles".rust]
-status = "present"
-path = "rlmesh::Session::observation_roles"
-params = {}
-
-["rlmesh:Session.observation_roles".c]
-status = "present"
-path = "rlmesh_session_observation_roles"
-params = {}
-
-["rlmesh:Session.observation_roles".cpp]
-status = "present"
-path = "rlmesh::Session::observation_roles"
-params = {}
-
-["rlmesh:Session.predict"]
-area = "running"
-rule = ["R-4"]
-parameters = { "observation" = {} }
-
-["rlmesh:Session.predict".rust]
-status = "present"
-path = "rlmesh::Session::predict"
-params = { "observation" = "rlmesh::Session::predict#observation" }
-
-["rlmesh:Session.predict".c]
-status = "present"
-path = "rlmesh_session_predict"
-params = { "observation" = "rlmesh_session_predict#observation" }
-
-["rlmesh:Session.predict".cpp]
-status = "present"
-path = "rlmesh::Session::predict"
-params = { "observation" = "rlmesh::Session::predict#observation" }
-
-["rlmesh:Session.read"]
-area = "running"
-rule = ["R-4"]
-parameters = { "observation" = {}, "item" = {} }
-
-["rlmesh:Session.read".rust]
-status = "present"
-path = "rlmesh::Session::read"
-params = { "observation" = "rlmesh::Session::read#observation", "item" = "rlmesh::Session::read#item" }
-
-["rlmesh:Session.read".c]
-status = "present"
-path = "rlmesh_session_read"
-params = { "observation" = "rlmesh_session_read#observation", "item" = "rlmesh_session_read#item" }
-
-["rlmesh:Session.read".cpp]
-status = "present"
-path = "rlmesh::Session::read"
-params = { "observation" = "rlmesh::Session::read#observation", "item" = "rlmesh::Session::read#item" }
-
-["rlmesh:Session.reader"]
-area = "running"
-rule = ["R-4"]
-parameters = { "items" = {} }
-
-["rlmesh:Session.reader".rust]
-status = "present"
-path = "rlmesh::Session::reader"
-params = { "items" = "rlmesh::Session::reader#items" }
-also = [
-  "rlmesh::ReadItem",
-  "rlmesh::ReadItem::Clone",
-  "rlmesh::ReadItem::Debug",
-  "rlmesh::ReadItem::From<&str>",
-  "rlmesh::ReadItem::From<Image>",
-  "rlmesh::ReadItem::From<State>",
-  "rlmesh::ReadItem::From<String>",
-  "rlmesh::ReadItem::From<Text>",
-  "rlmesh::ReadItem::Image",
-  "rlmesh::ReadItem::PartialEq",
-  "rlmesh::ReadItem::Role",
-  "rlmesh::ReadItem::State",
-  "rlmesh::ReadItem::StructuralPartialEq",
-]
-rule = ["R-3"]
-
-["rlmesh:Session.reader".c]
-status = "present"
-path = "rlmesh_session_reader"
-params = { "items" = "rlmesh_session_reader#items" }
-also = [
-  "RLMeshReadItem",
-  "rlmesh_read_item_free",
-  "rlmesh_read_item_image",
-  "rlmesh_read_item_role",
-  "rlmesh_read_item_state",
-  "rlmesh_read_item_text",
-]
-rule = ["R-3"]
-
-# Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "RLMeshReadItem" = [
-  "R-3",
-], "rlmesh_read_item_free" = [
-  "R-11",
-], "rlmesh_read_item_image" = [
-  "R-3",
-], "rlmesh_read_item_role" = [
-  "R-3",
-], "rlmesh_read_item_state" = [
-  "R-3",
-], "rlmesh_read_item_text" = [
-  "R-3",
-] }
-
-["rlmesh:Session.reader".cpp]
-status = "present"
-path = "rlmesh::Session::reader"
-params = { "items" = "rlmesh::Session::reader#items" }
-also = ["rlmesh::ReadItem", "rlmesh::ReadItem::ReadItem", "rlmesh::ReadItem::raw"]
-rule = ["R-3"]
-
-# Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh::ReadItem::ReadItem" = ["R-3"], "rlmesh::ReadItem::raw" = ["R-11"] }
-
-["rlmesh:Session.reset"]
-area = "running"
-rule = ["R-4"]
-parameters = { "seed" = { "default" = "None" }, "trial_index" = { "default" = "None" } }
-
-["rlmesh:Session.reset".rust]
-status = "present"
-path = "rlmesh::Session::reset"
-params = { "seed" = "rlmesh::Session::reset#seed", "trial_index" = "rlmesh::Session::reset#trial_index" }
-
-default_skip = { "seed" = "Positional or authored callable parameter, not a data field; R-7/R-12 defaults are exercised by behavioural fixtures.", "trial_index" = "Positional or authored callable parameter, not a data field; R-7/R-12 defaults are exercised by behavioural fixtures." }
-
-returns = "Result<(Value, InfoDict)>"
-result_tuple = ["Value", "InfoDict"]
-
-["rlmesh:Session.reset".c]
-status = "present"
-path = "rlmesh_session_reset"
-params = { "seed" = "rlmesh_session_reset#seed", "trial_index" = "rlmesh_session_reset#trial_index" }
-
-["rlmesh:Session.reset".cpp]
-status = "present"
-path = "rlmesh::Session::reset"
-params = { "seed" = "rlmesh::Session::reset#seed", "trial_index" = "rlmesh::Session::reset#trial_index" }
-
-returns = "ResetResult"
-result_tuple = ["Value", "InfoDict"]
-
-["rlmesh:Session.run"]
-area = "running"
-rule = ["R-4"]
-parameters = { "seeds" = { "default" = "None" }, "episodes" = { "default" = "None" }, "max_episode_steps" = { "default" = "None" }, "max_episode_seconds" = { "default" = "None" }, "hooks" = { "default" = "None" }, "trial_index_base" = { "default" = "0" } }
-
-["rlmesh:Session.run".rust]
-status = "present"
-path = "rlmesh::Session::run"
-params = { "seeds" = "rlmesh::SessionRunOptions#seeds", "episodes" = "rlmesh::SessionRunOptions#episodes", "max_episode_steps" = "rlmesh::SessionRunOptions#max_episode_steps", "max_episode_seconds" = "rlmesh::SessionRunOptions#max_episode", "hooks" = "rlmesh::SessionRunOptions#hooks", "trial_index_base" = "rlmesh::SessionRunOptions#trial_index_base" }
-also = [
-  "rlmesh::SessionRunOptions",
-  "rlmesh::SessionRunOptions::Debug",
-  "rlmesh::SessionRunOptions::Default",
-  "rlmesh::SessionRunOptions::episodes",
-  "rlmesh::SessionRunOptions::hooks",
-  "rlmesh::SessionRunOptions::max_episode",
-  "rlmesh::SessionRunOptions::max_episode_steps",
-  "rlmesh::SessionRunOptions::seeds",
-  "rlmesh::SessionRunOptions::trial_index_base",
-]
-rule = ["R-3"]
-
-["rlmesh:Session.run".c]
-status = "present"
-path = "rlmesh_session_run"
-params = { "seeds" = "RLMeshSessionRunOptions#seeds", "episodes" = "RLMeshSessionRunOptions#episodes", "max_episode_steps" = "RLMeshSessionRunOptions#max_episode_steps", "max_episode_seconds" = "RLMeshSessionRunOptions#max_episode_seconds", "hooks" = "RLMeshSessionRunOptions#hooks", "trial_index_base" = "RLMeshSessionRunOptions#trial_index_base" }
-also = [
-  "RLMESH_SESSION_RUN_OPTIONS_INIT",
-  "RLMESH_SESSION_RUN_OPTIONS_MIN_SIZE",
-  "RLMeshSessionRunOptions",
-  "RLMeshSessionRunOptions::_reserved",
-  "RLMeshSessionRunOptions::episodes",
-  "RLMeshSessionRunOptions::has_episodes",
-  "RLMeshSessionRunOptions::has_max_episode_seconds",
-  "RLMeshSessionRunOptions::has_max_episode_steps",
-  "RLMeshSessionRunOptions::hooks",
-  "RLMeshSessionRunOptions::max_episode_seconds",
-  "RLMeshSessionRunOptions::max_episode_steps",
-  "RLMeshSessionRunOptions::seeds",
-  "RLMeshSessionRunOptions::seeds_len",
-  "RLMeshSessionRunOptions::struct_size",
-  "RLMeshSessionRunOptions::trial_index_base",
-]
-rule = ["R-3"]
-
-["rlmesh:Session.run".cpp]
-status = "present"
-path = "rlmesh::Session::run"
-params = { "seeds" = "rlmesh::SessionRunOptions#seeds", "episodes" = "rlmesh::SessionRunOptions#episodes", "max_episode_steps" = "rlmesh::SessionRunOptions#max_episode_steps", "max_episode_seconds" = "rlmesh::SessionRunOptions#max_episode", "hooks" = "rlmesh::SessionRunOptions#hooks", "trial_index_base" = "rlmesh::SessionRunOptions#trial_index_base" }
-also = [
-  "rlmesh::SessionRunOptions",
-  "rlmesh::SessionRunOptions::episodes",
-  "rlmesh::SessionRunOptions::hooks",
-  "rlmesh::SessionRunOptions::max_episode",
-  "rlmesh::SessionRunOptions::max_episode_steps",
-  "rlmesh::SessionRunOptions::seeds",
-  "rlmesh::SessionRunOptions::trial_index_base",
-  "rlmesh::SessionRunOptions::with_episodes",
-  "rlmesh::SessionRunOptions::with_hooks",
-  "rlmesh::SessionRunOptions::with_max_episode",
-  "rlmesh::SessionRunOptions::with_max_episode_steps",
-  "rlmesh::SessionRunOptions::with_seeds",
-  "rlmesh::SessionRunOptions::with_trial_index_base",
-]
-rule = ["R-3"]
-
-["rlmesh:Session.selected_workflow_edition"]
-area = "running"
-rule = ["R-4"]
-parameters = {}
-
-["rlmesh:Session.selected_workflow_edition".rust]
-status = "present"
-path = "rlmesh::Session::selected_workflow_edition"
-params = {}
-
-["rlmesh:Session.selected_workflow_edition".c]
-status = "present"
-path = "rlmesh_session_selected_workflow_edition"
-params = {}
-
-["rlmesh:Session.selected_workflow_edition".cpp]
-status = "present"
-path = "rlmesh::Session::selected_workflow_edition"
-params = {}
-
-["rlmesh:Session.step"]
-area = "running"
-rule = ["R-4"]
-parameters = { "action" = {} }
-
-["rlmesh:Session.step".rust]
-status = "present"
-path = "rlmesh::Session::step"
-params = { "action" = "rlmesh::Session::step#action" }
-
-returns = "Result<(Value, f64, bool, bool, InfoDict)>"
-result_tuple = ["Value", "f64", "bool", "bool", "InfoDict"]
-
-["rlmesh:Session.step".c]
-status = "present"
-path = "rlmesh_session_step"
-params = { "action" = "rlmesh_session_step#action" }
-
-["rlmesh:Session.step".cpp]
-status = "present"
-path = "rlmesh::Session::step"
-params = { "action" = "rlmesh::Session::step#action" }
-
-returns = "StepResult"
-result_tuple = ["Value", "double", "bool", "bool", "InfoDict"]
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:StepEvent"]
 area = "running"
@@ -7476,7 +7743,7 @@ params = { "episode_seed" = "rlmesh::predict_seed#episode_seed", "predict_index"
 ["rlmesh:run"]
 area = "running"
 rule = ["R-4"]
-parameters = { "model" = {}, "env" = {}, "seeds" = { "default" = "None" }, "episodes" = { "default" = "None" }, "max_episode_steps" = { "default" = "None" }, "max_episode_seconds" = { "default" = "None" }, "hooks" = { "default" = "None" }, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "1" }, "prefetch_lead" = { "default" = "0" }, "view" = { "default" = "None" }, "workflow_edition" = { "default" = "None" }, "trial_index_base" = { "default" = "0" } }
+parameters = { "model" = {}, "env" = {}, "seeds" = { "default" = "None" }, "episodes" = { "default" = "None" }, "max_episode_steps" = { "default" = "None" }, "max_episode_seconds" = { "default" = "None" }, "hooks" = { "default" = "None" }, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "None" }, "prefetch_lead" = { "default" = "0" }, "view" = { "default" = "None" }, "workflow_edition" = { "default" = "None" }, "trial_index_base" = { "default" = "0" } }
 
 ["rlmesh:run".rust]
 status = "present"
@@ -7554,7 +7821,6 @@ also = [
   "RLMeshModelTargetKind",
   "RLMeshModelTargetKind::RLMESH_MODEL_TARGET_KIND_INVALID",
   "RLMeshModelTargetKind::RLMESH_MODEL_TARGET_KIND_MODEL",
-  "RLMeshModelTargetKind::RLMESH_MODEL_TARGET_KIND_REMOTE_MODEL",
   "RLMeshModelTargetKind::RLMESH_MODEL_TARGET_KIND_RANDOM_SAMPLE",
   "RLMeshEnvTargetKind",
   "RLMeshEnvTargetKind::RLMESH_ENV_TARGET_KIND_INVALID",
@@ -7645,59 +7911,19 @@ also_rules = { "rlmesh::EnvTarget::EnvTarget" = [
 ["rlmesh:session"]
 area = "running"
 rule = ["R-4"]
-parameters = { "model" = {}, "env" = {}, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "1" }, "view" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
+parameters = { "args" = {}, "kwargs" = {} }
 
 ["rlmesh:session".rust]
-status = "present"
-path = "rlmesh::session"
-params = { "model" = "rlmesh::session#model", "env" = "rlmesh::session#env", "instruction" = "rlmesh::SessionOptions#instruction", "close_env" = "rlmesh::SessionOptions#close_env", "trust_entrypoints" = "rlmesh::SessionOptions#trust_entrypoints", "execution_horizon" = "rlmesh::SessionOptions#execution_horizon", "view" = "rlmesh::SessionOptions#view", "workflow_edition" = "rlmesh::SessionOptions#workflow_edition" }
-also = [
-  "rlmesh::SessionOptions::close_env",
-  "rlmesh::SessionOptions::execution_horizon",
-  "rlmesh::SessionOptions::instruction",
-  "rlmesh::SessionOptions::trust_entrypoints",
-  "rlmesh::SessionOptions::view",
-  "rlmesh::SessionOptions::workflow_edition",
-  "rlmesh::session_async",
-]
-rule = ["R-3"]
-
-# Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh::session_async" = ["R-16"] }
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:session".c]
-status = "present"
-path = "rlmesh_session_new"
-params = { "model" = "rlmesh_session_new#model", "env" = "rlmesh_session_new#env", "instruction" = "RLMeshSessionOptions#instruction", "close_env" = "RLMeshSessionOptions#close_env", "trust_entrypoints" = "RLMeshSessionOptions#trust_entrypoints", "execution_horizon" = "RLMeshSessionOptions#execution_horizon", "view" = "RLMeshSessionOptions#view", "workflow_edition" = "RLMeshSessionOptions#workflow_edition" }
-also = [
-  "RLMESH_SESSION_OPTIONS_INIT",
-  "RLMESH_SESSION_OPTIONS_MIN_SIZE",
-  "RLMeshSessionOptions::_reserved",
-  "RLMeshSessionOptions::close_env",
-  "RLMeshSessionOptions::execution_horizon",
-  "RLMeshSessionOptions::has_trust_entrypoints",
-  "RLMeshSessionOptions::instruction",
-  "RLMeshSessionOptions::struct_size",
-  "RLMeshSessionOptions::trust_entrypoints",
-  "RLMeshSessionOptions::view",
-  "RLMeshSessionOptions::workflow_edition",
-  "rlmesh_session_new",
-]
-rule = ["R-3", "D-6"]
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:session".cpp]
-status = "present"
-path = "rlmesh::session"
-params = { "model" = "rlmesh::session#model", "env" = "rlmesh::session#env", "instruction" = "rlmesh::SessionOptions#instruction", "close_env" = "rlmesh::SessionOptions#close_env", "trust_entrypoints" = "rlmesh::SessionOptions#trust_entrypoints", "execution_horizon" = "rlmesh::SessionOptions#execution_horizon", "view" = "rlmesh::SessionOptions#view", "workflow_edition" = "rlmesh::SessionOptions#workflow_edition" }
-also = [
-  "rlmesh::SessionOptions::close_env",
-  "rlmesh::SessionOptions::execution_horizon",
-  "rlmesh::SessionOptions::instruction",
-  "rlmesh::SessionOptions::trust_entrypoints",
-  "rlmesh::SessionOptions::view",
-  "rlmesh::SessionOptions::workflow_edition",
-]
-rule = ["R-3"]
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh:spaces"]
 area = "core"
@@ -8160,12 +8386,12 @@ params = {}
 ["rlmesh.adapters:Actuator"]
 area = "adapters"
 rule = ["R-4"]
-parameters = { "role" = { "default" = "None" }, "dim" = { "default" = "0" }, "encoding" = { "default" = "None" }, "range" = { "default" = "None" }, "binary" = { "default" = "False" }, "scale" = { "default" = "None" }, "invert" = { "default" = "False" }, "threshold" = { "default" = "None" }, "clip" = { "default" = "False" }, "fill" = { "default" = "0.0" }, "optional" = { "default" = "False" }, "frame" = { "default" = "None" }, "reference" = { "default" = "None" }, "part" = { "default" = "None" }, "offset" = { "default" = "None" }, "labels" = { "default" = "None" } }
+parameters = { "role" = { "default" = "None" }, "dim" = { "default" = "0" }, "encoding" = { "default" = "None" }, "range" = { "default" = "None" }, "binary" = { "default" = "False" }, "scale" = { "default" = "None" }, "invert" = { "default" = "False" }, "threshold" = { "default" = "None" }, "clip" = { "default" = "False" }, "fill" = { "default" = "0.0" }, "optional" = { "default" = "False" }, "frame" = { "default" = "None" }, "reference" = { "default" = "None" }, "part" = { "default" = "None" }, "offset" = { "default" = "None" }, "labels" = { "default" = "None" }, polarity = { default = "None" }, unit = { default = "None" } }
 
 ["rlmesh.adapters:Actuator".rust]
 status = "present"
 path = "rlmesh::adapters::Actuator"
-params = { "role" = "rlmesh::adapters::Actuator#role", "dim" = "rlmesh::adapters::Actuator#dim", "encoding" = "rlmesh::adapters::Actuator#encoding", "range" = "rlmesh::adapters::Actuator#range", "binary" = "rlmesh::adapters::Actuator#binary", "scale" = "rlmesh::adapters::Actuator#scale", "invert" = "rlmesh::adapters::Actuator#invert", "threshold" = "rlmesh::adapters::Actuator#threshold", "clip" = "rlmesh::adapters::Actuator#clip", "fill" = "rlmesh::adapters::Actuator#fill", "optional" = "rlmesh::adapters::Actuator#optional", "frame" = "rlmesh::adapters::Actuator#frame", "reference" = "rlmesh::adapters::Actuator#reference", "part" = "rlmesh::adapters::Actuator#part", "offset" = "rlmesh::adapters::Actuator#offset", "labels" = "rlmesh::adapters::Actuator#labels" }
+params = { "role" = "rlmesh::adapters::Actuator#role", "dim" = "rlmesh::adapters::Actuator#dim", "encoding" = "rlmesh::adapters::Actuator#encoding", "range" = "rlmesh::adapters::Actuator#range", "binary" = "rlmesh::adapters::Actuator#binary", "scale" = "rlmesh::adapters::Actuator#scale", "invert" = "rlmesh::adapters::Actuator#invert", "threshold" = "rlmesh::adapters::Actuator#threshold", "clip" = "rlmesh::adapters::Actuator#clip", "fill" = "rlmesh::adapters::Actuator#fill", "optional" = "rlmesh::adapters::Actuator#optional", "frame" = "rlmesh::adapters::Actuator#frame", "reference" = "rlmesh::adapters::Actuator#reference", "part" = "rlmesh::adapters::Actuator#part", "offset" = "rlmesh::adapters::Actuator#offset", "labels" = "rlmesh::adapters::Actuator#labels", polarity = "rlmesh::adapters::Actuator#polarity", unit = "rlmesh::adapters::Actuator#unit" }
 also = [
   "rlmesh::adapters::Actuator::Clone",
   "rlmesh::adapters::Actuator::Debug",
@@ -8183,7 +8409,7 @@ default_serializers = { "range" = "json" }
 ["rlmesh.adapters:Actuator".c]
 status = "present"
 path = "RLMeshActuator"
-params = { "role" = "RLMeshActuator#role", "dim" = "RLMeshActuator#dim", "encoding" = "RLMeshActuator#encoding", "range" = "RLMeshActuator#range", "binary" = "RLMeshActuator#binary", "scale" = "RLMeshActuator#scale", "invert" = "RLMeshActuator#invert", "threshold" = "RLMeshActuator#threshold", "clip" = "RLMeshActuator#clip", "fill" = "RLMeshActuator#fill", "optional" = "RLMeshActuator#optional", "frame" = "RLMeshActuator#frame", "reference" = "RLMeshActuator#reference", "part" = "RLMeshActuator#part", "offset" = "RLMeshActuator#offset", "labels" = "RLMeshActuator#labels" }
+params = { "role" = "RLMeshActuator#role", "dim" = "RLMeshActuator#dim", "encoding" = "RLMeshActuator#encoding", "range" = "RLMeshActuator#range", "binary" = "RLMeshActuator#binary", "scale" = "RLMeshActuator#scale", "invert" = "RLMeshActuator#invert", "threshold" = "RLMeshActuator#threshold", "clip" = "RLMeshActuator#clip", "fill" = "RLMeshActuator#fill", "optional" = "RLMeshActuator#optional", "frame" = "RLMeshActuator#frame", "reference" = "RLMeshActuator#reference", "part" = "RLMeshActuator#part", "offset" = "RLMeshActuator#offset", "labels" = "RLMeshActuator#labels", polarity = "RLMeshActuator#polarity", unit = "RLMeshActuator#unit" }
 also = [
   "RLMESH_ACTUATOR_INIT",
   "RLMESH_ACTUATOR_MIN_SIZE",
@@ -8196,6 +8422,7 @@ also = [
   "RLMeshActuator::_reserved6",
   "RLMeshActuator::_reserved7",
   "RLMeshActuator::_reserved8",
+  "RLMeshActuator::_reserved9",
   "RLMeshActuator::axis_offset",
   "RLMeshActuator::axis_offset_len",
   "RLMeshActuator::axis_scale",
@@ -8209,6 +8436,7 @@ also = [
   "RLMeshActuator::has_reference",
   "RLMeshActuator::has_scale",
   "RLMeshActuator::has_threshold",
+  "RLMeshActuator::has_unit",
   "RLMeshActuator::labels_len",
   "RLMeshActuator::reference_other",
   "RLMeshActuator::struct_size",
@@ -8235,7 +8463,7 @@ also_rules = { "RLMeshActuator::axis_offset" = [
 ["rlmesh.adapters:Actuator".cpp]
 status = "present"
 path = "rlmesh::adapters::Actuator"
-params = { "role" = "rlmesh::adapters::Actuator#role", "dim" = "rlmesh::adapters::Actuator#dim", "encoding" = "rlmesh::adapters::Actuator#encoding", "range" = "rlmesh::adapters::Actuator#range", "binary" = "rlmesh::adapters::Actuator#binary", "scale" = "rlmesh::adapters::Actuator#scale", "invert" = "rlmesh::adapters::Actuator#invert", "threshold" = "rlmesh::adapters::Actuator#threshold", "clip" = "rlmesh::adapters::Actuator#clip", "fill" = "rlmesh::adapters::Actuator#fill", "optional" = "rlmesh::adapters::Actuator#optional", "frame" = "rlmesh::adapters::Actuator#frame", "reference" = "rlmesh::adapters::Actuator#reference", "part" = "rlmesh::adapters::Actuator#part", "offset" = "rlmesh::adapters::Actuator#offset", "labels" = "rlmesh::adapters::Actuator#labels" }
+params = { "role" = "rlmesh::adapters::Actuator#role", "dim" = "rlmesh::adapters::Actuator#dim", "encoding" = "rlmesh::adapters::Actuator#encoding", "range" = "rlmesh::adapters::Actuator#range", "binary" = "rlmesh::adapters::Actuator#binary", "scale" = "rlmesh::adapters::Actuator#scale", "invert" = "rlmesh::adapters::Actuator#invert", "threshold" = "rlmesh::adapters::Actuator#threshold", "clip" = "rlmesh::adapters::Actuator#clip", "fill" = "rlmesh::adapters::Actuator#fill", "optional" = "rlmesh::adapters::Actuator#optional", "frame" = "rlmesh::adapters::Actuator#frame", "reference" = "rlmesh::adapters::Actuator#reference", "part" = "rlmesh::adapters::Actuator#part", "offset" = "rlmesh::adapters::Actuator#offset", "labels" = "rlmesh::adapters::Actuator#labels", polarity = "rlmesh::adapters::Actuator#polarity", unit = "rlmesh::adapters::Actuator#unit" }
 also = ["rlmesh::adapters::Actuator::from_raw", "rlmesh::adapters::Actuator::raw"]
 rule = ["R-3"]
 
@@ -10263,12 +10491,12 @@ params = {}
 ["rlmesh.adapters:Field"]
 area = "adapters"
 rule = ["R-4"]
-parameters = { "role" = { "default" = "None" }, "dim" = { "default" = "0" }, "encoding" = { "default" = "None" }, "range" = { "default" = "None" }, "frame" = { "default" = "None" }, "provenance" = { "default" = "None" }, "part" = { "default" = "None" }, "labels" = { "default" = "None" } }
+parameters = { "role" = { "default" = "None" }, "dim" = { "default" = "0" }, "encoding" = { "default" = "None" }, "range" = { "default" = "None" }, "frame" = { "default" = "None" }, "provenance" = { "default" = "None" }, "part" = { "default" = "None" }, "labels" = { "default" = "None" }, polarity = { default = "None" } }
 
 ["rlmesh.adapters:Field".rust]
 status = "present"
 path = "rlmesh::adapters::Field"
-params = { "role" = "rlmesh::adapters::Field#role", "dim" = "rlmesh::adapters::Field#dim", "encoding" = "rlmesh::adapters::Field#encoding", "range" = "rlmesh::adapters::Field#range", "frame" = "rlmesh::adapters::Field#frame", "provenance" = "rlmesh::adapters::Field#provenance", "part" = "rlmesh::adapters::Field#part", "labels" = "rlmesh::adapters::Field#labels" }
+params = { "role" = "rlmesh::adapters::Field#role", "dim" = "rlmesh::adapters::Field#dim", "encoding" = "rlmesh::adapters::Field#encoding", "range" = "rlmesh::adapters::Field#range", "frame" = "rlmesh::adapters::Field#frame", "provenance" = "rlmesh::adapters::Field#provenance", "part" = "rlmesh::adapters::Field#part", "labels" = "rlmesh::adapters::Field#labels", polarity = "rlmesh::adapters::Field#polarity" }
 also = [
   "rlmesh::adapters::Field::Clone",
   "rlmesh::adapters::Field::Debug",
@@ -10286,7 +10514,7 @@ default_serializers = { "range" = "json" }
 ["rlmesh.adapters:Field".c]
 status = "present"
 path = "RLMeshField"
-params = { "role" = "RLMeshField#role", "dim" = "RLMeshField#dim", "encoding" = "RLMeshField#encoding", "range" = "RLMeshField#range", "frame" = "RLMeshField#frame", "provenance" = "RLMeshField#provenance", "part" = "RLMeshField#part", "labels" = "RLMeshField#labels" }
+params = { "role" = "RLMeshField#role", "dim" = "RLMeshField#dim", "encoding" = "RLMeshField#encoding", "range" = "RLMeshField#range", "frame" = "RLMeshField#frame", "provenance" = "RLMeshField#provenance", "part" = "RLMeshField#part", "labels" = "RLMeshField#labels", polarity = "RLMeshField#polarity" }
 also = [
   "RLMESH_FIELD_INIT",
   "RLMESH_FIELD_MIN_SIZE",
@@ -10318,7 +10546,7 @@ also_rules = { "RLMeshField::encoding_other" = [
 ["rlmesh.adapters:Field".cpp]
 status = "present"
 path = "rlmesh::adapters::Field"
-params = { "role" = "rlmesh::adapters::Field#role", "dim" = "rlmesh::adapters::Field#dim", "encoding" = "rlmesh::adapters::Field#encoding", "range" = "rlmesh::adapters::Field#range", "frame" = "rlmesh::adapters::Field#frame", "provenance" = "rlmesh::adapters::Field#provenance", "part" = "rlmesh::adapters::Field#part", "labels" = "rlmesh::adapters::Field#labels" }
+params = { "role" = "rlmesh::adapters::Field#role", "dim" = "rlmesh::adapters::Field#dim", "encoding" = "rlmesh::adapters::Field#encoding", "range" = "rlmesh::adapters::Field#range", "frame" = "rlmesh::adapters::Field#frame", "provenance" = "rlmesh::adapters::Field#provenance", "part" = "rlmesh::adapters::Field#part", "labels" = "rlmesh::adapters::Field#labels", polarity = "rlmesh::adapters::Field#polarity" }
 also = ["rlmesh::adapters::Field::from_raw", "rlmesh::adapters::Field::raw"]
 rule = ["R-3"]
 
@@ -11810,12 +12038,12 @@ params = {}
 ["rlmesh.adapters:ModelSpec"]
 area = "adapters"
 rule = ["R-4"]
-parameters = { "input" = {}, "output" = {} }
+parameters = { "input" = {}, "output" = {}, allow = { default = "()" }, timing = { default = "None", expression = "Timing()" } }
 
 ["rlmesh.adapters:ModelSpec".rust]
 status = "present"
 path = "rlmesh::adapters::ModelSpec"
-params = { "input" = "rlmesh::adapters::ModelSpec::new#input", "output" = "rlmesh::adapters::ModelSpec::new#output" }
+params = { "input" = "rlmesh::adapters::ModelSpec::new#input", "output" = "rlmesh::adapters::ModelSpec::new#output", allow = "rlmesh::adapters::ModelSpec::with_allow#allow", timing = "rlmesh::adapters::ModelSpec::with_timing#timing" }
 also = [
   "rlmesh::adapters::ModelSpec::Clone",
   "rlmesh::adapters::ModelSpec::Debug",
@@ -11824,22 +12052,29 @@ also = [
   "rlmesh::adapters::ModelSpec::PartialEq",
   "rlmesh::adapters::ModelSpec::StructuralPartialEq",
   "rlmesh::adapters::ModelSpec::new",
+  "rlmesh::adapters::ModelSpec::with_allow",
 ]
 rule = ["R-3"]
 
 # Individually reviewed translation helpers; additions need their own citation.
-also_rules = { "rlmesh::adapters::ModelSpec::new" = ["R-11"] }
+also_rules = { "rlmesh::adapters::ModelSpec::new" = [
+  "R-11",
+], "rlmesh::adapters::ModelSpec::with_allow" = [
+  "R-3",
+] }
+default_skip = { timing = "Builder argument; an unset Timing is the default pacing declaration (R-6).", allow = "Builder argument (ModelSpec::with_allow), not a data field; ModelSpec::new starts with none allowed, as the Python default ()." }
 
 ["rlmesh.adapters:ModelSpec".c]
 status = "present"
 path = "RLMeshModelSpec"
-params = { "input" = "rlmesh_model_spec_new#input", "output" = "rlmesh_model_spec_new#output" }
+params = { "input" = "rlmesh_model_spec_new#input", "output" = "rlmesh_model_spec_new#output", allow = "rlmesh_model_spec_with_allow#allow", timing = "rlmesh_model_spec_with_timing#timing" }
 also = [
   "rlmesh_model_spec_clone",
   "rlmesh_model_spec_equals",
   "rlmesh_model_spec_free",
   "rlmesh_model_spec_new",
   "rlmesh_model_spec_repr",
+  "rlmesh_model_spec_with_allow",
 ]
 rule = ["R-3"]
 
@@ -11854,12 +12089,14 @@ also_rules = { "rlmesh_model_spec_clone" = [
   "R-11",
 ], "rlmesh_model_spec_repr" = [
   "R-10",
+], rlmesh_model_spec_with_allow = [
+  "R-3",
 ] }
 
 ["rlmesh.adapters:ModelSpec".cpp]
 status = "present"
 path = "rlmesh::adapters::ModelSpec"
-params = { "input" = "rlmesh::adapters::ModelSpec::ModelSpec#input", "output" = "rlmesh::adapters::ModelSpec::ModelSpec#output" }
+params = { "input" = "rlmesh::adapters::ModelSpec::ModelSpec#input", "output" = "rlmesh::adapters::ModelSpec::ModelSpec#output", allow = "rlmesh::adapters::ModelSpec::ModelSpec#allow", timing = "rlmesh::adapters::ModelSpec::ModelSpec#timing" }
 also = [
   "rlmesh::adapters::ModelSpec::ModelSpec",
   "rlmesh::adapters::ModelSpec::raw",
@@ -13055,12 +13292,12 @@ params = {}
 ["rlmesh.adapters:State"]
 area = "adapters"
 rule = ["R-4"]
-parameters = { "role" = {}, "encoding" = { "default" = "None" }, "dim" = { "default" = "None" }, "index" = { "default" = "None" }, "optional" = { "default" = "False" }, "range" = { "default" = "None" }, "pad_to" = { "default" = "None" }, "dtype" = { "default" = "'float32'" }, "reshape" = { "default" = "None" }, "container" = { "default" = "'array'" }, "fill" = { "default" = "0.0" }, "post_rotate" = { "default" = "None" }, "scale" = { "default" = "None" }, "offset" = { "default" = "None" }, "frame" = { "default" = "None" }, "provenance" = { "default" = "None" }, "part" = { "default" = "None" }, "labels" = { "default" = "None" }, "source" = { "default" = "'observation'" }, "clip" = { "default" = "None" } }
+parameters = { "role" = {}, "encoding" = { "default" = "None" }, "dim" = { "default" = "None" }, "index" = { "default" = "None" }, "optional" = { "default" = "False" }, "range" = { "default" = "None" }, "pad_to" = { "default" = "None" }, "dtype" = { "default" = "'float32'" }, "reshape" = { "default" = "None" }, "container" = { "default" = "'array'" }, "fill" = { "default" = "0.0" }, "post_rotate" = { "default" = "None" }, "scale" = { "default" = "None" }, "offset" = { "default" = "None" }, "frame" = { "default" = "None" }, "provenance" = { "default" = "None" }, "part" = { "default" = "None" }, "labels" = { "default" = "None" }, "source" = { "default" = "'observation'" }, "clip" = { "default" = "None" }, polarity = { default = "None" } }
 
 ["rlmesh.adapters:State".rust]
 status = "present"
 path = "rlmesh::adapters::State"
-params = { "role" = "rlmesh::adapters::State#role", "encoding" = "rlmesh::adapters::State#encoding", "dim" = "rlmesh::adapters::State#dim", "index" = "rlmesh::adapters::State#index", "optional" = "rlmesh::adapters::State#optional", "range" = "rlmesh::adapters::State#range", "pad_to" = "rlmesh::adapters::State#pad_to", "dtype" = "rlmesh::adapters::State#dtype", "reshape" = "rlmesh::adapters::State#reshape", "container" = "rlmesh::adapters::State#container", "fill" = "rlmesh::adapters::State#fill", "post_rotate" = "rlmesh::adapters::State#post_rotate", "scale" = "rlmesh::adapters::State#scale", "offset" = "rlmesh::adapters::State#offset", "frame" = "rlmesh::adapters::State#frame", "provenance" = "rlmesh::adapters::State#provenance", "part" = "rlmesh::adapters::State#part", "labels" = "rlmesh::adapters::State#labels", "source" = "rlmesh::adapters::State#source", "clip" = "rlmesh::adapters::State#clip" }
+params = { "role" = "rlmesh::adapters::State#role", "encoding" = "rlmesh::adapters::State#encoding", "dim" = "rlmesh::adapters::State#dim", "index" = "rlmesh::adapters::State#index", "optional" = "rlmesh::adapters::State#optional", "range" = "rlmesh::adapters::State#range", "pad_to" = "rlmesh::adapters::State#pad_to", "dtype" = "rlmesh::adapters::State#dtype", "reshape" = "rlmesh::adapters::State#reshape", "container" = "rlmesh::adapters::State#container", "fill" = "rlmesh::adapters::State#fill", "post_rotate" = "rlmesh::adapters::State#post_rotate", "scale" = "rlmesh::adapters::State#scale", "offset" = "rlmesh::adapters::State#offset", "frame" = "rlmesh::adapters::State#frame", "provenance" = "rlmesh::adapters::State#provenance", "part" = "rlmesh::adapters::State#part", "labels" = "rlmesh::adapters::State#labels", "source" = "rlmesh::adapters::State#source", "clip" = "rlmesh::adapters::State#clip", polarity = "rlmesh::adapters::State#polarity" }
 also = [
   "rlmesh::adapters::State::Clone",
   "rlmesh::adapters::State::Debug",
@@ -13083,7 +13320,7 @@ default_serializers = { "range" = "json" }
 ["rlmesh.adapters:State".c]
 status = "present"
 path = "RLMeshState"
-params = { "role" = "RLMeshState#role", "encoding" = "RLMeshState#encoding", "dim" = "RLMeshState#dim", "index" = "RLMeshState#index", "optional" = "RLMeshState#optional", "range" = "RLMeshState#range", "pad_to" = "RLMeshState#pad_to", "dtype" = "RLMeshState#dtype", "reshape" = "RLMeshState#reshape", "container" = "RLMeshState#container", "fill" = "RLMeshState#fill", "post_rotate" = "RLMeshState#post_rotate", "scale" = "RLMeshState#scale", "offset" = "RLMeshState#offset", "frame" = "RLMeshState#frame", "provenance" = "RLMeshState#provenance", "part" = "RLMeshState#part", "labels" = "RLMeshState#labels", "source" = "RLMeshState#source", "clip" = "RLMeshState#clip" }
+params = { "role" = "RLMeshState#role", "encoding" = "RLMeshState#encoding", "dim" = "RLMeshState#dim", "index" = "RLMeshState#index", "optional" = "RLMeshState#optional", "range" = "RLMeshState#range", "pad_to" = "RLMeshState#pad_to", "dtype" = "RLMeshState#dtype", "reshape" = "RLMeshState#reshape", "container" = "RLMeshState#container", "fill" = "RLMeshState#fill", "post_rotate" = "RLMeshState#post_rotate", "scale" = "RLMeshState#scale", "offset" = "RLMeshState#offset", "frame" = "RLMeshState#frame", "provenance" = "RLMeshState#provenance", "part" = "RLMeshState#part", "labels" = "RLMeshState#labels", "source" = "RLMeshState#source", "clip" = "RLMeshState#clip", polarity = "RLMeshState#polarity" }
 also = [
   "RLMESH_STATE_INIT",
   "RLMESH_STATE_MIN_SIZE",
@@ -13146,7 +13383,7 @@ also_rules = { "RLMeshState::axis_offset" = [
 ["rlmesh.adapters:State".cpp]
 status = "present"
 path = "rlmesh::adapters::State"
-params = { "role" = "rlmesh::adapters::State#role", "encoding" = "rlmesh::adapters::State#encoding", "dim" = "rlmesh::adapters::State#dim", "index" = "rlmesh::adapters::State#index", "optional" = "rlmesh::adapters::State#optional", "range" = "rlmesh::adapters::State#range", "pad_to" = "rlmesh::adapters::State#pad_to", "dtype" = "rlmesh::adapters::State#dtype", "reshape" = "rlmesh::adapters::State#reshape", "container" = "rlmesh::adapters::State#container", "fill" = "rlmesh::adapters::State#fill", "post_rotate" = "rlmesh::adapters::State#post_rotate", "scale" = "rlmesh::adapters::State#scale", "offset" = "rlmesh::adapters::State#offset", "frame" = "rlmesh::adapters::State#frame", "provenance" = "rlmesh::adapters::State#provenance", "part" = "rlmesh::adapters::State#part", "labels" = "rlmesh::adapters::State#labels", "source" = "rlmesh::adapters::State#source", "clip" = "rlmesh::adapters::State#clip" }
+params = { "role" = "rlmesh::adapters::State#role", "encoding" = "rlmesh::adapters::State#encoding", "dim" = "rlmesh::adapters::State#dim", "index" = "rlmesh::adapters::State#index", "optional" = "rlmesh::adapters::State#optional", "range" = "rlmesh::adapters::State#range", "pad_to" = "rlmesh::adapters::State#pad_to", "dtype" = "rlmesh::adapters::State#dtype", "reshape" = "rlmesh::adapters::State#reshape", "container" = "rlmesh::adapters::State#container", "fill" = "rlmesh::adapters::State#fill", "post_rotate" = "rlmesh::adapters::State#post_rotate", "scale" = "rlmesh::adapters::State#scale", "offset" = "rlmesh::adapters::State#offset", "frame" = "rlmesh::adapters::State#frame", "provenance" = "rlmesh::adapters::State#provenance", "part" = "rlmesh::adapters::State#part", "labels" = "rlmesh::adapters::State#labels", "source" = "rlmesh::adapters::State#source", "clip" = "rlmesh::adapters::State#clip", polarity = "rlmesh::adapters::State#polarity" }
 also = ["rlmesh::adapters::State::from_raw", "rlmesh::adapters::State::raw"]
 rule = ["R-3"]
 
@@ -13662,12 +13899,12 @@ rule = ["R-3"]
 ["rlmesh.adapters:StateTag"]
 area = "adapters"
 rule = ["R-4"]
-parameters = { "role" = {}, "encoding" = { "default" = "None" }, "range" = { "default" = "None" }, "frame" = { "default" = "None" }, "provenance" = { "default" = "None" }, "part" = { "default" = "None" }, "labels" = { "default" = "None" } }
+parameters = { "role" = {}, "encoding" = { "default" = "None" }, "range" = { "default" = "None" }, "frame" = { "default" = "None" }, "provenance" = { "default" = "None" }, "part" = { "default" = "None" }, "labels" = { "default" = "None" }, polarity = { default = "None" } }
 
 ["rlmesh.adapters:StateTag".rust]
 status = "present"
 path = "rlmesh::adapters::StateTag"
-params = { "role" = "rlmesh::adapters::StateTag#role", "encoding" = "rlmesh::adapters::StateTag#encoding", "range" = "rlmesh::adapters::StateTag#range", "frame" = "rlmesh::adapters::StateTag#frame", "provenance" = "rlmesh::adapters::StateTag#provenance", "part" = "rlmesh::adapters::StateTag#part", "labels" = "rlmesh::adapters::StateTag#labels" }
+params = { "role" = "rlmesh::adapters::StateTag#role", "encoding" = "rlmesh::adapters::StateTag#encoding", "range" = "rlmesh::adapters::StateTag#range", "frame" = "rlmesh::adapters::StateTag#frame", "provenance" = "rlmesh::adapters::StateTag#provenance", "part" = "rlmesh::adapters::StateTag#part", "labels" = "rlmesh::adapters::StateTag#labels", polarity = "rlmesh::adapters::StateTag#polarity" }
 also = [
   "rlmesh::adapters::StateTag::Clone",
   "rlmesh::adapters::StateTag::Debug",
@@ -13690,7 +13927,7 @@ default_serializers = { "range" = "json" }
 ["rlmesh.adapters:StateTag".c]
 status = "present"
 path = "RLMeshStateTag"
-params = { "role" = "RLMeshStateTag#role", "encoding" = "RLMeshStateTag#encoding", "range" = "RLMeshStateTag#range", "frame" = "RLMeshStateTag#frame", "provenance" = "RLMeshStateTag#provenance", "part" = "RLMeshStateTag#part", "labels" = "RLMeshStateTag#labels" }
+params = { "role" = "RLMeshStateTag#role", "encoding" = "RLMeshStateTag#encoding", "range" = "RLMeshStateTag#range", "frame" = "RLMeshStateTag#frame", "provenance" = "RLMeshStateTag#provenance", "part" = "RLMeshStateTag#part", "labels" = "RLMeshStateTag#labels", polarity = "RLMeshStateTag#polarity" }
 also = [
   "RLMESH_STATE_TAG_INIT",
   "RLMESH_STATE_TAG_MIN_SIZE",
@@ -13721,7 +13958,7 @@ also_rules = { "RLMeshStateTag::encoding_other" = [
 ["rlmesh.adapters:StateTag".cpp]
 status = "present"
 path = "rlmesh::adapters::StateTag"
-params = { "role" = "rlmesh::adapters::StateTag#role", "encoding" = "rlmesh::adapters::StateTag#encoding", "range" = "rlmesh::adapters::StateTag#range", "frame" = "rlmesh::adapters::StateTag#frame", "provenance" = "rlmesh::adapters::StateTag#provenance", "part" = "rlmesh::adapters::StateTag#part", "labels" = "rlmesh::adapters::StateTag#labels" }
+params = { "role" = "rlmesh::adapters::StateTag#role", "encoding" = "rlmesh::adapters::StateTag#encoding", "range" = "rlmesh::adapters::StateTag#range", "frame" = "rlmesh::adapters::StateTag#frame", "provenance" = "rlmesh::adapters::StateTag#provenance", "part" = "rlmesh::adapters::StateTag#part", "labels" = "rlmesh::adapters::StateTag#labels", polarity = "rlmesh::adapters::StateTag#polarity" }
 also = ["rlmesh::adapters::StateTag::from_raw", "rlmesh::adapters::StateTag::raw"]
 rule = ["R-3"]
 
@@ -14448,6 +14685,20 @@ status = "bridge"
 ["rlmesh.numpy:Model.allow_fusion".cpp]
 status = "bridge"
 
+["rlmesh.numpy:Model.bind"]
+area = "model"
+rule = ["R-24"]
+parameters = { "target" = {}, "hooks" = { "default" = "None" }, "view" = { "default" = "None" }, "execution_horizon" = { "default" = "None" }, "close_env" = { "default" = "False" }, "workflow_edition" = { "default" = "None" } }
+
+["rlmesh.numpy:Model.bind".rust]
+status = "bridge"
+
+["rlmesh.numpy:Model.bind".c]
+status = "bridge"
+
+["rlmesh.numpy:Model.bind".cpp]
+status = "bridge"
+
 ["rlmesh.numpy:Model.close"]
 area = "model"
 rule = ["R-24"]
@@ -14608,7 +14859,7 @@ status = "bridge"
 ["rlmesh.numpy:Model.run"]
 area = "model"
 rule = ["R-24"]
-parameters = { "env_or_address" = {}, "seeds" = { "default" = "None" }, "episodes" = { "default" = "None" }, "max_episode_steps" = { "default" = "None" }, "max_episode_seconds" = { "default" = "None" }, "hooks" = { "default" = "None" }, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "1" }, "prefetch_lead" = { "default" = "0" }, "trial_index_base" = { "default" = "0" }, "workflow_edition" = { "default" = "None" } }
+parameters = { "env_or_address" = {}, "seeds" = { "default" = "None" }, "episodes" = { "default" = "None" }, "max_episode_steps" = { "default" = "None" }, "max_episode_seconds" = { "default" = "None" }, "hooks" = { "default" = "None" }, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "None" }, "prefetch_lead" = { "default" = "0" }, "trial_index_base" = { "default" = "0" }, "workflow_edition" = { "default" = "None" }, view = { default = "None" } }
 
 ["rlmesh.numpy:Model.run".rust]
 status = "bridge"
@@ -14622,7 +14873,7 @@ status = "bridge"
 ["rlmesh.numpy:Model.serve"]
 area = "model"
 rule = ["R-24"]
-parameters = { "address" = {}, "options" = { "default" = "None" } }
+parameters = { "address" = {}, "options" = { "default" = "None" }, name = { default = "None" }, batching = { default = "None" } }
 
 ["rlmesh.numpy:Model.serve".rust]
 status = "bridge"
@@ -14635,17 +14886,20 @@ status = "bridge"
 
 ["rlmesh.numpy:Model.session"]
 area = "model"
-rule = ["R-24"]
-parameters = { "env_or_address" = {}, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "1" }, "view" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
+rule = ["R-4"]
+parameters = {}
 
 ["rlmesh.numpy:Model.session".rust]
-status = "bridge"
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh.numpy:Model.session".c]
-status = "bridge"
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh.numpy:Model.session".cpp]
-status = "bridge"
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh.numpy:Model.spec"]
 area = "model"
@@ -14915,45 +15169,20 @@ status = "bridge"
 
 ["rlmesh.numpy:RemoteModel"]
 area = "remote"
-rule = ["R-24"]
-parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "api_key" = { "default" = "None" }, "tls_ca_file" = { "default" = "None" } }
+rule = ["R-4"]
+parameters = { "args" = {}, "kwargs" = {} }
 
 ["rlmesh.numpy:RemoteModel".rust]
-status = "bridge"
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh.numpy:RemoteModel".c]
-status = "bridge"
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh.numpy:RemoteModel".cpp]
-status = "bridge"
-
-["rlmesh.numpy:RemoteModel.address"]
-area = "remote"
-rule = ["R-24"]
-parameters = {}
-
-["rlmesh.numpy:RemoteModel.address".rust]
-status = "bridge"
-
-["rlmesh.numpy:RemoteModel.address".c]
-status = "bridge"
-
-["rlmesh.numpy:RemoteModel.address".cpp]
-status = "bridge"
-
-["rlmesh.numpy:RemoteModel.session"]
-area = "remote"
-rule = ["R-24"]
-parameters = { "env" = {}, "instruction" = { "default" = "None" }, "close_env" = { "default" = "False" }, "trust_entrypoints" = { "default" = "None" }, "execution_horizon" = { "default" = "1" }, "view" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
-
-["rlmesh.numpy:RemoteModel.session".rust]
-status = "bridge"
-
-["rlmesh.numpy:RemoteModel.session".c]
-status = "bridge"
-
-["rlmesh.numpy:RemoteModel.session".cpp]
-status = "bridge"
+status = "exempt"
+rule = ["D-4"]
 
 ["rlmesh.numpy:RemoteVectorEnv"]
 area = "remote"
@@ -15816,12 +16045,12 @@ params = {}
 ["rlmesh.recorder:Recorder"]
 area = "running"
 rule = ["R-4"]
-parameters = { "result_set_id" = { "default" = "None" }, "fps" = { "default" = "30", "expression" = "DEFAULT_FPS" }, "quality" = { "default" = "60", "expression" = "DEFAULT_QUALITY" } }
+parameters = { "result_set_id" = { "default" = "None" }, "fps" = { "default" = "30", "expression" = "DEFAULT_FPS" }, "quality" = { "default" = "60", "expression" = "DEFAULT_QUALITY" }, "codec" = { "default" = "'av1'", "expression" = "DEFAULT_CODEC" }, "ffmpeg" = { "default" = "None" } }
 
 ["rlmesh.recorder:Recorder".rust]
 status = "present"
 path = "rlmesh::recorder::Recorder"
-params = { "result_set_id" = "rlmesh::recorder::RecorderOptions#result_set_id", "fps" = "rlmesh::recorder::RecorderOptions#fps", "quality" = "rlmesh::recorder::RecorderOptions#quality" }
+params = { "result_set_id" = "rlmesh::recorder::RecorderOptions#result_set_id", "fps" = "rlmesh::recorder::RecorderOptions#fps", "quality" = "rlmesh::recorder::RecorderOptions#quality", "codec" = "rlmesh::recorder::RecorderOptions#codec", "ffmpeg" = "rlmesh::recorder::RecorderOptions#ffmpeg" }
 also = [
   "rlmesh::recorder::Recorder::Debug",
   "rlmesh::recorder::Recorder::close_async",
@@ -15846,6 +16075,7 @@ also_rules = { "rlmesh::recorder::Recorder::close_async" = [
 status = "present"
 path = "RLMeshRecorder"
 params = { "result_set_id" = "RLMeshRecorderOptions#result_set_id", "fps" = "RLMeshRecorderOptions#fps", "quality" = "RLMeshRecorderOptions#quality" }
+refused = { codec = ["D-47"], ffmpeg = ["D-47"] }
 also = [
   "RLMeshRecorderOptions::fps",
   "RLMeshRecorderOptions::quality",
@@ -15869,6 +16099,7 @@ also_rules = { "rlmesh_recorder_free" = [
 status = "present"
 path = "rlmesh::Recorder"
 params = { "result_set_id" = "rlmesh::RecorderOptions#result_set_id", "fps" = "rlmesh::RecorderOptions#fps", "quality" = "rlmesh::RecorderOptions#quality" }
+refused = { codec = ["D-47"], ffmpeg = ["D-47"] }
 also = [
   "rlmesh::Recorder::Recorder",
   "rlmesh::RecorderOptions::fps",
@@ -15921,50 +16152,53 @@ rule = ["R-3"]
 ["rlmesh.recorder:Recorder.capture"]
 area = "running"
 rule = ["R-4"]
-parameters = { "model" = {}, "env" = {}, "task" = { "default" = "None" }, "config" = { "default" = "None" }, "cameras" = { "default" = "None" }, "session" = { "default" = "None" }, "video_info_keys" = { "default" = "('video_artifact_path', 'video_url')", "expression" = "DEFAULT_VIDEO_INFO_KEYS" }, "included_in_metrics" = { "default" = "True" } }
+parameters = { "model" = {}, "env" = {}, "task" = { "default" = "None" }, "config" = { "default" = "None" }, "cameras" = { "default" = "None" }, "session" = { "default" = "None" }, "video_info_keys" = { "default" = "('video_artifact_path', 'video_url')", "expression" = "DEFAULT_VIDEO_INFO_KEYS" }, "included_in_metrics" = { "default" = "True" }, binding = { default = "None" } }
 
 ["rlmesh.recorder:Recorder.capture".rust]
 status = "present"
 path = "rlmesh::recorder::Recorder::capture"
-params = { "model" = "rlmesh::recorder::Recorder::capture#model", "env" = "rlmesh::recorder::Recorder::capture#env", "task" = "rlmesh::recorder::RecorderCaptureOptions#task", "config" = "rlmesh::recorder::RecorderCaptureOptions#config", "cameras" = "rlmesh::recorder::RecorderCaptureOptions#cameras", "session" = "rlmesh::recorder::RecorderCaptureOptions#session", "video_info_keys" = "rlmesh::recorder::RecorderCaptureOptions#video_info_keys", "included_in_metrics" = "rlmesh::recorder::RecorderCaptureOptions#included_in_metrics" }
+params = { "model" = "rlmesh::recorder::Recorder::capture#model", "env" = "rlmesh::recorder::Recorder::capture#env", "task" = "rlmesh::recorder::RecorderCaptureOptions#task", "config" = "rlmesh::recorder::RecorderCaptureOptions#config", "cameras" = "rlmesh::recorder::RecorderCaptureOptions#cameras", "video_info_keys" = "rlmesh::recorder::RecorderCaptureOptions#video_info_keys", "included_in_metrics" = "rlmesh::recorder::RecorderCaptureOptions#included_in_metrics", binding = "rlmesh::recorder::RecorderCaptureOptions#binding" }
 also = [
+  "rlmesh::recorder::RecorderCaptureOptions::binding",
   "rlmesh::recorder::RecorderCaptureOptions::cameras",
   "rlmesh::recorder::RecorderCaptureOptions::config",
   "rlmesh::recorder::RecorderCaptureOptions::included_in_metrics",
-  "rlmesh::recorder::RecorderCaptureOptions::session",
   "rlmesh::recorder::RecorderCaptureOptions::task",
   "rlmesh::recorder::RecorderCaptureOptions::video_info_keys",
 ]
 rule = ["R-3"]
+refused = { session = ["D-4"] }
 
 ["rlmesh.recorder:Recorder.capture".c]
 status = "present"
 path = "rlmesh_recorder_capture"
-params = { "model" = "rlmesh_recorder_capture#model", "env" = "rlmesh_recorder_capture#env", "task" = "RLMeshRecorderCaptureOptions#task", "config" = "RLMeshRecorderCaptureOptions#config", "cameras" = "RLMeshRecorderCaptureOptions#cameras", "session" = "RLMeshRecorderCaptureOptions#session", "video_info_keys" = "RLMeshRecorderCaptureOptions#video_info_keys", "included_in_metrics" = "RLMeshRecorderCaptureOptions#included_in_metrics" }
+params = { "model" = "rlmesh_recorder_capture#model", "env" = "rlmesh_recorder_capture#env", "task" = "RLMeshRecorderCaptureOptions#task", "config" = "RLMeshRecorderCaptureOptions#config", "cameras" = "RLMeshRecorderCaptureOptions#cameras", "video_info_keys" = "RLMeshRecorderCaptureOptions#video_info_keys", "included_in_metrics" = "RLMeshRecorderCaptureOptions#included_in_metrics", binding = "RLMeshRecorderCaptureOptions#binding" }
 rule = ["RUN-20", "R-3"]
 also = [
+  "RLMeshRecorderCaptureOptions::binding",
   "RLMeshRecorderCaptureOptions::cameras",
   "RLMeshRecorderCaptureOptions::config",
   "RLMeshRecorderCaptureOptions::included_in_metrics",
-  "RLMeshRecorderCaptureOptions::session",
   "RLMeshRecorderCaptureOptions::task",
   "RLMeshRecorderCaptureOptions::video_info_keys",
 ]
 translations = { video_info_keys = ["RUN-20"] }
+refused = { session = ["D-4"] }
 
 ["rlmesh.recorder:Recorder.capture".cpp]
 status = "present"
 path = "rlmesh::Recorder::capture"
-params = { "model" = "rlmesh::Recorder::capture#model", "env" = "rlmesh::Recorder::capture#env", "task" = "rlmesh::RecorderCaptureOptions#task", "config" = "rlmesh::RecorderCaptureOptions#config", "cameras" = "rlmesh::RecorderCaptureOptions#cameras", "session" = "rlmesh::RecorderCaptureOptions#session", "video_info_keys" = "rlmesh::RecorderCaptureOptions#video_info_keys", "included_in_metrics" = "rlmesh::RecorderCaptureOptions#included_in_metrics" }
+params = { "model" = "rlmesh::Recorder::capture#model", "env" = "rlmesh::Recorder::capture#env", "task" = "rlmesh::RecorderCaptureOptions#task", "config" = "rlmesh::RecorderCaptureOptions#config", "cameras" = "rlmesh::RecorderCaptureOptions#cameras", "video_info_keys" = "rlmesh::RecorderCaptureOptions#video_info_keys", "included_in_metrics" = "rlmesh::RecorderCaptureOptions#included_in_metrics", binding = "rlmesh::RecorderCaptureOptions#binding" }
 also = [
+  "rlmesh::RecorderCaptureOptions::binding",
   "rlmesh::RecorderCaptureOptions::cameras",
   "rlmesh::RecorderCaptureOptions::config",
   "rlmesh::RecorderCaptureOptions::included_in_metrics",
-  "rlmesh::RecorderCaptureOptions::session",
   "rlmesh::RecorderCaptureOptions::task",
   "rlmesh::RecorderCaptureOptions::video_info_keys",
 ]
 rule = ["R-3"]
+refused = { session = ["D-4"] }
 
 ["rlmesh.recorder:Recorder.close"]
 area = "running"
@@ -19793,6 +20027,121 @@ status = "bridge"
 ["rlmesh.types:ViewArg".cpp]
 status = "bridge"
 
+
+["rlmesh.adapters:Timing"]
+area = "adapters"
+rule = ["R-4"]
+parameters = { execution = { default = "None" } }
+
+["rlmesh.adapters:Timing".rust]
+status = "present"
+path = "rlmesh::adapters::Timing"
+params = { execution = "rlmesh::adapters::Timing#execution" }
+also = [
+  "rlmesh::adapters::Timing::Clone",
+  "rlmesh::adapters::Timing::TrivialClone",
+  "rlmesh::adapters::Timing::Copy",
+  "rlmesh::adapters::Timing::Debug",
+  "rlmesh::adapters::Timing::Default",
+  "rlmesh::adapters::Timing::PartialEq",
+  "rlmesh::adapters::Timing::StructuralPartialEq",
+  "rlmesh::adapters::Timing::Eq",
+  "rlmesh::adapters::Timing::Hash",
+  "rlmesh::adapters::Timing::Display",
+]
+rule = ["R-10"]
+
+["rlmesh.adapters:Timing".c]
+status = "present"
+path = "RLMeshTiming"
+params = { execution = "RLMeshTiming#execution" }
+also = [
+  "RLMeshTiming::has_execution",
+  "RLMeshTiming::struct_size",
+  "RLMeshTiming::_reserved",
+  "RLMESH_TIMING_INIT",
+  "RLMESH_TIMING_MIN_SIZE",
+]
+rule = ["R-6"]
+
+["rlmesh.adapters:Timing".cpp]
+status = "present"
+path = "rlmesh::adapters::Timing"
+params = { execution = "rlmesh::adapters::Timing#execution" }
+also = ["rlmesh::adapters::Timing::with_execution"]
+rule = ["R-3"]
+also_rules = { "rlmesh::adapters::Timing::with_execution" = ["R-3"] }
+
+["rlmesh.adapters:Timing.execution"]
+area = "adapters"
+rule = ["R-4"]
+parameters = {}
+["rlmesh.adapters:Timing.execution".rust]
+status = "present"
+path = "rlmesh::adapters::Timing::execution"
+params = {}
+["rlmesh.adapters:Timing.execution".c]
+status = "present"
+path = "RLMeshTiming::execution"
+params = {}
+["rlmesh.adapters:Timing.execution".cpp]
+status = "present"
+path = "rlmesh::adapters::Timing::execution"
+params = {}
+
+["rlmesh.adapters:ModelSpec.timing"]
+area = "adapters"
+rule = ["R-4"]
+parameters = {}
+["rlmesh.adapters:ModelSpec.timing".rust]
+status = "present"
+path = "rlmesh::adapters::ModelSpec::timing"
+params = {}
+also = ["rlmesh::adapters::ModelSpec::with_timing"]
+also_rules = { "rlmesh::adapters::ModelSpec::with_timing" = ["R-3"] }
+["rlmesh.adapters:ModelSpec.timing".c]
+status = "present"
+path = "rlmesh_model_spec_timing"
+params = {}
+also = ["rlmesh_model_spec_with_timing"]
+also_rules = { "rlmesh_model_spec_with_timing" = ["R-3"] }
+["rlmesh.adapters:ModelSpec.timing".cpp]
+status = "present"
+path = "rlmesh::adapters::ModelSpec::timing"
+params = {}
+
+["rlmesh:Model.execution_horizon"]
+area = "model"
+rule = ["R-4", "R-12"]
+parameters = {}
+["rlmesh:Model.execution_horizon".rust]
+status = "present"
+path = "rlmesh::Model::execution_horizon"
+params = {}
+also = ["rlmesh::Policy::execution_horizon"]
+also_rules = { "rlmesh::Policy::execution_horizon" = ["R-12"] }
+["rlmesh:Model.execution_horizon".c]
+status = "present"
+path = "rlmesh_model_execution_horizon"
+params = {}
+also = ["RLMeshModelVtable::loaded_execution_horizon"]
+also_rules = { "RLMeshModelVtable::loaded_execution_horizon" = ["R-12"] }
+["rlmesh:Model.execution_horizon".cpp]
+status = "present"
+path = "rlmesh::Model::execution_horizon"
+params = {}
+
+["rlmesh.numpy:Model.execution_horizon"]
+area = "model"
+rule = ["R-24"]
+parameters = {}
+["rlmesh.numpy:Model.execution_horizon".rust]
+status = "bridge"
+["rlmesh.numpy:Model.execution_horizon".c]
+status = "bridge"
+["rlmesh.numpy:Model.execution_horizon".cpp]
+status = "bridge"
+
 [ext]
 rust = [
   { path = "rlmesh::ext", rule = "R-25" },
@@ -19801,7 +20150,6 @@ rust = [
   { path = "rlmesh::ext::BindAddress::Debug", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::Display", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::Eq", rule = "R-25" },
-  { path = "rlmesh::ext::BindAddress::From<BindAddress>", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::FromStr", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::PartialEq", rule = "R-25" },
   { path = "rlmesh::ext::BindAddress::StructuralPartialEq", rule = "R-25" },
@@ -19933,9 +20281,6 @@ rust = [
   { path = "rlmesh::ModelServeOptions::cancel", rule = "R-18" },
   { path = "rlmesh::ModelServeOptions::ext", rule = "R-25" },
   { path = "rlmesh::RunOptions::cancel", rule = "R-18" },
-  { path = "rlmesh::Session::cancel_handle", rule = "R-18" },
-  { path = "rlmesh::SessionOptions::cancel", rule = "R-18" },
-  { path = "rlmesh::SessionRunOptions::cancel", rule = "R-18" },
   { path = "rlmesh::env::EnvFactoryServeOptions::cancel", rule = "R-18" },
   { path = "rlmesh::env::EnvServerOptions::ext", rule = "R-25" },
   { path = "rlmesh::env::RemoteEnv::cancel_handle", rule = "R-18" },
@@ -19980,9 +20325,6 @@ c = [
   { path = "rlmesh_ext_frame_sources_has_render", rule = "R-25" },
   { path = "rlmesh_ext_last_error_take_payload", rule = "R-25" },
   { path = "rlmesh_ext_last_error_take_payload_owned", rule = "R-25" },
-  { path = "rlmesh_ext_session_reset", rule = "R-25" },
-  { path = "rlmesh_ext_session_predict", rule = "R-25" },
-  { path = "rlmesh_ext_session_step", rule = "R-25" },
   { path = "rlmesh_ext_remote_env_reset", rule = "R-25" },
   { path = "rlmesh_ext_remote_env_step", rule = "R-25" },
   { path = "rlmesh_ext_remote_vector_env_reset", rule = "R-25" },
@@ -19994,9 +20336,6 @@ c = [
   { path = "RLMeshModelServeOptions::cancel", rule = "R-18" },
   { path = "RLMeshModelServeOptions::ext", rule = "R-25" },
   { path = "RLMeshRunOptions::cancel", rule = "R-18" },
-  { path = "RLMeshSessionOptions::cancel", rule = "R-18" },
-  { path = "RLMeshSessionRunOptions::cancel", rule = "R-18" },
-  { path = "rlmesh_session_cancel_handle", rule = "R-18" },
   { path = "rlmesh_remote_env_cancel_handle", rule = "R-18" },
   { path = "rlmesh_remote_vector_env_cancel_handle", rule = "R-18" },
   { path = "rlmesh_abi_version", rule = "R-25" },
@@ -20032,7 +20371,6 @@ cpp = [
   { path = "rlmesh::ext::box_elementwise", rule = "R-25" },
   { path = "rlmesh::ext::env_server_describe_json", rule = "R-25" },
   { path = "rlmesh::ext::reset", rule = "R-25" },
-  { path = "rlmesh::ext::predict", rule = "R-25" },
   { path = "rlmesh::ext::step", rule = "R-25" },
   { path = "rlmesh::ext::register_entrypoint", rule = "R-25" },
   { path = "rlmesh::ext::unregister_entrypoint", rule = "R-25" },
@@ -20047,15 +20385,69 @@ cpp = [
   { path = "rlmesh::RemoteVectorEnv::cancel_handle", rule = "R-18" },
   { path = "rlmesh::RunOptions::cancel", rule = "R-18" },
   { path = "rlmesh::RunOptions::with_cancel", rule = "R-18" },
-  { path = "rlmesh::SessionOptions::cancel", rule = "R-18" },
-  { path = "rlmesh::SessionOptions::with_cancel", rule = "R-18" },
-  { path = "rlmesh::SessionRunOptions::cancel", rule = "R-18" },
-  { path = "rlmesh::SessionRunOptions::with_cancel", rule = "R-18" },
-  { path = "rlmesh::Session::cancel_handle", rule = "R-18" },
 ]
 
 [binding]
-rust = [{ path = "rlmesh::Error::Attached", rule = "R-12" }]
+rust = [
+  { path = "rlmesh::BatchOptions", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::Clone", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::Debug", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::Default", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::batch_byte_budget", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::batch_records", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::batch_window_ms", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::max_batch_size", rule = "R-25" },
+  { path = "rlmesh::serve_options::BatchOptions::max_in_flight_batches", rule = "R-25" },
+  { path = "rlmesh::Error::Attached", rule = "R-12" },
+  { path = "rlmesh::RunHooks::artifacts", rule = "R-25" },
+  { path = "rlmesh::RunHooks::transform_action", rule = "R-25" },
+  { path = "rlmesh::RunHooks::transform_observation", rule = "R-25" },
+  { path = "rlmesh::recorder::RecorderCaptureOptions::record", rule = "R-25" },
+  { path = "rlmesh::managed::Client", rule = "R-25" },
+  { path = "rlmesh::managed::Client::cancel", rule = "R-25" },
+  { path = "rlmesh::managed::Client::connect", rule = "R-25" },
+  { path = "rlmesh::managed::Client::evaluation", rule = "R-25" },
+  { path = "rlmesh::managed::Client::evaluations", rule = "R-25" },
+  { path = "rlmesh::managed::Client::get", rule = "R-25" },
+  { path = "rlmesh::managed::Client::metrics", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::Clone", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::Debug", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::Default", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::profile", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::token", rule = "R-25" },
+  { path = "rlmesh::managed::ClientOptions::url", rule = "R-25" },
+  { path = "rlmesh::managed::Client::patch", rule = "R-25" },
+  { path = "rlmesh::managed::Client::post", rule = "R-25" },
+  { path = "rlmesh::managed::Client::preview", rule = "R-25" },
+  { path = "rlmesh::managed::Client::scores", rule = "R-25" },
+  { path = "rlmesh::managed::Client::submit", rule = "R-25" },
+  { path = "rlmesh::managed::Client::url", rule = "R-25" },
+  { path = "rlmesh::managed::Client::wait", rule = "R-25" },
+  { path = "rlmesh::managed::Error", rule = "R-25" },
+  { path = "rlmesh::managed::Error::Debug", rule = "R-25" },
+  { path = "rlmesh::managed::Error::Display", rule = "R-25" },
+  { path = "rlmesh::managed::Error::Error", rule = "R-25" },
+  { path = "rlmesh::managed::Error::message", rule = "R-25" },
+  { path = "rlmesh::managed::Error::status", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::Clone", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::Debug", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::Default", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::limit", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::q", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::status", rule = "R-25" },
+  { path = "rlmesh::managed::EvaluationsOptions::tags", rule = "R-25" },
+  { path = "rlmesh::managed::Result", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::Clone", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::Debug", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::Default", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::poll", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::progress", rule = "R-25" },
+  { path = "rlmesh::managed::WaitOptions::timeout", rule = "R-25" },
+]
 c = [
   { path = "RLMESH_HOST_RUNTIME_JSON", rule = "ENV-12" },
   { path = "DLPackVersion", rule = "SPC-19" },

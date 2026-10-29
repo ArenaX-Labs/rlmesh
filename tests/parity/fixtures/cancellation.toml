@@ -1,15 +1,13 @@
 [[scenario]]
-id = "cancel_single_step"
-family = "Cancellation"
-rules = ["R-18"]
-operation = "cancel_step"
-expect = { error = "KeyboardInterrupt", episode_ends_before_reset = 0, episode_ends = 1, reusable = true }
-
-[[scenario]]
-id = "cancel_session_run"
+id = "cancel_run"
 family = "Cancellation"
 rules = ["R-18"]
 operation = "cancel_run"
+languages = ["rust", "c", "cpp"]
+why = "Python serves a local env on a host thread, where a KeyboardInterrupt the env raises is an env failure; Ctrl-C itself interrupts the caller."
+# The env fires the token mid-episode and holds that episode open, so the run
+# always fails inside it: it ends the open episode, and on_run_end gets only
+# completed episodes (none).
 expect = { error = "KeyboardInterrupt", episode_ends = 1, run_ends = 1, partial_episodes = 0, reusable = true }
 
 [[scenario]]
@@ -108,21 +106,3 @@ operation = "serve_drop_nonblocking"
 languages = ["rust"]
 why = "Tests nonblocking Rust future destruction; C/C++ and Python do not expose serve futures."
 expect = { nonblocking = true, env_closes = 1 }
-
-[[scenario]]
-id = "session_drop_closes_owned_connection"
-family = "Cancellation"
-rules = ["R-17", "R-18"]
-operation = "drop_owned_cleanup"
-languages = ["rust"]
-why = "Tests Rust session Drop cleanup of an owned connection and borrowed model."
-expect = { episode_ends = 1, env_closes = 0, model_closes = 0, reusable = true }
-
-[[scenario]]
-id = "drop_queued_predict_future"
-family = "Cancellation"
-rules = ["R-18"]
-operation = "drop_queued_predict"
-languages = ["rust"]
-why = "Tests dropping a queued Rust predict future before dispatch; other APIs are synchronous."
-expect = { no_calls_after_drop = true, reusable = true }

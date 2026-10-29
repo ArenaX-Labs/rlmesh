@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#MISE description="Rehearse a board's lobby (scene design §3) against a real rlmesh daemon on loopback: the device robot (rlmesh-device's examples/lobby_board) waits in the lobby, is assigned a run, joins and declares, comes back when the run stops, and rejoins through the lobby after a reboot mid-run"
+#MISE dir="{{ config_root }}"
+# Local only: it runs the daemon and the CLI.
+set -euo pipefail
+
+target_dir="${CARGO_TARGET_DIR:-target}"
+out="$target_dir/esp32-lobby"
+rm -rf "$out"
+mkdir -p "$out/state"
+# Separately: `--example` would limit every listed package to its examples.
+cargo build -q -p rlmesh-cli --bin rlmesh
+cargo build -q -p rlmesh-device --example lobby_board
+rlmesh="$target_dir/debug/rlmesh"
+board_bin="$target_dir/debug/examples/lobby_board"
+export RLMESH_STATE_DIR="$out/state"
+
+# Four consecutive free loopback ports, one per traffic class.
+port="$(python3 -c '
+import socket
+for base in range(27447, 28447, 4):
+    try:
+        socks = [socket.socket() for _ in range(4)]
+        for i, s in enumerate(socks): s.bind(("127.0.0.1", base + i))
+        print(base); break
+    except OSError: pass
+    finally:
+        for s in socks: s.close()
+')"
+home="127.0.0.1:$port"
+pids=()
+trap 'kill "${pids[@]}" 2>/dev/null || true' EXIT
+
+"$rlmesh" daemon --state-dir "$out/state" --listen "$home" >"$out/daemon.log" 2>&1 &
+pids+=($!)
+for _ in $(seq 50); do [ -s "$out/state/local.key" ] && grep -q rlmeshd "$out/daemon.log" && break; sleep 0.1; done
+
+board() {
+  "$board_bin" "$home" "$out/state/local.key" >"$1" 2>&1 &
+  pids+=($!)
+  board_pid=$!
+}
+# Waits up to $3 s for $2 in log $1.
+await() {
+  for _ in $(seq $(($3 * 10))); do grep -q "$2" "$1" && return; sleep 0.1; done
+  echo "no \"$2\" in $1:" >&2
+  cat "$1" >&2
+  exit 1
+}
+# Waits up to $4 s for $3 in log $1 after a line with $2.
+await_after() {
+  for _ in $(seq $(($4 * 10))); do
+    awk -v a="$2" -v b="$3" '$0 ~ a {seen = 1; next} seen && $0 ~ b {found = 1} END {exit !found}' "$1" && return
+    sleep 0.1
+  done
+  echo "no \"$3\" after \"$2\" in $1:" >&2
+  cat "$1" >&2
+  exit 1
+}
+scene="$out/eyes.toml"
+printf '[scene]\nformat = 1\nname = "eyes-test"\nhost = "home"\nwait = "20s"\narm = "manual"\n\n[members.eyes]\nrole = "robot"\ndevice = "local"\n' >"$scene"
+
+echo "==> the board waits in the lobby"
+board "$out/board.log"
+await "$out/board.log" "lobby: Waiting" 10
+"$rlmesh" lobby --home "$home" | grep -q eyes
+
+echo "==> a run assigns it; it joins, declares, and comes back when the run stops"
+"$rlmesh" run "$scene" --home "$home" --arm manual >"$out/run.log" 2>&1 &
+pids+=($!)
+await "$out/run.log" "eyes: declared" 30
+await "$out/board.log" "run: Running" 5
+run="$(grep -o '^r-[a-z0-9]*' "$out/run.log" | head -1)"
+"$rlmesh" arm "$run" --home "$home" >/dev/null
+"$rlmesh" stop "$run" --home "$home" >/dev/null
+await "$out/run.log" "eyes: returned" 30
+await "$out/run.log" "ended" 30
+await_after "$out/board.log" "run: Running" "lobby: Waiting" 10
+
+echo "==> its claim was released: the next run assigns it at once; a reboot mid-run: lost, then back through the lobby with the same join"
+"$rlmesh" run "$scene" --home "$home" --arm manual >"$out/run2.log" 2>&1 &
+pids+=($!)
+await "$out/run2.log" "eyes: assigned" 10
+await "$out/run2.log" "eyes: declared" 30
+run="$(grep -o '^r-[a-z0-9]*' "$out/run2.log" | head -1)"
+"$rlmesh" arm "$run" --home "$home" >/dev/null
+kill "$board_pid"
+await "$out/run2.log" "eyes: lost" 30
+board "$out/board2.log"
+await "$out/board2.log" "run: Running" 15
+await "$out/run2.log" "eyes: joined" 10
+"$rlmesh" stop "$run" --home "$home" >/dev/null
+await "$out/run2.log" "ended" 30
+echo "ok"

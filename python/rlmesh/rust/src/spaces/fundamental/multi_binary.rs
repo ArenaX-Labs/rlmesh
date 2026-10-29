@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
+use rlmesh_spaces::DType;
 use rlmesh_spaces::spaces::*;
 
 pub fn make_multibinary<'py>(
@@ -24,10 +25,13 @@ pub fn make_multibinary<'py>(
     spaces.getattr("MultiBinary")?.call1((n_value,))
 }
 
+/// A Gymnasium `MultiBinary`, as `int8` (Gymnasium's dtype for it), so its
+/// values are `int8` both ways.
 pub fn parse_multibinary<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> {
     let n_value = space.getattr("n")?;
     if let Ok(size) = n_value.extract::<i64>() {
         return MultiBinaryBuilder::scalar(size)
+            .dtype(DType::Int8)
             .build()
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
     }
@@ -40,6 +44,7 @@ pub fn parse_multibinary<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> 
     };
 
     MultiBinaryBuilder::shape(dims)
+        .dtype(DType::Int8)
         .build()
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }

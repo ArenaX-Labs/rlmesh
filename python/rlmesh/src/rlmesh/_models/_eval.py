@@ -1,107 +1,46 @@
-"""The model-side eval loop, shared by every framework ``Model``.
+"""A run's results and hooks, shared by every framework ``Model``.
 
-A model consumes the env contract rather than publishing its own: a :class:`Session`
-dials an env, pulls its contract, resolves the adapter from the env's tags and the
-model's spec, and runs a per-episode loop that returns a typed :class:`RunResult`.
-
-The supporting machinery lives in sibling modules and is re-exported here for the
-names :class:`Session` resolves as module globals: connection/contract synthesis
-(:mod:`._connect`), role-addressed reads (:mod:`._read`), adapter resolution
-(:mod:`._resolve`), source coercion (:mod:`._coerce`), and instruction injection
-(:mod:`._instruction`).
+The Rust facade drives both runs and manual bindings. Python converts its
+callbacks and values into :class:`RunHooks` and typed :class:`RunResult`.
 """
 
 from __future__ import annotations
 
 import contextlib
-import math
 import numbers
 import os
 import threading
-import time
-import uuid
-import warnings
-import weakref
-from _thread import LockType
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
-from functools import partial, wraps
-from typing import TYPE_CHECKING, Any, Generic, ParamSpec, Protocol, TypeVar, cast
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
-from .._value_conversion import from_value, identity_bridge
-from ._calls import CLOSED_TEXT, ModelCalls
-from ._chunk import ChunkReplay
 from ._coerce import RANDOM_SAMPLE
 from ._connect import (
     adapter_env_bridge,
-    classify_env_target,
-    close_client,
-    connect_env,
-    declares_reset_option,
-    reset_env,
-    shutdown_env,
 )
-from ._instruction import TextPlacement, text_placements, tree_set
 from ._read import Reader, resolve_read_adapter
-from ._resolve import reject_vector_env, resolve_adapter
-from ._view import FrameSources, ViewerDriver, discover_frame_sources, resolve_view
-from .base import accepts_context
+from ._resolve import resolve_adapter
+from ._view import FrameSources, discover_frame_sources
 
 if TYPE_CHECKING:
-    from rlmesh._rlmesh import Advisory, PyModelClient, SpaceSpec, Tensor
+    from rlmesh._rlmesh import Advisory
 
-    from .._value_conversion import ValueBridge
-    from ..adapters import ObservationRoles
 
 __all__ = [
     "RANDOM_SAMPLE",
     "EpisodeResult",
+    "EvalReport",
+    "Interrupted",
     "RunHooks",
     "RunResult",
-    "Session",
     "StepEvent",
     "TelemetryRow",
     "resolve_adapter",
 ]
 
-# Bound the loop so a non-terminating env cannot hang it forever. The twin of the
-# native `EditionDefaults::default_max_episode_steps` row (`rlmesh-proto`
-# `lib.rs`), which bounds the Rust driver's episodes the same way; the two loops
-# must agree, so an edition that changes that row changes this constant with it.
-_MAX_STEPS_PER_EPISODE = 100_000
-
-# The execution-horizon ceiling, the twin of the native `MAX_EXECUTION_HORIZON`
-# (`rlmesh-adapters` `stateful.rs`) the served engine enforces at resolve. Above
-# this a horizon is always a mis-set knob, not a real open-loop plan.
-MAX_EXECUTION_HORIZON = 1024
-
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
-
-
-_CallParams = ParamSpec("_CallParams")
-_CallResult = TypeVar("_CallResult")
-
-
-def _session_operation(
-    fn: Callable[_CallParams, _CallResult],
-) -> Callable[_CallParams, _CallResult]:
-    @wraps(fn)
-    def call(*args: _CallParams.args, **kwargs: _CallParams.kwargs) -> _CallResult:
-        session = cast("Session[Any, Any]", args[0])
-        with session._active_operation():  # pyright: ignore[reportPrivateUsage]
-            return fn(*args, **kwargs)
-
-    return call
-
-
-def _ema(prev: float, sample: float) -> float:
-    """Smooth a per-step timing sample, matching the viewer's fps smoothing (0.85/0.15).
-
-    Seeds on the first real sample (``prev <= 0``) so the displayed value isn't dragged
-    up from a cold zero.
-    """
-    return sample if prev <= 0.0 else 0.85 * prev + 0.15 * sample
 
 
 # Mirrors `EditionDefaults::success_info_keys` in crates/rlmesh-proto; keep in sync.
@@ -112,7 +51,7 @@ def _success_flag(value: object) -> bool | None:
     """One info value as a task outcome, or ``None`` when its kind carries none.
 
     Matches the native runtime (`success_from_final_info` in
-    crates/rlmesh-runtime `driver.rs`) over the value as it crosses the wire:
+    crates/rlmesh/src/run/runtime `driver.rs`) over the value as it crosses the wire:
     NumPy scalars and 0-d arrays unwrap to Python scalars first (as metadata
     encoding does), then a bool is taken as-is and an integer or float is
     true when non-zero. Any other kind -- a string, ``None``, a list -- is
@@ -132,58 +71,7 @@ def _success_flag(value: object) -> bool | None:
     return None
 
 
-def _nearest_rank(ordered: Sequence[float], percentile: float) -> float:
-    """Nearest-rank percentile of a sorted, non-empty sequence (the native rule)."""
-    return ordered[math.ceil((len(ordered) - 1) * percentile)]
-
-
-class _RunTelemetry:
-    """The per-op timing samples one :meth:`Session.run` measures, as telemetry rows.
-
-    The Python loop's twin of the native runtime's aggregator: every sample is a
-    client-observed wall time (``rpc.total``) under the same ``op`` / ``component``
-    names the native loop uses, so :meth:`RunResult.format_telemetry` reads the
-    same on both paths. Summarized with the native nearest-rank percentiles.
-    """
-
-    #: Row order: the model, then the env, then the loop around them.
-    _ORDER = ("model.predict", "env.reset", "env.step", "runner.round")
-
-    def __init__(self) -> None:
-        self._samples: dict[tuple[str, str], list[float]] = {}
-
-    def record(self, op: str, component: str, ms: float) -> None:
-        self._samples.setdefault((op, component), []).append(ms)
-
-    def rows(self) -> tuple[TelemetryRow, ...]:
-        def rank(key: tuple[str, str]) -> tuple[int, str]:
-            op = key[0]
-            return (
-                self._ORDER.index(op) if op in self._ORDER else len(self._ORDER),
-                op,
-            )
-
-        rows: list[TelemetryRow] = []
-        for op, component in sorted(self._samples, key=rank):
-            values = self._samples[(op, component)]
-            ordered = sorted(values)
-            rows.append(
-                TelemetryRow(
-                    op=op,
-                    component=component,
-                    metric="rpc.total",
-                    unit="ms",
-                    count=len(values),
-                    avg=sum(values) / len(values),
-                    p50=_nearest_rank(ordered, 0.50),
-                    p95=_nearest_rank(ordered, 0.95),
-                    p99=_nearest_rank(ordered, 0.99),
-                )
-            )
-        return tuple(rows)
-
-
-def _episode_success(info: Mapping[str, Any]) -> bool | None:
+def episode_success(info: Mapping[str, Any]) -> bool | None:
     """Read an env-reported task outcome from a step ``info`` (Gymnasium convention).
 
     Checks ``is_success``, ``success``, then ``task_success``; the first one
@@ -197,78 +85,28 @@ def _episode_success(info: Mapping[str, Any]) -> bool | None:
     return None
 
 
-#: The runtime's bounds on the native loop's caps (``Option<i64>`` steps and a
-#: ``u32`` prefetch lead), checked on both loops so they validate alike.
-_MAX_EPISODE_STEPS = 2**63 - 1
-_MAX_PREFETCH_LEAD = 2**32 - 1
+def success_rate(outcomes: Iterable[bool | None]) -> float | None:
+    """Successes over episodes, an unknown outcome counting as a failure.
 
-
-def check_execution_horizon(execution_horizon: int, native_chunk: int | None) -> None:
-    """Refuse an ``execution_horizon`` outside ``1..=1024`` or past ``native_chunk``."""
-    if execution_horizon < 1:
-        raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
-    if execution_horizon > MAX_EXECUTION_HORIZON:
-        raise ValueError(
-            f"execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got "
-            f"{execution_horizon}"
-        )
-    if native_chunk is not None and execution_horizon > native_chunk:
-        raise ValueError(
-            f"execution_horizon={execution_horizon} exceeds the model's declared "
-            f"native_chunk={native_chunk}: it cannot produce that many actions per "
-            f"predict. Lower the horizon to at most {native_chunk}."
-        )
-
-
-def check_episode_caps(
-    max_episode_steps: int | None, max_episode_seconds: float | None
-) -> None:
-    """Refuse a step cap outside ``1..=2**63-1`` and a time cap not ``> 0``.
-
-    NaN is refused (it is no cap a native caller can spell); ``inf`` is no cap.
+    ``None`` when no episode reported an outcome. The same rule as the Rust
+    ``RunResult::success_rate`` and the managed platform's ``successRate``.
     """
-    if max_episode_steps is not None:
-        if max_episode_steps < 1:
-            raise ValueError(f"max_episode_steps must be >= 1, got {max_episode_steps}")
-        if max_episode_steps > _MAX_EPISODE_STEPS:
-            raise ValueError(
-                f"max_episode_steps must be <= {_MAX_EPISODE_STEPS}, got "
-                f"{max_episode_steps}"
-            )
-    if max_episode_seconds is not None and (
-        math.isnan(max_episode_seconds) or max_episode_seconds <= 0
-    ):
-        raise ValueError(f"max_episode_seconds must be > 0, got {max_episode_seconds}")
+    flags = list(outcomes)
+    if all(flag is None for flag in flags):
+        return None
+    return sum(1 for flag in flags if flag) / len(flags)
 
 
-def check_prefetch_lead(prefetch_lead: int) -> None:
-    """Refuse a ``prefetch_lead`` outside the runtime's ``0..=2**32-1``."""
-    if prefetch_lead < 0:
-        raise ValueError(f"prefetch_lead must be >= 0, got {prefetch_lead}")
-    if prefetch_lead > _MAX_PREFETCH_LEAD:
-        raise ValueError(
-            f"prefetch_lead must be <= {_MAX_PREFETCH_LEAD}, got {prefetch_lead}"
-        )
-
-
-def resolve_episode_budget(episodes: int | None, seeds: Sequence[int] | None) -> int:
-    """The exact number of episodes a run executes.
-
-    One when neither ``episodes`` nor ``seeds`` is given; the length of
-    ``seeds`` when only seeds are; ``episodes`` itself otherwise, which must
-    then match the seed count (a seed per episode, no unseeded tail). Zero
-    runs nothing; a negative count is refused.
-    """
-    if episodes is None:
-        return len(seeds) if seeds is not None else 1
-    if episodes < 0:
-        raise ValueError(f"episodes must be >= 0, got {episodes}")
-    if seeds is not None and len(seeds) != episodes:
-        raise ValueError(
-            f"episodes={episodes} does not match len(seeds)={len(seeds)}: pass "
-            "one seed per episode, or only one of the two"
-        )
-    return episodes
+def episode_outcome(terminated: bool, truncated: bool, info: Mapping[str, Any]) -> str:
+    """The viewer's word for how a step ended its episode ("" while it runs)."""
+    if not (terminated or truncated):
+        return ""
+    success = episode_success(info)
+    if success is None:
+        return "done" if terminated else "timeout"
+    if success:
+        return "success"
+    return "failure" if terminated else "timeout"
 
 
 @dataclass(frozen=True)
@@ -324,11 +162,7 @@ class TelemetryRow:
     """One aggregated metric series from a :meth:`Model.run` eval.
 
     The runtime aggregates every measurement per ``(op, component, metric)``
-    over the whole run. :meth:`Session.run` (the Python loop a served model or a
-    viewed run drives) reports the subset it can see from the client side under
-    the same names: ``rpc.total`` of ``model.predict`` (each predict that ran
-    the model; a replayed chunk step is not one), ``env.reset``, ``env.step``,
-    and ``runner.round``, with any ``View.step_hz`` pacing sleep left out. ``rpc.total`` is the client-observed round trip of an
+    over the whole run. ``rpc.total`` is the client-observed round trip of an
     op; ``endpoint.total`` the peer's own handling wall, split by
     ``endpoint.decode`` / ``endpoint.user`` / ``endpoint.encode``;
     ``endpoint.queue`` the wait before the op's handler ran (the model's
@@ -373,15 +207,13 @@ class RunResult:
 
     episodes: tuple[EpisodeResult, ...] = ()
     #: The run's aggregated timing/size telemetry, one :class:`TelemetryRow`
-    #: per measured series. The native :meth:`Model.run` loop reports every
-    #: series its peers stamp; :meth:`Session.run` reports its client-side
-    #: round trips (see :class:`TelemetryRow`).
+    #: per measured series: every series the run's peers stamp. A binding's
+    #: result carries none.
     telemetry: tuple[TelemetryRow, ...] = ()
-    #: Each distinct :class:`~rlmesh.adapters.Advisory` the runtime raised while
-    #: relaying payloads between the env and the model; a ``"caution"`` marks
-    #: data it converted for a peer that could not decode it as sent. Empty
-    #: unless a relay policy converted something, which the open-source runtime
-    #: never does.
+    #: Each :class:`~rlmesh.adapters.Advisory` the model's adapter resolve
+    #: raised for the env: what it tolerated or applied, such as a zero-filled
+    #: camera or an allowed projection (``select_state``). A served model sends
+    #: them to a driver that reads them. Empty for a spec-less model.
     advisories: tuple[Advisory, ...] = ()
 
     @property
@@ -407,15 +239,14 @@ class RunResult:
 
         Counts the env-reported task outcome only (the final step's
         ``info["is_success"]`` / ``["success"]`` / ``["task_success"]``,
-        captured per episode in :attr:`EpisodeResult.success`).
-        ``None`` when the run is empty or any episode lacks that signal: an
-        unknown outcome is never inferred from ``terminated``. Read
-        :attr:`EpisodeResult.terminated` yourself if a terminal state is the
-        metric you want.
+        captured per episode in :attr:`EpisodeResult.success`), by the
+        managed platform's rule that ``rlmesh eval report`` shares: an episode
+        without that signal counts as a failure, and the rate is ``None`` when
+        no episode reported one. An outcome is never inferred from
+        ``terminated``; read :attr:`EpisodeResult.terminated` yourself if a
+        terminal state is the metric you want.
         """
-        if not self.episodes or any(e.success is None for e in self.episodes):
-            return None
-        return sum(1 for e in self.episodes if e.success) / len(self.episodes)
+        return success_rate(e.success for e in self.episodes)
 
     def format_telemetry(self) -> str:
         """The :attr:`telemetry` rows as an aligned text table.
@@ -452,11 +283,144 @@ class RunResult:
 
         return "\n".join([line(header), *(line(row) for row in rows)])
 
+    def save(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        model: str = "model",
+        env: str = "env",
+        config: Mapping[str, Any] | None = None,
+    ) -> Path:
+        """Write this result as an ``rlmesh.result.v1`` bundle and return its path.
+
+        One workload of ``model`` on ``env``, with ``config`` recorded beside
+        it: a folder, or a zip when ``path`` ends ``.zip`` (as
+        :meth:`Recorder.export <rlmesh.Recorder.export>` writes). The bundle
+        keeps each episode's outcome, not its trial ordinal or latency; the
+        run's telemetry rows are kept beside the workload. For media, record
+        the run with :meth:`Recorder.capture <rlmesh.Recorder.capture>` instead.
+        """
+        from ..recorder import Recorder
+
+        with Recorder() as recorder:
+            recorder.add(
+                self, model=model, env=env, config=dict(config) if config else None
+            )
+            return recorder.export(Path(path))
+
+    @classmethod
+    def load(
+        cls, path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]]
+    ) -> RunResult:
+        """The result the ``rlmesh.result.v1`` bundles at ``path`` hold.
+
+        ``path`` is a bundle (folder or zip) of one or several workloads, a
+        folder of bundles (read in name order), or a list of these. The
+        workloads' counted episodes come back in order with the fields the
+        bundle keeps, indexed afresh from 0 (one left out of the metrics,
+        ``included_in_metrics=False``, is dropped), and their telemetry
+        merged per series (counts add; ``avg`` and percentiles are
+        count-weighted means).
+        Workloads of several models raise ``ValueError``; report them with
+        :class:`EvalReport` instead.
+        """
+        from .._rlmesh import load_run_result
+        from ._facade import result_from_native
+
+        return result_from_native(load_run_result(_bundle_paths(path)))
+
+    @classmethod
+    def merge(cls, results: Iterable[RunResult]) -> RunResult:
+        """Several results as one.
+
+        Experimental. The episodes in order, indexed afresh from 0 (each keeps
+        its seed and trial ordinal), the telemetry merged per series as
+        :meth:`load` merges workloads, and each advisory once. Joins the
+        per-route results of :meth:`Model.run_routes <rlmesh.Model.run_routes>`.
+        """
+        from .._rlmesh import merge_telemetry
+
+        results = list(results)
+        episodes = [e for result in results for e in result.episodes]
+        advisories: list[Advisory] = []
+        for advisory in (a for result in results for a in result.advisories):
+            if advisory not in advisories:
+                advisories.append(advisory)
+        rows = [asdict(row) for result in results for row in result.telemetry]
+        return cls(
+            episodes=tuple(replace(e, index=i) for i, e in enumerate(episodes)),
+            telemetry=tuple(TelemetryRow(**row) for row in merge_telemetry(rows)),
+            advisories=tuple(advisories),
+        )
+
     def __repr__(self) -> str:
         return (
             f"RunResult(episodes={self.num_episodes}, mean_reward={self.mean_reward:.3f}, "
             f"total_steps={self.total_steps})"
         )
+
+
+def _bundle_paths(
+    path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]],
+) -> list[str]:
+    paths = [path] if isinstance(path, (str, os.PathLike)) else path
+    return [os.fspath(p) for p in paths]
+
+
+class EvalReport:
+    """Success and telemetry of saved ``rlmesh.result.v1`` bundles, per model.
+
+    Experimental. Per task, per suite (a workload's ``config["suite"]``) and
+    overall: counted episodes, successes, the success rate with its Wilson
+    95% interval, steps, mean episode length and wall time; and the runs'
+    telemetry merged per series. An episode with no success signal counts as
+    a failure and is reported as ``unknown``, as on the managed platform.
+    """
+
+    def __init__(self, document: dict[str, Any], table: str) -> None:
+        self._document = document
+        self._table = table
+
+    @classmethod
+    def load(
+        cls, path: str | os.PathLike[str] | Sequence[str | os.PathLike[str]]
+    ) -> EvalReport:
+        """The report of the bundles at ``path`` (as :meth:`RunResult.load` reads them)."""
+        import json
+
+        from .._rlmesh import eval_report
+
+        document, table = eval_report(_bundle_paths(path))
+        return cls(json.loads(document), table)
+
+    def to_dict(self) -> dict[str, Any]:
+        """The report as a JSON-native dict: ``{"models": [...]}``."""
+        import copy
+
+        return copy.deepcopy(self._document)
+
+    def format_table(self) -> str:
+        """The report as aligned text tables, one per model."""
+        return self._table
+
+    def __str__(self) -> str:
+        return self._table
+
+
+class Interrupted(KeyboardInterrupt):
+    """Ctrl-C during :meth:`Model.run <rlmesh.Model.run>`, with what it finished.
+
+    A ``KeyboardInterrupt``, so code that stops on Ctrl-C still stops; catch it
+    to keep :attr:`result`, the :class:`RunResult` of the episodes that
+    completed before the interrupt (the one in progress is not in it).
+    """
+
+    def __init__(self, result: RunResult) -> None:
+        super().__init__(
+            f"run interrupted after {result.num_episodes} completed episode(s)"
+        )
+        #: The episodes that completed before the interrupt.
+        self.result = result
 
 
 @dataclass(frozen=True)
@@ -509,12 +473,13 @@ class StepEvent:
 
 
 class RunContext(Protocol):
-    """What a run exposes to its hooks: the connected env, in either loop.
+    """What a run exposes to its hooks: the connected env.
 
-    :meth:`RunHooks.on_run_start` receives one. The session loop passes a view of its :class:`Session`; the native :meth:`Model.run <rlmesh.Model.run>` loop passes
-    its own. ``contract`` and ``num_envs`` are known once the env is connected
-    (before the first :meth:`RunHooks.on_episode_start`); ``read`` resolves a
-    role over one observation the way :meth:`Session.read` does, and
+    :meth:`RunHooks.on_run_start` receives one: :meth:`Model.run
+    <rlmesh.Model.run>` passes its own, and a :class:`~rlmesh.Binding` is one.
+    ``contract`` and ``num_envs`` are known once the env is connected (before
+    the first :meth:`RunHooks.on_episode_start`); ``read`` resolves a role over
+    one observation, and
     ``frame_sources`` lists the env's image roles plus its ``render()`` thunk
     when one is reachable (a native run reaches it only for a local env object).
     """
@@ -533,10 +498,11 @@ class RunContext(Protocol):
 class RunHooks:
     """Observer callbacks for a run; every default is a no-op.
 
-    Subclass and override any subset, then pass an instance as ``hooks=`` to
-    :func:`rlmesh.run`, :meth:`Model.run <rlmesh.Model.run>`, or
-    :meth:`Session.run`. Both loops fire the same callbacks in the same per-
-    episode order. Hook exceptions propagate and abort the run with their own
+    Subclass and override any subset, then pass an instance (or a list of them,
+    each called in order) as ``hooks=`` to :func:`rlmesh.run`,
+    :meth:`Model.run <rlmesh.Model.run>`, or
+    :meth:`Model.bind <rlmesh.Model.bind>`. A run and a binding fire the same
+    callbacks in the same per-episode order. Hook exceptions propagate and abort the run with their own
     type; :meth:`on_run_end` still fires exactly once with the completed
     episodes. Hooks run inline, so a slow hook slows the loop.
     """
@@ -544,8 +510,8 @@ class RunHooks:
     def on_run_start(self, context: RunContext) -> None:
         """Called once per ``run``, before the first episode (no-op by default).
 
-        Receives the run's :class:`RunContext` (the :class:`Session` itself on
-        the session loop) so a hook can read roles off observations and
+        Receives the run's :class:`RunContext` (the :class:`~rlmesh.Binding`
+        itself on a binding) so a hook can read roles off observations and
         discover the env's frame sources without the caller wiring anything in.
         """
 
@@ -570,1278 +536,159 @@ class RunHooks:
         :class:`RunResult` of the episodes that completed.
         """
 
+    def transform_observation(
+        self, observation: Any, *, episode: int, step: int
+    ) -> Any | None:
+        """Replace one lane's observation before the model sees it (Experimental).
 
-def _summarize_payload(payload: Any) -> str:
-    """One value's dtype/shape signature for error context.
+        Return the replacement, in the observation's own space, or ``None`` to
+        keep it (the default). Runs on ``run`` only, not on a manual
+        :meth:`Model.bind <rlmesh.Model.bind>`. An exception aborts the run.
+        :meth:`on_step` reports the observation the model saw.
 
-    Mirrors the served engine's wording: ``float32[8]``,
-    ``{image: uint8[8, 8, 3], state: float32[7]}``.
-    """
-    shape = getattr(payload, "shape", None)
-    dtype = getattr(payload, "dtype", None)
-    if shape is not None and dtype is not None:
-        return f"{dtype}{list(shape)}"
-    if isinstance(payload, Mapping):
-        items = cast("Mapping[Any, Any]", payload).items()
-        entries = ", ".join(
-            f"{key}: {_summarize_payload(value)}" for key, value in items
-        )
-        return "{" + entries + "}"
-    if isinstance(payload, str):
-        return f"text(len={len(payload)})"
-    if isinstance(payload, bytes):
-        return f"bytes(len={len(payload)})"
-    if isinstance(payload, (list, tuple)):
-        seq = cast("Sequence[Any]", payload)
-        if not seq:
-            return "list(len=0)"
-        return f"list(len={len(seq)}, first={_summarize_payload(seq[0])})"
-    return type(payload).__name__
+        Args:
+            observation: The lane's observation, decoded as the env's framework.
+            episode: 0-based episode index.
+            step: Steps the episode has taken (0 for its reset observation).
+        """
+        return None
 
+    def transform_action(self, action: Any, *, episode: int, step: int) -> Any | None:
+        """Replace one lane's action before the env receives it (Experimental).
 
-#: Ceiling on the frame history a session may hold, in bytes
-#: (``num_envs * sum(span * frame_bytes)``). A window is live memory for the
-#: whole episode, and a mis-set stride turns a modest ``stack`` into gigabytes;
-#: refuse it at connect, where the number is already known, rather than at the
-#: allocation that OOMs. Overridable with ``RLMESH_FRAME_HISTORY_LIMIT_BYTES``
-#: (the same knob the served engine's gate reads).
-FRAME_HISTORY_LIMIT_BYTES = 2 << 30
+        As :meth:`transform_observation`, once per env step, so a hook that
+        keeps the episode's recent actions can delay them, drop one (send the
+        previous action again) or freeze them for a burst. :meth:`on_step`
+        reports the action the env received.
+        """
+        return None
 
 
-def _check_frame_history_budget(adapter: Any, num_envs: int) -> None:
-    """Refuse a resolved adapter whose frame windows exceed the byte ceiling.
-
-    ``frame_bytes == 0`` means the env never declared its camera resolution, so
-    that window contributes nothing to the projection -- the gate is a ceiling on
-    what is known, never a guess. A custom adapter declares no window (it owns
-    whatever state it keeps), so there is nothing to bound.
-    """
-    declared = getattr(adapter, "history_windows", None)
-    windows = declared() if declared is not None else ()
-    if not windows:
-        return
-    limit = int(
-        os.environ.get("RLMESH_FRAME_HISTORY_LIMIT_BYTES", 0)
-        or FRAME_HISTORY_LIMIT_BYTES
+def overrides_transforms(hooks: RunHooks) -> bool:
+    """Whether ``hooks`` override either transform."""
+    if isinstance(hooks, _HookList):
+        return any(overrides_transforms(hook) for hook in hooks.hooks)
+    kind = type(hooks)
+    return (
+        kind.transform_observation is not RunHooks.transform_observation
+        or kind.transform_action is not RunHooks.transform_action
     )
-    projected = max(1, num_envs) * sum(
-        span * frame_bytes for _key, span, frame_bytes in windows
+
+
+def artifact_tap(hooks: RunHooks | None) -> Any:
+    """The first hook's artifact-tree writer (``Recorder.record``), if any."""
+    listed = hooks.hooks if isinstance(hooks, _HookList) else (hooks,)
+    return next(
+        (
+            tap
+            for hook in listed
+            if (tap := getattr(hook, "_artifact_tap", None)) is not None
+        ),
+        None,
     )
-    if projected > limit:
-        held = ", ".join(
-            f"{key!r} {span} frames x {frame_bytes} B"
-            for key, span, frame_bytes in windows
-        )
-        raise ValueError(
-            f"frame history would hold {projected} bytes ({held}) across "
-            f"{max(1, num_envs)} env(s), over the {limit}-byte ceiling; shorten the "
-            "window (stack/stride), resize the image, or raise "
-            "RLMESH_FRAME_HISTORY_LIMIT_BYTES"
-        )
 
 
-def _box_space(action_space: object) -> SpaceSpec | None:
-    from .._rlmesh import space_spec_from_gym_space
-
-    spec = space_spec_from_gym_space(action_space)
-    return spec if spec.kind == "box" else None
+HooksArg = RunHooks | Sequence[RunHooks] | None
 
 
-def _fit_box(action: Tensor, box: SpaceSpec) -> Tensor:
-    """Cast and shape the adapter's flat float32 action to the env's Box.
+class _HookList(RunHooks):
+    """Several hooks as one: every callback reaches each hook, in order.
 
-    The same restore the native run applies (``tensor_to_space_value``), so a
-    session hands ``env.step`` the action ``Model.run`` would.
-    """
-    if action.dtype != box.dtype:
-        from ..numpy import (
-            _numpy_bridge,  # pyright: ignore[reportPrivateUsage]
-            ensure_available,
-        )
-
-        ensure_available()
-        import numpy as np
-
-        numpy_action = cast("Any", _numpy_bridge.decode(action))
-        target = np.dtype(box.dtype)
-        if np.issubdtype(target, np.integer) and numpy_action.size:
-            # astype truncates and wraps; the native cast refuses, so do we.
-            if not np.all(np.isfinite(numpy_action)) or np.any(
-                numpy_action != np.floor(numpy_action)
-            ):
-                raise ValueError(
-                    f"cannot cast non-integral action values to {box.dtype}"
-                )
-            bounds = np.iinfo(target)
-            if numpy_action.min() < bounds.min or numpy_action.max() > bounds.max:
-                raise ValueError(
-                    f"action values out of range for {box.dtype} "
-                    f"[{bounds.min}, {bounds.max}]"
-                )
-        action = cast("Tensor", _numpy_bridge.encode(numpy_action.astype(target)))
-    return action.reshape(box.shape)
-
-
-def _predict_step(
-    predict: Callable[..., Any],
-    obs: Any,
-    adapter: Any,
-    instruction: str | None,
-    text_placements: tuple[TextPlacement, ...],
-    env_bridge: ValueBridge | None,
-    model_bridge: ValueBridge | None,
-    device: object | None,
-    context: Mapping[str, Any] | None = None,
-) -> Any:
-    """Assemble one observation into the model payload and call ``predict``.
-
-    The re-plan half of the chunk-replay loop (skipped while a chunk is replaying):
-    the declarative obs transform (or the raw obs for a spec-less model),
-    instruction injection (one rebuilt copy, never the env's obs), then the model
-    forward. ``device`` (the model's, torch/jax) moves every obs tensor leaf onto it
-    before predict -- the local dual of the served worker -- so the author never
-    calls ``.to(device)``; a no-op for None or a non-device framework.
-    """
-    if adapter is not None:
-        payload = from_value(
-            adapter.transform_obs_value(
-                obs, input_bridge=env_bridge, custom_bridge=env_bridge
-            ),
-            model_bridge,
-        )
-    else:
-        payload = obs
-    if device is not None and model_bridge is not None:
-        payload = model_bridge.to_device(payload, device)
-    if instruction is not None:
-        # Inject into every text leaf the spec declares, at its tree placement and
-        # in its declared shape: ``[instruction]`` for container='list', a bare
-        # ``str`` otherwise. ``tree_set`` rebuilds the path it touches (the empty
-        # path replaces the whole payload, for a bare-root text input), so the obs
-        # the env returned is never mutated.
-        for placement in text_placements:
-            value: Any = [instruction] if placement.as_list else instruction
-            payload = tree_set(payload, placement.segments, value)
-    try:
-        if context is not None:
-            return predict(payload, context)
-        return predict(payload)
-    except Exception as exc:
-        kind = "adapter-assembled" if adapter is not None else "spec-less (raw obs)"
-        note = f"{kind} model input: {_summarize_payload(payload)}"
-        add_note = getattr(exc, "add_note", None)
-        if add_note is not None:
-            add_note(note)
-        raise
-
-
-class Session(Generic[ObsT, ActT]):
-    """A model bound to one env: drive it by hand, or pump whole episodes.
-
-    The neutral pair-driver returned by :func:`rlmesh.session`. ``reset`` / ``predict`` /
-    ``step`` drive one step at a time -- ``predict`` applies the model's adapter (resolved
-    from the env's published contract) around the model's own predict, replaying an action
-    chunk one action per step when ``execution_horizon`` > 1 and the model defines
-    ``predict_chunk``. ``run`` pumps whole episodes and returns a typed :class:`RunResult`.
-
-    The env connection is opened lazily on first ``reset`` (manual driving); ``run``
-    drives whole episodes through the same primitives and leaves the session open, so
-    a caller-held session runs as often as you like. Close it yourself -- ``close()``
-    or the ``with`` block; after that, any further use raises. (The one-shot
-    :func:`rlmesh.run` / :meth:`Model.run <rlmesh.Model.run>` create their session
-    internally and close it when the run ends.)
+    ``on_run_end`` reaches every hook even when one raises; the first exception
+    is raised after the last hook ran, so each still sees the run end once.
     """
 
-    #: Instance attributes, declared here because :meth:`_create` (a classmethod)
-    #: populates a bare ``object.__new__`` instance -- the public ``__init__`` only
-    #: rejects direct construction. ``_device`` is the compute device for the local
-    #: model's inputs (torch/jax); obs tensor leaves are moved onto it before
-    #: predict (a served model leaves it unset -- the server worker places obs).
-    _predict: Callable[[Any], Any] | None
-    _predict_chunk: Callable[..., Any] | None
-    _execution_horizon: int
-    _spec: object | None
-    _env: object
-    _on_episode_end: Callable[..., None] | None
-    _on_close: Callable[[], None] | None
-    _trust: bool
-    _bridge: ValueBridge | None
-    _remote_env_cls: type | None
-    _instruction: str | None
-    _close_env: bool
-    _owns_env: bool
-    _model_client: PyModelClient | None
-    _owner: Any
-    _device: object | None
-    _closed: bool
-    _connected: bool
-    _client: Any
-    _owns_client: bool
-    _adapter: Any
-    _contract: Any
-    _env_bridge: ValueBridge | None
-    _action_box: SpaceSpec | None
-    _text_placements: tuple[TextPlacement, ...]
-    _horizon: int
-    _native_chunk: int | None
-    _replay: ChunkReplay
-    _terminated: bool
-    _truncated: bool
-    _steps: int
-    _reward: float
-    _last_info: Mapping[str, Any]
-    _episode_id: str
-    _replay_fn: Callable[..., Any] | None
-    _model_ms: float
-    _env_ms: float
-    _sps: float
-    _ep_start: float | None
-    _last_step_t: float | None
-    _ep_index: int
-    _ep_total: int
-    _seed: int | None
-    _trial: int | None
-    _chunk_pos: int
-    _chunk_len: int
-    _episode_open: bool
-    _read_cache: dict[Any, Reader]
-    _view_driver: ViewerDriver | None
-    _workflow_edition: str | None
-    _model_calls: ModelCalls | None
-    _telemetry: _RunTelemetry | None
-    _paced_s: float
-    _run_failed: bool
-    _in_hooks: bool
-    _hook_thread: int | None
-    _op_lock: LockType
-    _op_thread: int | None
-    _op_depth: int
-    _rendering: bool
-
-    def __init__(self) -> None:
-        raise TypeError(
-            "Session is not constructed directly; use rlmesh.session(model, env) "
-            "or model.session(env)"
-        )
-
-    @classmethod
-    def _create(
-        cls,
-        *,
-        env: object,
-        predict: Callable[[Any], Any] | None = None,
-        predict_chunk: Callable[..., Any] | None = None,
-        spec: object | None = None,
-        on_episode_end: Callable[..., None] | None = None,
-        on_close: Callable[[], None] | None = None,
-        trust_entrypoints: bool = False,
-        bridge: ValueBridge | None = None,
-        remote_env_cls: type | None = None,
-        instruction: str | None = None,
-        close_env: bool = False,
-        owns_env: bool = False,
-        execution_horizon: int = 1,
-        native_chunk: int | None = None,
-        model_client: PyModelClient | None = None,
-        owner: Any = None,
-        device: object | None = None,
-        view: object = None,
-        workflow_edition: str | None = None,
-        model_calls: ModelCalls | None = None,
-    ) -> Session[Any, Any]:
-        """Build and populate a session (two modes: local predict+spec, or served model_client).
-
-        The single construction seam behind :func:`rlmesh.session`,
-        :meth:`Model.session`, and the served handles' ``session``; the public
-        ``__init__`` only rejects direct construction.
-        """
-        check_execution_horizon(execution_horizon, native_chunk)
-        self = object.__new__(cls)
-        #: A local model's call gate (None for a served model): a session over
-        #: a model that was closed refuses predict, step and run.
-        self._model_calls = model_calls
-        self._native_chunk = native_chunk
-        self._predict = predict
-        self._predict_chunk = predict_chunk
-        self._execution_horizon = execution_horizon
-        self._spec = spec
-        self._env = env
-        self._on_episode_end = on_episode_end
-        self._on_close = on_close
-        self._trust = trust_entrypoints
-        self._bridge = bridge
-        self._remote_env_cls = remote_env_cls
-        self._instruction = instruction
-        self._close_env = close_env
-        # An env handle the caller's entry point dialed for this session (a bare
-        # address to a served model): released with the session, like a
-        # connection it opens itself.
-        self._owns_env = owns_env
-        self._model_client = model_client
-        self._workflow_edition = workflow_edition
-        self._owner = owner
-        self._device = device
-        self._closed = False
-        self._connected = False
-        self._client = None
-        self._owns_client = False
-        self._adapter = None
-        self._contract = None
-        self._env_bridge = None
-        self._action_box = None
-        self._text_placements = ()
-        self._horizon = 1
-        self._replay = self._new_replay()
-        self._replay_fn = None
-        self._takes_context = False
-        self._terminated = False
-        self._truncated = False
-        self._steps = 0
-        self._reward = 0.0
-        self._last_info = {}
-        #: This episode's identity, minted by `reset` (the local drive path has no
-        #: runtime to mint one). Stable for the whole episode, so the model's
-        #: per-episode store keys the same entry every predict and drops it at the
-        #: same id on `_end_episode` -- the local twin of the served ResetAdapter.
-        self._episode_id = ""
-        #: Debug-viewer telemetry (smoothed), fed to the HUD each step. ``model_ms``
-        #: tracks the forward cost only when the model actually runs (so chunk-replay
-        #: steps don't read as 0ms); ``env_ms`` the simulator ``step``; ``sps`` the
-        #: realized throughput. Episode index/total/seed are set by ``run``; chunk
-        #: pos/len mirror the local replay queue. All inert when no viewer is attached.
-        self._model_ms = 0.0
-        self._env_ms = 0.0
-        self._sps = 0.0
-        self._ep_start = None
-        self._last_step_t = None
-        self._ep_index = 0
-        self._ep_total = 0
-        self._seed = None
-        #: The trial ordinal delivered on this episode's reset, or ``None`` when
-        #: none was asked for or the env declared no such reset option.
-        self._trial = None
-        self._chunk_pos = 0
-        self._chunk_len = 0
-        #: Whether an episode has been reset and not yet ended. The local episode
-        #: boundary (a stateful model's `on_episode_end`) fires when the next reset()
-        #: begins or the session closes -- see `_end_episode`.
-        self._episode_open = False
-        #: Resolved Readers (sess.read), cached per read item so a per-step read
-        #: does not re-resolve.
-        self._read_cache = {}
-        #: Optional built-in debug viewer (``view=`` on run/session). Lazily builds
-        #: a native ``PyViewer`` on the first fed frame; best-effort, never fatal.
-        _view = resolve_view(view)
-        self._view_driver = ViewerDriver(_view) if _view is not None else None
-        #: Per-op timing samples, collected only while `run` drives the session.
-        self._telemetry = None
-        #: Seconds the last `step` slept for `View.step_hz` pacing, so `run`
-        #: leaves the deliberate idle out of its step and round timings.
-        self._paced_s = 0.0
-        #: Whether the last `run` ended by raising (an env crash, Ctrl-C), so a
-        #: later close skips the viewer's `View.hold` and releases at once.
-        self._run_failed = False
-        #: Set while this session's own `run` calls a hook: the hook gets the
-        #: RunContext protocol only (RUN-28).
-        self._in_hooks = False
-        self._hook_thread = None
-        self._op_lock = threading.Lock()
-        self._op_thread = None
-        self._op_depth = 0
-        self._rendering = False
-        return self
-
-    def _new_replay(self) -> ChunkReplay:
-        """A fresh replay queue at this session's horizon and declared chunk length.
-
-        The one place the two numbers meet, so the resolved horizon and the model's
-        ``native_chunk`` can never drift apart between construction, connect, and
-        each episode boundary.
-        """
-        return ChunkReplay(self._horizon, self._native_chunk)
-
-    def _require_open(self) -> None:
-        """Reject any use of an explicitly closed session (no silent reconnect)."""
-        if self._closed:
-            raise RuntimeError("session is closed")
-
-    def _refuse_in_own_hooks(self, member: str) -> None:
-        """Reject ``member`` from inside this session's own run hooks.
-
-        A hook gets the run's :class:`RunContext`: ``contract``, ``num_envs``,
-        ``read`` and ``frame_sources``. Driving or closing the session under its
-        own loop would corrupt the loop's state.
-        """
-        if self._in_hooks:
-            raise RuntimeError(
-                f"Session.{member} cannot be used from inside this session's own run "
-                "hooks: a hook gets the run's RunContext (contract, num_envs, read, "
-                "frame_sources)"
-            )
-
-    @contextlib.contextmanager
-    def _active_operation(self) -> Iterator[None]:
-        thread = threading.get_ident()
-        with self._op_lock:
-            if self._op_thread not in (None, thread):
-                raise RuntimeError("a session operation is already in flight")
-            self._op_thread = thread
-            self._op_depth += 1
-        try:
-            yield
-        finally:
-            with self._op_lock:
-                self._op_depth -= 1
-                if self._op_depth == 0:
-                    self._op_thread = None
-
-    @contextlib.contextmanager
-    def _own_hooks(self) -> Iterator[None]:
-        """Lend the local render source only to this dispatching thread."""
-        previous = self._in_hooks, self._hook_thread
-        self._in_hooks = True
-        self._hook_thread = threading.get_ident()
-        try:
-            yield
-        finally:
-            self._in_hooks, self._hook_thread = previous
-
-    def _render_reachable(self, *, context_only: bool) -> bool:
-        own_hook = self._hook_thread == threading.get_ident()
-        if self._rendering or (self._in_hooks and not own_hook):
-            return False
-        if self._op_depth and not own_hook:
-            return False
-        local = classify_env_target(self._client)[0] == "env"
-        return not (context_only and local and not own_hook)
-
-    def _require_model_open(self, what: str) -> None:
-        """Reject ``what`` on a local model that was closed, or from its own corner."""
-        if self._model_calls is not None:
-            self._model_calls.check_open(what)
-
-    def _ensure_connected(self) -> None:
-        self._require_open()
-        if self._connected:
-            return
-        client, contract, owns = connect_env(
-            self._env, self._remote_env_cls, self._workflow_edition
-        )
-        try:
-            reject_vector_env(contract)
-            self._client = client
-            self._contract = contract
-            self._owns_client = owns or self._owns_env
-            # A served-model session runs at the three-way floor; the env leg is
-            # pinned to it (its first Join message) so both legs name one edition.
-            if self._model_client is not None:
-                pin = getattr(client, "_pin_workflow_edition", None)
-                if callable(pin):
-                    pin(self._model_client.selected_workflow_edition())
-            # A served model resolves its adapter server-side (from the contract sent at
-            # bind); only a local model resolves it here, client-side.
-            if self._model_client is None:
-                self._adapter = resolve_adapter(self._spec, contract, self._trust)
-                if self._adapter is not None:
-                    _check_frame_history_budget(
-                        self._adapter, getattr(contract, "num_envs", 1) or 1
-                    )
-                self._env_bridge = (
-                    adapter_env_bridge(client) if self._adapter is not None else None
-                )
-                self._action_box = (
-                    _box_space(contract.action_space)
-                    if self._adapter is not None
-                    else None
-                )
-                self._text_placements = text_placements(self._spec)
-                # The execution horizon is a caller decision (execution_horizon), not the
-                # spec. It engages only when the model exposes a predict_chunk corner
-                # (the entry points warn about the un-chunked fallback at creation);
-                # without one, fall back to single-step predict.
-                self._horizon = (
-                    self._execution_horizon if self._predict_chunk is not None else 1
-                )
-                # Seed the replay with the resolved horizon so a hand-driven predict()
-                # before the first reset() already replays the right chunk length.
-                self._replay = self._new_replay()
-        except BaseException:
-            # Not yet connected, so close() would not release what was just acquired.
-            self._client = None
-            if owns:
-                close_client(client)
-            raise
-        self._connected = True
+    def __init__(self, hooks: Sequence[RunHooks]) -> None:
+        self._hooks = tuple(hooks)
 
     @property
-    def selected_workflow_edition(self) -> str:
-        """The workflow edition this session runs at, in the spelling the peers agreed on.
+    def hooks(self) -> tuple[RunHooks, ...]:
+        return self._hooks
 
-        On a served model it is the floor across the env, the model, and this
-        runtime, settled when the session was opened; on a local model the env
-        leg is the whole negotiation, so it is what that connection settled on.
-        Named apart from the ``workflow_edition`` *declaration* surfaces: this
-        is what was agreed, not what this side asked for.
-        """
-        self._refuse_in_own_hooks("selected_workflow_edition")
-        if self._model_client is not None:
-            return self._model_client.selected_workflow_edition()
-        self._ensure_connected()
-        selected = getattr(self._client, "selected_workflow_edition", None)
-        if selected is None:
-            raise RuntimeError(
-                "a local env negotiates no workflow edition: it runs in this "
-                "process at rlmesh.current_workflow_edition()"
-            )
-        return cast("str", selected() if callable(selected) else selected)
+    def on_run_start(self, context: RunContext) -> None:
+        for hook in self._hooks:
+            hook.on_run_start(context)
 
-    @property
-    def done(self) -> bool:
-        """Whether the current episode has terminated or truncated."""
-        self._refuse_in_own_hooks("done")
-        return self._terminated or self._truncated
+    def on_episode_start(self, *, episode: int, seed: int | None) -> None:
+        for hook in self._hooks:
+            hook.on_episode_start(episode=episode, seed=seed)
 
-    def _feed_view(self, obs: object) -> None:
-        """Push the current obs + HUD to the debug viewer, if one is attached."""
-        if self._view_driver is not None:
-            elapsed = (
-                time.perf_counter() - self._ep_start
-                if self._ep_start is not None
-                else 0.0
-            )
-            self._view_driver.feed(
-                contract=self._contract,
-                client=self._client,
-                obs=obs,
-                read=self.read,
-                steps=self._steps,
-                reward=self._reward,
-                outcome=self._view_outcome(),
-                model_ms=self._model_ms,
-                env_ms=self._env_ms,
-                sps=self._sps,
-                elapsed_s=elapsed,
-                episode=self._ep_index,
-                episodes=self._ep_total,
-                seed=self._seed,
-                chunk_pos=self._chunk_pos,
-                chunk_len=self._chunk_len,
-            )
+    def on_step(self, event: StepEvent) -> None:
+        for hook in self._hooks:
+            hook.on_step(event)
 
-    def _view_outcome(self) -> str:
-        """The viewer HUD's outcome label for the current step.
+    def on_episode_end(self, result: EpisodeResult) -> None:
+        for hook in self._hooks:
+            hook.on_episode_end(result)
 
-        The env-reported task result (:func:`_episode_success` over the last step's
-        ``info``); an env that emits none shows how the episode ended, never an
-        inferred success -- matching :attr:`RunResult.success_rate`.
-        """
-        if not (self._terminated or self._truncated):
-            return ""
-        success = _episode_success(self._last_info)
-        if success is None:
-            return "done" if self._terminated else "timeout"
-        if success:
-            return "success"
-        return "failure" if self._terminated else "timeout"
+    def transform_observation(
+        self, observation: Any, *, episode: int, step: int
+    ) -> Any | None:
+        changed = False
+        for hook in self._hooks:
+            out = hook.transform_observation(observation, episode=episode, step=step)
+            if out is not None:
+                observation, changed = out, True
+        return observation if changed else None
 
-    def _end_episode(self) -> None:
-        """Fire the local model's `on_episode_end` once for the currently-open episode.
+    def transform_action(self, action: Any, *, episode: int, step: int) -> Any | None:
+        changed = False
+        for hook in self._hooks:
+            out = hook.transform_action(action, episode=episode, step=step)
+            if out is not None:
+                action, changed = out, True
+        return action if changed else None
 
-        The episode boundary on the local drive path: an open episode ends when the
-        next reset() begins, or when the session closes. This fires the same
-        `on_episode_end` the served path drives via `ResetAdapter`, so a stateful
-        local model (a subclass's `on_episode_end()` / a policy object's `reset()` is wired here) clears
-        its per-episode state identically whether driven by hand or via `run()`. For
-        a served model `_on_episode_end` is None (the remote engine owns the hook),
-        so this is a no-op there. Idempotent: safe to call from both reset() and
-        close().
-        """
-        if self._episode_open:
-            self._episode_open = False
-            if self._on_episode_end is not None:
-                self._on_episode_end(self._episode_id)
-
-    @_session_operation
-    def reset(
-        self, *, seed: int | None = None, trial_index: int | None = None
-    ) -> tuple[ObsT, Mapping[str, Any]]:
-        """Begin a new episode: end the previous one, then reset the env and adapter.
-
-        Ending the previous episode fires the model's `on_episode_end` (the local
-        per-episode boundary), so a stateful model clears its state between episodes
-        on the hand-driven path too, not only via `run()`.
-
-        ``trial_index`` is the 0-based ordinal of this episode in a benchmark's
-        trial sweep, delivered as ``reset(options={"trial_index": ...})`` -- but
-        only to an env that declared the key in
-        :attr:`EnvFactory.reset_options <rlmesh.EnvFactory.reset_options>`.
-        Passing one to an env that did not warns and resets without it.
-        """
-        self._refuse_in_own_hooks("reset()")
-        self._ensure_connected()
-        self._end_episode()
-        options = None
-        if trial_index is not None:
-            if declares_reset_option(self._contract, "trial_index"):
-                options = {"trial_index": int(trial_index)}
-            else:
-                trial_index = None
-                warnings.warn(
-                    'trial_index was given but this env declares no "trial_index" '
-                    "reset option (EnvFactory.reset_options); resetting without it.",
-                    stacklevel=2,
-                )
-        t0 = time.perf_counter()
-        obs, info = reset_env(self._client, seed, options)
-        if self._telemetry is not None:
-            self._telemetry.record(
-                "env.reset", "env", (time.perf_counter() - t0) * 1000.0
-            )
-        if self._predict is RANDOM_SAMPLE and seed is not None:
-            # A seeded episode seeds the random baseline's sampler too, so a
-            # seeded run reproduces; an unseeded one keeps the running stream.
-            self._client.action_space.seed(seed)
-        if self._model_client is not None:
-            # Mark a reset boundary on the served route; the seed rides too, as
-            # the served model's context["episode_seed"] on every predict of
-            # this episode.
-            self._model_client.reset(seed)
-        else:
-            if self._adapter is not None:
-                self._adapter.reset()
-            self._replay = self._new_replay()
-        self._terminated = self._truncated = False
-        self._steps = 0
-        self._reward = 0.0
-        self._last_info = info
-        self._episode_id = uuid.uuid4().hex
-        self._episode_open = True
-        # Viewer telemetry: start the episode clock, drop the inter-step timer (so the
-        # first step's sps isn't computed off the reset gap), and record the seed.
-        self._ep_start = time.perf_counter()
-        self._last_step_t = None
-        self._seed = seed
-        self._trial = trial_index
-        self._feed_view(obs)
-        return cast("ObsT", obs), info
-
-    @_session_operation
-    def predict(self, observation: ObsT) -> ActT:
-        """Map one env observation to an env-ready action (the model's adapter applied)."""
-        self._refuse_in_own_hooks("predict()")
-        self._require_model_open("predict()")
-        self._ensure_connected()
-        if self._predict is RANDOM_SAMPLE:
-            t0 = time.perf_counter()
-            action = self._client.action_space.sample()
-            self._record_predict((time.perf_counter() - t0) * 1000.0)
-            return cast("ActT", action)
-        if self._model_client is not None:
-            # Served model: the server applies the adapter (and any chunk replay);
-            # we only bridge the obs out and the env-ready action back. The timed span
-            # is the whole served round-trip -- the meaningful "model" cost host-side.
-            bridge = self._bridge if self._bridge is not None else identity_bridge
-            t0 = time.perf_counter()
-            action = self._model_client.predict(bridge.encode(observation))
-            self._record_predict((time.perf_counter() - t0) * 1000.0)
-            return cast("ActT", bridge.decode(action))
-        model_bridge = self._bridge if self._bridge is not None else self._env_bridge
-        # Local mode always has a predict (only the served-model branch above lacks
-        # one). When chunking (horizon > 1) the replay re-plans through
-        # predict_chunk(payload, horizon) -- which returns a chunk the queue splits
-        # and replays one step at a time -- otherwise through single-step predict.
-        # The horizon goes in positionally: the corner was normalized to the internal
-        # (obs, horizon) contract, so a model that ignores it still binds cleanly.
-        # The corner and its context acceptance are properties of the session
-        # (corners and horizon are fixed once connected), sniffed on the first
-        # predict rather than per step -- this is the hot path.
-        if self._replay_fn is None:
-            if self._horizon > 1 and self._predict_chunk is not None:
-                chunk_fn = self._predict_chunk
-                horizon = self._horizon
-                self._takes_context = accepts_context(chunk_fn, 2)
-
-                def _replay(obs: Any, context: Mapping[str, Any] | None = None) -> Any:
-                    if context is not None:
-                        return chunk_fn(obs, horizon, context)
-                    return chunk_fn(obs, horizon)
-
-                self._replay_fn = cast("Callable[..., Any]", _replay)
-            else:
-                self._replay_fn = cast("Callable[..., Any]", self._predict)
-                self._takes_context = accepts_context(self._replay_fn, 1)
-        replay_fn = self._replay_fn
-        takes_context = self._takes_context
-
-        # Time the forward inside the replay thunk so model_ms records only on steps
-        # that re-plan (the thunk is skipped while a chunk replays), keeping it a true
-        # forward cost rather than a near-zero queue pop.
-        def _forward() -> Any:
-            t0 = time.perf_counter()
-            # The same context contract the served path's native worker hands a
-            # model: this episode's identity and explicit reset seed, nothing
-            # positional or path-specific.
-            predict_context = (
-                {"episode_id": self._episode_id, "episode_seed": self._seed}
-                if takes_context
-                else None
-            )
-            out = _predict_step(
-                replay_fn,
-                observation,
-                self._adapter,
-                self._instruction,
-                self._text_placements,
-                self._env_bridge,
-                model_bridge,
-                self._device,
-                predict_context,
-            )
-            self._record_predict((time.perf_counter() - t0) * 1000.0)
-            return out
-
-        # The replayed-step tick: a queued action still consumed an env step, so
-        # every frame window sees this observation. Without it a stacked model's
-        # payloads would depend on the execution horizon.
-        def _observe() -> None:
-            self._adapter.observe(observation, input_bridge=self._env_bridge)
-
-        raw_action = self._replay.next_action(
-            _forward, _observe if self._adapter is not None else None
-        )
-        # Mirror the local chunk-replay position for the HUD (1-based; 0/0 = not
-        # chunking). The length is the chunk the model actually returned (post-cap),
-        # not the requested horizon, so a short native chunk displays truthfully.
-        if self._horizon > 1:
-            self._chunk_len = self._replay.last_chunk_len
-            self._chunk_pos = self._chunk_len - self._replay.pending
-        else:
-            self._chunk_len = self._chunk_pos = 0
-        if self._adapter is not None:
-            action = self._adapter.transform_action_value(
-                raw_action, action_bridge=model_bridge
-            )
-            if self._action_box is not None:
-                action = _fit_box(cast("Tensor", action), self._action_box)
-            return cast("ActT", from_value(action, self._env_bridge))
-        return cast("ActT", raw_action)
-
-    def _record_predict(self, ms: float) -> None:
-        """Book one model forward: the HUD's smoothed model time and run telemetry."""
-        self._model_ms = _ema(self._model_ms, ms)
-        if self._telemetry is not None:
-            self._telemetry.record("model.predict", "model", ms)
-
-    @_session_operation
-    def step(self, action: ActT) -> tuple[ObsT, float, bool, bool, Mapping[str, Any]]:
-        """Apply one action to the env; record reward and termination.
-
-        With a viewer paced by :attr:`View.step_hz <rlmesh.View.step_hz>`, returns
-        no sooner than the next step is due.
-        """
-        self._refuse_in_own_hooks("step()")
-        if self._model_calls is not None and self._model_calls.closed:
-            raise RuntimeError(CLOSED_TEXT)
-        self._ensure_connected()
-        t0 = time.perf_counter()
-        obs, reward, terminated, truncated, info = self._client.step(action)
-        now = time.perf_counter()
-        if self._telemetry is not None:
-            self._telemetry.record("env.step", "env", (now - t0) * 1000.0)
-        # env_ms = the simulator step alone; sps = realized throughput from the gap
-        # between consecutive steps (model + env + overhead), skipping the first step
-        # of an episode (no prior timestamp).
-        self._env_ms = _ema(self._env_ms, (now - t0) * 1000.0)
-        if self._last_step_t is not None:
-            dt = now - self._last_step_t
-            if dt > 0.0:
-                self._sps = _ema(self._sps, 1.0 / dt)
-        self._last_step_t = now
-        self._reward += float(reward)
-        self._steps += 1
-        self._terminated = bool(terminated)
-        self._truncated = bool(truncated)
-        self._last_info = info
-        self._feed_view(obs)
-        # Viewer "skip episode" (the `n` key / `/skip` button): a soft, non-failure end
-        # -- like a time-limit truncation -- that advances to the next episode, distinct
-        # from quit (which stops the whole run early with a partial result). Forcing the
-        # returned `truncated` true ends the episode in any loop that reads this tuple
-        # (the catalog's record.run) as well as ones reading `self.done` (Session.run).
-        # Quit (`q` / Esc) also truncates the current episode so a hand-driven loop
-        # ends; Session.run additionally stops iterating episodes (see run()).
-        if self._view_driver is not None and (
-            self._view_driver.consume_skip() or self._view_driver.quit_requested()
-        ):
-            truncated = True
-            self._truncated = True
-        self._paced_s = (
-            self._view_driver.pace() if self._view_driver is not None else 0.0
-        )
-        return (
-            cast("ObsT", obs),
-            float(reward),
-            bool(terminated),
-            bool(truncated),
-            cast("Mapping[str, Any]", info),
-        )
-
-    @property
-    def contract(self) -> Any:
-        """The connected env's contract (connects on first use)."""
-        self._ensure_connected()
-        return self._contract
-
-    @property
-    def num_envs(self) -> int:
-        """Lanes the connected env runs (a session drives one)."""
-        return int(getattr(self.contract, "num_envs", 1) or 1)
-
-    def frame_sources(self) -> FrameSources:
-        """The env's image roles and ``render()`` source, as the viewer sees them."""
-        self._ensure_connected()
-        return self._frame_sources(context_only=False)
-
-    def _frame_sources(self, *, context_only: bool) -> FrameSources:
-        self._ensure_connected()
-        sources = discover_frame_sources(self._contract, self._client)
-        raw = sources.render
-        if raw is None or not self._render_reachable(context_only=context_only):
-            return FrameSources(sources.roles, None, None)
-        session_ref = weakref.ref(self)
-
-        def render() -> object:
-            session = session_ref()
-            if session is None:
-                raise RuntimeError("session has been dropped")
-            session._require_open()
-            with session._active_operation():
-                # The operation above reserves access; an idle direct call now
-                # owns one depth, whereas a hook already has the run's depth.
-                own_hook = session._hook_thread == threading.get_ident()
-                local = classify_env_target(session._client)[0] == "env"
-                if (
-                    session._rendering
-                    or (session._in_hooks and not own_hook)
-                    or (session._op_depth > 1 and not own_hook)
-                    or (context_only and local and not own_hook)
-                ):
-                    raise RuntimeError(
-                        "render is unreachable outside its hook dispatch"
-                    )
-                session._rendering = True
-                try:
-                    return raw()
-                finally:
-                    session._rendering = False
-
-        return FrameSources(sources.roles, sources.render_label, render)
-
-    def reader(self, *items: object) -> Reader:
-        """Build a read-only, role-addressed view over this env's observations.
-
-        Each item is a role constant -- kept in the env's native encoding -- or a
-        model-input leaf declaring the encoding you want
-        (``Image(IMAGE_PRIMARY, layout="hwc")``, ``State(EEF_POS)``). The returned
-        :class:`Reader` maps a raw observation to ``{role: value}`` through the same
-        adapter pipeline a model uses, so it is encoding-agnostic across envs and
-        runs identically in the native core. Resolved once here, reused each step::
-
-            read = sess.reader(Image(IMAGE_PRIMARY, layout="hwc"), EEF_POS)
-            obs, _ = sess.reset()
-            while not sess.done:
-                screen.show(read(obs)[IMAGE_PRIMARY])
-                obs, *_ = sess.step(sess.predict(obs))
-
-        A bare role is desugared to the env-native leaf for that role (by the env's
-        own tag); pass an explicit leaf to override the encoding.
-        """
-        self._refuse_in_own_hooks("reader()")
-        return self._reader(*items)
-
-    def _reader(self, *items: object) -> Reader:
-        """:meth:`reader` without the own-hooks guard (``read`` is a RunContext member)."""
-        if not items:
-            raise TypeError(
-                "reader() needs at least one role or model-input leaf to read"
-            )
-        self._ensure_connected()
-        adapter, roles = resolve_read_adapter(self._contract, items, self._trust)
-        return Reader(adapter, roles, adapter_env_bridge(self._client))
-
-    def read(self, observation: object, item: object) -> Any:
-        """One-shot read of a single role from one observation.
-
-        The single-value convenience for :meth:`reader` -- ``item`` is a role
-        constant or a model-input leaf. The reader is resolved once and cached per
-        item, so calling this every step does not re-resolve::
-
-            ee = sess.read(obs, EEF_POS)
-            img = sess.read(obs, Image(IMAGE_PRIMARY, layout="hwc"))
-
-        The value is typed ``Any`` (like :class:`Reader`'s): its concrete shape is
-        the leaf's declared encoding, which the caller owns.
-        """
-        self._require_open()
-        reader = self._read_cache.get(item)
-        if reader is None:
-            reader = self._reader(item)
-            self._read_cache[item] = reader
-        return reader(observation)[reader.roles[0]]
-
-    def observation_roles(self) -> ObservationRoles:
-        """The observation roles this session's env declares, grouped by kind.
-
-        Connects if needed, reads the env contract's published tags, and returns
-        their :attr:`~rlmesh.adapters.EnvTags.observation_roles`. An env that
-        publishes no tags yields empty groups -- "none declared" is an answer,
-        not an error.
-        """
-        from ..adapters import EnvTags
-        from ..adapters import ObservationRoles as _ObservationRoles
-
-        self._refuse_in_own_hooks("observation_roles()")
-        self._ensure_connected()
-        env_tags = EnvTags.from_metadata(
-            getattr(self._contract, "metadata", None) or {}
-        )
-        if env_tags is None:
-            return _ObservationRoles()
-        return env_tags.observation_roles
-
-    @_session_operation
-    def run(
-        self,
-        *,
-        seeds: Sequence[int] | None = None,
-        episodes: int | None = None,
-        max_episode_steps: int | None = None,
-        max_episode_seconds: float | None = None,
-        hooks: RunHooks | None = None,
-        trial_index_base: int = 0,
-    ) -> RunResult:
-        """Drive whole episodes to completion and return a typed :class:`RunResult`.
-
-        The single drive loop: pumps this session's own ``reset`` / ``predict`` /
-        ``step`` primitives, so a served model's ``run`` routes through here.
-        ``episodes`` is the exact number of episodes to run (see
-        :func:`resolve_episode_budget`: one by default, the length of ``seeds``
-        when only seeds are given, and the two must agree when both are).
-        ``max_episode_steps`` / ``max_episode_seconds``
-        cap each episode -- hitting a cap marks it ``truncated``, exactly like the
-        built-in step bound (the wall-clock cap is checked at the top of the step
-        loop). Episode ``i`` walks trial ordinal ``trial_index_base + i``,
-        delivered as ``reset(options={"trial_index": ...})`` to an env that
-        declared the key in :attr:`EnvFactory.reset_options
-        <rlmesh.EnvFactory.reset_options>` (an env that did not never sees it)
-        and recorded on :attr:`EpisodeResult.trial` either way; the base lets a
-        local eval walk the same states as a platform shard. ``hooks``
-        (:class:`RunHooks`) observes the loop; hook exceptions propagate and
-        abort the run, and :meth:`RunHooks.on_run_end` always fires exactly once
-        with the completed episodes, even on an error or interrupt.
-
-        Does **not** close the session: a caller-held session (from
-        :func:`rlmesh.session` / :meth:`Model.session`) stays connected -- viewer
-        and hooks included -- so ``run`` can be called again or mixed with manual
-        driving; close it via :meth:`close` or the ``with`` block. (The one-shot
-        :func:`rlmesh.run` / :meth:`Model.run` own their internal session and
-        close it for you.)
-        """
-        self._refuse_in_own_hooks("run()")
-        check_episode_caps(max_episode_steps, max_episode_seconds)
-        if trial_index_base < 0:
-            raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
-        n_episodes = resolve_episode_budget(episodes, seeds)
-        self._require_model_open("run()")
-        self._ensure_connected()
-        step_cap = (
-            max_episode_steps
-            if max_episode_steps is not None
-            else _MAX_STEPS_PER_EPISODE
-        )
-        results: list[EpisodeResult] = []
-        run_end_error: BaseException | None = None
-        telemetry = _RunTelemetry()
-        self._telemetry = telemetry
-        self._ep_total = n_episodes
-        # Walk the benchmark's trials in order (episode i is trial base + i), but
-        # only for an env that declared the option -- everyone else keeps today's
-        # seed-only reset and no warning.
-        walks_trials = declares_reset_option(self._contract, "trial_index")
-        self._run_failed = True
-        run_raised = False
-        end_error: BaseException | None = None
-        try:
-            if hooks is not None:
-                with self._own_hooks():
-                    hooks.on_run_start(_SessionRunContext(self))
-            for i in range(n_episodes):
-                self._ep_index = i + 1
-                seed = seeds[i] if seeds is not None and i < len(seeds) else None
-                trial = trial_index_base + i
-                obs, last_info = self.reset(
-                    seed=seed, trial_index=trial if walks_trials else None
-                )
-                # Recorded whether or not the env asked for it (delivery is what
-                # the declaration gates), matching the native loop's report.
-                self._trial = trial
-                ep_start = time.perf_counter()
-                round_start = ep_start
-                if hooks is not None:
-                    with self._own_hooks():
-                        hooks.on_episode_start(episode=i, seed=seed)
-                predict_total_ms = 0.0
-                step_total_ms = 0.0
-                while not self.done and self._steps < step_cap:
-                    if (
-                        max_episode_seconds is not None
-                        and time.perf_counter() - ep_start >= max_episode_seconds
-                    ):
-                        break
-                    step_index = self._steps
-                    prev_obs = obs
-                    t0 = time.perf_counter()
-                    action = self.predict(prev_obs)
-                    t1 = time.perf_counter()
-                    obs, reward, terminated, truncated, last_info = self.step(action)
-                    t2 = time.perf_counter()
-                    paced_ms = self._paced_s * 1000.0
-                    predict_ms = (t1 - t0) * 1000.0
-                    step_ms = (t2 - t1) * 1000.0 - paced_ms
-                    telemetry.record(
-                        "runner.round", "runner", (t2 - round_start) * 1000.0 - paced_ms
-                    )
-                    round_start = t2
-                    predict_total_ms += predict_ms
-                    step_total_ms += step_ms
-                    # The step cap truncates at the capped step itself, so the
-                    # event says so -- as the native loop's does.
-                    if not self.done and self._steps >= step_cap:
-                        truncated = True
-                        self._truncated = True
-                    if hooks is not None:
-                        with self._own_hooks():
-                            hooks.on_step(
-                                StepEvent(
-                                    episode=i,
-                                    seed=seed,
-                                    step=step_index,
-                                    observation=prev_obs,
-                                    action=action,
-                                    reward=reward,
-                                    terminated=terminated,
-                                    truncated=truncated,
-                                    info=last_info,
-                                    predict_ms=predict_ms,
-                                    step_ms=step_ms,
-                                    read=partial(self.read, prev_obs),
-                                )
-                            )
-                if not self._terminated and not self._truncated:
-                    self._truncated = True
-                steps = self._steps
-                episode = EpisodeResult(
-                    index=i,
-                    seed=seed,
-                    trial=trial,
-                    steps=steps,
-                    reward=self._reward,
-                    terminated=self._terminated,
-                    truncated=self._truncated,
-                    success=_episode_success(last_info),
-                    duration_s=time.perf_counter() - ep_start,
-                    predict_ms=predict_total_ms / steps if steps else None,
-                    step_ms=step_total_ms / steps if steps else None,
-                )
-                results.append(episode)
-                if hooks is not None:
-                    with self._own_hooks():
-                        hooks.on_episode_end(episode)
-                # Viewer quit (`q` / Esc): stop early and return the partial result
-                # -- the just-recorded (truncated) episode is the last one. A real
-                # Ctrl-C still raises KeyboardInterrupt out of the loop above.
-                if self._view_driver is not None and self._view_driver.quit_requested():
-                    break
-            self._run_failed = False
-        except BaseException:
-            run_raised = True
-            raise
-        finally:
-            self._telemetry = None
-            result = RunResult(episodes=tuple(results), telemetry=telemetry.rows())
-            if hooks is not None:
-                try:
-                    with self._own_hooks():
-                        hooks.on_run_end(result)
-                except BaseException as exc:
-                    run_end_error = exc
-            # The first error wins: the run's own, then on_run_end's, then the
-            # last episode end's (RUN-P11).
+    def on_run_end(self, result: RunResult) -> None:
+        error: BaseException | None = None
+        for hook in self._hooks:
             try:
-                self._end_episode()
-            except BaseException as exc:
-                if not run_raised and run_end_error is None:
-                    end_error = exc
-        if run_end_error is not None:
-            self._run_failed = True
-            raise run_end_error
-        if end_error is not None:
-            self._run_failed = True
-            raise end_error
-        return result
-
-    @_session_operation
-    def close(self) -> None:
-        """Close this session: served route (and owned source), connection, env.
-
-        For a served model, closes the model client and shuts down a managed source it
-        started (e.g. a ``SandboxModel`` container). For the env, shuts it down only on
-        the ``close_env`` opt-in, and always releases what this session made itself:
-        a connection it dialed or an env it built from a factory. A local model
-        instance is the caller's and is never closed here (one the session built
-        from a class is closed exactly once).
-
-        A viewer with :attr:`View.hold <rlmesh.View.hold>` holds first, but only
-        after a session that ended normally: when the last :meth:`run` raised, or
-        the ``with`` block is exiting on an exception (``KeyboardInterrupt``
-        included), the hold is skipped so everything is released and the error
-        propagates at once.
-
-        Idempotent: later calls are no-ops, and any other use of a closed session
-        raises ``RuntimeError``.
-        """
-        self._refuse_in_own_hooks("close()")
-        self._close(failed=self._run_failed)
-
-    def _close(self, *, failed: bool) -> None:
-        """Close; ``failed`` (the session is ending on an error) skips the hold."""
-        if self._closed:
-            return
-        self._closed = True
-        # Every step runs even when an earlier one raises (a failing
-        # `on_episode_end` must not leak the env); the first error propagates.
-        first_error: BaseException | None = None
-        for release in (
-            (
-                partial(self._view_driver.close, hold=not failed)
-                if self._view_driver is not None
-                else None
-            ),
-            # End an episode left open by a hand-driven loop, so a stateful model's
-            # `on_episode_end` fires for the last episode even without a reset().
-            self._end_episode,
-            self._on_close,
-            self._release_model_client,
-            self._release_env,
-        ):
-            if release is None:
-                continue
-            try:
-                release()
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-        if first_error is not None:
-            raise first_error
-
-    def _release_model_client(self) -> None:
-        model_client, self._model_client = self._model_client, None
-        if model_client is None:
-            return
-        try:
-            model_client.close()
-        finally:
-            owner, self._owner = self._owner, None
-            if owner is not None:
-                owner.shutdown()
-
-    def _release_env(self) -> None:
-        if self._connected:
-            try:
-                target = self._client if self._owns_client else self._env
-                # Explicit opt-in to stop the env: the dialed client if we opened
-                # it, else the caller-supplied env/address. An owned local env
-                # (built from a factory) has only close(), which the release
-                # below is; shutting it down here too would close it twice.
-                if self._close_env and not (
-                    self._owns_client and not hasattr(target, "shutdown")
-                ):
-                    shutdown_env(target)
-            finally:
-                # Always release the dialed connection and clear state, even if the
-                # shutdown raised (the error still propagates after cleanup).
-                if self._owns_client and self._client is not None:
-                    close_client(self._client)
-                self._connected = False
-                self._client = None
-        elif self._owns_env:
-            close_client(self._env)
-
-    def __enter__(self) -> Session[ObsT, ActT]:
-        return self
-
-    @_session_operation
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: object,
-    ) -> None:
-        self._close(failed=exc_type is not None or self._run_failed)
+                hook.on_run_end(result)
+            except BaseException as exc:  # re-raised after the last hook
+                error = error or exc
+        if error is not None:
+            raise error
 
 
-class _SessionRunContext:
-    """A retained protocol view, without ownership of the source session."""
-
-    def __init__(self, session: Session[Any, Any]) -> None:
-        self._session_ref = weakref.ref(session)
-
-    def _session(self) -> Session[Any, Any]:
-        session = self._session_ref()
-        if session is None:
-            raise RuntimeError("session has been dropped")
-        session._require_open()  # pyright: ignore[reportPrivateUsage]
-        return session
-
-    @property
-    def contract(self) -> Any:
-        return self._session().contract
-
-    @property
-    def num_envs(self) -> int:
-        return self._session().num_envs
-
-    def read(self, observation: object, item: object) -> Any:
-        return self._session().read(observation, item)
-
-    def frame_sources(self) -> FrameSources:
-        return self._session()._frame_sources(context_only=True)  # pyright: ignore[reportPrivateUsage]
-
-    def __getattr__(self, name: str) -> Any:
-        # Preserve the session's own descriptive errors for non-protocol use.
-        return getattr(self._session(), name)
+def as_hooks(hooks: HooksArg) -> RunHooks | None:
+    """``hooks=`` as one :class:`RunHooks`: a list fans out, in order."""
+    if hooks is None or isinstance(hooks, RunHooks):
+        return hooks
+    listed = tuple(hooks)
+    if not listed:
+        return None
+    return listed[0] if len(listed) == 1 else _HookList(listed)
 
 
 class NativeRunContext:
     """The :class:`RunContext` of a native :meth:`Model.run`.
 
-    ``contract`` is filled by the worker's route resolve at connect; ``client``
-    is the locally served env object (so ``render()`` is reachable while a hook
-    runs, the env being idle between runtime events) or ``None`` for an
-    address / handle target.
+    ``contract`` is filled when the runtime connects to the env (a local model's
+    route resolve may refine it); ``client`` is the locally served env object
+    (so ``render()`` is reachable while a hook runs, the env being idle between
+    runtime events) or ``None`` for an address / handle target.
     """
 
     def __init__(self, *, trust: bool) -> None:
         self._trust = trust
-        self.contract: Any = None
+        self._contract: Any = None
+        self._core: Any = None
         self._client: object | None = None
         self._bridge = adapter_env_bridge(None)
         self._read_cache: dict[Any, Reader] = {}
         self._hook_thread: int | None = None
         self._rendering = False
 
+    @property
+    def contract(self) -> Any:
+        return self._core.env_contract if self._core is not None else self._contract
+
+    @contract.setter
+    def contract(self, value: Any) -> None:
+        self._contract = value
+
     @contextlib.contextmanager
-    def dispatch(self) -> Iterator[None]:
+    def _dispatch(self) -> Iterator[None]:
         previous = self._hook_thread
         self._hook_thread = threading.get_ident()
         try:
@@ -1849,15 +696,24 @@ class NativeRunContext:
         finally:
             self._hook_thread = previous
 
-    def bind_client(self, client: object | None) -> None:
-        self._client = client
+    @property
+    def client(self) -> object | None:
+        return self._client
+
+    def bind_client(self, client: object | None, *, local: bool = True) -> None:
+        """Decode values in ``client``'s framework.
+
+        ``local`` also reaches its ``render()``; a remote handle lent to the run
+        is not reachable.
+        """
+        self._client = client if local else None
         self._bridge = adapter_env_bridge(client)
 
     @property
     def num_envs(self) -> int:
         return int(getattr(self.contract, "num_envs", 1) or 1)
 
-    def decode(self, value: object) -> Any:
+    def _decode(self, value: object) -> Any:
         """A neutral runtime value in the env's own framework."""
         return self._bridge.decode(cast("Any", value))
 
@@ -1885,134 +741,3 @@ class NativeRunContext:
                 self._rendering = False
 
         return FrameSources(sources.roles, sources.render_label, render)
-
-
-@dataclass
-class _NativeEpisode:
-    index: int
-    seed: int | None
-    trial: int | None
-    steps: int = 0
-
-
-@dataclass
-class _NativeGroup:
-    """One lane group's in-flight step: what it observed, then what it did."""
-
-    ids: list[str]
-    observations: list[Any]
-    actions: list[Any] | None = None
-
-
-class NativeHookRelay:
-    """Turns the native runtime's plain-data events into :class:`RunHooks` calls.
-
-    Events arrive per lane group, keyed by the group's primary ``env_index``:
-    an observation, the action predicted from it, then the step's outcome with
-    the terminal flags the runtime already knows (so a ``StepEvent`` is exact,
-    never reconstructed). ``results`` collects the completed episodes for
-    :meth:`RunHooks.on_run_end` on a run that fails midway.
-    """
-
-    def __init__(self, hooks: RunHooks, context: NativeRunContext) -> None:
-        self._hooks = hooks
-        self._context = context
-        self._episodes: dict[str, _NativeEpisode] = {}
-        self._groups: dict[int, _NativeGroup] = {}
-        self.results: list[EpisodeResult] = []
-
-    def episode_started(
-        self,
-        episode_id: str,
-        index: int,
-        env_index: int,
-        seed: int | None,
-        trial: int | None,
-    ) -> None:
-        _ = env_index
-        self._episodes[episode_id] = _NativeEpisode(index - 1, seed, trial)
-        with self._context.dispatch():
-            self._hooks.on_episode_start(episode=index - 1, seed=seed)
-
-    def observation(self, env_index: int, ids: list[str], values: list[Any]) -> None:
-        decoded = [self._context.decode(v) for v in values]
-        self._groups[env_index] = _NativeGroup(ids, decoded)
-
-    def action(self, env_index: int, values: list[Any]) -> None:
-        self._groups[env_index].actions = [self._context.decode(v) for v in values]
-
-    def step(
-        self,
-        env_index: int,
-        rewards: list[float],
-        terminated: list[bool],
-        truncated: list[bool],
-        autoreset_roll: list[bool],
-        info: Mapping[str, Any] | None,
-        predict_ms: float,
-        step_ms: float,
-    ) -> None:
-        group = self._groups[env_index]
-        actions = group.actions or []
-        for lane, episode_id in enumerate(group.ids):
-            episode = self._episodes.get(episode_id)
-            if episode is None or autoreset_roll[lane]:
-                continue
-            if lane >= len(actions):
-                # The runtime always sends the action it stepped (RUN-21).
-                from .._rlmesh import RLMeshException
-
-                raise RLMeshException("the runtime reported a step without its action")
-            observation = group.observations[lane]
-            event = StepEvent(
-                episode=episode.index,
-                seed=episode.seed,
-                step=episode.steps,
-                observation=observation,
-                action=actions[lane],
-                reward=rewards[lane],
-                terminated=terminated[lane],
-                truncated=truncated[lane],
-                info=info or {},
-                predict_ms=predict_ms,
-                step_ms=step_ms,
-                read=partial(self._context.read, observation),
-            )
-            episode.steps += 1
-            with self._context.dispatch():
-                self._hooks.on_step(event)
-
-    def episode_completed(
-        self,
-        episode_id: str,
-        index: int,
-        env_index: int,
-        seed: int | None,
-        trial: int | None,
-        steps: int,
-        reward: float,
-        terminated: bool,
-        truncated: bool,
-        success: bool | None,
-        duration_s: float,
-        timings: tuple[float | None, float | None],
-    ) -> None:
-        _ = env_index
-        self._episodes.pop(episode_id, None)
-        predict_ms, step_ms = timings
-        result = EpisodeResult(
-            index=index - 1,
-            seed=seed,
-            trial=trial,
-            steps=steps,
-            reward=reward,
-            terminated=terminated,
-            truncated=truncated,
-            success=success,
-            duration_s=duration_s,
-            predict_ms=predict_ms,
-            step_ms=step_ms,
-        )
-        self.results.append(result)
-        with self._context.dispatch():
-            self._hooks.on_episode_end(result)

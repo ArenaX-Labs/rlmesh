@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::types::ModelObservation;
+use super::types::{EpisodeInfo, ModelObservation};
 use crate::{Result, binding::spaces};
 
 /// Resolves per-env adapter state (e.g. an env→model adapter) when an adapter is
@@ -66,6 +66,9 @@ pub struct ResolveOptions {
     /// A runtime that does not is refused a stacked adapter at a horizon above
     /// 1, since the window would hold only decision-point frames.
     pub delivers_history: bool,
+    /// The workflow edition the run executes at, which a model served
+    /// elsewhere is pinned to (`None`: unpinned).
+    pub workflow_edition: Option<rlmesh_proto::Edition>,
 }
 
 /// What a resolved route needs from the runtime, answered on
@@ -81,6 +84,9 @@ pub struct RouteNeeds {
     /// frame window: the runtime must then deliver every replayed step as a
     /// history row on the next predict, stamped with steps.
     pub history: Option<HistoryNeeds>,
+    /// What the route's adapter resolve tolerated or applied (a zero-filled
+    /// camera, an allowed projection): carried into the run's result.
+    pub advisories: Vec<rlmesh_adapters::v1::Advisory>,
 }
 
 /// The frame windows a route keeps, answered on `ResolveAdapterResponse.history`.
@@ -125,8 +131,8 @@ pub struct HeldState {
 /// Implement [`predict`](ModelHandler::predict) to map an observation to encoded
 /// action bytes. The default hooks let stateful policies track resets, episode
 /// ends, and shutdown. Drive the handler with
-/// [`ModelWorker::run_local`](crate::binding::model::ModelWorker::run_local) or host it with
-/// [`ModelWorker::serve`](crate::binding::model::ModelWorker::serve).
+/// [`ModelWorker::run_local`](crate::binding::model::ModelWorker::run_local) or serve it
+/// on a session with `lockstep::ModelService`.
 #[async_trait]
 pub trait ModelHandler: Send {
     /// Produce an action for `observation`.
@@ -143,16 +149,10 @@ pub trait ModelHandler: Send {
     /// [`Error::model_recoverable`](crate::Error::model_recoverable) when the
     /// policy declines a request.
     ///
-    /// # Concurrency contract (pipelined predict)
+    /// # Concurrency
     ///
-    /// The served model endpoint pipelines Join-stream requests, so responses
-    /// may complete out of arrival order. The handler itself is never invoked
-    /// concurrently: `predict` and the lifecycle hooks take `&mut self`, and
-    /// the server holds a per-handler mutex across each call.
-    ///
-    /// Per-route lifecycle order is preserved. Calls for different routes may
-    /// interleave, still one at a time. The `model.concurrent_predict.v1`
-    /// handshake capability advertises this pipelining to clients.
+    /// The handler is never invoked concurrently: `predict` and the lifecycle
+    /// hooks take `&mut self`, one call at a time.
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>>;
 
     /// Produce an action for `observation` plus any open-loop chunk replay frames
@@ -204,6 +204,14 @@ pub trait ModelHandler: Send {
         results
     }
 
+    /// Whether [`predict_grouped`](Self::predict_grouped) fuses its groups
+    /// into one forward, so a served model gains from coalescing requests
+    /// into one call. Defaults to `false`: the default runs the groups one
+    /// at a time.
+    fn fuses_groups(&self) -> bool {
+        false
+    }
+
     /// Engine-held per-episode adapter state (frame-stack windows) at this
     /// endpoint, summed across routes — the state that grows with concurrent
     /// episodes and shrinks on episode-end GC. `None` for a handler that keeps
@@ -219,6 +227,16 @@ pub trait ModelHandler: Send {
     /// for a handler that does not measure it.
     fn take_adapter_ns(&mut self) -> u64 {
         0
+    }
+
+    /// What a model served elsewhere measured answering the last
+    /// predict-family call: its own total and phases (decode, user, encode,
+    /// queue, in flight), each its request's share of a batch it fused.
+    /// Read-and-clear, drained after [`take_adapter_ns`](Self::take_adapter_ns)
+    /// and [`held_state`](Self::held_state). `None` (the default) for a
+    /// handler answering here, which the caller times around its own call.
+    fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
+        None
     }
 
     /// Per-route setup invoked at `ResolveAdapter`, before any `predict` on the
@@ -260,4 +278,107 @@ pub trait ModelHandler: Send {
     async fn on_close(&mut self) -> Result<()> {
         Ok(())
     }
+
+    /// The session a run drives in (a session address), before its route
+    /// resolves: a model served elsewhere is invited into it, so its
+    /// predicts stay there. Defaults to nothing.
+    async fn join(&mut self, _session: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// The workflow editions a model served elsewhere declared in its
+    /// session, after [`join`](Self::join): a run executes at the floor
+    /// across the env, the model and itself. Defaults to `None`, which
+    /// leaves the run at the env's edition.
+    async fn workflow_editions(&mut self) -> Result<Option<rlmesh_proto::SessionOffer>> {
+        Ok(None)
+    }
+
+    /// The options this model adds to the env resets that start its
+    /// episodes, obtained once when a run begins and called off the predict
+    /// lock (see [`ModelResetOptions`]). Defaults to `None`: it adds none.
+    fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
+        None
+    }
 }
+
+/// The options a model adds to the env reset that starts one of its
+/// episodes, merged under the runtime's own reserved keys. A NEXT_STEP
+/// autoreset restarts lanes inside the env, with no reset to carry them.
+#[async_trait]
+pub trait ModelResetOptions: Send + Sync {
+    /// The options for `episode`, which a reset is about to start as trial
+    /// `trial_index`; `None` adds none.
+    async fn reset_options(
+        &self,
+        episode: &EpisodeInfo,
+        trial_index: Option<u64>,
+    ) -> Result<Option<rlmesh_spaces::MetaMap>>;
+}
+
+/// Forwards every call to the handler behind the pointer.
+macro_rules! forward_handler {
+    ($($ty:ty),*) => {$(
+#[async_trait]
+impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        (**self).predict(observation).await
+    }
+
+    async fn predict_chunked(&mut self, observation: ModelObservation) -> Result<PredictFrames> {
+        (**self).predict_chunked(observation).await
+    }
+
+    async fn predict_grouped(
+        &mut self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<Result<PredictFrames>> {
+        (**self).predict_grouped(observations).await
+    }
+
+    fn fuses_groups(&self) -> bool {
+        (**self).fuses_groups()
+    }
+
+    fn held_state(&self) -> Option<HeldState> {
+        (**self).held_state()
+    }
+
+    fn take_adapter_ns(&mut self) -> u64 {
+        (**self).take_adapter_ns()
+    }
+
+    fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
+        (**self).take_endpoint_timing()
+    }
+
+    fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
+        (**self).route_setup()
+    }
+
+    async fn reset_adapter(&mut self, env_id: &str, episode_ids: Vec<String>) -> Result<()> {
+        (**self).reset_adapter(env_id, episode_ids).await
+    }
+
+    async fn on_close(&mut self) -> Result<()> {
+        (**self).on_close().await
+    }
+
+    async fn join(&mut self, session: &str) -> Result<()> {
+        (**self).join(session).await
+    }
+
+    async fn workflow_editions(&mut self) -> Result<Option<rlmesh_proto::SessionOffer>> {
+        (**self).workflow_editions().await
+    }
+
+    fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
+        (**self).reset_options()
+    }
+}
+    )*};
+}
+
+// A boxed handler is what a binding holds when its model is local or served;
+// a borrowed one is what a run drives.
+forward_handler!(Box<H>, &mut H);

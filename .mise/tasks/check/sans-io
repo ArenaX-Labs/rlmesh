@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#MISE description="Sans-IO guard: rlmesh-session-core, rlmesh-tether and rlmesh-device build for wasm32-unknown-unknown and, without std, for a bare-metal target, with no clock reads, threads, sleeps or IO dependencies"
+#MISE dir="{{ config_root }}"
+#MISE depends=["setup:js"]
+
+# Each guarded crate carries its own clippy.toml with `disallowed-methods`
+# (Instant::now, SystemTime::now, thread::spawn, thread::sleep); clippy does
+# not merge config files, so it repeats the workspace's settings too. Time is
+# always an injected `now_ns`.
+set -euo pipefail
+
+crates=(rlmesh-session-core rlmesh-tether rlmesh-device)
+# A bare-metal target with atomics (ESP32-C6 class), for the no_std build an
+# embedded robot uses. Xtensa needs the esp toolchain, so it stays local.
+bare=riscv32imac-unknown-none-elf
+toolchain="$(mise current rust)"
+rustup target list --installed --toolchain "$toolchain" | grep -qx "$bare" ||
+  rustup target add --toolchain "$toolchain" "$bare"
+deny='^(tokio|mio|socket2|zenoh.*|tonic|hyper|async-std|getrandom|wasm-bindgen|js-sys|web-sys|libc)$'
+
+for crate in "${crates[@]}"; do
+  echo "==> $crate builds for wasm32-unknown-unknown"
+  cargo build -q -p "$crate" --target wasm32-unknown-unknown
+  echo "==> $crate: no clock reads, threads or sleeps"
+  cargo clippy -q -p "$crate" --all-targets -- -D warnings -D clippy::disallowed_methods
+  cargo clippy -q -p "$crate" --target wasm32-unknown-unknown -- -D warnings -D clippy::disallowed_methods
+  echo "==> $crate builds without std for $bare"
+  cargo clippy -q -p "$crate" --no-default-features --target "$bare" -- -D warnings -D clippy::disallowed_methods
+  # Its tests too, on the host (a bare target has no test harness).
+  cargo clippy -q -p "$crate" --no-default-features --all-targets -- -D warnings -D clippy::disallowed_methods
+  echo "==> $crate: dependency deny-list (normal deps, wasm target)"
+  found=$(cargo tree -q -p "$crate" -e normal --target wasm32-unknown-unknown --prefix none |
+    awk '{print $1}' | sort -u | grep -E "$deny" || true)
+  if [ -n "$found" ]; then
+    echo "forbidden dependencies in $crate: $(echo "$found" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+done
+# The device runtime links as a board's static library (its allocator and
+# panic handler included) on upstream Rust: the ESP32-C6's target.
+echo "==> rlmesh-device links as a static library for $bare"
+cargo build -q -p rlmesh-device --no-default-features --target "$bare"
+echo "OK: ${crates[*]} sans-IO"

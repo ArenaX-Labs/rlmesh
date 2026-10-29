@@ -323,12 +323,7 @@ def env_server(env: object, options: ServeOptions | None = None) -> EnvServer:
     import rlmesh
 
     try:
-        return rlmesh.EnvServer(
-            cast("ServedEnv", env),
-            host="127.0.0.1",
-            port=0,
-            options=options,
-        )
+        return rlmesh.EnvServer(cast("ServedEnv", env), ":0/env", options=options)
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -350,7 +345,8 @@ def test_remote_close_detaches_without_stopping_endpoint() -> None:
     server.start()
     try:
         remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-        assert remote.shutdown("default remote shutdown is disabled") is False
+        with pytest.raises(TypeError, match=r"server\.shutdown\(\)"):
+            remote.shutdown("an owner shutdown")
         remote.close()
 
         assert env.close_calls == 0
@@ -399,24 +395,6 @@ def test_remote_env_rejects_multi_env_endpoint() -> None:
         )
     finally:
         server.shutdown()
-
-
-def test_remote_shutdown_requires_explicit_allow() -> None:
-    import rlmesh
-
-    env = TinyEnv()
-    server = env_server(
-        env,
-        rlmesh.ServeOptions(allow_remote_shutdown=True),
-    )
-    server.start()
-    remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-    try:
-        assert remote.shutdown("test shutdown") is True
-    finally:
-        server.shutdown()
-
-    assert env.close_calls == 1
 
 
 def test_env_server_shutdown_is_idempotent_and_closes_env() -> None:
@@ -496,74 +474,6 @@ def test_env_server_wait_timeout_returns_false_while_running() -> None:
         server.shutdown()
 
     assert env.close_calls == 1
-
-
-def test_env_server_wait_returns_true_after_remote_shutdown() -> None:
-    import rlmesh
-
-    env = TinyEnv()
-    server = env_server(env, rlmesh.ServeOptions(allow_remote_shutdown=True))
-    server.start()
-    try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-        assert remote.shutdown("test shutdown") is True
-        assert server.wait(timeout=3.0) is True
-    finally:
-        server.shutdown()
-
-    assert env.close_calls == 1
-
-
-class ImageEnv(TinyEnv):
-    """Env whose observation is a ~200 KB uint8 image (compressible gradient)."""
-
-    def __init__(self) -> None:
-        import numpy as np
-        from rlmesh import spaces
-
-        super().__init__()
-        self.frame = (np.arange(240 * 280 * 3) % 251).astype(np.uint8)
-        self.frame = self.frame.reshape(240, 280, 3)
-        self.observation_space = spaces.Box(0, 255, (240, 280, 3), dtype=np.uint8)
-
-    def reset(
-        self, *, seed: int | None = None, options: dict[str, object] | None = None
-    ):
-        return self.frame, {}
-
-    def step(self, action: object):
-        return self.frame, 1.0, False, False, {}
-
-
-def test_env_server_compressed_responses_round_trip() -> None:
-    import numpy as np
-    import rlmesh
-    from rlmesh._editions import serve_options_declaring
-
-    options = rlmesh.ServeOptions(compress_responses=True)
-    assert options.compress_responses is True
-    assert rlmesh.ServeOptions().compress_responses is False
-    # Restamping an edition declaration keeps the compression opt-in.
-    restamped = serve_options_declaring(
-        options, option=rlmesh.current_workflow_edition()
-    )
-    assert restamped is not None and restamped.compress_responses is True
-
-    env = ImageEnv()
-    server = env_server(env, options)
-    server.start()
-    try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-        try:
-            obs, _ = remote.reset(seed=0)
-            np.testing.assert_array_equal(np.asarray(obs), env.frame)
-            obs, reward, *_ = remote.step(0)
-            np.testing.assert_array_equal(np.asarray(obs), env.frame)
-            assert reward == 1.0
-        finally:
-            remote.close()
-    finally:
-        server.shutdown()
 
 
 @pytest.mark.parametrize(
@@ -713,8 +623,8 @@ def test_client_constructor_default_timeout_applies() -> None:
 
 
 def test_recoverable_env_error_keeps_the_session() -> None:
-    """A recoverable env error fails one step; a fatal one ends the session
-    until the next reset reopens it."""
+    """A recoverable env error fails one step and keeps the session; a fatal
+    one fails as a non-recoverable error."""
     import rlmesh
 
     env = FailingStepEnv()
@@ -743,11 +653,6 @@ def test_recoverable_env_error_keeps_the_session() -> None:
             remote.step(0)
         assert fatal.value.is_recoverable is False
         assert not isinstance(fatal.value, rlmesh.RecoverableEnvironmentException)
-        assert str(fatal.value) == "[INTERNAL] step failed: solver diverged"
-        with pytest.raises(
-            rlmesh.EnvironmentException, match="reset to start a new session"
-        ):
-            remote.step(0)
 
         remote.reset(seed=1)
         remote.step(0)
@@ -925,7 +830,8 @@ def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
     server.start()
     try:
         remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address)
-        assert remote.shutdown("default remote shutdown is disabled") is False
+        with pytest.raises(TypeError, match=r"server\.shutdown\(\)"):
+            remote.shutdown("an owner shutdown")
         remote.close()
 
         assert env.close_calls == 0
@@ -949,7 +855,7 @@ def test_env_server_serves_one_env_vector_shape_as_scalar() -> None:
     from rlmesh.numpy import RemoteEnv
 
     env = TinyOneVectorEnv()
-    server = rlmesh.EnvServer(env, host="127.0.0.1", port=0)
+    server = rlmesh.EnvServer(env, ":0/env")
     server.start()
     try:
         client = RemoteEnv(server.address)
@@ -975,22 +881,22 @@ def test_env_server_asserts_the_expected_contract_branch(
     env.metadata = {ENV_BRANCH_METADATA_KEY: {"action_type": "abs"}}  # type: ignore[attr-defined]
 
     monkeypatch.setenv("RLMESH_EXPECTED_ENV_BRANCH", '{"action_type": "abs"}')
-    server = rlmesh.EnvServer(env, host="127.0.0.1", port=0)
+    server = rlmesh.EnvServer(env, ":0/env")
     server.shutdown()
 
     monkeypatch.setenv("RLMESH_EXPECTED_ENV_BRANCH", '{"action_type": "delta"}')
     with pytest.raises(ValueError, match="different contracts"):
-        rlmesh.EnvServer(env, host="127.0.0.1", port=0)
+        rlmesh.EnvServer(env, ":0/env")
 
     # An env that publishes no branch at all fails the same way (the two-phase
     # push order: a model image pinning a branch the env image cannot answer).
     plain = TinyEnv()
     with pytest.raises(ValueError, match="published null"):
-        rlmesh.EnvServer(plain, host="127.0.0.1", port=0)
+        rlmesh.EnvServer(plain, ":0/env")
 
     # Unset asserts nothing: the local and unmanaged paths are unchanged.
     monkeypatch.delenv("RLMESH_EXPECTED_ENV_BRANCH")
-    rlmesh.EnvServer(plain, host="127.0.0.1", port=0).shutdown()
+    rlmesh.EnvServer(plain, ":0/env").shutdown()
 
 
 def test_remote_vector_space_properties_load_from_contract() -> None:
@@ -1015,24 +921,6 @@ def test_remote_vector_space_properties_load_from_contract() -> None:
         server.shutdown()
 
 
-def test_remote_vector_shutdown_requires_explicit_allow() -> None:
-    import rlmesh
-
-    env = TinyVectorEnv()
-    server = env_server(
-        env,
-        rlmesh.ServeOptions(allow_remote_shutdown=True),
-    )
-    server.start()
-    remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address)
-    try:
-        assert remote.shutdown("test vector shutdown") is True
-    finally:
-        server.shutdown()
-
-    assert env.close_calls == 1
-
-
 def test_numpy_remote_vector_step_accepts_ndarray_action_batch() -> None:
     np = pytest.importorskip("numpy")
     from rlmesh import numpy as rlmesh_numpy
@@ -1047,7 +935,7 @@ def test_numpy_remote_vector_step_accepts_ndarray_action_batch() -> None:
             assert isinstance(observations, np.ndarray)
             observation_array = cast("NumpyArray", observations)
             assert observation_array.shape == (2, 4)
-            assert info["seed"] == [1, 2]
+            assert np.asarray(info["seed"]).tolist() == [1, 2]
 
             actions = np.zeros(2, dtype=np.int64)
             observations, rewards, terminated, truncated, info = remote.step(actions)
@@ -1058,7 +946,7 @@ def test_numpy_remote_vector_step_accepts_ndarray_action_batch() -> None:
             np.testing.assert_array_equal(rewards, np.asarray([1.0, 2.0]))
             np.testing.assert_array_equal(terminated, np.asarray([False, True]))
             np.testing.assert_array_equal(truncated, np.asarray([False, False]))
-            assert info["actions"] == [0, 0]
+            assert np.asarray(info["actions"]).tolist() == [0, 0]
             assert env.last_actions_shape == (2,)
         finally:
             remote.close()
@@ -1153,39 +1041,11 @@ def test_legacy_gym_vector_reset_and_step_shapes_are_normalized() -> None:
         server.shutdown()
 
 
-def test_model_run_close_env_requests_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
-    import rlmesh
-
-    env = TinyEnv()
-    server = env_server(
-        env,
-        rlmesh.ServeOptions(allow_remote_shutdown=True),
-    )
-    server.start()
-    remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-    shutdown_reasons: list[str] = []
-    original_shutdown = remote.shutdown
-
-    def shutdown(reason: str = "owner shutdown") -> bool:
-        shutdown_reasons.append(reason)
-        return original_shutdown(reason)
-
-    monkeypatch.setattr(remote, "shutdown", shutdown)
-
-    try:
-        model = rlmesh.Model(lambda _observation: 0)
-        model.run(remote, episodes=1, close_env=True)
-    finally:
-        server.shutdown()
-
-    assert shutdown_reasons == ["owner shutdown"]
-
-
 def test_model_lifecycle_callbacks_are_zero_argument() -> None:
     import rlmesh
 
     env = TinyEnv()
-    server = env_server(env, rlmesh.ServeOptions(allow_remote_shutdown=True))
+    server = env_server(env)
     server.start()
     calls: list[str] = []
 
@@ -1196,13 +1056,12 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
         calls.append("close")
 
     try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
         model = rlmesh.Model(
             lambda _observation: 0,
             on_episode_end=on_episode_end,
             on_close=on_close,
         )
-        model.run(remote, episodes=1, close_env=True)
+        model.run(server.address, episodes=1)
         assert calls == ["episode_end"]  # the model is borrowed: not closed
         model.close()
     finally:
@@ -1211,31 +1070,28 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
     assert calls == ["episode_end", "close"]
 
 
-def test_hand_driven_session_fires_episode_end_between_episodes() -> None:
-    """A stateful model driven BY HAND (reset/predict/step, not run()) still gets
-    its per-episode reset between episodes: on_episode_end fires once per episode
-    boundary (at the next reset, and at session close for the last), so a stateful
-    local policy clears its state the same as on the run()/served paths.
+def test_a_binding_fires_episode_end_between_episodes() -> None:
+    """A stateful model driven BY HAND (reset/step, not run()) still gets its
+    per-episode reset between episodes: on_episode_end fires once per episode,
+    so a stateful local policy clears its state the same as on the run()/served
+    paths.
     """
     import rlmesh
 
     env = TinyEnv()
-    server = env_server(env, rlmesh.ServeOptions(allow_remote_shutdown=True))
+    server = env_server(env)
     server.start()
     ends: list[int] = []
 
     try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
         model = rlmesh.Model(
             lambda _observation: 0, on_episode_end=lambda: ends.append(1)
         )
-        with model.session(remote, close_env=True) as sess:
+        with model.bind(server.address) as binding:
             for _ in range(2):
-                obs, _info = sess.reset()
-                while not sess.done:
-                    obs, *_rest = sess.step(sess.predict(obs))
-        # Two episodes by hand: episode_end fired once per boundary (the second
-        # reset ends episode 1; session close ends episode 2).
+                binding.reset()
+                while not binding.done:
+                    binding.step()
         assert sum(ends) == 2
     finally:
         server.shutdown()
@@ -1266,9 +1122,7 @@ def test_server_client_lifecycle_process_exits_promptly() -> None:
 
         server = EnvServer(
             TinyEnv(),
-            host="127.0.0.1",
-            port=0,
-            options=rlmesh.ServeOptions(allow_remote_shutdown=True),
+            ":0/env",
         )
         server.start()
         remote = rlmesh.RemoteEnv(server.address)
@@ -1323,8 +1177,7 @@ def test_repeated_evals_do_not_accumulate_fds_or_runtimes() -> None:
         server = env_server(TinyEnv())
         server.start()
         try:
-            remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-            rlmesh.run(rlmesh.Model(lambda _o: 0), remote, episodes=1)
+            rlmesh.run(rlmesh.Model(lambda _o: 0), server.address, episodes=1)
         finally:
             server.shutdown()
 

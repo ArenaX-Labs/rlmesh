@@ -8,6 +8,7 @@ and option handling -- is exercised without Docker.
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -22,9 +23,16 @@ def _start_result(*_args: object, **_kwargs: object) -> dict[str, str]:
     return {
         "requested_source": "gym://CartPole-v1",
         "resolved_source": "gym://CartPole-v1",
-        "address": "tcp://127.0.0.1:50051",
+        "address": "127.0.0.1:40000/env",
         "container_id": "container-1",
     }
+
+
+@pytest.fixture(autouse=True)
+def _container_port_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The container's published port accepts, and speaks no v1 wire."""
+    monkeypatch.setattr(sandbox, "_accepts", lambda _address: True)
+    monkeypatch.setattr(sandbox, "_answers_v1", lambda _address: False)
 
 
 class _Contract:
@@ -51,6 +59,9 @@ class _OkClient:
 
     def handshake(self) -> _Contract:
         return _Contract()
+
+    def drives_view(self) -> bool:
+        return False
 
     def env_id(self) -> str:
         return "env-id"
@@ -107,11 +118,7 @@ def test_sandbox_cleanup_runs_on_keyboard_interrupt(
 
     # The started container is stopped before the attach error propagates.
     assert stopped == ["container-1"]
-    assert captured["address"] == "tcp://127.0.0.1:50051"
-    assert (
-        captured["connect_timeout_seconds"]
-        == sandbox.SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS
-    )
+    assert captured["address"] == "127.0.0.1:40000/env"
 
 
 def test_sandbox_cleanup_runs_on_remote_attach_exception(
@@ -267,9 +274,11 @@ def test_sandbox_model_shutdown_is_idempotent(
     )
 
     model = object.__new__(SandboxModel)
-    model._address = "0.0.0.0:50051"
+    model._address = "127.0.0.1:40000/model"
     model._container_id = "container-x"
+    model._model = None
     model._closed = False
+    model._serving = threading.Lock()
 
     with model:
         model.shutdown()  # explicit early stop
@@ -392,7 +401,7 @@ class _ManualSession(sandbox.SandboxLifecycle):
         self.sandbox = sandbox.SandboxInfo(
             requested_source="img:1",
             resolved_source="docker://img:1",
-            address="127.0.0.1:1",
+            address="127.0.0.1:1/env",
             container_id="container-1",
         )
 
@@ -445,11 +454,11 @@ def test_attach_reports_inspect_failure_distinctly(
         session._attach(connect_timeout_seconds=1.0)
 
 
-def test_attach_caps_retry_timeout_at_remaining_deadline(
+def test_attach_retries_in_short_attempts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The first dial gets the full timeout; each retry's native timeout is
-    capped at the remaining deadline so the worst case never doubles it."""
+    """Each dial waits at most a second, so an image that will never answer
+    is told apart between attempts, and the next one retries."""
     timeouts: list[float] = []
 
     class FlakyClient:
@@ -476,6 +485,9 @@ def test_attach_caps_retry_timeout_at_remaining_deadline(
         def handshake(self) -> _Contract:
             return _Contract()
 
+        def drives_view(self) -> bool:
+            return False
+
         def env_id(self) -> str:
             return "env-id"
 
@@ -494,9 +506,7 @@ def test_attach_caps_retry_timeout_at_remaining_deadline(
     with rlmesh.SandboxEnv("CartPole-v1"):
         pass
 
-    assert len(timeouts) == 2
-    assert timeouts[0] == sandbox.SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS
-    assert 0 < timeouts[1] < timeouts[0]
+    assert timeouts == [1.0, 1.0]
 
 
 def test_prebuilt_source_rejects_security_build_options() -> None:
@@ -555,6 +565,9 @@ def test_sandbox_vector_env_default_mode_is_auto(
         def handshake(self) -> _VecContract:
             return _VecContract()
 
+        def drives_view(self) -> bool:
+            return False
+
         def env_id(self) -> str:
             return "env-id"
 
@@ -587,3 +600,62 @@ def test_top_level_sandbox_option_is_rejected_not_swallowed() -> None:
     ):
         with pytest.raises(TypeError, match="build=SandboxBuild"):
             sandbox.reject_sandbox_option_params({name: True})
+
+
+def test_an_image_built_with_rlmesh_0_1_is_refused_naming_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 0.1 image serves the v1 wire where a 0.2 one hosts its session: its
+    answer to an HTTP/2 preface gives it away, so the wait stops at once."""
+    import socket
+    import threading
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(2)
+
+    def v1_server() -> None:
+        for _ in range(2):  # the listening check, then the probe
+            conn, _ = listener.accept()
+            with conn:
+                if conn.recv(64):
+                    conn.sendall(bytes([0, 0, 0, 4, 0, 0, 0, 0, 0]))  # SETTINGS
+
+    thread = threading.Thread(target=v1_server, daemon=True)
+    thread.start()
+    monkeypatch.undo()  # the real probes
+    info = sandbox.SandboxInfo(
+        requested_source="old-model:0.1",
+        resolved_source="docker://old-model:0.1",
+        address=f"127.0.0.1:{listener.getsockname()[1]}/model",
+        container_id="container-1",
+    )
+
+    def never(_attempt: float) -> None:
+        raise ConnectionError("no session here")
+
+    with pytest.raises(ValueError, match=r"'old-model:0.1' was built with rlmesh 0.1"):
+        sandbox.wait_serving(info, 30.0, never)
+    thread.join(timeout=5)
+    listener.close()
+
+
+def test_another_container_joins_a_sandbox_at_its_network_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = sandbox.SandboxInfo(**_start_result())
+    monkeypatch.setattr(
+        sandbox,
+        "run_docker",
+        lambda argv: SimpleNamespace(returncode=0, stdout="172.17.0.3 \n", stderr=""),
+    )
+    assert sandbox.peer_session(info) == "172.17.0.3:40000"
+    monkeypatch.setattr(
+        sandbox,
+        "run_docker",
+        lambda argv: SimpleNamespace(
+            returncode=1, stdout="", stderr="no such container"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="no such container"):
+        sandbox.peer_session(info)

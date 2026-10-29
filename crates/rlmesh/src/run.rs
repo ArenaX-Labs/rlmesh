@@ -1,27 +1,35 @@
-//! Running a model against an env: runs, sessions, hooks and results.
+//! Running a model against an env: runs, bindings, hooks and results.
 //!
-//! Every call is sync and blocks; each has an `_async` twin. A run borrows
-//! the model and the env: it never closes the model, and closes the env only
-//! on `close_env`.
+//! Every call is sync and blocks; a run has an `_async` twin. A run or a
+//! binding borrows the model and the env: it never closes the model, and
+//! closes the env only on `close_env` (or one it built from a factory).
 
 pub(crate) mod drive;
 pub(crate) mod hooks;
 mod read;
 pub use read::{FrameSources, ReadFn, ReadItem, Reader, RenderFn};
+#[cfg(feature = "lockstep")]
+mod bind;
 mod lent;
 mod native;
 mod options;
+pub(crate) mod plan;
+pub(crate) mod report;
 mod results;
-mod session;
+pub(crate) mod routes;
+pub mod runtime;
 mod targets;
 
 #[cfg(test)]
 mod tests;
 
-pub use hooks::{RunContext, RunHooks};
-pub use options::{RunOptions, SessionOptions, SessionRunOptions};
-pub use results::{EpisodeResult, RunResult, StepEvent, TelemetryRow};
-pub use session::Session;
+#[cfg(feature = "lockstep")]
+pub use bind::Binding;
+pub use hooks::{RunContext, RunFrame, RunHooks};
+pub(crate) use options::check_horizon;
+pub use options::{BindOptions, RunOptions, resolve_execution_horizon};
+pub use results::{EpisodeResult, RunResult, RunResultSaveOptions, StepEvent, TelemetryRow};
+pub(crate) use results::{success_rate, success_rate_of};
 pub use targets::{EnvTarget, ModelTarget, RANDOM_SAMPLE, RandomSample};
 
 pub(crate) use native::Mode;
@@ -47,7 +55,7 @@ impl Model {
     ) -> Result<RunResult> {
         drive::refuse_in_async_context("Model::run")?;
         drive::run_sync(native::run_model(
-            self,
+            native::Driven::Local(self),
             env_or_address.into(),
             options,
             Mode::Sync,
@@ -62,54 +70,39 @@ impl Model {
         env_or_address: impl Into<EnvTarget<'e>>,
         options: RunOptions<'_>,
     ) -> Result<RunResult> {
-        native::run_model(self, env_or_address.into(), options, Mode::Async).await
+        native::run_model(
+            native::Driven::Local(self),
+            env_or_address.into(),
+            options,
+            Mode::Async,
+        )
+        .await
     }
 
-    /// Bind this model to `env` for driving by hand. Nothing dials until
-    /// first use; closing the session never closes the model.
-    pub fn session<'a>(
+    /// Bind this model to `env` and step it by hand, as Python's
+    /// `Model.bind`: connects now, serving a local env in this process for
+    /// the binding's life. Closing the binding never closes the model.
+    #[cfg(feature = "lockstep")]
+    pub fn bind<'a>(
         &'a self,
-        env_or_address: impl Into<EnvTarget<'a>>,
-        options: SessionOptions,
-    ) -> Result<Session<'a>> {
-        Session::create(Some(self), env_or_address.into(), options)
-    }
-
-    /// The async twin of [`session`](Model::session) (nothing dials at
-    /// creation, so it never waits).
-    pub async fn session_async<'a>(
-        &'a self,
-        env_or_address: impl Into<EnvTarget<'a>>,
-        options: SessionOptions,
-    ) -> Result<Session<'a>> {
-        self.session(env_or_address, options)
+        target: impl Into<EnvTarget<'a>>,
+        options: BindOptions<'a>,
+    ) -> Result<Binding<'a>> {
+        Binding::create(self.into(), target.into(), options)
     }
 }
 
-/// Drive `model` against `env` to completion. A [`Model`] runs on the native
-/// loop ([`Model::run`]); a [`RemoteModel`](crate::RemoteModel) and
-/// [`RANDOM_SAMPLE`] run through a session it opens and closes.
+/// Drive `model` against `env` to completion on the native loop: a
+/// [`Model`], a model served on a session ([`RemoteModel`](crate::RemoteModel)
+/// at its participant address) or [`RANDOM_SAMPLE`].
 pub fn run<'a>(
     model: impl Into<ModelTarget<'a>>,
     env: impl Into<EnvTarget<'a>>,
     options: RunOptions<'_>,
 ) -> Result<RunResult> {
-    match model.into().0 {
-        ModelKind::Model(model) => model.run(env, options),
-        ModelKind::Remote(model) => {
-            drive::refuse_in_async_context("run")?;
-            drive::run_sync(run_session_loop(
-                Some(model),
-                env.into(),
-                options,
-                Mode::Sync,
-            ))
-        }
-        ModelKind::Random => {
-            drive::refuse_in_async_context("run")?;
-            drive::run_sync(run_session_loop(None, env.into(), options, Mode::Sync))
-        }
-    }
+    let driven = driven(model.into())?;
+    drive::refuse_in_async_context("run")?;
+    drive::run_sync(native::run_model(driven, env.into(), options, Mode::Sync))
 }
 
 /// The async twin of [`run`].
@@ -118,112 +111,65 @@ pub async fn run_async<'a>(
     env: impl Into<EnvTarget<'a>>,
     options: RunOptions<'_>,
 ) -> Result<RunResult> {
-    match model.into().0 {
-        ModelKind::Model(model) => model.run_async(env, options).await,
+    native::run_model(driven(model.into())?, env.into(), options, Mode::Async).await
+}
+
+fn driven(model: ModelTarget<'_>) -> Result<native::Driven<'_>> {
+    Ok(match model.0 {
+        ModelKind::Model(model) => native::Driven::Local(model),
+        #[cfg(feature = "lockstep")]
+        ModelKind::Remote(model) if crate::address::is_v2(model.address()) => {
+            native::Driven::Served(model)
+        }
         ModelKind::Remote(model) => {
-            run_session_loop(Some(model), env.into(), options, Mode::Async).await
+            return Err(Error::invalid_argument(format!(
+                "run: {:?} is a v1 model endpoint, which rlmesh 0.2 no longer dials; reach a \
+                 served model by its participant address (e.g. 'lab:7447/openpi')",
+                model.address()
+            )));
         }
-        ModelKind::Random => run_session_loop(None, env.into(), options, Mode::Async).await,
-    }
+        ModelKind::Random => native::Driven::Random,
+        ModelKind::Prepared(model) => native::Driven::Prepared(model),
+    })
 }
 
-/// Run on the session loop: validate, open, run, close.
-async fn run_session_loop<'a>(
-    remote: Option<&'a crate::RemoteModel>,
-    env: EnvTarget<'a>,
+/// Bind `model` to `env` (see [`Model::bind`]).
+#[cfg(feature = "lockstep")]
+pub fn bind<'a>(
+    model: impl Into<ModelTarget<'a>>,
+    env: impl Into<EnvTarget<'a>>,
+    options: BindOptions<'a>,
+) -> Result<Binding<'a>> {
+    Binding::create(model.into(), env.into(), options)
+}
+
+// Host handlers and resources enter the same private implementation as the
+// public facade, without exposing its modules as alternate API paths.
+pub(crate) fn run_prepared(
+    model: crate::binding::model::PreparedModel,
+    env: EnvTarget<'_>,
     options: RunOptions<'_>,
-    mode: Mode,
 ) -> Result<RunResult> {
-    let RunOptions {
-        episodes,
-        seeds,
-        max_episode_steps,
-        max_episode,
-        hooks,
-        close_env,
-        trust_entrypoints,
-        instruction,
-        view,
-        execution_horizon,
-        prefetch_lead,
-        workflow_edition,
-        trial_index_base,
-        cancel,
-    } = options;
-    if prefetch_lead != 0 {
-        return Err(Error::invalid_argument(format!(
-            "prefetch_lead={prefetch_lead} drives the native runtime loop; a served model or \
-             RANDOM_SAMPLE runs through the session loop, which does not prefetch. Remove \
-             prefetch_lead or run a local Model."
-        )));
-    }
-    // RUN-P6: what the options alone decide, before the session dials.
-    options::episode_budget(episodes, seeds.as_deref())?;
-    options::check_caps(max_episode_steps, max_episode)?;
-    let session_options = SessionOptions {
-        close_env,
-        trust_entrypoints,
-        instruction,
-        view,
-        execution_horizon,
-        workflow_edition,
-        cancel: None,
-    };
-    let mut session = match remote {
-        Some(model) => match mode {
-            Mode::Sync => model.session(env, session_options)?,
-            Mode::Async => model.session_async(env, session_options).await?,
-        },
-        None => Session::create(None, env, session_options)?,
-    };
-    let run_options = SessionRunOptions {
-        episodes,
-        seeds,
-        max_episode_steps,
-        max_episode,
-        hooks,
-        trial_index_base,
-        cancel,
-    };
-    let result = match mode {
-        Mode::Sync => session.run(run_options),
-        Mode::Async => session.run_async(run_options).await,
-    };
-    match result {
-        // A failed run drops the session: `__exit__` on an exception.
-        Err(err) => Err(err),
-        Ok(result) => {
-            match mode {
-                Mode::Sync => session.close()?,
-                Mode::Async => session.close_async().await?,
-            }
-            Ok(result)
-        }
-    }
+    drive::refuse_in_async_context("run")?;
+    drive::run_sync(native::run_model(
+        native::Driven::Prepared(model),
+        env,
+        options,
+        Mode::Sync,
+    ))
 }
 
-/// Bind `model` to `env`.
-pub fn session<'a>(
-    model: impl Into<ModelTarget<'a>>,
-    env: impl Into<EnvTarget<'a>>,
-    options: SessionOptions,
-) -> Result<Session<'a>> {
-    match model.into().0 {
-        ModelKind::Model(model) => model.session(env, options),
-        ModelKind::Remote(model) => model.session(env, options),
-        ModelKind::Random => Session::create(None, env.into(), options),
-    }
+#[cfg(feature = "lockstep")]
+pub(crate) fn bind_prepared<'a>(
+    model: crate::binding::model::PreparedModel,
+    env: EnvTarget<'a>,
+    options: BindOptions<'a>,
+) -> Result<Binding<'a>> {
+    Binding::create(ModelTarget(ModelKind::Prepared(model)), env, options)
 }
 
-/// The async twin of [`session`].
-pub async fn session_async<'a>(
-    model: impl Into<ModelTarget<'a>>,
-    env: impl Into<EnvTarget<'a>>,
-    options: SessionOptions,
-) -> Result<Session<'a>> {
-    match model.into().0 {
-        ModelKind::Remote(model) => model.session_async(env, options).await,
-        ModelKind::Model(model) => model.session(env, options),
-        ModelKind::Random => Session::create(None, env.into(), options),
-    }
+pub(crate) fn adapted_env(
+    adapter: Box<dyn crate::binding::model::EnvAdapter>,
+) -> EnvTarget<'static> {
+    EnvTarget(targets::EnvKind::Adapted(adapter))
 }

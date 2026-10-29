@@ -7,7 +7,8 @@ from abc import ABC
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, TypeVar, cast, final
 
 from ._authoring import EnvFactory as _EnvFactory
-from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
+from ._client import RemoteEnvBase, RemoteVectorEnvBase
+from ._client._gym import GymEnv, GymVectorEnv
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
 from ._sandbox import (
@@ -18,6 +19,7 @@ from ._sandbox import (
     SandboxVectorEnvBase,
 )
 from ._sandbox._model import SandboxModel
+from ._upgrade import RemoteModel
 from ._value_conversion import UNHANDLED, FrameworkBridge, ValueBridge
 from .spaces import Space
 from .spaces import space_from_spec as _space_from_spec
@@ -191,12 +193,20 @@ def space_from_spec(spec: SpaceSpec) -> Space[NumpyValue]:
 
 
 @final
-class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
+class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue], GymEnv):  # pyright: ignore[reportIncompatibleMethodOverride, reportIncompatibleVariableOverride]
     """NumPy-backed remote client for a single RLMesh environment.
 
     Observations, rewards, and actions are decoded into Python primitives,
     NumPy arrays, or nested containers of those values. Use this client when a
     model or notebook expects NumPy values at the environment boundary.
+
+    With gymnasium installed it is a ``gymnasium.Env``: its spaces are the
+    env's own Gymnasium spaces (bounds and dtypes included), a ``Discrete``
+    observation is a NumPy integer, and an action may be a plain array, list
+    or scalar, cast to the space's dtype when the kind allows. ``address``
+    may also be a robot's participant address in a v2 session
+    (``"cartpole"``, ``"lab:7447/bench-3/cartpole"``; an ``EnvServer``
+    prints its own).
 
     Args:
         address: Endpoint address such as ``"tcp://127.0.0.1:5555"``,
@@ -212,42 +222,28 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
 
     Examples:
         >>> from rlmesh.numpy import RemoteEnv
-        >>> env = RemoteEnv("127.0.0.1:5555")
+        >>> env = RemoteEnv("127.0.0.1:5555/env")
         >>> observation, info = env.reset(seed=42)
         >>> observation, reward, terminated, truncated, info = env.step(0)
         >>> env.close()
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
+    _gym: ClassVar[bool] = True
 
 
 @final
-class RemoteModel(RemoteModelBase[NumpyValue, NumpyValue]):
-    """NumPy-backed handle to a served model (policy).
-
-    Bind it to an env with ``rlmesh.session(model, env)`` to get a :class:`rlmesh.Session`
-    whose ``predict`` accepts and returns NumPy values, driven symmetrically with the env.
-
-    Examples:
-        >>> import rlmesh
-        >>> from rlmesh.numpy import RemoteEnv, RemoteModel
-        >>> env = RemoteEnv("127.0.0.1:5555")
-        >>> sess = rlmesh.session(RemoteModel("127.0.0.1:5556"), env)
-        >>> obs, _ = sess.reset(seed=0)
-        >>> action = sess.predict(obs)
-        >>> obs, reward, terminated, truncated, _ = sess.step(action)
-    """
-
-    _bridge: ClassVar[ValueBridge] = _numpy_bridge
-
-
-@final
-class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
+class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue], GymVectorEnv):  # pyright: ignore[reportIncompatibleMethodOverride, reportIncompatibleVariableOverride]
     """NumPy-backed remote client for a vectorized RLMesh environment.
 
     A vector client connects one model process to an endpoint that owns
     multiple environment instances. Batched observations, rewards,
     terminations, and truncations decode into NumPy-compatible values.
+
+    With gymnasium installed it is a ``gymnasium.vector.VectorEnv``:
+    ``observation_space`` and ``action_space`` are batched, the
+    ``single_*`` spaces are the env's own, and a batched action is cast leaf
+    by leaf as :class:`RemoteEnv` casts one.
 
     Args:
         address: Endpoint address such as ``"tcp://127.0.0.1:5555"``.
@@ -262,7 +258,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
 
     Examples:
         >>> from rlmesh.numpy import RemoteVectorEnv
-        >>> envs = RemoteVectorEnv("127.0.0.1:5555")
+        >>> envs = RemoteVectorEnv("127.0.0.1:5555/env")
         >>> observations, infos = envs.reset(seed=42)
         >>> actions = [envs.single_action_space.sample() for _ in range(envs.num_envs)]
         >>> observations, rewards, terminations, truncations, infos = envs.step(actions)
@@ -270,6 +266,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
+    _gym: ClassVar[bool] = True
 
 
 class Model(ModelBase[_ObsT, _ActT]):
@@ -281,8 +278,8 @@ class Model(ModelBase[_ObsT, _ActT]):
 
     Generic over the observation/action types, defaulting to ``NumpyValue``:
     wrapping an annotated predict callable infers them (``Model(predict)`` with
-    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``session`` a
-    ``Session[X, Y]``); subclasses and unannotated sources bind ``NumpyValue``.
+    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``bind`` a
+    ``Binding[X, Y]``); subclasses and unannotated sources bind ``NumpyValue``.
 
     Examples:
         >>> from rlmesh.numpy import Model
@@ -293,7 +290,6 @@ class Model(ModelBase[_ObsT, _ActT]):
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
-    _remote_env_cls: ClassVar[type | None] = RemoteEnv
 
 
 @final

@@ -386,8 +386,9 @@ extern "C" {
  * repr(C) layout/enum-discriminant change, an extern "C" signature retype, or a
  * symbol removal). Decoupled from the package semver below, which can't express
  * an ABI break. Appending a struct_size-guarded vtable/config field is NOT a
- * break. */
-#define RLMESH_ABI_VERSION 5
+ * break. ABI 6 grew after it was cut without a bump; the C ABI does not ship in
+ * 0.2, and the first release that ships it publishes that surface as ABI 7. */
+#define RLMESH_ABI_VERSION 6
 
 RLMESH_API uint32_t rlmesh_abi_version(void);
 
@@ -398,7 +399,7 @@ static inline int rlmesh_abi_check(void) { return RLMESH_ABI_VERSION == rlmesh_a
 
 /* This header's package version, in SemVer. rlmesh_build_info() reports the linked
  * library's. */
-#define RLMESH_VERSION "0.1.0"
+#define RLMESH_VERSION "0.2.0-alpha.0"
 
 /* Signals: creating a model or env handle sets SIGPIPE to ignored (POSIX), unless
  * the host already installed a handler for it. The transport's socket writes
@@ -1549,6 +1550,7 @@ struct RLMeshState {
   bool has_clip;
   uint8_t _reserved9[3];
   double clip[2];
+  const char* polarity; /* "open" | "close"; NULL = unset */
 };
 #define RLMESH_STATE_INIT   \
   {sizeof(RLMeshState),     \
@@ -1602,7 +1604,8 @@ struct RLMeshState {
    (RLMeshStateSource)1,    \
    0,                       \
    {0},                     \
-   {0, 0}}
+   {0, 0},                  \
+   NULL}
 #else
 struct RLMeshState {
   size_t struct_size;
@@ -1656,6 +1659,8 @@ struct RLMeshState {
   bool has_clip;
   uint8_t _reserved8[7];
   double clip[2];
+  const char* polarity; /* "open" | "close"; NULL = unset */
+  uint8_t _reserved9[4];
 };
 #define RLMESH_STATE_INIT   \
   {sizeof(RLMeshState),     \
@@ -1708,9 +1713,11 @@ struct RLMeshState {
    (RLMeshStateSource)1,    \
    0,                       \
    {0},                     \
-   {0, 0}}
+   {0, 0},                  \
+   NULL,                    \
+   {0}}
 #endif
-#define RLMESH_STATE_MIN_SIZE sizeof(RLMeshState)
+#define RLMESH_STATE_MIN_SIZE offsetof(RLMeshState, polarity)
 #if UINTPTR_MAX > UINT32_MAX
 struct RLMeshConcat {
   size_t struct_size;
@@ -1854,6 +1861,10 @@ struct RLMeshActuator {
   size_t axis_offset_len;
   const char* const* labels;
   size_t labels_len;
+  const char* polarity; /* "open" | "close"; NULL = unset */
+  bool has_unit;
+  uint8_t _reserved9[7];
+  double unit; /* SI size of one command unit */
 };
 #define RLMESH_ACTUATOR_INIT  \
   {sizeof(RLMeshActuator),    \
@@ -1896,6 +1907,10 @@ struct RLMeshActuator {
    NULL,                      \
    0,                         \
    NULL,                      \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   {0},                       \
    0}
 #else
 struct RLMeshActuator {
@@ -1939,6 +1954,10 @@ struct RLMeshActuator {
   size_t axis_offset_len;
   const char* const* labels;
   size_t labels_len;
+  const char* polarity; /* "open" | "close"; NULL = unset */
+  bool has_unit;
+  uint8_t _reserved8[3];
+  double unit; /* SI size of one command unit */
 };
 #define RLMESH_ACTUATOR_INIT  \
   {sizeof(RLMeshActuator),    \
@@ -1980,9 +1999,13 @@ struct RLMeshActuator {
    NULL,                      \
    0,                         \
    NULL,                      \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   {0},                       \
    0}
 #endif
-#define RLMESH_ACTUATOR_MIN_SIZE sizeof(RLMeshActuator)
+#define RLMESH_ACTUATOR_MIN_SIZE offsetof(RLMeshActuator, polarity)
 #if UINTPTR_MAX > UINT32_MAX
 struct RLMeshAction {
   size_t struct_size;
@@ -2048,6 +2071,7 @@ struct RLMeshStateTag {
   const char* part;
   const char* const* labels;
   size_t labels_len;
+  const char* polarity; /* "open" | "close"; NULL = unset */
 };
 #define RLMESH_STATE_TAG_INIT \
   {sizeof(RLMeshStateTag),    \
@@ -2068,7 +2092,8 @@ struct RLMeshStateTag {
    NULL,                      \
    NULL,                      \
    NULL,                      \
-   0}
+   0,                         \
+   NULL}
 #else
 struct RLMeshStateTag {
   size_t struct_size;
@@ -2091,6 +2116,8 @@ struct RLMeshStateTag {
   const char* const* labels;
   size_t labels_len;
   uint8_t _reserved3[4];
+  const char* polarity; /* "open" | "close"; NULL = unset */
+  uint8_t _reserved4[4];
 };
 #define RLMESH_STATE_TAG_INIT \
   {sizeof(RLMeshStateTag),    \
@@ -2112,9 +2139,11 @@ struct RLMeshStateTag {
    NULL,                      \
    NULL,                      \
    0,                         \
+   {0},                       \
+   NULL,                      \
    {0}}
 #endif
-#define RLMESH_STATE_TAG_MIN_SIZE sizeof(RLMeshStateTag)
+#define RLMESH_STATE_TAG_MIN_SIZE offsetof(RLMeshStateTag, polarity)
 #if UINTPTR_MAX > UINT32_MAX
 struct RLMeshTextTag {
   size_t struct_size;
@@ -2152,6 +2181,7 @@ struct RLMeshField {
   const char* part;
   const char* const* labels;
   size_t labels_len;
+  const char* polarity; /* "open" | "close"; NULL = unset */
 };
 #define RLMESH_FIELD_INIT \
   {sizeof(RLMeshField),   \
@@ -2174,7 +2204,8 @@ struct RLMeshField {
    NULL,                  \
    NULL,                  \
    NULL,                  \
-   0}
+   0,                     \
+   NULL}
 #else
 struct RLMeshField {
   size_t struct_size;
@@ -2198,6 +2229,8 @@ struct RLMeshField {
   const char* const* labels;
   size_t labels_len;
   uint8_t _reserved3[4];
+  const char* polarity; /* "open" | "close"; NULL = unset */
+  uint8_t _reserved4[4];
 };
 #define RLMESH_FIELD_INIT \
   {sizeof(RLMeshField),   \
@@ -2220,9 +2253,11 @@ struct RLMeshField {
    NULL,                  \
    NULL,                  \
    0,                     \
+   {0},                   \
+   NULL,                  \
    {0}}
 #endif
-#define RLMESH_FIELD_MIN_SIZE sizeof(RLMeshField)
+#define RLMESH_FIELD_MIN_SIZE offsetof(RLMeshField, polarity)
 #if UINTPTR_MAX > UINT32_MAX
 struct RLMeshSplit {
   size_t struct_size;
@@ -2394,6 +2429,32 @@ RLMESH_API RLMeshStatus rlmesh_model_spec_new(const RLMeshInputNode* input,
                                               const RLMeshAction* output, RLMeshModelSpec** out);
 RLMESH_API const RLMeshInputNode* rlmesh_model_spec_input(const RLMeshModelSpec* spec);
 RLMESH_API const RLMeshAction* rlmesh_model_spec_output(const RLMeshModelSpec* spec);
+/* The same spec accepting the named projections (lossy fits) in allow:
+ * drop_action, select_state, rebind_camera, flip_gripper, convert_units. A
+ * pairing that needs one the spec does not allow is refused. */
+RLMESH_API RLMeshStatus rlmesh_model_spec_with_allow(const RLMeshModelSpec* spec,
+                                                     const char* const* allow, size_t allow_len,
+                                                     RLMeshModelSpec** out);
+/* How a model paces its actions: execution (with has_execution) is the
+ * execution horizon a run uses when neither the run nor the model's load()
+ * names one, in 1..=1024. */
+typedef struct RLMeshTiming {
+  size_t struct_size;
+  bool has_execution;
+  uint8_t _reserved[3];
+  uint32_t execution;
+} RLMeshTiming;
+#define RLMESH_TIMING_MIN_SIZE sizeof(RLMeshTiming)
+#define RLMESH_TIMING_INIT {sizeof(RLMeshTiming), false, {0, 0, 0}, 0}
+/* The same spec pacing its actions by timing (an execution outside 1..=1024
+ * is RLMESH_ERR_INVALID_ARGUMENT). */
+RLMESH_API RLMeshStatus rlmesh_model_spec_with_timing(const RLMeshModelSpec* spec,
+                                                      const RLMeshTiming* timing,
+                                                      RLMeshModelSpec** out);
+/* How the spec paces its actions; out->struct_size must be set. */
+RLMESH_API RLMeshStatus rlmesh_model_spec_timing(const RLMeshModelSpec* spec, RLMeshTiming* out);
+/* The projections the spec accepts, borrowed for the spec's lifetime. */
+RLMESH_API const char* const* rlmesh_model_spec_allow(const RLMeshModelSpec* spec, size_t* out_len);
 RLMESH_API RLMeshStatus rlmesh_env_tags_new(const RLMeshObsNode* observation,
                                             const RLMeshAction* action, RLMeshEnvTags** out);
 RLMESH_API const RLMeshObsNode* rlmesh_env_tags_observation(const RLMeshEnvTags* tags);
@@ -2651,6 +2712,8 @@ typedef struct RLMeshExtEnvServerOptions {
 
 typedef struct RLMeshEnvServerOptions {
   size_t struct_size;
+  /* A session participant address (":0/env", "host:port/session/name"), or a
+   * v1 tcp:// or unix:// endpoint; NULL with no helper is ":0/env". */
   const char* address;
   const char* host;
   const char* path;
@@ -2724,7 +2787,7 @@ typedef struct RLMeshVectorEnvVtable {
 
 /* Env handles copy vtables/attributes. State transfers only on success and
  * free_user_data runs once after the last library reference. Free never closes;
- * close runs at most once. A handle may be borrowed by one server/run/session
+ * close runs at most once. A handle may be borrowed by one server/run/binding
  * at a time. Free a borrowing server before freeing the env. Close on a busy
  * env fails with RLMESH_ERR_RUNTIME. Callback outputs are taken even on failure;
  * NULL info means {}. Callbacks and state must be safe to move between threads. */
@@ -2874,7 +2937,7 @@ rlmesh_env_factory_serve(RLMeshEnvFactory* factory, const char* address,
  * On success the caller owns *out and may immediately reuse/free the factory.
  * The server closes made envs on shutdown; free it to release them. It watches
  * a clone of cancel until serving stops; wait or shutdown reports cancellation
- * once, whichever observes it first. A session borrow or another hook in
+ * once, whichever observes it first. A binding borrow or another hook in
  * progress refuses with RLMESH_ERR_RUNTIME. On failure *out is NULL and made
  * envs are closed and freed. The factory itself is never closed. */
 RLMESH_API RLMeshStatus rlmesh_ext_env_factory_start(
@@ -3044,10 +3107,19 @@ typedef struct RLMeshModelVtable {
   const RLMeshLoadKey* load_keys; /* NULL = None: every key reaches load */
   size_t
       load_keys_len; /* entries, deep-copied; non-NULL with 0 = []; NULL with >0: RLMESH_ERR_TYPE */
+  /* Options to add to the env reset that starts an episode: episode is a dict
+   * of episode_id, seed and trial_index; leave a dict in *out_options, or
+   * NULL to add none. NULL slot = adds none. */
+  RLMeshStatus (*reset_options)(void* user_data, const RLMeshValue* episode,
+                                RLMeshValue** out_options);
+  /* The execution horizon load() chose for its checkpoint, read once after
+   * load (as loaded_native_chunk): a run naming none executes at it, above the
+   * spec's timing. NULL slot or *out_has false = none. */
+  RLMeshStatus (*loaded_execution_horizon)(void* user_data, bool* out_has, uint32_t* out);
 } RLMeshModelVtable;
 #define RLMESH_MODEL_VTABLE_INIT                                                               \
   {sizeof(RLMeshModelVtable),     NULL, NULL,  NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, \
-   {RLMESH_SPEC_KIND_NONE, NULL}, true, false, {0},  0,    NULL, NULL, 0}
+   {RLMESH_SPEC_KIND_NONE, NULL}, true, false, {0},  0,    NULL, NULL, 0,    NULL, NULL}
 
 typedef struct RLMeshModelOptions {
   size_t struct_size;
@@ -3080,9 +3152,16 @@ typedef struct RLMeshModelServeOptions {
   const RLMeshServeOptions* options;     /* NULL = None (Env) */
   RLMeshExtCancelToken* cancel;          /* NULL = none, borrowed */
   const RLMeshExtModelServeOptions* ext; /* NULL = none */
+  /* The participant the model joins the session at address as; NULL reads it
+   * off address. Appended at ABI-5 sizeof. */
+  const char* name;
 } RLMeshModelServeOptions;
-#define RLMESH_MODEL_SERVE_OPTIONS_INIT {sizeof(RLMeshModelServeOptions), NULL, NULL, NULL}
+#define RLMESH_MODEL_SERVE_OPTIONS_INIT {sizeof(RLMeshModelServeOptions), NULL, NULL, NULL, NULL}
 
+/* address is the participant address the model joins its session as
+ * (":0/policy", "host:port/session/policy"), or its session with the
+ * participant in options->name, or a v1 bind address. A model
+ * from rlmesh_model_from_address is served elsewhere and is refused. */
 RLMESH_API RLMeshStatus
 rlmesh_model_serve(RLMeshModel* model, const char* address,
                    const RLMeshModelServeOptions* options /* NULL = INIT */);
@@ -3092,23 +3171,32 @@ RLMESH_API RLMeshStatus rlmesh_model_new(const RLMeshModelVtable* vtable, void* 
 RLMESH_API RLMeshStatus rlmesh_model_from_config(const RLMeshModelVtable* model_vtable,
                                                  void* user_data, const RLMeshValue* config,
                                                  RLMeshModel** out);
+/* A model served elsewhere, reached by its participant address
+ * ("lab:7447/openpi"), as Python's Model(address): it runs and binds like a
+ * local model; nothing dials until then. A v1 endpoint, or an address naming
+ * no model, is ERR_VALUE. Its spec/workflow edition/native chunk read as
+ * unset, and serve and describe refuse it (ERR_TYPE). */
+RLMESH_API RLMeshStatus rlmesh_model_from_address(const char* address, RLMeshModel** out);
 RLMESH_API RLMeshStatus rlmesh_model_clone(const RLMeshModel* model, RLMeshModel** out);
 RLMESH_API RLMeshStatus rlmesh_model_close(RLMeshModel* model);
 RLMESH_API void rlmesh_model_free(RLMeshModel* model);
 RLMESH_API RLMeshStatus rlmesh_model_spec(const RLMeshModel* model, RLMeshSpecArg* out);
 RLMESH_API bool rlmesh_model_allow_fusion(const RLMeshModel* model);
 RLMESH_API void rlmesh_model_native_chunk(const RLMeshModel* model, bool* out_has, uint32_t* out);
+/* The checkpoint's execution horizon, read once after load(). */
+RLMESH_API void rlmesh_model_execution_horizon(const RLMeshModel* model, bool* out_has,
+                                               uint32_t* out);
 RLMESH_API RLMeshStatus rlmesh_model_workflow_edition(const RLMeshModel* model, bool* out_has,
                                                       RLMeshBytes* out);
 RLMESH_API int64_t rlmesh_predict_seed(int64_t episode_seed, uint64_t predict_index);
 
-#define RLMESH_MODEL_VTABLE_MIN_SIZE sizeof(RLMeshModelVtable)
+#define RLMESH_MODEL_VTABLE_MIN_SIZE offsetof(RLMeshModelVtable, reset_options)
 
 #define RLMESH_MODEL_OPTIONS_MIN_SIZE sizeof(RLMeshModelOptions)
 
 #define RLMESH_PREDICT_CONTEXT_MIN_SIZE sizeof(RLMeshPredictContext)
 
-#define RLMESH_MODEL_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshModelServeOptions)
+#define RLMESH_MODEL_SERVE_OPTIONS_MIN_SIZE offsetof(RLMeshModelServeOptions, name)
 
 #define RLMESH_EXT_MODEL_SERVE_OPTIONS_MIN_SIZE \
   offsetof(RLMeshExtModelServeOptions, no_signal_handlers)
@@ -3183,7 +3271,6 @@ typedef struct RLMeshAdvisory RLMeshAdvisory;
 typedef enum RLMeshModelTargetKind {
   RLMESH_MODEL_TARGET_KIND_INVALID = 0,
   RLMESH_MODEL_TARGET_KIND_MODEL = 1,
-  RLMESH_MODEL_TARGET_KIND_REMOTE_MODEL = 2,
   RLMESH_MODEL_TARGET_KIND_RANDOM_SAMPLE = 3
 } RLMeshModelTargetKind;
 typedef enum RLMeshEnvTargetKind {
@@ -3289,6 +3376,24 @@ RLMESH_API RLMeshStatus rlmesh_run_result_format_telemetry(const RLMeshRunResult
                                                            RLMeshBytes* out);
 RLMESH_API RLMeshStatus rlmesh_run_result_repr(const RLMeshRunResult* run_result, RLMeshBytes* out);
 RLMESH_API bool rlmesh_run_result_equals(const RLMeshRunResult* a, const RLMeshRunResult* b);
+/* The labels of the one workload rlmesh_run_result_save writes. */
+typedef struct RLMeshRunResultSaveOptions {
+  size_t struct_size;
+  const char* model;         /* NULL = "model"; copied. */
+  const char* env;           /* NULL = "env"; copied. */
+  const RLMeshValue* config; /* NULL = None, else a dict; copied. */
+} RLMeshRunResultSaveOptions;
+#define RLMESH_RUN_RESULT_SAVE_OPTIONS_MIN_SIZE sizeof(RLMeshRunResultSaveOptions)
+#define RLMESH_RUN_RESULT_SAVE_OPTIONS_INIT \
+  {sizeof(RLMeshRunResultSaveOptions), "model", "env", NULL}
+/* Writes the result as an rlmesh.result.v1 bundle (a folder, or a zip when
+ * path ends .zip) and returns its path in out. */
+RLMESH_API RLMeshStatus rlmesh_run_result_save(
+    const RLMeshRunResult* run_result, const char* path,
+    const RLMeshRunResultSaveOptions* options /* NULL = INIT */, RLMeshBytes* out);
+/* Reads an rlmesh.result.v1 bundle, or a folder of them, back as one model's
+ * result (as RunResult::load); *out is freed with rlmesh_run_result_free. */
+RLMESH_API RLMeshStatus rlmesh_run_result_load(const char* path, RLMeshRunResult** out);
 RLMESH_API RLMeshStatus rlmesh_telemetry_row_new(const char* op, const char* component,
                                                  const char* metric, const char* unit,
                                                  int64_t count, double avg, double p50, double p95,
@@ -3386,7 +3491,7 @@ RLMESH_API RLMeshStatus rlmesh_run_hooks_on_run_end(RLMeshRunHooks* hooks,
                                                     const RLMeshRunResult* result);
 
 /* Plain View configuration. Strings are borrowed here, copied by a consuming
- * run/session call. Parse writes no string allocation (source is NULL).
+ * run call. Parse writes no string allocation (source is NULL).
  * Initialize both inputs and parse outputs with RLMESH_VIEW_INIT. Seconds holds
  * require finite nonnegative values; overflow saturates to Duration::MAX. */
 typedef enum RLMeshViewBackend {
@@ -3450,14 +3555,15 @@ typedef struct RLMeshRunOptions {
   double max_episode_seconds;
   uint64_t prefetch_lead;
   uint64_t trial_index_base;
-  uint32_t execution_horizon;
+  uint32_t execution_horizon; /* with has_execution_horizon; unset: the model's own, else 1 */
   bool has_episodes;
   bool has_max_episode_steps;
   bool has_max_episode_seconds;
   bool close_env;
   bool has_trust_entrypoints;
   bool trust_entrypoints;
-  uint8_t _reserved[6];
+  bool has_execution_horizon;
+  uint8_t _reserved[5];
   const char* instruction; /* NULL = None; copied. */
   const RLMeshView* view;  /* NULL = None; copied and validated by the facade. */
 } RLMeshRunOptions;
@@ -3474,7 +3580,8 @@ typedef struct RLMeshRunOptions {
    0.0,                         \
    0,                           \
    0,                           \
-   1,                           \
+   0,                           \
+   false,                       \
    false,                       \
    false,                       \
    false,                       \
@@ -3486,111 +3593,69 @@ typedef struct RLMeshRunOptions {
    NULL}
 /* NULL options means INIT; zero-initialized options are refused. Result remains
  * NULL on failure. Hooks/targets are borrowed until the call returns. Instruction
- * is copied. A local Model.run refuses view; use a session for local viewing. */
+ * is copied. A run refuses view. */
 RLMESH_API RLMeshStatus rlmesh_run(RLMeshModelTarget model, RLMeshEnvTarget env,
                                    const RLMeshRunOptions* options, RLMeshRunResult** out);
 RLMESH_API RLMeshStatus rlmesh_model_run(RLMeshModel* model, RLMeshEnvTarget env_or_address,
                                          const RLMeshRunOptions* options, RLMeshRunResult** out);
 
-/* A Session borrows its model/server until free. Local envs/factories stay
- * exclusively leased until free; close never closes the model. */
-typedef struct RLMeshSession RLMeshSession;
-typedef struct RLMeshSessionOptions {
+/* A model bound to one env and stepped by hand, as Python's Model.bind.
+ * Binding connects: an address or EnvServer is dialed, and a local env or
+ * factory is served in this process, its callbacks running only on the
+ * thread calling the binding. A multi-lane env and a RemoteEnv are refused.
+ * A binding borrows its model and env until free; local envs/factories stay
+ * exclusively leased until free. Close ends the episode and closes a
+ * factory's env (a local env or EnvServer only under close_env); it never
+ * closes the model. */
+typedef struct RLMeshBinding RLMeshBinding;
+typedef struct RLMeshBindOptions {
   size_t struct_size;
-  const char* workflow_edition;
-  const RLMeshExtCancelToken* cancel;
-  uint32_t execution_horizon;
+  const char* workflow_edition; /* NULL = None; copied. */
+  uint32_t execution_horizon;   /* with has_execution_horizon; unset: the model's own, else 1 */
   bool close_env;
-  bool has_trust_entrypoints;
-  bool trust_entrypoints;
-  uint8_t _reserved;
-  const char* instruction; /* NULL = None; copied. */
-  const RLMeshView* view;  /* NULL = None; copied. */
-} RLMeshSessionOptions;
-#define RLMESH_SESSION_OPTIONS_MIN_SIZE sizeof(RLMeshSessionOptions)
-#define RLMESH_SESSION_OPTIONS_INIT \
-  {sizeof(RLMeshSessionOptions), NULL, NULL, 1, false, false, false, 0, NULL, NULL}
-typedef struct RLMeshSessionRunOptions {
-  size_t struct_size;
-  const int64_t* seeds;
-  size_t seeds_len;
+  bool has_execution_horizon;
+  uint8_t _reserved[2];
+  /* Borrowed until the binding is freed (NULL = none): the binding is their
+   * run context, an episode reset over before it ended counts as truncated,
+   * and on_run_end fires at close. */
   RLMeshRunHooks* hooks;
-  const RLMeshExtCancelToken* cancel;
-  uint64_t episodes;
-  uint64_t max_episode_steps;
-  double max_episode_seconds;
-  uint64_t trial_index_base;
-  bool has_episodes;
-  bool has_max_episode_steps;
-  bool has_max_episode_seconds;
-  uint8_t _reserved[5];
-} RLMeshSessionRunOptions;
-#define RLMESH_SESSION_RUN_OPTIONS_MIN_SIZE sizeof(RLMeshSessionRunOptions)
-#define RLMESH_SESSION_RUN_OPTIONS_INIT \
-  {sizeof(RLMeshSessionRunOptions),     \
-   NULL,                                \
-   0,                                   \
-   NULL,                                \
-   NULL,                                \
-   0,                                   \
-   0,                                   \
-   0.0,                                 \
-   0,                                   \
-   false,                               \
-   false,                               \
-   false,                               \
-   {0, 0, 0, 0, 0}}
-RLMESH_API RLMeshStatus rlmesh_session_new(RLMeshModelTarget model, RLMeshEnvTarget env,
-                                           const RLMeshSessionOptions* options,
-                                           RLMeshSession** out);
-RLMESH_API RLMeshStatus rlmesh_model_session(RLMeshModel* model, RLMeshEnvTarget env_or_address,
-                                             const RLMeshSessionOptions* options,
-                                             RLMeshSession** out);
-RLMESH_API RLMeshStatus rlmesh_session_reset(RLMeshSession* session, const int64_t* seed,
-                                             const int64_t* trial_index,
+  const RLMeshView* view; /* NULL = None; native loop refuses a set view (RUN-4). */
+} RLMeshBindOptions;
+#define RLMESH_BIND_OPTIONS_MIN_SIZE offsetof(RLMeshBindOptions, hooks)
+#define RLMESH_BIND_OPTIONS_INIT \
+  {sizeof(RLMeshBindOptions), NULL, 0, false, false, {0, 0}, NULL, NULL}
+RLMESH_API RLMeshStatus rlmesh_bind(RLMeshModelTarget model, RLMeshEnvTarget target,
+                                    const RLMeshBindOptions* options /* NULL = INIT */,
+                                    RLMeshBinding** out);
+RLMESH_API RLMeshStatus rlmesh_model_bind(RLMeshModel* model, RLMeshEnvTarget target,
+                                          const RLMeshBindOptions* options /* NULL = INIT */,
+                                          RLMeshBinding** out);
+/* Ends the live episode and starts the next; options (a dict, NULL = None)
+ * reach the env's reset over the model's own reset options. */
+RLMESH_API RLMeshStatus rlmesh_binding_reset(RLMeshBinding* binding, const int64_t* seed,
+                                             const RLMeshValue* options,
                                              RLMeshValue** out_observation, RLMeshValue** out_info);
-RLMESH_API RLMeshStatus rlmesh_session_predict(RLMeshSession* session,
-                                               const RLMeshValue* observation,
-                                               RLMeshValue** out_action);
-RLMESH_API RLMeshStatus rlmesh_session_step(RLMeshSession* session, const RLMeshValue* action,
+/* Steps under action, or the model's when action is NULL. */
+RLMESH_API RLMeshStatus rlmesh_binding_step(RLMeshBinding* binding, const RLMeshValue* action,
                                             RLMeshValue** out_observation, double* out_reward,
                                             bool* out_terminated, bool* out_truncated,
                                             RLMeshValue** out_info);
-RLMESH_API RLMeshStatus rlmesh_session_run(RLMeshSession* session,
-                                           const RLMeshSessionRunOptions* options,
-                                           RLMeshRunResult** out);
-RLMESH_API RLMeshStatus rlmesh_session_done(const RLMeshSession* session, bool* out);
-RLMESH_API RLMeshStatus rlmesh_session_contract(RLMeshSession* session, RLMeshEnvContract** out);
-RLMESH_API RLMeshStatus rlmesh_session_num_envs(RLMeshSession* session, uint64_t* out);
-RLMESH_API RLMeshStatus rlmesh_session_selected_workflow_edition(RLMeshSession* session,
-                                                                 RLMeshBytes* out);
-RLMESH_API RLMeshStatus rlmesh_session_run_context(RLMeshSession* session, RLMeshRunContext** out);
-RLMESH_API RLMeshStatus rlmesh_session_cancel_handle(const RLMeshSession* session,
-                                                     RLMeshExtCancelToken** out);
-RLMESH_API RLMeshStatus rlmesh_session_close(RLMeshSession* session);
-/* NULL no-op. From the session's own run hook, refuses to release the handle
- * and records ERR_RUNTIME in last error; the caller must free it after the run. */
-RLMESH_API void rlmesh_session_free(RLMeshSession* session);
+/* True until the first reset and after an episode ends. */
+RLMESH_API RLMeshStatus rlmesh_binding_done(const RLMeshBinding* binding, bool* out);
+RLMESH_API RLMeshStatus rlmesh_binding_contract(RLMeshBinding* binding, RLMeshEnvContract** out);
+RLMESH_API RLMeshStatus rlmesh_binding_num_envs(RLMeshBinding* binding, uint64_t* out);
+RLMESH_API RLMeshStatus rlmesh_binding_render_mode(RLMeshBinding* binding, RLMeshBytes* out);
+/* The env's rendered frame, or a None value. */
+RLMESH_API RLMeshStatus rlmesh_binding_render(RLMeshBinding* binding, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_binding_close(RLMeshBinding* binding);
+/* NULL no-op; closes a binding still open. */
+RLMESH_API void rlmesh_binding_free(RLMeshBinding* binding);
 
 /* ---- Remote clients ----------------------------------------------------- */
 typedef struct RLMeshRemoteEnv RLMeshRemoteEnv;
 typedef struct RLMeshRemoteVectorEnv RLMeshRemoteVectorEnv;
 
 /* Per-call cancellation: NULL matches the ordinary call. Borrowed for the call. */
-RLMESH_API RLMeshStatus rlmesh_ext_session_reset(RLMeshSession* session, const int64_t* seed,
-                                                 const int64_t* trial_index,
-                                                 const RLMeshExtCancelToken* cancel,
-                                                 RLMeshValue** out_observation,
-                                                 RLMeshValue** out_info);
-RLMESH_API RLMeshStatus rlmesh_ext_session_predict(RLMeshSession* session,
-                                                   const RLMeshValue* observation,
-                                                   const RLMeshExtCancelToken* cancel,
-                                                   RLMeshValue** out_action);
-RLMESH_API RLMeshStatus rlmesh_ext_session_step(RLMeshSession* session, const RLMeshValue* action,
-                                                const RLMeshExtCancelToken* cancel,
-                                                RLMeshValue** out_observation, double* out_reward,
-                                                bool* out_terminated, bool* out_truncated,
-                                                RLMeshValue** out_info);
 RLMESH_API RLMeshStatus rlmesh_ext_remote_env_reset(RLMeshRemoteEnv* remote_env,
                                                     const int64_t* seed, const RLMeshValue* options,
                                                     const RLMeshExtCancelToken* cancel,
@@ -3617,7 +3682,6 @@ RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_step(RLMeshRemoteVectorEnv*
                                                           bool* out_truncated, size_t capacity,
                                                           size_t* out_len, RLMeshValue** out_info);
 
-typedef struct RLMeshRemoteModel RLMeshRemoteModel;
 typedef struct RLMeshRemoteEnvOptions {
   size_t struct_size;
   const char* address;
@@ -3661,52 +3725,16 @@ typedef struct RLMeshRemoteEnvOptions {
    0,                                  \
    NULL,                               \
    NULL}
-typedef struct RLMeshRemoteModelOptions {
-  size_t struct_size;
-  const char* address;
-  const char* host;
-  bool has_port;
-  uint16_t port;
-  const char* path;
-  bool has_transport;
-  RLMeshTransport transport;
-  bool has_connect_timeout_seconds;
-  double connect_timeout_seconds;
-  bool has_request_timeout_seconds;
-  double request_timeout_seconds;
-  /* Appended after ABI 5, as in RLMeshRemoteEnvOptions. */
-  const char* api_key;
-  const char* tls_ca_file;
-} RLMeshRemoteModelOptions;
-/* The ABI-5 sizeof: its last field is a double, so it has no tail padding. */
-#define RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE offsetof(RLMeshRemoteModelOptions, api_key)
-#define RLMESH_REMOTE_MODEL_OPTIONS_INIT                                   \
-  {sizeof(RLMeshRemoteModelOptions), NULL,  NULL, false, 0,   NULL, false, \
-   RLMESH_TRANSPORT_INVALID,         false, 0.0,  false, 0.0, NULL, NULL}
-/* Env construction connects; Model construction only validates. Remote I/O
+/* Env construction connects. Remote I/O
  * is exclusive, while immutable accessors/cancellation may overlap any call.
  * Accessor pointers remain borrowed until free, including after close. */
 RLMESH_API RLMeshStatus rlmesh_remote_env_new(const RLMeshRemoteEnvOptions* options,
                                               RLMeshRemoteEnv** out);
 RLMESH_API RLMeshStatus rlmesh_remote_vector_env_new(const RLMeshRemoteEnvOptions* options,
                                                      RLMeshRemoteVectorEnv** out);
-RLMESH_API RLMeshStatus rlmesh_remote_model_new(const RLMeshRemoteModelOptions* options,
-                                                RLMeshRemoteModel** out);
-RLMESH_API RLMeshStatus rlmesh_remote_model_clone(const RLMeshRemoteModel* remote_model,
-                                                  RLMeshRemoteModel** out);
-RLMESH_API RLMeshStatus rlmesh_remote_model_address(const RLMeshRemoteModel* remote_model,
-                                                    RLMeshBytes* out);
-RLMESH_API RLMeshStatus rlmesh_remote_model_repr(const RLMeshRemoteModel* remote_model,
-                                                 RLMeshBytes* out);
-RLMESH_API void rlmesh_remote_model_free(RLMeshRemoteModel* remote_model);
-RLMESH_API RLMeshModelTarget rlmesh_remote_model_target(const RLMeshRemoteModel* remote_model);
 RLMESH_API RLMeshEnvTarget rlmesh_remote_env_target(RLMeshRemoteEnv* remote_env);
 RLMESH_API RLMeshEnvTarget
 rlmesh_remote_vector_env_target(RLMeshRemoteVectorEnv* remote_vector_env);
-RLMESH_API RLMeshStatus rlmesh_remote_model_session(const RLMeshRemoteModel* model,
-                                                    RLMeshEnvTarget env,
-                                                    const RLMeshSessionOptions* options,
-                                                    RLMeshSession** out);
 RLMESH_API RLMeshStatus rlmesh_remote_env_address(const RLMeshRemoteEnv* remote_env,
                                                   RLMeshBytes* out);
 RLMESH_API RLMeshStatus rlmesh_remote_env_env_id(const RLMeshRemoteEnv* remote_env,
@@ -3813,19 +3841,14 @@ RLMESH_API RLMeshStatus rlmesh_reader_roles_get(const RLMeshReader* reader, size
                                                 RLMeshBytes* out);
 RLMESH_API RLMeshStatus rlmesh_reader_call(const RLMeshReader* reader,
                                            const RLMeshValue* observation, RLMeshValue** out);
-RLMESH_API RLMeshStatus rlmesh_session_reader(RLMeshSession* session,
-                                              const RLMeshReadItem* const* items, size_t items_len,
-                                              RLMeshReader** out);
-RLMESH_API RLMeshStatus rlmesh_session_read(RLMeshSession* session, const RLMeshValue* observation,
+RLMESH_API RLMeshStatus rlmesh_binding_read(RLMeshBinding* binding, const RLMeshValue* observation,
                                             const RLMeshReadItem* item, RLMeshValue** out);
-RLMESH_API RLMeshStatus rlmesh_session_observation_roles(RLMeshSession* session,
-                                                         RLMeshObservationRoles* out);
 RLMESH_API RLMeshStatus rlmesh_run_context_read(const RLMeshRunContext* context,
                                                 const RLMeshValue* observation,
                                                 const RLMeshReadItem* item, RLMeshValue** out);
 RLMESH_API RLMeshStatus rlmesh_step_event_read(const RLMeshStepEvent* step_event,
                                                const RLMeshReadItem* read_item, RLMeshValue** out);
-/* Session-made sources retain weak state: render after session free returns
+/* Binding-made sources retain weak state: render after binding free returns
  * ERR_RUNTIME. Context-made sources retain the context. Facade closed/busy/
  * dispatch checks remain in force, including after a C callback transfers sources. */
 typedef RLMeshStatus (*RLMeshRenderFn)(void* user_data, RLMeshValue** out);
@@ -3834,7 +3857,7 @@ RLMESH_API RLMeshStatus rlmesh_frame_sources_new(const char* const* roles, size_
                                                  void* user_data,
                                                  void (*free_user_data)(void* user_data),
                                                  RLMeshFrameSources** out);
-RLMESH_API RLMeshStatus rlmesh_session_frame_sources(RLMeshSession* session,
+RLMESH_API RLMeshStatus rlmesh_binding_frame_sources(RLMeshBinding* binding,
                                                      RLMeshFrameSources** out);
 RLMESH_API RLMeshStatus rlmesh_run_context_frame_sources(const RLMeshRunContext* run_context,
                                                          RLMeshFrameSources** out);
@@ -3925,7 +3948,7 @@ typedef struct RLMeshRecorderCaptureOptions {
   const RLMeshValue* config;
   const char* const* cameras;
   size_t cameras_len;
-  const RLMeshRunContext* session;
+  const RLMeshRunContext* binding;
   const char* const* video_info_keys;
   size_t video_info_keys_len;
   bool included_in_metrics;
@@ -3936,9 +3959,9 @@ typedef struct RLMeshRecorderCaptureOptions {
   {sizeof(RLMeshRecorderCaptureOptions), NULL, NULL, NULL, 0, NULL, NULL, 0, true, {0}}
 /* NULL cameras = discover all; non-NULL/0 = metrics only. NULL video_info_keys
  * = ["video_artifact_path", "video_url"]; non-NULL/0 = empty. A nonzero count
- * with a NULL list, or a NULL list element, is refused. Capture retains session
+ * with a NULL list, or a NULL list element, is refused. Capture retains binding
  * and recorder state through run_hooks_free, even after recorder_free.
- * Returned hooks work with run/session and all run_hooks_on_* calls. */
+ * Returned hooks work with runs and all run_hooks_on_* calls. */
 typedef struct RLMeshRecorderToDictOptions {
   size_t struct_size;
   const char* recorded_at;

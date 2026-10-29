@@ -1,19 +1,27 @@
 mod auth;
 mod check;
 mod cli;
-mod config;
-mod helpers;
+mod container;
+mod daemon;
+mod devices;
+mod doctor;
+mod eval_run;
+mod host;
 pub mod image_check;
+mod lobby;
 mod manifest;
+mod pair;
 mod platform;
 mod profile;
+mod provision;
 mod publish;
 mod registry;
 mod render;
-mod session;
-mod settings;
+mod satellite;
+mod scene;
+#[cfg(unix)]
+mod sys;
 pub mod variant;
-mod viewtest;
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -22,9 +30,9 @@ use anyhow::Result;
 use clap::error::ErrorKind;
 use clap::{ColorChoice, CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
-use config::ProfileStore;
 use render::{Style, write_error, write_heading, write_key_value};
-pub use settings::Settings;
+use rlmesh::binding::managed::ProfileStore;
+pub use rlmesh::binding::managed::Settings;
 
 /// Runs the CLI with settings taken from the environment.
 pub async fn run_cli(
@@ -76,10 +84,21 @@ pub async fn run_cli_in(
 
     let mut profiles = match &cli.command {
         Command::Version
-        | Command::Viewtest(_)
         | Command::Check(_)
         | Command::CheckImage(_)
         | Command::Describe(_)
+        | Command::Host(_)
+        | Command::Daemon(_)
+        | Command::Devices(_)
+        | Command::Scene(_)
+        | Command::Run(_)
+        | Command::Lobby(_)
+        | Command::Stop(_)
+        | Command::Arm(_)
+        | Command::Pair(_)
+        | Command::Eval(cli::EvalArgs {
+            command: cli::EvalCommand::Run(_) | cli::EvalCommand::Report(_),
+        })
         | Command::Registry(cli::RegistryArgs {
             command: cli::RegistryCommand::Publish(_),
         }) => None,
@@ -173,11 +192,23 @@ pub async fn run_cli_in(
                     .await
                     .map(|()| 0)
             }
+            cli::EvalCommand::Report(args) => eval_report(&args, stdout).map(|()| 0),
+            cli::EvalCommand::Run(args) => eval_run::eval_run(&args, stdout, stderr),
         },
         Command::Check(args) => check::check_target(&args, stdout, stdout_style),
         Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),
         Command::Describe(args) => check::describe(&args, stdout, stderr),
-        Command::Viewtest(args) => viewtest::run(&args, stderr).map(|_| 0),
+        Command::Host(args) => host::host(&args, stdout).await.map(|()| 0),
+        Command::Daemon(args) => daemon::daemon(&args, stdout, stderr).await.map(|()| 0),
+        Command::Devices(args) => devices::devices(&args, stdout).map(|()| 0),
+        Command::Scene(args) => scene::scene(&args, stdout),
+        Command::Run(args) => scene::run(&args, stdout).await,
+        Command::Lobby(args) => scene::lobby(&args, stdout).await.map(|()| 0),
+        Command::Stop(args) => scene::stop(&args, stdout).await,
+        Command::Arm(args) => scene::arm(&args, stdout).await.map(|()| 0),
+        Command::Pair(args) => pair::pair(&args, stdout).await.map(|()| 0),
+        Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
+        Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),
     };
 
     match result {
@@ -187,6 +218,20 @@ pub async fn run_cli_in(
             Ok(1)
         }
     }
+}
+
+fn eval_report(args: &cli::EvalReportArgs, stdout: &mut impl Write) -> Result<()> {
+    let report = rlmesh::binding::report::EvalReport::load(&args.paths)?;
+    if args.json {
+        writeln!(
+            stdout,
+            "{}",
+            serde_json::to_string_pretty(&report.to_json())?
+        )?;
+    } else {
+        writeln!(stdout, "{}", report.format_table())?;
+    }
+    Ok(())
 }
 
 /// Terminal entrypoint shared by the `rlmesh` and `docker-credential-rlmesh`
@@ -301,11 +346,13 @@ mod tests {
         assert!(stdout.contains("check"));
         assert!(stdout.contains("check-image"));
         assert!(stdout.contains("describe"));
+        assert!(stdout.contains("doctor"));
+        assert!(stdout.contains("bench"));
         assert!(!stdout.contains("viewer"));
 
         let mut command = cli::Cli::command();
         let subcommands: Vec<&str> = command.get_subcommands().map(|c| c.get_name()).collect();
-        for command_name in ["auth", "init", "doctor", "probe", "build", "catalog"] {
+        for command_name in ["auth", "init", "probe", "build", "catalog"] {
             assert!(!subcommands.contains(&command_name), "{command_name}");
         }
 

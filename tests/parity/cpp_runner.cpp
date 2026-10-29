@@ -13,11 +13,8 @@
 #include <memory>
 #include <rlmesh.hpp>
 #include <sstream>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <thread>
 #include <type_traits>
-#include <unistd.h>
 // Observe the real ABI boundary, then forward to the linked library. Recorder
 // stores both missing and empty config as {}, so a roundtrip alone cannot catch
 // a wrapper accidentally converting an absent optional into an empty dict.
@@ -67,7 +64,7 @@ struct Script {
   int steps = 0, env_closes = 0, model_closes = 0, ends = 0, starts = 0;
   int64_t reset_seed = -1, reset_trial = -1;
   bool dict_action = false;
-  bool cancel_step = false;
+  bool cancel_step = false, held = false;
   std::optional<ext::CancelToken> cancel;
 };
 struct Counter {
@@ -90,6 +87,7 @@ struct Counter {
     s->reset_trial = trial_index(options).value_or(-1);
     ++s->starts;
     s->steps = 0;
+    s->held = false;
     return {0, {}};
   }
   StepResult step(std::optional<Value>) {
@@ -98,8 +96,10 @@ struct Counter {
     if (s->cancel_step) {
       s->cancel_step = false;
       s->cancel->cancel();
+      s->held = true;
     }
-    return {s->steps, 1.0, s->steps >= 2, false, {}};
+    // A cancelled episode never ends, so the run's cancel lands in it.
+    return {s->steps, 1.0, s->steps >= 2 && !s->held, false, {}};
   }
   void close() { ++s->env_closes; }
 };
@@ -199,8 +199,8 @@ void current_error() {
   }
 }
 
-// The current exception's record, with every `value` (a port, a socket
-// path) in its text masked.
+// The current exception's record, with every `value` (a port) in its text
+// masked.
 void current_error_masked(const std::string &value, const std::string &mask) {
   std::ostringstream captured;
   auto *previous = std::cout.rdbuf(captured.rdbuf());
@@ -212,104 +212,50 @@ void current_error_masked(const std::string &value, const std::string &mask) {
     text.replace(at, value.size(), mask);
   std::cout << text;
 }
-void wait_for_socket(const std::string &path) {
-  for (int i = 0; i < 1000; ++i) {
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    REQUIRE(fd >= 0);
-    sockaddr_un addr{};
-    addr.sun_family = AF_UNIX;
-    std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path.c_str());
-    int connected =
-        connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr);
-    ::close(fd);
-    if (connected == 0)
-      return;
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+// A run refuses an https:// env endpoint (v1) before any dial.
+void https_env(Model &model) {
+  EnvServer server(Counter{std::make_shared<Script>()},
+                   EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+  server.start();
+  const std::string address = server.address();
+  const std::string port = address.substr(address.rfind(':') + 1);
+  try {
+    model.run("https://127.0.0.1:" + port);
+    REQUIRE(false);
+  } catch (...) {
+    current_error_masked(port, "PORT");
   }
-  std::abort();
+  server.shutdown();
 }
-// A served model reached with an api_key, over TLS, or driving a local env.
-void remote_auth(const std::string &variant, Env &env, Model &model,
-                 const std::shared_ptr<Script> &state) {
-  if (variant == "invalid_header") {
-    try {
-      RemoteModel(RemoteModelOptions{}
-                      .with_address("https://localhost:1")
-                      .with_api_key("bad\nkey"));
-      REQUIRE(false);
-    } catch (...) {
-      current_error();
-    }
-    return;
-  }
-  if (variant == "local_model_https_env") {
-    EnvServer server(Counter{std::make_shared<Script>()},
-                     EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
-    server.start();
-    const std::string address = server.address();
-    const std::string port = address.substr(address.rfind(':') + 1);
-    try {
-      model.run("https://127.0.0.1:" + port);
-      REQUIRE(false);
-    } catch (...) {
-      current_error_masked(port, "PORT");
-    }
-    server.shutdown();
-    return;
-  }
-  if (variant == "https_to_plaintext") {
-    EnvServer server(Counter{std::make_shared<Script>()},
-                     EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
-    server.start();
-    const std::string address = server.address();
-    const std::string port = address.substr(address.rfind(':') + 1);
-    RemoteModel remote(
-        RemoteModelOptions{}.with_address("https://127.0.0.1:" + port));
-    try {
-      run(remote, env);
-      REQUIRE(false);
-    } catch (...) {
-      current_error_masked(port, "PORT");
-    }
-    server.shutdown();
-    return;
-  }
-  char dir[] = "/tmp/rlmesh-parity-XXXXXX";
-  REQUIRE(mkdtemp(dir) != nullptr);
-  const std::string path = std::string(dir) + "/model.sock";
-  const std::string address = "unix://" + path;
-  const bool keyed =
-      variant == "api_key_rejected" || variant == "api_key_accepted";
+// A model served as the participant "policy" of a session this process
+// hosts, reached by its address and driving a local env.
+void served_model(Env &env, Model &model,
+                  const std::shared_ptr<Script> &state) {
+  EnvServer host(Counter{std::make_shared<Script>()},
+                 EnvServerOptions{}.with_address(":0/host"));
+  host.start();
+  const std::string base = host.address();
+  const std::string address = base.substr(0, base.rfind('/')) + "/policy";
   ext::CancelToken cancel;
   ModelServeOptions serve_options;
   serve_options.cancel = cancel;
-  if (keyed)
-    serve_options.ext = ext::ModelServeOptions{}.with_token("right-key");
   std::thread serving([&] {
     try {
       model.serve(address, serve_options);
     } catch (...) {
     }
   });
-  wait_for_socket(path);
-  auto options = RemoteModelOptions{}.with_address(address);
-  if (variant == "api_key_rejected")
-    options.api_key = "wrong-key";
-  else if (variant == "api_key_accepted")
-    options.api_key = "right-key";
-  RemoteModel remote(options);
   try {
-    auto result = run(remote, env);
+    auto result = Model::from_address(address).run(env);
     std::cout << "\"episodes\":" << result.num_episodes()
               << ",\"steps\":" << result.total_steps()
               << ",\"env_closes\":" << state->env_closes;
   } catch (...) {
-    current_error_masked(path, "SOCKET");
+    current_error();
   }
   cancel.cancel();
   serving.join();
-  ::unlink(path.c_str());
-  ::rmdir(dir);
+  host.shutdown();
 }
 
 struct KeyedPolicy {
@@ -344,11 +290,10 @@ void own_exception(const std::string &variant) {
     });
     auto work = [&](int tag) {
       Env env(Counter{std::make_shared<Script>()});
-      auto session = model.session(env);
-      auto [obs, info] = session.reset(tag);
-      (void)info;
+      auto binding = model.bind(env);
+      binding.reset(tag);
       try {
-        session.predict(obs);
+        binding.step();
         REQUIRE(false);
       } catch (const OwnError &e) {
         REQUIRE(e.tag == tag);
@@ -372,11 +317,10 @@ void own_exception(const std::string &variant) {
         REQUIRE(e.tag == 23);
       }
     } else {
-      auto session = model.session(env);
-      auto [obs, info] = session.reset();
-      (void)info;
+      auto binding = model.bind(env);
+      binding.reset();
       try {
-        session.predict(obs);
+        binding.step();
         REQUIRE(false);
       } catch (const OwnError &e) {
         REQUIRE(e.tag == 17);
@@ -437,8 +381,9 @@ int main(int argc, char **argv) {
                     rows.size() == 5 && rows[3].config.empty() &&
                     rows[4].config.empty());
     } else if (op == "reset_order") {
-      auto session = model.session(env);
-      auto [observation, info] = session.reset(37, 11);
+      auto binding = model.bind(env);
+      auto [observation, info] =
+          binding.reset(37, InfoDict{{"trial_index", 11}});
       std::cout << "\"seed\":" << state->reset_seed
                 << ",\"trial_index\":" << state->reset_trial
                 << ",\"observation\":" << observation.as_int()
@@ -488,29 +433,31 @@ int main(int argc, char **argv) {
       Env fresh(Counter{std::make_shared<Script>()});
       model.run(fresh);
       std::cout << ",\"reusable\":true";
-    } else if (op == "busy_session") {
+    } else if (op == "busy_binding") {
       EnvServer server(Counter{state},
-                       EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+                       EnvServerOptions{}.with_address(":0/env"));
       server.start();
       {
-        auto first = model.session(server);
+        auto first = model.bind(server);
         first.reset(0);
         try {
-          auto second = model.session(server);
+          auto second = model.bind(server);
           second.reset(0);
           REQUIRE(false);
         } catch (...) {
           current_error();
         }
-        first.step(0);
+        first.step();
         std::cout << ",\"reusable\":true";
       }
       server.shutdown();
-    } else if (op == "remote_auth") {
-      remote_auth(variant, env, model, state);
+    } else if (op == "https_env") {
+      https_env(model);
+    } else if (op == "served_model") {
+      served_model(env, model, state);
     } else if (op == "busy_remote") {
       EnvServer server(Counter{state},
-                       EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+                       EnvServerOptions{}.with_address(":0/env"));
       server.start();
       RemoteEnv remote(RemoteEnvOptions{}.with_address(server.address()));
       remote.reset(0);
@@ -527,8 +474,9 @@ int main(int argc, char **argv) {
       server.shutdown();
     } else if (op == "borrow") {
       {
-        auto session = model.session(env);
-        session.reset(0);
+        auto binding = model.bind(env);
+        binding.reset(0);
+        binding.close();
       }
       std::cout << "\"env_closes\":" << state->env_closes
                 << ",\"model_closes\":" << state->model_closes
@@ -552,7 +500,7 @@ int main(int argc, char **argv) {
         options.cancel = token;
       auto server = [&] {
         Factory factory(state);
-        auto started = ext::start(factory, "tcp://127.0.0.1:0", options);
+        auto started = ext::start(factory, ":0/env", options);
         prepares = factory.prepares;
         return started;
       }();
@@ -642,69 +590,53 @@ int main(int argc, char **argv) {
       std::cout << "\"warnings\":" << warnings << ",\"category\":";
       quote(category);
       std::cout << ",\"calling_thread\":" << calling_thread;
-    } else {
-      auto token = ext::CancelToken();
-      state->cancel = token;
-      state->cancel_step = op == "cancel_step" || op == "cancel_run";
-      auto session = model.session(env, SessionOptions{}.with_cancel(token));
-      Value obs(0);
-      if (op != "cancel_run" && op != "hook_error")
-        obs = std::get<0>(session.reset(0));
-      if (op == "borrow") {
-        session.close();
-        std::cout << "\"env_closes\":" << state->env_closes
-                  << ",\"model_closes\":" << state->model_closes
-                  << ",\"episode_ends\":" << state->ends;
-        model.run(env);
-        std::cout << ",\"reusable\":true";
-      } else if (op == "error") {
-        session.predict(obs);
-        REQUIRE(false);
-      } else if (op == "cancel_idle") {
-        int failures = 0;
-        int cancelled_call_starts = 0;
-        for (int i = 0; i < 2; ++i) {
-          int before = state->starts;
-          token.cancel();
-          token.cancel();
-          try {
-            session.predict(obs);
-            REQUIRE(false);
-          } catch (const ext::CancelledError &e) {
-            ++failures;
-            if (!i)
-              error(e, "KeyboardInterrupt");
-          }
-          cancelled_call_starts += state->starts - before;
-          session.predict(obs);
-        }
-        std::cout << ",\"failures\":" << failures
-                  << ",\"cancelled_call_starts\":" << cancelled_call_starts
-                  << ",\"reusable\":true";
-      } else if (op == "cancel_step" || op == "cancel_run" ||
-                 op == "hook_error") {
-        Hooks hooks;
-        hooks.fail = op == "hook_error";
+    } else if (op == "error") {
+      auto binding = model.bind(env);
+      binding.reset(0);
+      binding.step();
+      REQUIRE(false);
+    } else if (op == "cancel_idle") {
+      ext::CancelToken token;
+      auto options = RunOptions{}.with_cancel(token);
+      int failures = 0;
+      int cancelled_call_starts = 0;
+      for (int i = 0; i < 2; ++i) {
+        int before = state->starts;
+        token.cancel();
+        token.cancel();
         try {
-          if (op == "cancel_step")
-            session.step(0);
-          else
-            session.run(SessionRunOptions{}.with_hooks(&hooks));
+          model.run(env, options);
           REQUIRE(false);
-        } catch (...) {
-          current_error();
+        } catch (const ext::CancelledError &e) {
+          ++failures;
+          if (!i)
+            error(e, "KeyboardInterrupt");
         }
-        std::cout << ",\"episode_ends_before_reset\":" << state->ends;
-        if (op == "cancel_step")
-          session.reset(0);
-        std::cout << ",\"episode_ends\":" << state->ends
-                  << ",\"run_ends\":" << hooks.ends
-                  << ",\"partial_episodes\":" << hooks.partial;
-        session.step(0);
-        std::cout << ",\"reusable\":true";
-      } else {
-        throw std::logic_error("unknown operation " + op);
+        cancelled_call_starts += state->starts - before;
+        model.run(env, options);
       }
+      std::cout << ",\"failures\":" << failures
+                << ",\"cancelled_call_starts\":" << cancelled_call_starts
+                << ",\"reusable\":true";
+    } else if (op == "cancel_run" || op == "hook_error") {
+      ext::CancelToken token;
+      state->cancel = token;
+      state->cancel_step = op == "cancel_run";
+      Hooks hooks;
+      hooks.fail = op == "hook_error";
+      try {
+        model.run(env, RunOptions{}.with_cancel(token).with_hooks(&hooks));
+        REQUIRE(false);
+      } catch (...) {
+        current_error();
+      }
+      std::cout << ",\"episode_ends\":" << state->ends
+                << ",\"run_ends\":" << hooks.ends
+                << ",\"partial_episodes\":" << hooks.partial;
+      model.run(env);
+      std::cout << ",\"reusable\":true";
+    } else {
+      throw std::logic_error("unknown operation " + op);
     }
   } catch (...) {
     current_error();

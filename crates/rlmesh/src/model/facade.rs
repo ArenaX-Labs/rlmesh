@@ -15,8 +15,9 @@ use rlmesh_grpc::lifecycle::ShutdownTrigger;
 use super::context::{BatchPredictContext, EpisodeStore, OwnedContext, PredictContext};
 use super::policy::{Corners, LoadKey, Policy, SpecArg};
 use super::types::EpisodeInfo;
+#[cfg(feature = "lockstep")]
 use crate::editions::EditionSources;
-use crate::{BindAddress, Error, Kwargs, Result, ServeOptions, Value};
+use crate::{Error, Kwargs, Metadata, Result, ServeOptions, Value};
 
 /// The cap on a `None` drain or close timeout, which a model serve takes
 /// too.
@@ -50,6 +51,10 @@ impl fmt::Debug for ModelOptions {
 /// Options for [`Model::serve`], including cancellation and native extras.
 #[derive(Clone, Debug, Default)]
 pub struct ModelServeOptions {
+    /// The participant the model joins the session at `address` as:
+    /// `serve("lab:7447", name: "policy")` is reached at `lab:7447/policy`.
+    /// `None` reads it off `address` (`"lab:7447/policy"`).
+    pub name: Option<String>,
     /// The transport lifecycle policy; `None` drain and close timeouts take
     /// a 5 s cap.
     pub options: Option<ServeOptions>,
@@ -58,6 +63,10 @@ pub struct ModelServeOptions {
     pub cancel: Option<crate::ext::CancelToken>,
     /// The Rust- and C-only extras.
     pub ext: Option<crate::ext::ModelServeOptions>,
+    /// How a session-served model coalesces predicts; `None` is
+    /// [`BatchOptions::default`](crate::BatchOptions). Only a session
+    /// address batches.
+    pub batching: Option<crate::BatchOptions>,
 }
 
 /// A loaded model built from a [`Policy`] or predict closure. A shared
@@ -247,6 +256,10 @@ pub trait DynPolicy: Send {
     fn allow_fusion(&self) -> bool;
     /// [`Policy::native_chunk`].
     fn native_chunk(&self) -> Option<u32>;
+    /// [`Policy::execution_horizon`].
+    fn execution_horizon(&self) -> Option<u32> {
+        None
+    }
     /// `predict`, with a context when the corner reads one.
     fn predict(
         &mut self,
@@ -275,6 +288,16 @@ pub trait DynPolicy: Send {
     ) -> Result<Vec<Value>>;
     /// [`Policy::on_episode_end`].
     fn on_episode_end(&mut self, episode_id: &str) -> Result<()>;
+    /// Whether [`reset_options`](DynPolicy::reset_options) is written
+    /// ([`Policy::RESET_OPTIONS`]); read once, after `load`.
+    fn has_reset_options(&self) -> bool {
+        false
+    }
+    /// [`Policy::reset_options`].
+    fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
+        let _ = episode;
+        Ok(None)
+    }
     /// [`Policy::close`].
     fn close(&mut self) -> Result<()>;
 }
@@ -294,6 +317,10 @@ impl<P: Policy> DynPolicy for Erased<P> {
 
     fn native_chunk(&self) -> Option<u32> {
         self.0.native_chunk()
+    }
+
+    fn execution_horizon(&self) -> Option<u32> {
+        self.0.execution_horizon()
     }
 
     fn predict(
@@ -354,6 +381,14 @@ impl<P: Policy> DynPolicy for Erased<P> {
         self.0.on_episode_end(episode_id)
     }
 
+    fn has_reset_options(&self) -> bool {
+        P::RESET_OPTIONS
+    }
+
+    fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
+        self.0.reset_options(episode)
+    }
+
     fn close(&mut self) -> Result<()> {
         self.0.close()
     }
@@ -391,9 +426,27 @@ pub(crate) struct Resolved {
     pub(crate) type_name: String,
     pub(crate) load_keys: Option<Vec<(String, bool)>>,
     pub(crate) trust_entrypoints: bool,
+    /// Whether the policy adds reset options (read after `load`).
+    pub(crate) reset_options: bool,
+    /// The execution horizon `load` chose for its checkpoint.
+    pub(crate) execution_horizon: Option<u32>,
 }
 
 impl Resolved {
+    /// The horizon a run naming none executes at: the one `load` chose, else
+    /// the spec's `timing.execution`, else 1.
+    pub(crate) fn resolve_horizon(&self, explicit: Option<u32>) -> Result<u32> {
+        crate::run::resolve_execution_horizon(
+            explicit.map(i128::from),
+            self.execution_horizon.map(i128::from),
+            match &self.spec {
+                Some(SpecArg::ModelSpec(spec)) => spec.timing().execution.map(i128::from),
+                _ => None,
+            },
+            self.native_chunk,
+        )
+    }
+
     /// Whether a chunk corner exists, written or derived (`predict_chunk`
     /// from `predict_chunk_batch`).
     pub(crate) fn has_chunk(&self) -> bool {
@@ -439,6 +492,11 @@ impl Core {
         for context in contexts {
             self.store.finish(context);
         }
+    }
+
+    /// The policy's reset options for one episode.
+    pub(crate) fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
+        self.policy.reset_options(episode)
     }
 
     /// `predict` for one row: the policy's own, or a batch of one of
@@ -577,6 +635,7 @@ enum Phase {
 struct LifeState {
     phase: Phase,
     serves: std::collections::HashMap<u64, ShutdownTrigger>,
+    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     next_serve: u64,
 }
 
@@ -642,15 +701,26 @@ pub(crate) struct Shared {
     life: Arc<Life>,
     refuse: AtomicBool,
     /// Set while a run drives this model.
-    running: AtomicBool,
+    running: Arc<AtomicBool>,
 }
 
 /// Holds a model's run slot; released on drop.
-pub(crate) struct RunSlot(Arc<Shared>);
+pub struct RunSlot(Arc<AtomicBool>);
+
+impl RunSlot {
+    pub(crate) fn claim(gate: Arc<AtomicBool>) -> Result<Self> {
+        if gate.swap(true, Ordering::SeqCst) {
+            return Err(Error::Runtime(
+                "run() is already in progress on this model; a model runs one run at a time".into(),
+            ));
+        }
+        Ok(Self(gate))
+    }
+}
 
 impl Drop for RunSlot {
     fn drop(&mut self) {
-        self.0.running.store(false, Ordering::SeqCst);
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -707,7 +777,7 @@ impl Shared {
                 changed: Condvar::new(),
             }),
             refuse: AtomicBool::new(false),
-            running: AtomicBool::new(false),
+            running: Arc::new(AtomicBool::new(false)),
         }))
     }
 
@@ -769,28 +839,10 @@ impl Shared {
             .map_err(|_| Error::Internal("the model call was dropped".to_string()))?
     }
 
-    /// Owned Drop cleanup is enqueued immediately; only the wait may detach.
-    pub(crate) fn queue_episode_end(&self, episode_id: String) -> Result<()> {
-        let _admission = self.life.lock();
-        if self.refuse.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        crate::warnings::with_work(None, || {
-            self.submit(move |core| core.episode_end(&episode_id))
-        })?;
-        Ok(())
-    }
-
     /// Claim the model's one run slot: a second run while one is in progress
     /// fails at once with the `RuntimeError` class.
     pub(crate) fn claim_run(self: &Arc<Self>) -> Result<RunSlot> {
-        if self.running.swap(true, Ordering::SeqCst) {
-            return Err(Error::Runtime(
-                "run() is already in progress on this model; a model runs one run at a time"
-                    .to_string(),
-            ));
-        }
-        Ok(RunSlot(Arc::clone(self)))
+        RunSlot::claim(self.running.clone())
     }
 
     /// Refuse a new run or serve once `close()` has begun.
@@ -801,6 +853,7 @@ impl Shared {
         Ok(())
     }
 
+    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     fn register_serve(&self, trigger: ShutdownTrigger) -> Result<u64> {
         let mut state = self.life.lock();
         if state.phase != Phase::Open {
@@ -812,6 +865,7 @@ impl Shared {
         Ok(id)
     }
 
+    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     fn deregister_serve(&self, id: u64) {
         self.life.lock().serves.remove(&id);
         self.life.changed.notify_all();
@@ -926,6 +980,11 @@ pub(crate) fn construct(
     let native_chunk = policy.native_chunk();
     check_native_chunk(native_chunk, decl.corners)?;
     let allow_fusion = policy.allow_fusion();
+    let reset_options = policy.has_reset_options();
+    let execution_horizon = policy.execution_horizon();
+    if let Some(horizon) = execution_horizon {
+        crate::run::check_horizon(horizon, native_chunk)?;
+    }
     let ModelOptions {
         spec,
         on_episode_end,
@@ -944,6 +1003,8 @@ pub(crate) fn construct(
         type_name: decl.type_name,
         load_keys: decl.load_keys,
         trust_entrypoints,
+        reset_options,
+        execution_horizon,
     };
     let shared = Shared::start(policy, resolved, on_episode_end, on_close)?;
     Ok(Model {
@@ -991,6 +1052,11 @@ impl Model {
     /// The native chunk length, read after `load`.
     pub fn native_chunk(&self) -> Option<u32> {
         self.shared().decl.native_chunk
+    }
+
+    /// The checkpoint's execution horizon, read once after `load`.
+    pub fn execution_horizon(&self) -> Option<u32> {
+        self.shared().decl.execution_horizon
     }
 
     /// The policy's workflow edition declaration.
@@ -1112,12 +1178,14 @@ impl Drop for DropCancels {
 }
 
 /// Watches cancel tokens and stops a server when one fires.
+#[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
 pub(crate) struct CancelWatcher {
     stop: Arc<AtomicBool>,
     fired: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+#[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
 impl CancelWatcher {
     pub(crate) fn start(
         tokens: Vec<crate::ext::CancelToken>,
@@ -1165,7 +1233,8 @@ impl CancelWatcher {
 }
 
 /// One serve, blocking the calling thread: validate, resolve the edition,
-/// bind, serve until stopped, then close the model.
+/// join the session of the participant address as the model it names, as
+/// Python's serve does, serve until stopped, then close the model.
 fn serve_blocking(
     shared: &Arc<Shared>,
     address: &str,
@@ -1174,15 +1243,29 @@ fn serve_blocking(
     dropped: Option<crate::ext::CancelToken>,
 ) -> Result<()> {
     let ModelServeOptions {
+        name,
         options,
         cancel,
         ext,
+        batching,
     } = options;
     if cancel.as_ref().is_some_and(crate::ext::CancelToken::take) {
         return Err(Error::Cancelled);
     }
+    let participant = match name.as_deref() {
+        Some("") => return Err(Error::invalid_argument("name must not be empty")),
+        Some(name) => format!("{}/{name}", address.trim_end_matches('/')),
+        None => address.to_string(),
+    };
+    let address = participant.as_str();
+    if !crate::address::is_v2(address) {
+        return Err(Error::invalid_argument(format!(
+            "serve: {address:?} is a v1 model endpoint, which rlmesh 0.2 no longer serves; \
+             serve on a participant address (e.g. 'lab:7447/policy')"
+        )));
+    }
     shared.admit()?;
-    let mut serve = options.unwrap_or_default();
+    let serve = options.unwrap_or_default();
     serve.validate()?;
     let ext = ext.unwrap_or_default();
     if ext.predict_concurrency == Some(0) {
@@ -1190,35 +1273,109 @@ fn serve_blocking(
             "predict_concurrency must be at least 1",
         ));
     }
-    let token = crate::serve_options::model_endpoint_token(ext.token)?.unwrap_or_default();
-    let address = BindAddress::parse(address)?;
-    // The call's edition wins over the environment variable; a served peer
-    // is authored, so a floating one warns (COR-6, COR-7).
-    serve.workflow_edition = crate::editions::resolve_native(
-        EditionSources {
-            call: serve.workflow_edition.as_deref(),
-            option: None,
-            declared: shared.decl.workflow_edition.as_deref(),
-        },
-        true,
-    )?;
-    serve.drain_timeout = Some(serve.drain_timeout.unwrap_or(SERVE_GRACE));
-    let close_timeout = serve.close_timeout.unwrap_or(SERVE_GRACE);
-    serve.close_timeout = Some(close_timeout);
+    let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
+    #[cfg(not(feature = "lockstep"))]
+    {
+        let _ = (serve, ext, batching, foreground, tokens);
+        Err(Error::invalid_argument(
+            "serve: a session model needs rlmesh's `lockstep` feature",
+        ))
+    }
+    #[cfg(feature = "lockstep")]
+    {
+        crate::binding::check_session_model_serve(&serve)?;
+        crate::serve_options::check_session_token(
+            crate::serve_options::MODEL_ENDPOINT_TOKEN_ENV,
+            ext.token.is_some(),
+        )?;
+        if ext.predict_concurrency.is_some() {
+            return Err(Error::invalid_argument(
+                "predict_concurrency: a session model runs one forward at a time (gone in \
+                 rlmesh 0.2 for a session address)",
+            ));
+        }
+        // The call's edition wins over the environment variable; a served peer
+        // is authored, so a floating one warns (COR-6, COR-7).
+        let edition = crate::editions::resolve_native(
+            EditionSources {
+                call: serve.workflow_edition.as_deref(),
+                option: None,
+                declared: shared.decl.workflow_edition.as_deref(),
+            },
+            true,
+        )?;
+        let join = serve.close_timeout.unwrap_or(SESSION_JOIN);
+        let batching = batching.unwrap_or_default();
+        serve_session(shared, address, edition, batching, join, foreground, tokens)
+    }
+}
+
+/// How long a session model's join and close may take when the options set
+/// no `close_timeout`, as Python's serve.
+#[cfg(feature = "lockstep")]
+const SESSION_JOIN: Duration = Duration::from_secs(30);
+
+/// Joins the session of the participant address `address` as the model and
+/// answers whoever drives it there, until stopped.
+#[cfg(feature = "lockstep")]
+fn serve_session(
+    shared: &Arc<Shared>,
+    address: &str,
+    edition: Option<String>,
+    batching: crate::BatchOptions,
+    join: Duration,
+    foreground: bool,
+    tokens: Vec<crate::ext::CancelToken>,
+) -> Result<()> {
     let handler = super::bridge::engine_handler(Arc::clone(shared));
-    let bound = crate::run::drive::block_on_library(super::server::bind_model_with_options(
-        handler,
-        address,
-        &token,
-        ext.predict_concurrency,
-        serve,
-    ))?;
-    let trigger = bound.shutdown_trigger();
+    // The envelope a driver reads the model's own horizon (and spec) from.
+    let describe = crate::describe::describe_json(
+        crate::describe::Describable::built(shared),
+        crate::describe::DescribeJsonOptions {
+            workflow_edition: Some(edition.clone().unwrap_or_default()),
+            ..Default::default()
+        },
+    )?;
+    let service = Arc::new(
+        crate::lockstep::ModelService::new(handler, describe)
+            .declaring(edition.as_deref())
+            .batching(batching)?,
+    );
+    let binding = crate::run::drive::block_on_library(crate::lockstep::ModelBinding::bind(address))
+        .map_err(crate::env::client::lockstep_error)?;
+    tracing::info!(address = %binding.address(), "model serving");
+    let trigger = ShutdownTrigger::new();
+    let stopped = trigger.clone();
+    let serve = async move {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let stop = cancel.clone();
+        let relay = tokio::spawn(async move {
+            stopped.cancelled_owned().await;
+            stop.cancel();
+        });
+        let result = binding.serve(service, join, cancel).await;
+        relay.abort();
+        result.map_err(crate::env::client::lockstep_error)
+    };
+    serve_until_stopped(shared, trigger, foreground, tokens, join, serve)
+}
+
+/// Serves until `trigger` fires (a signal, a cancel token, the model's
+/// close), then closes the model: the cancellation class when a token or
+/// SIGINT stopped it.
+#[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
+fn serve_until_stopped(
+    shared: &Arc<Shared>,
+    trigger: ShutdownTrigger,
+    foreground: bool,
+    tokens: Vec<crate::ext::CancelToken>,
+    close_timeout: Duration,
+    serve: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
     let serve_id = shared.register_serve(trigger.clone())?;
     let signals = foreground.then(|| crate::env::signals::enter(trigger.clone()));
-    let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
     let watcher = CancelWatcher::start(tokens, trigger);
-    let result = crate::run::drive::block_on_library(bound.serve());
+    let result = crate::run::drive::block_on_library(serve);
     shared.deregister_serve(serve_id);
     let cancelled = watcher.stop();
     let interrupted = signals.as_ref().is_some_and(|scope| scope.interrupted());
@@ -1238,8 +1395,8 @@ pub(crate) async fn run_local(
     model: &Model,
     options: super::worker::RunLocalOptions,
     cancellation: tokio_util::sync::CancellationToken,
-    hooks: Arc<dyn rlmesh_runtime::RuntimeHooks>,
-) -> Result<rlmesh_runtime::RuntimeReport> {
+    hooks: Arc<dyn crate::run::runtime::RuntimeHooks>,
+) -> Result<crate::run::runtime::RuntimeReport> {
     let shared = model.shared();
     shared.check_not_reentrant("run")?;
     shared.admit()?;

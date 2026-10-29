@@ -9,6 +9,7 @@
     "**/*.proto",
     "site/*",
     "**/tests/api_surface/snapshots/**",
-    "**/tests/fixtures/2026.06/**"
+    "**/tests/fixtures/runtime/2026.10/**",
+    "crates/rlmesh-cli/tests/fixtures/eyeball-rig.toml"
   ]
 }

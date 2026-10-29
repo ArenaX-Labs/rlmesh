@@ -1,11 +1,10 @@
 use crate::cli::{CredentialHelperArgs, ProfileArgs};
-use crate::config::{Identity, ProfileStore};
-use crate::helpers::http_client;
-use crate::platform::Platform;
 use crate::render::{Style, write_heading, write_key_value};
-use crate::session::{Refresh, ensure_fresh_session};
 
 use anyhow::{Context, Result, anyhow, bail};
+use rlmesh::binding::managed::{
+    self as store, Identity, ProfileStore, Refresh, ensure_fresh_session, http_client,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -45,7 +44,7 @@ pub async fn registry_login(
     writeln!(stdout, "{} Checking session…", style.muted("◌"))?;
     stdout.flush()?;
 
-    let mut connection = Platform::connect_profile(profiles, profile.clone()).await?;
+    let mut connection = store::connect_profile(profiles.clone(), profile.clone()).await?;
 
     writeln!(stdout, "{} Looking up registry…", style.muted("◌"))?;
     stdout.flush()?;

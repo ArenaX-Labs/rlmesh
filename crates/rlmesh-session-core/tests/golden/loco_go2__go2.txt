@@ -1,0 +1,22 @@
+binding loco_go2 on go2: 6 inputs, 1 action, fingerprint e2b1af7aea1fdd22
+replan 50 Hz
+
+  entry    dir  part           status  plan                                                                delivers
+  gravity  in   base/imu       bound   fields orientation → rotation(orientation quat_wxyz → gravity_xyz)  f32 [3]
+  ang_vel  in   base/imu       bound   fields ang_vel → scale(0.25)                                        f32 [3]
+  command  in   goal/cmd_vel   bound   fields linear, angular                                              f32 [3]
+  q        in   legs           bound   fields pos → auto reorder(by names) → offset(12 values)             f32 [12]
+  dq       in   legs           bound   fields vel → auto reorder(by names) → scale(0.05)                   f32 [12]
+  last     in   legs/_applied  bound   auto reorder(by names) → scale(4) → offset(12 values)               f32 [12]
+  legs     out  legs           bound   scale(0.25) → offset(12 values) → auto reorder(by names)            f32 [1, 12]
+
+  input    contract   source  delivery  freshness
+  gravity  latest@50  500 Hz  50 Hz     30 ms
+  ang_vel  latest@50  500 Hz  50 Hz     60 ms (derived)
+  command  every      50 Hz   50 Hz     60 ms (derived)
+  q        latest@50  500 Hz  50 Hz     30 ms
+  dq       latest@50  500 Hz  50 Hz     60 ms (derived)
+  last     latest@50  500 Hz  50 Hz     60 ms (derived)
+
+  action  grid   chunk              valid  edge              age cap
+  legs    50 Hz  1 × 20 ms = 20 ms  20 ms  500 Hz (default)  200 ms (default)

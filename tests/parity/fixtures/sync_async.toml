@@ -85,5 +85,5 @@ family = "Sync and async"
 rules = ["R-16"]
 operation = "model_callback"
 languages = ["rust"]
-why = "Tests the Rust sync facade re-entering Tokio from a policy callback."
+why = "Tests the Rust sync facade binding a served model from inside a policy callback."
 expect = { episodes = 1 }

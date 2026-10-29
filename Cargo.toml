@@ -4,19 +4,19 @@ default-members = [
   "crates/rlmesh-adapters",
   "crates/rlmesh-capi",
   "crates/rlmesh-cli",
+  "crates/rlmesh-cockpit",
   "crates/rlmesh-grpc",
   "crates/rlmesh-proto",
-  "crates/rlmesh-runtime",
-  "crates/rlmesh-sandbox",
+  "crates/rlmesh-session",
+  "crates/rlmesh-session-core",
   "crates/rlmesh-spaces",
-  "crates/rlmesh-viewer",
   "python/rlmesh/rust",
 ]
-members = ["crates/*", "python/rlmesh/rust"]
+members = ["crates/*", "javascript/rlmesh/native", "javascript/rlmesh/wasm", "python/rlmesh/rust"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 authors = ["ArenaX Labs, Inc. <research@competesai.com>", "Josh Blayone <josh@arenaxlabs.com>"]
 edition = "2024"
 rust-version = "1.99"
@@ -30,15 +30,16 @@ publish = true
 
 [workspace.dependencies]
 # Rust Framework Crates
-rlmesh = { version = "=0.1.0", path = "crates/rlmesh" }
-rlmesh-adapters = { version = "=0.1.0", path = "crates/rlmesh-adapters" }
-rlmesh-cli = { version = "=0.1.0", path = "crates/rlmesh-cli" }
-rlmesh-grpc = { version = "=0.1.0", path = "crates/rlmesh-grpc" }
-rlmesh-proto = { version = "=0.1.0", path = "crates/rlmesh-proto" }
-rlmesh-runtime = { version = "=0.1.0", path = "crates/rlmesh-runtime" }
-rlmesh-sandbox = { version = "=0.1.0", path = "crates/rlmesh-sandbox" }
-rlmesh-spaces = { version = "=0.1.0", path = "crates/rlmesh-spaces" }
-rlmesh-viewer = { version = "=0.1.0", path = "crates/rlmesh-viewer" }
+rlmesh = { version = "=0.2.0-alpha.0", path = "crates/rlmesh" }
+rlmesh-adapters = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-adapters" }
+rlmesh-cli = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-cli" }
+rlmesh-grpc = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-grpc" }
+rlmesh-proto = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-proto" }
+rlmesh-session = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-session", default-features = false }
+rlmesh-session-core = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-session-core" }
+rlmesh-spaces = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-spaces" }
+rlmesh-tether = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-tether" }
+rlmesh-wasm = { version = "=0.2.0-alpha.0", path = "javascript/rlmesh/wasm" }
 
 # Protocol / Transport
 rayon = "1.10"
@@ -60,6 +61,35 @@ http-body-util = "0.1"
 # Test-only: a throwaway CA and server certificate for TLS tests.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 zstd = "0.13"
+# Real-time session transport (protocol v2). Pinned exactly: liveliness, query
+# and priority semantics are part of the session contract. Default features
+# stay off: `transport_multilink` pulls `rsa` (RUSTSEC-2023-0071), and the
+# session opens one Zenoh session per traffic class instead.
+zenoh = { version = "=1.10.1", default-features = false }
+# The cockpit (protocol v2): a native single-session viewer. eframe without
+# default features: glow on X11 and Wayland, no accesskit or persistence.
+eframe = { version = "0.37", default-features = false, features = [
+  "default_fonts",
+  "glow",
+  "wayland",
+  "x11",
+] }
+egui = "0.37"
+# Test-only: headless rendering of the cockpit (wgpu; lavapipe without a GPU).
+egui_kittest = "0.37"
+# rlmeshd's mDNS advertisement and the lookup by host id (scene design §3.1):
+# pure Rust, both sides, Linux, macOS and Windows, and no async runtime. No
+# default features: no flume async or log.
+mdns-sd = { version = "0.21", default-features = false }
+# Session recordings (protocol v2, §13). No default features: no compression.
+mcap = { version = "0.26", default-features = false }
+# Per-episode `trajectory.parquet` (the recorder's artifact tree): the Arrow
+# writer with zstd pages only, the same crates the managed runner writes with.
+arrow-array = { version = "60", default-features = false }
+arrow-schema = { version = "60", default-features = false }
+parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
+# Shared, sliceable buffers for zero-copy tensor payloads (`Bytes::from_owner`).
+bytes = "1.9"
 
 # Async Runtime
 async-trait = "0.1"
@@ -82,6 +112,8 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Utilities
+# Declaration and binding fingerprints (protocol v2, §3.3).
+blake3 = "1"
 chacha20 = { version = "0.10", features = ["rng"] }
 half = "2"
 image = { version = "0.25", default-features = false }
@@ -99,6 +131,8 @@ re_mp4 = "0.5"
 sha2 = "0.11"
 tempfile = "3"
 uuid = "1"
+# Wipes secrets on drop (an embedded host's address key).
+zeroize = "1"
 
 # Python Bindings
 pyo3 = "0.29"
@@ -121,6 +155,16 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 toml = "1.1"
 
+# Browser gateway (rlmesh-session, feature `gateway`): static files with COOP/COEP, TLS
+# on the ring provider, and a WebSocket client for its tests.
+tokio-rustls = { version = "0.26", default-features = false, features = [
+  "logging",
+  "ring",
+  "tls12",
+] }
+tokio-tungstenite = "0.29"
+tower-http = "0.6"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 
@@ -133,6 +177,42 @@ print_stdout = "warn"
 print_stderr = "warn"
 # Fires on every `#[tonic::async_trait]` service stub and impl (generated code).
 double_must_use = "allow"
+
+# The browser binding's .wasm (javascript/rlmesh/wasm, `mise run build:js`): size
+# matters more than speed, and a panic aborts the instance (the class Worker
+# that loaded it is respawned).
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# The Node/Electron addon (javascript/rlmesh/native, `mise run build:js:native`):
+# one download per platform, so size counts; panics unwind (napi-rs turns one
+# into a JS error rather than killing the process).
+[profile.node]
+inherits = "release"
+lto = true
+codegen-units = 1
+strip = true
+
+# The board's static library (crates/rlmesh-device, `mise run build:esp32`):
+# flash is the limit, and a panic resets the board (abort).
+[profile.device]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+# Checked in RLMesh's own code, where an overflow is a bug and resetting the
+# board is safe; not in the dependencies (the crypto), which wrap on purpose
+# and run on every message.
+overflow-checks = true
+
+[profile.device.package."*"]
+overflow-checks = false
 
 # Keep unwinding well-defined across the rlmesh-capi `extern "C"` boundary: every
 # FFI body relies on `catch_unwind`, which is a no-op under `panic = "abort"`.

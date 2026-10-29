@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import gc
-import threading
-import weakref
 from concurrent.futures import ThreadPoolExecutor
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -40,11 +36,9 @@ class RenderEnv:
         pass
 
 
-@pytest.mark.parametrize("native", [False, True])
-def test_local_hook_render_scope_and_retained_context(native: bool) -> None:
+def test_local_hook_render_scope_and_retained_context() -> None:
     env = RenderEnv()
     model = rlmesh.Model(lambda obs: 0)
-    session = rlmesh.session(model, env)
     retained: list[Any] = []
     renders: list[Any] = []
     stages: list[str] = []
@@ -52,9 +46,8 @@ def test_local_hook_render_scope_and_retained_context(native: bool) -> None:
     class Hooks(rlmesh.RunHooks):
         def on_run_start(self, context: Any) -> None:
             retained.append(context)
-            if native:
-                assert context.contract is None
-                assert context.frame_sources().render is None
+            assert context.contract is None
+            assert context.frame_sources().render is None
 
         def check(self, stage: str) -> None:
             stages.append(stage)
@@ -79,10 +72,7 @@ def test_local_hook_render_scope_and_retained_context(native: bool) -> None:
         def on_run_end(self, result: rlmesh.RunResult) -> None:
             self.check("run_end")
 
-    if native:
-        model.run(env, hooks=Hooks())
-    else:
-        session.run(hooks=Hooks())
+    model.run(env, hooks=Hooks())
     assert stages == ["start", "step", "episode_end", "run_end"]
     context = retained[0]
     assert context.contract is not None and context.num_envs == 1
@@ -90,70 +80,3 @@ def test_local_hook_render_scope_and_retained_context(native: bool) -> None:
     for render in renders:
         with pytest.raises(RuntimeError):
             render()
-    direct = session.frame_sources().render
-    assert direct is not None and direct() is env.frame
-    env.render_again = direct
-    with pytest.raises(RuntimeError):
-        direct()
-    env.render_again = None
-    assert direct() is env.frame
-    session.close()
-    with pytest.raises(RuntimeError, match="closed"):
-        direct()
-    if native:
-        assert context.contract is not None and context.num_envs == 1
-    else:
-        with pytest.raises(RuntimeError, match="closed"):
-            context.frame_sources()
-        with pytest.raises(RuntimeError, match="closed"):
-            _ = context.contract
-
-
-def test_remote_session_context_is_idle_only_and_does_not_own_session() -> None:
-    env = RenderEnv()
-    # A handle uses its existing connection, represented here by an in-process
-    # protocol double. Native remote integration tests exercise the transport.
-    env.env_contract = SimpleNamespace(  # type: ignore[attr-defined]
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        metadata={},
-        num_envs=1,
-    )
-    entered = threading.Event()
-    release = threading.Event()
-
-    def predict(obs: object) -> int:
-        entered.set()
-        assert release.wait(10)
-        return 0
-
-    session = rlmesh.session(rlmesh.Model(predict), env)
-    contexts: list[Any] = []
-
-    class Hooks(rlmesh.RunHooks):
-        def on_run_start(self, context: Any) -> None:
-            contexts.append(context)
-
-    session.run(episodes=0, hooks=Hooks())
-    context = contexts[0]
-    render = context.frame_sources().render
-    assert render is not None and render() is env.frame
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(session.predict, 0)
-        try:
-            assert entered.wait(10)
-            assert context.frame_sources().render is None
-            with pytest.raises(RuntimeError, match="in flight"):
-                render()
-        finally:
-            release.set()
-        assert future.result() == 0
-    assert render() is env.frame
-    session_ref = weakref.ref(session)
-    del session
-    gc.collect()
-    assert session_ref() is None
-    with pytest.raises(RuntimeError, match="dropped"):
-        context.frame_sources()
-    with pytest.raises(RuntimeError, match="dropped"):
-        render()

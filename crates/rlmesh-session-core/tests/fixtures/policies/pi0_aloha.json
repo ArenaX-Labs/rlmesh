@@ -1,0 +1,76 @@
+{
+  "hz": 50,
+  "inputs": {
+    "cam_high": {
+      "kind": "camera",
+      "at": "scene/cam",
+      "size": [224, 224]
+    },
+    "cam_low": {
+      "kind": "camera",
+      "at": "scene/cam_low",
+      "size": [224, 224],
+      "optional": true
+    },
+    "cam_left_wrist": {
+      "kind": "camera",
+      "at": "left/wrist/cam",
+      "size": [224, 224]
+    },
+    "cam_right_wrist": {
+      "kind": "camera",
+      "at": "right/wrist/cam",
+      "size": [224, 224]
+    },
+    "left": {
+      "kind": "joints",
+      "at": "left/arm",
+      "fields": ["pos"],
+      "names": ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"]
+    },
+    "right": {
+      "kind": "joints",
+      "at": "right/arm",
+      "fields": ["pos"],
+      "names": ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"]
+    },
+    "left_gripper": {
+      "kind": "gripper",
+      "at": "left/gripper"
+    },
+    "right_gripper": {
+      "kind": "gripper",
+      "at": "right/gripper"
+    },
+    "prompt": "text"
+  },
+  "actions": {
+    "left": {
+      "kind": "joints",
+      "at": "left/arm",
+      "command": "position",
+      "names": ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"],
+      "horizon": 50
+    },
+    "right": {
+      "kind": "joints",
+      "at": "right/arm",
+      "command": "position",
+      "names": ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"],
+      "horizon": 50
+    },
+    "left_gripper": {
+      "kind": "gripper",
+      "at": "left/gripper",
+      "command": "position",
+      "horizon": 50
+    },
+    "right_gripper": {
+      "kind": "gripper",
+      "at": "right/gripper",
+      "command": "position",
+      "horizon": 50
+    }
+  },
+  "allow": ["resize", "pad", "blank"]
+}

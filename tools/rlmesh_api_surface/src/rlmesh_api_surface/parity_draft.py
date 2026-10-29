@@ -60,8 +60,7 @@ def generate(root: Path, surfaces: dict) -> dict:
             if owner
             in (
                 "run",
-                "session",
-                "Session",
+                "Binding",
                 "RunResult",
                 "RunHooks",
                 "RunContext",
@@ -157,8 +156,6 @@ def generate(root: Path, surfaces: dict) -> dict:
                         )
                         + owner,
                     ]
-                    if owner == "session":
-                        candidates.insert(0, "rlmesh_session_new")
                     if owner == "__version__":
                         candidates = ["RLMESH_VERSION"]
                 if owner.endswith("Exception"):
@@ -248,8 +245,6 @@ def generate(root: Path, surfaces: dict) -> dict:
                 types = [target, target.rsplit("::", 1)[0]]
                 # Options are discoverable on the callable's native parameter.
                 functions = [target]
-                if lang == "c" and owner == "session":
-                    functions += ["rlmesh_session_new"]
                 if obj["kind"] == "class":
                     functions += [
                         target + "::new",

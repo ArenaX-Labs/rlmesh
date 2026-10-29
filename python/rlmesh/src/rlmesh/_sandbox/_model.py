@@ -3,44 +3,38 @@
 The model-side sibling of ``SandboxEnv``. The source is a prebuilt
 ``image://<tag>`` container you built yourself (BYO); construction is inert -- it
 records the tag but starts nothing. ``serve()`` (or use as a context manager)
-starts a long-lived container serving the policy as a model endpoint;
-``rlmesh.session(model, env)`` (or ``model.session(env)``) serves it and binds it to an
-env for the drive loop.
+starts a long-lived container serving the policy in the session it hosts;
+``run(env)`` and ``bind(env)`` drive it there.
 """
 
 from __future__ import annotations
 
-import time
-from typing import TYPE_CHECKING, Any
+import threading
+from typing import TYPE_CHECKING, Any, NoReturn
 
-from ..types import EnvTarget, ViewArg
-from ._sources import looks_like_gym_id, run_docker
+from .._upgrade import removed
+from ._sources import looks_like_gym_id
 from .session import (
+    SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
     SandboxRuntime,
     normalize_gpus,
     normalize_user,
     reject_sandbox_option_params,
     start_prebuilt_container,
     string_sequence,
+    wait_serving,
 )
 
 if TYPE_CHECKING:
-    from rlmesh._rlmesh import PyModelClient
+    from collections.abc import Sequence
 
-    from .._models._eval import Session
-    from ..specs import EnvContract
+    from .._models import Binding, RunResult
+    from .._models.base import ModelBase
+    from ..types import LocalEnvTarget
 
 __all__ = ["SandboxModel"]
 
 _IMAGE_SCHEMES = ("image://", "docker://")
-
-# Only these are retried while the container boots: a refused/unavailable
-# connection (ConnectionError/OSError) or a connect timeout. Deterministic
-# config errors -- a missing/invalid contract space (RuntimeError/TypeError,
-# raised before the client even dials) -- are NOT here, so they fail fast. Each
-# retry first re-checks the container is still running, so a dial error against
-# an already-exited container also fails fast (with logs) rather than retrying.
-_TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
 
 
 def _resolve_model_source(source: object) -> str:
@@ -96,7 +90,14 @@ class SandboxModel:
     run`` flags -- ``gpus`` for CUDA compute, or ``devices=["nvidia.com/gpu=all"]``
     (a CDI ref, full graphics+compute) and ``volumes=[...]`` for large local
     checkpoints/assets. A model is always a prebuilt image, so there is no build
-    config (no ``SandboxBuild``).
+    config (no ``SandboxBuild``). The image must be built with rlmesh 0.2; one
+    built with 0.1 is refused, naming it.
+
+    :meth:`run` and :meth:`bind` drive the served model as
+    ``rlmesh.Model(address)`` does, serving a local env in the session the
+    container hosts, which it reaches. :meth:`run` also takes a
+    :class:`~rlmesh.SandboxEnv`, whose session the container joins over their
+    shared Docker network.
     """
 
     def __init__(
@@ -105,6 +106,7 @@ class SandboxModel:
         /,
         *,
         runtime: SandboxRuntime | None = None,
+        connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
         **params: object,
     ) -> None:
         self._image = _resolve_model_source(source)
@@ -115,225 +117,101 @@ class SandboxModel:
         self._volumes = string_sequence("volumes", run.volumes)
         self._user = normalize_user(run.user)
         self._binding = dict(params)
+        self._connect_timeout = connect_timeout_seconds
         self._address: str | None = None
         self._container_id: str | None = None
+        self._model: ModelBase[Any, Any] | None = None
         self._closed = False
+        self._serving = threading.Lock()
 
-    def _serve_image(self) -> SandboxModel:
-        """Start a long-lived container for a prebuilt image tag (serve mode).
+    def serve(self) -> SandboxModel:
+        """Start a long-lived container serving the policy, once it answers.
 
-        Delegates to the shared :func:`start_prebuilt_container` (the same path the
-        env sandbox uses), passing ``num_envs``/``vectorization_mode`` as ``None`` so
-        the container serves in single (model) mode -- a model is never vectorized.
-        The container enters serve mode because no ``RLMESH_DRIVE_ENV_ADDRESS`` is set
-        (the BYO model protocol); the model's construction params, if any, ride in as
-        ``RLMESH_MAKE_KWARGS``. The port is published on a Docker-assigned host port
-        and read back (no host-side bind/close, so no TOCTOU race); on port-discovery
-        failure the helper stops the container before re-raising, so nothing leaks.
-        Readiness is the caller's connect-with-retry (see :meth:`session`).
+        Delegates to the shared :func:`start_prebuilt_container` (the same path
+        the env sandbox uses) without an eval shape -- a model is never
+        vectorized; the model's construction params, if any, ride in as
+        ``RLMESH_MAKE_KWARGS``. A container that does not answer is stopped
+        before the error is raised, so nothing leaks.
+
+        Idempotent: a second call returns the already-running handle, and one
+        made while the first is starting waits for it. The model is reachable at
+        :attr:`address` until :meth:`shutdown`.
         """
+        with self._serving:
+            return self._serve()
+
+    def _serve(self) -> SandboxModel:
+        if self._address is not None:
+            return self
+        from .._rlmesh import model_answers, sandbox_stop_env
+
         info = start_prebuilt_container(
             self._image,
             requested_source=self._image,
+            name="model",
             binding=self._binding,
             gpus=self._gpus,
             devices=self._devices,
             volumes=self._volumes,
             user=self._user,
         )
+        try:
+            wait_serving(
+                info,
+                self._connect_timeout,
+                lambda attempt: model_answers(info.address, attempt),
+            )
+        except BaseException:
+            sandbox_stop_env(container_id=info.container_id)
+            raise
         self._container_id = info.container_id
         self._address = info.address
         self._closed = False
         return self
 
-    def serve(self) -> SandboxModel:
-        """Start a long-lived container serving the policy as a model endpoint.
+    def run(self, env: LocalEnvTarget, **options: Any) -> RunResult:
+        """Run the served model against ``env``, as :meth:`rlmesh.Model.run` does.
 
-        The prebuilt ``image://`` image is run in serve mode.
-
-        Idempotent: a second call returns the already-running handle. The endpoint
-        is reachable at :attr:`address` until :meth:`shutdown`.
+        Serves the container first; a local env is served in its session, and
+        a :class:`~rlmesh.SandboxEnv`'s session is joined from the container.
         """
-        if self._address is not None:
-            return self
-        return self._serve_image()
+        return self._served().run(env, **options)
 
-    def session(
-        self,
-        env: EnvTarget,
-        *,
-        instruction: str | None = None,
-        close_env: bool = False,
-        trust_entrypoints: bool | None = None,
-        execution_horizon: int = 1,
-        connect_timeout_seconds: float = 30.0,
-        view: ViewArg = None,
-        workflow_edition: str | None = None,
-    ) -> Session[Any, Any]:
-        """Serve this model and bind it to ``env``, returning a neutral :class:`rlmesh.Session`.
+    def run_routes(
+        self, envs: Sequence[LocalEnvTarget], **options: Any
+    ) -> list[RunResult | Exception]:
+        """Drive the containerized model against every env in ``envs`` at once.
 
-        The managed sibling of :meth:`rlmesh.RemoteModel.session`: starts the model
-        container (idempotent), then opens a route configured from the env's contract so
-        the *same* drive loop works for both pairs::
-
-            with rlmesh.SandboxEnv("gym://CartPole-v1") as env:
-                sess = rlmesh.session(
-                    rlmesh.SandboxModel("image://my-model:latest"), env
-                )
-                obs, _ = sess.reset()
-                while not sess.done:
-                    obs, reward, terminated, truncated, _ = sess.step(sess.predict(obs))
-
-        Closing the session stops the container it started. ``instruction`` /
-        ``trust_entrypoints`` cannot be honored by a served container and raise
-        ``ValueError`` when set rather than being silently dropped. ``view`` opts into
-        the built-in live viewer over this session's env loop (see :func:`rlmesh.run`). ``execution_horizon``
-        requests open-loop action chunking: the runtime executes that many actions of each
-        predicted chunk before re-planning (1 = re-plan every step; only engages if the served
-        policy defines a chunk corner). Retries the connection while the container starts, up to
-        ``connect_timeout_seconds``.
+        Experimental. Serves the container first; see
+        :meth:`Model.run_routes <rlmesh.Model.run_routes>`.
         """
-        if instruction is not None:
-            raise ValueError(
-                "instruction= is not supported on a SandboxModel session: a "
-                "served model takes the instruction from the env; set it on "
-                "the env instead"
-            )
-        if trust_entrypoints is not None:
-            raise ValueError(
-                "trust_entrypoints= applies to local model entrypoints and is "
-                "not supported on a SandboxModel session; remove it"
-            )
-        from .._client._remote_model import (
-            dial_env_address,
-            env_contract_of,
-            env_session_offer,
-            remote_session,
-        )
-        from .._editions import resolve_workflow_edition
-        from .._load_native import load_native
+        return self._served().run_routes(envs, **options)
 
-        workflow_edition = resolve_workflow_edition(call=workflow_edition)
+    def bind(self, env: LocalEnvTarget, **options: Any) -> Binding[Any, Any]:
+        """Bind the served model to ``env``, as :meth:`rlmesh.Model.bind` does.
 
-        # Only tear down on failure if THIS call started the container; a handle the
-        # caller is managing (context manager / reuse) must survive a failed bind
-        # (serve() is idempotent and returns early when already serving).
-        started_here = self._address is None
-        env, owns_env = dial_env_address(env)
+        Serves the container first; a local env is served in its session.
+        """
+        return self._served().bind(env, **options)
+
+    def _served(self) -> ModelBase[Any, Any]:
+        """The served model, reached at :attr:`address`."""
         self.serve()
-        try:
-            contract = env_contract_of(env)
-            client = self._dial_with_retry(
-                load_native("PyModelClient"),
-                contract,
-                connect_timeout_seconds,
-                execution_horizon,
-                workflow_edition,
-                env_session_offer(env),
-            )
-            # Hand ownership (and so container teardown on session close) only to a
-            # session that actually started the container. A caller-managed handle
-            # (serve()/context manager) must survive its sessions closing.
-            try:
-                return remote_session(
-                    client,
-                    env,
-                    owner=self if started_here else None,
-                    close_env=close_env,
-                    owns_env=owns_env,
-                    view=view,
-                )
-            except BaseException:
-                try:
-                    client.close()
-                except Exception:
-                    pass
-                raise
-        except BaseException:
-            if started_here:
-                self.shutdown()
-            raise
+        if self._model is None:
+            from .._native import Model
 
-    def _dial_with_retry(
-        self,
-        client_cls: type[PyModelClient],
-        contract: EnvContract,
-        connect_timeout_seconds: float,
-        execution_horizon: int = 1,
-        workflow_edition: str | None = None,
-        env_offer: tuple[list[str], str | None] | None = None,
-    ) -> PyModelClient:
-        """Dial the serving container, retrying while it is still starting.
+            model = Model(self.address)
+            model._env_session = self.address.rsplit("/", 1)[0]  # pyright: ignore[reportPrivateUsage]
+            self._model = model
+        return self._model
 
-        Retries only genuine transient startup failures (see
-        :data:`_TRANSIENT_DIAL_ERRORS`): a deterministic contract/config error
-        (e.g. a missing observation space) fails fast instead of being retried
-        for the whole timeout and then masked as "did not become ready". If the
-        container has exited/crashed, fail fast with its recent logs.
-        """
-        deadline = time.monotonic() + connect_timeout_seconds
-        last_error: BaseException | None = None
-        while True:
-            try:
-                return client_cls(
-                    self.address,
-                    contract,
-                    execution_horizon=execution_horizon,
-                    connect_timeout_seconds=max(deadline - time.monotonic(), 0.1),
-                    workflow_edition=workflow_edition,
-                    env_offer=env_offer,
-                )
-            except _TRANSIENT_DIAL_ERRORS as exc:  # the container may still be starting
-                last_error = exc
-                running = self._container_running()
-                if running is None:
-                    raise RuntimeError(
-                        f"could not inspect model container for image "
-                        f"{self._image!r} at {self.address} (docker daemon "
-                        f"busy?); last dial error: {exc}"
-                    ) from last_error
-                if not running:
-                    raise RuntimeError(
-                        f"model container for image {self._image!r} at "
-                        f"{self.address} exited before becoming ready; recent "
-                        f"logs:\n{self._container_logs()}"
-                    ) from last_error
-                if time.monotonic() >= deadline:
-                    raise RuntimeError(
-                        f"model container for image {self._image!r} at "
-                        f"{self.address} did not become ready within "
-                        f"{connect_timeout_seconds:.0f}s; recent logs:\n"
-                        f"{self._container_logs()}"
-                    ) from last_error
-                time.sleep(0.1)
-
-    def _container_running(self) -> bool | None:
-        """Whether the served container is still running, or None if unknowable.
-
-        ``None`` means the inspect itself failed (daemon busy/erroring), which
-        the dial loop reports as "could not inspect" rather than misreading a
-        busy daemon as an exited container.
-        """
-        if self._container_id is None:
-            return False
-        proc = run_docker(
-            ["docker", "inspect", "-f", "{{.State.Running}}", self._container_id]
+    def session(self, *args: object, **kwargs: object) -> NoReturn:
+        """Removed in 0.2: a model is bound to an env with ``bind(target)``."""
+        _ = args, kwargs
+        removed(
+            "SandboxModel.session(env)",
+            "SandboxModel(...).bind(target) returns a Binding you step by hand",
         )
-        if proc.returncode != 0:
-            return None
-        return proc.stdout.strip() == "true"
-
-    def _container_logs(self, tail: int = 50) -> str:
-        """Recent container logs for error messages, degrading instead of raising."""
-        if self._container_id is None:
-            return ""
-        try:
-            proc = run_docker(
-                ["docker", "logs", "--tail", str(tail), self._container_id]
-            )
-        except RuntimeError as exc:
-            return f"<no logs: {exc}>"
-        return (proc.stdout + proc.stderr).strip()
 
     @property
     def address(self) -> str:
@@ -354,6 +232,9 @@ class SandboxModel:
 
     def shutdown(self) -> None:
         """Stop the served container, if any. Idempotent; safe to call repeatedly."""
+        if self._model is not None:
+            self._model.close()
+            self._model = None
         if self._closed or self._container_id is None:
             return
         from .._rlmesh import sandbox_stop_env

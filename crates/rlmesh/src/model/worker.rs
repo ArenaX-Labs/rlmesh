@@ -1,28 +1,20 @@
 use std::sync::Arc;
 
-use rlmesh_runtime::RuntimeReport;
+use crate::run::runtime::RuntimeReport;
 
 use super::handler::ModelHandler;
-use super::server::BoundModelServer;
-use super::{local, server};
-use crate::serve_options::MODEL_ENDPOINT_TOKEN_ENV;
-use crate::{BindAddress, ConnectAddress, Error, Result, ServeOptions};
+use super::local;
+use crate::{ConnectAddress, Error, Result};
 
-/// Drives or serves a [`ModelHandler`].
-///
-/// Construct with [`ModelWorker::new`], then pick a mode:
-///
-/// - [`run_local`](ModelWorker::run_local) / [`run_local_async`](ModelWorker::run_local_async):
-///   connect to a remote env and run the model/env loop in-process.
-/// - [`serve`](ModelWorker::serve) / [`serve_async`](ModelWorker::serve_async) /
-///   [`bind_async`](ModelWorker::bind_async): host the handler as a model
-///   endpoint that an orchestrator joins.
+/// Drives a [`ModelHandler`]: [`run_local`](ModelWorker::run_local) /
+/// [`run_local_async`](ModelWorker::run_local_async) connect to a remote env
+/// and run the model/env loop in-process.
 pub struct ModelWorker<H> {
     handler: H,
 }
 
 impl<H> ModelWorker<H> {
-    /// Wrap a [`ModelHandler`] to be driven or served.
+    /// Wrap a [`ModelHandler`] to be driven.
     pub fn new(handler: H) -> Self {
         Self { handler }
     }
@@ -98,6 +90,11 @@ pub struct RunLocalOptions {
     /// no peer can run is refused by the env-leg negotiation before any Join
     /// stream opens, naming every tier's WANT and CAN.
     pub workflow_edition: Option<String>,
+    /// The env's session as a model served elsewhere reaches it, when that
+    /// differs from the address this driver dials (a model container joins
+    /// an env container's session over their shared network). `None`
+    /// invites it at the dialed session.
+    pub invite_at: Option<String>,
 }
 
 impl RunLocalOptions {
@@ -117,6 +114,7 @@ impl RunLocalOptions {
             execution_horizon: 1,
             prefetch_lead: 0,
             workflow_edition: None,
+            invite_at: None,
         }
     }
 
@@ -240,65 +238,6 @@ impl From<ConnectAddress> for RunLocalOptions {
     }
 }
 
-/// Options for [`ModelWorker::serve`] / [`ModelWorker::serve_async`] /
-/// [`ModelWorker::bind_async`].
-#[derive(Debug, Clone)]
-pub struct ServeModelOptions {
-    /// Address to bind the model server to.
-    pub address: BindAddress,
-    /// Bearer token required on requests when `RLMESH_MODEL_ENDPOINT_TOKEN` is unset.
-    /// Empty/`""` disables auth only when the environment variable is unset.
-    ///
-    /// `RLMESH_MODEL_ENDPOINT_TOKEN`, when set, takes precedence.
-    pub token: String,
-    /// Maximum number of model Join-stream requests processed concurrently
-    /// per connection (pipelined predict). `None` applies the default cap.
-    pub predict_concurrency: Option<usize>,
-    /// Transport serve options (idle/drain/close timeouts, remote shutdown).
-    pub serve: ServeOptions,
-}
-
-impl ServeModelOptions {
-    /// Serve on `address` with default serve options and the environment token, if set.
-    pub fn new(address: BindAddress) -> Self {
-        Self {
-            address,
-            token: String::new(),
-            predict_concurrency: None,
-            serve: ServeOptions::default(),
-        }
-    }
-
-    /// Parse a string bind address (e.g. `"tcp://0.0.0.0:50061"`).
-    pub fn parse(address: &str) -> Result<Self> {
-        Ok(Self::new(BindAddress::parse(address)?))
-    }
-
-    /// Require `token` on the `authorization` header when the environment token is unset.
-    pub fn token(mut self, token: impl Into<String>) -> Self {
-        self.token = token.into();
-        self
-    }
-
-    /// Set the predict concurrency cap.
-    pub fn predict_concurrency(mut self, predict_concurrency: Option<usize>) -> Self {
-        self.predict_concurrency = predict_concurrency;
-        self
-    }
-
-    /// Set the transport serve options.
-    pub fn serve_options(mut self, serve: ServeOptions) -> Self {
-        self.serve = serve;
-        self
-    }
-}
-
-impl From<BindAddress> for ServeModelOptions {
-    fn from(address: BindAddress) -> Self {
-        Self::new(address)
-    }
-}
-
 impl<H: ModelHandler + 'static> ModelWorker<H> {
     /// Run the handler in-process against a remote environment (blocking).
     ///
@@ -338,7 +277,7 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
         self.run_local_hooked_async(
             options,
             cancellation,
-            Arc::new(rlmesh_runtime::NoopRuntimeHooks),
+            Arc::new(crate::run::runtime::NoopRuntimeHooks),
         )
         .await
     }
@@ -350,7 +289,7 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
         mut self,
         options: impl Into<RunLocalOptions>,
         cancellation: tokio_util::sync::CancellationToken,
-        hooks: Arc<dyn rlmesh_runtime::RuntimeHooks>,
+        hooks: Arc<dyn crate::run::runtime::RuntimeHooks>,
     ) -> Result<RuntimeReport> {
         let options = options.into();
         let close_model = options.close_model;
@@ -360,125 +299,5 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
         }
         let close_result = self.handler.on_close().await;
         crate::error::join_results(result, close_result, "local model run failed")
-    }
-
-    /// Serve the handler as a model endpoint (blocking).
-    ///
-    /// # Panics
-    ///
-    /// This is a blocking entrypoint: it builds its own Tokio runtime, so
-    /// calling it from inside one panics. From async code call
-    /// [`serve_async`](ModelWorker::serve_async) (or
-    /// [`bind_async`](ModelWorker::bind_async)) instead.
-    pub fn serve(self, options: impl Into<ServeModelOptions>) -> Result<()> {
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;
-        runtime.block_on(self.serve_async(options))
-    }
-
-    /// Async variant of [`ModelWorker::serve`].
-    pub async fn serve_async(self, options: impl Into<ServeModelOptions>) -> Result<()> {
-        self.bind_async(options).await?.serve().await
-    }
-
-    /// Bind the model server without yet serving.
-    ///
-    /// The returned [`BoundModelServer`] exposes its resolved address via
-    /// [`BoundModelServer::local_addr`] (e.g. the OS-assigned port for TCP port
-    /// 0) before [`BoundModelServer::serve`] is awaited.
-    ///
-    /// The bearer token is taken from `options.serve.token` when it is set and
-    /// non-empty, otherwise from `options.token`, so auth configured either way
-    /// is enforced. `RLMESH_MODEL_ENDPOINT_TOKEN`, when set, overrides both
-    /// options. An empty, whitespace-only, or non-Unicode environment value
-    /// fails startup instead of disabling authentication, as does a token that
-    /// cannot travel in an HTTP header value (leading or trailing whitespace
-    /// such as a secret file's newline, control or non-ASCII characters). The
-    /// token is captured
-    /// at bind time and is required on Handshake, Join, and Shutdown.
-    pub async fn bind_async(
-        self,
-        options: impl Into<ServeModelOptions>,
-    ) -> Result<BoundModelServer> {
-        let options = options.into();
-        let effective_token =
-            model_endpoint_token(&options, std::env::var(MODEL_ENDPOINT_TOKEN_ENV))?;
-        server::bind_model_with_options(
-            self.handler,
-            options.address,
-            &effective_token,
-            options.predict_concurrency,
-            options.serve,
-        )
-        .await
-    }
-}
-
-/// Resolve the deployment credential before binding a listener. Keep the env
-/// read outside this helper so invalid values and precedence can be tested
-/// without mutating the process environment.
-fn model_endpoint_token(
-    options: &ServeModelOptions,
-    environment: std::result::Result<String, std::env::VarError>,
-) -> Result<String> {
-    crate::serve_options::endpoint_token(
-        MODEL_ENDPOINT_TOKEN_ENV,
-        options.token.clone(),
-        environment,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn model_endpoint_token_precedence() {
-        for (direct, expected) in [("", ""), ("direct", "direct")] {
-            let options = ServeModelOptions::parse("tcp://127.0.0.1:0")
-                .unwrap()
-                .token(direct);
-            assert_eq!(
-                model_endpoint_token(&options, Err(std::env::VarError::NotPresent)).unwrap(),
-                expected
-            );
-            assert_eq!(
-                model_endpoint_token(&options, Ok("deployment-token".to_string())).unwrap(),
-                "deployment-token"
-            );
-        }
-    }
-
-    #[test]
-    fn model_endpoint_token_invalid_environment_fails_closed() {
-        let options = ServeModelOptions::parse("tcp://127.0.0.1:0")
-            .unwrap()
-            .token("fallback-must-not-be-used");
-        for value in ["", " ", "\t\n"] {
-            let error = model_endpoint_token(&options, Ok(value.to_string())).unwrap_err();
-            assert!(error.to_string().contains("RLMESH_MODEL_ENDPOINT_TOKEN"));
-            assert!(!error.to_string().contains("fallback-must-not-be-used"));
-        }
-        let error = model_endpoint_token(
-            &options,
-            Err(std::env::VarError::NotUnicode("private-value".into())),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("valid Unicode"));
-        assert!(!error.to_string().contains("private-value"));
-    }
-
-    #[test]
-    fn model_endpoint_token_with_trailing_newline_fails_startup() {
-        let options = ServeModelOptions::parse("tcp://127.0.0.1:0")
-            .unwrap()
-            .token("fallback-must-not-be-used");
-        let error = model_endpoint_token(&options, Ok("private-value\n".to_string()))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("RLMESH_MODEL_ENDPOINT_TOKEN"), "{error}");
-        assert!(error.contains("trailing whitespace"), "{error}");
-        assert!(!error.contains("private-value"), "{error}");
-        assert!(!error.contains("fallback-must-not-be-used"), "{error}");
     }
 }

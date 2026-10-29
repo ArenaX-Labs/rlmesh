@@ -90,7 +90,7 @@
     "rlmesh.spaces",
     "rlmesh.types",
     "rlmesh.specs",
-    "rlmesh.platform",
+    "rlmesh.managed",
     "rlmesh.recorder"
   ],
   "modules": {
@@ -148,11 +148,11 @@
       "status": "Experimental.",
       "title": "rlmesh.jax"
     },
-    "rlmesh.platform": {
+    "rlmesh.managed": {
       "description": "Submit and read evaluations on a managed RLMesh platform through the signed-in CLI.",
       "stability": "Experimental",
       "status": "Experimental.",
-      "title": "rlmesh.platform"
+      "title": "rlmesh.managed"
     },
     "rlmesh.recorder": {
       "title": "rlmesh.recorder",
@@ -176,6 +176,9 @@
       "members": {
         "params": {
           "stability": "Experimental"
+        },
+        "run_routes": {
+          "stability": "Experimental"
         }
       }
     },
@@ -190,6 +193,17 @@
     "rlmesh.Vector": {
       "stability": "Experimental",
       "description": "Declared vector-valued construction parameter shape."
+    },
+    "rlmesh.Interrupted": {
+      "stability": "Experimental",
+      "description": "KeyboardInterrupt raised by Model.run on Ctrl-C, carrying the RunResult of the episodes that completed."
+    },
+    "rlmesh.BatchOptions": {
+      "stability": "Experimental"
+    },
+    "rlmesh.EvalReport": {
+      "stability": "Experimental",
+      "description": "Per-task, per-suite and overall success with Wilson 95% intervals and merged telemetry of saved result bundles; native counterparts deferred."
     },
     "rlmesh.SandboxBuild": {
       "stability": "Experimental"
@@ -593,9 +607,46 @@
     "rlmesh.params": {
       "stability": "Experimental"
     },
+    "rlmesh.Recorder": {
+      "members": {
+        "record": {
+          "stability": "Experimental"
+        }
+      }
+    },
+    "rlmesh.recorder.Recorder": {
+      "members": {
+        "record": {
+          "stability": "Experimental"
+        }
+      }
+    },
+    "rlmesh.RunHooks": {
+      "members": {
+        "transform_action": {
+          "stability": "Experimental"
+        },
+        "transform_observation": {
+          "stability": "Experimental"
+        }
+      }
+    },
+    "rlmesh.RunResult": {
+      "members": {
+        "merge": {
+          "stability": "Experimental"
+        }
+      }
+    },
     "rlmesh.EnvFactory": {
       "members": {
         "params": {
+          "stability": "Experimental"
+        },
+        "render_params": {
+          "stability": "Experimental"
+        },
+        "requires_episode_cap": {
           "stability": "Experimental"
         }
       }
@@ -604,12 +655,21 @@
       "members": {
         "params": {
           "stability": "Experimental"
+        },
+        "run_routes": {
+          "stability": "Experimental"
         }
       }
     },
     "rlmesh.numpy.EnvFactory": {
       "members": {
         "params": {
+          "stability": "Experimental"
+        },
+        "render_params": {
+          "stability": "Experimental"
+        },
+        "requires_episode_cap": {
           "stability": "Experimental"
         }
       }

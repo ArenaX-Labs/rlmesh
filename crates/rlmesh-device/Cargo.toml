@@ -1,0 +1,44 @@
+[package]
+name = "rlmesh-device"
+description = "Internal RLMesh crate (unstable Rust API): the device runtime a networked board (an ESP32) links as a static library with a C header: the session's crypto and the robot edge over the no_std core, with the platform's clock and randomness passed in."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = false
+
+[lib]
+name = "rlmesh_device"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Not `workspace = true`: that entry keeps the default features (std), and a
+# member can't turn them off.
+rlmesh-session-core = { version = "=0.2.0-alpha.0", path = "../rlmesh-session-core", default-features = false }
+# USB provisioning's messages (tether spec §14), shared with the daemon.
+rlmesh-tether = { version = "=0.2.0-alpha.0", path = "../rlmesh-tether" }
+# Wiping a device key's copies.
+zeroize = { version = "1", default-features = false }
+# A sample's payload type (session-core's `Sample`).
+bytes = { version = "1.9", default-features = false }
+
+[dev-dependencies]
+# The robot against a real host, over Zenoh on loopback.
+rlmesh-session = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+zenoh = { workspace = true }
+
+[features]
+# A board builds without it (`--no-default-features`), on the C library's
+# malloc and abort.
+default = ["std"]
+std = ["rlmesh-session-core/std"]
+
+[lints]
+workspace = true

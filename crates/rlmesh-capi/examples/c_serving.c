@@ -1,4 +1,4 @@
-/* Factory start ownership/failures, factory host identity, and model signals. */
+/* Factory start ownership/failures, factory host identity, and model serve signals. */
 #define _POSIX_C_SOURCE 200809L
 #include <arpa/inet.h>
 #include <pthread.h>
@@ -69,8 +69,7 @@ static RLMeshStatus prepare(void* u) {
   ++s->prepares;
   if (s->reentrant) {
     RLMeshEnvServer* out = (RLMeshEnvServer*)1;
-    CHECK(rlmesh_ext_env_factory_start(s->reentrant, "tcp://127.0.0.1:0", NULL, &out) ==
-              RLMESH_ERR_RUNTIME &&
+    CHECK(rlmesh_ext_env_factory_start(s->reentrant, ":0/env", NULL, &out) == RLMESH_ERR_RUNTIME &&
           !out);
   }
   return RLMESH_OK;
@@ -161,6 +160,18 @@ static RLMeshEnvFactory* factory(State* s) {
   rlmesh_value_free(one);
   rlmesh_value_free(choices);
   return f;
+}
+/* Steps one episode of a binding. */
+static void step_bound(RLMeshBinding* binding) {
+  RLMeshValue *obs = NULL, *info = NULL;
+  CHECK(rlmesh_binding_reset(binding, NULL, NULL, &obs, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  double reward = 0;
+  bool term = false, trunc = false;
+  CHECK(rlmesh_binding_step(binding, NULL, &obs, &reward, &term, &trunc, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
 }
 static void drive(RLMeshEnvServer* server) {
   RLMeshRunResult* result = NULL;
@@ -261,40 +272,35 @@ static void rejected_output_tests(State* original) {
   RLMeshEnvFactory* f = factory(&s);
   RLMeshEnvServer* server = NULL;
   s.both_outputs = true;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", NULL, &server) == RLMESH_ERR_TYPE &&
-        !server);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", NULL, &server) == RLMESH_ERR_TYPE && !server);
   CHECK(s.env_closes == 2 && s.env_frees == 2);
   s.both_outputs = false;
   s.fail_after_make = s.makes + 1;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", NULL, &server) ==
-            RLMESH_ERR_ENVIRONMENT &&
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", NULL, &server) == RLMESH_ERR_ENVIRONMENT &&
         !server);
   CHECK(s.env_closes == 3 && s.env_frees == 3);
-  /* Foreground and session borrows retain their existing free-only behaviour. */
+  /* Foreground and binding borrows retain their existing free-only behaviour. */
   s.fail_after_make = s.makes + 1;
-  CHECK(rlmesh_env_factory_serve(f, "tcp://127.0.0.1:0", NULL) == RLMESH_ERR_ENVIRONMENT);
+  CHECK(rlmesh_env_factory_serve(f, ":0/env", NULL) == RLMESH_ERR_ENVIRONMENT);
   CHECK(s.env_closes == 3 && s.env_frees == 4);
   s.fail_after_make = s.makes + 1;
-  RLMeshSession* session = NULL;
-  CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(f), NULL, &session) ==
-        RLMESH_OK);
-  RLMeshRunResult* result = NULL;
-  CHECK(rlmesh_session_run(session, NULL, &result) == RLMESH_ERR_ENVIRONMENT);
-  rlmesh_session_free(session);
+  RLMeshBinding* binding = NULL;
+  CHECK(rlmesh_bind(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(f), NULL, &binding) ==
+            RLMESH_ERR_ENVIRONMENT &&
+        !binding);
   CHECK(s.env_closes == 3 && s.env_frees == 5);
   s.fail_after_make = 0;
   RLMeshEnv* env = NULL;
   RLMeshVectorEnv* vector = NULL;
   CHECK(rlmesh_env_factory_make(f, NULL, &env, &vector) == RLMESH_OK && env && !vector);
   RLMeshEnvServerOptions opts = RLMESH_ENV_SERVER_OPTIONS_INIT;
-  opts.address = "tcp://127.0.0.1:0";
+  opts.address = ":0/env";
   RLMeshEnvServer* owner = NULL;
   CHECK(rlmesh_env_server_new(&env, 1, &opts, &owner) == RLMESH_OK);
   CHECK(rlmesh_env_server_start(owner) == RLMESH_OK);
   s.returned_env = env; /* Transfers the handle while the server holds its lease. */
   s.fail_after_make = s.makes + 1;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", NULL, &server) ==
-            RLMESH_ERR_ENVIRONMENT &&
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", NULL, &server) == RLMESH_ERR_ENVIRONMENT &&
         !server);
   CHECK(s.env_closes == 3 && s.env_frees == 5);
   drive(owner);
@@ -313,7 +319,7 @@ static void start_tests(State* s) {
   RLMeshEnvServer *a = NULL, *b = NULL;
   struct sigaction before_int, before_term, after;
   CHECK(sigaction(SIGINT, NULL, &before_int) == 0 && sigaction(SIGTERM, NULL, &before_term) == 0);
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   CHECK(sigaction(SIGINT, NULL, &after) == 0 && after.sa_handler == before_int.sa_handler);
   CHECK(sigaction(SIGTERM, NULL, &after) == 0 && after.sa_handler == before_term.sa_handler);
   RLMeshBytes json = {NULL, 0, 0};
@@ -324,7 +330,7 @@ static void start_tests(State* s) {
   free(text);
   rlmesh_bytes_free(json);
   /* The second start must not steal the first server's drain. */
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &b) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &b) == RLMESH_OK);
   drive(a);
   drive(b);
   stop(a);
@@ -333,7 +339,7 @@ static void start_tests(State* s) {
   CHECK(s->env_closes == 2 && s->env_frees == 2);
   /* Hook reentry refuses without disturbing the outer start or its scope. */
   s->reentrant = f;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", NULL, &a) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", NULL, &a) == RLMESH_OK);
   s->reentrant = NULL;
   RLMeshEnv* remade = NULL;
   RLMeshVectorEnv* vector = NULL;
@@ -347,21 +353,19 @@ static void start_tests(State* s) {
   CHECK(pthread_create(&driver_thread, NULL, foreground_driver, &driver) == 0);
   RLMeshEnvFactoryServeOptions foreground = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
   foreground.cancel = foreground_cancel;
-  CHECK(rlmesh_env_factory_serve(f, "tcp://127.0.0.1:0", &foreground) == RLMESH_ERR_CANCELLED);
+  CHECK(rlmesh_env_factory_serve(f, ":0/env", &foreground) == RLMESH_ERR_CANCELLED);
   CHECK(pthread_join(driver_thread, NULL) == 0);
   rlmesh_ext_cancel_token_free(foreground_cancel);
   drive(a);
   rlmesh_env_server_free(a); /* Free alone must stop and close its owned envs. */
   CHECK(s->env_closes == s->makes && s->env_frees == s->makes);
-  /* Session admission must refuse without replacing the session's gate slot. */
-  RLMeshSession* session = NULL;
-  CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(f), NULL, &session) ==
+  /* A binding's admission must refuse without replacing its gate slot. */
+  RLMeshBinding* binding = NULL;
+  CHECK(rlmesh_bind(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(f), NULL, &binding) ==
         RLMESH_OK);
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_ERR_RUNTIME && !a);
-  RLMeshRunResult* result = NULL;
-  CHECK(rlmesh_session_run(session, NULL, &result) == RLMESH_OK);
-  rlmesh_run_result_free(result);
-  rlmesh_session_free(session);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_RUNTIME && !a);
+  step_bound(binding);
+  rlmesh_binding_free(binding);
   CHECK(s->env_closes == s->makes && s->env_frees == s->makes);
   /* No invalid input may consume this firing, including a host extension. */
   CHECK(rlmesh_ext_cancel_token_cancel(s->cancel) == RLMESH_OK);
@@ -371,31 +375,21 @@ static void start_tests(State* s) {
   int prepares = s->prepares;
   for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); ++i) {
     ext.host_runtime_json = invalid[i];
-    CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) ==
-              RLMESH_ERR_INVALID_ARGUMENT &&
-          !a);
+    CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_INVALID_ARGUMENT && !a);
     CHECK(s->prepares == prepares);
   }
   ext.host_runtime_json = "{}";
   o._reserved = 1;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) ==
-            RLMESH_ERR_INVALID_ARGUMENT &&
-        !a);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_INVALID_ARGUMENT && !a);
   o._reserved = 0;
   o.struct_size = RLMESH_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE + 1;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) ==
-            RLMESH_ERR_INVALID_ARGUMENT &&
-        !a);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_INVALID_ARGUMENT && !a);
   o.struct_size = sizeof(o);
   ext.struct_size = 0;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) ==
-            RLMESH_ERR_INVALID_ARGUMENT &&
-        !a);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_INVALID_ARGUMENT && !a);
   ext.struct_size = sizeof(ext);
   o.workflow_edition = "invalid-edition";
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) ==
-            RLMESH_ERR_INVALID_ARGUMENT &&
-        !a);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_INVALID_ARGUMENT && !a);
   o.workflow_edition = NULL;
   CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:not-a-port", &o, &a) ==
             RLMESH_ERR_INVALID_ARGUMENT &&
@@ -406,13 +400,11 @@ static void start_tests(State* s) {
   const RLMeshValue* values[] = {bad};
   CHECK(rlmesh_value_dict(&key, values, 1, &bad_kwargs) == RLMESH_OK);
   o.make_kwargs = bad_kwargs;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) ==
-            RLMESH_ERR_INVALID_ARGUMENT &&
-        !a);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_INVALID_ARGUMENT && !a);
   o.make_kwargs = NULL;
   rlmesh_value_free(bad_kwargs);
   rlmesh_value_free(bad);
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_ERR_CANCELLED && !a);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_CANCELLED && !a);
   CHECK(s->prepares == prepares);
   /* Every partial build is drained exactly once, and admission is released. */
   int made = s->makes;
@@ -426,8 +418,7 @@ static void start_tests(State* s) {
     s->fail_after_make = failure == 4 ? s->makes + 2 : 0;
     char address[80];
     int fd = failure == 2 ? occupied(address, sizeof(address)) : -1;
-    RLMeshStatus status =
-        rlmesh_ext_env_factory_start(f, fd < 0 ? "tcp://127.0.0.1:0" : address, &o, &a);
+    RLMeshStatus status = rlmesh_ext_env_factory_start(f, fd < 0 ? ":0/env" : address, &o, &a);
     CHECK(status == ((failure == 3 || failure == 5) ? RLMESH_ERR_CANCELLED
                      : failure == 2                 ? RLMESH_ERR_CONNECTION
                                                     : RLMESH_ERR_ENVIRONMENT) &&
@@ -438,14 +429,14 @@ static void start_tests(State* s) {
     s->fail_make = s->fail_stamp = s->cancel_make = s->fail_after_make = s->fail_close = 0;
     o.num_envs = 1;
     CHECK(rlmesh_env_factory_prepare(f) == RLMESH_OK);
-    CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_OK);
+    CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
     drive(a);
     stop(a);
     CHECK(s->env_closes == s->env_frees);
   }
   CHECK(s->makes > made);
   /* shutdown consumes the same background result as wait, exactly once. */
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   CHECK(rlmesh_ext_cancel_token_cancel(s->cancel) == RLMESH_OK);
   CHECK(rlmesh_env_server_shutdown(a) == RLMESH_ERR_CANCELLED);
   CHECK(rlmesh_env_server_shutdown(a) == RLMESH_OK);
@@ -455,22 +446,22 @@ static void start_tests(State* s) {
   rlmesh_env_server_free(a);
   CHECK(s->env_closes == s->env_frees);
   /* A firing during slow close loses to an earlier plain shutdown. */
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   s->cancel_close = true;
   stop(a);
   s->cancel_close = false;
   CHECK(s->env_closes == s->env_frees);
   /* With no firing, the caller's own shutdown is successful. */
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   stop(a);
   CHECK(s->env_closes == s->env_frees);
   /* Preparation must observe a firing even when another server is already
    * subscribed, so cancel() does not set the token's idle pending flag. */
   int closed_before = s->env_closes;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   s->cancel_make = s->makes + 2;
   o.num_envs = 3;
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &b) == RLMESH_ERR_CANCELLED && !b);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &b) == RLMESH_ERR_CANCELLED && !b);
   s->cancel_make = 0;
   o.num_envs = 1;
   wait_cancelled(a);
@@ -479,8 +470,8 @@ static void start_tests(State* s) {
   CHECK(rlmesh_env_factory_prepare(f) == RLMESH_OK);
   /* A shared token broadcasts to both live subscriptions, rather than one
    * server consuming an idle firing intended for both. */
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_OK);
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &b) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &b) == RLMESH_OK);
   CHECK(rlmesh_ext_cancel_token_cancel(s->cancel) == RLMESH_OK);
   wait_cancelled(a);
   wait_cancelled(b);
@@ -490,14 +481,14 @@ static void start_tests(State* s) {
    * an idle firing must now fail the next start before any prepare hook. */
   prepares = s->prepares;
   CHECK(rlmesh_ext_cancel_token_cancel(s->cancel) == RLMESH_OK);
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_ERR_CANCELLED && !a);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_CANCELLED && !a);
   CHECK(s->prepares == prepares);
   OldFactoryOptions old = {sizeof(old), 1, NULL, NULL, NULL};
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0",
-                                     (const RLMeshEnvFactoryServeOptions*)&old, &a) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", (const RLMeshEnvFactoryServeOptions*)&old, &a) ==
+        RLMESH_OK);
   drive(a);
   stop(a);
-  CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:0", &o, &a) == RLMESH_OK);
+  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_OK);
   /* The server owns both its env drain and its token subscription. */
   RLMeshExtCancelToken* alias = NULL;
   CHECK(rlmesh_ext_cancel_token_clone(s->cancel, &alias) == RLMESH_OK);
@@ -517,15 +508,38 @@ static volatile sig_atomic_t host_ints;
 static void host_signal(int sig) {
   if (sig == SIGINT) ++host_ints;
 }
+/* The participant address the model serves at, once its host session is up. */
+static char served_at[256];
+static atomic_bool hosting;
+/* A run through the served model returns only once its serve has joined, past
+ * where it installs (or skips) its signal handlers. */
+static void wait_served(State* s) {
+  struct timespec poll = {0, 10000000};
+  while (!atomic_load(&hosting)) nanosleep(&poll, NULL);
+  RLMeshModel* served = NULL;
+  CHECK(rlmesh_model_from_address(served_at, &served) == RLMESH_OK);
+  RLMeshEnv* env = NULL;
+  RLMeshVectorEnv* vector = NULL;
+  CHECK(make(s, NULL, &env, &vector) == RLMESH_OK);
+  RLMeshRunOptions o = RLMESH_RUN_OPTIONS_INIT;
+  o.close_env = true;
+  RLMeshRunResult* result = NULL;
+  CHECK(rlmesh_model_run(served, rlmesh_env_target(env), &o, &result) == RLMESH_OK);
+  rlmesh_run_result_free(result);
+  rlmesh_env_free(env);
+  rlmesh_model_free(served);
+}
 typedef struct Commands {
   RLMeshExtCancelToken* cancel;
   bool no_handlers;
+  State* model; /* set when a served model is probed */
 } Commands;
 static void* commands(void* u) {
   Commands* c = (Commands*)u;
   int command;
   while ((command = getchar()) != EOF) {
     if (command == 'i') {
+      if (c->model) wait_served(c->model);
       struct sigaction action;
       CHECK(sigaction(SIGINT, NULL, &action) == 0);
       CHECK((action.sa_handler == host_signal) == c->no_handlers);
@@ -564,7 +578,9 @@ int main(int argc, char** argv) {
     CHECK(sigaction(SIGINT, &action, NULL) == 0 && sigaction(SIGTERM, &action, NULL) == 0);
     bool is_factory = strstr(argv[1], "foreground") || strstr(argv[1], "start");
     bool background = strstr(argv[1], "start") || !strcmp(argv[1], "env-server");
-    Commands c = {state.cancel, !strcmp(argv[1], "no-signals") || background};
+    bool is_model = !is_factory && strcmp(argv[1], "env-server");
+    Commands c = {state.cancel, !strcmp(argv[1], "no-signals") || background,
+                  is_model ? &state : NULL};
     pthread_t reader;
     CHECK(pthread_create(&reader, NULL, commands, &c) == 0);
     if (is_factory) {
@@ -607,6 +623,22 @@ int main(int argc, char** argv) {
       stop(server);
       rlmesh_env_free(env);
     } else {
+      /* The model joins a session this process hosts on argv[2]. */
+      RLMeshEnv* host_env = NULL;
+      RLMeshVectorEnv* host_vector = NULL;
+      CHECK(make(&state, NULL, &host_env, &host_vector) == RLMESH_OK);
+      RLMeshEnvServerOptions host_opts = RLMESH_ENV_SERVER_OPTIONS_INIT;
+      host_opts.address = argv[2];
+      RLMeshEnvServer* host = NULL;
+      CHECK(rlmesh_env_server_new(&host_env, 1, &host_opts, &host) == RLMESH_OK);
+      CHECK(rlmesh_env_server_start(host) == RLMESH_OK);
+      RLMeshBytes bytes;
+      CHECK(rlmesh_env_server_address(host, &bytes) == RLMESH_OK);
+      size_t session = bytes.len;
+      while (session && bytes.data[session - 1] != '/') --session;
+      snprintf(served_at, sizeof(served_at), "%.*spolicy", (int)session, (const char*)bytes.data);
+      rlmesh_bytes_free(bytes);
+      atomic_store(&hosting, true);
       RLMeshModelVtable vt = RLMESH_MODEL_VTABLE_INIT;
       vt.predict = predict;
       vt.workflow_edition = rlmesh_current_workflow_edition();
@@ -621,12 +653,14 @@ int main(int argc, char** argv) {
       RLMeshExtModelServeOptions invalid = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;
       ((unsigned char*)&invalid)[offsetof(RLMeshExtModelServeOptions, no_signal_handlers)] = 2;
       opts.ext = &invalid;
-      CHECK(rlmesh_model_serve(model, argv[2], &opts) == RLMESH_ERR_INVALID_ARGUMENT);
+      CHECK(rlmesh_model_serve(model, served_at, &opts) == RLMESH_ERR_INVALID_ARGUMENT);
       invalid.struct_size = RLMESH_EXT_MODEL_SERVE_OPTIONS_MIN_SIZE + 2;
-      CHECK(rlmesh_model_serve(model, argv[2], &opts) == RLMESH_ERR_INVALID_ARGUMENT);
+      CHECK(rlmesh_model_serve(model, served_at, &opts) == RLMESH_ERR_INVALID_ARGUMENT);
       opts.ext = !strcmp(argv[1], "old-signals") ? (const RLMeshExtModelServeOptions*)&old : &ext;
-      CHECK(rlmesh_model_serve(model, argv[2], &opts) == RLMESH_ERR_CANCELLED);
+      CHECK(rlmesh_model_serve(model, served_at, &opts) == RLMESH_ERR_CANCELLED);
       rlmesh_model_free(model);
+      stop(host);
+      rlmesh_env_free(host_env);
     }
     if (!background) CHECK(pthread_join(reader, NULL) == 0);
     CHECK(sigaction(SIGINT, NULL, &action) == 0 && action.sa_handler == host_signal);

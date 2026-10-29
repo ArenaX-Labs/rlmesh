@@ -98,7 +98,7 @@ static void check_values(void) {
 }
 
 int main(void) {
-  CHECK(rlmesh_abi_version() == 5 && rlmesh_abi_check());
+  CHECK(rlmesh_abi_version() == 6 && rlmesh_abi_check());
   check_values();
   RLMeshBuildInfo bi = RLMESH_BUILD_INFO_INIT;
   CHECK(rlmesh_build_info(&bi) == RLMESH_OK);

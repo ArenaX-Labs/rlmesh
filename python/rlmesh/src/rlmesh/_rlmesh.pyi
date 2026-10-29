@@ -3,6 +3,7 @@
 
 import builtins
 import collections.abc
+import os
 import typing
 from typing import TypeAlias, TypedDict
 __all__ = [
@@ -11,6 +12,11 @@ __all__ = [
     "EnvironmentException",
     "RecoverableEnvironmentException",
     "ModelException",
+    "SessionException",
+    "SessionRefused",
+    "BindingRefused",
+    "StartSkipped",
+    "SessionLost",
     "ACTION_DELTA_POS",
     "ACTION_DELTA_ROT",
     "ACTION_EEF_POS",
@@ -34,6 +40,8 @@ __all__ = [
     "EEF_WRENCH",
     "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
+    "ENV_RENDER_PARAMS_KEY",
+    "ENV_REQUIRES_EPISODE_CAP_KEY",
     "ENV_RESET_OPTIONS_KEY",
     "EnvContract",
     "GRIPPER_POS",
@@ -50,11 +58,12 @@ __all__ = [
     "MODEL_METADATA_KEY",
     "PARTS",
     "PrimitiveValue",
+    "PyBinding",
     "PyEditionCell",
     "PyEnvClient",
     "PyEnvServer",
+    "PyEpisodeArtifacts",
     "PyModel",
-    "PyModelClient",
     "PyVectorEnvClient",
     "PyVectorEnvServer",
     "PyVideoWriter",
@@ -68,25 +77,47 @@ __all__ = [
     "SpaceSpec",
     "TORSO",
     "Tensor",
+    "V2Controller",
+    "V2Due",
+    "V2Host",
+    "V2LockstepRobot",
+    "V2Observation",
+    "V2Rate",
+    "V2Recorder",
+    "V2Robot",
+    "V2Scene",
     "Value",
     "adapters_join_check",
+    "adapters_render_size",
     "adapters_resolve",
     "adapters_spec_normalize",
     "box_space_spec",
     "build_info",
-    "check_remote_model_options",
     "current_workflow_edition",
     "describe_envelope_normalize",
     "dict_space_spec",
     "discrete_space_spec",
-    "local_env_contract",
+    "episode_seed",
+    "eval_report",
+    "frames_between",
+    "is_v2_address",
+    "load_run_result",
+    "local_run_session",
+    "merge_telemetry",
+    "model_answers",
+    "model_describe",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
+    "nested_predict",
     "normalize_connect_address",
+    "parse_address",
     "predict_seed",
+    "resolve_execution_horizon",
     "resolve_workflow_edition_rungs",
     "run_cli",
+    "sandbox_host_identity",
     "sandbox_reap_orphans",
+    "sandbox_session_ports",
     "sandbox_start_env",
     "sandbox_stop_env",
     "space_spec_from_gym_space",
@@ -117,6 +148,8 @@ EEF_ROT: builtins.str
 EEF_WRENCH: builtins.str
 ENV_BRANCH_METADATA_KEY: builtins.str
 ENV_METADATA_KEY: builtins.str
+ENV_RENDER_PARAMS_KEY: builtins.str
+ENV_REQUIRES_EPISODE_CAP_KEY: builtins.str
 ENV_RESET_OPTIONS_KEY: builtins.str
 GRIPPER_POS: builtins.str
 HEAD: builtins.str
@@ -154,6 +187,23 @@ class ModelException(RLMeshException):
     code: builtins.str
     is_recoverable: builtins.bool
     def __init__(self, message: builtins.str, *, is_recoverable: builtins.bool = False) -> None: ...
+
+class SessionException(RLMeshException): ...
+
+class SessionRefused(SessionException):
+    status: builtins.str
+
+class BindingRefused(SessionException):
+    problems: builtins.list[tuple[builtins.str, builtins.str, builtins.str]]
+
+class StartSkipped(SessionException):
+    reason: builtins.str
+    waiting: builtins.list[builtins.str]
+    stale: builtins.list[builtins.str]
+    gaps: builtins.list[builtins.str]
+
+class SessionLost(SessionException):
+    reason: builtins.str
 
 ResetInfo: TypeAlias = dict[str, object]
 
@@ -372,6 +422,18 @@ class EnvContract:
     def __repr__(self) -> builtins.str: ...
 
 @typing.final
+class PyBinding:
+    @property
+    def env_contract(self) -> typing.Any: ...
+    @property
+    def done(self) -> builtins.bool: ...
+    def observe(self, relay: typing.Any) -> None: ...
+    def reset(self, seed: typing.Optional[builtins.int] = None, options: typing.Optional[typing.Any] = None) -> tuple[typing.Any, builtins.dict[builtins.str, typing.Any]]: ...
+    def step(self, action: typing.Optional[typing.Any] = None) -> tuple[typing.Any, builtins.float, builtins.bool, builtins.bool, builtins.dict[builtins.str, typing.Any]]: ...
+    def render(self) -> typing.Optional[typing.Any]: ...
+    def close(self) -> None: ...
+
+@typing.final
 class PyEditionCell:
     r"""
     A client's selected workflow edition, read without borrowing the client,
@@ -381,13 +443,11 @@ class PyEditionCell:
 
 @typing.final
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
     def edition_cell(self) -> PyEditionCell: ...
-    def session_offer(self) -> tuple[list[str], str | None]: ...
-    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -445,39 +505,61 @@ class PyEnvServer:
         """
 
 @typing.final
-class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None) -> None: ...
-    def stop_serving(self) -> None: ...
-    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, env_token: str | None = None) -> dict[str, typing.Any]: ...
-    def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
+class PyEpisodeArtifacts:
+    r"""
+    The Python recorder's handle on a workload's per-episode artifact tree
+    (`episodes/epNNNNNN/`, the managed evaluation-artifacts layout). A run
+    feeds it the native loop's events; the recorder reads back each closed
+    episode's record to bundle its files.
+    """
+    def __new__(cls, root: builtins.str, record: builtins.str, task_id: builtins.str, workload_id: builtins.str, quality: builtins.int = ..., codec: builtins.str = ..., ffmpeg: typing.Optional[builtins.str] = None) -> PyEpisodeArtifacts:
+        r"""
+        `record` is the `record` block as JSON; the ids land in each
+        `episode.json`.
+        """
+    def set_episode_offset(self, offset: builtins.int) -> None:
+        r"""
+        Number the next run's episodes after `offset`.
+        """
+    def take_finished(self) -> typing.Optional[builtins.str]:
+        r"""
+        The oldest closed episode's `episode.json` not yet taken, or `None`.
+        """
+    def phases(self) -> builtins.str:
+        r"""
+        The run's phase marks (`warmup`) as a JSON list.
+        """
+    @staticmethod
+    def stamp() -> builtins.str:
+        r"""
+        This machine's hardware stamp as JSON (shells out to nvidia-smi).
+        """
 
 @typing.final
-class PyModelClient:
-    r"""
-    Client handle to a model (policy) server: the model-side mirror of
-    `PyEnvClient`. Bound to one env contract (one route) for its lifetime; the
-    Python layer creates one per `rlmesh.session(model, env)`.
-    """
-    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
-    def address(self) -> str: ...
-    def env_id(self) -> str: ...
-    def selected_workflow_edition(self) -> str: ...
-    def observation_space(self) -> Space: ...
-    def action_space(self) -> Space: ...
-    def reset(self, seed: int | None = None) -> None: ...
-    def predict(self, observation: Value) -> Value: ...
-    def close(self) -> None: ...
+class PyModel:
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None, reset_options_fn: collections.abc.Callable[[dict[str, typing.Any]], typing.Any] | None = None) -> None: ...
+    @staticmethod
+    def served(address: str, timeout_s: float = 30) -> PyModel: ...
+    def default_execution_horizon(self) -> int | None: ...
+    def set_inner_models(self, inners: list[tuple[int, PyModel]]) -> None: ...
+    @staticmethod
+    def random_sample() -> PyModel: ...
+    def bind(self, env_address: str, execution_horizon: int = 1, workflow_edition: str | None = None) -> PyBinding: ...
+    def run_facade(self, target: object, relay: object, options: dict[str, typing.Any]) -> dict[str, typing.Any]: ...
+    def run_routes_facade(self, routes: list[tuple[object, dict[str, typing.Any]]]) -> tuple[list[typing.Any], BaseException | None]: ...
+    def bind_facade(self, target: object, execution_horizon: int = 1, workflow_edition: str | None = None, close_env: bool = False) -> PyBinding: ...
+    def stop_serving(self) -> None: ...
+    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
+    def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None, max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None) -> None: ...
 
 @typing.final
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
     def edition_cell(self) -> PyEditionCell: ...
-    def session_offer(self) -> tuple[list[str], str | None]: ...
-    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -510,12 +592,19 @@ class PyVectorEnvServer:
 @typing.final
 class PyVideoWriter:
     r"""
-    Native AV1 recorder: encodes HWC uint8 frames to an `.mp4` on a dedicated
-    encoder thread (no ffmpeg), built by the Python recorder and fed one
-    camera's frames per step. `write_frame` only copies the frame and queues
-    it, so the eval loop overlaps env stepping with encoding.
+    Native video recorder: encodes HWC uint8 frames to an `.mp4` on a
+    dedicated encoder thread (AV1 in process, or H.264 through the user's
+    ffmpeg), built by the Python recorder and fed one camera's frames per
+    step. `write_frame` only copies the frame and queues it, so the eval loop
+    overlaps env stepping with encoding.
     """
-    def __new__(cls, path: builtins.str, width: builtins.int, height: builtins.int, fps: builtins.int = ..., quality: builtins.int = ...) -> PyVideoWriter: ...
+    def __new__(cls, path: builtins.str, width: builtins.int, height: builtins.int, fps: builtins.int = ..., quality: builtins.int = ..., codec: builtins.str = ..., ffmpeg: typing.Optional[builtins.str] = None) -> PyVideoWriter: ...
+    @staticmethod
+    def check_codec(codec: builtins.str, ffmpeg: typing.Optional[builtins.str] = None) -> None:
+        r"""
+        Raise unless `codec` can record here: H.264 needs an `ffmpeg` with
+        libx264 (checked once per process).
+        """
     def write_frame(self, buf: builtins.bytes | builtins.bytearray | builtins.memoryview, width: builtins.int, height: builtins.int, channels: builtins.int) -> None:
         r"""
         Queue one contiguous HWC uint8 frame (`channels` = 1/3/4) for encoding.
@@ -699,9 +788,500 @@ class Tensor:
     def tobytes(self) -> bytes: ...
     def __repr__(self) -> builtins.str: ...
 
+@typing.final
+class V2Controller:
+    r"""
+    A policy bound to a robot: inputs, leases, chunks and the run loop.
+    """
+    @property
+    def name(self) -> builtins.str:
+        r"""
+        The policy's participant id.
+        """
+    @property
+    def table(self) -> builtins.str:
+        r"""
+        The binding table, as the cockpit shows it (§6.8).
+        """
+    @property
+    def table_json(self) -> builtins.str:
+        r"""
+        The binding table as canonical JSON (what the fingerprint is over).
+        """
+    @property
+    def fingerprint(self) -> builtins.str:
+        r"""
+        The binding fingerprint, 16 hex digits.
+        """
+    @property
+    def warnings(self) -> builtins.list[builtins.str]:
+        r"""
+        Warnings the binder accepted the binding with.
+        """
+    @property
+    def replan_hz(self) -> builtins.float:
+        r"""
+        The replan rate R.
+        """
+    def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: builtins.str, *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ...) -> V2Controller:
+        r"""
+        Attaches as `name` at `priority`, waits for `robot`'s parts, binds
+        `policy_json` (the policy map, §6) with the run-time options, and
+        declares the binding. Raises `BindingRefused` with the binder's
+        refuse-and-explain text.
+        """
+    def actions(self) -> builtins.list[tuple[builtins.str, typing.Optional[builtins.str], builtins.int]]:
+        r"""
+        Each bound action: `(entry, part path or None, horizon)`.
+        """
+    def observe(self) -> V2Observation:
+        r"""
+        A policy start now. Raises `StartSkipped` when an input is missing,
+        stale (without `allow: hold`) or has a window gap.
+        """
+    def send(self, values: dict[builtins.str, typing.Any], observation: V2Observation) -> builtins.dict[builtins.str, typing.Optional[builtins.int]]:
+        r"""
+        Sends one chunk per action entry, computed from `observation`:
+        `values` maps each action to `(dtype, shape, bytes)` or a dict of
+        them, `[horizon, ...]`. Returns each entry's chunk seq, or `None`
+        without the lease (or for a dropped entry).
+        """
+    def acquire(self) -> builtins.list[tuple[builtins.str, builtins.int]]:
+        r"""
+        Takes the binding's leases now, preempting a lower class; from then
+        on they are kept. Raises `SessionRefused` (`LEASE_BUSY`,
+        `GROUP_BUSY`, `NOT_READY`, ...) when they cannot be granted.
+        """
+    def release(self) -> None:
+        r"""
+        Gives the leases back; they are not re-requested until `acquire` or
+        `run`.
+        """
+    def holds(self) -> builtins.bool:
+        r"""
+        Whether this policy holds every lease its binding commands.
+        """
+    def run(self, predict: collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]], duration_s: typing.Optional[builtins.float] = None) -> None:
+        r"""
+        Runs the policy loop (§8.9) on this thread until `stop()`,
+        `duration_s`, or a failure, calling `predict(observation)` at the
+        replan rate with one inference in flight. If `predict` raises, the
+        leases are released and the exception propagates; if the robot or
+        the host is lost, it raises `SessionLost`.
+        """
+    def stop(self) -> None:
+        r"""
+        Asks a `run` in progress to return.
+        """
+    def stats(self) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        The start, skip and completion counters (§8.10), and the input the
+        starts are phased after (`aligned_to`, `phase_offset_ms`).
+        """
+    def events(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        Takes the events reported so far (`rate_drift`, inference pending),
+        oldest first, as dicts with a `kind` and a `message`.
+        """
+    def close(self) -> None:
+        r"""
+        Gives the leases back and detaches.
+        """
+
+@typing.final
+class V2Due:
+    r"""
+    What the robot does this control tick.
+    """
+    @property
+    def path(self) -> builtins.str:
+        r"""
+        The part the tick concerns.
+        """
+    @property
+    def mode(self) -> builtins.str:
+        r"""
+        `driving`, `hold`, `safe`, `estop` or `idle`.
+        """
+    @property
+    def safe(self) -> typing.Optional[builtins.str]:
+        r"""
+        The declared safe behaviour to run now, or `None`.
+        """
+    @property
+    def handover(self) -> typing.Optional[tuple[builtins.str, builtins.str, builtins.str]]:
+        r"""
+        `(group, from_path, to_path)` on the tick a handover starts.
+        """
+    @property
+    def lease_token(self) -> typing.Optional[builtins.int]:
+        r"""
+        The lease token of the chunk the command came from.
+        """
+    @property
+    def chunk_seq(self) -> typing.Optional[builtins.int]:
+        r"""
+        That chunk's seq under its token.
+        """
+    @property
+    def index(self) -> typing.Optional[builtins.int]:
+        r"""
+        The command's index in that chunk.
+        """
+    @property
+    def received_ns(self) -> typing.Optional[builtins.int]:
+        r"""
+        When the edge received the chunk (this robot's clock).
+        """
+    @property
+    def slot_ns(self) -> typing.Optional[builtins.int]:
+        r"""
+        When this command's slot starts (this robot's clock).
+        """
+    @property
+    def based_on(self) -> builtins.list[tuple[builtins.str, builtins.int, builtins.int]]:
+        r"""
+        The inputs the chunk was computed from: `(path, seq_first,
+        seq_last)`, with this robot's paths.
+        """
+    @property
+    def fields(self) -> builtins.dict[builtins.str, Tensor] | None:
+        r"""
+        The command fields by name (validated and clamped), or `None`.
+        """
+
+@typing.final
+class V2Host:
+    r"""
+    A session host in this process, on local per-class TCP ports.
+    """
+    @property
+    def address(self) -> builtins.str:
+        r"""
+        `{ip}:{port}[/{session}]#{key}`: what participants connect to. The
+        key is a credential (its holder attaches as device `local`).
+        """
+    def __new__(cls, address: builtins.str = ..., lease_grace_ms: builtins.int = ..., insecure: builtins.bool = ...) -> V2Host:
+        r"""
+        Places the session `address` names (`":0"`: hosted here on an
+        OS-assigned port). It listens on loopback only unless `insecure`.
+        """
+    def close(self) -> None:
+        r"""
+        Stops the host (participants see it leave).
+        """
+
+@typing.final
+class V2LockstepRobot:
+    r"""
+    A v2 robot that serves the lockstep exchange (§12): every step is one
+    call of its Python `step(commands)`, which publishes the robot's parts.
+    """
+    @property
+    def name(self) -> builtins.str:
+        r"""
+        The robot's participant id.
+        """
+    @property
+    def address(self) -> builtins.str:
+        r"""
+        The robot's participant address, `{ip}:{port}[/{session}]/{name}`.
+        """
+    def __new__(cls, address: builtins.str, name: builtins.str, robot_json: builtins.str) -> V2LockstepRobot:
+        r"""
+        Binds the robot `name` in the session at `address`
+        (`{ip}:{port}/{tenant}/{session}`) with the map `robot_json`; it
+        declares and arms when it starts serving.
+        """
+    def parts(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        The parts as normalised, in authored order.
+        """
+    def serve(self, step: typing.Any, reset: typing.Any, background: builtins.bool = ..., timeout_s: builtins.float = ...) -> None:
+        r"""
+        Declares, arms and serves: `step(commands)` and `reset(seed,
+        options_json)` each return `(reward, terminated, truncated,
+        info_json)`. With `background`, returns once serving.
+        """
+    def publish(self, path: builtins.str, fields: typing.Sequence[typing.Any]) -> None:
+        r"""
+        Inside a callback: publishes `path`'s fields (bytes-likes in field
+        order, or a `str` for text) into this step's reply.
+        """
+    def close(self) -> None:
+        r"""
+        Stops serving and detaches.
+        """
+
+@typing.final
+class V2Observation:
+    r"""
+    A policy start: each input as `predict` receives it, and its snapshot.
+    """
+    @property
+    def time_ns(self) -> builtins.int:
+        r"""
+        The session time the snapshot was taken at.
+        """
+    @property
+    def values(self) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        Inputs by entry: a `Tensor`, a dict of them, or a `str`.
+        """
+    @property
+    def ages(self) -> builtins.dict[builtins.str, typing.Optional[builtins.int]]:
+        r"""
+        Each input's conservative age in ns (`None`: blank, or no clock
+        mapping).
+        """
+    @property
+    def stale(self) -> builtins.list[builtins.str]:
+        r"""
+        Inputs delivered stale under `allow: hold`.
+        """
+    @property
+    def padded(self) -> builtins.dict[builtins.str, builtins.int]:
+        r"""
+        Window slots padded by `allow: warmup`, by entry.
+        """
+    @property
+    def blank(self) -> builtins.list[builtins.str]:
+        r"""
+        Inputs bound to a constant (`allow: blank`).
+        """
+    @property
+    def skew_ns(self) -> builtins.int:
+        r"""
+        The newest capture minus the oldest, across inputs.
+        """
+    @property
+    def based_on(self) -> builtins.list[tuple[builtins.int, builtins.int, builtins.int]]:
+        r"""
+        Per stream, the seq range used: `(stream id, seq_first, seq_last)`.
+        """
+
+@typing.final
+class V2Rate:
+    r"""
+    A fixed-rate loop timer on `time.monotonic_ns()`: `sleep()` waits for
+    the next period (coarse sleep, then a short spin) with the GIL
+    released. A tick more than a period late skips the missed ones rather
+    than bursting.
+    """
+    @property
+    def missed(self) -> builtins.int:
+        r"""
+        Periods skipped because a call came more than a period late.
+        """
+    def __new__(cls, hz: builtins.float) -> V2Rate: ...
+    def sleep(self) -> builtins.int:
+        r"""
+        Waits until the next period starts; returns how late this call was
+        for it, in ns.
+        """
+
+@typing.final
+class V2Recorder:
+    r"""
+    An MCAP recording of a session (§13), as an observer participant.
+    """
+    @property
+    def path(self) -> builtins.str:
+        r"""
+        The MCAP file.
+        """
+    def __new__(cls, address: builtins.str, path: builtins.str, name: builtins.str = ..., timeout_s: builtins.float = ...) -> V2Recorder:
+        r"""
+        Attaches as observer `name` and starts recording every stream,
+        chunk and authority change of the session into a new MCAP file at
+        `path`.
+        """
+    def close(self) -> builtins.dict[builtins.str, typing.Any] | None:
+        r"""
+        Stops recording and finishes the file: `messages`, `channels`,
+        `bytes`, `log_time_clamped`. `None` when already closed.
+        """
+    @staticmethod
+    def read(path: builtins.str) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        Reads a recording back: `messages`, `metadata` (record names),
+        `topics` (per topic: `schema`, `channels`, `messages`,
+        `first_log_ns`, `last_log_ns`, `log_time_monotonic`,
+        `publish_time_monotonic`, `undecodable`) and `leases` (the lease
+        timeline: `log_ns`, `part`, `holder`, `priority`, `token`).
+        """
+    @staticmethod
+    def samples(path: builtins.str) -> builtins.list[tuple[builtins.str, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]]:
+        r"""
+        Every sample of a recording (an MCAP file, or a directory of them)
+        split into its declared fields, in log-time order: `(topic, log_ns,
+        fields)`, each field `(name, dtype, shape, bytes)`. Topics are
+        `{robot}/{path}` and `{robot}/{path}/_applied`; camera frames come
+        as raw RGB.
+        """
+
+@typing.final
+class V2Robot:
+    r"""
+    A robot: its map declared, a publisher per part and an edge per command
+    group.
+    """
+    @property
+    def leaving(self) -> typing.Optional[builtins.str]:
+        r"""
+        Why this robot should leave its scene's run: the run is closing (its
+        reason, `scene_ended` or `scene_failed`), the host lost it
+        (`robot_lost`: wait in the lobby again, where its run re-sends its
+        join), or another process took its name over (`superseded`: stop).
+        `None` while it is in the run, and outside a scene.
+        """
+    @property
+    def name(self) -> builtins.str:
+        r"""
+        The robot's participant id.
+        """
+    @property
+    def address(self) -> builtins.str:
+        r"""
+        The robot's participant address, `{ip}:{port}[/{session}]#{key}/{name}`.
+        """
+    @property
+    def mode(self) -> builtins.str:
+        r"""
+        The session mode this robot sees (`disarmed`, `armed`, `active`,
+        `safe`, `estop`).
+        """
+    @property
+    def mode_reason(self) -> builtins.str:
+        r"""
+        Why the session mode is what it is (`robot_lost`, `estop_local`, ...;
+        `unspecified` before any change).
+        """
+    def __new__(cls, address: builtins.str, name: builtins.str, robot_json: builtins.str, timeout_s: builtins.float = ...) -> V2Robot:
+        r"""
+        Attaches as `name` (the robot's participant id), declares
+        `robot_json` (the authored map, §3) and starts its publishers and
+        edges.
+        """
+    @staticmethod
+    def from_lobby(home: typing.Optional[builtins.str], name: builtins.str, robot_json: builtins.str, timeout_s: typing.Optional[builtins.float] = None) -> V2Robot:
+        r"""
+        Waits in the lobby of the home daemon `home` names (`None`: this
+        machine's rlmeshd) as robot `name` until a run assigns it, then joins
+        the run and declares `robot_json`. A refused join (its pin, another
+        map) is reported to the daemon by the next wait, which goes on
+        waiting; `timeout_s` (`None`: none) bounds it all.
+        """
+    def parts(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        The parts as the host normalised them, in authored order.
+        """
+    def publish(self, path: builtins.str, fields: collections.abc.Sequence[builtins.str | builtins.bytes | memoryview], capture_ns: typing.Optional[builtins.int] = None) -> typing.Optional[builtins.int]:
+        r"""
+        Publishes one sample of `path` from its fields in declaration order
+        (C-contiguous bytes-likes; a `str` for text), captured at
+        `capture_ns` (`time.monotonic_ns()`; now by default). The values
+        are copied before this returns. Returns the sample's seq, or `None`
+        when coalesced (or handed to an image encoder).
+        """
+    def due(self, path: builtins.str) -> typing.Optional[V2Due]:
+        r"""
+        One control tick of the edge serving `path` and its command group:
+        what to dispatch now, or `None`. Call it once per tick per group.
+        """
+    def handover_done(self, path: builtins.str) -> None:
+        r"""
+        The robot switched control modes after a handover of `path`'s
+        group: the group may dispatch again.
+        """
+    def arm(self) -> None:
+        r"""
+        DISARMED or SAFE to ARMED, in a fresh epoch.
+        """
+    def disarm(self) -> None:
+        r"""
+        Back to DISARMED.
+        """
+    def estop(self, reason: builtins.str) -> None:
+        r"""
+        Emergency stop, latched locally with no network (any thread): the
+        next `due` purges every queue and returns `estop`, and the host is
+        told in the background. Latched until `clear_estop`, then disarm and
+        arm.
+        """
+    def clear_estop(self) -> None:
+        r"""
+        Clears the local e-stop latch and tells the host `Clear` (after any
+        unsent e-stop): the session stays ESTOP, unlatched, until disarm and
+        arm.
+        """
+    def report_safe(self, reason: builtins.str) -> None:
+        r"""
+        Tells the host the robot fell back on its own account (a device
+        watchdog fired): the session goes SAFE. Never blocks.
+        """
+    def now_ns(self) -> builtins.int:
+        r"""
+        Now on this robot's clock (`time.monotonic_ns()`).
+        """
+    def edge_stats(self, path: builtins.str) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        The counters of the edge serving `path`.
+        """
+    def close(self) -> None:
+        r"""
+        Detaches: the edges and publishers go, the host drops the parts.
+        """
+
+@typing.final
+class V2Scene:
+    r"""
+    A scene run started from this process on the home daemon's lobby.
+    """
+    @property
+    def run(self) -> builtins.str:
+        r"""
+        The run's id.
+        """
+    def __new__(cls, home: typing.Optional[builtins.str], scene_toml: builtins.str, manual_arm: builtins.bool = ..., timeout_s: builtins.float = ...) -> V2Scene:
+        r"""
+        Runs the scene file's text `scene_toml` on the home daemon `home`
+        names (`None`: this machine's rlmeshd), waiting up to `timeout_s` for
+        it (`manual_arm`: wait for `arm()`). A refused scene raises
+        `SessionRefused` with its code.
+        """
+    def address(self) -> typing.Optional[builtins.str]:
+        r"""
+        Where the run's members join, once its host is up (`None` before).
+        """
+    def status(self) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        The run's state now.
+        """
+    def wait_until(self, stage: builtins.str, timeout_s: builtins.float) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        Waits up to `timeout_s` for the run to be at `stage` (`running`);
+        its state then. A run that ends first raises `SessionRefused` with
+        its error; the timeout raises `TimeoutError`.
+        """
+    def arm(self) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        Arms the run (`manual`, or after a lost member rejoined); its state.
+        """
+    def stop(self, timeout_s: builtins.float = ...) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        Stops the run and waits up to `timeout_s` for it to end; its state.
+        """
+    def close(self, timeout_s: builtins.float = ...) -> None:
+        r"""
+        Stops the run unless it ended, and leaves the lobby. Idempotent.
+        """
+
 def _set_python_peer_info(*, language: str | None = None, language_version: str | None = None, package_version: str | None = None, os: str | None = None, os_version: str | None = None, arch: str | None = None, framework_versions: dict[str, str] | None = None, extra: dict[str, str] | None = None) -> None: ...
 
 def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> list[Advisory]: ...
+
+def adapters_render_size(spec_json: str) -> tuple[int, int] | None: ...
 
 def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
 
@@ -713,15 +1293,6 @@ def build_info() -> BuildInfo:
     r"""
     This build's identity: the package version, the protocol generation, and
     the workflow edition it advertises with the cohort behind that spelling.
-    """
-
-def check_remote_model_options(address: builtins.str, *, connect_timeout_seconds: typing.Optional[builtins.float] = None, request_timeout_seconds: typing.Optional[builtins.float] = None, api_key: typing.Optional[builtins.str] = None, tls_ca_file: typing.Optional[builtins.str] = None) -> None:
-    r"""
-    Check a `RemoteModel`'s address, timeouts, `api_key` and `tls_ca_file`
-    as the native constructor does (RMT-P6): an address that does not parse
-    (`invalid address: ...`), a negative or non-finite timeout, a key a
-    header cannot carry or an unreadable CA bundle is ValueError. An explicit
-    key for a plaintext non-loopback address warns. No network I/O.
     """
 
 def current_workflow_edition() -> builtins.str:
@@ -743,17 +1314,29 @@ def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
 
 def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> SpaceSpec: ...
 
-def local_env_contract(env: typing.Any) -> typing.Any:
-    r"""
-    The wire contract of a local env, derived as an `EnvServer` would publish
-    it, for a served-model session that steps the env on the caller's side.
-    A vector env (`num_envs` or `single_*` spaces) is TypeError: a served
-    model drives a single env. No I/O.
-    """
+def episode_seed(base_seed: int, seed_key: str, slot: int) -> int: ...
+
+def eval_report(paths: list[str]) -> tuple[str, str]: ...
+
+def frames_between(a_xyz: typing.Sequence[float], a_quat_xyzw: typing.Sequence[float], b_xyz: typing.Sequence[float], b_quat_xyzw: typing.Sequence[float]) -> tuple[list[float], list[float]]: ...
+
+def is_v2_address(text: str) -> bool: ...
+
+def load_run_result(paths: list[str]) -> dict[str, typing.Any]: ...
+
+def local_run_session() -> str: ...
+
+def merge_telemetry(rows: list[dict[str, typing.Any]]) -> list[dict[str, typing.Any]]: ...
+
+def model_answers(address: str, timeout_s: float) -> None: ...
+
+def model_describe(address: str, timeout_s: float) -> str: ...
 
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
 def multi_discrete_space_spec(nvec: list[int], dtype: str | None = None) -> SpaceSpec: ...
+
+def nested_predict(key: int, observation: typing.Any) -> typing.Any: ...
 
 def normalize_connect_address(address: typing.Optional[builtins.str] = None, *, host: typing.Optional[builtins.str] = None, port: typing.Optional[builtins.int] = None, path: typing.Optional[builtins.str] = None, transport: typing.Optional[builtins.str] = None) -> builtins.str:
     r"""
@@ -762,7 +1345,11 @@ def normalize_connect_address(address: typing.Optional[builtins.str] = None, *, 
     has checked `port`'s type and range and `transport`'s spelling.
     """
 
+def parse_address(text: str, session: bool = False) -> dict[str, typing.Any]: ...
+
 def predict_seed(episode_seed: int, predict_index: int) -> int: ...
+
+def resolve_execution_horizon(explicit: typing.Optional[builtins.int] = None, loaded: typing.Optional[builtins.int] = None, timing: typing.Optional[builtins.int] = None, native_chunk: typing.Optional[builtins.int] = None) -> builtins.int: ...
 
 def resolve_workflow_edition_rungs(*, call: typing.Optional[builtins.str] = None, option: typing.Optional[builtins.str] = None, declared: typing.Optional[builtins.str] = None) -> tuple[typing.Optional[builtins.str], builtins.bool]:
     r"""
@@ -775,7 +1362,11 @@ def resolve_workflow_edition_rungs(*, call: typing.Optional[builtins.str] = None
 
 def run_cli(args: list[str]) -> int: ...
 
+def sandbox_host_identity() -> tuple[str, str]: ...
+
 def sandbox_reap_orphans() -> None: ...
+
+def sandbox_session_ports() -> int: ...
 
 def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None) -> SandboxRunInfo: ...
 

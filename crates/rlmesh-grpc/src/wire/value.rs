@@ -2,15 +2,12 @@
 //!
 //! Submodules split the codec by concern: `interaction` adapts
 //! reset/step/render requests and results, `payload` wraps values in
-//! transport messages, `codec` encodes single space values, `batch` handles
-//! batched payloads, and `scalars` packs scalar element bytes.
+//! transport messages and `batch` handles batched payloads. The leaf codec
+//! itself is native ([`rlmesh_spaces::leaves`]), re-exported here.
 
 mod batch;
-mod codec;
 mod interaction;
-mod leaves;
 mod payload;
-mod scalars;
 
 #[cfg(test)]
 mod proptests;
@@ -23,8 +20,8 @@ pub use interaction::{
     reset_request_to_proto, reset_result_from_proto, reset_result_to_proto, step_request_to_proto,
     step_result_from_proto, step_result_to_proto,
 };
-pub use leaves::{decode_leaf_slab, decode_leaves, encode_leaf_slab, encode_leaves};
 pub use payload::{
     binary_to_bytes, bytes_to_binary, decode_value, encode_value, leaves_from_blob, leaves_to_blob,
     leaves_value, optional_bytes_to_binary, value_leaves,
 };
+pub use rlmesh_spaces::leaves::{decode_leaf_slab, decode_leaves, encode_leaf_slab, encode_leaves};

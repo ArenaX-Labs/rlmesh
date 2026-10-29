@@ -2,6 +2,8 @@
 //! [`Model`] handle, the per-episode context, and the engine plumbing the
 //! bindings drive (re-exported through `binding`).
 
+#[cfg(feature = "lockstep")]
+pub(crate) mod bind;
 pub(crate) mod bridge;
 mod context;
 pub(crate) mod engine;
@@ -10,10 +12,9 @@ pub(crate) mod handler;
 pub(crate) mod local;
 mod policy;
 pub(crate) mod predict_fn;
+pub(crate) mod random;
 pub(crate) mod remote;
-pub(crate) mod server;
 pub(crate) mod types;
-mod wire;
 pub(crate) mod worker;
 
 pub use context::{BatchPredictContext, EpisodeState, PredictContext};
@@ -29,17 +30,15 @@ pub use types::predict_seed;
 pub(crate) use engine::AdaptedModelHandler;
 #[allow(unused_imports)]
 pub(crate) use handler::{
-    HeldState, HistoryNeeds, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions,
-    RouteNeeds,
+    HeldState, HistoryNeeds, ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames,
+    ResolveOptions, RouteNeeds,
 };
 #[allow(unused_imports)]
 pub(crate) use predict_fn::{PredictFn, RouteConfig, RouteResolver};
 #[allow(unused_imports)]
-pub(crate) use server::BoundModelServer;
-#[allow(unused_imports)]
 pub(crate) use types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
 #[allow(unused_imports)]
-pub(crate) use worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
+pub(crate) use worker::{ModelWorker, RunLocalOptions};
 
 #[cfg(test)]
 mod facade_tests;

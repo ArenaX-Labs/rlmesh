@@ -1,0 +1,47 @@
+{
+  "scene/cam": {
+    "kind": "camera",
+    "width": 256,
+    "height": 256,
+    "hz": 20,
+    "mount": "upside_down",
+    "frame": "agentview_optical"
+  },
+  "wrist/cam": {
+    "kind": "camera",
+    "width": 256,
+    "height": 256,
+    "hz": 20,
+    "mount": "upside_down",
+    "frame": "eye_in_hand_optical"
+  },
+  "arm/tcp": {
+    "kind": "pose",
+    "frame": "robot_base",
+    "child": "gripper_tcp",
+    "hz": 20,
+    "command": "delta",
+    "reference": "current",
+    "max_action_age_ms": 1000
+  },
+  "gripper/fingers": {
+    "kind": "joints",
+    "count": 2,
+    "fields": ["pos"],
+    "hz": 20,
+    "prismatic": true
+  },
+  "gripper": {
+    "kind": "gripper",
+    "hz": 20,
+    "command": "position",
+    "binary": true,
+    "max_action_age_ms": 1000
+  },
+  "task": {
+    "kind": "text"
+  },
+  "success": {
+    "kind": "success"
+  }
+}

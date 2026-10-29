@@ -80,6 +80,8 @@ enum Target<'a> {
     Model {
         decl: PolicyDecl,
         spec: Option<SpecArg>,
+        /// A built model's: the horizon its `load()` chose.
+        execution_horizon: Option<u32>,
     },
     Factory(Box<dyn FactoryForm + 'a>),
 }
@@ -98,14 +100,22 @@ impl Describable<'static> {
     pub(crate) fn from_declaration(decl: PolicyDecl) -> Result<Describable<'static>> {
         decl.validate()?;
         let spec = decl.spec.clone();
-        Ok(Describable(Target::Model { decl, spec }))
+        Ok(Describable(Target::Model {
+            decl,
+            spec,
+            execution_horizon: None,
+        }))
     }
 
     /// The model type form: `P`'s declarations only, no user code run.
     pub fn model<P: Policy>() -> Describable<'static> {
         let decl = PolicyDecl::of::<P>();
         let spec = decl.spec.clone();
-        Describable(Target::Model { decl, spec })
+        Describable(Target::Model {
+            decl,
+            spec,
+            execution_horizon: None,
+        })
     }
 }
 
@@ -122,7 +132,14 @@ impl<'a> Describable<'a> {
 /// A built model: its policy's type-level items plus the model's own spec.
 impl<'a> From<&'a Model> for Describable<'a> {
     fn from(model: &'a Model) -> Describable<'a> {
-        let decl = &model.shared().decl;
+        Describable::built(model.shared())
+    }
+}
+
+impl Describable<'static> {
+    /// A built model's envelope target, from its resolved declarations.
+    pub(crate) fn built(shared: &crate::model::facade::Shared) -> Describable<'static> {
+        let decl = &shared.decl;
         Describable(Target::Model {
             decl: PolicyDecl {
                 corners: decl.corners,
@@ -134,7 +151,8 @@ impl<'a> From<&'a Model> for Describable<'a> {
                 authored: decl.authored,
                 type_name: decl.type_name.clone(),
             },
-            spec: model.spec().cloned(),
+            spec: decl.spec.clone(),
+            execution_horizon: decl.execution_horizon,
         })
     }
 }
@@ -565,8 +583,16 @@ pub(crate) fn envelope(
         served.read()?;
     }
     let pieces = match &mut target {
-        Target::Model { decl, spec } => {
-            model_pieces(decl, spec.as_ref(), workflow_edition.as_deref(), host)?
+        Target::Model {
+            decl,
+            spec,
+            execution_horizon,
+        } => {
+            let mut pieces = model_pieces(decl, spec.as_ref(), workflow_edition.as_deref(), host)?;
+            if let Some(horizon) = execution_horizon {
+                pieces["execution_horizon"] = json!(horizon);
+            }
+            pieces
         }
         Target::Factory(form) => factory_pieces(
             form.as_mut(),

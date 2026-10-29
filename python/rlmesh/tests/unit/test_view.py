@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import rlmesh._rlmesh as native
 from rlmesh._models import _view
-from rlmesh._models._eval import Session
+from rlmesh._models._binding import Binding
 from rlmesh._models._view import (
     FrameSources,
     View,
@@ -168,24 +168,13 @@ def test_resolve_render_picks_convention_by_signature() -> None:
 
 
 def test_view_outcome_prefers_info_over_terminated() -> None:
-    sess: Session[object, object] = Session._create(  # pyright: ignore[reportPrivateUsage]
-        env=object()
-    )
-    assert sess._view_outcome() == ""
+    from rlmesh._models._eval import episode_outcome
 
-    sess._terminated = True
-    sess._last_info = {"is_success": False}
-    assert sess._view_outcome() == "failure"
-
-    sess._last_info = {"is_success": True}
-    assert sess._view_outcome() == "success"
-
-    sess._last_info = {}
-    assert sess._view_outcome() == "done"  # terminal, outcome unknown: never "success"
-
-    sess._terminated = False
-    sess._truncated = True
-    assert sess._view_outcome() == "timeout"
+    assert episode_outcome(False, False, {}) == ""
+    assert episode_outcome(True, False, {"is_success": False}) == "failure"
+    assert episode_outcome(True, False, {"is_success": True}) == "success"
+    assert episode_outcome(True, False, {}) == "done"  # outcome unknown: not success
+    assert episode_outcome(False, True, {}) == "timeout"
 
 
 def test_pyviewer_api_smoke() -> None:
@@ -431,10 +420,10 @@ class _DoneEnv(_CrashEnv):
         return 0, 1.0, True, False, {}
 
 
-def _held_session(
+def _held_binding(
     monkeypatch: pytest.MonkeyPatch, env: _CrashEnv | None = None
-) -> tuple[Session[Any, Any], _FakePV]:
-    """A session whose viewer would hold (http, hold=True, an interactive stdin).
+) -> tuple[Binding[Any, Any], _FakePV]:
+    """A binding whose viewer would hold (http, hold=True, an interactive stdin).
 
     The hold never really waits: its first wait presses quit, so a test that
     wrongly holds still finishes, and ``[held]`` on the HUD shows it held.
@@ -442,58 +431,60 @@ def _held_session(
     import rlmesh
 
     driver, pv = _driver(monkeypatch, View(backend="http", hold=True))
-    # Show only render(), so the session's own feeds draw without adapter tags
+    # Show only render(), so the binding's own feeds draw without adapter tags
     # (a feed error would disable the viewer and make every hold vacuous).
     pv.sources, pv.selected = ["render"], 0
     monkeypatch.setattr("sys.stdin", _Tty())
     _hold_quits_on_first_wait(monkeypatch, pv)
-    sess = rlmesh.session(rlmesh.Model(lambda obs: 0), env or _CrashEnv())
-    sess._view_driver = driver  # pyright: ignore[reportPrivateUsage]
-    return sess, pv
+    binding = rlmesh.Model(lambda obs: 0).bind(env or _CrashEnv())
+    binding._view = driver  # pyright: ignore[reportPrivateUsage]
+    return binding, pv
 
 
 @pytest.mark.parametrize("error", [RuntimeError("boom"), KeyboardInterrupt()])
-def test_session_exiting_on_an_error_skips_the_hold(
+def test_a_binding_exiting_on_an_error_skips_the_hold(
     monkeypatch: pytest.MonkeyPatch, error: BaseException
 ) -> None:
-    sess, pv = _held_session(monkeypatch)
+    binding, pv = _held_binding(monkeypatch)
     with pytest.raises(type(error)):
-        with sess:
+        with binding:
             raise error
     assert pv.closed
     assert not _held(pv)
 
 
-def test_session_exiting_on_a_crashed_run_skips_the_hold(
+def test_a_binding_exiting_on_a_crashed_step_skips_the_hold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    env = _CrashEnv()
-    sess, pv = _held_session(monkeypatch, env)
-    with pytest.raises(RuntimeError, match="env crashed"):
-        with sess:
-            sess.run(seeds=[0])
+    binding, pv = _held_binding(monkeypatch, _CrashEnv())
+    with pytest.raises(Exception, match="env crashed"):
+        with binding:
+            binding.reset()
+            binding.step()
     assert pv.closed and not _held(pv)
 
 
-def test_close_after_a_failed_run_skips_the_hold(
+def test_close_after_a_failed_step_skips_the_hold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The try/finally shape: close() itself sees no exception, but the run raised.
-    sess, pv = _held_session(monkeypatch)
-    with pytest.raises(RuntimeError, match="env crashed"):
+    # The try/finally shape: close() itself sees no exception, but the step raised.
+    binding, pv = _held_binding(monkeypatch)
+    with pytest.raises(Exception, match="env crashed"):
         try:
-            sess.run(seeds=[0])
+            binding.reset()
+            binding.step()
         finally:
-            sess.close()
+            binding.close()
     assert pv.closed and not _held(pv)
 
 
-def test_session_ending_normally_still_holds(
+def test_a_binding_ending_normally_still_holds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sess, pv = _held_session(monkeypatch, _DoneEnv())
-    with sess:
-        sess.run(seeds=[0])
+    binding, pv = _held_binding(monkeypatch, _DoneEnv())
+    with binding:
+        binding.reset()
+        binding.step()
     assert pv.closed and _held(pv)
 
 
@@ -554,8 +545,6 @@ def test_run_with_a_local_model_takes_view_false_as_none() -> None:
         def close(self) -> None:
             pass
 
-    with pytest.raises(TypeError, match="session\\(\\) option"):
-        rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=True)
     with pytest.raises(TypeError, match="view must be"):
         rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=cast("Any", 3))
     result = rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=False)

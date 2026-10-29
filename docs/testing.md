@@ -17,7 +17,27 @@ mise run test:rust
 mise run test:python
 mise run test:python:unit
 mise run test:python:integration
+mise run test:python:conformance
+mise run test:python:perf
 ```
+
+`test:python:perf` runs the tests marked `perf`, the ones that hold a
+wall-clock budget. A busy machine fails them whatever the code does, so every
+other run leaves them out (`addopts` in `pyproject.toml`) and `test:ci` runs
+them on its own.
+
+`test:python:conformance` holds the gates other code is measured against. The
+Gymnasium gate (`python/rlmesh/tests/conformance/test_gym_conformance.py`) runs
+plain gymnasium and the same env behind `rlmesh.numpy.RemoteEnv` /
+`RemoteVectorEnv`, over gRPC and a v2 session, and compares every
+observation, reward, flag and info bit for bit; its docstring lists the
+documented differences. MuJoCo cases skip when `mujoco` is not installed
+(`uv sync --group mujoco`). `native_gate.py` beside it runs the same rows
+over an env, a model and clients written in another language, against
+Python on a session: `test:cxx` runs it for C++ and the Unreal plugin's
+game-thread env, `test:csharp` for C# and the Unity host, each naming its gate
+program in `RLMESH_NATIVE_GATE`; a row the language cannot express is skipped
+with the reason it prints.
 
 Run only what a change can affect (changed crates since `origin/main`, their dependents, and Python when reachable):
 
@@ -53,7 +73,7 @@ mise watch test:python:unit
 
 ## CI Parity
 
-`test:ci` is the single test entrypoint CI runs after `check`. It runs `test`, the API surface tests, the example programs, the system harness tests, then builds a local wheel and runs the installed-artifact system profile against it:
+`test:ci` is the single test entrypoint CI runs after `check`. It runs `test`, the API surface tests, the perf budgets, the example programs, the system harness tests, then builds a local wheel and runs the installed-artifact system profile against it:
 
 ```bash
 mise run test:ci
@@ -61,16 +81,15 @@ mise run test:ci
 
 To run the whole CI job on Depot compute instead of locally, including uncommitted changes, use `mise run ci:remote` (see [local development](local-dev.md#worktrees-and-limited-compute)).
 
-CI uses one required job, `Fast Checks`, on pull requests, pushes to `main`, and manual runs. It runs `check` and `test:ci`, reuses the resulting wheels for cross-version compatibility, verifies Rust and C/C++ packages, and repeats the C/C++ smoke under gcc (pull requests) or under both gcc and clang (pushes to `main` and manual runs); `test` itself already covers zig's clang with libc++. Package and compatibility failures therefore fail the same required check as the rest of CI; there are no event-specific skipped jobs.
+CI uses one required job, `Fast Checks`, on pull requests, pushes to `main`, and manual runs. It runs `check` and `test:ci`, verifies Rust and C/C++ packages, and repeats the C/C++ smoke under gcc (pull requests) or under both gcc and clang (pushes to `main` and manual runs); `test` itself already covers zig's clang with libc++. Package failures therefore fail the same required check as the rest of CI; there are no event-specific skipped jobs.
 
 Toolchain setup installs the committed `mise.lock` with `--locked`; CI does not regenerate it against changing upstream dependency metadata. Refresh the lock explicitly when updating tools.
 
-CI sets `RLMESH_RELEASE_BUILD=1` so one local wheel build covers both the basic installed-artifact and compatibility profiles. To reproduce its checks locally:
+CI sets `RLMESH_RELEASE_BUILD=1` so one local wheel build covers the installed-artifact profiles. To reproduce its checks locally:
 
 ```bash
 RLMESH_RELEASE_BUILD=1 mise run check
 RLMESH_RELEASE_BUILD=1 mise run test:ci
-mise run test:crossver:installed
 mise run release:rust:package
 CC=clang CXX=clang++ mise run test:cxx:pkg
 CC=clang CXX=clang++ mise run test:cxx
@@ -131,22 +150,6 @@ Clean system-test environments, logs, and reports:
 mise run test:system:clean
 ```
 
-## Cross-Version Matrix
-
-The cross-version matrix runs this tree against the last published release as part of the required CI job, on every pull request and on pushes to `main`. The standalone local entrypoint builds its own release wheels:
-
-```bash
-mise run test:crossver
-```
-
-When release-cohort wheels have already been built, run `mise run test:crossver:installed` to validate them without rebuilding. CI and `release:check` use this entrypoint; the runner rejects a dev-cohort wheel rather than silently testing the wrong artifact.
-
-The old side of every cell is the PyPI wheel pinned by exact version and sha256 in `tests/system/crossver.lock`; the new side is a wheel built from this tree with `RLMESH_RELEASE_BUILD=1`, which stamps the same workflow-edition cohort the published wheel advertises (a plain dev build stamps `2026.06-dev.<sha>` and is refused at the edition floor by design). `tests/system/crossver.py` drives the cells: old and new env servers against old and new runtimes, old and new served models against the other side's runtime, both same-version controls, and two forged refusals (a ConfigureEnv pin naming an edition no build implements, and a `rlmesh-wire-v2` handshake). Each of the six real cells asserts that the cross-version Join reproduces `tests/system/traces/counter-entrypoint.json`, and — measured on the server it runs against, by a raw wire probe rather than by the runtime's own client — that server's `HandshakeResponse.compatible` flag and its declared WANT (this tree's servers declare the current edition; the published wheel declares none). The edition column is the runtime's real `ResolveAdapter` pin on the model cells and its real `ConfigureEnv` pin on the env cells this tree's runtime drives (read off this tree's env server log, or proven by the trace when the published wheel serves the env, since a refused pin aborts before Reset); the published wheel's runtime sends no pin, so its env cells fall back to the two builds' CAN intersection acked through a forged `ConfigureEnv`. The two refusal cells assert the refusal message instead; the results table prints the same legend.
-
-Cells 7 and 8 select _between_ two editions, so they print as pending until a second edition is sealed; they are listed in the results table rather than skipped silently.
-
-Set `RLMESH_CROSSVER_WHEEL_DIR` to a directory holding the pinned wheel to resolve it from there instead of PyPI; the install still goes through the lock file's hashes, so a look-alike wheel (this tree's own build carries the same version) fails.
-
 ## Release Check
 
 The local release gate combines static checks, tests, package verification, wheel builds, and installed-artifact validation:
@@ -203,7 +206,11 @@ Repeat a repaired gate under load with
 lock; do not wrap it again. `run.py` honours `CARGO_TARGET_DIR` and supports
 `--no-build` when reusing native consumers.
 
-For local libclang/header-driver mismatches, run header checks with
-`CC="mise exec zig@0.13.0 -- zig cc" CXX="mise exec zig@0.13.0 -- zig c++"`.
-`RLMESH_PARITY_HEADER_CC` / `RLMESH_PARITY_HEADER_CXX` apply those drivers only
-to parity header extraction when invoking the combined check task.
+The header checks parse `rlmesh.h` and `rlmesh.hpp` with the pinned libclang
+(LLVM 18) against the host compiler's system headers. When those headers are
+newer than libclang can read (GCC 16's libstdc++, a newer libc++), and every
+error is inside them rather than in the RLMesh headers, the check parses again
+against zig 0.13's (also LLVM 18) and prints a `note:` saying so; an error in the
+RLMesh headers fails either way. To choose the driver yourself,
+`RLMESH_PARITY_HEADER_CC` / `RLMESH_PARITY_HEADER_CXX` (for example
+`"mise exec zig@0.13.0 -- zig c++"`) apply only to parity header extraction.

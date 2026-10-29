@@ -51,8 +51,8 @@ use rlmesh_adapters::v1::{
 };
 
 use super::handler::{
-    HeldState, HistoryNeeds, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions,
-    RouteNeeds,
+    HeldState, HistoryNeeds, ModelHandler, ModelResetOptions, ModelRouteSetup, PredictFrames,
+    ResolveOptions, RouteNeeds,
 };
 use super::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 use super::types::{EpisodeInfo, ModelObservation};
@@ -1159,6 +1159,22 @@ fn predict_grouped_fused(
         .collect()
 }
 
+/// A model's reset options, asked of its predict hole on a blocking thread.
+struct PredictResetOptions(Arc<dyn PredictFn>);
+
+#[async_trait]
+impl ModelResetOptions for PredictResetOptions {
+    async fn reset_options(
+        &self,
+        episode: &EpisodeInfo,
+        trial_index: Option<u64>,
+    ) -> Result<Option<rlmesh_spaces::MetaMap>> {
+        let predict = Arc::clone(&self.0);
+        let episode = episode.clone();
+        crate::warnings::blocking(move || predict.reset_options(&episode, trial_index)).await?
+    }
+}
+
 #[async_trait]
 impl ModelHandler for AdaptedModelHandler {
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<SpaceValue>> {
@@ -1200,9 +1216,7 @@ impl ModelHandler for AdaptedModelHandler {
         &mut self,
         observations: Vec<ModelObservation>,
     ) -> Vec<Result<PredictFrames>> {
-        let fusable = self.predict.allow_fusion()
-            && (self.predict.has_chunk_batch() || self.predict.has_batch());
-        if observations.len() <= 1 || !fusable {
+        if observations.len() <= 1 || !self.fuses_groups() {
             let mut results = Vec::with_capacity(observations.len());
             for observation in observations {
                 results.push(self.predict_chunked(observation).await);
@@ -1235,8 +1249,18 @@ impl ModelHandler for AdaptedModelHandler {
         .unwrap_or_else(|err| (0..group_count).map(|_| Err(err.clone())).collect())
     }
 
+    fn fuses_groups(&self) -> bool {
+        self.predict.allow_fusion() && (self.predict.has_chunk_batch() || self.predict.has_batch())
+    }
+
     fn take_adapter_ns(&mut self) -> u64 {
         self.adapter_ns.swap(0, Ordering::Relaxed)
+    }
+
+    fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
+        self.predict
+            .has_reset_options()
+            .then(|| Arc::new(PredictResetOptions(Arc::clone(&self.predict))) as _)
     }
 
     fn held_state(&self) -> Option<HeldState> {
@@ -1377,7 +1401,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         let native_chunk = self.predict.native_chunk();
         let mut needs = RouteNeeds {
             native_chunk,
-            history: None,
+            ..RouteNeeds::default()
         };
         // The horizon doors, before any resolution work: a pin this side of the
         // bound, a declaration the model can actually honor, and a horizon the
@@ -1413,13 +1437,16 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         // aspect crop/letterbox. The route runs regardless, so without this the
         // signal stays buried on the adapter handle and the degradation is silent
         // in practice.
-        for note in config.adapter.advisories() {
+        let advisories = rlmesh_adapters::v1::advisories(&config.adapter);
+        for note in &advisories {
             tracing::warn!(
                 env_id = %env_id,
                 severity = note.severity.as_str(),
                 "adapter advisory: {note}"
             );
         }
+        // And hand them to the run's driver, which carries them into its result.
+        needs.advisories = advisories;
         // Stamp the runtime-chosen execution horizon onto the resolved config (1 = no
         // chunking). Warn once here when the runtime asks for chunking but the model
         // has no chunk corner: the route still runs, re-planning every step.
@@ -2281,6 +2308,7 @@ mod fused_route_tests {
                     ResolveOptions {
                         execution_horizon: horizon,
                         delivers_history: false,
+                        workflow_edition: None,
                     },
                 )
                 .await
@@ -2652,6 +2680,7 @@ mod fused_route_tests {
                     ResolveOptions {
                         execution_horizon: 10,
                         delivers_history: false,
+                        workflow_edition: None,
                     },
                 )
                 .await
@@ -2828,6 +2857,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history: false,
+                    workflow_edition: None,
                 },
             )
             .await
@@ -3223,6 +3253,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history,
+                    workflow_edition: None,
                 },
             )
             .await?;
@@ -3265,6 +3296,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: 4,
                     delivers_history: true,
+                    workflow_edition: None,
                 },
             )
             .await
@@ -3329,6 +3361,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: 1,
                     delivers_history: true,
+                    workflow_edition: None,
                 },
             )
             .await
@@ -3585,6 +3618,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history,
+                    workflow_edition: None,
                 },
             )
             .await?;
@@ -3842,6 +3876,7 @@ mod fused_route_tests {
                     ResolveOptions {
                         execution_horizon: 1,
                         delivers_history: true,
+                        workflow_edition: None,
                     },
                 )
                 .await

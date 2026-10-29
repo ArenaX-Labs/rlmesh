@@ -1,6 +1,25 @@
 use crate::*;
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 
+/// Where a test serves an env its runs dial: a session address on the v2
+/// build, which dials no v1 endpoint, and a v1 endpoint otherwise.
+pub(crate) const ENV_ADDRESS: &str = if cfg!(feature = "lockstep") {
+    ":0/env"
+} else {
+    "tcp://127.0.0.1:0"
+};
+
+/// Serve options for [`ENV_ADDRESS`]: a short drain on v1, so a test does
+/// not wait out the 5 s cap, and none on a session, which has nothing to
+/// drain.
+pub(crate) fn env_serve_options() -> ServeOptions {
+    ServeOptions {
+        #[cfg(not(feature = "lockstep"))]
+        drain_timeout: Some(std::time::Duration::from_millis(100)),
+        ..Default::default()
+    }
+}
+
 #[test]
 fn reexports_space_types() {
     let spec = binding::spaces::EnvContract {
@@ -65,6 +84,7 @@ fn facade_error_mapping_hides_core_error_types() {
             code: ErrorCode::InvalidAction,
             message: "bad action".to_string(),
             is_recoverable: true,
+            class: None,
         })
     );
 }

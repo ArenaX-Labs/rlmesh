@@ -3,13 +3,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::recorder::artifacts::{ArtifactTap, EpisodeArtifacts};
+use crate::run::runtime::{
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
+    ObservationEmittedEvent, RuntimeHooks, SessionFailedEvent, SessionStartedEvent,
+    StepCompletedEvent, TelemetrySnapshotEvent,
+};
 use async_trait::async_trait;
 use rlmesh_grpc::wire::{
     decode_batched_partial_values, leaves_value, meta_map_from_proto, space_spec_from_proto,
-};
-use rlmesh_runtime::{
-    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    ObservationEmittedEvent, RuntimeHooks, StepCompletedEvent,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +22,7 @@ use super::hooks::LibraryContext;
 use super::lent::{LentEnv, LentVectorEnv};
 use super::options::{check_caps, check_horizon, check_prefetch, episode_budget};
 use super::results::{self, EpisodeResult, RunResult, StepEvent};
+use super::routes::RouteSpec;
 use super::targets::{EnvKind, EnvTarget};
 use super::{LoopbackEnv, RunHooks, RunOptions};
 use crate::editions::EditionSources;
@@ -59,16 +62,60 @@ impl Mode {
     }
 }
 
-/// `Model::run` / `run_async`.
+/// What a run drives: a local [`Model`]'s engine, or a model served on a
+/// session (a [`RemoteModel`](crate::RemoteModel) at a session address),
+/// which the run invites into its env's session.
+pub(crate) enum Driven<'m> {
+    Local(&'m Model),
+    #[cfg(feature = "lockstep")]
+    Served(&'m crate::RemoteModel),
+    Random,
+    Prepared(crate::binding::model::PreparedModel),
+}
+
+/// Makes the run's model handler, given the run's adapter context.
+type MakeHandler =
+    Box<dyn FnOnce(Arc<LibraryContext>) -> Box<dyn crate::model::ModelHandler> + Send>;
+
+/// `Model::run` / `run_async`, and `run` of a served model.
 pub(crate) async fn run_model(
-    model: &Model,
+    model: Driven<'_>,
     env: EnvTarget<'_>,
     options: RunOptions<'_>,
     mode: Mode,
 ) -> Result<RunResult> {
-    let shared = model.shared();
-    shared.check_not_reentrant("run()")?;
-    shared.admit()?;
+    run_route(model, env, options, mode, RouteSpec::default()).await
+}
+
+/// [`run_model`] as one route of a multi-route run.
+pub(crate) async fn run_route(
+    mut model: Driven<'_>,
+    env: EnvTarget<'_>,
+    options: RunOptions<'_>,
+    mode: Mode,
+    route: RouteSpec,
+) -> Result<RunResult> {
+    let presentation = match &mut model {
+        Driven::Prepared(model) => model.presentation.take(),
+        _ => None,
+    };
+    let _prepared_slot = match &model {
+        Driven::Prepared(model) => Some(match &model.run_lease {
+            Some(lease) => lease.clone(),
+            None => crate::binding::model::claim_run(model.run_gate.clone())?,
+        }),
+        _ => None,
+    };
+    let shared = match &model {
+        Driven::Local(model) => Some(model.shared()),
+        #[cfg(feature = "lockstep")]
+        Driven::Served(_) => None,
+        Driven::Random | Driven::Prepared(_) => None,
+    };
+    if let Some(shared) = shared {
+        shared.check_not_reentrant("run()")?;
+        shared.admit()?;
+    }
     let RunOptions {
         episodes,
         seeds,
@@ -87,17 +134,98 @@ pub(crate) async fn run_model(
     } = options;
     if let Some(view) = view {
         view.validate()?;
-        return Err(Error::Type("view is a session() option for a local model: use model.session(env, view=...).run(...) for it.".into()));
+        return Err(Error::Type(
+            "view= is not supported by the native run loop".into(),
+        ));
     }
     // RUN-5: what the options alone decide, before anything dials.
     let budget = episode_budget(episodes, seeds.as_deref())?;
-    check_horizon(execution_horizon, shared.decl.native_chunk)?;
+    let native_chunk = match &model {
+        Driven::Prepared(model) => model.native_chunk,
+        _ => shared.and_then(|shared| shared.decl.native_chunk),
+    };
+    let (declared_edition, authored, has_chunk) = match &model {
+        Driven::Prepared(model) => (
+            model.workflow_edition.clone(),
+            model.authored,
+            model.has_chunk,
+        ),
+        _ => (
+            shared.and_then(|s| s.decl.workflow_edition.clone()),
+            shared.is_some_and(|s| s.decl.authored),
+            shared.map(|s| s.decl.has_chunk()),
+        ),
+    };
+    if let Some(horizon) = execution_horizon {
+        check_horizon(horizon, native_chunk)?;
+    }
     let caps = check_caps(max_episode_steps, max_episode)?;
     let prefetch_lead = check_prefetch(prefetch_lead)?;
-    let _slot = shared.claim_run()?;
+    // A run naming no horizon executes at the model's own (a served model's
+    // from its describe envelope), else 1.
+    let execution_horizon = match (execution_horizon, &model) {
+        (Some(horizon), _) => horizon,
+        (None, Driven::Local(model)) => model.shared().decl.resolve_horizon(None)?,
+        #[cfg(feature = "lockstep")]
+        (None, Driven::Served(model)) => {
+            let probe = crate::lockstep::ServedModel::default_execution_horizon(
+                model.address(),
+                model.connect_timeout().unwrap_or(SERVED_CONNECT),
+            );
+            // The sync outer future is deliberately polled outside Tokio.
+            // Enter the library runtime only while this I/O probe is driven.
+            match mode {
+                Mode::Sync => drive::block_on_library(probe),
+                Mode::Async => probe.await,
+            }?
+            .unwrap_or(1)
+        }
+        (None, Driven::Random) => 1,
+        (None, Driven::Prepared(model)) => super::options::resolve_execution_horizon(
+            None,
+            model.execution_horizon.map(i128::from),
+            None,
+            model.native_chunk,
+        )?,
+    };
+    check_horizon(execution_horizon, native_chunk)?;
+    let make_handler: MakeHandler = match model {
+        Driven::Prepared(model) => Box::new(move |_| model.handler),
+        Driven::Local(model) => {
+            let shared = Arc::clone(model.shared());
+            let trust = trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints);
+            Box::new(move |context| {
+                Box::new(crate::model::bridge::engine_handler_configured(
+                    shared,
+                    trust,
+                    instruction,
+                    Some(context),
+                ))
+            })
+        }
+        #[cfg(feature = "lockstep")]
+        Driven::Served(model) => {
+            served_options(trust_entrypoints, instruction.as_deref())?;
+            let served = crate::lockstep::ServedModel::new(
+                model.address(),
+                model.connect_timeout().unwrap_or(SERVED_CONNECT),
+            );
+            Box::new(move |_| Box::new(served))
+        }
+        Driven::Random => {
+            if trust_entrypoints.is_some() || instruction.is_some() {
+                return Err(Error::invalid_argument(
+                    "trust_entrypoints and instruction= do not apply to RANDOM_SAMPLE",
+                ));
+            }
+            Box::new(|_| Box::<crate::model::random::RandomSampleHandler>::default())
+        }
+    };
+    let _slot = shared.map(|shared| shared.claim_run()).transpose()?;
     let driver = CancellationToken::new();
     let watch = CancelWatch::start(cancel.into_iter().collect(), driver.clone())?;
     let context = LibraryContext::new();
+    context.set_presentation(presentation);
     let relay = hooks
         .is_some()
         .then(|| Arc::new(HookRelay::new(driver.clone(), context.clone())));
@@ -107,11 +235,11 @@ pub(crate) async fn run_model(
             EditionSources {
                 call: workflow_edition.as_deref(),
                 option: None,
-                declared: shared.decl.workflow_edition.as_deref(),
+                declared: declared_edition.as_deref(),
             },
-            shared.decl.authored,
+            authored,
         )?;
-        if execution_horizon > 1 && !shared.decl.has_chunk() {
+        if execution_horizon > 1 && has_chunk == Some(false) {
             crate::warnings::warn(
                 crate::WarningCategory::UserWarning,
                 format!(
@@ -123,9 +251,7 @@ pub(crate) async fn run_model(
         let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let plan = Plan {
             ended: ended.clone(),
-            shared: Arc::clone(shared),
-            trust: trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints),
-            instruction,
+            make_handler,
             budget,
             seeds: seeds.unwrap_or_default(),
             caps,
@@ -134,6 +260,7 @@ pub(crate) async fn run_model(
             prefetch_lead,
             edition,
             trial_index_base,
+            route,
         };
         let outcome = run_body(
             plan,
@@ -174,6 +301,7 @@ pub(crate) async fn run_model(
     // Detach atomically before selecting the error. A late firing must not
     // replace the first hook error retained by the relay.
     let fired = watch.finish(Ok(())).is_err();
+    context.set_presentation(None);
     if let Some(error) = relay.as_ref().and_then(|relay| relay.take_error()) {
         Err(error)
     } else if fired {
@@ -181,6 +309,31 @@ pub(crate) async fn run_model(
     } else {
         outcome
     }
+}
+
+/// How long a run waits to reach a served model when its `RemoteModel` sets
+/// no connect timeout, as Python's `Model(address)`.
+#[cfg(feature = "lockstep")]
+pub(crate) const SERVED_CONNECT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Refuses what a served model cannot take from its driver: it owns its
+/// adapter, and its instruction is its own.
+#[cfg(feature = "lockstep")]
+pub(crate) fn served_options(
+    trust_entrypoints: Option<bool>,
+    instruction: Option<&str>,
+) -> Result<()> {
+    if trust_entrypoints.is_some() {
+        return Err(Error::invalid_argument(
+            "trust_entrypoints is not supported for a served model: it resolves its own adapter",
+        ));
+    }
+    if instruction.is_some() {
+        return Err(Error::invalid_argument(
+            "instruction= is not supported for a served model",
+        ));
+    }
+    Ok(())
 }
 
 /// A factory-made env remains owned until its explicit close, including on a
@@ -208,9 +361,7 @@ impl Drop for OwnedMadeEnv {
 
 struct Plan {
     ended: Arc<std::sync::atomic::AtomicBool>,
-    shared: Arc<crate::model::facade::Shared>,
-    trust: bool,
-    instruction: Option<String>,
+    make_handler: MakeHandler,
     budget: u64,
     seeds: Vec<i64>,
     caps: super::options::Caps,
@@ -219,11 +370,14 @@ struct Plan {
     prefetch_lead: u32,
     edition: Option<String>,
     trial_index_base: u64,
+    route: RouteSpec,
 }
 
 /// Where the driver dials, and what the run releases afterwards.
 struct Dial<'e> {
     address: String,
+    /// The v1 endpoint token a run's own loopback checks.
+    #[cfg(not(feature = "lockstep"))]
     token: String,
     loopback: Option<EnvServer>,
     /// A served env to shut down afterwards (`close_env` on an `EnvServer`).
@@ -249,10 +403,29 @@ async fn run_body(
     }
     let (port, mut queue) = caller_channel();
     let mut env = env.0;
-    let over_wire = matches!(env, EnvKind::Address(_));
+    let mut adapted = None;
+    let mut invite_at = None;
+    let mut over_wire = matches!(env, EnvKind::Address(_));
+    if let EnvKind::Adapted(adapter) = env {
+        let mut owned = crate::binding::model::OwnedTarget::new(adapter, plan.close_env);
+        let target = mode.call(|| {
+            owned.open(
+                plan.edition.as_deref(),
+                crate::binding::model::caller_port(port.clone()),
+            )
+        })?;
+        invite_at = target.invite_at;
+        over_wire = target.close_over_wire;
+        env = EnvKind::Address(target.address);
+        adapted = Some(owned);
+    }
+    if let EnvKind::Address(address) = &env {
+        super::options::check_address_close(address, plan.close_env && over_wire)?;
+    }
     let remote = match &env {
         EnvKind::Address(address) => Some(Dial {
             address: address.clone(),
+            #[cfg(not(feature = "lockstep"))]
             token: String::new(),
             loopback: None,
             shutdown: None,
@@ -261,14 +434,25 @@ async fn run_body(
             let server: &EnvServer = server;
             Some(Dial {
                 address: server.address().to_string(),
+                #[cfg(not(feature = "lockstep"))]
                 token: server.token().unwrap_or_default().to_string(),
                 loopback: None,
                 shutdown: None,
             })
         }
+        // An open client holds a session env's lease, which the run needs.
+        #[cfg(feature = "lockstep")]
+        EnvKind::Remote(handle) if crate::address::is_v2(handle.remote_address()) => {
+            return Err(Error::Type(
+                "run(RemoteEnv(address)) is gone in rlmesh 0.2: an open RemoteEnv holds its \
+                 env's lease, so close it and pass the address: run(address)"
+                    .into(),
+            ));
+        }
         // The native loop dials a caller's client's address itself.
         EnvKind::Remote(handle) => Some(Dial {
             address: handle.remote_address().to_string(),
+            #[cfg(not(feature = "lockstep"))]
             token: String::new(),
             loopback: None,
             shutdown: None,
@@ -312,6 +496,7 @@ async fn run_body(
             server.start()?;
             Dial {
                 address: server.address().to_string(),
+                #[cfg(not(feature = "lockstep"))]
                 token: server.token().unwrap_or_default().to_string(),
                 loopback: Some(server),
                 shutdown: None,
@@ -322,9 +507,12 @@ async fn run_body(
     let is_local = local.is_some();
     let run = LocalRun {
         address: dial.address.clone(),
+        #[cfg(not(feature = "lockstep"))]
         token: dial.token.clone(),
         episodes: plan.budget,
-        base_seed: None,
+        base_seed: plan.route.base_seed,
+        seed_key: plan.route.seed_key,
+        start: plan.route.start,
         seeds: plan.seeds,
         trial_index_base: Some(plan.trial_index_base),
         max_episode_steps: plan.caps.max_episode_steps,
@@ -334,25 +522,20 @@ async fn run_body(
         execution_horizon: plan.execution_horizon,
         prefetch_lead: plan.prefetch_lead,
         workflow_edition: plan.edition,
+        invite_at,
     };
     let runtime_hooks: Arc<dyn RuntimeHooks> = match &relay {
         Some(relay) => {
             relay.attach(port.clone());
             Arc::clone(relay) as Arc<dyn RuntimeHooks>
         }
-        None => Arc::new(rlmesh_runtime::NoopRuntimeHooks),
+        None => Arc::new(crate::run::runtime::NoopRuntimeHooks),
     };
-    let shared = Arc::clone(&plan.shared);
-    let trust = plan.trust;
     let connected = Arc::clone(&context);
     let adapter_context = context.clone();
+    let make_handler = plan.make_handler;
     let core = async move {
-        let mut handler = crate::model::bridge::engine_handler_configured(
-            shared,
-            trust,
-            plan.instruction,
-            Some(adapter_context),
-        );
+        let mut handler = make_handler(adapter_context);
         drive_local(&mut handler, run, driver, runtime_hooks, &move |contract| {
             if let Ok(contract) = crate::EnvContract::from_wire(contract) {
                 connected.connect(contract);
@@ -368,14 +551,16 @@ async fn run_body(
         .drive(core, &mut queue, &mut side)
         .await
         .map_err(|err| match err {
+            // v1's Join stream and a v2 session's lease refuse a second
+            // driver alike.
             Error::Runtime(message) | Error::Connection(message)
-                if message.contains("active Join session") =>
+                if message.contains("active Join session")
+                    || message.starts_with(crate::env::client::ENV_HELD) =>
             {
                 Error::Runtime(
-                    "the target env already has an active session: a RemoteEnv / \
-                     RemoteVectorEnv handle that was driven with reset()/step() holds the \
-                     env's single session slot. close() the handle (or its open session) \
-                     before run(), or drive it interactively via session()."
+                    "the target env already has an active session: another driver (an open \
+                     RemoteEnv / RemoteVectorEnv, or another run) holds the env's lease. \
+                     close() it before run()."
                         .to_string(),
                 )
             }
@@ -427,10 +612,18 @@ async fn run_body(
         };
         release = release.and(shut);
     }
+    if let Some(target) = &mut adapted {
+        release = release.and(mode.call(|| target.release()));
+    }
     let outcome = report.and_then(|report| {
         release.map(|()| {
             let mut result = results::from_report(&report);
-            result.advisories = context.advisories();
+            // An in-process spec'd model's resolve reports through the run's
+            // context; a served one's through the report.
+            let local = context.advisories();
+            if !local.is_empty() {
+                result.advisories = local;
+            }
             result
         })
     });
@@ -466,6 +659,25 @@ struct Episode {
     index: i64,
     seed: Option<i64>,
     steps: i64,
+    reward: f64,
+    started: std::time::Instant,
+    predict_ms: f64,
+    step_ms: f64,
+}
+
+/// The facade value of each lane of a group, encoded back into wire leaves.
+fn encode_lanes(
+    values: &[Value],
+    space: &rlmesh_proto::spaces::v1::SpaceSpec,
+) -> Result<Vec<rlmesh_grpc::wire::Bytes>> {
+    let space =
+        space_spec_from_proto(space.clone()).map_err(|err| Error::Protocol(err.to_string()))?;
+    let values = values
+        .iter()
+        .map(|value| space_codec::value_to_space(&space, value))
+        .collect::<Result<Vec<_>>>()?;
+    rlmesh_spaces::leaves::encode_leaf_slab(&values, &space)
+        .map_err(|err| Error::Protocol(err.to_string()))
 }
 
 /// One lane group's in-flight step: what it observed, then what it did.
@@ -480,6 +692,10 @@ struct RelayState {
     episodes: HashMap<String, Episode>,
     groups: HashMap<i32, Group>,
     results: Vec<EpisodeResult>,
+    /// A group's observation and action as the transforms decoded (and
+    /// maybe replaced) them, so the events after them do not decode again.
+    observed: HashMap<i32, Vec<Value>>,
+    acted: HashMap<i32, Vec<Value>>,
 }
 
 /// Turns the runtime's events into [`RunHooks`] calls on the caller: each is
@@ -491,6 +707,9 @@ pub(crate) struct HookRelay {
     error: Mutex<Option<Error>>,
     state: Mutex<RelayState>,
     context: Arc<LibraryContext>,
+    directive: Arc<Mutex<super::runtime::RunDirective>>,
+    /// The hooks' artifact writer, asked for at each session start.
+    artifacts: Mutex<Option<ArtifactTap>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -521,7 +740,27 @@ impl HookRelay {
             error: Mutex::new(None),
             state: Mutex::new(RelayState::default()),
             context,
+            directive: Arc::default(),
+            artifacts: Mutex::default(),
         }
+    }
+
+    /// Feed the hooks' artifact writer on the caller's thread. Recording is
+    /// best-effort: a failure warns and the run goes on.
+    async fn record(
+        &self,
+        feed: impl FnOnce(&mut EpisodeArtifacts) -> Result<()> + Send + 'static,
+    ) {
+        let Some(tap) = lock(&self.artifacts).clone() else {
+            return;
+        };
+        self.dispatch(move |_| {
+            if let Err(err) = feed(&mut lock(&tap)) {
+                crate::recorder::artifacts::warn(format!("recorder: {err}"));
+            }
+            Ok(())
+        })
+        .await;
     }
 
     fn attach(&self, port: CallerPort) {
@@ -543,26 +782,141 @@ impl HookRelay {
 
     /// Run `call` on the caller's hooks and wait for it.
     async fn dispatch(&self, call: impl FnOnce(&mut dyn RunHooks) -> Result<()> + Send + 'static) {
+        let _ = self.transform(call).await;
+    }
+
+    /// Run `call` on the caller's hooks and hand back its value, `None` when
+    /// there is no caller to run it; a failure is kept, cancels the run and
+    /// fails the route.
+    async fn transform<R: Send + 'static>(
+        &self,
+        call: impl FnOnce(&mut dyn RunHooks) -> Result<R> + Send + 'static,
+    ) -> std::result::Result<Option<R>, HookError> {
         if self.driver.is_cancelled() {
-            return;
+            return Ok(None);
         }
         let Some(port) = lock(&self.port).clone() else {
-            return;
+            return Ok(None);
         };
         let id = self.context.id;
-        let result = port.call(move |side| side.hook(id, call).map(|_| ())).await;
-        if let Err(err) = result {
-            self.fail(err);
+        port.call(move |side| side.hook(id, call))
+            .await
+            .map_err(|err| self.fatal(err))
+    }
+
+    /// Keep `err` as the run's error, cancel the run, and fail the route.
+    fn fatal(&self, err: Error) -> HookError {
+        let message = err.to_string();
+        self.fail(err);
+        HookError::Message(message)
+    }
+
+    /// Each lane's `(episode, steps taken)`; `None` for a lane outside any
+    /// scored episode.
+    fn lanes(&self, episode_ids: &[String]) -> Vec<Option<(i64, i64)>> {
+        let state = lock(&self.state);
+        episode_ids
+            .iter()
+            .map(|id| state.episodes.get(id).map(|e| (e.index, e.steps)))
+            .collect()
+    }
+
+    /// Run a lane transform (`transform_observation` or `transform_action`)
+    /// over a group's leaves, decoded per lane: the lanes, transformed where
+    /// a hook replaced them, and the re-encoded leaves when one did. `None`
+    /// when no caller ran it.
+    async fn transform_lanes(
+        &self,
+        episode_ids: &[String],
+        leaves: &[rlmesh_grpc::wire::Bytes],
+        space: &rlmesh_proto::spaces::v1::SpaceSpec,
+        call: fn(&mut dyn RunHooks, i64, i64, &Value) -> Result<Option<Value>>,
+    ) -> std::result::Result<Option<(Vec<Value>, Option<Vec<rlmesh_grpc::wire::Bytes>>)>, HookError>
+    {
+        let values = decode_lanes(leaves.to_vec(), space, episode_ids.len())
+            .map_err(|err| self.fatal(err))?;
+        let lanes = self.lanes(episode_ids);
+        if lanes.iter().all(Option::is_none) {
+            return Ok(Some((values, None)));
         }
+        let out = self
+            .transform(move |hooks| {
+                let mut changed = false;
+                let mut values = values;
+                for (value, lane) in values.iter_mut().zip(lanes) {
+                    let Some((episode, step)) = lane else {
+                        continue;
+                    };
+                    if let Some(replaced) = call(hooks, episode, step, value)? {
+                        *value = replaced;
+                        changed = true;
+                    }
+                }
+                Ok((values, changed))
+            })
+            .await?;
+        let Some((values, changed)) = out else {
+            return Ok(None);
+        };
+        let leaves = changed
+            .then(|| encode_lanes(&values, space))
+            .transpose()
+            .map_err(|err| self.fatal(err))?;
+        Ok(Some((values, leaves)))
     }
 }
 
 #[async_trait]
 impl RuntimeHooks for HookRelay {
+    fn directive(&self) -> super::runtime::RunDirective {
+        let mut directive = lock(&self.directive);
+        match *directive {
+            super::runtime::RunDirective::EndEpisode => std::mem::take(&mut *directive),
+            held => held,
+        }
+    }
+
+    async fn session_started(
+        &self,
+        event: SessionStartedEvent,
+    ) -> std::result::Result<(), HookError> {
+        let tap = self.transform(|hooks| Ok(hooks.artifacts())).await?;
+        *lock(&self.artifacts) = tap.flatten();
+        self.record(move |artifacts| artifacts.session_started(&event))
+            .await;
+        Ok(())
+    }
+
+    async fn session_failed(
+        &self,
+        _event: SessionFailedEvent,
+    ) -> std::result::Result<(), HookError> {
+        self.record(|artifacts| {
+            artifacts.abandon();
+            Ok(())
+        })
+        .await;
+        Ok(())
+    }
+
+    async fn on_telemetry(
+        &self,
+        event: TelemetrySnapshotEvent,
+    ) -> std::result::Result<(), HookError> {
+        self.record(move |artifacts| artifacts.telemetry(&event))
+            .await;
+        Ok(())
+    }
+
     async fn episode_started(
         &self,
         event: EpisodeStartedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.episode_started(&recorded))
+                .await;
+        }
         let index = event.episode_index - 1;
         lock(&self.state).episodes.insert(
             event.episode_id,
@@ -570,6 +924,10 @@ impl RuntimeHooks for HookRelay {
                 index,
                 seed: event.seed,
                 steps: 0,
+                reward: 0.0,
+                started: std::time::Instant::now(),
+                predict_ms: 0.0,
+                step_ms: 0.0,
             },
         );
         let seed = event.seed;
@@ -582,11 +940,68 @@ impl RuntimeHooks for HookRelay {
         &self,
         event: ObservationEmittedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.observation(&recorded))
+                .await;
+        }
         let Some(leaves) = event.observation else {
             return Ok(());
         };
-        match decode_lanes(leaves, &event.observation_space, event.episode_ids.len()) {
+        let observed = lock(&self.state).observed.remove(&event.env_index);
+        let decoded = match observed {
+            Some(observations) => Ok(observations),
+            None => decode_lanes(leaves, &event.observation_space, event.episode_ids.len()),
+        };
+        match decoded {
             Ok(observations) => {
+                let frame = {
+                    let state = lock(&self.state);
+                    event
+                        .episode_ids
+                        .first()
+                        .and_then(|id| state.episodes.get(id))
+                        .zip(observations.first())
+                        .map(|(episode, observation)| {
+                            (
+                                observation.clone(),
+                                episode.index,
+                                episode.seed,
+                                episode.steps,
+                                episode.reward,
+                                episode.predict_ms,
+                                episode.step_ms,
+                                episode.started.elapsed().as_secs_f64(),
+                            )
+                        })
+                };
+                if let Some((
+                    observation,
+                    episode,
+                    seed,
+                    steps,
+                    reward,
+                    predict_ms,
+                    step_ms,
+                    elapsed_s,
+                )) = frame
+                {
+                    let context = self.context.clone();
+                    self.dispatch(move |_hooks| {
+                        context.frame(&super::RunFrame {
+                            observation: &observation,
+                            episode,
+                            seed,
+                            steps,
+                            reward,
+                            outcome: None,
+                            predict_ms,
+                            step_ms,
+                            elapsed_s,
+                        })
+                    })
+                    .await;
+                }
                 lock(&self.state).groups.insert(
                     event.env_index,
                     Group {
@@ -601,14 +1016,66 @@ impl RuntimeHooks for HookRelay {
         Ok(())
     }
 
+    async fn transform_observation(
+        &self,
+        event: &ObservationEmittedEvent,
+    ) -> std::result::Result<Option<Vec<rlmesh_grpc::wire::Bytes>>, HookError> {
+        let Some(leaves) = &event.observation else {
+            return Ok(None);
+        };
+        let out = self
+            .transform_lanes(
+                &event.episode_ids,
+                leaves,
+                &event.observation_space,
+                |hooks, episode, step, value| hooks.transform_observation(episode, step, value),
+            )
+            .await?;
+        Ok(out.and_then(|(values, leaves)| {
+            lock(&self.state).observed.insert(event.env_index, values);
+            leaves
+        }))
+    }
+
+    async fn transform_action(
+        &self,
+        event: &ActionReceivedEvent,
+    ) -> std::result::Result<Option<Vec<rlmesh_grpc::wire::Bytes>>, HookError> {
+        let Some(leaves) = &event.action else {
+            return Ok(None);
+        };
+        let out = self
+            .transform_lanes(
+                &event.episode_ids,
+                leaves,
+                &event.action_space,
+                |hooks, episode, step, value| hooks.transform_action(episode, step, value),
+            )
+            .await?;
+        Ok(out.and_then(|(values, leaves)| {
+            lock(&self.state).acted.insert(event.env_index, values);
+            leaves
+        }))
+    }
+
     async fn action_received(
         &self,
         event: ActionReceivedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.action(&recorded))
+                .await;
+        }
         let Some(leaves) = event.action else {
             return Ok(());
         };
-        match decode_lanes(leaves, &event.action_space, event.episode_ids.len()) {
+        let acted = lock(&self.state).acted.remove(&event.env_index);
+        let decoded = match acted {
+            Some(actions) => Ok(actions),
+            None => decode_lanes(leaves, &event.action_space, event.episode_ids.len()),
+        };
+        match decoded {
             Ok(actions) => {
                 if let Some(group) = lock(&self.state).groups.get_mut(&event.env_index) {
                     group.actions = Some(actions);
@@ -623,6 +1090,11 @@ impl RuntimeHooks for HookRelay {
         &self,
         event: StepCompletedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.step(&recorded))
+                .await;
+        }
         let info = event
             .infos
             .map(|infos| meta_codec::metadata_from_wire(meta_map_from_proto(infos)))
@@ -672,10 +1144,24 @@ impl RuntimeHooks for HookRelay {
                     step_ms: event.step_ms,
                 });
                 episode.steps += 1;
+                episode.reward += event.rewards.get(lane).copied().unwrap_or_default();
+                episode.predict_ms = event.predict_ms;
+                episode.step_ms = event.step_ms;
             }
         }
         for step in events {
-            self.dispatch(move |hooks| hooks.on_step(&step)).await;
+            let directive = self.directive.clone();
+            let context = self.context.clone();
+            self.dispatch(move |hooks| {
+                hooks.on_step(&step)?;
+                let asked = context.directive()?;
+                let mut current = lock(&directive);
+                if *current != super::runtime::RunDirective::Stop {
+                    *current = asked;
+                }
+                Ok(())
+            })
+            .await;
         }
         Ok(())
     }
@@ -684,6 +1170,11 @@ impl RuntimeHooks for HookRelay {
         &self,
         event: EpisodeCompletedEvent,
     ) -> std::result::Result<(), HookError> {
+        if lock(&self.artifacts).is_some() {
+            let recorded = event.clone();
+            self.record(move |artifacts| artifacts.episode_completed(&recorded))
+                .await;
+        }
         let result = EpisodeResult {
             index: event.episode_index - 1,
             seed: event.seed,

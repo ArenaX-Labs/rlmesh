@@ -34,24 +34,40 @@ cli = ["dep:rlmesh-cli"]
 stub-gen = ["dep:pyo3-stub-gen"]
 
 [dependencies]
-rlmesh = { workspace = true }
+# No `managed`: the package has its own platform client (`rlmesh.managed`);
+# the bundled CLI (feature `cli`) brings it in for itself.
+rlmesh = { workspace = true, default-features = false, features = ["lockstep", "viewer"] }
 rlmesh-adapters = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-proto = { workspace = true }
-rlmesh-sandbox = { workspace = true }
+rlmesh-session = { workspace = true, features = ["record"] }
 rlmesh-spaces = { workspace = true }
-rlmesh-viewer = { workspace = true }
 
+anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+# The Docker sandbox (`sandbox`): image hashes, build contexts, container ids.
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
 tokio-stream = { workspace = true, features = ["net"] }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { workspace = true, features = ["v4"] }
 
 image = { workspace = true, features = ["png", "jpeg"] }
 pyo3 = { workspace = true, features = [

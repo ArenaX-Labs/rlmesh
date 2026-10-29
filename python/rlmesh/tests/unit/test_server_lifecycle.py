@@ -7,20 +7,16 @@ and a model still serving is closed from an ``atexit`` hook.
 The exit paths are exercised in a child process: a negative ``returncode`` is a
 signal death (SIGABRT/SIGSEGV), which is exactly the failure being guarded.
 
-Also covers the neighbouring lifecycle contracts: ``wait()`` is interruptible,
-the unix bind path never deletes a file it cannot prove is a dead socket, and a
-non-finite serve timeout raises instead of panicking.
+Also covers the neighbouring lifecycle contracts: ``wait()`` is interruptible
+and a non-finite serve timeout raises instead of panicking.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +76,7 @@ def _run_child(tmp_path: Path, body: str) -> subprocess.CompletedProcess[str]:
 def test_a_held_server_exits_cleanly(tmp_path: Path) -> None:
     result = _run_child(
         tmp_path,
-        'server = rlmesh.EnvServer(TinyEnv(), "127.0.0.1:0")\nprint(server.address)\n',
+        'server = rlmesh.EnvServer(TinyEnv(), ":0/env")\nprint(server.address)\n',
     )
 
     assert result.returncode == 0, result.stderr
@@ -91,7 +87,7 @@ def test_a_started_server_that_is_never_shut_down_exits_cleanly(
 ) -> None:
     result = _run_child(
         tmp_path,
-        'server = rlmesh.EnvServer(TinyEnv(), "127.0.0.1:0")\nserver.start()\n',
+        'server = rlmesh.EnvServer(TinyEnv(), ":0/env")\nserver.start()\n',
     )
 
     # The finalizer shuts the background server down and joins it while the
@@ -103,7 +99,7 @@ def test_a_started_server_that_is_never_shut_down_exits_cleanly(
 def test_an_explicitly_stopped_server_exits_cleanly(tmp_path: Path) -> None:
     result = _run_child(
         tmp_path,
-        'server = rlmesh.EnvServer(TinyEnv(), "127.0.0.1:0")\n'
+        'server = rlmesh.EnvServer(TinyEnv(), ":0/env")\n'
         "server.start()\n"
         "server.shutdown()\n",
     )
@@ -111,26 +107,21 @@ def test_an_explicitly_stopped_server_exits_cleanly(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(os.name != "posix", reason="unix sockets are POSIX-only")
 def test_a_model_still_serving_at_exit_is_closed_before_finalization(
-    tmp_path: Path, socket_dir: Path
+    tmp_path: Path, session_port: int
 ) -> None:
-    path = socket_dir / "model.sock"
     result = _run_child(
         tmp_path,
-        "import os, threading, time\n"
-        f"address = 'unix://{path}'\n"
+        "import threading\n"
+        f"session = '127.0.0.1:{session_port}'\n"
         "model = rlmesh.Model(\n"
         "    lambda observation: 0,\n"
         "    on_close=lambda: print('MODEL_CLOSED', flush=True),\n"
         ")\n"
-        "threading.Thread(target=model.serve, args=(address,), daemon=True).start()\n"
-        f"while not os.path.exists({str(path)!r}):\n"
-        "    time.sleep(0.01)\n"
-        "rlmesh.run(rlmesh.RemoteModel(address), TinyEnv(), episodes=2,"
-        " max_episode_steps=5)\n"
-        "session = rlmesh.RemoteModel(address).session(TinyEnv())\n"
-        "session.reset()\n",
+        "threading.Thread(\n"
+        "    target=model.serve, args=(session,), kwargs={'name': 'm'}, daemon=True\n"
+        ").start()\n"
+        "rlmesh.Model(f'{session}/m').run(TinyEnv(), episodes=2, max_episode_steps=5)\n",
     )
 
     # The serve's daemon thread polled and answered from native threads; the
@@ -145,8 +136,7 @@ def test_a_script_that_raises_while_holding_a_server_reports_the_error(
 ) -> None:
     result = _run_child(
         tmp_path,
-        'server = rlmesh.EnvServer(TinyEnv(), "127.0.0.1:0")\n'
-        'raise RuntimeError("boom")\n',
+        'server = rlmesh.EnvServer(TinyEnv(), ":0/env")\nraise RuntimeError("boom")\n',
     )
 
     # The real traceback and exit 1, not a signal death on top of it.
@@ -159,7 +149,7 @@ def test_ctrl_c_interrupts_wait_and_the_env_still_closes(tmp_path: Path) -> None
     result = _run_child(
         tmp_path,
         "import os, signal, threading\n"
-        'server = rlmesh.EnvServer(TinyEnv(), "127.0.0.1:0")\n'
+        'server = rlmesh.EnvServer(TinyEnv(), ":0/env")\n'
         "server.start()\n"
         "threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGINT)).start()\n"
         "try:\n"
@@ -217,7 +207,7 @@ def test_serve_keeps_the_env_on_the_calling_thread(
 ) -> None:
     result = _run_child(
         tmp_path,
-        _THREAD_ENVS + f"server = rlmesh.EnvServer({env}(), '127.0.0.1:0')\n"
+        _THREAD_ENVS + f"server = rlmesh.EnvServer({env}(), ':0/env')\n"
         "def drive():\n"
         f"    handle = {client}(server.address)\n"
         "    handle.reset()\n"
@@ -245,7 +235,7 @@ def test_ctrl_c_stops_every_foreground_serve_and_the_env_still_closes(
         tmp_path,
         "import os, signal, threading\n"
         "for _ in range(2):\n"
-        '    server = rlmesh.EnvServer(TinyEnv(), "127.0.0.1:0")\n'
+        '    server = rlmesh.EnvServer(TinyEnv(), ":0/env")\n'
         "    threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGINT)).start()\n"
         "    try:\n"
         "        server.serve()\n"
@@ -276,7 +266,7 @@ def test_a_second_ctrl_c_interrupts_an_env_call_that_never_returns(
         '        print("CLOSE_CALLED", flush=True)\n'
         "        time.sleep(60)\n"
         "server = rlmesh.EnvServer(\n"
-        '    WedgedEnv(), "127.0.0.1:0",\n'
+        '    WedgedEnv(), ":0/env",\n'
         "    options=rlmesh.ServeOptions(close_timeout_seconds=0.1),\n"
         ")\n"
         "threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGINT)).start()\n"
@@ -300,63 +290,12 @@ def test_a_second_ctrl_c_interrupts_an_env_call_that_never_returns(
 
 
 def test_shutdown_detaches_the_finalizer() -> None:
-    server = rlmesh.EnvServer(TinyEnv(), "127.0.0.1:0")
+    server = rlmesh.EnvServer(TinyEnv(), ":0/env")
     assert server._finalizer.alive
 
     server.shutdown()
 
     assert not server._finalizer.alive
-
-
-@pytest.fixture
-def socket_dir(tmp_path: Path) -> Iterator[Path]:
-    """A directory short enough for an AF_UNIX path (108 bytes on Linux).
-
-    pytest's ``tmp_path`` follows ``TMPDIR`` and can exceed that budget.
-    """
-    if len(str(tmp_path)) < 80:
-        yield tmp_path
-        return
-    short = Path(tempfile.mkdtemp(prefix="rlm-", dir="/tmp"))
-    yield short
-    shutil.rmtree(short, ignore_errors=True)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="unix sockets are POSIX-only")
-def test_binding_over_a_live_unix_socket_is_refused(socket_dir: Path) -> None:
-    path = socket_dir / "live.sock"
-    live = rlmesh.EnvServer(TinyEnv(), f"unix://{path}")
-    live.start()
-    try:
-        with pytest.raises(ConnectionError, match="already"):
-            rlmesh.EnvServer(TinyEnv(), f"unix://{path}")
-    finally:
-        live.shutdown()
-
-
-@pytest.mark.skipif(os.name != "posix", reason="unix sockets are POSIX-only")
-def test_a_non_socket_file_is_left_in_place(tmp_path: Path) -> None:
-    path = tmp_path / "notes.txt"
-    path.write_text("precious")
-
-    with pytest.raises(ConnectionError):
-        rlmesh.EnvServer(TinyEnv(), f"unix://{path}")
-
-    assert path.read_text() == "precious"
-
-
-@pytest.mark.skipif(os.name != "posix", reason="unix sockets are POSIX-only")
-def test_a_stale_socket_is_reclaimed(socket_dir: Path) -> None:
-    path = socket_dir / "stale.sock"
-    leftover = socket.socket(socket.AF_UNIX)
-    leftover.bind(str(path))
-    leftover.close()
-
-    server = rlmesh.EnvServer(TinyEnv(), f"unix://{path}")
-    try:
-        assert server.address == f"unix://{path}"
-    finally:
-        server.shutdown()
 
 
 @pytest.mark.parametrize("value", [float("inf"), float("nan")])
@@ -377,3 +316,13 @@ def test_serve_cli_reports_a_clean_stop_on_ctrl_c(
     # Ctrl-C is how an operator stops a served container: the conventional
     # interrupted status, not a traceback.
     assert serve_cli.main(["--env", "pkg.module:make_env"]) == 130
+
+
+def test_shutting_down_an_unstarted_lockstep_server_stops_its_session_host() -> None:
+    server = rlmesh.EnvServer(TinyEnv(), ":0/env")
+    # The address is host:port#key/env: the key is the session's invite.
+    host, port = server.address.split("#")[0].rsplit(":", 1)
+    socket.create_connection((host, int(port)), timeout=5).close()
+    server.shutdown()
+    with pytest.raises(OSError):
+        socket.create_connection((host, int(port)), timeout=5).close()

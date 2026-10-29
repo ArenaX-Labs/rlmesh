@@ -1,0 +1,109 @@
+[package]
+name = "rlmesh-session"
+description = "Internal RLMesh crate (unstable Rust API): real-time sessions (protocol v2) on Zenoh: the session host, participants, clock offsets and per-class transport."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = true
+
+[[bin]]
+name = "rlmesh-gateway"
+path = "src/bin/rlmesh-gateway.rs"
+required-features = ["gateway"]
+
+[dependencies]
+# The browser gateway (feature `gateway`): WebSockets, static files with
+# COOP/COEP, TLS on the ring provider and the per-browser token.
+axum = { workspace = true, features = ["ws"], optional = true }
+blake3 = { workspace = true, optional = true }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"], optional = true }
+# JPEG camera channels: encode with jpeg-encoder, decode with image's
+# zune-jpeg (the workspace's existing pair, as in rlmesh-adapters).
+image = { workspace = true, features = ["jpeg"] }
+jpeg-encoder = { workspace = true }
+# Where an embedded host leaves its address key for local joiners, and
+# where recordings go by default.
+dirs = { workspace = true }
+futures = { workspace = true, optional = true }
+# rlmeshd's mDNS advertisement, and finding a paired host by its id.
+mdns-sd = { workspace = true }
+# Session recordings (§13), feature `record`.
+mcap = { workspace = true, optional = true }
+# The OS RNG: host keys and handshake ephemerals.
+rand = { workspace = true }
+# The sans-IO core (the wire, the spec, authority, clock offsets, input
+# cache, schedule, virtual clock, stream rules), re-exported unchanged.
+rlmesh-session-core = { workspace = true }
+rustls = { workspace = true, optional = true }
+# A scene's canonical form, for its fingerprint (`scene`).
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# A paired machine's host files (`~/.config/rlmesh/hosts/{host id}.toml`).
+toml = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-rustls = { workspace = true, optional = true }
+tokio-util = { workspace = true }
+tower-http = { workspace = true, features = ["fs", "set-header"], optional = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"], optional = true }
+# One Zenoh session per traffic class: no `transport_multilink` (it pulls
+# `rsa`, RUSTSEC-2023-0071) and no pubkey auth (also `rsa`). `unstable` is
+# for per-publisher reliability, the only way Zenoh 1.10 sets it (§10.2).
+# `auth_usrpwd`: the loopback link gate (design §5).
+zenoh = { workspace = true, features = [
+  "auth_usrpwd",
+  "transport_tcp",
+  "transport_unixsock-stream",
+  "unstable",
+] }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+# Gateway handshake tests: a throwaway certificate.
+rcgen = { workspace = true }
+# The browser binding's frame tags, checked against the gateway's.
+# Path only: a dev-dependency packaging strips (the wasm crate is unpublished).
+rlmesh-wasm = { path = "../../javascript/rlmesh/wasm" }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+[features]
+# The library's optional parts are on for the crate itself (its binaries
+# and tests); the workspace dependency turns them off, so a binding opts in
+# to what it ships.
+default = ["gateway", "record"]
+# The browser gateway (`gateway`, bin `rlmesh-gateway`): one WebSocket per
+# traffic class, each browser a session participant.
+gateway = [
+  "dep:axum",
+  "dep:blake3",
+  "dep:clap",
+  "dep:futures",
+  "dep:rustls",
+  "dep:tokio-rustls",
+  "dep:tower-http",
+  "dep:tracing-subscriber",
+  "tokio/net",
+]
+# MCAP recording of a session (`record`).
+record = ["dep:mcap"]
+# QUIC links (one stream per Zenoh priority, so one connection can carry
+# every class across NAT); needs TLS certificates.
+quic = ["zenoh/transport_quic"]
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[lints]
+workspace = true

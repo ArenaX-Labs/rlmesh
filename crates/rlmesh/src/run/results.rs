@@ -132,7 +132,85 @@ pub struct RunResult {
     pub advisories: Vec<crate::adapters::Advisory>,
 }
 
+/// Options for [`RunResult::save`]: the labels of the one workload it writes.
+#[derive(Clone, Debug)]
+pub struct RunResultSaveOptions {
+    /// The model label (default `"model"`).
+    pub model: String,
+    /// The env label (default `"env"`).
+    pub env: String,
+    /// Caller metadata recorded beside the workload.
+    pub config: Option<crate::Metadata>,
+}
+
+impl Default for RunResultSaveOptions {
+    fn default() -> Self {
+        Self {
+            model: "model".to_string(),
+            env: "env".to_string(),
+            config: None,
+        }
+    }
+}
+
+/// The success rate, by the managed platform's rule: successes over counted
+/// episodes, an episode whose env reported no outcome (`unknown`) counting as
+/// a failure. `None` when no episode reported an outcome, so an env without
+/// the signal reads as unknown rather than 0%. Errored episodes are not
+/// counted at all (`includedInMetrics: false`); truncated ones are, as
+/// failures unless the env reported a success.
+pub(crate) fn success_rate(successes: u64, unknown: u64, episodes: u64) -> Option<f64> {
+    (unknown < episodes).then(|| successes as f64 / episodes as f64)
+}
+
+/// [`success_rate`] over per-episode outcomes.
+pub(crate) fn success_rate_of(outcomes: impl IntoIterator<Item = Option<bool>>) -> Option<f64> {
+    let (mut successes, mut unknown, mut episodes) = (0, 0, 0);
+    for outcome in outcomes {
+        episodes += 1;
+        successes += u64::from(outcome == Some(true));
+        unknown += u64::from(outcome.is_none());
+    }
+    success_rate(successes, unknown, episodes)
+}
+
 impl RunResult {
+    /// Write this result as an `rlmesh.result.v1` bundle and return its path:
+    /// one workload of `options.model` on `options.env`, a folder, or a zip
+    /// when `path` ends `.zip`. The bundle keeps each episode's outcome, not
+    /// its trial ordinal or latency; the run's telemetry rows are kept beside
+    /// the workload.
+    pub fn save(
+        &self,
+        path: impl AsRef<std::path::Path>,
+        options: RunResultSaveOptions,
+    ) -> Result<std::path::PathBuf> {
+        let mut recorder = crate::recorder::Recorder::new(Default::default())?;
+        recorder.add(
+            self,
+            &options.model,
+            &options.env,
+            crate::recorder::RecorderAddOptions {
+                config: options.config,
+                ..Default::default()
+            },
+        )?;
+        let written = recorder.export_(path, Default::default());
+        recorder.close()?;
+        written
+    }
+
+    /// The result the `rlmesh.result.v1` bundle at `path` holds: a bundle
+    /// (folder or zip) of one or several workloads, or a folder of bundles
+    /// read in name order. The workloads' counted episodes come back in
+    /// order with the fields the bundle keeps, indexed afresh from 0 (one
+    /// left out of the metrics, `includedInMetrics: false`, is dropped), and their
+    /// telemetry merged per series (counts add; `avg` and percentiles are
+    /// count-weighted means). Workloads of several models are refused.
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<RunResult> {
+        super::report::merge(&super::report::read_bundles([path])?)
+    }
+
     /// Number of episodes in this result.
     pub fn num_episodes(&self) -> usize {
         self.episodes.len()
@@ -155,18 +233,11 @@ impl RunResult {
             / self.episodes.len() as f64
     }
 
-    /// The fraction of episodes the env reported a success, or `None` when
-    /// the run is empty or any episode lacks the signal.
+    /// The fraction of episodes the env reported a success, by the managed
+    /// platform's rule: an episode without the signal counts as a failure,
+    /// and the rate is `None` when no episode reported one.
     pub fn success_rate(&self) -> Option<f64> {
-        if self.episodes.is_empty() || self.episodes.iter().any(|e| e.success.is_none()) {
-            return None;
-        }
-        let successes = self
-            .episodes
-            .iter()
-            .filter(|episode| episode.success == Some(true))
-            .count();
-        Some(successes as f64 / self.episodes.len() as f64)
+        success_rate_of(self.episodes.iter().map(|e| e.success))
     }
 
     /// The telemetry rows as an aligned text table.
@@ -295,7 +366,7 @@ impl fmt::Display for StepEvent {
 }
 
 /// The facade result of a native run's report (0-based index, seconds).
-pub(crate) fn from_report(report: &rlmesh_runtime::RuntimeReport) -> RunResult {
+pub(crate) fn from_report(report: &crate::run::runtime::RuntimeReport) -> RunResult {
     RunResult {
         advisories: report
             .advisories
@@ -309,7 +380,7 @@ pub(crate) fn from_report(report: &rlmesh_runtime::RuntimeReport) -> RunResult {
 }
 
 pub(crate) fn episode_from_summary(
-    episode: &rlmesh_runtime::spec::EpisodeSummary,
+    episode: &crate::run::runtime::spec::EpisodeSummary,
 ) -> EpisodeResult {
     EpisodeResult {
         index: episode.episode_index - 1,
@@ -327,8 +398,10 @@ pub(crate) fn episode_from_summary(
 }
 
 /// One row per `(op, component, metric)` of a telemetry snapshot.
-pub(crate) fn telemetry_rows(snapshot: &rlmesh_runtime::telemetry::Snapshot) -> Vec<TelemetryRow> {
-    use rlmesh_runtime::telemetry::Kind;
+pub(crate) fn telemetry_rows(
+    snapshot: &crate::run::runtime::telemetry::Snapshot,
+) -> Vec<TelemetryRow> {
+    use crate::run::runtime::telemetry::Kind;
     snapshot
         .rows
         .iter()

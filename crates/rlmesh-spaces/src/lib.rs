@@ -8,6 +8,9 @@
 //! [`flatten_leaves`]/[`assemble_value`] move between a composite value and its
 //! ordered fundamental leaves.
 //!
+//! [`leaves`] is the thin-bytes value codec: each fundamental leaf as raw
+//! little-endian bytes, one value or a lane slab at a time.
+//!
 //! Tensor payloads use [`Tensor`], an immutable n-dimensional view over shared
 //! [`Storage`] with DLPack-compatible dtype, shape, and strides. [`dlpack_type`]
 //! maps the [`DType`] table to and from DLPack data-type codes for zero-copy
@@ -24,6 +27,7 @@ pub mod errors;
 pub mod advisory;
 mod display;
 pub mod dtype;
+pub mod leaves;
 pub mod meta;
 pub mod render;
 pub mod request;

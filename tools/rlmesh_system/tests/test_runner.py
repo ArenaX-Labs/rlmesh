@@ -10,7 +10,6 @@ from rlmesh_system.support import manifest
 from rlmesh_system.support.command import CommandError, run_command
 from rlmesh_system.support.manifest import (
     EnvironmentSpec,
-    ScenarioSpec,
     filter_scenarios,
     load_specs,
     select_environments,
@@ -25,7 +24,6 @@ def test_profiles_keep_system_surface_explicit() -> None:
 
     assert set(spec.profiles) == {
         "basic",
-        "compatibility",
         "gymnasium",
         "heavy",
         "mujoco",
@@ -36,7 +34,6 @@ def test_profiles_keep_system_surface_explicit() -> None:
     assert set(spec.environments) == {
         "basic-py310",
         "basic-py311",
-        "crossver-py311",
         "gymnasium-py311",
         "mujoco-py311",
         "perf-jax-py311",
@@ -46,8 +43,6 @@ def test_profiles_keep_system_surface_explicit() -> None:
     }
     assert spec.scenarios["counter-entrypoint"].kind == "trace"
     assert spec.scenarios["tensor-numpy-view"].kind == "artifact"
-    assert spec.profiles["compatibility"].environments == ("crossver-py311",)
-    assert spec.scenarios["crossver-matrix"].kind == "external"
 
 
 def test_select_environments_defaults_to_basic() -> None:
@@ -210,51 +205,6 @@ def test_run_command_times_out(tmp_path: Path) -> None:
 
     assert exc_info.value.returncode == 124
     assert "command timed out after 0.2s" in log_path.read_text()
-
-
-def test_missing_external_command_fails_before_running(tmp_path: Path) -> None:
-    scenario = ScenarioSpec(
-        name="external-sim",
-        kind="external",
-        description="external",
-        env={},
-        model=None,
-        client="numpy",
-        seed=None,
-        steps=1,
-        trace=None,
-        artifact=None,
-        command_env="RLMESH_TEST_MISSING_COMMAND",
-        timeout_seconds=None,
-        metadata={},
-    )
-    environment = EnvironmentSpec(
-        name="external-py311",
-        python="3.11",
-        dependencies=(),
-        dependency_args=(),
-        env={},
-        tier="external",
-        scenarios=("external-sim",),
-        warmups=1,
-        samples=1,
-        processes=1,
-        timeout_seconds=1,
-        rlmesh={},
-    )
-
-    with pytest.raises(CommandError) as exc_info:
-        runner.run_external_scenario(
-            environment,
-            scenario,
-            {},
-            tmp_path,
-            verbose=False,
-            renderer=_Renderer(),
-        )
-
-    assert exc_info.value.returncode == 2
-    assert "requires RLMESH_TEST_MISSING_COMMAND" in exc_info.value.output
 
 
 def test_dry_run_does_not_require_wheels(

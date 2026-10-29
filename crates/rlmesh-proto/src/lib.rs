@@ -110,6 +110,9 @@ const fn edition_at(bytes: &'static [u8], start: usize, end: usize) -> &'static 
 pub enum Edition {
     /// `2026.06`, sealed at v0.1.0. Contract: `docs/editions/2026.06.md`.
     E2026_06,
+    /// `2026.10`, provisional until v0.2.0 seals it. Contract:
+    /// `docs/editions/2026.10.md`.
+    E2026_10,
 }
 
 impl Edition {
@@ -120,12 +123,13 @@ impl Edition {
     /// a new arm does not compile until it is named there, and the test fails
     /// unless every name this build offers ([`SUPPORTED_WORKFLOW_EDITIONS`]) and
     /// every arm's own base resolve through this list.
-    const ALL: &'static [Edition] = &[Edition::E2026_06];
+    const ALL: &'static [Edition] = &[Edition::E2026_06, Edition::E2026_10];
 
     /// The bare `YYYY.MM` base this edition's contract document is keyed by.
     pub const fn base(&self) -> &'static str {
         match self {
             Edition::E2026_06 => "2026.06",
+            Edition::E2026_10 => "2026.10",
         }
     }
 
@@ -194,7 +198,9 @@ impl std::error::Error for UnknownEdition {}
 pub struct EditionDefaults {
     /// Per-episode step bound applied when the session sets no explicit
     /// `max_episode_steps` and the runtime owns resets, so a broken termination
-    /// condition surfaces as a truncation instead of hanging the run.
+    /// condition surfaces as a truncation instead of hanging the run. Under
+    /// env-owned resets (`NEXT_STEP`) the runtime cannot truncate a lane, so an
+    /// episode the env has not ended by this bound fails the run instead.
     ///
     /// Not named in the prose of `docs/editions/2026.06.md`, but observable in
     /// the episode ledger the edition's "Episode Accounting" section governs
@@ -263,6 +269,19 @@ static DEFAULTS_2026_06: EditionDefaults = EditionDefaults {
     conformance_warning_info_key: "rlmesh.conformance.warning",
 };
 
+/// Edition `2026.10`: the same defaults as `2026.06`. Frozen once v0.2.0 seals
+/// the edition.
+static DEFAULTS_2026_10: EditionDefaults = EditionDefaults {
+    default_max_episode_steps: 100_000,
+    trial_index_option_key: "trial_index",
+    driver_owned_reset_modes: &[
+        core::v1::AutoresetMode::Disabled,
+        core::v1::AutoresetMode::Unspecified,
+    ],
+    success_info_keys: &["is_success", "success", "task_success"],
+    conformance_warning_info_key: "rlmesh.conformance.warning",
+};
+
 /// The defaults row governing a session running at `edition`.
 ///
 /// Exhaustive by construction: a new [`Edition`] arm does not compile until it
@@ -270,6 +289,7 @@ static DEFAULTS_2026_06: EditionDefaults = EditionDefaults {
 pub const fn defaults(edition: Edition) -> &'static EditionDefaults {
     match edition {
         Edition::E2026_06 => &DEFAULTS_2026_06,
+        Edition::E2026_10 => &DEFAULTS_2026_10,
     }
 }
 
@@ -1845,6 +1865,9 @@ mod tests {
             match edition {
                 Edition::E2026_06 => {
                     assert!(Edition::ALL.contains(&Edition::E2026_06));
+                }
+                Edition::E2026_10 => {
+                    assert!(Edition::ALL.contains(&Edition::E2026_10));
                 }
             }
             let row = defaults(*edition);

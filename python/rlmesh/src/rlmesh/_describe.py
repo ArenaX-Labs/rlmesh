@@ -210,6 +210,10 @@ def _gather(
         native_chunk = _declared_native_chunk(obj, corners)
         if native_chunk is not None:
             pieces["native_chunk"] = native_chunk
+        built = obj if spec_of is None else spec_of
+        loaded = getattr(built, "_loaded_execution_horizon", None)
+        if loaded is not None:
+            pieces["execution_horizon"] = loaded
     return pieces
 
 

@@ -2,7 +2,9 @@ name: CI
 
 on:
   workflow_dispatch:
+  # Draft PRs skip CI; marking one ready runs it once.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - main
@@ -17,10 +19,11 @@ concurrency:
 jobs:
   fast:
     name: Fast Checks
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: depot-ubuntu-24.04-8
     env:
       UV_CACHE_DIR: /tmp/.uv-cache
-      # One release-cohort wheel build serves basic and compatibility profiles.
+      # One release-cohort wheel build serves the installed-artifact profiles.
       RLMESH_RELEASE_BUILD: "1"
 
     steps:
@@ -79,12 +82,11 @@ jobs:
         timeout-minutes: 5
         run: mise run --skip-tools test:csharp:package
 
-      - name: Cross-version matrix against the already-built wheels
-        run: mise run --skip-tools test:crossver:installed
-
-      # Verify the distributable source, not just the workspace checkout.
-      # Keep this in the required job so package failures cannot pass the gate.
+      # Verify the distributable source, not just the workspace checkout. It
+      # recompiles every published crate (up to 3 minutes), so pull requests
+      # skip it: pushes to main run it, and the release workflow before it publishes.
       - name: Rust package verification
+        if: github.event_name != 'pull_request'
         run: mise run --skip-tools release:rust:package
 
       - name: C/C++ package verification (pkg-config + CMake find_package)
@@ -93,12 +95,9 @@ jobs:
           CXX: clang++
         run: mise run --skip-tools test:cxx:pkg
 
-      # `test` runs the C/C++ bindings under zig (clang, libc++). Pull requests re-run
-      # them under gcc (libstdc++), the most different toolchain; pushes to main and
-      # manual runs add real clang too.
-      - name: C/C++ bindings under gcc
-        run: CC=gcc CXX=g++ mise run --skip-tools test:cxx
-
+      # `test` runs the C/C++ bindings under zig (clang, libc++) and the C++ ones
+      # under gcc (libstdc++) too, the most different toolchain; pushes to main and
+      # manual runs add real clang.
       - name: C/C++ bindings under clang
         if: github.event_name != 'pull_request'
         run: CC=clang CXX=clang++ mise run --skip-tools test:cxx
@@ -115,3 +114,103 @@ jobs:
       - name: Minimize uv cache
         if: always()
         run: uv cache prune --ci
+
+  # The browser binding (javascript/rlmesh, its wasm core in javascript/rlmesh/wasm). No trigger or
+  # matrix of its own: it rides this workflow's triggers and concurrency
+  # group, on the smallest Depot runner. The first step diffs against the
+  # base (as the C# selection above does); every later step is skipped unless
+  # a browser input changed (a tether-only change runs just the sans-IO guard
+  # and the Arduino codec's vectors), so an unaffected run costs a checkout
+  # and a `git diff`. The tools come from javascript/mise.toml (`setup:js`), so no
+  # other job installs them.
+  browser:
+    name: Browser (wasm + JS)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Skip unless browser, sans-IO or tether inputs changed
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then printf 'run=true\nsansio=true\ntether=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
+          base="${PR_BASE:-${PUSH_BASE:-origin/main}}"
+          if [[ "$base" =~ ^0+$ ]]; then base="$(git rev-parse HEAD^)"; fi
+          paths='^(crates/rlmesh-session(-core)?/|javascript/|examples/web/|scripts/check-wasm\.mjs$|Cargo\.(toml|lock)$|mise\.(toml|lock)$|clippy\.toml$|\.mise/tasks/(setup/js|build/js|check/sans-io|test/js/)|\.github/(workflows/ci\.yml|actions/setup/))'
+          changed="$(git diff --name-only "$base"...HEAD)"
+          if grep -qE "$paths" <<<"$changed"; then run=true; else run=false; fi
+          # The tether crate needs only the sans-IO guard, not the browser build.
+          if [ "$run" = true ] || grep -qE '^crates/rlmesh-tether/' <<<"$changed"; then sansio=true; else sansio=false; fi
+          # The Arduino codec runs the tether's conformance vectors (g++ only).
+          if grep -qE '^(crates/rlmesh-tether/|integrations/arduino/|\.mise/tasks/test/tether/|mise\.(toml|lock)$|\.github/(workflows/ci\.yml|actions/setup/))' <<<"$changed"; then tether=true; else tether=false; fi
+          printf 'run=%s\nsansio=%s\ntether=%s\n' "$run" "$sansio" "$tether" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Setup toolchain
+        if: steps.changes.outputs.sansio == 'true' || steps.changes.outputs.tether == 'true'
+        uses: ./.github/actions/setup
+        with:
+          rust-components: "true"
+
+      # wasm-bindgen and wasm-opt (javascript/mise.toml, locked), the
+      # wasm32-unknown-unknown target and the npm dev dependencies.
+      - name: Browser toolchain
+        if: steps.changes.outputs.sansio == 'true'
+        run: mise run --skip-tools setup:js
+
+      # rlmesh-session-core and rlmesh-tether build for wasm32-unknown-unknown
+      # and, without std, for riscv32imac-unknown-none-elf; clippy denies
+      # clock reads, threads and sleeps (their clippy.toml), and no IO crate
+      # is a normal dependency on the wasm target.
+      - name: Sans-IO guard
+        if: steps.changes.outputs.sansio == 'true'
+        run: mise run --skip-tools check:sans-io
+
+      # The Arduino tether codec, built on the host as a board would build it
+      # (C++11, no exceptions, RTTI or heap), against the same vectors.json
+      # the Rust crate checks: the two implementations can't drift apart.
+      - name: Arduino tether codec against the vectors
+        if: steps.changes.outputs.tether == 'true'
+        env:
+          # g++ only: Setup also installs zig, whose run the local default adds.
+          CXX: g++
+        run: mise run --skip-tools test:tether:cpp
+
+      # wasm-bindgen-test under Node (no browser): decode, receive rules,
+      # leases, garbage input as an error, and the std::time::Instant canary.
+      - name: rlmesh-wasm tests under Node
+        if: steps.changes.outputs.run == 'true'
+        run: mise run --skip-tools test:js:wasm
+
+      # cargo --profile wasm, wasm-bindgen --target web, wasm-opt -Oz, then
+      # the esbuild bundles and the .d.ts files.
+      - name: Build the wasm and javascript/rlmesh
+        if: steps.changes.outputs.run == 'true'
+        run: mise run --skip-tools build:js
+
+      # The .wasm imports only wasm-bindgen glue (no env/WASI) and stays
+      # under its gzip budget.
+      - name: wasm import check and size budget
+        if: steps.changes.outputs.run == 'true'
+        run: mise run --skip-tools check:js:wasm
+
+      - name: TypeScript strict typecheck
+        if: steps.changes.outputs.run == 'true'
+        run: mise run --skip-tools typecheck:js
+
+      # Queue, backoff and reconnect, the Worker supervisor (trap -> respawn),
+      # the session (leases revoked on a disconnect or a Worker restart,
+      # peek/latest lifetimes). Fake Workers and sockets: no browser, robot or
+      # gateway.
+      - name: JS unit tests
+        if: steps.changes.outputs.run == 'true'
+        run: mise run --skip-tools test:js:unit

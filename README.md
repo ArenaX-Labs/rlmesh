@@ -26,7 +26,7 @@ Serve an env:
 import gymnasium as gym
 import rlmesh
 
-rlmesh.EnvServer(gym.make("CartPole-v1"), "127.0.0.1:5555").serve()
+rlmesh.EnvServer(gym.make("CartPole-v1"), "127.0.0.1:5555/cartpole").serve()
 ```
 
 Use it from somewhere else:
@@ -34,7 +34,7 @@ Use it from somewhere else:
 ```python
 from rlmesh.numpy import RemoteEnv
 
-env = RemoteEnv("127.0.0.1:5555")
+env = RemoteEnv("127.0.0.1:5555/cartpole")
 obs, info = env.reset(seed=0)
 
 done = False
@@ -49,23 +49,19 @@ More in [`examples/python`](examples/python): adapters, Docker sandboxes, bring-
 
 ### Endpoint authentication
 
-A served model or env requires a key when it is started with
+A Rust, C or C++ served model or env requires a key when it is started with
 `RLMESH_MODEL_ENDPOINT_TOKEN` / `RLMESH_ENV_ENDPOINT_TOKEN`. Clients send one
 with `api_key=` (`authorization: Bearer <key>`), and an `https://` address
 dials over TLS, so a policy behind a TLS load balancer drives your local env
-directly:
-
-```python
-import rlmesh
-
-model = rlmesh.RemoteModel("https://models.example.com", api_key="...")
-result = rlmesh.run(model, MyEnv(), episodes=10)
-```
+directly. Python 0.2 serves envs and models on sessions, which check no
+endpoint token yet: a set `RLMESH_ENV_ENDPOINT_TOKEN` fails `EnvServer` and a
+set `RLMESH_MODEL_ENDPOINT_TOKEN` fails `Model.serve`, so keep the session's
+network private.
 
 Without `api_key`, clients read `RLMESH_API_KEY`, and send it only to
 `https://` addresses. `tls_ca_file=` trusts a private CA bundle instead of the
-system roots. The same options exist in Rust (`RemoteModelOptions::api_key`),
-C (`RLMeshRemoteModelOptions.api_key`) and C++ (`with_api_key`).
+system roots. The options are `RemoteEnvOptions::api_key` in Rust,
+`RLMeshRemoteEnvOptions.api_key` in C and `with_api_key` in C++.
 
 Servers send HTTP/2 keepalive PINGs on idle connections. They detect a dead
 peer and keep NAT mappings and proxies that count PINGs as traffic alive, but
@@ -86,12 +82,14 @@ rlmesh::Model model([](const rlmesh::Value&) { return rlmesh::Value(0); });
 auto result = model.run("tcp://127.0.0.1:5555", {.episodes = 2, .seeds = {0, 1}});
 ```
 
-RLMesh aims to feel familiar in every language: the same nouns and constructs (`Env`, `Space`, `Model`, `run`, `Session`, `RemoteEnv`), each in that language's own conventions and with its own helpers.
+RLMesh aims to feel familiar in every language: the same nouns and constructs (`Env`, `Space`, `Model`, `run`, `Binding`, `RemoteEnv`), each in that language's own conventions and with its own helpers.
 
 ## Integrations
 
 - [Unreal Engine](integrations/unreal/RLMesh): serve actors as RLMesh environments.
 - [Unity](integrations/unity): Experimental `com.rlmesh.unity` package with main-thread callbacks and reload preflight. Unity support is not yet verified on IL2CPP.
+- [Arduino](integrations/arduino): `RLMeshTether`, which makes a board without a network (Nano, Uno, Mega, UNO R4) an RLMesh robot over a USB cable to a computer.
+- [ESP32](integrations/esp32): `RLMeshESP32`, an ESP32 on Wi-Fi as an RLMesh robot. Work in progress: a board joins a session, takes commands and publishes samples.
 
 ## Status
 

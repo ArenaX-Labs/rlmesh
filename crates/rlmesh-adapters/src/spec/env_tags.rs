@@ -9,11 +9,12 @@
 
 use std::collections::BTreeMap;
 
+use super::conventions::Polarity;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::AcceptSet;
+use super::FrameRef;
 use super::action::Action;
-use super::frames::FrameRef;
 use super::layouts::ImageLayout;
 use super::leaf_codec::leaf_codec;
 use super::model::{NodeShape, TreeNode, deserialize_node};
@@ -64,7 +65,7 @@ pub struct StateTag {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
     /// Where this feature's numbers come from: `sensed`, `estimated` or
-    /// `privileged` (see [`PROVENANCES`](super::frames::PROVENANCES)). Part
+    /// `privileged` (see [`PROVENANCES`](super::PROVENANCES)). Part
     /// of the leaf's identity, so an env may publish one role under two
     /// provenances. Omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,6 +79,10 @@ pub struct StateTag {
     /// Omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    /// Openness (`open`) or closedness (`close`) for a gripper reading
+    /// (`proprio/gripper_pos`); see `Polarity`. Omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polarity: Option<Polarity>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
@@ -112,6 +117,8 @@ struct FieldWire {
     part: Option<String>,
     #[serde(default)]
     labels: Option<Vec<String>>,
+    #[serde(default)]
+    polarity: Option<Polarity>,
     /// Unrecognized additive fields, captured instead of hard-erroring so a
     /// newer writer's field survives an older reader; the publish gate rejects
     /// a bare one. See [`ImageTag`].
@@ -132,11 +139,12 @@ impl TryFrom<FieldWire> for Field {
                 || wire.frame.is_some()
                 || wire.provenance.is_some()
                 || wire.part.is_some()
-                || wire.labels.is_some())
+                || wire.labels.is_some()
+                || wire.polarity.is_some())
         {
             return Err(
                 "a role-less field (a skip) cannot carry an encoding, range, frame, \
-                 provenance, part or labels"
+                 provenance, part, labels or polarity"
                     .to_owned(),
             );
         }
@@ -160,6 +168,7 @@ impl TryFrom<FieldWire> for Field {
             provenance: wire.provenance,
             part: wire.part,
             labels: wire.labels,
+            polarity: wire.polarity,
             unknown: wire.unknown,
         })
     }
@@ -200,6 +209,9 @@ pub struct Field {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
+    /// Openness or closedness for a gripper reading; see [`StateTag::polarity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polarity: Option<Polarity>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
 }

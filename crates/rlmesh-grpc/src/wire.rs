@@ -6,8 +6,9 @@ pub mod value;
 pub use prost::bytes::Bytes;
 
 pub use spaces::{
-    env_contract_from_proto, env_contract_to_proto, env_spec_from_proto, env_spec_to_proto,
-    meta_map_from_proto, meta_map_to_proto, space_spec_from_proto, space_spec_to_proto,
+    check_proto_contract, env_contract_from_proto, env_contract_to_proto, env_spec_from_proto,
+    env_spec_to_proto, meta_map_from_proto, meta_map_to_proto, space_spec_from_proto,
+    space_spec_to_proto,
 };
 pub use value::{
     binary_to_bytes, decode_batched_partial_values, decode_value, encode_batched_partial_values,

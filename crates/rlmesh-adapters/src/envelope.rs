@@ -69,6 +69,8 @@ struct Pieces {
     #[serde(default)]
     native_chunk: Option<Value>,
     #[serde(default)]
+    execution_horizon: Option<Value>,
+    #[serde(default)]
     params: Option<Value>,
     #[serde(default)]
     variants: Option<Value>,
@@ -85,6 +87,7 @@ impl Pieces {
             Kind::Env if self.model_spec.is_some() => Some("model_spec"),
             Kind::Env if self.corners.is_some() => Some("corners"),
             Kind::Env if self.native_chunk.is_some() => Some("native_chunk"),
+            Kind::Env if self.execution_horizon.is_some() => Some("execution_horizon"),
             Kind::Model if self.env_spec.is_some() => Some("env_spec"),
             Kind::Model if self.env_tags.is_some() => Some("env_tags"),
             Kind::Model if self.env_contracts.is_some() => Some("env_contracts"),
@@ -144,6 +147,11 @@ struct ModelEnvelope {
     /// for the elastic (undeclared) contract. Model-only.
     #[serde(skip_serializing_if = "Option::is_none")]
     native_chunk: Option<Value>,
+    /// The execution horizon a built model's `load()` chose for its
+    /// checkpoint, which a run naming none executes at; absent when `load()`
+    /// set none (the spec's `timing.execution`, then 1, apply). Model-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_horizon: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,6 +225,7 @@ pub fn build_describe_envelope(
             model_spec: pieces.model_spec.unwrap_or(Value::Null),
             corners: pieces.corners,
             native_chunk: pieces.native_chunk,
+            execution_horizon: pieces.execution_horizon,
             params: pieces.params,
             variants: pieces.variants,
             runtime: pieces.runtime,
@@ -392,6 +401,24 @@ mod tests {
         let env = build_describe_envelope("env", r#"{"env_spec":{"a":1}}"#, None).unwrap();
         assert!(env.contains(r#""env_tags":null"#));
         assert!(!env.contains("model_spec"));
+    }
+
+    #[test]
+    fn a_loaded_execution_horizon_is_a_model_only_piece() {
+        let out = build_describe_envelope("model", r#"{"execution_horizon":8}"#, None).unwrap();
+        assert!(out.contains(r#""execution_horizon":8"#));
+        assert!(
+            !build_describe_envelope("model", "{}", None)
+                .unwrap()
+                .contains("execution_horizon")
+        );
+        assert!(matches!(
+            build_describe_envelope("env", r#"{"execution_horizon":8}"#, None).unwrap_err(),
+            EnvelopeError::KindMismatch {
+                kind: Kind::Env,
+                field: "execution_horizon"
+            }
+        ));
     }
 
     #[test]

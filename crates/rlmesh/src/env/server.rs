@@ -61,8 +61,10 @@ impl fmt::Display for Transport {
 /// appending a field is a minor change by project policy.
 #[derive(Clone, Debug)]
 pub struct EnvServerOptions {
-    /// The bind address (`tcp://host:port` or `unix:///path`); `None` uses the
-    /// helpers below, or `tcp://127.0.0.1:0`. Excludes the helpers.
+    /// The bind address: a session participant address (`:0/env`,
+    /// `host:port/session/name`), or a v1 `tcp://host:port` or
+    /// `unix:///path`; `None` uses the helpers below, or `:0/env` (a session
+    /// of its own on an OS-assigned local port). Excludes the helpers.
     pub address: Option<String>,
     /// TCP host helper (default `127.0.0.1`).
     pub host: Option<String>,
@@ -146,10 +148,72 @@ enum Served {
     Vector(Box<dyn VectorEnv + Send>),
 }
 
+/// Where a server listens: a gRPC listener, or (with the `lockstep`
+/// feature) a v2 lockstep robot in a session (its participant address, §12).
+enum Listener {
+    Grpc(BoundListener),
+    #[cfg(feature = "lockstep")]
+    Lockstep(Box<crate::lockstep::LockstepBinding>),
+}
+
+impl Listener {
+    fn bind(
+        address: &str,
+        runtime: &tokio::runtime::Runtime,
+        contract: &crate::EnvContract,
+    ) -> Result<(Self, String)> {
+        if crate::address::is_v2(address) {
+            #[cfg(feature = "lockstep")]
+            {
+                crate::lockstep::check(contract.to_wire()?)
+                    .map_err(|err| Error::invalid_argument(err.to_string()))?;
+                // Off the caller's thread: a server built inside an async
+                // context (an in-process run's env) cannot block on it.
+                let binding = std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| runtime.block_on(crate::lockstep::bind(address)))
+                        .join()
+                })
+                .map_err(|_| Error::Internal("binding the lockstep env panicked".into()))?
+                .map_err(|err| match err {
+                    crate::lockstep::GymError::Config(why) => Error::invalid_argument(why),
+                    other => Error::Connection(other.to_string()),
+                })?;
+                let bound = binding.address();
+                return Ok((Self::Lockstep(Box::new(binding)), bound));
+            }
+            #[cfg(not(feature = "lockstep"))]
+            {
+                let _ = contract;
+                return Err(Error::invalid_argument(format!(
+                    "{address}: this build has no v2 lockstep transport (the `lockstep` feature)"
+                )));
+            }
+        }
+        rlmesh_grpc::wire::check_proto_contract(&contract.to_wire()?)
+            .map_err(|err| Error::invalid_argument(err.to_string()))?;
+        let listener = BoundListener::bind_sync(BindAddress::parse(address)?, runtime.handle())?;
+        let bound = listener.local_addr()?.to_string();
+        Ok((Self::Grpc(listener), bound))
+    }
+
+    fn release(self, runtime: &tokio::runtime::Runtime) {
+        match self {
+            Self::Grpc(listener) => listener.release(),
+            #[cfg(feature = "lockstep")]
+            // Off this thread: a failed serve_async start releases from
+            // inside an executor.
+            Self::Lockstep(binding) => std::thread::scope(|scope| {
+                scope.spawn(|| runtime.block_on(binding.close()));
+            }),
+        }
+    }
+}
+
 struct Resources {
     served: Served,
     runtime: tokio::runtime::Runtime,
-    listener: BoundListener,
+    listener: Listener,
     grpc: rlmesh_grpc::ServeOptions,
     idle_timeout: Option<Duration>,
     drain_timeout: Duration,
@@ -170,6 +234,7 @@ struct Shared {
     address: String,
     contract: EnvContract,
     binding_description: Mutex<Option<String>>,
+    #[cfg(not(feature = "lockstep"))]
     token: Option<String>,
     shutdown: ShutdownTrigger,
     background_cancel: Mutex<std::sync::Weak<CancelProbe>>,
@@ -404,8 +469,19 @@ impl EnvServer {
         edition: Option<String>,
     ) -> Result<EnvServer> {
         let options = EnvServerOptions {
+            // In-process on the v2 lockstep path when the build has it, in a
+            // session of this process's shared host: the run's driver then
+            // calls the env directly.
+            #[cfg(feature = "lockstep")]
+            address: Some(format!(
+                "{}/env",
+                crate::lockstep::local_run_session()
+                    .map_err(|err| Error::Internal(err.to_string()))?
+            )),
             options: Some(ServeOptions {
                 workflow_edition: edition,
+                // A session server has nothing to drain.
+                #[cfg(not(feature = "lockstep"))]
                 drain_timeout: Some(Duration::from_millis(100)),
                 ..Default::default()
             }),
@@ -420,6 +496,7 @@ impl EnvServer {
     }
 
     /// The endpoint token this server checks, if any.
+    #[cfg(not(feature = "lockstep"))]
     pub(crate) fn token(&self) -> Option<&str> {
         self.shared.token.as_deref()
     }
@@ -518,6 +595,10 @@ impl EnvServer {
         let address = normalize_bind_address(&options)?;
         let serve = options.options.clone().unwrap_or_default();
         serve.validate()?;
+        let session = crate::address::is_v2(&address);
+        if session {
+            serve.check_session()?;
+        }
 
         // Step 6: the edition. An explicit options value is the call's own;
         // a served env is an authored participant, so a float warns.
@@ -532,7 +613,14 @@ impl EnvServer {
 
         // Step 8: the endpoint token, before binding.
         let ext = options.ext.clone().unwrap_or_default();
+        if session {
+            crate::serve_options::check_session_token(
+                crate::serve_options::ENV_ENDPOINT_TOKEN_ENV,
+                ext.token.is_some(),
+            )?;
+        }
         let token = env_endpoint_token(ext.token.clone())?;
+        #[cfg(not(feature = "lockstep"))]
         let checked_token = token.clone().filter(|token| !token.is_empty());
         let mut peer_info_extra: BTreeMap<String, String> = ext.peer_info_extra.clone();
         match &factory {
@@ -570,8 +658,7 @@ impl EnvServer {
             .thread_name("rlmesh-env-server")
             .build()
             .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;
-        let listener = BoundListener::bind_sync(BindAddress::parse(&address)?, runtime.handle())?;
-        let address = listener.local_addr()?.to_string();
+        let (listener, address) = Listener::bind(&address, &runtime, &contract)?;
 
         let idle_timeout = serve.idle_timeout;
         let drain_timeout = serve.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE);
@@ -595,6 +682,7 @@ impl EnvServer {
                 address,
                 contract,
                 binding_description: Mutex::new(binding_description),
+                #[cfg(not(feature = "lockstep"))]
                 token: checked_token,
                 shutdown: ShutdownTrigger::new(),
                 background_cancel: Mutex::new(std::sync::Weak::new()),
@@ -1085,6 +1173,11 @@ fn normalize_bind_address(options: &EnvServerOptions) -> Result<String> {
         }
         return Ok(address.clone());
     }
+    // In a session of its own on an OS-assigned local port, as Python's.
+    #[cfg(feature = "lockstep")]
+    if !helpers {
+        return Ok(":0/env".to_string());
+    }
     let tcp_helpers = options.host.is_some() || options.port.is_some();
     if options.path.is_some() && tcp_helpers {
         return Err(Error::invalid_argument(
@@ -1444,7 +1537,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
 /// What the transport needs to serve one env.
 struct ServeParts {
     runtime: tokio::runtime::Runtime,
-    listener: BoundListener,
+    listener: Listener,
     grpc: rlmesh_grpc::ServeOptions,
     idle_timeout: Option<Duration>,
     drain_timeout: Duration,
@@ -1453,9 +1546,20 @@ struct ServeParts {
     shutdown: ShutdownTrigger,
 }
 
+/// What [`drive`] serves: a transport env, natively too with the `lockstep`
+/// feature.
+#[cfg(feature = "lockstep")]
+trait Driven: Environment + crate::lockstep::Served {}
+#[cfg(feature = "lockstep")]
+impl<E: Environment + crate::lockstep::Served> Driven for E {}
+#[cfg(not(feature = "lockstep"))]
+trait Driven: Environment {}
+#[cfg(not(feature = "lockstep"))]
+impl<E: Environment> Driven for E {}
+
 /// Serve `environment`; with a foreground runner, the transport runs on a
 /// helper thread while this thread runs the runner's jobs.
-fn drive<E: Environment + Send + Sync + 'static>(
+fn drive<E: Driven + Send + Sync + 'static>(
     environment: E,
     runner: Runner,
     parts: ServeParts,
@@ -1473,25 +1577,52 @@ fn drive<E: Environment + Send + Sync + 'static>(
     let serve = move || -> Result<()> {
         runtime.block_on(async move {
             let environment = Arc::new(environment);
-            let activity_tx = start_idle_shutdown(idle_timeout, shutdown.clone());
-            let service = rlmesh_grpc::env::env_service_from_shared(
-                Arc::clone(&environment),
-                shutdown.clone(),
-                grpc,
-                activity_tx,
-            );
-            let (_health, health_service) = rlmesh_grpc::health::serving_health_service().await;
-            let router = rlmesh_grpc::lifecycle::server_builder()
-                .add_service(health_service)
-                .add_service(service);
-            let serve_result = listener
-                .serve(router, shutdown.clone(), Some(drain_timeout))
-                .await;
+            let serve_result = match listener {
+                Listener::Grpc(listener) => {
+                    let activity_tx = start_idle_shutdown(idle_timeout, shutdown.clone());
+                    let service = rlmesh_grpc::env::env_service_from_shared(
+                        Arc::clone(&environment),
+                        shutdown.clone(),
+                        grpc,
+                        activity_tx,
+                    );
+                    let (_health, health_service) =
+                        rlmesh_grpc::health::serving_health_service().await;
+                    let router = rlmesh_grpc::lifecycle::server_builder()
+                        .add_service(health_service)
+                        .add_service(service);
+                    listener
+                        .serve(router, shutdown.clone(), Some(drain_timeout))
+                        .await
+                }
+                #[cfg(feature = "lockstep")]
+                Listener::Lockstep(binding) => {
+                    let _ = (idle_timeout, drain_timeout);
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    let stop = {
+                        let (shutdown, cancel) = (shutdown.clone(), cancel.clone());
+                        tokio::spawn(async move {
+                            shutdown.cancelled().await;
+                            cancel.cancel();
+                        })
+                    };
+                    let options = crate::lockstep::ServeOptions {
+                        workflow_edition: grpc.workflow_edition.clone(),
+                        record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
+                    };
+                    let served = binding
+                        .serve(Arc::clone(&environment) as _, options, cancel)
+                        .await
+                        .map_err(|err| Error::server(err.to_string()));
+                    stop.abort();
+                    served
+                }
+            };
             // A transport failure also begins stopping before close callbacks.
             // Later token firings cannot replace that selected serve error.
             shutdown.trigger("serve ended");
             let close_result = if close_env_on_shutdown {
-                let close = async { environment.close().await.map(|_| ()) };
+                let close = async { Environment::close(&*environment).await.map(|_| ()) };
                 match await_close_with_timeout(close, Some(close_timeout)).await {
                     Ok(Ok(())) => Ok(()),
                     Ok(Err(err)) => Err(Error::Internal(err.message)),
@@ -1544,7 +1675,7 @@ fn serve_failure(serve: Result<()>, close: Result<()>) -> Result<()> {
     }
 }
 
-/// Release a never-served server: drop the listener and close the envs (when
+/// Release a never-served server: release the listener (stopping a session host it runs) and close the envs (when
 /// `close_env_on_shutdown`), bounded by `close_timeout`.
 fn cleanup_ready(resources: Resources, shared: &Arc<Shared>) -> Result<()> {
     let Resources {
@@ -1555,7 +1686,7 @@ fn cleanup_ready(resources: Resources, shared: &Arc<Shared>) -> Result<()> {
         close_env_on_shutdown,
         ..
     } = resources;
-    listener.release();
+    listener.release(&runtime);
     drop(runtime);
     let id = shared.id;
     if !close_env_on_shutdown {

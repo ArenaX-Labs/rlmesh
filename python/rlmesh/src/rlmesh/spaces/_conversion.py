@@ -90,17 +90,16 @@ def to_gymnasium_space(space: Space[Any] | SpaceSpec) -> object:
         details = spec_details(spec)
         n = cast(int, details["n"])
         start = cast(int, details.get("start", 0))
-        return gym_spaces.Discrete(
-            int(n),
-            start=int(start),
-        )
+        return gym_spaces.Discrete(int(n), start=int(start), dtype=_dtype(spec))
     if spec.kind == "multi_binary":
         details = spec_details(spec)
         shape = details.get("dims", details.get("size", spec.shape))
         return gym_spaces.MultiBinary(shape)
     if spec.kind == "multi_discrete":
         details = spec_details(spec)
-        return gym_spaces.MultiDiscrete(details["nvec"])
+        return gym_spaces.MultiDiscrete(
+            details["nvec"], dtype=_dtype(spec), start=details.get("start")
+        )
     if spec.kind == "text":
         details = spec_details(spec)
         max_length = cast(int, details["max_length"])
@@ -124,6 +123,12 @@ def to_gymnasium_space(space: Space[Any] | SpaceSpec) -> object:
             tuple(to_gymnasium_space(child) for child in raw_spaces)
         )
     return spec.to_gym_space()
+
+
+def _dtype(spec: SpaceSpec) -> Any:
+    import numpy as np
+
+    return np.dtype(spec.dtype)
 
 
 def _gym_spaces() -> Any:
@@ -230,8 +235,10 @@ def _multi_discrete_from_gymnasium(space: Any) -> MultiDiscrete:
     import numpy as np
 
     nvec = np.asarray(space.nvec)
-    if nvec.ndim == 1:
-        return MultiDiscrete([int(value) for value in nvec.tolist()])
+    if nvec.ndim == 1 and not np.any(getattr(space, "start", 0)):
+        return MultiDiscrete(
+            [int(value) for value in nvec.tolist()], dtype=str(space.dtype)
+        )
 
     return cast(MultiDiscrete, _space_from_native_gym_parser(space))
 

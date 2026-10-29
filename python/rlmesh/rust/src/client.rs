@@ -22,7 +22,18 @@ use crate::telemetry::{ProfileCollector, init_tracing, profiling_enabled};
 use crate::types::{space_value_size, to_py_err};
 
 /// Interval for polling Python signals during blocked RPCs.
-pub(crate) const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The signal poll for a blocked call, first due one interval from now. A plain
+/// `interval` ticks at once, and that tick waits for the timer wheel's next
+/// millisecond: awaited before the call is first polled, it delayed every
+/// request by about 1 ms.
+pub(crate) fn signal_poll() -> tokio::time::Interval {
+    tokio::time::interval_at(
+        tokio::time::Instant::now() + SIGNAL_POLL_INTERVAL,
+        SIGNAL_POLL_INTERVAL,
+    )
+}
 
 /// Poll for a pending Python signal from a thread blocked in native code.
 /// A daemon thread can outlive the interpreter; once it has finalized there is
@@ -91,6 +102,7 @@ impl ClientCore {
         workflow_edition: Option<String>,
         api_key: Option<&str>,
         tls_ca_file: Option<&std::path::Path>,
+        runtime_info: bool,
     ) -> PyResult<Self> {
         init_tracing(role);
         let profiler = ProfileCollector::new(role);
@@ -138,6 +150,9 @@ impl ClientCore {
             client.require_vector().map_err(to_py_err)?;
         }
         client.set_name(public);
+        if !runtime_info {
+            client.without_runtime_info();
+        }
         let _ = connect_guard.finish(0);
 
         Ok(Self {
@@ -188,8 +203,7 @@ impl ClientCore {
             runtime.block_on(async move {
                 let mut rpc = make(client);
 
-                let mut poll = tokio::time::interval(SIGNAL_POLL_INTERVAL);
-                poll.tick().await; // first tick fires immediately; consume it.
+                let mut poll = signal_poll();
 
                 loop {
                     tokio::select! {
@@ -289,7 +303,8 @@ macro_rules! client_class {
         #[pymethods]
         impl $Class {
             #[new]
-            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, api_key=None, tls_ca_file=None))]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, api_key=None, tls_ca_file=None, runtime_info=true))]
+            #[allow(clippy::too_many_arguments)]
             fn new(
                 address: &str,
                 connect_timeout_seconds: Option<f64>,
@@ -297,6 +312,7 @@ macro_rules! client_class {
                 workflow_edition: Option<String>,
                 api_key: Option<String>,
                 tls_ca_file: Option<String>,
+                runtime_info: bool,
             ) -> PyResult<Self> {
                 Ok(Self {
                     core: ClientCore::connect(
@@ -308,6 +324,7 @@ macro_rules! client_class {
                         workflow_edition,
                         api_key.as_deref(),
                         tls_ca_file.as_deref().map(std::path::Path::new),
+                        runtime_info,
                     )?,
                 })
             }
@@ -322,6 +339,12 @@ macro_rules! client_class {
                 self.core.client.env_id().to_string()
             }
 
+            /// Whether the endpoint is a v2-native robot driven through its
+            /// Gym view (not a served Gym env).
+            fn drives_view(&self) -> bool {
+                self.core.client.drives_view()
+            }
+
             /// The workflow edition this connection negotiated with the env.
             fn selected_workflow_edition(&self) -> String {
                 self.core.client.selected_workflow_edition().to_string()
@@ -333,29 +356,6 @@ macro_rules! client_class {
                 PyEditionCell {
                     cell: self.core.client.edition_cell(),
                 }
-            }
-
-            /// The env's handshake offer, `(CAN, WANT)`: the editions it
-            /// advertised and the one it declared (`None` when it declared
-            /// none). A served-model session hands this to `PyModelClient` so
-            /// the three-way floor sees the env's real offer.
-            fn session_offer(&self) -> (Vec<String>, Option<String>) {
-                let offer = self.core.client.session_offer();
-                (offer.editions.clone(), offer.preferred.clone())
-            }
-
-            /// Pin the env to the session edition a served-model session
-            /// settled on (its three-way floor), sent as the first Join
-            /// message. Call before the first reset.
-            fn pin_workflow_edition(
-                slf: &Bound<'_, Self>,
-                selected_workflow_edition: &str,
-            ) -> PyResult<()> {
-                let mut this = Self::lock(slf)?;
-                this.core
-                    .client
-                    .pin_workflow_edition(selected_workflow_edition);
-                Ok(())
             }
 
             fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -574,13 +574,11 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
     def edition_cell(self) -> PyEditionCell: ...
-    def session_offer(self) -> tuple[list[str], str | None]: ...
-    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -598,13 +596,11 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
     def edition_cell(self) -> PyEditionCell: ...
-    def session_offer(self) -> tuple[list[str], str | None]: ...
-    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -655,15 +651,6 @@ pub fn normalize_connect_address(
         .map_err(to_py_err)
 }
 
-/// Parse a client timeout given in seconds: `None` and zero are no timeout;
-/// negative or non-finite is ValueError (RMT-4).
-pub(crate) fn optional_timeout(
-    value: Option<f64>,
-    field: &'static str,
-) -> PyResult<Option<Duration>> {
-    rlmesh::binding::env::client_timeout_from_secs(value, field).map_err(to_py_err)
-}
-
 fn decode_options(
     py: Python<'_>,
     options: Option<Py<PyAny>>,
@@ -693,7 +680,7 @@ fn info_to_pydict<'py>(
 
 /// A wire PNG frame as a uint8 tensor; an undecodable frame is
 /// `ProtocolException` (RMT-P3).
-fn decode_render_frame<'py>(py: Python<'py>, png: &[u8]) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn decode_render_frame<'py>(py: Python<'py>, png: &[u8]) -> PyResult<Bound<'py, PyAny>> {
     let (shape, raw) = rlmesh::binding::env::decode_render_frame(png).map_err(to_py_err)?;
     tensor_from_shape(py, raw, shape, "uint8")
 }

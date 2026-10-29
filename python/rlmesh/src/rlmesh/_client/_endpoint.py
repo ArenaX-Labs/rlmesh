@@ -12,6 +12,19 @@ def _supports_unix_transport() -> bool:
     return not sys.platform.startswith("win")
 
 
+def redact_address(address: str) -> str:
+    """``address`` with its key (``#…``) left out.
+
+    What reprs, logs and errors show, since the key is a credential (its
+    holder attaches as ``local``).
+    """
+    before, sep, rest = address.partition("#")
+    if not sep:
+        return address
+    slash = rest.find("/")
+    return f"{before}#…{rest[slash:] if slash >= 0 else ''}"
+
+
 def normalize_bind_address(
     address: str | None = None,
     *,

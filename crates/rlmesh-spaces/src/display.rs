@@ -34,6 +34,9 @@ impl fmt::Display for SpaceSpec {
             Some(SpaceKind::MultiBinary(_)) => {
                 write!(f, "MultiBinary({})", fmt_shape(&self.shape))
             }
+            Some(SpaceKind::MultiDiscrete(spec)) if spec.has_start() => {
+                write!(f, "MultiDiscrete({:?}, start={:?})", spec.nvec, spec.start)
+            }
             Some(SpaceKind::MultiDiscrete(spec)) => write!(f, "MultiDiscrete({:?})", spec.nvec),
             Some(SpaceKind::Text(spec)) => {
                 if spec.charset.is_empty() {

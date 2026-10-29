@@ -13,6 +13,7 @@ cannot express (image layout, rotation encoding, explicit ranges).
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import warnings
 from types import SimpleNamespace
@@ -441,6 +442,9 @@ XVLA = adapt.ModelSpec(
             adapt.ACTION_GRIPPER, part=adapt.RIGHT_ARM, dim=1, range=(-1.0, 1.0)
         ),
     ),
+    # The second arm's outputs have no LIBERO actuator, and X-VLA reads one
+    # of LIBERO's two finger joints.
+    allow=("drop_action", "select_state"),
 )
 
 
@@ -608,8 +612,10 @@ def test_role_constants_match_rust_crate():
     roles_dir = (
         Path(__file__).resolve().parents[4]
         / "crates"
-        / "rlmesh-adapters"
+        / "rlmesh-session-core"
         / "src"
+        / "spec"
+        / "role"
         / "roles"
     )
     rust_roles: dict[str, str] = {}
@@ -1293,13 +1299,15 @@ def test_bilinear_resize_preserves_constant_images():
     )
 
 
-def test_single_env_image_fallback_match():
+def test_single_env_image_fallback_match_is_the_rebind_camera_projection():
     env = image_env(8, 8, role=adapt.IMAGE_SECONDARY)
     spec = adapt.ModelSpec(
         input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
         output=SMOLVLA.output,
     )
-    adapter = resolve(env, spec)
+    with pytest.raises(adapt.AdapterResolutionError, match="rebind_camera"):
+        resolve(env, spec)
+    adapter = resolve(env, dataclasses.replace(spec, allow=("rebind_camera",)))
     obs = {"rgb": np.zeros((8, 8, 3), dtype=np.uint8)}
     assert adapter.transform_obs(obs)["image"].shape == (8, 8, 3)
 
@@ -2111,43 +2119,6 @@ def test_image_input_stack_round_trips_and_omits_default() -> None:
             input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=10_000)},
             output=SMOLVLA.output,
         ).to_dict()
-
-
-def test_vector_env_rejected_by_single_env_eval_loop() -> None:
-    # The SESSION's per-episode loop reads scalar reward/termination, so it rejects
-    # any vector env (num_envs>1) up front instead of crashing on array truthiness
-    # deep in the step loop. (Model.run drives vector envs through the native
-    # runtime loop instead, so only the interactive session rejects them.)
-    from rlmesh.numpy import Model
-
-    env = image_env(4, 4)
-    contract: Any = SimpleNamespace(
-        metadata=env.tags.to_metadata(),
-        observation_space=env.obs_space,
-        action_space=env.action_space,
-        num_envs=2,
-    )
-    # A steppable env-like object; the vector env is rejected before any step.
-    fake_env: Any = SimpleNamespace(
-        env_contract=contract,
-        reset=lambda **_kw: ({}, {}),
-        step=lambda _action: ({}, 0.0, True, False, {}),
-    )
-
-    def predict(payload: dict[str, Any]) -> Any:
-        return np.zeros(SMOLVLA.output.dim, dtype=np.float32)
-
-    model = Model(
-        predict,
-        spec=adapt.ModelSpec(
-            input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=2)},
-            output=SMOLVLA.output,
-        ),
-    )
-    import rlmesh
-
-    with pytest.raises(ValueError, match="num_envs=2"):
-        rlmesh.session(model, fake_env).run(episodes=1)
 
 
 def test_stateful_adapter_allowed_on_vector_route() -> None:
@@ -3963,6 +3934,7 @@ def test_xvla_libero_hand_to_grip_is_a_post_rotation():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
 
     obs = make_obs()
@@ -3997,6 +3969,7 @@ def test_state_scale_and_offset_express_the_robotwin_gripper():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     obs = make_obs()
     gripper = float(np.asarray(obs["robot0_gripper_qpos"])[0])
@@ -4012,6 +3985,7 @@ def test_constant_part_is_not_reported_as_a_zero_filled_role():
     constant = adapt.ModelSpec(
         input={"state": adapt.Concat(adapt.EEF_POS, adapt.Constant(dim=2))},
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     absent = adapt.ModelSpec(
         input={
@@ -4021,6 +3995,7 @@ def test_constant_part_is_not_reported_as_a_zero_filled_role():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     constant_text = resolve(LIBERO_ENV, constant).explain()
     assert "const(2)=0.0" in constant_text
@@ -4063,6 +4038,7 @@ def test_non_zero_fill_needs_optional_and_folds_scale_and_offset():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     state = resolve(LIBERO_ENV, spec).transform_obs(make_obs())["state"]
     # fill * scale + offset, folded once at resolve.
@@ -4092,6 +4068,7 @@ def test_rotation_literal_must_be_a_rotation():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     with pytest.raises(ValueError, match="orthonormal"):
         sheared.to_dict()
@@ -4114,6 +4091,7 @@ def test_constant_part_shifts_a_later_custom_encoding_slice():
             )
         },
         output=XVLA.output,
+        allow=XVLA.allow,
     )
     adapter = resolve(LIBERO_ENV, spec)
     assert "'state'[5:9]" in adapter.explain()
@@ -4301,7 +4279,7 @@ class _StackedFrameEnv:
         pass
 
 
-def _drive_stacked_session(horizon: int, steps: int) -> list[Any]:
+def _drive_stacked_binding(horizon: int, steps: int) -> list[Any]:
     """Drive a stacked model for `steps` env steps; return the payloads it saw."""
     from rlmesh.numpy import Model
 
@@ -4322,24 +4300,23 @@ def _drive_stacked_session(horizon: int, steps: int) -> list[Any]:
             return np.zeros((chunk, 7), dtype=np.float32)
 
     model = _Chunky(spec=spec)
-    sess = model.session(
+    with model.bind(
         _StackedFrameEnv(env.tags, env.obs_space, env.action_space),
         execution_horizon=horizon,
-    )
-    obs, _info = sess.reset()
-    for _ in range(steps):
-        obs, *_rest = sess.step(sess.predict(obs))
-    sess.close()
+    ) as binding:
+        binding.reset()
+        for _ in range(steps):
+            binding.step()
     return seen
 
 
 def test_a_stacked_window_is_the_same_at_every_execution_horizon() -> None:
     # The horizon invariant: chunk replay changes WHEN the model runs, never WHAT
-    # it sees. Every fourth payload of a single-step session must equal the
-    # payloads a horizon-4 session assembled at the same env steps -- which only
+    # it sees. Every fourth payload of a single-step binding must equal the
+    # payloads a horizon-4 binding assembled at the same env steps -- which only
     # holds because a replayed step still ticks the frame window.
-    every_step = _drive_stacked_session(1, 12)
-    chunked = _drive_stacked_session(4, 12)
+    every_step = _drive_stacked_binding(1, 12)
+    chunked = _drive_stacked_binding(4, 12)
     assert len(every_step) == 12
     assert len(chunked) == 3
     for index, payload in enumerate(chunked):
@@ -4375,7 +4352,7 @@ def test_image_stride_sugar_builds_the_declared_offsets() -> None:
 
 def test_frame_history_budget_is_gated_at_connect() -> None:
     # A window is live memory for the whole episode: a mis-set stride turns a
-    # modest stack into gigabytes, so the session refuses it where the number is
+    # modest stack into gigabytes, so a binding refuses it where the number is
     # already known rather than at the allocation that OOMs.
     from rlmesh.numpy import Model
 
@@ -4384,13 +4361,10 @@ def test_frame_history_budget_is_gated_at_connect() -> None:
         input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=4, stride=32)},
         output=SMOLVLA.output,
     )
-    sess = Model(lambda obs: np.zeros(7, dtype=np.float32), spec=spec).session(
-        _StackedFrameEnv(env.tags, env.obs_space, env.action_space)
-    )
-    with pytest.raises(ValueError, match="over the 64-byte ceiling"):
+    model = Model(lambda obs: np.zeros(7, dtype=np.float32), spec=spec)
+    with pytest.raises(Exception, match="64-byte"):
         with _frame_history_limit(64):
-            sess.reset()
-    sess.close()
+            model.bind(_StackedFrameEnv(env.tags, env.obs_space, env.action_space))
 
 
 @contextlib.contextmanager
@@ -4556,6 +4530,7 @@ def test_two_arms_bind_by_explicit_part() -> None:
                     "state": adapt.State(adapt.EEF_POS, dim=3, part=adapt.RIGHT_ARM)
                 },
                 output=XVLA.output,
+                allow=XVLA.allow,
             ),
         )
 
@@ -5391,3 +5366,67 @@ def test_an_action_role_on_an_observation_tag_is_a_join_error() -> None:
     )
     with pytest.raises(adapt.AdapterResolutionError, match="an action kind"):
         resolve(env, spec)
+
+
+def test_an_output_the_env_has_no_actuator_for_needs_drop_action():
+    """A 7-D LIBERO model on a 4-D (xyz + gripper) env is refused; allowing
+    the named projection binds it and records the discarded output."""
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"instruction": adapt.TextTag(role=adapt.INSTRUCTION)},
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"instruction": text_space()}),
+        action_space=box(4, low=-1.0, high=1.0),
+    )
+    model = adapt.ModelSpec(
+        input={"prompt": adapt.Text(role=adapt.INSTRUCTION)},
+        output=LIBERO_MODEL_ACTION,
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="drop_action"):
+        resolve(env, model)
+    allowed = dataclasses.replace(model, allow=("drop_action",))
+    assert adapt.ModelSpec.from_json(allowed.to_json()) == allowed
+    adapter = resolve(env, allowed)
+    assert "drop_action" in adapter.explain()
+    action = adapter.transform_action(np.arange(7, dtype=np.float32) / 10)
+    np.testing.assert_allclose(action, [0.0, 0.1, 0.2, 0.6])
+
+
+def test_a_reversed_gripper_or_another_delta_unit_is_refused_until_allowed():
+    """The conventions round-trip the wire and reach the resolver: an env
+    gripper that closes on +1 against a model whose +1 opens, or a 5 cm env
+    step against a model speaking metres, binds only under its projection."""
+    env_action = adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, unit=0.05),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(
+            adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0), polarity="close"
+        ),
+    )
+    env = LIBERO_ENV._replace(
+        tags=adapt.EnvTags(observation=LIBERO_ENV.tags.observation, action=env_action)
+    )
+    assert adapt.EnvTags.from_dict(env.tags.to_dict()) == env.tags
+    model_action = adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, unit=1.0),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0), polarity="open"),
+    )
+    spec = adapt.ModelSpec(
+        input={"instruction": adapt.Text(role=adapt.INSTRUCTION)}, output=model_action
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="convert_units"):
+        resolve(env, spec)
+    with pytest.raises(adapt.AdapterResolutionError, match="flip_gripper"):
+        resolve(env, dataclasses.replace(spec, allow=("convert_units",)))
+    adapter = resolve(
+        env, dataclasses.replace(spec, allow=("flip_gripper", "convert_units"))
+    )
+    action = adapter.transform_action(np.array([0.01, 0, 0, 0, 0, 0, 1.0], np.float32))
+    np.testing.assert_allclose(action[[0, 6]], [0.2, -1.0], atol=1e-6)
+    with pytest.raises(ValueError, match="polarity must be"):
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, polarity="shut")  # pyright: ignore[reportArgumentType]

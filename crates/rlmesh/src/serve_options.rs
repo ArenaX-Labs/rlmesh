@@ -57,6 +57,38 @@ impl ServeOptions {
         Ok(())
     }
 
+    /// Refuses what a session-served participant cannot honor: each is a 0.1
+    /// option of the v1 wire.
+    pub(crate) fn check_session(&self) -> Result<()> {
+        let refused = [
+            (
+                self.allow_remote_shutdown,
+                "allow_remote_shutdown: a session takes no remote shutdown; an owner \
+                 shutdown is server.shutdown() in the serving process",
+            ),
+            (
+                self.idle_timeout.is_some(),
+                "idle_timeout_seconds: a session server has no idle shutdown; stop it with \
+                 server.shutdown()",
+            ),
+            (
+                self.drain_timeout.is_some(),
+                "drain_timeout_seconds: a session server stops answering at once and has \
+                 nothing to drain",
+            ),
+            (
+                self.compress_responses,
+                "compress_responses: the session wire is not compressed",
+            ),
+        ];
+        match refused.into_iter().find(|(set, _)| *set) {
+            Some((_, why)) => Err(Error::invalid_argument(format!(
+                "ServeOptions.{why} (gone in rlmesh 0.2 for a session address)"
+            ))),
+            None => Ok(()),
+        }
+    }
+
     /// The transport's options for these, with the language-only extras the
     /// serve call carries beside them.
     #[allow(clippy::wrong_self_convention)] // The name R-25 gives it; consuming avoids a clone.
@@ -79,6 +111,67 @@ impl ServeOptions {
     }
 }
 
+/// Experimental (Python's `BatchOptions`). How a session-served model
+/// coalesces the predicts it receives, from every session it answers in, into
+/// one handler call (one fused forward for a
+/// model that fuses). The model still runs one forward at a time: batching
+/// raises fill, not concurrency.
+///
+/// A batch closes at `max_batch_size` groups or `batch_byte_budget`
+/// observation bytes, or as soon as every route the model has resolved has a
+/// request in it. While the model is idle it also closes `batch_window_ms`
+/// after its first request; while a forward runs, it stays open until that
+/// forward ends, so under load the window costs nothing.
+/// A model that cannot fuse (`allow_fusion = false`, or no batched corner)
+/// is not batched.
+///
+/// The defaults are the platform's: `max_batch_size` and `batch_window_ms`
+/// as its request compiler sets them, the byte budget and in-flight cap as
+/// its runner reads them. Build one with `..Default::default()`.
+#[derive(Debug, Clone)]
+pub struct BatchOptions {
+    /// The most predict groups (one route's rows each) one handler call
+    /// carries; 1 answers each request on its own, at once. A request with
+    /// more groups runs as a batch of its own.
+    pub max_batch_size: usize,
+    /// The longest an idle model holds a batch open for more requests.
+    pub batch_window_ms: u64,
+    /// The most observation bytes one handler call carries. A request over
+    /// it runs as a batch of its own.
+    pub batch_byte_budget: usize,
+    /// Batches past assembly at once: one on the model and the next
+    /// assembling behind it at 2; 1 assembles only while the model is idle.
+    pub max_in_flight_batches: usize,
+    /// Append one JSON line per batch here, in the platform's
+    /// `telemetry/batches.jsonl` shape. `None` records nothing.
+    pub batch_records: Option<std::path::PathBuf>,
+}
+
+impl Default for BatchOptions {
+    fn default() -> Self {
+        Self {
+            max_batch_size: 32,
+            batch_window_ms: 5,
+            batch_byte_budget: 256 * 1024 * 1024 - 4 * 1024,
+            max_in_flight_batches: 2,
+            batch_records: None,
+        }
+    }
+}
+
+/// Refuses an endpoint token on a session (`configured`, or set in `var`,
+/// `RLMESH_ENV_ENDPOINT_TOKEN` or `RLMESH_MODEL_ENDPOINT_TOKEN`): 0.2
+/// sessions cannot check one yet.
+pub(crate) fn check_session_token(var: &str, configured: bool) -> Result<()> {
+    if configured || std::env::var_os(var).is_some() {
+        return Err(Error::invalid_argument(format!(
+            "{var} is set, but rlmesh 0.2 sessions check no endpoint token yet (participant \
+             credentials arrive with safety step 6); isolate the session's network and unset it"
+        )));
+    }
+    Ok(())
+}
+
 /// What a serve call adds to its [`ServeOptions`] on the wire: the fenced
 /// token and peer-info extras, and the model's predict concurrency.
 #[derive(Debug, Clone, Default)]
@@ -93,17 +186,6 @@ pub(crate) struct WireExtras {
 /// no header can carry is the `ValueError` class, an invalid options field).
 pub(crate) fn env_endpoint_token(configured: Option<String>) -> Result<Option<String>> {
     env_endpoint_token_from(configured, std::env::var(ENV_ENDPOINT_TOKEN_ENV))
-}
-
-/// A model server's token: `RLMESH_MODEL_ENDPOINT_TOKEN` when set (its
-/// failures are the `RLMeshException` class), else the configured
-/// `ext.token` (a token no header can carry is the `ValueError` class).
-pub(crate) fn model_endpoint_token(configured: Option<String>) -> Result<Option<String>> {
-    configured_endpoint_token(
-        MODEL_ENDPOINT_TOKEN_ENV,
-        configured,
-        std::env::var(MODEL_ENDPOINT_TOKEN_ENV),
-    )
 }
 
 fn env_endpoint_token_from(

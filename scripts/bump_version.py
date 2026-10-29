@@ -3,7 +3,7 @@
 
 SemVer is the source of truth: `Cargo.toml [workspace.package].version`. The PEP 440
 spelling for the Python package is derived from it (mirrors the Rust
-`rlmesh-sandbox::python_package_version`). `policy:check` is the backstop — it fails
+`python_package_version` in `python/rlmesh/rust/src/sandbox.rs`). `policy:check` is the backstop — it fails
 loudly if any version-bearing spot is missed.
 
 Usage:
@@ -95,6 +95,12 @@ def _sealed_workflow_editions(text: str) -> list[str]:
     return sealed
 
 
+def _dropped_workflow_editions(text: str) -> set[str]:
+    """Sealed editions ``[workflow.dropped_editions]`` names, never re-offered."""
+    workflow = tomllib.loads(text).get("workflow", {})
+    return set(workflow.get("dropped_editions", {}))
+
+
 def _workflow_supported_value(editions: list[str]) -> str:
     return "[" + ", ".join(f'"{edition}"' for edition in editions) + "]"
 
@@ -132,10 +138,11 @@ def _update_workflow_manifest(text: str, version: str) -> str:
     new_edition = base if status == "stable" else f"{base}-{version}"
     spec = f"docs/editions/{base}.md"
     supported = [new_edition]
+    dropped = _dropped_workflow_editions(text)
     supported.extend(
         edition
         for edition in _sealed_workflow_editions(text)
-        if edition != new_edition
+        if edition != new_edition and edition not in dropped
     )
 
     text = re.sub(
@@ -266,6 +273,10 @@ def bump(old: str, new: str) -> None:
     for py in ("pyproject.toml", "python/rlmesh/pyproject.toml"):
         sub_file(ROOT / py, [(rf'version = "{op}"', f'version = "{new_pep}"')])
 
+    # The npm package (release:js:package also stamps the workspace version at pack time).
+    for npm in ("javascript/rlmesh/package.json", "javascript/rlmesh/package-lock.json"):
+        sub_file(ROOT / npm, [(rf'"version": "{o}"', f'"version": "{new}"')])
+
     # Policy manifest: cargo artifacts use SemVer; the pypi artifact uses PEP 440.
     rlmesh_toml = ROOT / "rlmesh.toml"
     sub_file(rlmesh_toml, [(rf'version = "{o}"', f'version = "{new}"')])
@@ -377,6 +388,18 @@ current_generation = "rlmesh-wire-v1"
     assert '[workflow.editions."2026.06"]' in prerelease_manifest
     assert 'sealed_in = "0.1.0"' in prerelease_manifest
     assert '[workflow.editions."2026.09-0.2.0-alpha.1"]' in prerelease_manifest
+    # A dropped sealed edition keeps its record but is not offered again.
+    dropped_manifest = _update_workflow_manifest(
+        sealed_manifest.replace(
+            "\n[workflow.editions.",
+            '\n[workflow.dropped_editions]\n"2026.06" = "major break"\n\n'
+            "[workflow.editions.",
+            1,
+        ),
+        "0.2.0-alpha.1",
+    )
+    assert 'supported_editions = ["2026.09-0.2.0-alpha.1"]' in dropped_manifest
+    assert 'sealed_in = "0.1.0"' in dropped_manifest
 
     stable_patch_manifest = sealed_manifest.replace(
         'base_edition = "2026.09"',

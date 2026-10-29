@@ -159,6 +159,16 @@ impl<'de, T: WireVocab> Deserialize<'de> for AcceptSet<T> {
     }
 }
 
+impl WireVocab for super::Provenance {
+    fn from_wire(name: &str) -> Option<Self> {
+        Self::from_name(name)
+    }
+
+    fn as_wire(self) -> &'static str {
+        self.as_str()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AcceptSet, WireVocab};
@@ -243,5 +253,19 @@ mod tests {
             err.to_string().contains("at least one encoding"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn a_provenance_set_tolerates_an_unknown_value() {
+        use crate::spec::Provenance;
+        // A single value is a bare string on the wire; an unknown one rides
+        // along and is simply not a known entry.
+        let set: AcceptSet<Provenance> = serde_json::from_str(r#""estimated""#).unwrap();
+        assert_eq!(set.first_known(), Some(Provenance::Estimated));
+        assert_eq!(serde_json::to_string(&set).unwrap(), r#""estimated""#);
+        let set: AcceptSet<Provenance> =
+            serde_json::from_str(r#"["privileged", "estimated", "guessed"]"#).unwrap();
+        assert_eq!(set.known().count(), 2);
+        assert_eq!(set.wire_names(), vec!["privileged", "estimated", "guessed"]);
     }
 }

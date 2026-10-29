@@ -6,7 +6,6 @@ use super::lookup::resolve_in_obs;
 use super::value::Value;
 use crate::error::ApplyError;
 use crate::plans::TextPlan;
-use crate::spec::TextContainer;
 
 /// Produce one model text input value, honoring the plan's fill.
 ///
@@ -37,7 +36,7 @@ pub(super) fn apply_text(
     let Some(value) = value.or_else(|| plan.fill.clone()) else {
         return Ok(None);
     };
-    let entry = if plan.container == TextContainer::List {
+    let entry = if plan.list {
         Value::List(vec![Value::Text(value)])
     } else {
         Value::Text(value)

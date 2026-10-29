@@ -1,4 +1,4 @@
-use crate::config::{Config, CredentialStatus};
+use rlmesh::binding::managed::{Config, CredentialStatus};
 
 use anyhow::Result;
 use std::io::Write;
@@ -212,7 +212,7 @@ fn color_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Profile;
+    use rlmesh::binding::managed::Profile;
     use std::collections::BTreeMap;
 
     const PLAIN: Style = Style {

@@ -21,27 +21,52 @@ publish = { workspace = true }
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [dependencies]
+# The managed-platform client (feature `managed`).
+anyhow = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
+keyring = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["form", "json", "query"], optional = true }
+rustls = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 async-trait = { workspace = true }
+# The `lockstep` module (feature `lockstep`) and token claims (`managed`).
+base64 = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+zenoh = { workspace = true, optional = true }
 rlmesh-spaces = { workspace = true }
 rlmesh-adapters = { workspace = true }
 rlmesh-grpc = { workspace = true }
+# The v2 lockstep transport (`lockstep://` env addresses, protocol v2 §12).
+rlmesh-session = { workspace = true, features = ["record"], optional = true }
 rlmesh-proto = { workspace = true }
-rlmesh-runtime = { workspace = true }
-rlmesh-viewer = { workspace = true }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+prost = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 tempfile = { workspace = true }
-zip = { version = "2", default-features = false }
+# Reads zips the Python recorder deflates.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 futures = { workspace = true }
 image = { workspace = true, features = ["png"] }
-indexmap = { workspace = true }
+# The recorder's in-process AV1 episode videos.
+rav1e = { workspace = true }
+# The recorder's per-episode trajectories (`trajectory.parquet`).
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+half = { workspace = true }
+parquet = { workspace = true }
+# The live viewer (feature `viewer`): terminal and HTTP backends.
+crossterm = { version = "0.29", optional = true }
+tiny_http = { version = "0.12", optional = true }
+indexmap = { workspace = true, features = ["serde"] }
 rand = { workspace = true }
 rayon = { workspace = true }
 scoped-tls-hkt = "0.1.5"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tonic = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
-tokio-util.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v7"] }
@@ -50,10 +75,39 @@ uuid = { workspace = true, features = ["v4", "v7"] }
 libc = { workspace = true }
 
 [dev-dependencies]
+re_mp4 = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tonic-health = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+[features]
+default = ["managed", "viewer"]
+# The managed-platform client (`managed`), sharing the CLI's profiles.
+managed = [
+  "dep:anyhow",
+  "dep:base64",
+  "dep:dirs",
+  "dep:keyring",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:toml",
+]
+# The live terminal/HTTP viewer behind `View`.
+viewer = ["dep:crossterm", "dep:tiny_http", "image/jpeg"]
+# Serve envs and drive models over the v2 lockstep path (`lockstep://`).
+lockstep = [
+  "dep:base64",
+  "dep:blake3",
+  "dep:rlmesh-session",
+  "dep:zenoh",
+  "serde_json/float_roundtrip",
+  "serde_json/raw_value",
+]
+
 [lints]
 workspace = true
+
+[[example]]
+name = "lockstep_bench"
+required-features = ["lockstep"]

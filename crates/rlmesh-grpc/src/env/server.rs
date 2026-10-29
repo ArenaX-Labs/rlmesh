@@ -574,25 +574,13 @@ async fn handle_env_request<E: Environment>(
                 Ok((ok, op_phases)) => {
                     phases = op_phases;
                     let mut tracker = episode_tracker.lock().await;
-                    let episode_count = if partial {
-                        // Start a fresh episode only for the reset lanes, adopting
-                        // the runtime-pushed ids (aligned to env_indices). Other
-                        // lanes keep their active id.
-                        for (i, &env_idx) in env_indices.iter().enumerate() {
-                            let seed = seeds.get(i).copied();
-                            let id = pushed_ids.get(i).cloned().unwrap_or_default();
-                            // Wire env_index is uint32; the tracker keys on i32.
-                            tracker.start_episode(env_idx as i32, seed, id);
-                        }
-                        env_indices.len()
-                    } else {
-                        for env_idx in 0..num_envs {
-                            let seed = seeds.get(env_idx).copied();
-                            let id = pushed_ids.get(env_idx).cloned().unwrap_or_default();
-                            tracker.start_episode(env_idx as i32, seed, id);
-                        }
-                        num_envs
-                    };
+                    let episode_count = start_reset_episodes(
+                        &mut tracker,
+                        &env_indices,
+                        &seeds,
+                        &pushed_ids,
+                        num_envs,
+                    );
                     let obs_bytes = space_value_len(ok.observation.as_ref());
                     let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
                     tracing::debug!(obs_bytes, info_bytes, episode_count, "env reset completed");
@@ -817,6 +805,33 @@ fn is_lane_scoped(req: &JoinRequest) -> bool {
         Some(join_request::Kind::Reset(reset)) => !reset.env_indices.is_empty(),
         _ => false,
     }
+}
+
+/// Start the episodes a successful reset began: only the named lanes of a
+/// partial reset (other lanes keep their active id), or every lane, adopting
+/// the runtime-pushed ids positionally. Returns how many started.
+fn start_reset_episodes(
+    tracker: &mut EpisodeTracker,
+    env_indices: &[u32],
+    seeds: &[i64],
+    pushed_ids: &[String],
+    num_envs: usize,
+) -> usize {
+    if env_indices.is_empty() {
+        for env_idx in 0..num_envs {
+            let seed = seeds.get(env_idx).copied();
+            let id = pushed_ids.get(env_idx).cloned().unwrap_or_default();
+            tracker.start_episode(env_idx as i32, seed, id);
+        }
+        return num_envs;
+    }
+    for (i, &env_idx) in env_indices.iter().enumerate() {
+        let seed = seeds.get(i).copied();
+        let id = pushed_ids.get(i).cloned().unwrap_or_default();
+        // Wire env_index is uint32; the tracker keys on i32.
+        tracker.start_episode(env_idx as i32, seed, id);
+    }
+    env_indices.len()
 }
 
 /// Advance the tracker for every lane a validated step response covers.

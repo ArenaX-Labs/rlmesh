@@ -40,16 +40,27 @@ pub enum EnvRuntimeError {
     /// ends it).
     #[error("recoverable runtime error: {0}")]
     Recoverable(String),
+    /// A runtime failure the env raised as a builtin exception class
+    /// (`ValueError`), kept so a client can raise the same class.
+    #[error("{class}: {message}")]
+    Raised {
+        class: String,
+        message: String,
+        recoverable: bool,
+    },
 }
 
 impl EnvRuntimeError {
     /// Whether the session stays usable after this error.
     #[must_use]
     pub fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
-            Self::InvalidSpace(_) | Self::InvalidValue(_) | Self::Recoverable(_)
-        )
+        match self {
+            Self::Raised { recoverable, .. } => *recoverable,
+            other => matches!(
+                other,
+                Self::InvalidSpace(_) | Self::InvalidValue(_) | Self::Recoverable(_)
+            ),
+        }
     }
 }
 

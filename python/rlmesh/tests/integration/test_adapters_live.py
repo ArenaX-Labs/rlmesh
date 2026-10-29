@@ -10,15 +10,15 @@ actions in its format. This exercises tag -> serve -> resolve_from_contract
 from __future__ import annotations
 
 import importlib
-import socket
 import threading
-import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import rlmesh
 import rlmesh.adapters as adapt
-from rlmesh.numpy import Model, RemoteEnv, RemoteModel
+from rlmesh.numpy import Model, RemoteEnv
 
 if TYPE_CHECKING:
     import numpy as np
@@ -140,17 +140,18 @@ def test_adapted_model_runs_against_tagged_server() -> None:
     def on_episode_end() -> None:
         seen["episode_ends"] = cast(int, seen["episode_ends"]) + 1
 
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
+    server = rlmesh.EnvServer(env_obj, ":0/env", tags=tags)
     server.start()
     try:
-        client = RemoteEnv(server.address)
-        # The tags published via EnvServer(tags=) survive the
-        # round-trip through the contract metadata.
-        recovered = adapt.EnvTags.from_metadata(client.env_contract.metadata or {})
+        with RemoteEnv(server.address) as client:
+            # The tags published via EnvServer(tags=) survive the
+            # round-trip through the contract metadata.
+            recovered = adapt.EnvTags.from_metadata(client.env_contract.metadata or {})
         assert recovered == tags
 
-        Model(predict, spec=spec, on_episode_end=on_episode_end).run(client, episodes=1)
-        client.close()
+        Model(predict, spec=spec, on_episode_end=on_episode_end).run(
+            server.address, episodes=1
+        )
     finally:
         server.shutdown()
 
@@ -210,20 +211,18 @@ def test_adapted_model_runs_against_local_tagged_env() -> None:
     assert adapter_rows and adapter_rows[0].avg > 0.0
 
 
-@pytest.mark.parametrize("path", ["session", "native"])
 @pytest.mark.parametrize(
     ("container", "expected"),
     [("str", "follow the override"), ("list", ["follow the override"])],
 )
 def test_instruction_override_reaches_predict_in_declared_shape(
-    container: str, expected: object, path: str
+    container: str, expected: object
 ) -> None:
     """``run(..., instruction=)`` overrides the text input in its declared shape.
 
     The env publishes its own instruction ("pick up the cube"); the override must
     win and land as a bare ``str`` for ``container='str'`` and as ``[instruction]``
-    for ``container='list'`` -- on the session loop and the native loop alike,
-    and only for the run that asked.
+    for ``container='list'`` -- and only for the run that asked.
     """
     pytest.importorskip("numpy")
 
@@ -249,22 +248,11 @@ def test_instruction_override_reaches_predict_in_declared_shape(
 
     tagged = adapt.tag(env_obj, _tags())
     model = Model(predict, spec=spec)
-    if path == "session":
-        with rlmesh.session(model, tagged, instruction="follow the override") as sess:
-            sess.run(episodes=1)
-    else:
-        try:
-            model.run(tagged, episodes=1, instruction="follow the override")
-        except ConnectionError as exc:
-            if "Operation not permitted" in str(exc):
-                pytest.skip("local tcp bind is not permitted in this environment")
-            raise
-
+    model.run(tagged, episodes=1, instruction="follow the override")
     assert seen["instruction"] == expected
 
-    if path == "native":
-        model.run(tagged, episodes=1)
-        assert seen["instruction"] != expected, "the override is scoped to its run"
+    model.run(tagged, episodes=1)
+    assert seen["instruction"] != expected, "the override is scoped to its run"
 
 
 # (framework module, leaf tensor type, zeros constructor) for the cross-framework
@@ -330,7 +318,7 @@ def test_adapted_model_runs_against_env_factory() -> None:
     spec = _model_spec()
     captured: dict[str, Any] = {}
 
-    # Pass the EnvFactory straight in: session/run builds + tags + drives it locally.
+    # Pass the EnvFactory straight in: run builds + tags + drives it locally.
     result = Model(_arm_predict(spec, captured), spec=spec).run(
         TinyArmFactory(), episodes=1
     )
@@ -351,7 +339,7 @@ def test_resolve_from_contract_describes_the_pairing() -> None:
     spec = _model_spec()
     env_obj = TinyArmEnv()
 
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
+    server = rlmesh.EnvServer(env_obj, ":0/env", tags=tags)
     server.start()
     try:
         client = RemoteEnv(server.address)
@@ -364,19 +352,28 @@ def test_resolve_from_contract_describes_the_pairing() -> None:
         server.shutdown()
 
 
-def _free_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+@contextmanager
+def _served(model: Any, port: int) -> Iterator[str]:
+    """Serve ``model`` on a session at ``port`` in a thread; yield the address
+    reaching it."""
+    session = f"127.0.0.1:{port}"
+    thread = threading.Thread(
+        target=model.serve, args=(session,), kwargs={"name": "model"}
+    )
+    thread.start()
     try:
-        sock.bind(("127.0.0.1", 0))
-        return cast(int, sock.getsockname()[1])
+        yield f"{session}/model"
     finally:
-        sock.close()
+        model.close()
+        thread.join(10)
 
 
-def test_served_spec_model_resolves_adapter_at_configure_route() -> None:
+def test_served_spec_model_resolves_adapter_at_configure_route(
+    session_port: int,
+) -> None:
     """A spec'd model served over the wire resolves its adapter from the route's
-    contract (configure_route) and applies transform_obs/transform_action, so the
-    same RemoteEnv/RemoteModel loop drives an adapted model end-to-end."""
+    contract (configure_route) and applies transform_obs/transform_action, so
+    ``Model(address).run`` drives an adapted model end-to-end."""
     pytest.importorskip("numpy")
 
     tags = _tags()
@@ -390,43 +387,8 @@ def test_served_spec_model_resolves_adapter_at_configure_route() -> None:
         seen["payload_keys"] = sorted(payload)
         return np.zeros(spec.output.dim, dtype=np.float32)
 
-    env_server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
-    env_server.start()
-    model_address = f"127.0.0.1:{_free_port()}"
-
-    def serve_model() -> None:
-        Model(predict, spec=spec).serve(
-            model_address, options=rlmesh.ServeOptions(allow_remote_shutdown=True)
-        )
-
-    threading.Thread(target=serve_model, daemon=True).start()
-
-    try:
-        env = RemoteEnv(env_server.address)
-        deadline = time.monotonic() + 5.0
-        sess: Any = None
-        last_error: BaseException | None = None
-        while time.monotonic() < deadline:
-            try:
-                sess = rlmesh.session(RemoteModel(model_address), env)
-                break
-            except Exception as exc:
-                last_error = exc
-                time.sleep(0.05)
-        if sess is None:
-            raise AssertionError("served model never came up") from last_error
-
-        obs, _info = sess.reset(seed=0)
-        steps = 0
-        while not sess.done and steps < 5:
-            action = sess.predict(obs)
-            obs, _reward, _terminated, _truncated, _info = sess.step(action)
-            steps += 1
-
-        sess.close()
-        env.close()
-    finally:
-        env_server.shutdown()
+    with _served(Model(predict, spec=spec), session_port) as address:
+        Model(address).run(adapt.tag(env_obj, tags), episodes=1)
 
     # transform_obs ran server-side: the policy saw the model's declared payload.
     assert seen["payload_keys"] == ["image", "instruction", "state"]
@@ -465,7 +427,7 @@ def test_local_stacked_run_reports_held_state_telemetry() -> None:
     assert rows["held.bytes"].unit == "bytes"
 
 
-def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
+def test_served_frame_stacking_adapter_stacks_per_episode(session_port: int) -> None:
     """A served frame-stacking (stateful) spec'd model end-to-end.
 
     The native serving engine episode-keys the frame buffers and stacks
@@ -495,38 +457,8 @@ def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
         images.append(np.asarray(payload["image"]))
         return np.zeros(spec.output.dim, dtype=np.float32)
 
-    env_server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
-    env_server.start()
-    model_address = f"127.0.0.1:{_free_port()}"
-
-    def serve_model() -> None:
-        Model(predict, spec=spec).serve(
-            model_address, options=rlmesh.ServeOptions(allow_remote_shutdown=True)
-        )
-
-    threading.Thread(target=serve_model, daemon=True).start()
-    try:
-        env = RemoteEnv(env_server.address)
-        deadline = time.monotonic() + 5.0
-        sess: Any = None
-        while time.monotonic() < deadline:
-            try:
-                sess = rlmesh.session(RemoteModel(model_address), env)
-                break
-            except Exception:  # retry until the server is up
-                time.sleep(0.05)
-        assert sess is not None, "served model never came up"
-
-        obs, _info = sess.reset(seed=0)
-        steps = 0
-        while not sess.done and steps < 3:
-            action = sess.predict(obs)
-            obs, _reward, _terminated, _truncated, _info = sess.step(action)
-            steps += 1
-        sess.close()
-        env.close()
-    finally:
-        env_server.shutdown()
+    with _served(Model(predict, spec=spec), session_port) as address:
+        Model(address).run(adapt.tag(env_obj, tags), episodes=1)
 
     import numpy as np
 
@@ -570,12 +502,10 @@ def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
             return chunk
 
     env_obj = TinyArmEnv()
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
+    server = rlmesh.EnvServer(env_obj, ":0/env", tags=_tags())
     server.start()
     try:
-        client = RemoteEnv(server.address)
-        ChunkModel().run(client, episodes=1, execution_horizon=2)
-        client.close()
+        ChunkModel().run(server.address, episodes=1, execution_horizon=2)
     finally:
         server.shutdown()
 
@@ -606,14 +536,12 @@ def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
             return single
 
     env_obj = TinyArmEnv()
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
+    server = rlmesh.EnvServer(env_obj, ":0/env", tags=_tags())
     server.start()
     try:
-        client = RemoteEnv(server.address)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            PlainModel().run(client, episodes=1, execution_horizon=2)
-        client.close()
+            PlainModel().run(server.address, episodes=1, execution_horizon=2)
     finally:
         server.shutdown()
 
@@ -624,11 +552,11 @@ def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
     ]
 
 
-def test_served_model_chunks_via_remote_model_mini_driver() -> None:
-    """A served spec'd model with predict_chunk + RemoteModel.session(execution_horizon=2):
-    the served engine emits the chunk; RemoteModel pins the horizon on ResolveAdapter,
-    buffers the chunk's future frames, and replays them open-loop (a predict RPC only
-    every 2 steps). The end-to-end served-OSS chunking path."""
+def test_served_model_chunks_through_a_run(session_port: int) -> None:
+    """A served spec'd model with predict_chunk, run with execution_horizon=2:
+    the served engine emits the chunk; the driver pins the horizon at resolve,
+    buffers the chunk's future frames and replays them open-loop (a predict
+    only every 2 steps). The end-to-end served chunking path."""
     pytest.importorskip("numpy")
     pytest.importorskip("gymnasium")
     import numpy as np
@@ -650,40 +578,11 @@ def test_served_model_chunks_via_remote_model_mini_driver() -> None:
             return chunk
 
     env_obj = TinyArmEnv()
-    env_server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
-    env_server.start()
-    model_address = f"127.0.0.1:{_free_port()}"
-
-    def serve_model() -> None:
-        ChunkModel().serve(
-            model_address, options=rlmesh.ServeOptions(allow_remote_shutdown=True)
-        )
-
-    threading.Thread(target=serve_model, daemon=True).start()
-
-    try:
-        env = RemoteEnv(env_server.address)
-        deadline = time.monotonic() + 5.0
-        sess: Any = None
-        last_error: BaseException | None = None
-        while time.monotonic() < deadline:
-            try:
-                sess = RemoteModel(model_address).session(env, execution_horizon=2)
-                break
-            except Exception as exc:
-                last_error = exc
-                time.sleep(0.05)
-        if sess is None:
-            raise AssertionError("served model never came up") from last_error
-
-        sess.run(episodes=1)
-        sess.close()
-        env.close()
-    finally:
-        env_server.shutdown()
+    with _served(ChunkModel(), session_port) as address:
+        Model(address).run(adapt.tag(env_obj, _tags()), episodes=1, execution_horizon=2)
 
     # 3-step episode, chunk size 2: the served model's predict_chunk fires once per
-    # 2 steps (steps 0 and 2); RemoteModel replays the in-between step without an RPC.
+    # 2 steps (steps 0 and 2); the driver replays the in-between step without a predict.
     # The runtime-chosen horizon reaches the served model's predict_chunk.
     assert calls["predict_chunk"] == 2, calls
     assert calls["predict"] == 0, calls

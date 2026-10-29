@@ -2,9 +2,10 @@
 
 ``python -m rlmesh.serve my_pkg:Policy`` serves a model; ``--env my_pkg:Env``
 serves an environment. The target may be a ``Model`` subclass, an :class:`EnvFactory`,
-or a bare predict / make-env callable. Serves on ``RLMESH_ADDRESS``
-(default ``0.0.0.0:50051``); point your Dockerfile ``ENTRYPOINT`` here instead of
-hand-writing a serve loop.
+or a bare predict / make-env callable. Serves as ``RLMESH_NAME`` (default
+``model``, or ``env``) in the session at ``RLMESH_ADDRESS`` (default
+``0.0.0.0:7447``, hosted here); point your Dockerfile ``ENTRYPOINT`` here
+instead of hand-writing a serve loop.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from ._authoring import render_binding
 from ._entrypoint import resolve_entrypoint
 
 # Startup phase marks. Every mark is wall-clock milliseconds since the process
@@ -135,6 +137,11 @@ if TYPE_CHECKING:
 
 __all__ = ["main", "serve_env", "serve_model", "startup_marks"]
 
+# Where a model or env serves by default: the default session, hosted in this
+# process on the well-known port, on all interfaces (a container's published
+# ports).
+_ADDRESS = "0.0.0.0:7447"
+
 # Frameworks whose obs/action seam carries device tensors. numpy and the default
 # Auto backend have no device, so a device= is meaningless (and unsupported) there.
 _DEVICE_FRAMEWORKS = ("torch", "jax")
@@ -201,7 +208,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--env", help="module:Class for an environment")
     parser.add_argument(
-        "--address", default=os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
+        "--address",
+        default=os.environ.get("RLMESH_ADDRESS") or None,
+        help=(
+            f"The session to serve in (default {_ADDRESS}, which hosts it here on "
+            "all interfaces). Defaults to RLMESH_ADDRESS."
+        ),
+    )
+    parser.add_argument(
+        "--name",
+        default=os.environ.get("RLMESH_NAME") or None,
+        help=(
+            "The participant name in the session, reached at '<address>/<name>'. "
+            "Defaults to RLMESH_NAME, then 'model' (or 'env' with --env)."
+        ),
     )
     parser.add_argument(
         "--framework",
@@ -300,9 +320,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             env = resolve_entrypoint(args.env, label="env entrypoint")
             _mark("imports")
+            # The model's Image(render=...) size, which a sandbox driver that
+            # knows the model passes in: bound on the env's own camera dial,
+            # under the explicit binding.
+            binding = render_binding(env, _render_size(parser)) | binding
             serve_env(
                 env,
-                args.address,
+                f"{(args.address or _ADDRESS).rstrip('/')}/{args.name or 'env'}",
                 num_envs=num_envs,
                 vectorization_mode=vectorization_mode,
                 framework=args.framework,
@@ -315,7 +339,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _mark("imports")
             serve_model(
                 model,
-                args.address,
+                args.address or _ADDRESS,
+                name=args.name or "model",
                 binding=binding,
                 workflow_edition=args.workflow_edition,
             )
@@ -326,6 +351,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         # traceback. Not 0: an interrupt during startup served nothing.
         return 130
     return 0
+
+
+def _render_size(parser: argparse.ArgumentParser) -> tuple[int, int] | None:
+    """``RLMESH_RENDER_SIZE`` (``"<height>x<width>"``) as a pair, or ``None``."""
+    raw = os.environ.get("RLMESH_RENDER_SIZE")
+    if not raw:
+        return None
+    height, sep, width = raw.partition("x")
+    if not (sep and height.isdigit() and width.isdigit()):
+        parser.error(f"RLMESH_RENDER_SIZE must be <height>x<width>, got {raw!r}")
+    return int(height), int(width)
 
 
 def _json_object(value: str) -> dict[str, Any]:
@@ -343,10 +379,11 @@ def serve_model(
     model_source: object,
     address: str,
     *,
+    name: str = "model",
     binding: dict[str, Any] | None = None,
     workflow_edition: str | None = None,
 ) -> None:
-    """Host a model on ``address`` (blocking).
+    """Serve a model in the session at ``address`` as ``name`` (blocking).
 
     Resolves the source to a serveable ``Model``: a ``Model`` subclass class is
     instantiated, an existing ``Model`` instance is used directly, and a bare predict
@@ -371,8 +408,8 @@ def serve_model(
         option=workflow_edition,
         declared=getattr(type(model), "workflow_edition", None),
     )
-    _stamp_startup("model", address, model, options=options)
-    model.serve(address, options=options)
+    _stamp_startup("model", f"{address.rstrip('/')}/{name}", model, options=options)
+    model.serve(address, name=name, options=options)
 
 
 def _warn_without_spec(model: object) -> None:
@@ -442,7 +479,7 @@ def serve_env(
     workflow_edition: str | None = None,
     **make_kwargs: object,
 ) -> None:
-    """Host an environment on ``address`` (blocking).
+    """Serve an environment at the participant address ``address`` (blocking).
 
     An :class:`EnvFactory` class/instance is constructed via ``prepare()`` +
     ``make(**make_kwargs)`` and its ``tags`` published; a bare make-env callable is

@@ -1,0 +1,23 @@
+[package]
+name = "rlmesh-tether"
+description = "Internal RLMesh crate (unstable Rust API): the serial tether a small board without a network uses to be a robot through a computer. COBS framing, CRC-16 and frame encoding, sans-IO and allocation-free, so Rust firmware can use it as-is."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = true
+
+# no_std and allocation-free: the same code runs on the bridge and on a board.
+[dependencies]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -32,6 +32,19 @@ The `params` module and the `Model.params` and `EnvFactory.params` declarations
 are Experimental; their native counterparts are deferred until that surface is
 Stable.
 
+`rlmesh.EvalReport` (per-task and per-suite success of saved result bundles)
+is Experimental. Rust reaches it as `rlmesh::binding::report` (binding
+plumbing, semver-exempt) and the CLI as `rlmesh eval report`; C and C++ are
+deferred.
+
+`BatchOptions` (a served model's batcher) and the `RunHooks`
+`transform_observation` and `transform_action` hooks are Experimental.
+
+`Model.run_routes` (many env targets against one model in one process) and
+`RunResult.merge` are Experimental. Rust reaches them as
+`rlmesh::binding::routes` (binding plumbing, semver-exempt); C and C++ are
+deferred.
+
 > [!WARNING]
 > The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an earlier release fails with a decode error naming the unknown dtype when it meets an environment that uses them: a clean refusal at the decoding peer, not a conversion. A per-leg dtype ceiling that refuses on the sending side instead is on the roadmap below.
 
@@ -43,7 +56,7 @@ Stable.
 The `rlmesh` Rust facade crate, the C API (`rlmesh.h`) and the C++ header (`rlmesh.hpp`) share the Python package's nouns and constructs (envs, spaces, values, models, runs, sessions, remote clients and the same error classes and texts), each in its own language's conventions. Their changes are recorded in the [changelog](../CHANGELOG.md), breaking ones with a migration note. None of them carries Python's Stable promise yet:
 
 - **Rust facade (`rlmesh` crate): Preview.** It is intended to become stable but may still change in a `0.x` minor release, with a migration note. `rlmesh::ext` holds documented Rust-only extras and is part of the facade. `rlmesh::binding` is `#[doc(hidden)]` plumbing for the in-repo bindings (the Python extension and the C API): it is Internal and exempt from SemVer, so do not depend on it.
-- **C API (`rlmesh.h`): Experimental.** Binary compatibility is tracked by the ABI generation, currently 5: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.5` SONAME and the CMake package version. A layout or enum change, a signature retype or a removed symbol bumps the generation, which may happen in any minor release; binaries and sources built for another generation do not load or build against it. Within a generation, a sized struct (options, vtables, attributes, out-structs) grows only by appending optional fields whose all-zero bytes mean the default, so a caller compiled against an older header keeps working; a field that must be supplied needs a new generation. A struct below its `RLMESH_<NAME>_MIN_SIZE` is refused, and a newer caller's nonzero bytes past the library's struct size are refused rather than ignored. C-only extras are fenced under `rlmesh_ext_` / `RLMeshExt` names.
+- **C API (`rlmesh.h`): Experimental.** Binary compatibility is tracked by the ABI generation, currently 6: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.6` SONAME and the CMake package version. 0.2 does not ship the C ABI; generation 6 grew after it was cut without a bump, so the first release that ships it publishes that surface as ABI 7. A layout or enum change, a signature retype or a removed symbol bumps the generation, which may happen in any minor release; binaries and sources built for another generation do not load or build against it. Within a generation, a sized struct (options, vtables, attributes, out-structs) grows only by appending optional fields whose all-zero bytes mean the default, so a caller compiled against an older header keeps working; a field that must be supplied needs a new generation. A struct below its `RLMESH_<NAME>_MIN_SIZE` is refused, and a newer caller's nonzero bytes past the library's struct size are refused rather than ignored. C-only extras are fenced under `rlmesh_ext_` / `RLMeshExt` names.
 - **C++ header (`rlmesh.hpp`): Experimental.** A header-only C++17 wrapper over the C API, compiled into each consumer; it changes together with the C API it wraps. It requires C++17 and exceptions and is tested at C++17 and C++20 with one header shape. C++-only extras live in `rlmesh::ext`.
 
 - **C# package (`RLMesh`): Experimental.** The `netstandard2.1` and `net10.0` assemblies support serving authored environments, including spaces, tensors, values and supporting errors. See [the C# guide](../csharp/README.md) for usage and native-library requirements. This API may change or disappear. Hosts must complete `RLMesh.Ext.Lifetime.Shutdown` before unloading its managed context; a `false` result means the context must remain loaded. Unity runtime support has not yet been validated.
@@ -99,9 +112,9 @@ The same shape fixes what a future `rlmesh-wire-v2` would look like: a runtime-o
 - **Sealed editions are never dropped.** `rlmesh.toml` lists the retained editions, the `rlmesh-proto` crate ships a copy of that list, and every build generates its offer from it at build time. `mise run policy:check` fails if the generated list and the manifest disagree, if a sealed edition leaves the list, or if the list lost an edition the last release tag's manifest had sealed.
 - **The wire grows additively.** Field tags are never removed or renumbered within `rlmesh-wire-v1` (`mise run protocol:breaking`). A new dtype, `AutoresetMode`, or `SpaceSpec` arm is a new type an old peer refuses rather than decodes wrongly (the two exceptions, error codes and `MetaValue` kinds, are listed under "Not yet guaranteed"), and an emitter may only send it toward a leg that can decode it; the emitter-side rules are in [workflow editions](editions/index.md).
 
-### The machine proof
+### Across 0.1 and 0.2
 
-`mise run test:crossver` builds a release-cohort wheel from this tree and runs it against the published wheel pinned in `tests/system/crossver.lock`: old and new env servers against old and new runtimes, old and new served models against the other side's runtime, both same-version controls, and two forged refusals (a pin of an edition no build implements, and a `rlmesh-wire-v2` handshake). Each real cell must reproduce the committed trace and report the server's handshake result and the session edition. It runs as its own CI job; `docs/testing.md` describes the cells.
+0.2 speaks only session addresses and refuses the 0.1 gRPC wire by address, naming the 0.2 form, so a 0.1 peer and a 0.2 peer never meet and there is no cross-version matrix. An image built with 0.1 is refused by `SandboxEnv` and `SandboxModel` with a message to rebuild it with 0.2.
 
 ### Not yet guaranteed
 

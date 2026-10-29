@@ -30,18 +30,10 @@ macro_rules! input {
 }
 input!(crate::adapters::RLMeshAction, has_clip);
 input!(
-    crate::adapters::RLMeshActuator,
-    has_encoding,
-    has_range,
-    binary,
-    has_scale,
-    invert,
-    has_threshold,
-    clip,
-    optional,
-    has_frame,
-    has_reference,
-    has_offset
+    crate::adapters::RLMeshActuator;
+    first_appended = polarity;
+    appended = [polarity, unit];
+    bools = [has_encoding, has_range, binary, has_scale, invert, has_threshold, clip, optional, has_frame, has_reference, has_offset, has_unit]
 );
 input!(crate::adapters::RLMeshAdaptersText, has_fill);
 input!(crate::adapters::RLMeshAdvisory);
@@ -50,10 +42,10 @@ input!(crate::adapters::RLMeshConstant);
 input!(crate::adapters::RLMeshCustom);
 input!(crate::adapters::RLMeshCustomEncoding);
 input!(
-    crate::adapters::RLMeshField,
-    has_range,
-    has_frame,
-    has_provenance
+    crate::adapters::RLMeshField;
+    first_appended = polarity;
+    appended = [polarity];
+    bools = [has_range, has_frame, has_provenance]
 );
 input!(
     crate::adapters::RLMeshImage,
@@ -81,25 +73,20 @@ input!(
 input!(crate::adapters::RLMeshRotation);
 input!(crate::adapters::RLMeshSplit);
 input!(
-    crate::adapters::RLMeshState,
-    has_dim,
-    has_index,
-    optional,
-    has_range,
-    has_pad_to,
-    has_scale,
-    has_offset,
-    has_frame,
-    has_clip
+    crate::adapters::RLMeshState;
+    first_appended = polarity;
+    appended = [polarity];
+    bools = [has_dim, has_index, optional, has_range, has_pad_to, has_scale, has_offset, has_frame, has_clip]
 );
 input!(
-    crate::adapters::RLMeshStateTag,
-    has_range,
-    has_frame,
-    has_provenance
+    crate::adapters::RLMeshStateTag;
+    first_appended = polarity;
+    appended = [polarity];
+    bools = [has_range, has_frame, has_provenance]
 );
 input!(crate::adapters::RLMeshTagOptions, validate);
 input!(crate::adapters::RLMeshTextTag);
+input!(crate::adapters::RLMeshTiming, has_execution);
 input!(crate::adapters::runtime::RLMeshAdapterVtable);
 input!(crate::describe_api::RLMeshDescribeJsonOptions, has_kind);
 input!(crate::describe_api::RLMeshDescribeOptions, has_kind);
@@ -140,11 +127,17 @@ input!(
     bools = [has_predict_concurrency, no_signal_handlers]
 );
 input!(crate::model_api::RLMeshModelOptions, trust_entrypoints);
-input!(crate::model_api::RLMeshModelServeOptions);
+input!(crate::run_results::RLMeshRunResultSaveOptions);
 input!(
-    crate::model_api::RLMeshModelVtable,
-    allow_fusion,
-    has_native_chunk
+    crate::model_api::RLMeshModelServeOptions;
+    first_appended = name;
+    appended = [name]
+);
+input!(
+    crate::model_api::RLMeshModelVtable;
+    first_appended = reset_options;
+    appended = [reset_options, loaded_execution_horizon];
+    bools = [allow_fusion, has_native_chunk]
 );
 input!(
     crate::recorder::RLMeshRecorderAddOptions,
@@ -182,19 +175,14 @@ input!(
     bools = [has_port, has_transport, has_connect_timeout_seconds, has_request_timeout_seconds]
 );
 input!(
-    crate::remote_api::RLMeshRemoteModelOptions;
-    first_appended = api_key;
-    appended = [api_key, tls_ca_file];
-    bools = [has_port, has_transport, has_connect_timeout_seconds, has_request_timeout_seconds]
-);
-input!(
     crate::run_api::RLMeshRunOptions,
     has_episodes,
     has_max_episode_steps,
     has_max_episode_seconds,
     close_env,
     has_trust_entrypoints,
-    trust_entrypoints
+    trust_entrypoints,
+    has_execution_horizon
 );
 input!(crate::run_hooks::RLMeshRunContextVtable);
 input!(crate::run_hooks::RLMeshRunHooksVtable);
@@ -217,16 +205,10 @@ input!(
 );
 input!(crate::run_results::RLMeshRunResultOptions);
 input!(
-    crate::session_api::RLMeshSessionOptions,
-    close_env,
-    has_trust_entrypoints,
-    trust_entrypoints
-);
-input!(
-    crate::session_api::RLMeshSessionRunOptions,
-    has_episodes,
-    has_max_episode_steps,
-    has_max_episode_seconds
+    crate::binding_api::RLMeshBindOptions;
+    first_appended = hooks;
+    appended = [hooks, view];
+    bools = [close_env, has_execution_horizon]
 );
 input!(crate::space_handle::RLMeshBoxOptions);
 input!(crate::space_handle::RLMeshDiscreteOptions);
@@ -246,7 +228,7 @@ pub(crate) const fn field_size<T, F>(_get: fn(&T) -> &F) -> usize {
 #[cfg(test)]
 mod tests {
     use super::SizedInput;
-    use crate::remote_api::{RLMeshRemoteEnvOptions, RLMeshRemoteModelOptions};
+    use crate::remote_api::RLMeshRemoteEnvOptions;
     use std::ffi::c_char;
 
     /// The ABI-5 layouts, as an ABI-5 caller compiled them.
@@ -267,32 +249,11 @@ mod tests {
         request_timeout_seconds: f64,
         workflow_edition: *const c_char,
     }
-    #[repr(C)]
-    #[allow(dead_code)]
-    struct Abi5Model {
-        struct_size: usize,
-        address: *const c_char,
-        host: *const c_char,
-        has_port: bool,
-        port: u16,
-        path: *const c_char,
-        has_transport: bool,
-        transport: i32,
-        has_connect_timeout_seconds: bool,
-        connect_timeout_seconds: f64,
-        has_request_timeout_seconds: bool,
-        request_timeout_seconds: f64,
-    }
-
     #[test]
     fn appended_remote_fields_start_past_the_abi5_sizeof_on_this_target() {
         assert_eq!(
             <RLMeshRemoteEnvOptions as SizedInput>::MIN_SIZE,
             std::mem::size_of::<Abi5Env>()
-        );
-        assert_eq!(
-            <RLMeshRemoteModelOptions as SizedInput>::MIN_SIZE,
-            std::mem::size_of::<Abi5Model>()
         );
         assert!(
             std::mem::offset_of!(RLMeshRemoteEnvOptions, api_key) >= std::mem::size_of::<Abi5Env>()

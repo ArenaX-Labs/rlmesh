@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import rlmesh
 import rlmesh.adapters as adapt
-from rlmesh import EpisodeResult, Recorder, RunResult, StepEvent
+from rlmesh import EpisodeResult, Recorder, RunResult, StepEvent, TelemetryRow
 from rlmesh.recorder import SCHEMA
 
 
@@ -140,8 +140,8 @@ def test_included_in_metrics_excludes_from_aggregates() -> None:
     assert wl.episodes[0].included_in_metrics is False
 
 
-def test_success_rate_is_none_when_an_episode_has_no_reported_outcome() -> None:
-    """success=None is unknown, not a failure: the exported successRate is null."""
+def test_success_rate_counts_an_episode_with_no_reported_outcome_as_a_failure() -> None:
+    """success=None counts as a failure beside a reported outcome, as on the platform."""
     rec = Recorder()
     rec.add(
         _run(
@@ -150,8 +150,8 @@ def test_success_rate_is_none_when_an_episode_has_no_reported_outcome() -> None:
         model="m",
         env="e",
     )
-    assert rec.workloads[0].success_rate is None
-    assert rec.workloads[0].to_dict()["metrics"]["successRate"] is None
+    assert rec.workloads[0].success_rate == 0.5
+    assert rec.workloads[0].to_dict()["metrics"]["successRate"] == 0.5
 
 
 def test_export_folder(tmp_path: Path) -> None:
@@ -274,7 +274,7 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
 
     rec = Recorder(fps=20)
     session: Any = _context(_Client(), None)
-    hooks = rec.capture(model="m", env="e", task="t", session=session)
+    hooks = rec.capture(model="m", env="e", task="t", binding=session)
     hooks.on_episode_start(episode=0, seed=0)
     for _ in range(4):
         hooks.on_step(_step_event())
@@ -289,11 +289,11 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
     rec.close()
 
 
-@pytest.mark.parametrize("path", ["session", "native"])
+@pytest.mark.parametrize("path", ["bind", "native"])
 def test_capture_smoke_with_a_real_run(tmp_path: Path, path: str) -> None:
     """Recorder.capture works through a real run's hook path, on either loop.
 
-    Deliberately omits ``session=``: the hooks must adopt the run's context via
+    Deliberately omits ``binding=``: the hooks must adopt the run's context via
     ``RunHooks.on_run_start`` and auto-discover the image role from it.
     """
     np = pytest.importorskip("numpy")
@@ -332,30 +332,20 @@ def test_capture_smoke_with_a_real_run(tmp_path: Path, path: str) -> None:
     )
     env = adapt.tag(_ImageEnv(), tags)
 
+    from rlmesh.numpy import Model
+
     rec = Recorder(fps=12)
-    if path == "session":
-        with rlmesh.session(rlmesh.RANDOM_SAMPLE, env) as sess:
-            result = sess.run(
-                seeds=[123],
-                hooks=rec.capture(model="random", env="image-env", task="smoke"),
-            )
+    model = Model(lambda obs: np.zeros(1, np.float32), spec=rlmesh.NO_ADAPTER)
+    hooks = rec.capture(model="zeros", env="image-env", task="smoke")
+    if path == "bind":
+        with model.bind(env, hooks=hooks) as binding:
+            binding.reset(seed=123)
+            while not binding.done:
+                binding.step()
     else:
-        from rlmesh.numpy import Model
+        model.run(env, seeds=[123], hooks=hooks)
 
-        model = Model(lambda obs: np.zeros(1, np.float32), spec=rlmesh.NO_ADAPTER)
-        try:
-            result = model.run(
-                env,
-                seeds=[123],
-                hooks=rec.capture(model="zeros", env="image-env", task="smoke"),
-            )
-        except ConnectionError as exc:
-            if "Operation not permitted" in str(exc):
-                pytest.skip("local tcp bind is not permitted in this environment")
-            raise
-
-    assert result.num_episodes == 1
-    assert result.episodes[0].steps == 2
+    assert [episode.steps for episode in rec.workloads[0].episodes] == [2]
     media = rec.workloads[0].episodes[0].media
     assert len(media) == 1
     ref = media[0]
@@ -412,6 +402,79 @@ def test_native_capture_records_render_of_a_local_env(tmp_path: Path) -> None:
     media = rec.workloads[0].episodes[0].media
     assert [m.camera for m in media] == ["render"]
     assert media[0].frame_count == 2 and (media[0].width, media[0].height) == (64, 48)
+
+
+def test_record_writes_the_episode_artifact_tree_of_a_run(tmp_path: Path) -> None:
+    """Recorder.record writes the managed per-episode layout into the bundle;
+    with no transform the perturbed stream is the raw file."""
+    np = pytest.importorskip("numpy")
+    gym = pytest.importorskip("gymnasium")
+    from rlmesh.numpy import Model
+
+    class _ImageEnv:
+        def __init__(self) -> None:
+            self.metadata: dict[str, object] = {}
+            self.observation_space = gym.spaces.Dict(
+                {"cam": gym.spaces.Box(0, 255, shape=(16, 16, 3), dtype=np.uint8)}
+            )
+            self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
+            self._step = 0
+
+        def reset(self, *, seed: object = None, options: object = None) -> Any:
+            self._step = 0
+            return {"cam": np.zeros((16, 16, 3), np.uint8)}, {}
+
+        def step(self, action: object) -> Any:
+            self._step += 1
+            done = self._step >= 3
+            return (
+                {"cam": np.zeros((16, 16, 3), np.uint8)},
+                1.0,
+                done,
+                False,
+                ({"is_success": True} if done else {}),
+            )
+
+        def close(self) -> None:
+            pass
+
+    tags = adapt.EnvTags(
+        observation={"cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    rec = Recorder()
+    hooks = rec.record(
+        model="zeros",
+        env="image-env",
+        spec={
+            "video": {"raw": ["primary"], "perturbed": ["primary"]},
+            "trajectory": {"obs": "both"},
+        },
+    )
+    Model(lambda obs: np.zeros(1, np.float32), spec=rlmesh.NO_ADAPTER).run(
+        adapt.tag(_ImageEnv(), tags), seeds=[5, 6], hooks=hooks
+    )
+    out = rec.export(tmp_path / "bundle")
+    document = json.loads((out / "result.json").read_text())
+    workload = document["workloads"][0]
+    assert workload["artifactRoot"] == "workloads/c0001/attempts/a001"
+    stamp = document["stamp"]
+    assert stamp["runnerVersion"] == stamp["ossCrateVersions"]["rlmesh"]
+    root = out / workload["artifactRoot"]
+    assert sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()) == [
+        f"episodes/ep00000{i}/{name}"
+        for i in (1, 2)
+        for name in ("episode.json", "trajectory.parquet", "video/primary.raw.mp4")
+    ] + ["telemetry/windows.jsonl"]
+    episode = json.loads((root / "episodes/ep000002/episode.json").read_text())
+    assert (episode["seed"], episode["verdict"], episode["steps"]) == (6, "success", 3)
+    assert sorted((r["stream"], r["path"]) for r in episode["recordings"]) == [
+        ("perturbed", "episodes/ep000002/video/primary.raw.mp4"),
+        ("raw", "episodes/ep000002/video/primary.raw.mp4"),
+    ]
+    media = rec.workloads[0].episodes[1].media
+    assert {m.camera for m in media} == {"primary.raw", "primary.perturbed"}
+    assert all((out / m.path).read_bytes()[4:8] == b"ftyp" for m in media)
 
 
 def test_capture_refuses_frames_from_a_vector_env() -> None:
@@ -488,7 +551,7 @@ def test_auto_discovery_records_image_role_named_render() -> None:
         return role_img
 
     rec = Recorder()
-    hooks = rec.capture(model="m", env="e", task="t", session=session)
+    hooks = rec.capture(model="m", env="e", task="t", binding=session)
     hooks.on_episode_start(episode=0, seed=0)
     hooks.on_step(_step_event(read=read))
     hooks.on_episode_end(_episode(0, reward=1.0, success=True))
@@ -520,7 +583,7 @@ def test_auto_discovery_reads_render_role_without_render_source() -> None:
         return role_img
 
     rec = Recorder()
-    hooks = rec.capture(model="m", env="e", task="t", session=session)
+    hooks = rec.capture(model="m", env="e", task="t", binding=session)
     hooks.on_episode_start(episode=0, seed=0)
     hooks.on_step(_step_event(read=read))
     hooks.on_episode_end(_episode(0, reward=1.0, success=True))
@@ -596,7 +659,7 @@ def test_env_video_eager_copy_survives_overwrite(
 
 
 def test_capture_defers_camera_discovery_to_first_step() -> None:
-    """capture(session=) must not read the contract before the session connects."""
+    """capture(binding=) must not read the contract before the env connects."""
     rec = Recorder()
 
     class _Spy:
@@ -615,7 +678,7 @@ def test_capture_defers_camera_discovery_to_first_step() -> None:
             return FrameSources(roles=(), render_label=None, render=None)
 
     spy: Any = _Spy()
-    hooks = rec.capture(model="m", env="e", task="t", session=spy)
+    hooks = rec.capture(model="m", env="e", task="t", binding=spy)
     assert _Spy.reads == 0
 
     hooks.on_episode_start(episode=0, seed=0)
@@ -644,7 +707,7 @@ def test_explicit_empty_cameras_skips_discovery() -> None:
             return FrameSources(roles=(), render_label=None, render=None)
 
     spy: Any = _Spy()
-    hooks = rec.capture(model="m", env="e", task="t", cameras=[], session=spy)
+    hooks = rec.capture(model="m", env="e", task="t", cameras=[], binding=spy)
     hooks.on_episode_start(episode=0, seed=0)
     hooks.on_step(_step_event())
     hooks.on_episode_end(_episode(0, reward=1.0, success=True))
@@ -735,8 +798,9 @@ def test_context_manager_cleans_staging(tmp_path: Path) -> None:
     assert staging is None or not Path(staging).exists()
 
 
-def test_recorder_validates_quality_and_integer_fps() -> None:
-    """Bad fps/quality fail at construction, not as a swallowed first-frame error."""
+def test_recorder_validates_video_options_at_construction(tmp_path: Path) -> None:
+    """Bad fps/quality/codec and a missing ffmpeg fail at construction, not as a
+    swallowed first-frame error."""
     with pytest.raises(ValueError, match="quality"):
         _ = Recorder(quality=300)
     with pytest.raises(ValueError, match="quality"):
@@ -745,6 +809,13 @@ def test_recorder_validates_quality_and_integer_fps() -> None:
         _ = Recorder(fps=29.97)  # pyright: ignore[reportArgumentType]
     _ = Recorder(quality=1)
     _ = Recorder(quality=100)
+    with pytest.raises(ValueError, match="codec"):
+        _ = Recorder(codec="vp9")
+    missing = tmp_path / "no-ffmpeg"
+    with pytest.raises(
+        RuntimeError, match=r"needs ffmpeg.*install ffmpeg with libx264"
+    ):
+        _ = Recorder(codec="h264", ffmpeg=str(missing))
 
 
 def test_export_rejects_unknown_archive_string(tmp_path: Path) -> None:
@@ -853,7 +924,7 @@ def test_explicit_render_camera_falls_back_to_render_source() -> None:
     session: Any = _context(_Client(), None)
     rec = Recorder()
     hooks = rec.capture(
-        model="m", env="e", task="t", cameras=["render"], session=session
+        model="m", env="e", task="t", cameras=["render"], binding=session
     )
     hooks.on_episode_start(episode=0, seed=0)
     hooks.on_step(_step_event())
@@ -914,22 +985,22 @@ def test_env_video_outside_the_run_directory_is_refused(
     rec.close()
 
 
-def test_on_run_start_prefers_explicit_session() -> None:
-    """A session passed to capture(session=...) wins over the running one."""
+def test_on_run_start_prefers_an_explicit_binding() -> None:
+    """A context passed to capture(binding=...) wins over the running one."""
     from rlmesh.recorder.hooks import CaptureHooks
 
     rec = Recorder()
     explicit: Any = _context(None, None)
     other: Any = _context(None, None)
-    hooks = rec.capture(model="m", env="e", task="t", session=explicit)
+    hooks = rec.capture(model="m", env="e", task="t", binding=explicit)
     assert isinstance(hooks, CaptureHooks)
     hooks.on_run_start(other)
-    assert hooks._session is explicit  # pyright: ignore[reportPrivateUsage]
+    assert hooks._binding is explicit  # pyright: ignore[reportPrivateUsage]
 
     adopted = rec.capture(model="m", env="e", task="t")
     assert isinstance(adopted, CaptureHooks)
     adopted.on_run_start(other)
-    assert adopted._session is other  # pyright: ignore[reportPrivateUsage]
+    assert adopted._binding is other  # pyright: ignore[reportPrivateUsage]
 
 
 def test_capture_warnings_never_raise_under_warnings_as_errors() -> None:
@@ -955,7 +1026,7 @@ def test_capture_warnings_never_raise_under_warnings_as_errors() -> None:
     rec.close()
 
 
-@pytest.mark.parametrize("path", ["session", "native"])
+@pytest.mark.parametrize("path", ["bind", "native"])
 def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None:
     """One timing definition: the record ``capture()`` builds from the episode
     delivered to ``on_episode_end`` equals the one ``add(result)`` builds from
@@ -992,16 +1063,24 @@ def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None
     model = Model(lambda obs: np.zeros(1, np.float32))
     live = Recorder()
     hooks = live.capture(model="m", env="e", task="t", cameras=[])
-    try:
-        if path == "session":
-            with model.session(_Env()) as sess:
-                result = sess.run(seeds=[1, 2], hooks=hooks)
-        else:
-            result = model.run(_Env(), seeds=[1, 2], hooks=hooks)
-    except ConnectionError as exc:
-        if "Operation not permitted" in str(exc):
-            pytest.skip("local tcp bind is not permitted in this environment")
-        raise
+    if path == "bind":
+        # A binding hands its result to on_run_end alone; keep it.
+        ended: list[RunResult] = []
+        record = hooks.on_run_end
+
+        def on_run_end(result: RunResult) -> None:
+            ended.append(result)
+            record(result)
+
+        hooks.on_run_end = on_run_end
+        with model.bind(_Env(), hooks=hooks) as binding:
+            for seed in (1, 2):
+                binding.reset(seed=seed)
+                while not binding.done:
+                    binding.step()
+        (result,) = ended
+    else:
+        result = model.run(_Env(), seeds=[1, 2], hooks=hooks)
     post_hoc = Recorder()
     post_hoc.add(result, model="m", env="e", task="t")
     captured = live.to_dict()["workloads"][0]["episodes"]
@@ -1011,3 +1090,97 @@ def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None
     assert all(
         e.predict_ms is not None and e.step_ms is not None for e in result.episodes
     )
+
+
+def test_capture_refuses_the_0_1_session_keyword() -> None:
+    with pytest.raises(TypeError, match=r"capture\(\.\.\., binding=\.\.\.\)"):
+        Recorder().capture(model="m", env="e", session=object())
+
+
+@pytest.mark.parametrize("name", ["bundle", "bundle.zip"])
+def test_a_saved_result_loads_back_with_its_outcomes(tmp_path: Path, name: str) -> None:
+    episodes = (
+        EpisodeResult(0, 7, 3, 1.5, True, False, True, 0.25, 2.0, 1.0, 4),
+        EpisodeResult(1, 8, 5, 0.0, False, True, False, 0.5, 2.0, 1.0, 5),
+    )
+    path = RunResult(episodes=episodes).save(tmp_path / name, model="m", env="e")
+    (workload,) = json.loads(_result_json(path))["workloads"]
+    assert (workload["model"], workload["env"]) == ("m", "e")
+
+    loaded = RunResult.load(path)
+    # The bundle keeps outcomes, not the trial ordinal or the latencies.
+    assert loaded.episodes == tuple(
+        EpisodeResult(
+            e.index,
+            e.seed,
+            e.steps,
+            e.reward,
+            e.terminated,
+            e.truncated,
+            e.success,
+            e.duration_s,
+        )
+        for e in episodes
+    )
+    assert loaded.success_rate == 0.5
+
+
+def test_bundles_of_one_model_load_as_one_result_and_report_per_task(
+    tmp_path: Path,
+) -> None:
+    def result(*outcomes: bool, avg: float) -> RunResult:
+        return RunResult(
+            episodes=tuple(
+                EpisodeResult(i, i, 10, 1.0, True, False, ok, 0.5)
+                for i, ok in enumerate(outcomes)
+            ),
+            telemetry=(
+                TelemetryRow(
+                    "env.step", "env", "rpc.total", "ms", 2, avg, avg, avg, avg
+                ),
+            ),
+        )
+
+    recorder = Recorder()
+    recorder.add(
+        result(True, False, avg=1.0),
+        model="a",
+        env="e",
+        task="t1",
+        config={"suite": "s"},
+    )
+    recorder.add(
+        result(True, avg=4.0), model="a", env="e", task="t2", config={"suite": "s"}
+    )
+    folder = recorder.export(tmp_path / "runs" / "1")
+    zipped = result(False, avg=7.0).save(
+        tmp_path / "runs" / "2.zip", model="a", env="e"
+    )
+
+    loaded = RunResult.load([folder, zipped])
+    assert [e.index for e in loaded.episodes] == [0, 1, 2, 3]
+    assert [(r.count, r.avg) for r in loaded.telemetry] == [(6, 4.0)]
+    assert RunResult.load(tmp_path / "runs").episodes == loaded.episodes
+
+    (model,) = rlmesh.EvalReport.load(tmp_path / "runs").to_dict()["models"]
+    assert [
+        (t["suite"], t["task"], t["successes"], t["episodes"]) for t in model["tasks"]
+    ] == [
+        (None, "e", 0, 1),
+        ("s", "t1", 1, 2),
+        ("s", "t2", 1, 1),
+    ]
+    assert model["overall"]["successRate"] == 0.5
+
+    other = Recorder()
+    other.add(result(True, avg=1.0), model="b", env="e")
+    other.export(tmp_path / "runs" / "3")
+    with pytest.raises(ValueError, match="2 models"):
+        RunResult.load(tmp_path / "runs")
+
+
+def _result_json(path: Path) -> str:
+    if path.is_dir():
+        return (path / "result.json").read_text(encoding="utf-8")
+    with zipfile.ZipFile(path) as archive:
+        return archive.read("result.json").decode()

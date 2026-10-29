@@ -202,12 +202,12 @@ def test_model_subclass_serve_loads_then_serves(
 
     seen: dict[str, object] = {}
 
-    def fake_serve(self: object, address: str, *, options=None) -> None:
+    def fake_serve(self: object, address: str, *, name: str, options=None) -> None:
         seen["address"] = address
 
     monkeypatch.setattr(ModelBase, "serve", fake_serve)
     model = _ModelPolicy()
-    model.serve("127.0.0.1:5555")
+    model.serve("127.0.0.1:5555", name="policy")
     assert model.loaded is True  # load() fired during construction
     assert seen == {"address": "127.0.0.1:5555"}
 
@@ -225,7 +225,7 @@ def test_serve_model_dispatch_avoids_double_construction(
 
     served: list[object] = []
 
-    def fake_serve(self: object, address: str, *, options=None) -> None:
+    def fake_serve(self: object, address: str, *, name: str, options=None) -> None:
         served.append(self)
 
     monkeypatch.setattr(ModelBase, "serve", fake_serve)

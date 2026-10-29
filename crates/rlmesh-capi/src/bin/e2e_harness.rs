@@ -1,5 +1,5 @@
 //! End-to-end loopback harness: serve a trivial environment, then run a compiled
-//! C/C++ model binary (`<bin> <tcp-address> 3`) against it. A binary, not a
+//! C/C++ model binary (`<bin> <session-address> 3`) against it. A binary, not a
 //! `cargo test`, so the C/C++ toolchain stays out of `cargo test --workspace`.
 //!
 //! Usage: `e2e_harness <model-binary> [expected-stdout-substring]`. The optional
@@ -16,8 +16,8 @@
 use std::process::{Command, ExitCode};
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-use rlmesh::binding::spaces;
+use rlmesh::spaces::{Box, BoxOptions, Space};
+use rlmesh::{DType, EnvServer, EnvServerOptions, InfoDict, Tensor, Value};
 
 /// Steps per episode: reset → obs 0, then one step per further predict, the
 /// last of which terminates.
@@ -27,100 +27,60 @@ const STEPS_PER_EPISODE: u8 = 2;
 /// [`STEPS_PER_EPISODE`] steps per episode (reset → 0, step k → k, terminated
 /// on the last). Records the seed of every reset it was given.
 struct SmokeEnv {
-    obs_space: spaces::SpaceSpec,
-    action_space: spaces::SpaceSpec,
-    env_contract: spaces::EnvContract,
     steps: u8,
     reset_seeds: Arc<Mutex<Vec<Option<i64>>>>,
 }
 
-impl SmokeEnv {
-    fn new(reset_seeds: Arc<Mutex<Vec<Option<i64>>>>) -> Self {
-        let obs_space = spaces::spaces::BoxSpaceBuilder::scalar(0.0, 255.0, vec![1])
-            .dtype(spaces::DType::Uint8)
-            .build()
-            .expect("valid obs space");
-        let action_space = spaces::spaces::BoxSpaceBuilder::scalar(0.0, 1.0, vec![1])
-            .dtype(spaces::DType::Uint8)
-            .build()
-            .expect("valid action space");
-        let env_contract = spaces::EnvContract {
-            id: "SmokeEnv-capi-e2e".to_string(),
-            observation_space: Some(obs_space.clone()),
-            action_space: Some(action_space.clone()),
-            num_envs: 1,
-            ..Default::default()
-        };
-        Self {
-            obs_space,
-            action_space,
-            env_contract,
-            steps: 0,
-            reset_seeds,
-        }
-    }
-}
-
-fn u8_box(value: u8) -> spaces::SpaceValue {
-    spaces::SpaceValue::Box(
-        spaces::Tensor::from_vec(vec![value], vec![1], spaces::DType::Uint8).expect("tensor"),
+fn u8_box(high: u8) -> Space {
+    Box::new(
+        0,
+        high,
+        [1],
+        BoxOptions {
+            dtype: DType::Uint8,
+        },
     )
+    .expect("valid space")
+    .into()
 }
 
-#[async_trait]
-impl rlmesh::binding::env::Env for SmokeEnv {
-    fn observation_space(&self) -> &spaces::SpaceSpec {
-        &self.obs_space
+fn u8_value(value: u8) -> Value {
+    Value::Tensor(Tensor::new(&[value], &[1], DType::Uint8).expect("tensor"))
+}
+
+impl rlmesh::Env for SmokeEnv {
+    fn observation_space(&self) -> Space {
+        u8_box(255)
     }
-    fn action_space(&self) -> &spaces::SpaceSpec {
-        &self.action_space
+    fn action_space(&self) -> Space {
+        u8_box(1)
     }
-    fn env_contract(&self) -> &spaces::EnvContract {
-        &self.env_contract
+    fn id(&self) -> Option<String> {
+        Some("SmokeEnv-capi-e2e".to_string())
     }
 
-    async fn reset(
+    fn reset(
         &mut self,
-        req: rlmesh::binding::env::ResetRequest,
-    ) -> Result<rlmesh::binding::env::ResetResult, spaces::EnvRuntimeError> {
+        seed: Option<i64>,
+        _options: Option<&InfoDict>,
+    ) -> rlmesh::Result<(Value, InfoDict)> {
         self.steps = 0;
-        self.reset_seeds
-            .lock()
-            .expect("reset seed log")
-            .push(req.seed);
-        Ok(rlmesh::binding::env::ResetResult {
-            observation: Some(u8_box(0)),
-            info: None,
-            episode_id: None,
-        })
+        self.reset_seeds.lock().expect("reset seed log").push(seed);
+        Ok((u8_value(0), InfoDict::new()))
     }
 
-    async fn step(
+    fn step(
         &mut self,
-        _req: rlmesh::binding::env::StepRequest,
-    ) -> Result<rlmesh::binding::env::StepResult, spaces::EnvRuntimeError> {
+        _action: Option<Value>,
+    ) -> rlmesh::Result<(Value, f64, bool, bool, InfoDict)> {
         self.steps += 1;
-        Ok(rlmesh::binding::env::StepResult {
-            observation: Some(u8_box(self.steps)),
-            reward: 1.0,
-            terminated: self.steps >= STEPS_PER_EPISODE,
-            truncated: false,
-            info: None,
-        })
-    }
-
-    async fn render(
-        &mut self,
-        _req: rlmesh::binding::env::RenderRequest,
-    ) -> Result<rlmesh::binding::env::RenderResult, spaces::EnvRuntimeError> {
-        Ok(rlmesh::binding::env::RenderResult::default())
-    }
-
-    async fn close(
-        &mut self,
-        _req: rlmesh::binding::env::CloseRequest,
-    ) -> Result<rlmesh::binding::env::CloseResult, spaces::EnvRuntimeError> {
-        Ok(rlmesh::binding::env::CloseResult)
+        Ok((
+            u8_value(self.steps),
+            1.0,
+            self.steps >= STEPS_PER_EPISODE,
+            false,
+            InfoDict::new(),
+        ))
     }
 }
 
@@ -134,56 +94,36 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     let expect = std::env::args().nth(2);
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
+    let reset_seeds = Arc::new(Mutex::new(Vec::new()));
+    // The server is serving before the model joins its session (port 0 →
+    // OS-assigned), so no readiness sleep is needed.
+    let env = SmokeEnv {
+        steps: 0,
+        reset_seeds: Arc::clone(&reset_seeds),
+    };
+    let options = EnvServerOptions {
+        address: Some(":0/env".to_string()),
+        ..Default::default()
+    };
+    let server = match EnvServer::new(env, options).and_then(|server| {
+        server.start()?;
+        Ok(server)
+    }) {
+        Ok(server) => server,
         Err(err) => {
-            eprintln!("failed to build runtime: {err}");
+            eprintln!("failed to serve the env: {err}");
             return ExitCode::FAILURE;
         }
     };
-    runtime.block_on(run(binary, expect))
-}
-
-async fn run(binary: String, expect: Option<String>) -> ExitCode {
-    let reset_seeds = Arc::new(Mutex::new(Vec::new()));
-    // Bind first: the listener is accepting before the model connects (port 0 →
-    // OS-assigned), so no readiness sleep is needed.
-    let bound =
-        match rlmesh::binding::env::WireEnvServer::new(SmokeEnv::new(Arc::clone(&reset_seeds)))
-            .bind(rlmesh::ext::BindAddress::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: 0,
-            })
-            .await
-        {
-            Ok(bound) => bound,
-            Err(err) => {
-                eprintln!("failed to bind env: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
-    let address = bound.local_addr().to_string();
-    let server = tokio::spawn(async move {
-        let _ = bound.serve().await;
-    });
-
-    let output = tokio::task::spawn_blocking(move || {
-        Command::new(&binary).arg(&address).arg(EPISODES).output()
-    })
-    .await;
-    server.abort();
-
+    let output = Command::new(&binary)
+        .arg(server.address())
+        .arg(EPISODES)
+        .output();
+    let _ = server.shutdown();
     let output = match output {
-        Ok(Ok(output)) => output,
-        Ok(Err(err)) => {
-            eprintln!("failed to spawn model binary: {err}");
-            return ExitCode::FAILURE;
-        }
+        Ok(output) => output,
         Err(err) => {
-            eprintln!("harness join error: {err}");
+            eprintln!("failed to spawn model binary: {err}");
             return ExitCode::FAILURE;
         }
     };

@@ -20,8 +20,10 @@ thread_local! {
 
 /// Default options with a short drain, so a test does not wait out the 5 s
 /// cap on its own client's idle connection.
+/// A v1 server: these tests cover the gRPC wire's own serving options.
 fn quick() -> EnvServerOptions {
     EnvServerOptions {
+        address: Some("tcp://127.0.0.1:0".into()),
         options: Some(crate::ServeOptions {
             drain_timeout: Some(Duration::from_millis(100)),
             ..Default::default()
@@ -1253,46 +1255,6 @@ fn blocking_calls_refuse_an_async_context() {
         err.to_string(),
         "EnvServer::serve() blocks; call serve_async() from async code"
     );
-}
-
-#[test]
-fn a_session_borrows_a_remote_env_and_hands_it_back() {
-    let counters = Arc::new(Counters::default());
-    let server = EnvServer::new(Counter::new(&counters), quick()).unwrap();
-    server.start().unwrap();
-    let mut remote = dial(server.address()).unwrap();
-    let edition = remote.selected_workflow_edition().to_string();
-    assert!(!edition.is_empty());
-    {
-        let mut session = crate::session(
-            crate::RANDOM_SAMPLE,
-            &mut remote,
-            crate::SessionOptions::default(),
-        )
-        .unwrap();
-        let (observation, info) = session.reset(Some(2), None).unwrap();
-        assert_eq!(observation, Value::Int(2));
-        assert!(info.contains_key("episode_ids"));
-        session.step(Value::Int(1)).unwrap();
-        assert_eq!(session.selected_workflow_edition().unwrap(), edition);
-        session.close().unwrap();
-    }
-    // The core is back: the handle drives on and reports the same edition.
-    assert_eq!(remote.selected_workflow_edition(), edition);
-    let (observation, _) = reset(&mut remote, Some(0));
-    assert_eq!(observation, Value::Int(0));
-    // A dropped session hands it back too.
-    drop(
-        crate::session(
-            crate::RANDOM_SAMPLE,
-            &mut remote,
-            crate::SessionOptions::default(),
-        )
-        .unwrap(),
-    );
-    step(&mut remote, 1).unwrap();
-    remote.close().unwrap();
-    server.shutdown().unwrap();
 }
 
 #[test]

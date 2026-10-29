@@ -1,17 +1,29 @@
 [release]
-status = "stable"
-package_family = "0.1"
+status = "alpha"
+package_family = "0.2"
 
 [workflow]
-base_edition = "2026.06"
-current_edition = "2026.06"
-supported_editions = ["2026.06"]
+# TODO: 2026.10 is provisional; the 0.2.0 release seals the bare `2026.10`
+# (sealed_in, spec_sha256) and freezes docs/editions/2026.10.md.
+base_edition = "2026.10"
+current_edition = "2026.10-0.2.0-alpha.0"
+supported_editions = ["2026.10-0.2.0-alpha.0"]
+
+[workflow.dropped_editions]
+# Sealed editions this release deliberately stops offering, each with its
+# reason; policy:check exempts only these from the retention rule
+# (docs/editions/index.md, "Support Window").
+"2026.06" = "0.2 is a major break; the managed platform keeps 2026.06 through its 0.1 stack"
 
 [workflow.editions."2026.06"]
 status = "sealed"
 spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
 spec_sha256 = "f05f788382a5b4cfaa482811d52a24ade9ee5d9ed9f9544bc39b291d84b2c8c5"
+
+[workflow.editions."2026.10-0.2.0-alpha.0"]
+status = "provisional"
+spec = "docs/editions/2026.10.md"
 
 [protocol]
 # Single generation, equality-only: there is no support window, so no
@@ -64,6 +76,9 @@ manifest_kind = "rlmesh.rust-api-surface-manifest"
 package_artifact = "cargo:rlmesh"
 package_name = "rlmesh"
 crate = "rlmesh"
+# `lockstep` is the session path every 0.2 run takes (Binding, bind, served
+# models); documenting without it would leave the shipped surface out.
+features = ["lockstep"]
 skipped_modules = ["prelude"]
 access = "early-access"
 stability = "Preview"
@@ -97,7 +112,7 @@ id = "pypi:rlmesh"
 ecosystem = "pypi"
 name = "rlmesh"
 manifest = "python/rlmesh/pyproject.toml"
-version = "0.1.0"
+version = "0.2.0a0"
 role = "core"
 publish = true
 
@@ -106,7 +121,7 @@ id = "cargo:rlmesh"
 ecosystem = "cargo"
 name = "rlmesh"
 manifest = "crates/rlmesh/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 role = "core"
 publish = true
 
@@ -115,7 +130,7 @@ id = "cargo:rlmesh-adapters"
 ecosystem = "cargo"
 name = "rlmesh-adapters"
 manifest = "crates/rlmesh-adapters/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 role = "core"
 publish = true
 
@@ -124,7 +139,7 @@ id = "cargo:rlmesh-cli"
 ecosystem = "cargo"
 name = "rlmesh-cli"
 manifest = "crates/rlmesh-cli/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 role = "core"
 publish = true
 
@@ -133,7 +148,7 @@ id = "cargo:rlmesh-grpc"
 ecosystem = "cargo"
 name = "rlmesh-grpc"
 manifest = "crates/rlmesh-grpc/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 role = "core"
 publish = true
 
@@ -142,25 +157,25 @@ id = "cargo:rlmesh-proto"
 ecosystem = "cargo"
 name = "rlmesh-proto"
 manifest = "crates/rlmesh-proto/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 role = "core"
 publish = true
 
 [[artifact]]
-id = "cargo:rlmesh-runtime"
+id = "cargo:rlmesh-session-core"
 ecosystem = "cargo"
-name = "rlmesh-runtime"
-manifest = "crates/rlmesh-runtime/Cargo.toml"
-version = "0.1.0"
+name = "rlmesh-session-core"
+manifest = "crates/rlmesh-session-core/Cargo.toml"
+version = "0.2.0-alpha.0"
 role = "core"
 publish = true
 
 [[artifact]]
-id = "cargo:rlmesh-sandbox"
+id = "cargo:rlmesh-session"
 ecosystem = "cargo"
-name = "rlmesh-sandbox"
-manifest = "crates/rlmesh-sandbox/Cargo.toml"
-version = "0.1.0"
+name = "rlmesh-session"
+manifest = "crates/rlmesh-session/Cargo.toml"
+version = "0.2.0-alpha.0"
 role = "core"
 publish = true
 
@@ -169,15 +184,16 @@ id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"
 manifest = "crates/rlmesh-spaces/Cargo.toml"
-version = "0.1.0"
+version = "0.2.0-alpha.0"
 role = "core"
 publish = true
 
 [[artifact]]
-id = "cargo:rlmesh-viewer"
+id = "cargo:rlmesh-tether"
 ecosystem = "cargo"
-name = "rlmesh-viewer"
-manifest = "crates/rlmesh-viewer/Cargo.toml"
-version = "0.1.0"
+name = "rlmesh-tether"
+manifest = "crates/rlmesh-tether/Cargo.toml"
+version = "0.2.0-alpha.0"
 role = "core"
 publish = true
+

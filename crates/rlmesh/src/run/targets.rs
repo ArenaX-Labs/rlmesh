@@ -1,4 +1,4 @@
-//! The model and env a run or session takes.
+//! The model and env a run or binding takes.
 
 use std::fmt;
 
@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// The random baseline: a model that samples the env's action space.
-/// Accepted by [`run`](crate::run) and [`session`](crate::session).
+/// Accepted by [`run`](crate::run) and `bind`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct RandomSample;
 
@@ -22,7 +22,7 @@ impl fmt::Display for RandomSample {
     }
 }
 
-/// The model argument of [`run`](crate::run) and [`session`](crate::session):
+/// The model argument of [`run`](crate::run) and `bind`:
 /// a borrowed [`Model`], a borrowed [`RemoteModel`](crate::RemoteModel) or
 /// [`RANDOM_SAMPLE`].
 pub struct ModelTarget<'a>(pub(crate) ModelKind<'a>);
@@ -31,6 +31,7 @@ pub(crate) enum ModelKind<'a> {
     Model(&'a Model),
     Remote(&'a crate::RemoteModel),
     Random,
+    Prepared(crate::binding::model::PreparedModel),
 }
 
 impl<'a> From<&'a Model> for ModelTarget<'a> {
@@ -57,6 +58,7 @@ impl fmt::Debug for ModelTarget<'_> {
             ModelKind::Model(model) => f.debug_tuple("ModelTarget").field(model).finish(),
             ModelKind::Remote(model) => f.debug_tuple("ModelTarget").field(model).finish(),
             ModelKind::Random => f.write_str("ModelTarget(RANDOM_SAMPLE)"),
+            ModelKind::Prepared(_) => f.write_str("ModelTarget(<binding handler>)"),
         }
     }
 }
@@ -77,7 +79,7 @@ impl<F: EnvFactory> ErasedFactory for Factory<'_, F> {
     }
 }
 
-/// The env argument of a run or session: an address, a served [`EnvServer`],
+/// The env argument of a run or binding: an address, a served [`EnvServer`],
 /// a borrowed [`RemoteEnv`] / [`RemoteVectorEnv`], or a borrowed local env,
 /// vector env or factory.
 ///
@@ -88,9 +90,10 @@ pub struct EnvTarget<'a>(pub(crate) EnvKind<'a>);
 
 pub(crate) enum EnvKind<'a> {
     Address(String),
+    Adapted(Box<dyn crate::binding::model::EnvAdapter>),
     Server(&'a EnvServer),
-    /// A caller's remote client: a session drives it through its own
-    /// connection; a native run dials its address.
+    /// A caller's remote client: a run dials a v1 one's address and refuses
+    /// a session one, which holds its env's lease; a binding refuses both.
     Remote(&'a mut (dyn Lendable + Send + 'a)),
     Env(&'a mut (dyn Env + Send + 'a)),
     Vector(&'a mut (dyn VectorEnv + Send + 'a)),
@@ -149,6 +152,7 @@ impl<'a, E: Env + Send + 'a> From<&'a mut E> for EnvTarget<'a> {
 impl fmt::Debug for EnvTarget<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
+            EnvKind::Adapted(_) => f.write_str("EnvTarget(<binding target>)"),
             EnvKind::Address(address) => write!(f, "EnvTarget({address:?})"),
             EnvKind::Server(server) => write!(f, "EnvTarget({server})"),
             EnvKind::Remote(env) => write!(f, "EnvTarget(<remote {}>)", env.remote_address()),

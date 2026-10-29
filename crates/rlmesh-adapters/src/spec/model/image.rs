@@ -128,13 +128,6 @@ impl<'de> Deserialize<'de> for Normalize {
 /// would make the host adapter buffer that many frames and exhaust memory.
 pub(crate) const MAX_STACK: u32 = 64;
 
-/// Upper bound on a frame window's *span* — the number of consecutive frames a
-/// strided stack has to hold to reach its oldest offset (`1 - offsets[0]`). A
-/// `stack` of 64 is cheap; a stride that spreads those 64 frames over thousands
-/// of steps is not, and the window is held per live episode. Enforced at
-/// resolve, where the window is sized.
-pub(crate) const MAX_STACK_SPAN: i32 = 128;
-
 /// How the start of an episode fills a frame window that has not seen enough
 /// steps to be full.
 ///

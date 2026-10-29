@@ -81,7 +81,7 @@ def _serve_env(env: VecEnv) -> Any:
     import rlmesh
 
     try:
-        server = rlmesh.EnvServer(env, "127.0.0.1:0", tags=_tags())
+        server = rlmesh.EnvServer(env, ":0/env", tags=_tags())
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")

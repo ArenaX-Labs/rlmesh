@@ -1,6 +1,6 @@
 [project]
 name = "rlmesh-workspace"
-version = "0.1.0"
+version = "0.2.0a0"
 description = "Development workspace for RLMesh"
 requires-python = ">=3.10"
 authors = [{ name = "ArenaX Labs", email = "research@competesai.com" }]
@@ -8,7 +8,7 @@ maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]
 dependencies = ["rlmesh"]
 
 [dependency-groups]
-csharp = ["rlmesh[numpy]", "grpcio==1.75.1", "pyyaml==6.0.3"]
+csharp = ["rlmesh[gymnasium,numpy]", "pytest==8.4.2", "pyyaml==6.0.3"]
 dev = [
   "basedpyright==1.36.1",
   "ruff==0.14.9",
@@ -20,8 +20,10 @@ dev = [
   "rlmesh-api-surface",
   "rlmesh-system",
   "rlmesh-system-fixtures",
-  "trustme==1.2.1",
 ]
+# The MuJoCo UR10e session demo (examples/python/v2/ur10e_mujoco) and an
+# independent MCAP reader for its test: `uv sync --group mujoco`.
+mujoco = ["rlmesh[numpy]", "mujoco==3.16.0", "mcap==1.6.0"]
 
 [tool.basedpyright]
 include = [
@@ -53,6 +55,10 @@ pythonPlatform = "All"
 executionEnvironments = [{ root = "tools", pythonVersion = "3.11" }, { root = "." }]
 
 [tool.pytest.ini_options]
+# Wall-clock budgets fail on a busy machine whatever the code does, so the
+# default runs leave them out; `mise run test:python:perf` runs them alone.
+addopts = "-m 'not perf'"
+markers = ["perf: a wall-clock budget (mise run test:python:perf)"]
 pythonpath = [
   ".",
   "tools/rlmesh_api_surface/src",

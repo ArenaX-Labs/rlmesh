@@ -1,0 +1,32 @@
+{
+  "hz": 30,
+  "inputs": {
+    "hand": {
+      "kind": "hand",
+      "at": "{side}/hand",
+      "fields": ["pos"],
+      "count": 7
+    },
+    "touch": {
+      "kind": "tactile",
+      "at": "{side}/hand/tactile",
+      "shape": [9, 12],
+      "dtype": "float32"
+    },
+    "image": {
+      "kind": "camera",
+      "at": "/head/cam",
+      "size": [224, 224]
+    }
+  },
+  "actions": {
+    "hand": {
+      "kind": "hand",
+      "at": "{side}/hand",
+      "command": "position",
+      "count": 7,
+      "horizon": 8
+    }
+  },
+  "allow": ["resize", "crop"]
+}

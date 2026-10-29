@@ -2,7 +2,7 @@
 
 RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. This crate is the Rust API: write environments and policies as ordinary Rust types, serve them over gRPC, and run evaluations against anything else that speaks RLMesh.
 
-RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Session`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
+RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Binding`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
 ## Install
 
@@ -213,9 +213,9 @@ fn main() -> rlmesh::Result<()> {
 
 `Policy` also covers `load` (with `LOAD_KEYS` and `Model::from_config` to build from a config map), `close`, a `spec()` for adapters and a `workflow_edition()`. `rlmesh::with_context` turns a closure that takes the context into a policy.
 
-### Running and sessions
+### Running and binding
 
-`Model::run` and the free function `rlmesh::run` drive whole episodes and return a `RunResult` with per-episode results and telemetry. The env argument is anything that converts into an `EnvTarget`: an address, a running `&EnvServer`, a `&mut RemoteEnv`, or a local `&mut` env (served on a private loopback for the run; use `EnvTarget::vector` and `EnvTarget::factory` for vector envs and factories). `rlmesh::run` also accepts a `&RemoteModel` or `RANDOM_SAMPLE`, a baseline that samples the action space. A run borrows its model and env: it never closes the model, and closes the env only when `close_env` is set.
+`Model::run` and the free function `rlmesh::run` drive whole episodes and return a `RunResult` with per-episode results and telemetry. The env argument is anything that converts into an `EnvTarget`: an address, a running `&EnvServer`, a `&mut RemoteEnv`, or a local `&mut` env (served on a private loopback for the run; use `EnvTarget::vector` and `EnvTarget::factory` for vector envs and factories). `rlmesh::run` also accepts `RANDOM_SAMPLE`, a baseline that samples the action space, or a `&RemoteModel`: a model served elsewhere, reached by its participant address (`"lab:7447/openpi"`). A run borrows its model and env: it never closes the model, and closes the env only when `close_env` is set.
 
 `RunHooks` observe a run as it happens; every method has a default:
 
@@ -242,44 +242,42 @@ model.run(
 )?;
 ```
 
-For step-by-step control, open a `Session`. Nothing connects until first use, and closing the session never closes the model:
+For step-by-step control, bind the model to one env, as Python's `Model.bind` does. Binding connects (a local env or factory is served in this process and runs only on the thread that calls the binding); `step(None)` steps under the model's action, and closing the binding never closes the model:
 
 ```rust,ignore
-use rlmesh::SessionOptions;
+use rlmesh::BindOptions;
 
-let mut session = model.session("127.0.0.1:5555", SessionOptions::default())?;
-let (mut observation, _info) = session.reset(Some(0), None)?;
+let mut binding = model.bind("127.0.0.1:7447/counter", BindOptions::default())?;
+let (_observation, _info) = binding.reset(Some(0), None)?;
 loop {
-    let action = session.predict(observation)?;
-    let (next, _reward, terminated, truncated, _info) = session.step(action)?;
-    observation = next;
+    let (_next, _reward, terminated, truncated, _info) = binding.step(None)?;
     if terminated || truncated {
         break;
     }
 }
-session.close()?;
+binding.close()?;
 ```
 
-`session.run(SessionRunOptions { .. })` runs whole episodes inside an open session.
+`rlmesh::bind(model, env, options)` also binds a `&RemoteModel` or `RANDOM_SAMPLE`. A binding is sync only; it has no async twin.
 
 ### Remote clients
 
-`RemoteEnv` and `RemoteVectorEnv` connect to a served env and step it directly, Gymnasium style. `RemoteModel` points at a served model; it validates its options without dialing, and runs and sessions open connections as they need them.
+`RemoteEnv` and `RemoteVectorEnv` connect to a served env and step it directly, Gymnasium style. `RemoteModel` points at a model served elsewhere by its participant address; it validates its options without dialing, and a run or a binding reaches it.
 
 ```rust,ignore
 use rlmesh::{RemoteEnv, RemoteEnvOptions, RemoteModel, RemoteModelOptions, RunOptions};
 
-let mut env = RemoteEnv::new(RemoteEnvOptions::default().address("127.0.0.1:5555"))?;
+let mut env = RemoteEnv::new(RemoteEnvOptions::default().address("127.0.0.1:7447/counter"))?;
 let (_observation, _info) = env.reset(Some(0), None)?;
 let action = env.action_space().sample()?;
 let (_observation, reward, terminated, truncated, _info) = env.step(action)?;
 env.close()?;
 
-let model = RemoteModel::new(RemoteModelOptions::default().address("127.0.0.1:50051"))?;
-let result = rlmesh::run(&model, "127.0.0.1:5555", RunOptions::default())?;
+let model = RemoteModel::new(RemoteModelOptions::default().address("127.0.0.1:7447/policy"))?;
+let result = rlmesh::run(&model, "127.0.0.1:7447/counter", RunOptions::default())?;
 ```
 
-Addresses are `host:port`, `tcp://host:port` or `unix:///path/to.sock`; the options structs also take `host`, `port`, `path` and `transport` separately, plus connect and request timeouts.
+Addresses are session participant addresses (`host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port). The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately) still connect a remote env until v1 is removed; a run and a binding refuse them.
 
 ### Adapters
 
@@ -287,21 +285,21 @@ When a model and an env describe their observations and actions differently (cam
 
 ### View and Recorder
 
-`View` shows live frames in the terminal or a local web page; set it on `SessionOptions` (`View::parse("term")`, `View::parse("http:8008")`). `Recorder` collects run results, or captures live runs through the hooks returned by `Recorder::capture`, and exports them with media as a folder or ZIP bundle.
+`View` configures the live viewer (`View::parse("term")`, `View::parse("http:8008")`). `Recorder` collects run results, or captures live runs through the hooks returned by `Recorder::capture`, and exports them with media as a folder or ZIP bundle.
 
 `describe` and `describe_json` report a model's or factory's declarations, and `build_info()` reports the library's version, protocol generation and workflow editions.
 
 ## Rust conventions
 
-**Options structs with `Default`.** Optional parameters live in options structs (`EnvServerOptions`, `RunOptions`, `SessionOptions`, `RemoteEnvOptions`, ...) whose `Default` holds the defaults. Fill in the fields you need and finish with `..Default::default()`. New fields can be added in a minor release, so a full struct literal without `..` is not supported. The remote options also have builder methods (`RemoteEnvOptions::default().address(..).request_timeout(..)`), and durations are `std::time::Duration`.
+**Options structs with `Default`.** Optional parameters live in options structs (`EnvServerOptions`, `RunOptions`, `BindOptions`, `RemoteEnvOptions`, ...) whose `Default` holds the defaults. Fill in the fields you need and finish with `..Default::default()`. New fields can be added in a minor release, so a full struct literal without `..` is not supported. The remote options also have builder methods (`RemoteEnvOptions::default().address(..).request_timeout(..)`), and durations are `std::time::Duration`.
 
-**Blocking calls with `_async` twins.** Every call that does I/O blocks by default and has an async twin: `run_async`, `Model::run_async`, `Session::step_async`, `RemoteEnv::new_async`, `EnvServer::serve_async` and so on. Use the twin from async code: a blocking call made inside an async task fails with the `RuntimeError` class and names the twin to call. Dropping an async run cancels it.
+**Blocking calls with `_async` twins.** Every call that does I/O blocks by default and has an async twin: `run_async`, `Model::run_async`, `RemoteEnv::new_async`, `EnvServer::serve_async` and so on. Use the twin from async code: a blocking call made inside an async task fails with the `RuntimeError` class and names the twin to call. Dropping an async run cancels it.
 
 **`rlmesh::prelude`** imports the authoring traits and the types their signatures name: `Env`, `VectorEnv`, `Policy`, `EnvFactory`, `Space`, `Value`, `InfoDict`, `Error` and friends.
 
 **`rlmesh::ext`** holds Rust-only extras that sit beside the shared surface:
 
-- `ext::CancelToken`: a cloneable cancellation handle. Pass it in `RunOptions::cancel` (or the session, serve and factory options) and call `cancel()` from anywhere; the call in flight fails with `Error::Cancelled`. `Session::cancel_handle` and `RemoteEnv::cancel_handle` return the token a handle already uses.
+- `ext::CancelToken`: a cloneable cancellation handle. Pass it in `RunOptions::cancel` (or the serve and factory options) and call `cancel()` from anywhere; the call in flight fails with `Error::Cancelled`. `RemoteEnv::cancel_handle` returns the token a handle already uses.
 - `ext::TensorExt` (zero-copy `from_vec`, `zeros`, `stack`, `unstack`, storage and stride access) and `ext::SpaceExt::contains_detail` (why a value is not in a space).
 - Bearer-token endpoints: `ext::EnvServerOptions` and `ext::ModelServeOptions` (through the `ext` field of the serve options) set the token a server expects; clients send it as `api_key`.
 - Raw DLPack types in `ext::dlpack`, and `ext::register_entrypoint` for custom adapter transforms.

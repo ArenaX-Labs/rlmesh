@@ -1,4 +1,4 @@
-//! Vectorized stateful adapter engine: episode-keyed frame-stacking and the
+//! Per-episode host state around a Gym binding: episode-keyed frame-stacking and the
 //! per-lane assemble/apply seam.
 //!
 //! Frame-stacking is per-episode state that used to live host-side in the
@@ -27,8 +27,8 @@ use crate::apply::value::{cast, to_f64_vec};
 use crate::apply::{CustomTransform, Value};
 use crate::error::ApplyError;
 use crate::path::NodePath;
-use crate::plans::{ImagePlan, ObsPlan, ResolvedAdapter, StackedPlacement};
-use crate::spec::StackPad;
+use crate::plans::{Binding as ResolvedAdapter, ImagePlan, ObsPlan, StackedPlacement};
+use rlmesh_session_core::spec::role::input::StackPad;
 
 /// Upper bound on frame-stack depth (mirrors the spec's `MAX_STACK`). A raw
 /// native caller must not buffer an unbounded window and exhaust memory; the
@@ -505,8 +505,8 @@ pub fn assemble_obs(
 /// The observe tick: an env step that replays a queued action still happened, so
 /// every frame window has to see its frame or the history the next predict
 /// stacks would be the decision points rather than the steps. Pushes exactly the
-/// frames [`ResolvedAdapter::history_frames`] produces and returns; a route with
-/// no stacked input does nothing at all.
+/// frames of the stacked image plans and returns; a route with no stacked
+/// input does nothing at all.
 pub fn observe_obs(
     adapter: &ResolvedAdapter,
     raw_obs: &BTreeMap<String, Value>,
@@ -517,7 +517,7 @@ pub fn observe_obs(
     if stacked.is_empty() {
         return Ok(());
     }
-    let frames = adapter.history_frames(raw_obs)?;
+    let frames = crate::apply::obs::observe_obs(&adapter.obs_plans, stacked, raw_obs)?;
     let windows = buffers.episode(episode_id);
     for (entry, frame) in stacked.iter().zip(frames) {
         let ObsPlan::Image(image_plan) = &adapter.obs_plans[entry.plan_index] else {
@@ -552,7 +552,7 @@ pub fn apply_actions(
 ) -> Result<SpaceValue, ApplyError> {
     let mut action = raw_action;
     encodings.repack_action(&mut action)?;
-    let env_action = adapter.transform_action(&action)?;
+    let env_action = crate::apply::transform_action(adapter, &action)?;
     let value = tensor_to_space_value(env_action, action_space)?;
     record_action(adapter, &action, buffers, episode_id, step)?;
     Ok(value)
@@ -1020,9 +1020,8 @@ mod tests {
     }
 
     /// A pass-through (no resize/normalize) single-image adapter that stacks
-    /// `stack` consecutive frames. One literal, shared by the stacking tests, so
-    /// a new [`ImagePlan`] field lands in one place.
-    fn stacked_adapter(stack: u32) -> crate::plans::ResolvedAdapter {
+    /// `stack` consecutive frames of a 1x1x3 camera `cam`.
+    fn stacked_adapter(stack: u32) -> ResolvedAdapter {
         strided_adapter(stack, None, StackPad::First, None)
     }
 
@@ -1034,49 +1033,68 @@ mod tests {
         offsets: Option<Vec<i32>>,
         stack_pad: StackPad,
         normalize: Option<(f64, f64)>,
-    ) -> crate::plans::ResolvedAdapter {
-        use crate::plans::{ActionPlan, ImagePlan, ObsPlan, ResolvedAdapter};
-        use crate::spec::ImageLayout;
+    ) -> ResolvedAdapter {
+        let mut image = serde_json::json!({
+            "type": "image", "role": "image/primary", "stack": stack,
+            "resample": "bilinear_aa", "dtype": "uint8",
+        });
+        if let Some(offsets) = offsets {
+            image["offsets"] = serde_json::json!(offsets);
+        }
+        if stack_pad == StackPad::Black {
+            image["stack_pad"] = serde_json::json!("black");
+        }
+        if let Some((low, high)) = normalize {
+            image["normalize"] = serde_json::json!([low, high]);
+            image["dtype"] = serde_json::json!("float32");
+        }
+        images_adapter(&[("cam", "cam", image)])
+    }
 
-        ResolvedAdapter::new(
-            vec![ObsPlan::Image(ImagePlan {
-                placement: crate::path::NodePath::root().push_key("cam"),
-                source: crate::path::NodePath::root().push_key("cam"),
-                src_layout: ImageLayout::Hwc,
-                dst_layout: ImageLayout::Hwc,
-                flip: false,
-                size: None,
-                fit: crate::spec::FitMode::Stretch,
-                resample: "bilinear_aa".to_owned(),
-                dtype: if normalize.is_some() {
-                    "float32".to_owned()
-                } else {
-                    "uint8".to_owned()
-                },
-                normalize,
-                lead_dims: 0,
-                src_range: Some((0.0, 255.0)),
-                stack,
-                zero_fill: None,
-                fill: 0,
-                crop: None,
-                jpeg_quality: None,
-                swap_rb: false,
-                render: None,
-                offsets,
-                stack_pad,
-                frame_bytes: 3,
-                role_rebound: None,
-                part: None,
-            })],
-            ActionPlan {
-                segments: vec![],
-                clip: None,
-                in_dim: 0,
-            },
-            Vec::new(),
-            Vec::new(),
-        )
+    /// Model image inputs `(placement keys dotted into a tree, source key,
+    /// input)`, each camera a 1x1x3 uint8 leaf of its own role.
+    fn images_adapter(inputs: &[(&str, &str, serde_json::Value)]) -> ResolvedAdapter {
+        let roles = ["image/primary", "image/secondary"];
+        let mut tags = serde_json::Map::new();
+        let mut keys = Vec::new();
+        let mut model = serde_json::Map::new();
+        for (i, (placement, source, input)) in inputs.iter().enumerate() {
+            let mut input = input.clone();
+            input["role"] = serde_json::json!(roles[i]);
+            tags.insert(
+                (*source).to_owned(),
+                serde_json::json!({"type": "image", "role": roles[i]}),
+            );
+            keys.push(*source);
+            match placement.split_once('/') {
+                Some((outer, inner)) => {
+                    model
+                        .entry(outer.to_owned())
+                        .or_insert_with(|| serde_json::json!({}))[inner] = input;
+                }
+                None => {
+                    model.insert((*placement).to_owned(), input);
+                }
+            }
+        }
+        let tags: crate::spec::EnvTags = serde_json::from_value(serde_json::json!({
+            "observation": tags, "action": {"components": [{"dim": 1}]},
+        }))
+        .expect("env tags");
+        let spec: crate::spec::ModelSpec = serde_json::from_value(serde_json::json!({
+            "input": model, "output": {"components": [{"dim": 1}]},
+        }))
+        .expect("model spec");
+        let camera = serde_json::json!({"kind": "box", "shape": [1, 1, 3], "dtype": "uint8"});
+        let obs: crate::space_view::SpaceView = serde_json::from_value(serde_json::json!({
+            "kind": "dict", "dtype": "unspecified", "keys": keys,
+            "children": vec![camera; keys.len()],
+        }))
+        .expect("obs space");
+        let act: crate::space_view::SpaceView =
+            serde_json::from_str(r#"{"kind":"box","shape":[1],"dtype":"float32"}"#)
+                .expect("action space");
+        crate::lower::resolve(&tags, &obs, &act, &spec, false).expect("resolves")
     }
 
     /// A 1x1x3 uint8 frame whose every byte is `tag` — a per-step fingerprint.
@@ -1106,33 +1124,15 @@ mod tests {
     fn a_dotted_key_and_the_nested_path_it_renders_like_keep_separate_windows() {
         use crate::apply::NoCustoms;
         use crate::path::NodePath;
-        use crate::plans::{ActionPlan, ObsPlan};
 
-        let ObsPlan::Image(base) = stacked_adapter(2).obs_plans.remove(0) else {
-            unreachable!("stacked_adapter builds one image plan")
-        };
-        let image = |placement: NodePath, source: &str| {
-            let mut plan = base.clone();
-            plan.placement = placement;
-            plan.source = NodePath::root().push_key(source);
-            ObsPlan::Image(plan)
-        };
         let dotted = NodePath::root().push_key("camera.rgb");
         let nested = NodePath::root().push_key("camera").push_key("rgb");
         assert_eq!(dotted.to_string(), nested.to_string());
-        let adapter = ResolvedAdapter::new(
-            vec![
-                image(dotted.clone(), "primary"),
-                image(nested.clone(), "secondary"),
-            ],
-            ActionPlan {
-                segments: vec![],
-                clip: None,
-                in_dim: 0,
-            },
-            Vec::new(),
-            Vec::new(),
-        );
+        let image = serde_json::json!({"type": "image", "stack": 2});
+        let adapter = images_adapter(&[
+            ("camera.rgb", "primary", image.clone()),
+            ("camera/rgb", "secondary", image),
+        ]);
         let obs = |primary: u8, secondary: u8| -> BTreeMap<String, Value> {
             let frame = |tag| {
                 Value::Tensor(Tensor::from_vec(vec![tag; 3], vec![1, 1, 3], DType::Uint8).unwrap())
@@ -1377,7 +1377,7 @@ mod tests {
         let act: crate::space_view::SpaceView =
             serde_json::from_str(r#"{"kind":"box","shape":[3],"dtype":"float32"}"#)
                 .expect("action space");
-        crate::resolver::resolve(&tags, &obs, &act, &spec, false).expect("resolves")
+        crate::lower::resolve(&tags, &obs, &act, &spec, false).expect("resolves")
     }
 
     fn vector(values: &[f32]) -> Value {

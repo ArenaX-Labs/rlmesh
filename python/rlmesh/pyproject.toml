@@ -1,6 +1,6 @@
 [project]
 name = "rlmesh"
-version = "0.1.0"
+version = "0.2.0a0"
 description = "Python SDK for model-environment evaluation workflows"
 authors = [{ name = "ArenaX Labs, Inc.", email = "research@competesai.com" }]
 maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]
@@ -56,6 +56,7 @@ hf = ["huggingface_hub"]
 
 [project.scripts]
 rlmesh = "rlmesh.__main__:main"
+rlmeshd = "rlmesh.__main__:daemon_main"
 docker-credential-rlmesh = "rlmesh.__main__:credential_helper_main"
 
 [build-system]
@@ -78,7 +79,10 @@ exclude = [
 ]
 
 [tool.uv]
+# The extension stamps its dev workflow edition with the commit it is built
+# from (crates/rlmesh-proto/build.rs), so a commit makes it stale too.
 cache-keys = [
+  { git = { commit = true } },
   { file = "pyproject.toml" },
   { file = "rust/Cargo.toml" },
   { file = "rust/**/*.rs" },

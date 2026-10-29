@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::conversion::{
-    derive_autoreset_mode, encode_render_png, extract_optional_meta_attr, extract_render_mode,
+    derive_autoreset_mode, encode_render_png, extract_metadata, extract_render_mode,
     normalize_reset_result, normalize_single_step_result, normalize_vector_step_result,
 };
 use crate::spaces::{
@@ -143,11 +143,39 @@ fn as_server_callback<R>(id: u64, work: impl FnOnce() -> R) -> R {
 /// A Python call queued for the foreground thread (see [`Dispatch::Foreground`]).
 pub type ForegroundJob = Box<dyn FnOnce() + Send>;
 
+thread_local! {
+    static FACADE_CALLER: std::cell::RefCell<Option<(rlmesh::binding::model::CallerJobs, crate::model::LastPyError)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn with_facade_caller<R>(
+    caller: rlmesh::binding::model::CallerJobs,
+    error: crate::model::LastPyError,
+    call: impl FnOnce() -> R,
+) -> R {
+    struct Restore(
+        Option<(
+            rlmesh::binding::model::CallerJobs,
+            crate::model::LastPyError,
+        )>,
+    );
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FACADE_CALLER.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(FACADE_CALLER.with(|slot| slot.replace(Some((caller, error)))));
+    call()
+}
+
 /// Where an env's Python calls run.
 #[derive(Clone)]
 pub enum Dispatch {
     /// Tokio's blocking pool: any thread, so a call may hop between threads.
     Pool,
+    Facade(
+        rlmesh::binding::model::CallerJobs,
+        crate::model::LastPyError,
+    ),
     /// Inline on the calling thread. A lane actor sets this so a lane's env
     /// always executes on its own OS thread (what OSMesa/Vulkan contexts expect).
     Pinned,
@@ -208,6 +236,9 @@ impl PyServerEnv {
     pub fn dispatch_vector(&mut self, jobs: std::sync::mpsc::Sender<ForegroundJob>) -> bool {
         match self {
             PyServerEnv::Vector(env) => {
+                if matches!(env.0.dispatch, Dispatch::Facade(..)) {
+                    return false;
+                }
                 env.0.dispatch = Dispatch::Foreground(jobs);
                 true
             }
@@ -289,7 +320,11 @@ impl PyEnvironment {
                 env_contract,
                 num_envs,
                 uses_vector_api,
-                dispatch: Dispatch::Pool,
+                dispatch: FACADE_CALLER
+                    .with(|slot| slot.borrow().clone())
+                    .map_or(Dispatch::Pool, |(caller, error)| {
+                        Dispatch::Facade(caller, error)
+                    }),
                 server_id: 0,
                 profiler,
                 last_phases: EndpointPhases::default(),
@@ -412,7 +447,7 @@ pub fn derive_env_contract(env_ref: &Bound<'_, PyAny>) -> PyResult<(EnvContract,
         id: env_id,
         observation_space: Some(observation_space.clone()),
         action_space: Some(action_space.clone()),
-        metadata: extract_optional_meta_attr(env_ref, "metadata")?,
+        metadata: extract_metadata(env_ref)?,
         render_mode: extract_render_mode(env_ref)?,
         num_envs: num_envs as u32,
         autoreset_mode: derive_autoreset_mode(env_ref)?,
@@ -429,7 +464,9 @@ pub fn build_lane_server_env(envs: Vec<Py<PyAny>>, native_values: bool) -> PyRes
     let mut lanes: Vec<PySingleEnv> = Vec::with_capacity(envs.len());
     for env in envs {
         let mut env = PyEnvironment::new(env, native_values)?;
-        env.dispatch = Dispatch::Pinned;
+        if !matches!(env.dispatch, Dispatch::Facade(..)) {
+            env.dispatch = Dispatch::Pinned;
+        }
         if !env.uses_single_env_api() {
             return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "EnvServer serves scalar environments (one per lane). Use VectorEnvServer for \
@@ -470,6 +507,9 @@ pub fn build_vector_server_env(env: Py<PyAny>, native_values: bool) -> PyResult<
 fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {
     match error.code {
         EnvErrorCode::InvalidAction => EnvRuntimeError::InvalidValue(error.message),
+        _ if error.debug_info.is_some() => {
+            runtime_env_err(error.message, error.is_recoverable, error.debug_info)
+        }
         _ if error.is_recoverable => EnvRuntimeError::Recoverable(error.message),
         _ => EnvRuntimeError::Runtime(error.message),
     }
@@ -491,8 +531,23 @@ fn py_err_is_recoverable(error: &PyErr) -> bool {
     })
 }
 
+/// The builtin exception class (`ValueError`) an env raised, when it raised
+/// one: what a client raises beside `EnvironmentException`.
+fn builtin_class(error: &PyErr) -> Option<String> {
+    Python::attach(|py| {
+        let value = error.value(py);
+        if value.is_instance_of::<crate::types::EnvironmentException>() {
+            return None;
+        }
+        let class = value.get_type();
+        let module: String = class.getattr("__module__").ok()?.extract().ok()?;
+        (module == "builtins").then(|| class.name().ok()?.extract().ok())?
+    })
+}
+
 /// Run `work` under the GIL where `dispatch` says, mapping a lost reply or a
-/// `PyErr` through `into_err` (with whether the error is recoverable). Wraps
+/// `PyErr` through `into_err` (with whether the error is recoverable, and the
+/// builtin class it raised). Wraps
 /// the boilerplate every reset/step/render/close body shares.
 async fn spawn_py<T, E, W, M>(
     dispatch: Dispatch,
@@ -504,23 +559,50 @@ async fn spawn_py<T, E, W, M>(
 where
     T: Send + 'static,
     W: FnOnce(Python<'_>) -> PyResult<T> + Send + 'static,
-    M: Fn(String, bool) -> E,
+    M: Fn(String, bool, Option<String>) -> E,
 {
     let work = move |py: Python<'_>| as_server_callback(server_id, || work(py));
     let result = match dispatch {
         Dispatch::Pinned => Python::attach(work),
+        Dispatch::Facade(caller, error) => caller
+            .run(move || {
+                let result = Python::attach(work);
+                if let Err(err) = &result
+                    && Python::attach(|py| {
+                        err.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+                    })
+                {
+                    error
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get_or_insert_with(|| Python::attach(|py| err.clone_ref(py)));
+                }
+                result
+            })
+            .await
+            .map_err(|err| into_err(err.to_string(), false, None))?,
         Dispatch::Pool => tokio::task::spawn_blocking(move || Python::attach(work))
             .await
-            .map_err(|e| into_err(format!("{phase} task panicked: {e}"), false))?,
+            .map_err(|e| into_err(format!("{phase} task panicked: {e}"), false, None))?,
         Dispatch::Foreground(jobs) => {
             let (reply, replied) = tokio::sync::oneshot::channel();
             jobs.send(Box::new(move || {
                 let _ = reply.send(Python::attach(work));
             }))
-            .map_err(|_| into_err(format!("{phase}: the serving thread has stopped"), false))?;
-            replied
-                .await
-                .map_err(|_| into_err(format!("{phase}: the serving thread has stopped"), false))?
+            .map_err(|_| {
+                into_err(
+                    format!("{phase}: the serving thread has stopped"),
+                    false,
+                    None,
+                )
+            })?;
+            replied.await.map_err(|_| {
+                into_err(
+                    format!("{phase}: the serving thread has stopped"),
+                    false,
+                    None,
+                )
+            })?
         }
     };
     // ENV-35: `{phase} failed: {message}`, the message without a class name.
@@ -528,6 +610,7 @@ where
         into_err(
             format!("{phase} failed: {}", crate::types::py_err_text(&e)),
             py_err_is_recoverable(&e),
+            builtin_class(&e),
         )
     })
 }
@@ -585,18 +668,24 @@ fn set_reset_options(
     Ok(())
 }
 
-fn internal_env_err(message: String, recoverable: bool) -> EnvError {
+/// The builtin class rides in `debug_info` to [`env_error_to_runtime_error`].
+fn internal_env_err(message: String, recoverable: bool, class: Option<String>) -> EnvError {
     EnvError {
         is_recoverable: recoverable,
+        debug_info: class,
         ..EnvError::new(EnvErrorCode::Internal, message)
     }
 }
 
-fn runtime_env_err(message: String, recoverable: bool) -> EnvRuntimeError {
-    if recoverable {
-        EnvRuntimeError::Recoverable(message)
-    } else {
-        EnvRuntimeError::Runtime(message)
+fn runtime_env_err(message: String, recoverable: bool, class: Option<String>) -> EnvRuntimeError {
+    match class {
+        Some(class) => EnvRuntimeError::Raised {
+            class,
+            message,
+            recoverable,
+        },
+        None if recoverable => EnvRuntimeError::Recoverable(message),
+        None => EnvRuntimeError::Runtime(message),
     }
 }
 
@@ -1299,7 +1388,9 @@ env = Env()
             .unbind()
         });
         let mut env = PyEnvironment::new(env, false).unwrap();
-        env.dispatch = Dispatch::Pinned;
+        if !matches!(env.dispatch, Dispatch::Facade(..)) {
+            env.dispatch = Dispatch::Pinned;
+        }
         for policy in [
             ValidationPolicy::Warn,
             ValidationPolicy::Strict,

@@ -5,7 +5,7 @@ use std::fmt;
 
 use super::context::{BatchPredictContext, PredictContext};
 use crate::adapters::ModelSpec;
-use crate::{Error, Kwargs, Result, Value};
+use crate::{Error, Kwargs, Metadata, Result, Value};
 
 /// A set of predict corners, with C's `RLMESH_CORNER_*` bit values: which
 /// corners a [`Policy`] writes ([`Policy::CORNERS`]) and which read the
@@ -137,6 +137,9 @@ pub trait Policy: Send + 'static {
     const NATIVE_CHUNK: Option<u32> = None;
     /// The parameter keys `load` accepts; `None` forwards every key.
     const LOAD_KEYS: Option<&'static [LoadKey]> = None;
+    /// Whether the policy writes [`reset_options`](Policy::reset_options);
+    /// a run asks it only then.
+    const RESET_OPTIONS: bool = false;
     /// Whether the policy type is an authored participant; false only for
     /// the closure forms, as a wrapped bare callable is not one.
     #[doc(hidden)]
@@ -183,6 +186,12 @@ pub trait Policy: Send + 'static {
     /// read once, after `load`.
     fn native_chunk(&self) -> Option<u32> {
         Self::NATIVE_CHUNK
+    }
+
+    /// The execution horizon this checkpoint runs at when a run names none
+    /// (above the spec's `timing.execution`); read once, after `load`.
+    fn execution_horizon(&self) -> Option<u32> {
+        None
     }
 
     /// One observation to one action.
@@ -282,6 +291,18 @@ pub trait Policy: Send + 'static {
             "CONTEXT",
             "Corners::PREDICT_CHUNK_BATCH",
         ))
+    }
+
+    /// Options to add to the env reset that starts `episode`, which holds
+    /// its `episode_id`, `seed` and `trial_index`. A run asks before each
+    /// reset it sends (when [`RESET_OPTIONS`](Policy::RESET_OPTIONS) is
+    /// set), and the env's `reset(options)` receives them under the
+    /// runtime's own reserved keys. A reset of several lanes gets each key
+    /// as a per-lane list; an env that autoresets restarts its lanes itself,
+    /// with no reset to carry them. The default adds none.
+    fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
+        let _ = episode;
+        Ok(None)
     }
 
     /// An episode ended (after its context entry is dropped).

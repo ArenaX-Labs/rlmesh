@@ -1,0 +1,95 @@
+{
+  "description": "Paired reset seeds, v1: episode_seed(base_seed, seed_key, slot) = FNV-1a 64 over base_seed (i64 little-endian), 0xff, seed_key (UTF-8), 0xfd, slot (u64 little-endian), masked to the low 32 bits. Every implementation of the derivation must reproduce every case.",
+  "cases": [
+    {
+      "base_seed": 0,
+      "seed_key": "libero:spatial",
+      "slot": 0,
+      "seed": 4271684356
+    },
+    {
+      "base_seed": 0,
+      "seed_key": "libero:spatial",
+      "slot": 1,
+      "seed": 160171301
+    },
+    {
+      "base_seed": 0,
+      "seed_key": "libero:spatial",
+      "slot": 2,
+      "seed": 343625542
+    },
+    {
+      "base_seed": 0,
+      "seed_key": "libero:spatial",
+      "slot": 10,
+      "seed": 1811259470
+    },
+    {
+      "base_seed": 0,
+      "seed_key": "robotwin",
+      "slot": 0,
+      "seed": 1064891051
+    },
+    {
+      "base_seed": 7,
+      "seed_key": "libero#0",
+      "slot": 0,
+      "seed": 996448380
+    },
+    {
+      "base_seed": 7,
+      "seed_key": "libero#0",
+      "slot": 1,
+      "seed": 1179902621
+    },
+    {
+      "base_seed": 8,
+      "seed_key": "libero#0",
+      "slot": 0,
+      "seed": 963654095
+    },
+    {
+      "base_seed": 7,
+      "seed_key": "libero#1",
+      "slot": 0,
+      "seed": 3677646097
+    },
+    {
+      "base_seed": 1234,
+      "seed_key": "TestEnv-v0",
+      "slot": 0,
+      "seed": 2459853855
+    },
+    {
+      "base_seed": 1234,
+      "seed_key": "TestEnv-v0",
+      "slot": 1,
+      "seed": 2276399614
+    },
+    {
+      "base_seed": -1,
+      "seed_key": "metaworld:mt10",
+      "slot": 49,
+      "seed": 4209588941
+    },
+    {
+      "base_seed": -9223372036854775808,
+      "seed_key": "k",
+      "slot": 0,
+      "seed": 1406804038
+    },
+    {
+      "base_seed": 9223372036854775807,
+      "seed_key": "",
+      "slot": 18446744073709551615,
+      "seed": 1538888633
+    },
+    {
+      "base_seed": 42,
+      "seed_key": "環境",
+      "slot": 3,
+      "seed": 2177105691
+    }
+  ]
+}

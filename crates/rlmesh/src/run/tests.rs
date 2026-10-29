@@ -1,4 +1,4 @@
-//! Runs, sessions and hooks driven end to end against local and served envs.
+//! Runs, bindings and hooks driven end to end against local and served envs.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,6 +20,8 @@ struct Steps {
     closes: Arc<AtomicUsize>,
     resets: Arc<Mutex<Vec<Reset>>>,
     metadata: Option<Metadata>,
+    /// Fail the step that reaches this count, as an env whose container died.
+    fail_at: Option<i64>,
 }
 
 impl Steps {
@@ -29,6 +31,7 @@ impl Steps {
             closes: Arc::default(),
             resets: Arc::default(),
             metadata: None,
+            fail_at: None,
         }
     }
 }
@@ -51,6 +54,9 @@ impl Env for Steps {
     }
     fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
         self.step += 1;
+        if self.fail_at == Some(self.step) {
+            return Err(Error::Runtime("env gone".into()));
+        }
         let reward = match action {
             Some(Value::Int(action)) => action as f64,
             _ => -1.0,
@@ -78,10 +84,8 @@ fn ones() -> Model {
 
 fn quick() -> EnvServerOptions {
     EnvServerOptions {
-        options: Some(crate::ServeOptions {
-            drain_timeout: Some(Duration::from_millis(100)),
-            ..Default::default()
-        }),
+        address: Some(crate::tests::ENV_ADDRESS.into()),
+        options: Some(crate::tests::env_serve_options()),
         ..Default::default()
     }
 }
@@ -250,6 +254,85 @@ fn a_run_dials_an_address_or_an_env_server() {
     server.shutdown().unwrap();
 }
 
+/// One model served in process answers four routes at once. The route whose
+/// env dies mid-episode fails alone; its siblings finish, and their trials
+/// and seeds are the ones a single route over the whole range would draw.
+#[cfg(feature = "lockstep")]
+#[test]
+fn a_failed_route_leaves_its_siblings_running_against_a_shared_served_model() {
+    use crate::binding::routes::{Route, merge_results, run_routes};
+    use crate::lockstep::{ModelBinding, ModelService};
+
+    let runtime = drive::runtime();
+    let binding = runtime.block_on(ModelBinding::bind(":0/random")).unwrap();
+    let address = binding.address();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let service = ModelService::new(
+        crate::model::random::RandomSampleHandler::default(),
+        String::new(),
+    );
+    let served =
+        runtime.spawn(binding.serve(Arc::new(service), Duration::from_secs(5), stop.clone()));
+    let model =
+        crate::RemoteModel::new(crate::RemoteModelOptions::default().address(address)).unwrap();
+    let servers: Vec<EnvServer> = (0..4)
+        .map(|route| {
+            let mut env = Steps::new();
+            env.fail_at = (route == 2).then_some(2);
+            let server = EnvServer::new(env, quick()).unwrap();
+            server.start().unwrap();
+            server
+        })
+        .collect();
+    let routes = |base_seed| {
+        servers
+            .iter()
+            .enumerate()
+            .map(|(route, server)| Route {
+                base_seed,
+                ..Route::new(
+                    server,
+                    RunOptions {
+                        episodes: Some(3),
+                        trial_index_base: 3 * route as u64,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let results = run_routes(&model, routes(Some(7))).unwrap();
+
+    let verdicts: Vec<bool> = results.iter().map(Result::is_ok).collect();
+    assert_eq!(verdicts, [true, true, false, true]);
+    let failure = results[2].as_ref().unwrap_err().to_string();
+    assert!(failure.contains("env gone"), "{failure}");
+    let merged = merge_results(results.iter().flatten());
+    let trials: Vec<Option<i64>> = merged.episodes.iter().map(|e| e.trial).collect();
+    assert_eq!(trials, [0, 1, 2, 3, 4, 5, 9, 10, 11].map(Some));
+    let indices: Vec<i64> = merged.episodes.iter().map(|e| e.index).collect();
+    assert_eq!(indices, (0..9).collect::<Vec<_>>());
+    let contract_id = servers[0].env_contract().id().to_string();
+    for episode in &merged.episodes {
+        let slot = episode.trial.unwrap() as u64;
+        assert_eq!(
+            episode.seed,
+            Some(crate::run::runtime::episode_seed(7, &contract_id, slot))
+        );
+    }
+
+    // An in-process model drives one route at a time.
+    let error = run_routes(&ones(), routes(None)).unwrap_err();
+    assert_eq!(error.class(), ErrorClass::ValueError, "{error}");
+
+    for server in servers {
+        server.shutdown().unwrap();
+    }
+    stop.cancel();
+    runtime.block_on(served).unwrap().unwrap();
+}
+
 #[test]
 fn zero_episodes_never_touch_the_env_but_fire_the_run_hooks() {
     let model = ones();
@@ -328,14 +411,14 @@ fn options_are_checked_before_anything_dials() {
     );
     assert_eq!(
         refused(RunOptions {
-            execution_horizon: 0,
+            execution_horizon: Some(0),
             ..Default::default()
         }),
         "execution_horizon must be >= 1, got 0"
     );
     assert_eq!(
         refused(RunOptions {
-            execution_horizon: 1025,
+            execution_horizon: Some(1025),
             ..Default::default()
         }),
         "execution_horizon must be <= 1024, got 1025"
@@ -487,99 +570,7 @@ fn a_factory_target_builds_one_env_when_needed_and_closes_it() {
 }
 
 #[test]
-fn a_session_drives_by_hand_runs_and_closes() {
-    let ended = Arc::new(Mutex::new(Vec::<String>::new()));
-    let seen = Arc::clone(&ended);
-    let model = Model::new(
-        |_observation: Value| Ok(Value::Int(1)),
-        ModelOptions {
-            on_episode_end: Some(Box::new(move |id: &str| {
-                seen.lock().unwrap().push(id.to_string());
-                Ok(())
-            })),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let mut env = Steps::new();
-    let closes = Arc::clone(&env.closes);
-    {
-        let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-        let (mut observation, _info) = session.reset(Some(3), None).unwrap();
-        assert_eq!(observation, Value::Int(0));
-        let mut steps = 0;
-        while !session.done() {
-            let action = session.predict(observation.clone()).unwrap();
-            assert_eq!(action, Value::Int(1));
-            let (next, reward, ..) = session.step(action).unwrap();
-            assert_eq!(reward, 1.0);
-            observation = next;
-            steps += 1;
-        }
-        assert_eq!(steps, 3);
-        assert_eq!(session.num_envs().unwrap(), 1);
-        assert_eq!(
-            session.selected_workflow_edition().unwrap_err().class(),
-            ErrorClass::RuntimeError
-        );
-        let mut log = Log::default();
-        let result = session
-            .run(SessionRunOptions {
-                seeds: Some(vec![10, 11]),
-                hooks: Some(&mut log),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(result.num_episodes(), 2);
-        assert_eq!(result.episodes[1].trial, Some(1));
-        let mut expected = expected_two_episodes();
-        expected[0] = "run_start contract=true num_envs=1".to_string();
-        assert_eq!(log.calls, expected);
-        let ops: Vec<_> = result.telemetry.iter().map(|row| row.op.as_str()).collect();
-        assert_eq!(
-            ops,
-            ["model.predict", "env.reset", "env.step", "runner.round"]
-        );
-        let context = session.run_context().unwrap();
-        session.close().unwrap();
-        session.close().unwrap();
-        assert_eq!(
-            session.reset(None, None).unwrap_err().to_string(),
-            "session is closed"
-        );
-        assert_eq!(
-            context.num_envs().unwrap_err().to_string(),
-            "session is closed"
-        );
-    }
-    assert_eq!(
-        ended.lock().unwrap().len(),
-        3,
-        "one episode end per episode"
-    );
-    assert_eq!(closes.load(Ordering::SeqCst), 0, "the env is borrowed");
-    model.close().unwrap();
-}
-
-#[test]
-fn a_session_dials_an_address_and_reports_its_edition() {
-    let model = ones();
-    let server = EnvServer::new(Steps::new(), quick()).unwrap();
-    server.start().unwrap();
-    let mut session = model
-        .session(server.address(), SessionOptions::default())
-        .unwrap();
-    let result = session.run(SessionRunOptions::default()).unwrap();
-    assert_eq!(result.num_episodes(), 1);
-    assert_eq!(result.episodes[0].reward, 3.0);
-    assert!(!session.selected_workflow_edition().unwrap().is_empty());
-    session.close().unwrap();
-    drop(session);
-    server.shutdown().unwrap();
-}
-
-#[test]
-fn random_sample_runs_on_the_session_loop() {
+fn random_sample_runs_on_the_native_loop() {
     let mut env = Steps::new();
     let result = run(
         RANDOM_SAMPLE,
@@ -598,39 +589,197 @@ fn random_sample_runs_on_the_session_loop() {
             .iter()
             .all(|episode| episode.steps == 2 && episode.truncated)
     );
-    let error = run(
-        RANDOM_SAMPLE,
-        &mut env,
-        RunOptions {
-            prefetch_lead: 1,
-            ..Default::default()
-        },
-    )
-    .unwrap_err();
-    assert_eq!(error.class(), ErrorClass::ValueError);
     assert_eq!(RANDOM_SAMPLE.to_string(), "RANDOM_SAMPLE");
 }
 
 #[test]
-fn a_session_drops_cleanly_and_ends_its_episode() {
-    let ended = Arc::new(AtomicUsize::new(0));
-    let count = Arc::clone(&ended);
-    let model = Model::new(
-        |_observation: Value| Ok(Value::Int(0)),
-        ModelOptions {
-            on_episode_end: Some(Box::new(move |_id: &str| {
-                count.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+fn a_binding_steps_a_local_env_on_this_thread_with_the_model_or_a_given_action() {
+    struct OnThread(Steps, std::thread::ThreadId);
+    impl Env for OnThread {
+        fn observation_space(&self) -> Space {
+            self.0.observation_space()
+        }
+        fn action_space(&self) -> Space {
+            self.0.action_space()
+        }
+        fn reset(
+            &mut self,
+            seed: Option<i64>,
+            options: Option<&InfoDict>,
+        ) -> Result<(Value, InfoDict)> {
+            assert_eq!(std::thread::current().id(), self.1);
+            self.0.reset(seed, options)
+        }
+        fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
+            assert_eq!(std::thread::current().id(), self.1);
+            self.0.step(action)
+        }
+        fn close(&mut self) -> Result<()> {
+            self.0.close()
+        }
+    }
+    let model = ones();
+    let mut env = OnThread(Steps::new(), std::thread::current().id());
+    let resets = Arc::clone(&env.0.resets);
+    let closes = Arc::clone(&env.0.closes);
+    let mut binding = model.bind(&mut env, BindOptions::default()).unwrap();
+    assert!(binding.done());
+    assert_eq!(binding.num_envs(), 1);
+    let mut options = InfoDict::new();
+    options.insert("level", Value::Int(3));
+    let (observation, _) = binding.reset(Some(4), Some(&options)).unwrap();
+    assert_eq!(observation, Value::Int(0));
+    assert!(!binding.done());
+    // The model's action (1), then a given one (0).
+    assert_eq!(binding.step(None).unwrap().1, 1.0);
+    assert_eq!(binding.step(Some(Value::Int(0))).unwrap().1, 0.0);
+    let (observation, _, terminated, _, info) = binding.step(None).unwrap();
+    assert_eq!(observation, Value::Int(3));
+    assert!(terminated && binding.done());
+    assert_eq!(info.get("is_success"), Some(&Value::Bool(true)));
+    let error = binding.step(None).unwrap_err();
+    assert_eq!(error.class(), ErrorClass::RuntimeError);
+    binding.close().unwrap();
+    binding.close().unwrap();
+    assert_eq!(
+        binding.reset(None, None).unwrap_err().class(),
+        ErrorClass::RuntimeError
+    );
+    drop(binding);
+    assert_eq!(*resets.lock().unwrap(), vec![(Some(4), Some(options))]);
+    // Closing the binding closes neither the borrowed env nor the model.
+    assert_eq!(closes.load(Ordering::SeqCst), 0);
+    model.run(&mut env, RunOptions::default()).unwrap();
+}
+
+#[test]
+fn a_policy_that_writes_reset_options_adds_them_to_each_reset_it_starts() {
+    struct Levelled;
+    impl crate::Policy for Levelled {
+        const RESET_OPTIONS: bool = true;
+        fn predict(&mut self, _observation: Value) -> Result<Value> {
+            Ok(Value::Int(1))
+        }
+        fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
+            let mut options = Metadata::new();
+            options.insert("level", episode.get("seed").cloned().unwrap_or(Value::None));
+            assert!(matches!(episode.get("episode_id"), Some(Value::Text(_))));
+            Ok(Some(options))
+        }
+    }
+    let model = Model::new(Levelled, ModelOptions::default()).unwrap();
     let mut env = Steps::new();
-    let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-    session.reset(None, None).unwrap();
-    drop(session);
-    assert_eq!(ended.load(Ordering::SeqCst), 1);
+    let resets = Arc::clone(&env.resets);
+    model
+        .run(
+            &mut env,
+            RunOptions {
+                seeds: Some(vec![5, 6]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let levels: Vec<_> = resets
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, options)| options.as_ref().and_then(|o| o.get("level").cloned()))
+        .collect();
+    assert_eq!(levels, vec![Some(Value::Int(5)), Some(Value::Int(6))]);
+}
+
+#[test]
+fn a_bindings_hooks_see_its_episodes_a_reset_over_one_as_truncated_and_the_run_end_at_close() {
+    let model = ones();
+    let mut env = Steps::new();
+    let mut log = Log::default();
+    {
+        let mut binding = model
+            .bind(
+                &mut env,
+                BindOptions {
+                    hooks: Some(&mut log),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        binding.reset(Some(10), None).unwrap();
+        for _ in 0..3 {
+            binding.step(None).unwrap();
+        }
+        // Reset over the second episode after one step: it ends truncated.
+        binding.reset(Some(11), None).unwrap();
+        binding.step(Some(Value::Int(0))).unwrap();
+        binding.reset(None, None).unwrap();
+        binding.close().unwrap();
+    }
+    let context = log.context.take().unwrap();
+    assert_eq!(
+        context.num_envs().unwrap_err().class(),
+        ErrorClass::RuntimeError,
+        "the binding's context fails once it closes"
+    );
+    assert_eq!(
+        log.calls,
+        vec![
+            "run_start contract=true num_envs=1",
+            "episode_start 0 Some(10)",
+            "step 0 0 obs=0 action=1 reward=1",
+            "step 0 1 obs=1 action=1 reward=1",
+            "step 0 2 obs=2 action=1 reward=1",
+            "episode_end 0 steps=3 reward=3",
+            "episode_start 1 Some(11)",
+            "step 1 0 obs=0 action=0 reward=0",
+            "episode_end 1 steps=1 reward=0",
+            "episode_start 2 None",
+            "episode_end 2 steps=0 reward=0",
+            "run_end episodes=3",
+        ]
+    );
+}
+
+#[test]
+fn a_binding_closes_a_factory_built_env_and_a_local_env_only_under_close_env() {
+    let model = ones();
+    let mut factory = Factory {
+        closes: Arc::default(),
+        made: 0,
+    };
+    let closes = Arc::clone(&factory.closes);
+    let mut binding = model
+        .bind(EnvTarget::factory(&mut factory), BindOptions::default())
+        .unwrap();
+    binding.reset(None, None).unwrap();
+    binding.close().unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    let mut env = Steps::new();
+    let closes = Arc::clone(&env.closes);
+    let options = BindOptions {
+        close_env: true,
+        ..Default::default()
+    };
+    drop(model.bind(&mut env, options).unwrap());
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_binding_reaches_a_served_env_and_refuses_what_it_cannot_drive() {
+    let model = ones();
+    let server = steps_server();
+    let mut binding = model.bind(&server, BindOptions::default()).unwrap();
+    binding.reset(Some(1), None).unwrap();
+    assert_eq!(binding.step(None).unwrap().0, Value::Int(1));
+    binding.close().unwrap();
+    // A v1 endpoint, and a served model at one.
+    let error = model
+        .bind("127.0.0.1:1", BindOptions::default())
+        .unwrap_err();
+    assert_eq!(error.class(), ErrorClass::ValueError);
+    let v1 = crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
+        .unwrap();
+    let error = bind(&v1, &server, BindOptions::default()).unwrap_err();
+    assert_eq!(error.class(), ErrorClass::ValueError);
+    server.shutdown().unwrap();
 }
 
 #[test]
@@ -673,6 +822,10 @@ fn results_print_as_python_does() {
         "RunResult(episodes=1, mean_reward=1.500, total_steps=2)"
     );
     assert_eq!(result.success_rate(), None);
+    // An unknown outcome beside a reported one counts as a failure, as the
+    // platform and `rlmesh eval report` count it.
+    assert_eq!(crate::run::success_rate_of([Some(true), None]), Some(0.5));
+    assert_eq!(crate::run::success_rate_of([]), None);
     assert_eq!(
         result.format_telemetry(),
         "op        metric     unit  count   avg   p50   p95   p99\n\
@@ -751,13 +904,6 @@ impl crate::VectorEnv for Lanes {
 }
 
 impl Lanes {
-    fn new() -> Lanes {
-        Lanes {
-            counts: vec![0, 0],
-            ended: vec![false, false],
-        }
-    }
-
     fn observations(&self) -> Value {
         Value::List(self.counts.iter().map(|count| Value::Int(*count)).collect())
     }
@@ -801,394 +947,52 @@ fn a_borrowed_vector_env_runs_its_lanes_on_the_native_loop() {
     );
 }
 
-#[test]
-fn a_session_has_async_twins_and_closes_a_factory_built_env() {
-    let model = ones();
-    let mut factory = Factory {
-        closes: Arc::default(),
-        made: 0,
-    };
-    let closes = Arc::clone(&factory.closes);
-    futures::executor::block_on(async {
-        let mut session = model
-            .session_async(EnvTarget::factory(&mut factory), SessionOptions::default())
-            .await
-            .unwrap();
-        let (observation, _) = session.reset_async(Some(1), None).await.unwrap();
-        let action = session.predict_async(observation).await.unwrap();
-        let (_, reward, ..) = session.step_async(action).await.unwrap();
-        assert_eq!(reward, 1.0);
-        let mut log = Log::default();
-        let result = session
-            .run_async(SessionRunOptions {
-                hooks: Some(&mut log),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(result.num_episodes(), 1);
-        assert!(log.async_context.iter().all(|inside| *inside));
-        session.close_async().await.unwrap();
-    });
-    assert_eq!(factory.made, 1);
-    assert_eq!(
-        closes.load(Ordering::SeqCst),
-        1,
-        "a built env closes with the session"
-    );
-}
-
-#[test]
-fn a_session_refuses_a_vector_env() {
-    let model = ones();
-    let mut env = Lanes {
-        counts: vec![0; 2],
-        ended: vec![false; 2],
-    };
-    let mut session = model
-        .session(EnvTarget::vector(&mut env), SessionOptions::default())
-        .unwrap();
-    let error = session.reset(None, None).unwrap_err();
-    assert_eq!(error.class(), ErrorClass::ValueError);
-    assert!(error.to_string().contains("num_envs=2"), "{error}");
-}
-
-/// A model served on a free port by a library thread, stopped by `cancel`.
-struct ServedModel {
-    address: String,
-    cancel: crate::ext::CancelToken,
-    thread: Option<std::thread::JoinHandle<Result<()>>>,
-}
-
-impl ServedModel {
-    fn start() -> ServedModel {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let address = format!("tcp://127.0.0.1:{port}");
-        let cancel = crate::ext::CancelToken::new();
-        let serve_address = address.clone();
-        let serve_cancel = cancel.clone();
-        let thread = std::thread::spawn(move || {
-            ones().serve(
-                &serve_address,
-                crate::ModelServeOptions {
-                    cancel: Some(serve_cancel),
-                    ..Default::default()
-                },
-            )
-        });
-        // Wait until the model answers a handshake.
-        for _ in 0..200 {
-            let probe = drive::block_on_library(async {
-                crate::binding::model::ModelClient::connect(
-                    &address,
-                    crate::env::sync_wire::env_contract_of(&Steps::new())
-                        .unwrap()
-                        .to_wire()
-                        .unwrap(),
-                )
-                .await
-            });
-            if probe.is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        ServedModel {
-            address,
-            cancel,
-            thread: Some(thread),
-        }
-    }
-}
-
-impl Drop for ServedModel {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
 fn steps_server() -> EnvServer {
     let server = EnvServer::new(Steps::new(), quick()).unwrap();
     server.start().unwrap();
     server
 }
 
-#[test]
-fn remote_model_construction_checks_without_dialing() {
-    let err = crate::RemoteModel::new(crate::RemoteModelOptions::default()).unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    assert_eq!(err.to_string(), "address or host/port is required");
-    let err = crate::RemoteModel::new(crate::RemoteModelOptions::default().address("bogus://x"))
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    assert!(err.to_string().starts_with("invalid address: "), "{err}");
-    // Kept as given, and nothing listens there: construction does no I/O.
-    let model =
-        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
-            .unwrap();
-    assert_eq!(model.address(), "127.0.0.1:1");
-    assert_eq!(model.to_string(), "RemoteModel(address='127.0.0.1:1')");
-    let shared = model.clone();
-    assert_eq!(shared.address(), model.address());
-    let err = crate::RemoteModel::new(
-        crate::RemoteModelOptions::default()
-            .address("127.0.0.1:1")
-            .api_key(" padded"),
-    )
-    .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    // An api_key a header cannot carry is refused before any dial, and the
-    // key never reaches the error, Debug or Display.
-    let err = crate::RemoteModel::new(
-        crate::RemoteModelOptions::default()
-            .address("https://localhost:1")
-            .api_key("hidden-key\n"),
-    )
-    .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    assert!(!err.to_string().contains("hidden-key"), "{err}");
-    let options = crate::RemoteModelOptions::default()
-        .address("https://localhost:1")
-        .api_key("hidden-key");
-    assert!(!format!("{options:?}").contains("hidden-key"));
-    let model = crate::RemoteModel::new(options).unwrap();
-    assert!(!format!("{model:?} {model}").contains("hidden-key"));
-    // An https address with a path is refused.
-    let err = crate::RemoteModel::new(
-        crate::RemoteModelOptions::default().address("https://models.example/v1"),
-    )
-    .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    assert!(err.to_string().contains("cannot have a path"), "{err}");
-}
-
-#[test]
-fn remote_model_sessions_refuse_bad_targets_before_dialing() {
-    // Nothing serves the model: every refusal below precedes the dial.
-    let model =
-        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
-            .unwrap();
-    let mut lanes = Lanes::new();
-    let err = model
-        .session(EnvTarget::vector(&mut lanes), SessionOptions::default())
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::TypeError);
-    assert!(err.to_string().contains("single-lane"), "{err}");
-    // A factory's env is built before the dial and closed when it fails.
-    let mut factory = Factory {
-        closes: Arc::default(),
-        made: 0,
-    };
-    let err = model
-        .session(EnvTarget::factory(&mut factory), SessionOptions::default())
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ConnectionError, "{err}");
-    assert_eq!(factory.made, 1);
-    for _ in 0..200 {
-        if factory.closes.load(Ordering::SeqCst) == 1 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(factory.closes.load(Ordering::SeqCst), 1);
-    let server = steps_server();
-    let err = model
-        .session(
-            &server,
-            SessionOptions {
-                trust_entrypoints: Some(true),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    let err = model
-        .session(
-            &server,
-            SessionOptions {
-                execution_horizon: 0,
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    let lanes = EnvServer::lanes(vec![Steps::new(), Steps::new()], quick()).unwrap();
-    let err = model
-        .session(&lanes, SessionOptions::default())
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-    assert!(err.to_string().contains("num_envs=2"), "{err}");
-    // An unreachable model is the ConnectionError class, named.
-    let err = model
-        .session(server.address(), SessionOptions::default())
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ConnectionError, "{err}");
-    assert!(
-        err.to_string()
-            .starts_with("could not connect to a model at '127.0.0.1:1'"),
-        "{err}"
-    );
-}
-
-#[test]
-fn remote_model_sessions_drive_every_remote_target() {
-    let served = ServedModel::start();
-    let model =
-        crate::RemoteModel::new(crate::RemoteModelOptions::default().address(&served.address))
-            .unwrap();
-    let server = steps_server();
-
-    // An address: dialed now, owned by the session.
-    let mut session = model
-        .session(server.address(), SessionOptions::default())
-        .unwrap();
-    assert!(!session.selected_workflow_edition().unwrap().is_empty());
-    let (observation, _) = session.reset(Some(1), None).unwrap();
-    let action = session.predict(observation).unwrap();
-    assert_eq!(action, Value::Int(1));
-    let (_, reward, _, _, _) = session.step(action).unwrap();
-    assert_eq!(reward, 1.0);
-    session.close().unwrap();
-
-    // A borrowed RemoteEnv: driven through its own connection, handed back
-    // pinned to the session's floor.
-    let mut remote =
-        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
-            .unwrap();
-    let floor = {
-        let mut session = model
-            .session(&mut remote, SessionOptions::default())
-            .unwrap();
-        let result = session.run(SessionRunOptions::default()).unwrap();
-        assert_eq!(result.num_episodes(), 1);
-        assert_eq!(result.episodes[0].reward, 3.0);
-        session.selected_workflow_edition().unwrap()
-    };
-    assert_eq!(remote.selected_workflow_edition(), floor);
-    remote.reset(None, None).unwrap();
-    remote.close().unwrap();
-
-    // An EnvServer: dialed at first env use.
-    let mut session = model.session(&server, SessionOptions::default()).unwrap();
-    session.reset(None, None).unwrap();
-    drop(session);
-
-    // A plain local env, with no EnvServer: stepped on the caller's side.
-    let mut local = Steps::new();
-    let closes = Arc::clone(&local.closes);
-    {
-        let mut session = model
-            .session(&mut local, SessionOptions::default())
-            .unwrap();
-        let result = session.run(SessionRunOptions::default()).unwrap();
-        assert_eq!(result.episodes[0].reward, 3.0);
-        session.close().unwrap();
-    }
-    assert_eq!(local.step, 3);
-    assert_eq!(
-        closes.load(Ordering::SeqCst),
-        0,
-        "a borrowed env stays open"
-    );
-
-    // A factory: its env is built for the session and closed with it.
-    let mut factory = Factory {
-        closes: Arc::default(),
-        made: 0,
-    };
-    let mut session = model
-        .session(EnvTarget::factory(&mut factory), SessionOptions::default())
-        .unwrap();
-    session.run(SessionRunOptions::default()).unwrap();
-    session.close().unwrap();
-    drop(session);
-    assert_eq!(
-        (factory.made, factory.closes.load(Ordering::SeqCst)),
-        (1, 1)
-    );
-
-    // rlmesh::run over a served model runs the session loop.
-    let result = crate::run(
-        &model,
-        server.address(),
-        RunOptions {
-            episodes: Some(2),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(result.num_episodes(), 2);
-
-    // The async twin runs on any executor.
-    let address = server.address().to_string();
-    let result = futures::executor::block_on(async {
-        let mut session = model
-            .session_async(address.as_str(), SessionOptions::default())
-            .await?;
-        let out = session.run_async(SessionRunOptions::default()).await;
-        session.close_async().await?;
-        out
-    })
-    .unwrap();
-    assert_eq!(result.num_episodes(), 1);
-    server.shutdown().unwrap();
-}
-
-#[test]
-fn back_to_back_sessions_release_the_join_slot() {
-    let server = steps_server();
-    let model = ones();
-    for iteration in 0..100 {
-        let mut session = model.session(&server, SessionOptions::default()).unwrap();
-        session.reset(None, None).unwrap();
-        if iteration % 2 == 0 {
-            session.close().unwrap();
-        }
-        drop(session);
-
-        let mut remote =
-            crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
-                .unwrap();
-        remote.reset(None, None).unwrap();
-        if iteration % 2 == 0 {
-            remote.close().unwrap();
-        }
-        drop(remote);
-    }
-    server.shutdown().unwrap();
-}
-
+/// A `base_seed` derives the same reset seeds on every run, in any process on
+/// any machine: these values follow from `(4242, the env's id, slot)` alone.
+#[cfg(feature = "lockstep")]
 #[tokio::test]
-async fn back_to_back_async_drops_release_the_join_slot() {
-    let server = crate::EnvServer::new(Steps::new(), quick()).unwrap();
-    server.start().unwrap();
-    let model = ones();
-    for _ in 0..100 {
-        let mut session = model
-            .session_async(&server, SessionOptions::default())
-            .await
-            .unwrap();
-        session.reset_async(None, None).await.unwrap();
-        drop(session);
+async fn a_base_seed_derives_the_same_reset_seeds_in_every_process() {
+    use crate::model::random::RandomSampleHandler;
+    use crate::model::worker::{ModelWorker, RunLocalOptions};
 
-        let mut remote = crate::RemoteEnv::new_async(
-            crate::RemoteEnvOptions::default().address(server.address()),
-        )
+    let env = Steps::new();
+    let resets = Arc::clone(&env.resets);
+    let server = crate::EnvServer::new(env, quick()).unwrap();
+    server.start().unwrap();
+    let options = RunLocalOptions::parse(server.address())
+        .unwrap()
+        .for_episodes(2)
+        .base_seed(4242);
+    ModelWorker::new(RandomSampleHandler::default())
+        .run_local_async(options)
         .await
         .unwrap();
-        remote.reset_async(None, None).await.unwrap();
-        drop(remote);
-    }
+    server.shutdown_async().await.unwrap();
+    let seeds: Vec<Option<i64>> = resets.lock().unwrap().iter().map(|reset| reset.0).collect();
+    assert_eq!(seeds, [Some(3_549_056_084), Some(3_732_510_325)]);
+}
+
+#[cfg(feature = "lockstep")]
+#[tokio::test]
+async fn a_v2_handle_connects_and_drops_inside_a_current_thread_runtime() {
+    let server = crate::EnvServer::new(Steps::new(), quick()).unwrap();
+    server.start().unwrap();
+    let mut remote =
+        crate::RemoteEnv::new_async(crate::RemoteEnvOptions::default().address(server.address()))
+            .await
+            .unwrap();
+    remote.reset_async(None, None).await.unwrap();
+    drop(remote);
     server.shutdown_async().await.unwrap();
 }
 
+#[cfg(not(feature = "lockstep"))]
 #[test]
 fn a_native_run_dials_a_borrowed_remote_env_s_address() {
     let server = steps_server();
@@ -1221,6 +1025,34 @@ fn a_native_run_dials_a_borrowed_remote_env_s_address() {
     assert!(
         err.to_string()
             .starts_with("the target env already has an active session"),
+        "{err}"
+    );
+    remote.close().unwrap();
+    server.shutdown().unwrap();
+}
+
+#[cfg(feature = "lockstep")]
+#[test]
+fn a_native_run_through_an_open_v2_handle_says_the_handle_holds_the_env() {
+    let server = steps_server();
+    let mut remote =
+        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
+            .unwrap();
+    // A v2 handle holds its env's lease from connect: the run refuses it
+    // with Python's upgrade error.
+    let err = ones()
+        .run(
+            &mut remote,
+            RunOptions {
+                episodes: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::TypeError, "{err}");
+    assert!(
+        err.to_string()
+            .starts_with("run(RemoteEnv(address)) is gone in rlmesh 0.2"),
         "{err}"
     );
     remote.close().unwrap();
@@ -1335,6 +1167,106 @@ fn text_model() -> Model {
     )
     .unwrap()
 }
+/// A chunked spec'd policy recording the horizon each chunk is asked at.
+struct Paced {
+    seen: Arc<Mutex<Vec<u32>>>,
+    loaded: Option<u32>,
+}
+impl crate::Policy for Paced {
+    const CORNERS: crate::Corners = crate::Corners::PREDICT.union(crate::Corners::PREDICT_CHUNK);
+    fn execution_horizon(&self) -> Option<u32> {
+        self.loaded
+    }
+    fn predict(&mut self, _observation: Value) -> Result<Value> {
+        // The runtime takes the single-action corner at horizon 1.
+        self.seen.lock().unwrap().push(1);
+        Ok(Value::List(vec![Value::Float(0.)]))
+    }
+    fn predict_chunk(&mut self, _observation: Value, execution_horizon: u32) -> Result<Value> {
+        self.seen.lock().unwrap().push(execution_horizon);
+        Ok(Value::List(vec![
+            Value::List(vec![Value::Float(0.)]);
+            execution_horizon as usize
+        ]))
+    }
+}
+fn paced(loaded: Option<u32>, timing: Option<u32>) -> (Model, Arc<Mutex<Vec<u32>>>) {
+    use crate::adapters::*;
+    let seen = Arc::default();
+    let spec = ModelSpec::new(State::new(GRIPPER_POS), adapter_action())
+        .unwrap()
+        .with_timing(Timing { execution: timing })
+        .unwrap();
+    let model = Model::new(
+        Paced {
+            seen: Arc::clone(&seen),
+            loaded,
+        },
+        ModelOptions {
+            spec: Some(spec.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (model, seen)
+}
+
+#[test]
+fn a_run_naming_no_horizon_executes_at_the_loaded_one_then_the_spec_timing_then_one() {
+    for (loaded, timing, explicit, expected) in [
+        (Some(3), Some(2), None, 3),
+        (None, Some(2), None, 2),
+        (None, None, None, 1),
+        (Some(3), Some(2), Some(1), 1),
+    ] {
+        let (model, seen) = paced(loaded, timing);
+        let mut env = adapter_steps();
+        model
+            .run(
+                &mut env,
+                RunOptions {
+                    execution_horizon: explicit,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![expected],
+            "{loaded:?} {timing:?} {explicit:?}"
+        );
+    }
+    let (model, seen) = paced(Some(3), None);
+    let mut env = adapter_steps();
+    let mut binding = model.bind(&mut env, BindOptions::default()).unwrap();
+    binding.reset(None, None).unwrap();
+    binding.step(None).unwrap();
+    drop(binding);
+    assert_eq!(*seen.lock().unwrap(), vec![3]);
+    let envelope = crate::describe_json(&model, Default::default()).unwrap();
+    assert!(envelope.contains(r#""execution_horizon":3"#), "{envelope}");
+}
+
+#[test]
+fn a_spec_timing_outside_one_to_1024_is_refused() {
+    use crate::adapters::*;
+    let spec = ModelSpec::new(State::new(GRIPPER_POS), adapter_action()).unwrap();
+    for bad in [0, 1025] {
+        let error = spec
+            .clone()
+            .with_timing(Timing {
+                execution: Some(bad),
+            })
+            .unwrap_err();
+        assert_eq!(error.class(), ErrorClass::ValueError);
+    }
+    let timed = spec.with_timing(Timing { execution: Some(8) }).unwrap();
+    let back = ModelSpec::from_json(&timed.to_json().unwrap()).unwrap();
+    assert_eq!(back.timing(), timed.timing());
+    // State and its one-part Concat have the same canonical wire form.
+    assert_eq!(back.to_json().unwrap(), timed.to_json().unwrap());
+}
+
 #[derive(Default)]
 struct ReadHooks {
     context: Option<Arc<dyn RunContext>>,
@@ -1364,53 +1296,6 @@ impl RunHooks for ReadHooks {
     }
 }
 
-#[test]
-fn adapter_session_readers_instruction_and_scoped_render() {
-    let model = text_model();
-    let mut env = adapter_steps();
-    let mut session = model
-        .session(&mut env, SessionOptions::default().instruction("override"))
-        .unwrap();
-    let (observation, _) = session.reset(None, None).unwrap();
-    let reader = session
-        .reader(&[crate::adapters::GRIPPER_POS.into()])
-        .unwrap();
-    assert_eq!(reader.roles(), [crate::adapters::GRIPPER_POS]);
-    assert!(
-        reader
-            .call(&observation)
-            .unwrap()
-            .contains_key(crate::adapters::GRIPPER_POS)
-    );
-    assert_eq!(
-        session.observation_roles().unwrap().states,
-        [crate::adapters::GRIPPER_POS]
-    );
-    assert!(session.reader(&[]).is_err());
-    let context = session.run_context().unwrap();
-    assert!(context.frame_sources().unwrap().render.is_none());
-    {
-        let mut sources = session.frame_sources().unwrap();
-        assert_eq!(
-            sources.render.as_mut().unwrap().call().unwrap(),
-            Value::Int(0)
-        );
-    }
-    let mut hooks = ReadHooks::default();
-    let result = session
-        .run(SessionRunOptions {
-            hooks: Some(&mut hooks),
-            ..Default::default()
-        })
-        .unwrap();
-    assert_eq!(hooks.reads, 1);
-    assert!(!result.advisories.is_empty());
-    session.close().unwrap();
-    assert_eq!(
-        context.frame_sources().unwrap_err().class(),
-        ErrorClass::RuntimeError
-    );
-}
 #[test]
 fn native_adapter_instruction_and_kept_context_read() {
     let model = text_model();
@@ -1454,10 +1339,7 @@ fn closure_resolution_does_not_consume_the_authored_warning() {
     })));
     let closure = ones();
     let mut env = Steps::new();
-    let session = closure
-        .session(&mut env, SessionOptions::default())
-        .unwrap();
-    drop(session);
+    drop(closure.bind(&mut env, BindOptions::default()).unwrap());
     closure.run(&mut env, RunOptions::default()).unwrap();
     assert_eq!(warnings.load(Ordering::SeqCst), 0);
     struct Authored;
@@ -1467,375 +1349,9 @@ fn closure_resolution_does_not_consume_the_authored_warning() {
         }
     }
     let authored = Model::new(Authored, ModelOptions::default()).unwrap();
-    let session = authored
-        .session(&mut env, SessionOptions::default())
-        .unwrap();
-    drop(session);
+    drop(authored.bind(&mut env, BindOptions::default()).unwrap());
     crate::set_warning_handler(None);
     assert_eq!(warnings.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn short_chunk_warnings_run_on_the_polling_thread_and_can_abort() {
-    let _lock = crate::warnings::tests::HANDLER_LOCK.lock().unwrap();
-    struct Chunk;
-    impl crate::Policy for Chunk {
-        const CORNERS: crate::Corners =
-            crate::Corners::PREDICT.union(crate::Corners::PREDICT_CHUNK);
-        fn predict(&mut self, _: Value) -> Result<Value> {
-            Ok(Value::Int(0))
-        }
-        fn predict_chunk(&mut self, _: Value, _: u32) -> Result<Value> {
-            Ok(Value::List(vec![Value::Int(0)]))
-        }
-    }
-    let model = Model::new(Chunk, ModelOptions::default()).unwrap();
-    let mut env = Steps::new();
-    let mut session = model
-        .session(
-            &mut env,
-            SessionOptions {
-                execution_horizon: 2,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    session.reset(None, None).unwrap();
-    let caller = std::thread::current().id();
-    crate::set_warning_handler(Some(Box::new(move |warning| {
-        if warning.category == crate::WarningCategory::RuntimeWarning {
-            assert_eq!(std::thread::current().id(), caller);
-            return Err(crate::Error::Runtime("warning refused".into()));
-        }
-        Ok(())
-    })));
-    let error = session.predict(Value::Int(0)).unwrap_err();
-    crate::set_warning_handler(None);
-    assert_eq!(error, crate::Error::Runtime("warning refused".into()));
-}
-
-#[test]
-fn dropped_predict_never_starts_a_queued_model_callback() {
-    let starts = Arc::new(AtomicUsize::new(0));
-    let count = starts.clone();
-    let model = Model::new(
-        move |_: Value| {
-            count.fetch_add(1, Ordering::SeqCst);
-            Ok(Value::Int(0))
-        },
-        ModelOptions::default(),
-    )
-    .unwrap();
-    let mut env = Steps::new();
-    let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-    session.reset(None, None).unwrap();
-    let shared = model.shared().clone();
-    let (entered, started) = std::sync::mpsc::channel();
-    let (release, blocked) = std::sync::mpsc::channel();
-    let busy = std::thread::spawn(move || {
-        shared.call(move |_| {
-            entered.send(()).unwrap();
-            blocked.recv().unwrap();
-            Ok(())
-        })
-    });
-    started.recv().unwrap();
-    super::drive::block_on_library(async {
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(50),
-                session.predict_async(Value::Int(0))
-            )
-            .await
-            .is_err()
-        );
-    });
-    release.send(()).unwrap();
-    busy.join().unwrap().unwrap();
-    model.shared().call(|_| Ok(())).unwrap();
-    assert_eq!(starts.load(Ordering::SeqCst), 0);
-    session.predict(Value::Int(0)).unwrap();
-    assert_eq!(starts.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn async_session_drop_enqueues_episode_end_before_model_close() {
-    tokio::spawn(async move {
-        let ended = Arc::new(AtomicUsize::new(0));
-        let count = ended.clone();
-        let model = Model::new(
-            |_: Value| Ok(Value::Int(0)),
-            ModelOptions {
-                on_episode_end: Some(Box::new(move |_| {
-                    count.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                })),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let mut env = Steps::new();
-        let mut session = model
-            .session_async(&mut env, SessionOptions::default())
-            .await
-            .unwrap();
-        session.reset_async(None, None).await.unwrap();
-        drop(session);
-        let closing = model.clone();
-        std::thread::spawn(move || closing.close())
-            .join()
-            .unwrap()
-            .unwrap();
-        assert_eq!(ended.load(Ordering::SeqCst), 1);
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn async_session_drop_closes_factory_envs() {
-    tokio::spawn(async move {
-        let model = ones();
-        let mut factory = Factory {
-            closes: Arc::default(),
-            made: 0,
-        };
-        let closes = factory.closes.clone();
-        let mut session = model
-            .session_async(EnvTarget::factory(&mut factory), SessionOptions::default())
-            .await
-            .unwrap();
-        session.reset_async(None, None).await.unwrap();
-        drop(session);
-        for _ in 0..100 {
-            if closes.load(Ordering::SeqCst) != 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert_eq!(closes.load(Ordering::SeqCst), 1);
-    })
-    .await
-    .unwrap();
-}
-
-#[test]
-fn cancelling_a_slow_local_step_discards_its_result() {
-    struct Slow {
-        token: crate::ext::CancelToken,
-        steps: usize,
-    }
-    impl crate::Env for Slow {
-        fn observation_space(&self) -> Space {
-            Discrete::new(4, DiscreteOptions::default()).unwrap().into()
-        }
-        fn action_space(&self) -> Space {
-            self.observation_space()
-        }
-        fn reset(&mut self, _: Option<i64>, _: Option<&InfoDict>) -> Result<(Value, InfoDict)> {
-            Ok((Value::Int(0), InfoDict::new()))
-        }
-        fn step(&mut self, _: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
-            self.steps += 1;
-            if self.steps == 1 {
-                self.token.cancel();
-            }
-            Ok((Value::Int(1), 1., true, false, InfoDict::new()))
-        }
-    }
-    let token = crate::ext::CancelToken::new();
-    let mut env = Slow {
-        token: token.clone(),
-        steps: 0,
-    };
-    let model = ones();
-    let mut session = model
-        .session(
-            &mut env,
-            SessionOptions {
-                cancel: Some(token),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    session.reset(None, None).unwrap();
-    assert_eq!(
-        session.step(Value::Int(0)).unwrap_err(),
-        crate::Error::Cancelled
-    );
-    assert!(
-        !session.done(),
-        "cancelled results do not finish the episode"
-    );
-    session.step(Value::Int(0)).unwrap();
-    assert!(session.done());
-}
-
-#[test]
-fn one_firing_cancels_two_sessions_sharing_a_token() {
-    let token = crate::ext::CancelToken::new();
-    let (ready, entered) = std::sync::mpsc::channel();
-    let mut threads = Vec::new();
-    for _ in 0..2 {
-        let ready = ready.clone();
-        let token = token.clone();
-        threads.push(std::thread::spawn(move || {
-            struct Slow(std::sync::mpsc::Sender<()>);
-            impl crate::Env for Slow {
-                fn observation_space(&self) -> Space {
-                    Discrete::new(2, DiscreteOptions::default()).unwrap().into()
-                }
-                fn action_space(&self) -> Space {
-                    self.observation_space()
-                }
-                fn reset(
-                    &mut self,
-                    _: Option<i64>,
-                    _: Option<&InfoDict>,
-                ) -> Result<(Value, InfoDict)> {
-                    Ok((Value::Int(0), InfoDict::new()))
-                }
-                fn step(&mut self, _: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
-                    self.0.send(()).unwrap();
-                    std::thread::sleep(Duration::from_millis(150));
-                    Ok((Value::Int(0), 0., false, false, InfoDict::new()))
-                }
-            }
-            let model = ones();
-            let mut env = Slow(ready);
-            let mut session = model
-                .session(
-                    &mut env,
-                    SessionOptions {
-                        cancel: Some(token),
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-            session.reset(None, None).unwrap();
-            session.step(Value::Int(0))
-        }));
-    }
-    for _ in 0..2 {
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
-    }
-    token.cancel();
-    for thread in threads {
-        assert_eq!(thread.join().unwrap().unwrap_err(), crate::Error::Cancelled);
-    }
-    token.cancel();
-    assert!(token.take());
-    assert!(!token.take());
-}
-
-#[test]
-fn dropping_remote_session_creation_returns_the_borrowed_env() {
-    let server = steps_server();
-    let mut remote =
-        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
-            .unwrap();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let model = crate::RemoteModel::new(
-        crate::RemoteModelOptions::default().address(listener.local_addr().unwrap().to_string()),
-    )
-    .unwrap();
-    super::drive::block_on_library(async {
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(60),
-                model.session_async(&mut remote, SessionOptions::default())
-            )
-            .await
-            .is_err()
-        );
-    });
-    remote
-        .reset(None, None)
-        .expect("a cancelled session dial returns the borrowed client core");
-    remote.close().unwrap();
-    server.shutdown().unwrap();
-}
-
-#[test]
-fn dropping_remote_session_creation_closes_the_factory_env() {
-    // A listener that never answers: the model dial hangs until dropped.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let model = crate::RemoteModel::new(
-        crate::RemoteModelOptions::default().address(listener.local_addr().unwrap().to_string()),
-    )
-    .unwrap();
-    let mut factory = Factory {
-        closes: Arc::default(),
-        made: 0,
-    };
-    super::drive::block_on_library(async {
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(60),
-                model.session_async(EnvTarget::factory(&mut factory), SessionOptions::default())
-            )
-            .await
-            .is_err()
-        );
-    });
-    assert_eq!(factory.made, 1);
-    for _ in 0..500 {
-        if factory.closes.load(Ordering::SeqCst) == 1 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(
-        factory.closes.load(Ordering::SeqCst),
-        1,
-        "a dropped session_async closes the env it built"
-    );
-}
-
-/// A factory whose `make` makes a sync rlmesh call (`RemoteEnv::new`, which
-/// fails for want of an address) and records how that call failed.
-struct SyncCallingFactory(Arc<Mutex<Vec<ErrorClass>>>);
-
-impl EnvFactory for SyncCallingFactory {
-    fn make(&mut self, _kwargs: &Kwargs) -> Result<MadeEnv> {
-        let err = crate::RemoteEnv::new(crate::RemoteEnvOptions::default()).unwrap_err();
-        self.0.lock().unwrap().push(err.class());
-        Ok(MadeEnv::env(Steps::new()))
-    }
-}
-
-#[test]
-fn remote_session_creation_runs_the_factory_as_its_caller() {
-    // Nothing listens on port 1: creation fails at the model dial, after make().
-    let model = crate::RemoteModel::new(
-        crate::RemoteModelOptions::default()
-            .address("127.0.0.1:1")
-            .connect_timeout(Duration::from_secs(5)),
-    )
-    .unwrap();
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let mut factory = SyncCallingFactory(Arc::clone(&seen));
-    // The sync entry point runs make() as its caller would, so a sync call in
-    // it fails for its own reason.
-    assert!(
-        model
-            .session(EnvTarget::factory(&mut factory), SessionOptions::default())
-            .is_err()
-    );
-    // The async twin runs it inside its own future, where a sync call is
-    // refused.
-    super::drive::block_on_library(async {
-        assert!(
-            model
-                .session_async(EnvTarget::factory(&mut factory), SessionOptions::default())
-                .await
-                .is_err()
-        );
-    });
-    assert_eq!(
-        *seen.lock().unwrap(),
-        [ErrorClass::ValueError, ErrorClass::RuntimeError]
-    );
 }
 
 #[test]
@@ -1866,42 +1382,6 @@ fn plaintext_api_keys_warn_once_per_address() {
           keep it private"
         ]
     );
-}
-
-#[test]
-fn cancelling_a_failed_model_dial_does_not_poison_the_next_call() {
-    let server = steps_server();
-    let cancel = crate::ext::CancelToken::new();
-    let peer = FailedDial::new(cancel.clone());
-    let model = crate::RemoteModel::new(
-        crate::RemoteModelOptions::default()
-            .address(&peer.address)
-            .connect_timeout(Duration::from_secs(5)),
-    )
-    .unwrap();
-    let error = model
-        .session(
-            &server,
-            SessionOptions {
-                cancel: Some(cancel.clone()),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(error, crate::Error::Cancelled);
-    assert_eq!(peer.requests.load(Ordering::SeqCst), 1);
-    let error = model
-        .session(
-            &server,
-            SessionOptions {
-                cancel: Some(cancel),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(error.class(), ErrorClass::ConnectionError);
-    assert_eq!(peer.requests.load(Ordering::SeqCst), 2);
-    server.shutdown().unwrap();
 }
 
 #[test]
@@ -1939,304 +1419,6 @@ fn dropped_native_run_closes_its_factory_env() {
 }
 
 #[test]
-fn cancellation_wins_over_a_failed_env_dial_too() {
-    let cancel = crate::ext::CancelToken::new();
-    let peer = FailedDial::new(cancel.clone());
-    let model =
-        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
-            .unwrap();
-    super::drive::block_on_library(async {
-        let options = || SessionOptions {
-            cancel: Some(cancel.clone()),
-            ..Default::default()
-        };
-        // Bound the test itself: address-target env dials have no timeout
-        // option, and RMT-6 observes a token only after the dial returns.
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            model.session_async(peer.address.as_str(), options()),
-        )
-        .await
-        .expect("the peer refuses the env handshake");
-        assert_eq!(result.unwrap_err(), crate::Error::Cancelled);
-        assert_eq!(peer.requests.load(Ordering::SeqCst), 1);
-
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            model.session_async(peer.address.as_str(), options()),
-        )
-        .await
-        .expect("the next env dial also returns");
-        assert_eq!(result.unwrap_err().class(), ErrorClass::ConnectionError);
-        assert_eq!(peer.requests.load(Ordering::SeqCst), 2);
-    });
-}
-
-/// Refuse a dial at the RPC boundary, firing cancellation on its first RPC.
-/// Closing a raw TCP socket can race transport reconnects, and joining a
-/// blocking accept hangs if the client fails before connecting at all.
-struct FailedDial {
-    address: String,
-    requests: Arc<AtomicUsize>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl FailedDial {
-    fn new(cancel: crate::ext::CancelToken) -> Self {
-        super::drive::block_on_library(async {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap().to_string();
-            let requests = Arc::new(AtomicUsize::new(0));
-            let received = requests.clone();
-            let (_, health) = tonic_health::server::health_reporter();
-            let task = tokio::spawn(async move {
-                tonic::transport::Server::builder()
-                    .layer(tonic::service::InterceptorLayer::new(
-                        move |_: tonic::Request<()>| {
-                            if received.fetch_add(1, Ordering::SeqCst) == 0 {
-                                cancel.cancel();
-                            }
-                            Err::<tonic::Request<()>, _>(tonic::Status::unavailable(
-                                "test dial rejected",
-                            ))
-                        },
-                    ))
-                    .add_service(health)
-                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
-                    .await
-                    .unwrap();
-            });
-            Self {
-                address,
-                requests,
-                task,
-            }
-        })
-    }
-}
-
-impl Drop for FailedDial {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-struct ViewedSteps(Steps);
-impl Env for ViewedSteps {
-    fn observation_space(&self) -> Space {
-        self.0.observation_space()
-    }
-    fn action_space(&self) -> Space {
-        self.0.action_space()
-    }
-    fn reset(
-        &mut self,
-        seed: Option<i64>,
-        options: Option<&InfoDict>,
-    ) -> Result<(Value, InfoDict)> {
-        self.0.reset(seed, options)
-    }
-    fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
-        self.0.step(action)
-    }
-    fn render_mode(&self) -> Option<String> {
-        Some("rgb_array".into())
-    }
-    fn render(&mut self) -> Result<Option<Value>> {
-        Ok(Some(Value::Tensor(crate::Tensor::new(
-            &[128; 48],
-            &[4, 4, 3],
-            crate::DType::Uint8,
-        )?)))
-    }
-}
-fn http_view() -> crate::View {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    crate::View {
-        backend: crate::ViewBackend::Http,
-        port: listener.local_addr().unwrap().port(),
-        ..Default::default()
-    }
-}
-fn viewer_request(port: u16, route: &str) -> String {
-    use std::io::{Read, Write};
-    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
-    write!(
-        stream,
-        "GET {route} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-    )
-    .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    response
-}
-#[test]
-fn native_run_refuses_view_and_session_validates_before_env_use() {
-    let model = ones();
-    let mut env = ViewedSteps(Steps::new());
-    let err = model
-        .run(
-            &mut env,
-            RunOptions {
-                view: Some(crate::View::default()),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::TypeError);
-    assert!(env.0.resets.lock().unwrap().is_empty());
-    let err = model
-        .session(
-            &mut env,
-            SessionOptions {
-                view: Some(crate::View {
-                    fps: 0,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::ValueError);
-}
-#[test]
-fn viewer_skip_truncates_and_quit_returns_a_partial_success() {
-    let view = http_view();
-    let port = view.port;
-    let mut env = ViewedSteps(Steps::new());
-    let model = ones();
-    let mut session = model
-        .session(
-            &mut env,
-            SessionOptions {
-                view: Some(view),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    session.reset(None, None).unwrap();
-    assert!(viewer_request(port, "/skip").contains("200 OK"));
-    let (_, _, terminated, truncated, _) = session.step(Value::Int(1)).unwrap();
-    assert!(!terminated && truncated);
-    assert!(session.done());
-    assert!(viewer_request(port, "/quit").contains("200 OK"));
-    let result = session
-        .run(SessionRunOptions {
-            episodes: Some(5),
-            ..Default::default()
-        })
-        .unwrap();
-    assert_eq!(result.num_episodes(), 1);
-    assert!(result.episodes[0].truncated);
-    session.close().unwrap();
-}
-#[test]
-fn view_paces_steps_without_charging_telemetry_and_holds_only_success() {
-    let mut view = http_view();
-    view.step_hz = Some(5.);
-    view.hold = crate::ViewHold::For(Duration::from_millis(70));
-    let mut env = ViewedSteps(Steps::new());
-    let model = ones();
-    let mut session = model
-        .session(
-            &mut env,
-            SessionOptions {
-                view: Some(view),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    let started = std::time::Instant::now();
-    let result = session.run(SessionRunOptions::default()).unwrap();
-    assert!(started.elapsed() >= Duration::from_millis(300));
-    for row in &result.telemetry {
-        assert!(row.avg < 100., "{} included pacing: {}", row.op, row.avg);
-    }
-    let started = std::time::Instant::now();
-    session.close().unwrap();
-    assert!(started.elapsed() >= Duration::from_millis(70));
-
-    let mut view = http_view();
-    view.hold = crate::ViewHold::For(Duration::from_secs(5));
-    let mut env = ViewedSteps(Steps::new());
-    let mut session = model
-        .session(
-            &mut env,
-            SessionOptions {
-                view: Some(view),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    let mut hooks = Log {
-        fail_on_step: Some(0),
-        ..Default::default()
-    };
-    assert!(
-        session
-            .run(SessionRunOptions {
-                hooks: Some(&mut hooks),
-                ..Default::default()
-            })
-            .is_err()
-    );
-    let started = std::time::Instant::now();
-    session.close().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(2));
-}
-#[tokio::test]
-async fn async_view_run_and_dropping_a_pacing_future_leave_session_usable() {
-    let mut view = http_view();
-    view.step_hz = Some(0.1);
-    let mut env = ViewedSteps(Steps::new());
-    let model = ones();
-    let mut session = model
-        .session(
-            &mut env,
-            SessionOptions {
-                view: Some(view),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    session.reset_async(None, None).await.unwrap();
-    session.step_async(Value::Int(1)).await.unwrap();
-    let mut step = Box::pin(session.step_async(Value::Int(1)));
-    assert!(futures::poll!(&mut step).is_pending());
-    drop(step);
-    session.reset_async(None, None).await.unwrap();
-    session.close_async().await.unwrap();
-}
-
-#[test]
-fn immediate_predict_completion_observes_handle_cancellation() {
-    let token_slot = Arc::new(Mutex::new(None::<crate::ext::CancelToken>));
-    let callback_token = token_slot.clone();
-    let model = Model::new(
-        move |_: Value| {
-            if let Some(token) = callback_token.lock().unwrap().take() {
-                token.cancel();
-            }
-            Ok(Value::Int(1))
-        },
-        ModelOptions::default(),
-    )
-    .unwrap();
-    let mut env = Steps::new();
-    let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-    session.reset(None, None).unwrap();
-    *token_slot.lock().unwrap() = Some(session.cancel_handle());
-    assert_eq!(
-        session.predict(Value::Int(0)).unwrap_err(),
-        crate::Error::Cancelled
-    );
-    session.predict(Value::Int(0)).unwrap();
-}
-
-#[test]
 fn run_completion_observes_a_token_fired_by_the_final_hook() {
     struct Fire(crate::ext::CancelToken);
     impl RunHooks for Fire {
@@ -2262,86 +1444,6 @@ fn run_completion_observes_a_token_fired_by_the_final_hook() {
             .unwrap_err(),
         crate::Error::Cancelled
     );
-    let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
-    assert_eq!(
-        session
-            .run(SessionRunOptions {
-                cancel: Some(token.clone()),
-                hooks: Some(&mut hook),
-                ..Default::default()
-            })
-            .unwrap_err(),
-        crate::Error::Cancelled
-    );
-    session
-        .run(SessionRunOptions {
-            cancel: Some(token),
-            ..Default::default()
-        })
-        .unwrap();
-}
-
-#[test]
-fn pending_cancellation_skips_lazy_factory_creation() {
-    let model = ones();
-    let mut factory = Factory {
-        closes: Arc::default(),
-        made: 0,
-    };
-    let mut session = model
-        .session(EnvTarget::factory(&mut factory), SessionOptions::default())
-        .unwrap();
-    let token = session.cancel_handle();
-    token.cancel();
-    assert_eq!(
-        session.reset(None, None).unwrap_err(),
-        crate::Error::Cancelled
-    );
-    drop(session);
-    assert_eq!(factory.made, 0);
-}
-
-#[test]
-fn remote_session_factory_failure_observes_cancellation_before_return() {
-    struct FailingFactory {
-        token: crate::ext::CancelToken,
-        calls: usize,
-    }
-    impl EnvFactory for FailingFactory {
-        fn make(&mut self, _: &Kwargs) -> Result<MadeEnv> {
-            self.calls += 1;
-            if self.calls == 1 {
-                self.token.cancel();
-            }
-            Err(crate::Error::invalid_argument("factory failed immediately"))
-        }
-    }
-    let token = crate::ext::CancelToken::new();
-    let mut factory = FailingFactory {
-        token: token.clone(),
-        calls: 0,
-    };
-    let model =
-        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
-            .unwrap();
-    let options = || SessionOptions {
-        cancel: Some(token.clone()),
-        ..Default::default()
-    };
-    assert_eq!(
-        model
-            .session(EnvTarget::factory(&mut factory), options())
-            .unwrap_err(),
-        crate::Error::Cancelled
-    );
-    assert_eq!(
-        model
-            .session(EnvTarget::factory(&mut factory), options())
-            .unwrap_err()
-            .class(),
-        ErrorClass::ValueError
-    );
-    assert_eq!(factory.calls, 2);
 }
 
 #[test]
@@ -2357,33 +1459,19 @@ fn run_hook_error_wins_over_cancellation_from_on_run_end() {
         }
     }
     let model = ones();
-    for session_loop in [false, true] {
-        let mut env = Steps::new();
-        let token = crate::ext::CancelToken::new();
-        let mut hooks = FailThenFire(token.clone());
-        let result = if session_loop {
-            model
-                .session(&mut env, SessionOptions::default())
-                .unwrap()
-                .run(SessionRunOptions {
-                    cancel: Some(token),
-                    hooks: Some(&mut hooks),
-                    ..Default::default()
-                })
-        } else {
-            model.run(
-                &mut env,
-                RunOptions {
-                    cancel: Some(token),
-                    hooks: Some(&mut hooks),
-                    ..Default::default()
-                },
-            )
-        };
-        assert_eq!(
-            result.unwrap_err(),
-            Error::invalid_argument("first hook error"),
-            "session_loop={session_loop}"
-        );
-    }
+    let mut env = Steps::new();
+    let token = crate::ext::CancelToken::new();
+    let mut hooks = FailThenFire(token.clone());
+    let result = model.run(
+        &mut env,
+        RunOptions {
+            cancel: Some(token),
+            hooks: Some(&mut hooks),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Error::invalid_argument("first hook error")
+    );
 }

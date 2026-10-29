@@ -9,9 +9,10 @@ import rlmesh.numpy
 
 def drive(address: str, episodes: int, *, counter: bool = False) -> None:
     """Assert observations, rewards and episode boundaries over the real wire."""
-    with rlmesh.numpy.RemoteEnv(
+    env = rlmesh.numpy.RemoteEnv(
         address, connect_timeout_seconds=10, request_timeout_seconds=10
-    ) as env:
+    )
+    with env:
         for episode in range(episodes):
             observation, info = env.reset(seed=episode)
             if counter:

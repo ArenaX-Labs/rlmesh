@@ -16,12 +16,7 @@ from typing import Any
 
 import pytest
 import rlmesh
-from rlmesh._models._chunk import split_chunk
 from rlmesh._models._episodes import EpisodeStore
-from rlmesh._models.base import (  # pyright: ignore[reportPrivateUsage]
-    _chunk_len,
-    _first_frame,
-)
 
 
 class _Env:
@@ -105,25 +100,21 @@ def test_on_close_replaces_an_authored_close() -> None:
     assert calls == ["option"]
 
 
-def test_close_is_terminal_for_runs_sessions_and_open_sessions() -> None:
+def test_close_is_terminal_for_runs_bindings_and_open_bindings() -> None:
     ended: list[str] = []
     model = rlmesh.Model(
         lambda obs: 0, on_episode_end=lambda episode_id: ended.append(episode_id)
     )
-    session = model.session(_Env())
-    observation, _ = session.reset()
-    session.predict(observation)
+    binding = model.bind(_Env())
+    binding.reset()
+    binding.step()
     model.close()
     with pytest.raises(RuntimeError, match="the model is closed"):
-        session.predict(observation)
+        binding.step()
+    binding.close()
+    assert ended == [], "a binding closed after the model fires no on_episode_end"
     with pytest.raises(RuntimeError, match="the model is closed"):
-        session.step(0)
-    with pytest.raises(RuntimeError, match="the model is closed"):
-        session.run()
-    session.close()
-    assert ended == [], "a session closed after the model fires no on_episode_end"
-    with pytest.raises(RuntimeError, match="the model is closed"):
-        model.session(_Env())
+        model.bind(_Env())
     with pytest.raises(RuntimeError, match="the model is closed"):
         model.run(_Env())
     with pytest.raises(RuntimeError, match="the model is closed"):
@@ -143,15 +134,15 @@ def test_a_corner_that_re_enters_its_own_model_raises_instead_of_deadlocking() -
 
     model = rlmesh.Model(predict)
     holder["model"] = model
-    with model.session(_Env()) as session:
-        observation, _ = session.reset()
-        session.predict(observation)
+    with model.bind(_Env()) as binding:
+        binding.reset()
+        binding.step()
     assert len(seen) == 1
     assert "re-entered its own Model" in str(seen[0])
     model.close()
 
 
-def test_corner_calls_on_one_model_are_serialized_across_sessions() -> None:
+def test_corner_calls_on_one_model_are_serialized_across_bindings() -> None:
     lock = threading.Lock()
     active = {"now": 0, "most": 0}
 
@@ -167,8 +158,11 @@ def test_corner_calls_on_one_model_are_serialized_across_sessions() -> None:
     model = rlmesh.Model(predict)
 
     def drive() -> None:
-        with model.session(_Env()) as session:
-            session.run(episodes=2)
+        with model.bind(_Env()) as binding:
+            for _ in range(2):
+                binding.reset()
+                while not binding.done:
+                    binding.step()
 
     threads = [threading.Thread(target=drive) for _ in range(3)]
     for thread in threads:
@@ -269,15 +263,3 @@ def test_a_wrapped_policy_declarations_are_the_models() -> None:
         True,
         None,
     )
-
-
-def test_a_tuple_is_one_chunk_frame() -> None:
-    assert split_chunk((1, 2)) == [(1, 2)]
-    assert split_chunk([1, 2]) == [1, 2]
-    assert split_chunk({"a": [1, 2], "b": [3, 4]}) == [
-        {"a": 1, "b": 3},
-        {"a": 2, "b": 4},
-    ]
-    assert split_chunk(5) == [5]
-    assert _first_frame((1, 2)) == (1, 2)
-    assert _chunk_len((1, 2), batched=False) == 1

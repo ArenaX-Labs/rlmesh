@@ -22,8 +22,8 @@ if _TYPE_CHECKING:
 
 from . import _rlmesh as _rlmesh
 from . import adapters as adapters
+from . import managed as managed
 from . import params as params
-from . import platform as platform
 from . import spaces as spaces
 from . import specs as specs
 from . import types as types
@@ -33,13 +33,16 @@ from ._metadata import sanitize_metadata
 from ._models import (
     NO_ADAPTER,
     RANDOM_SAMPLE,
+    BatchOptions,
+    Binding,
     EpisodeResult,
+    EvalReport,
     FrameSources,
+    Interrupted,
     Reader,
     RunContext,
     RunHooks,
     RunResult,
-    Session,
     StepEvent,
     TelemetryRow,
     View,
@@ -73,6 +76,7 @@ from ._rlmesh import (
 )
 from ._sandbox import SandboxBuild, SandboxRuntime
 from ._server import EnvServer
+from ._upgrade import Session
 from ._variants import Variant
 from .params import Param, ParamSpec, Vector
 from .recorder import Recorder
@@ -128,12 +132,16 @@ __all__ = [
     "ENV_RESET_OPTIONS_KEY",
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
+    "BatchOptions",
+    "Binding",
     "BuildInfo",
     "EnvFactory",
     "EnvServer",
     "EnvironmentException",
     "EpisodeResult",
+    "EvalReport",
     "FrameSources",
+    "Interrupted",
     "Model",
     "ModelException",
     "Param",

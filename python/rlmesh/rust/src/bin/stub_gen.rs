@@ -11,6 +11,11 @@ const SUPPLEMENTAL_EXPORTS: &[&str] = &[
     "EnvironmentException",
     "RecoverableEnvironmentException",
     "ModelException",
+    "SessionException",
+    "SessionRefused",
+    "BindingRefused",
+    "StartSkipped",
+    "SessionLost",
 ];
 const SUPPLEMENTAL_STUBS: &str = r#"
 __version__: builtins.str
@@ -31,6 +36,23 @@ class ModelException(RLMeshException):
     code: builtins.str
     is_recoverable: builtins.bool
     def __init__(self, message: builtins.str, *, is_recoverable: builtins.bool = False) -> None: ...
+
+class SessionException(RLMeshException): ...
+
+class SessionRefused(SessionException):
+    status: builtins.str
+
+class BindingRefused(SessionException):
+    problems: builtins.list[tuple[builtins.str, builtins.str, builtins.str]]
+
+class StartSkipped(SessionException):
+    reason: builtins.str
+    waiting: builtins.list[builtins.str]
+    stale: builtins.list[builtins.str]
+    gaps: builtins.list[builtins.str]
+
+class SessionLost(SessionException):
+    reason: builtins.str
 
 ResetInfo: TypeAlias = dict[str, object]
 

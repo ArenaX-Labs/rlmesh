@@ -1,0 +1,34 @@
+binding pi0_aloha on aloha2_no_cam_low: 9 inputs, 4 actions, fingerprint 4cd55696170f913a
+replan 50 Hz
+
+  entry            dir  part             status  plan                                                    delivers
+  cam_high         in   scene/cam        bound   decode(jpeg) → pad(640x480 → 224x224, bilinear)         u8 [224, 224, 3]
+  cam_low          in   none             blank   blank(u8 224x224x3 black, then declared preprocessing)  u8 [224, 224, 3]
+  cam_left_wrist   in   left/wrist/cam   bound   decode(jpeg) → pad(640x480 → 224x224, bilinear)         u8 [224, 224, 3]
+  cam_right_wrist  in   right/wrist/cam  bound   decode(jpeg) → pad(640x480 → 224x224, bilinear)         u8 [224, 224, 3]
+  left             in   left/arm         bound   fields pos; names identical                             f32 [6]
+  right            in   right/arm        bound   fields pos; names identical                             f32 [6]
+  left_gripper     in   left/gripper     bound   none                                                    f32 [1]
+  right_gripper    in   right/gripper    bound   none                                                    f32 [1]
+  prompt           in   task             bound   none                                                    str
+  left             out  left/arm         bound   none; names identical                                   f32 [50, 6]
+  right            out  right/arm        bound   none; names identical                                   f32 [50, 6]
+  left_gripper     out  left/gripper     bound   none                                                    f32 [50, 1]
+  right_gripper    out  right/gripper    bound   none                                                    f32 [50, 1]
+
+  input            contract  source  delivery  freshness
+  cam_high         every     30 Hz   50 Hz     100 ms (derived)
+  cam_low          -         -       -         -
+  cam_left_wrist   every     30 Hz   50 Hz     100 ms (derived)
+  cam_right_wrist  every     30 Hz   50 Hz     100 ms (derived)
+  left             every     50 Hz   50 Hz     60 ms (derived)
+  right            every     50 Hz   50 Hz     60 ms (derived)
+  left_gripper     every     50 Hz   50 Hz     60 ms (derived)
+  right_gripper    every     50 Hz   50 Hz     60 ms (derived)
+  prompt           every     event   50 Hz     -
+
+  action         grid             chunk                 valid    edge             age cap
+  left           50 Hz (default)  50 × 20 ms = 1000 ms  1000 ms  50 Hz (default)  1000 ms
+  right          50 Hz (default)  50 × 20 ms = 1000 ms  1000 ms  50 Hz (default)  1000 ms
+  left_gripper   50 Hz (default)  50 × 20 ms = 1000 ms  1000 ms  50 Hz (default)  1000 ms
+  right_gripper  50 Hz (default)  50 × 20 ms = 1000 ms  1000 ms  50 Hz (default)  1000 ms
