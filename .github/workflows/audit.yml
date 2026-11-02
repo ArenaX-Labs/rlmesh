@@ -33,7 +33,7 @@ jobs:
         run: echo "MISE_IGNORED_CONFIG_PATHS=$HOME/.config/mise/config.toml" >> "$GITHUB_ENV"
 
       - name: Install mise
-        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
         with:
           version: 2026.10.2
           install: true
@@ -46,7 +46,7 @@ jobs:
           cache: true
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             . -> target
