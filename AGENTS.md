@@ -36,9 +36,13 @@ refreshes it (`test` and `test:affected` do this themselves).
 
 ## Rules
 
-- The wire contract is `crates/rlmesh-proto/proto/`, frozen per protocol
-  generation against `rlmesh.toml`; `protocol:baseline-verify` and
-  `protocol:breaking` enforce it.
+- Two wire contracts, both governed in `rlmesh.toml`: the eval wire
+  `crates/rlmesh-proto/proto/` (`[protocol]`, frozen per generation) and the
+  real-time session protocol `crates/rlmesh-session-core/proto/`
+  (`[protocols."rlmesh-realtime-v1"]`, provisional until 0.2.0 freezes it).
+  buf lints both; byte goldens (`crates/rlmesh-session-core/tests/vectors/wire`)
+  guard the session protocol's encodings; `protocol:baseline-verify` and
+  `protocol:breaking` enforce a frozen one.
 - Never hand-edit generated files: regenerate native stubs with
   `mise run stubs:generate`, and update the Python API surface snapshot
   (`python/rlmesh/tests/api_surface/snapshots/`) with the change it records.

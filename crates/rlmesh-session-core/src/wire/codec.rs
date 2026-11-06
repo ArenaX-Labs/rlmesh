@@ -1720,63 +1720,36 @@ fn applied_from_pb(a: pb::Applied) -> Result<Applied, WireError> {
 
 /// Every code with its wire value, so both directions read one table.
 const REASON_CODES: [(ReasonCode, pb::ReasonCode); 30] = [
-    (ReasonCode::Unspecified, pb::ReasonCode::ReasonUnspecified),
-    (ReasonCode::Armed, pb::ReasonCode::ReasonArmed),
-    (ReasonCode::Disarmed, pb::ReasonCode::ReasonDisarmed),
-    (ReasonCode::FirstLease, pb::ReasonCode::ReasonFirstLease),
-    (ReasonCode::LastRelease, pb::ReasonCode::ReasonLastRelease),
-    (ReasonCode::EstopRemote, pb::ReasonCode::ReasonEstopRemote),
-    (ReasonCode::EstopLocal, pb::ReasonCode::ReasonEstopLocal),
-    (ReasonCode::EstopSignal, pb::ReasonCode::ReasonEstopSignal),
-    (ReasonCode::EstopCleared, pb::ReasonCode::ReasonEstopCleared),
-    (ReasonCode::HolderLost, pb::ReasonCode::ReasonHolderLost),
-    (
-        ReasonCode::HeartbeatLapse,
-        pb::ReasonCode::ReasonHeartbeatLapse,
-    ),
-    (ReasonCode::QueueDry, pb::ReasonCode::ReasonQueueDry),
-    (
-        ReasonCode::EdgeLeaseLapsed,
-        pb::ReasonCode::ReasonEdgeLeaseLapsed,
-    ),
-    (
-        ReasonCode::HandoverTimeout,
-        pb::ReasonCode::ReasonHandoverTimeout,
-    ),
-    (
-        ReasonCode::DeviceWatchdog,
-        pb::ReasonCode::ReasonDeviceWatchdog,
-    ),
-    (ReasonCode::RobotLost, pb::ReasonCode::ReasonRobotLost),
-    (ReasonCode::HostLost, pb::ReasonCode::ReasonHostLost),
-    (ReasonCode::Released, pb::ReasonCode::ReasonReleased),
-    (ReasonCode::Preempted, pb::ReasonCode::ReasonPreempted),
-    (ReasonCode::Rebound, pb::ReasonCode::ReasonRebound),
-    (ReasonCode::VoidedBySafe, pb::ReasonCode::ReasonVoidedBySafe),
-    (
-        ReasonCode::VoidedByEstop,
-        pb::ReasonCode::ReasonVoidedByEstop,
-    ),
-    (
-        ReasonCode::VoidedByDisarm,
-        pb::ReasonCode::ReasonVoidedByDisarm,
-    ),
-    (
-        ReasonCode::VoidedByEpoch,
-        pb::ReasonCode::ReasonVoidedByEpoch,
-    ),
-    (ReasonCode::PartRemoved, pb::ReasonCode::ReasonPartRemoved),
-    (
-        ReasonCode::HolderDetached,
-        pb::ReasonCode::ReasonHolderDetached,
-    ),
-    (ReasonCode::Revoked, pb::ReasonCode::ReasonRevoked),
-    (
-        ReasonCode::AccessChanged,
-        pb::ReasonCode::ReasonAccessChanged,
-    ),
-    (ReasonCode::SceneEnded, pb::ReasonCode::ReasonSceneEnded),
-    (ReasonCode::SceneFailed, pb::ReasonCode::ReasonSceneFailed),
+    (ReasonCode::Unspecified, pb::ReasonCode::Unspecified),
+    (ReasonCode::Armed, pb::ReasonCode::Armed),
+    (ReasonCode::Disarmed, pb::ReasonCode::Disarmed),
+    (ReasonCode::FirstLease, pb::ReasonCode::FirstLease),
+    (ReasonCode::LastRelease, pb::ReasonCode::LastRelease),
+    (ReasonCode::EstopRemote, pb::ReasonCode::EstopRemote),
+    (ReasonCode::EstopLocal, pb::ReasonCode::EstopLocal),
+    (ReasonCode::EstopSignal, pb::ReasonCode::EstopSignal),
+    (ReasonCode::EstopCleared, pb::ReasonCode::EstopCleared),
+    (ReasonCode::HolderLost, pb::ReasonCode::HolderLost),
+    (ReasonCode::HeartbeatLapse, pb::ReasonCode::HeartbeatLapse),
+    (ReasonCode::QueueDry, pb::ReasonCode::QueueDry),
+    (ReasonCode::EdgeLeaseLapsed, pb::ReasonCode::EdgeLeaseLapsed),
+    (ReasonCode::HandoverTimeout, pb::ReasonCode::HandoverTimeout),
+    (ReasonCode::DeviceWatchdog, pb::ReasonCode::DeviceWatchdog),
+    (ReasonCode::RobotLost, pb::ReasonCode::RobotLost),
+    (ReasonCode::HostLost, pb::ReasonCode::HostLost),
+    (ReasonCode::Released, pb::ReasonCode::Released),
+    (ReasonCode::Preempted, pb::ReasonCode::Preempted),
+    (ReasonCode::Rebound, pb::ReasonCode::Rebound),
+    (ReasonCode::VoidedBySafe, pb::ReasonCode::VoidedBySafe),
+    (ReasonCode::VoidedByEstop, pb::ReasonCode::VoidedByEstop),
+    (ReasonCode::VoidedByDisarm, pb::ReasonCode::VoidedByDisarm),
+    (ReasonCode::VoidedByEpoch, pb::ReasonCode::VoidedByEpoch),
+    (ReasonCode::PartRemoved, pb::ReasonCode::PartRemoved),
+    (ReasonCode::HolderDetached, pb::ReasonCode::HolderDetached),
+    (ReasonCode::Revoked, pb::ReasonCode::Revoked),
+    (ReasonCode::AccessChanged, pb::ReasonCode::AccessChanged),
+    (ReasonCode::SceneEnded, pb::ReasonCode::SceneEnded),
+    (ReasonCode::SceneFailed, pb::ReasonCode::SceneFailed),
 ];
 
 fn reason_code_to_pb(code: ReasonCode) -> i32 {
@@ -2956,9 +2929,57 @@ mod tests {
     use crate::wire::part::tests::{arm, camera, pid};
     use crate::wire::version::PROTOCOL_MINOR;
 
+    /// Byte-level goldens of the v2 wire: every message a round-trip test
+    /// encodes, in order, as hex in `tests/vectors/wire/{test}.txt`. A
+    /// change to one is a wire change: regenerate with
+    /// `RLMESH_REGENERATE_WIRE_VECTORS=1 cargo test -p rlmesh-session-core
+    /// --lib wire::codec` only when the change is deliberate.
+    struct Goldens {
+        test: &'static str,
+        lines: Vec<String>,
+        seen: alloc::collections::BTreeMap<&'static str, usize>,
+    }
+
+    impl Goldens {
+        fn new(test: &'static str) -> Self {
+            Self {
+                test,
+                lines: Vec::new(),
+                seen: alloc::collections::BTreeMap::new(),
+            }
+        }
+
+        fn add<'a>(&mut self, message: &'static str, bytes: &'a [u8]) -> &'a [u8] {
+            let n = self.seen.entry(message).or_default();
+            *n += 1;
+            let hex: String = bytes.iter().map(|b| alloc::format!("{b:02x}")).collect();
+            self.lines.push(alloc::format!("{message}#{n} {hex}"));
+            bytes
+        }
+
+        fn check(self) {
+            extern crate std;
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/vectors/wire")
+                .join(alloc::format!("{}.txt", self.test));
+            let mut text = self.lines.join("\n");
+            text.push('\n');
+            if std::env::var_os("RLMESH_REGENERATE_WIRE_VECTORS").is_some() {
+                std::fs::create_dir_all(path.parent().expect("dir")).expect("mkdir");
+                std::fs::write(&path, &text).expect("write");
+            }
+            let want = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                want == text,
+                "{}: the v2 wire bytes changed (a wire change); regenerate only when it is deliberate",
+                path.display()
+            );
+        }
+    }
+
     fn snapshot() -> AuthoritySnapshot {
         AuthoritySnapshot {
-            session: SessionId::new(),
+            session: SessionId::named("wire-goldens"),
             epoch: Epoch(3),
             revision: 9,
             mode: Mode::Active,
@@ -3109,6 +3130,7 @@ mod tests {
 
     #[test]
     fn a_device_view_decodes_on_its_own_path() {
+        let mut g = Goldens::new("device_view");
         let state = snapshot();
         let view = DeviceView {
             robot: pid("ur10e"),
@@ -3137,6 +3159,7 @@ mod tests {
             closing: Some(Reason::new(ReasonCode::SceneEnded)),
         };
         let bytes = encode_view(&view);
+        g.add("view", &bytes);
         assert_eq!(decode_view(&bytes).expect("decode"), view);
         // The view is its own message, not a state a board could misread.
         assert!(decode_state(&bytes).is_err());
@@ -3153,6 +3176,7 @@ mod tests {
             run: None,
         };
         let bytes = encode_view_reply(&reply);
+        g.add("view_reply", &bytes);
         assert_eq!(decode_view_reply(&bytes).expect("decode"), reply);
         assert!(decode_reply(&bytes).is_err(), "no state in it");
         let full = encode_reply(&CtlReply {
@@ -3166,14 +3190,17 @@ mod tests {
         });
         let read = decode_view_reply(&full).expect("decode");
         assert_eq!((read.request_id, read.view), (14, None));
+        g.check();
     }
 
     #[test]
     fn binding_records_round_trip() {
+        let mut g = Goldens::new("binding");
         let state = snapshot();
         let binding = &state.bindings[0];
-        let decoded = decode_binding(&encode_binding(binding)).expect("decodes");
+        let decoded = decode_binding(g.add("binding", &encode_binding(binding))).expect("decodes");
         assert_eq!(&decoded, binding);
+        g.check();
     }
 
     #[test]
@@ -3193,6 +3220,7 @@ mod tests {
 
     #[test]
     fn control_messages_round_trip() {
+        let mut g = Goldens::new("control");
         let requests = [
             Command::Attach {
                 name: "Operator".into(),
@@ -3314,13 +3342,16 @@ mod tests {
                 command,
             };
             assert_eq!(
-                decode_request(&encode_request(&request)).expect("decode"),
+                decode_request(g.add("request", &encode_request(&request))).expect("decode"),
                 request
             );
         }
 
         let state = snapshot();
-        assert_eq!(decode_state(&encode_state(&state)).expect("decode"), state);
+        assert_eq!(
+            decode_state(g.add("state", &encode_state(&state))).expect("decode"),
+            state
+        );
         for result in [
             Ok(()),
             Err(CtlError::new(CtlStatus::GroupBusy, "busy")),
@@ -3348,9 +3379,12 @@ mod tests {
                 assignment: None,
                 run: None,
             };
-            assert_eq!(decode_reply(&encode_reply(&reply)).expect("decode"), reply);
+            assert_eq!(
+                decode_reply(g.add("reply", &encode_reply(&reply))).expect("decode"),
+                reply
+            );
         }
-        let session = SessionId::new();
+        let session = SessionId::named("wire-goldens");
         let assignments = [
             Assignment::Join(Join {
                 run: "r-7k2m".into(),
@@ -3436,7 +3470,10 @@ mod tests {
                 assignment,
                 run,
             };
-            assert_eq!(decode_reply(&encode_reply(&reply)).expect("decode"), reply);
+            assert_eq!(
+                decode_reply(g.add("reply", &encode_reply(&reply))).expect("decode"),
+                reply
+            );
         }
 
         let hello = HandshakeRequest {
@@ -3444,7 +3481,8 @@ mod tests {
             noise: vec![1, 2, 3],
         };
         assert_eq!(
-            decode_handshake_request(&encode_handshake_request(&hello)).expect("decode"),
+            decode_handshake_request(g.add("handshake_request", &encode_handshake_request(&hello)))
+                .expect("decode"),
             hello
         );
         for reply in [
@@ -3452,7 +3490,8 @@ mod tests {
             Err(CtlError::new(CtlStatus::Unauthenticated, "unknown key")),
         ] {
             assert_eq!(
-                decode_handshake_reply(&encode_handshake_reply(&reply)).expect("decode"),
+                decode_handshake_reply(g.add("handshake_reply", &encode_handshake_reply(&reply)))
+                    .expect("decode"),
                 reply
             );
         }
@@ -3466,7 +3505,8 @@ mod tests {
             down_key_id: 4,
         };
         assert_eq!(
-            decode_handshake_accept(&encode_handshake_accept(&accept)).expect("decode"),
+            decode_handshake_accept(g.add("handshake_accept", &encode_handshake_accept(&accept)))
+                .expect("decode"),
             accept
         );
 
@@ -3490,7 +3530,7 @@ mod tests {
             health: Health::Degraded,
         };
         assert_eq!(
-            decode_heartbeat(&encode_heartbeat(&hb)).expect("decode"),
+            decode_heartbeat(g.add("heartbeat", &encode_heartbeat(&hb))).expect("decode"),
             hb
         );
         let echo = HeartbeatEcho {
@@ -3500,7 +3540,10 @@ mod tests {
             t3_ns: 11,
             epoch: Epoch(3),
         };
-        assert_eq!(decode_echo(&encode_echo(&echo)).expect("decode"), echo);
+        assert_eq!(
+            decode_echo(g.add("echo", &encode_echo(&echo))).expect("decode"),
+            echo
+        );
         for run in [
             None,
             Some(RunCounters {
@@ -3531,7 +3574,7 @@ mod tests {
                 run,
             };
             assert_eq!(
-                decode_report(&encode_report(&report)).expect("decode"),
+                decode_report(g.add("report", &encode_report(&report))).expect("decode"),
                 report
             );
         }
@@ -3561,7 +3604,10 @@ mod tests {
                 }],
             }),
         ] {
-            assert_eq!(decode_tick(&encode_tick(&tick)).expect("decode"), tick);
+            assert_eq!(
+                decode_tick(g.add("tick", &encode_tick(&tick))).expect("decode"),
+                tick
+            );
         }
         let query = HistoryQuery {
             epoch: Epoch(2),
@@ -3571,9 +3617,11 @@ mod tests {
             request_id: 0,
         };
         assert_eq!(
-            decode_history_query(&encode_history_query(&query)).expect("decode"),
+            decode_history_query(g.add("history_query", &encode_history_query(&query)))
+                .expect("decode"),
             query
         );
+        g.check();
     }
 
     #[test]
@@ -3617,8 +3665,10 @@ mod tests {
 
     #[test]
     fn samples_are_plain_protobuf_with_the_payload_neither_copied_on_send_nor_on_receipt() {
+        let mut g = Goldens::new("sample");
         let sample = applied_sample();
         let encoded = encode_sample(&sample);
+        g.add("sample", &encoded.to_vec());
         assert!(
             encoded
                 .segments
@@ -3654,10 +3704,12 @@ mod tests {
         });
         assert!(decode_sample(Bytes::from(bad.encode_to_vec())).is_err());
         assert!(decode_sample(Bytes::from_static(b"\xff\xff")).is_err());
+        g.check();
     }
 
     #[test]
     fn batches_round_trip_with_their_gaps() {
+        let mut g = Goldens::new("batch");
         let batch = SampleBatch {
             channel: ChannelId(2),
             epoch: Epoch(3),
@@ -3682,12 +3734,14 @@ mod tests {
             request_id: 0,
         };
         let buf = Bytes::from(encode_batch(&batch).expect("encode").to_vec());
+        g.add("batch", &buf);
         let decoded = decode_batch(buf.clone()).expect("decode");
         assert_eq!(decoded, batch);
         assert!(buf.as_ptr_range().contains(&decoded.payload.as_ptr()));
         let mut huge = batch;
         huge.samples = vec![huge.samples[0]; MAX_BATCH + 1];
         assert!(encode_batch(&huge).is_err());
+        g.check();
     }
 
     fn chunk() -> ActionChunk {
@@ -3719,8 +3773,10 @@ mod tests {
 
     #[test]
     fn chunks_round_trip_through_plain_protobuf_without_copying_the_actions() {
+        let mut g = Goldens::new("chunk");
         let chunk = chunk();
         let encoded = encode_chunk(&chunk).expect("encode");
+        g.add("chunk", &encoded.to_vec());
         let buf = Bytes::from(encoded.to_vec());
         let plain = pb::ActionChunk::decode(&buf[..]).expect("plain protobuf");
         assert_eq!((plain.count, plain.actions.len()), (5, 120));
@@ -3741,10 +3797,12 @@ mod tests {
         let mut no_binding = pb::ActionChunk::decode(&buf[..]).expect("plain");
         no_binding.binding = Bytes::new();
         assert!(decode_chunk(Bytes::from(no_binding.encode_to_vec())).is_err());
+        g.check();
     }
 
     #[test]
     fn lockstep_messages_round_trip() {
+        let mut g = Goldens::new("lockstep");
         let reset = LockstepReset {
             epoch: Epoch(2),
             lanes: vec![0, 3],
@@ -3780,6 +3838,7 @@ mod tests {
             }],
         };
         let buf = Bytes::from(encode_lockstep_step(&step));
+        g.add("lockstep_step", &buf);
         let decoded = decode_lockstep_step(buf.clone()).expect("decode");
         assert_eq!(decoded, step);
         assert!(
@@ -3805,7 +3864,10 @@ mod tests {
             }),
         };
         assert_eq!(
-            decode_lockstep_reply(Bytes::from(encode_lockstep_reply(&reply))).expect("decode"),
+            decode_lockstep_reply(Bytes::copy_from_slice(
+                g.add("lockstep_reply", &encode_lockstep_reply(&reply),)
+            ))
+            .expect("decode"),
             reply
         );
         for result in [
@@ -3818,12 +3880,15 @@ mod tests {
                 result,
             };
             let buf = Bytes::from(encode_lockstep_response(&response));
+            g.add("lockstep_response", &buf);
             assert_eq!(decode_lockstep_response(buf).expect("decode"), response);
         }
+        g.check();
     }
 
     #[test]
     fn model_messages_round_trip() {
+        let mut g = Goldens::new("model");
         let slab = |b: u8| vec![Bytes::from(vec![b; 8]), Bytes::from(vec![b; 3])];
         let episode = |id: &str| ModelEpisode {
             id: id.into(),
@@ -3869,7 +3934,9 @@ mod tests {
                 session: "10.0.0.5:7447/bench".into(),
             },
         ] {
-            let decoded = decode_model_request(Bytes::from(encode_model_request(&request)));
+            let decoded = decode_model_request(Bytes::copy_from_slice(
+                g.add("model_request", &encode_model_request(&request)),
+            ));
             assert_eq!(decoded.expect("decode"), request);
         }
         let fault = ModelFault {
@@ -3895,11 +3962,13 @@ mod tests {
                 held_episodes: Some(2),
                 ..EndpointTiming::default()
             };
-            let decoded =
-                decode_model_reply(Bytes::from(encode_model_reply(&reply, Some(&timing))));
+            let decoded = decode_model_reply(Bytes::copy_from_slice(
+                g.add("model_reply", &encode_model_reply(&reply, Some(&timing))),
+            ));
             assert_eq!(decoded.expect("decode"), (reply, Some(timing)));
         }
         assert!(decode_model_request(Bytes::new()).is_err());
+        g.check();
     }
 
     #[test]
