@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-#MISE description="Build the device runtime (crates/rlmesh-device) for each ESP32 the Arduino library supports (the C6 on stable Rust; the classic ESP32 with Espressif's Rust fork, when installed), stage it into integrations/esp32, assemble zenoh-pico as an Arduino library, and compile the library's examples with arduino-cli when the esp32 core is installed"
+#MISE description="Build the device runtime (crates/rlmesh-device) for each ESP32 the Arduino library supports (the C6 on stable Rust; the classic ESP32 with Espressif's Rust fork, when installed), stage it into integrations/esp32, merge a private zenoh-pico transport into each archive, package one RLMesh zip per chip, and compile the library's examples with arduino-cli"
 #MISE dir="{{ config_root }}"
-# Local only: CI has neither the esp32 Arduino core (its binutils) nor
-# Espressif's fork. ARDUINO_CLI names an arduino-cli binary off PATH.
 set -euo pipefail
 
 lib=integrations/esp32
 target_dir="${CARGO_TARGET_DIR:-target}"
 tools="$HOME/.arduino15/packages/esp32/tools"
 cli="${ARDUINO_CLI:-arduino-cli}"
-have_cli=false
-if "$cli" version >/dev/null 2>&1; then have_cli=true; fi
+if ! "$cli" version >/dev/null 2>&1; then
+  echo "build:esp32 needs arduino-cli and the esp32:esp32 core (set ARDUINO_CLI for a binary off PATH)" >&2
+  exit 1
+fi
 mkdir -p "$target_dir/esp32"
 cp crates/rlmesh-device/include/rlmesh_device.h "$lib/src/"
 
@@ -49,6 +49,13 @@ cp "$zp/config/include/zenoh-pico/config.h" "$zp_lib/src/zenoh-pico/"
 done
 printf 'name=zenoh-pico\nversion=%s\nauthor=ZettaScale\nmaintainer=ZettaScale\nsentence=Zenoh for microcontrollers\nparagraph=\ncategory=Communication\nurl=https://github.com/eclipse-zenoh/zenoh-pico\narchitectures=esp32\n' \
   "$zp_version" >"$zp_lib/library.properties"
+cp integrations/esp32/transport/rlmesh_zenoh.{c,h} "$zp_lib/src/"
+cp crates/rlmesh-device/include/rlmesh_device.h "$zp_lib/src/"
+# An empty umbrella header: the sketch preprocessor uses -CC, which breaks
+# zenoh-pico's macro-expanded C declarations. Only C compiles those headers.
+touch "$zp_lib/src/RLMeshTransportBuild.h"
+mkdir -p "$zp/TransportBuild"
+printf '#include <RLMeshTransportBuild.h>\nvoid setup() {}\nvoid loop() {}\n' >"$zp/TransportBuild/TransportBuild.ino"
 zp_flags="-DZENOH_ARDUINO_ESP32 -DZENOH_COMPILER_GCC -DZENOH_C_STANDARD=11"
 
 # One chip: build the archive, keep only the ABI's C names global, stage it
@@ -68,9 +75,11 @@ chip() {
   # the whole image: ESP-IDF keeps its own in IRAM or ROM, for code that
   # runs with the flash cache off. Every C-level name but the ABI's is made
   # local to the archive, so the Rust code links against the firmware's.
-  local nm objcopy
+  local nm objcopy ld ar
   nm="$(ls "$tools/$bin"/*/bin/"$prefix"nm 2>/dev/null | tail -1)"
   objcopy="$(ls "$tools/$bin"/*/bin/"$prefix"objcopy 2>/dev/null | tail -1)"
+  ld="${nm%nm}ld"
+  ar="${nm%nm}ar"
   if [ -z "$nm" ] || [ -z "$objcopy" ]; then
     echo "no ${prefix}nm or ${prefix}objcopy: install the esp32:esp32 Arduino core" >&2
     exit 1
@@ -88,25 +97,63 @@ chip() {
     exit 1
   fi
 
-  if ! $have_cli || ! "$cli" board details -b "$fqbn" >/dev/null 2>&1; then
-    echo "==> sketch compile skipped for $fqbn (arduino-cli or its esp32 core not found)"
-    return
+  # Compile the transport using exactly the selected Arduino core's compiler,
+  # IDF headers and flags. These defines are private to this build.
+  local transport_build="$target_dir/esp32/$mcu-transport"
+  if ! "$cli" compile --fqbn "$fqbn" --library "$zp_lib" --jobs 2 \
+    --build-property "compiler.c.extra_flags=$zp_flags" \
+    --build-property "compiler.cpp.extra_flags=$zp_flags" \
+    --build-path "$transport_build" "$zp/TransportBuild" >"$transport_build.log" 2>&1; then
+    cat "$transport_build.log" >&2
+    exit 1
   fi
+  # Localizing separate archive members would break references between them.
+  # First combine them into one relocatable object, then hide every definition
+  # except the opaque bridge used by robot.cpp. IDF's undefined names stay global.
+  local transport="$transport_build/transport.o"
+  # Arduino's archive mode flattens duplicate basenames (link.c, config.c,
+  # ...). Use the compiled objects with their full paths instead.
+  local -a objects
+  mapfile -d '' -t objects < <(find "$transport_build/libraries/zenoh-pico" -name '*.o' -print0)
+  "$ld" -r "${objects[@]}" -o "$transport"
+  "$nm" -g --defined-only "$transport" | awk 'NF == 3 { print $3 }' | \
+    grep -v '^rlmesh_zenoh_' >"$transport_build/private-names.txt"
+  "$objcopy" --localize-symbols="$transport_build/private-names.txt" "$transport"
+  "$ar" rcs "$staged" "$transport"
+  leaked="$(c_names "$staged" | grep -v '^rlmesh_zenoh_' || true)"
+  if [ -n "$leaked" ]; then
+    echo "$staged leaks internal symbols: $leaked" >&2
+    exit 1
+  fi
+
+  # A chip-specific ZIP installs directly via Arduino's Add .ZIP Library.
+  # Keep only that chip's archive; never distribute private zenoh headers.
+  local package="$target_dir/esp32/package-$mcu/RLMesh"
+  rm -rf "${package%/RLMesh}"
+  mkdir -p "$package/src/$mcu"
+  mkdir -p "$package/extras/zenoh-pico"
+  cp "$zp_src/LICENSE" "$zp_src/NOTICE.md" "$package/extras/zenoh-pico/"
+  cp "$lib/library.properties" "$lib/README.md" "$lib"/LICENSE-* "$package/"
+  cp -r "$lib/examples" "$package/"
+  cp "$lib"/src/*.h "$lib"/src/*.cpp "$package/src/"
+  cp "$staged" "$package/src/$mcu/"
+
   local example name out log
-  for example in "$lib"/examples/*/; do
+  for example in "$package"/examples/*/; do
     name="$(basename "$example")"
     out="$target_dir/esp32/$mcu-$name"
     log="$out.log"
     echo "==> arduino-cli: examples/$name for $fqbn"
     # The core warns about its own code: the log is shown only on failure.
-    if ! "$cli" compile --fqbn "$fqbn" --library "$lib" --library "$zp_lib" --warnings all \
-      --build-property "compiler.c.extra_flags=$zp_flags" \
-      --build-property "compiler.cpp.extra_flags=$zp_flags" \
+    if ! "$cli" compile --fqbn "$fqbn" --library "$package" --warnings all --jobs 2 \
       --build-path "$out" "$example" >"$log" 2>&1; then
       cat "$log" >&2
+      if grep -qiE 'sketch too big|text section exceeds|will not fit' "$log"; then
+        echo "RLMesh $name exceeds its bundled 1,966,080-byte app slot. Keep partitions.csv and select a board with more flash or reduce the sketch." >&2
+      fi
       exit 1
     fi
-    if grep -nE "$lib/(src|examples)/.*warning" "$log"; then
+    if grep -nE "$package/(src|examples)/.*warning" "$log"; then
       echo "the library warns on $fqbn" >&2
       exit 1
     fi
@@ -118,13 +165,24 @@ chip() {
       exit 1
     fi
   done
+  mkdir -p "$target_dir/esp32/dist"
+  python3 - "$package" "$target_dir/esp32/dist/RLMesh-$mcu.zip" <<'ZIP'
+from pathlib import Path
+from zipfile import ZipFile, ZIP_DEFLATED
+import sys
+root, output = map(Path, sys.argv[1:])
+with ZipFile(output, 'w', ZIP_DEFLATED) as archive:
+    for path in sorted(root.rglob('*')):
+        if path.is_file():
+            archive.write(path, path.relative_to(root.parent))
+ZIP
 }
 
 # ESP32-C6 (RISC-V, with atomics): upstream stable Rust, prebuilt core.
 toolchain="$(mise current rust)"
 rustup target list --installed --toolchain "$toolchain" | grep -qx riscv32imac-unknown-none-elf ||
   rustup target add --toolchain "$toolchain" riscv32imac-unknown-none-elf
-chip esp32c6 riscv32imac-unknown-none-elf riscv32-esp-elf- esp-rv32 esp32:esp32:esp32c6:PartitionScheme=huge_app \
+chip esp32c6 riscv32imac-unknown-none-elf riscv32-esp-elf- esp-rv32 esp32:esp32:esp32c6:PartitionScheme=min_spiffs \
   42000000 42800000 -- cargo build
 
 # The classic ESP32 (Xtensa): Espressif's rustc under a nightly cargo, since
@@ -134,6 +192,7 @@ chip esp32c6 riscv32imac-unknown-none-elf riscv32-esp-elf- esp-rv32 esp32:esp32:
 export_esp="${ESP_EXPORT:-$HOME/export-esp.sh}"
 if [ ! -f "$export_esp" ] || ! rustup which --toolchain esp rustc >/dev/null 2>&1; then
   echo "==> classic ESP32 skipped: no esp toolchain (\`espup install\`, or set ESP_EXPORT)"
+  if [ "${RLMESH_ESP32_REQUIRE_XTENSA:-0}" = 1 ]; then exit 1; fi
   exit 0
 fi
 if ! rustup which --toolchain nightly cargo >/dev/null 2>&1; then
@@ -142,6 +201,11 @@ if ! rustup which --toolchain nightly cargo >/dev/null 2>&1; then
 fi
 # shellcheck disable=SC1090
 . "$export_esp"
-chip esp32 xtensa-esp32-none-elf xtensa-esp32-elf- esp-x32 esp32:esp32:esp32:PartitionScheme=huge_app \
+chip esp32 xtensa-esp32-none-elf xtensa-esp32-elf- esp-x32 esp32:esp32:esp32:PartitionScheme=min_spiffs \
   400d0000 40400000 -- env RUSTC="$(rustup which --toolchain esp rustc)" \
+  cargo +nightly build --ignore-rust-version -Zbuild-std=core,alloc
+
+# ESP32-S3 uses the same Xtensa compiler/binutils, with its own Rust target.
+chip esp32s3 xtensa-esp32s3-none-elf xtensa-esp32s3-elf- esp-x32 esp32:esp32:esp32s3:PartitionScheme=min_spiffs \
+  42000000 44000000 -- env RUSTC="$(rustup which --toolchain esp rustc)" \
   cargo +nightly build --ignore-rust-version -Zbuild-std=core,alloc

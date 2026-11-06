@@ -11,8 +11,12 @@
 // one-off host instead, run `rlmesh host --insecure --listen <lan-ip>:7447`
 // and paste the address it prints into kAddress.
 
-#include <RLMeshESP32.h>
+#include <RLMesh.h>
 #include <WiFi.h>
+
+#if defined(ARDUINO_PARTITION_default)
+#error "RLMesh examples: select Tools > Partition Scheme > Minimal SPIFFS and keep the bundled partitions.csv"
+#endif
 
 const char* kSsid = "your-wifi";
 const char* kPassword = "your-password";
@@ -164,7 +168,7 @@ void loop() {
   if (eyes < 0 || !robot.running() || now < nextTick) return;
   nextTick = now + kPeriodUs;
   rlmesh_device_tick_t t;
-  if (robot.tick(eyes, t) && t.has_action && t.value_len == sizeof target) {
+  if (robot.tick(eyes, t) == rlmesh::TickResult::Ready && t.has_action && t.value_len == sizeof target) {
     memcpy(target, t.value, sizeof target);
     writeServo(kPanPin, target[0]);
     writeServo(kTiltPin, target[1]);

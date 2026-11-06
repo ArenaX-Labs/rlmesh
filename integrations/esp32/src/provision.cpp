@@ -4,7 +4,7 @@
 #include <Preferences.h>
 #include <string.h>
 
-#include "RLMeshESP32.h"
+#include "RLMesh.h"
 
 namespace rlmesh {
 
@@ -14,7 +14,7 @@ const char kNamespace[] = "rlmesh";
 const char kKey[] = "key";
 const char kRecord[] = "record";
 
-#if defined(CONFIG_IDF_TARGET_ESP32)
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 const uint8_t kArch = 4;  // Xtensa
 #else
 const uint8_t kArch = 3;  // RISC-V

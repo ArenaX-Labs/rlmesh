@@ -2,8 +2,12 @@
 // signed authority state, and the chunk and sample of each control tick.
 // Open the Serial Monitor at 115200.
 
-#include <RLMeshESP32.h>
+#include <RLMesh.h>
 #include <WiFi.h>
+
+#if defined(ARDUINO_PARTITION_default)
+#error "RLMesh examples: select Tools > Partition Scheme > Minimal SPIFFS and keep the bundled partitions.csv"
+#endif
 
 // One control tick at 100 Hz.
 const uint32_t kTickUs = 10000;
@@ -19,7 +23,7 @@ void setup() {
   WiFi.mode(WIFI_STA);
 
   uint32_t v = rlmesh_device_version();
-  Serial.printf("RLMeshESP32 timing (library %lu.%lu.%lu, %lu MHz)\n", (unsigned long)(v >> 16),
+  Serial.printf("RLMesh timing (library %lu.%lu.%lu, %lu MHz)\n", (unsigned long)(v >> 16),
                 (unsigned long)(v >> 8 & 0xFF), (unsigned long)(v & 0xFF),
                 (unsigned long)getCpuFrequencyMhz());
   rlmesh_device_timing_t t;
