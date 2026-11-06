@@ -243,26 +243,68 @@ impl Leases {
         })
     }
 
-    /// Requests every lease, all or none, and declares a sender per new
-    /// token.
+    /// Requests the leases not held, robot by robot, so a robot that is
+    /// gone or stopped on its own never keeps the others from moving, and
+    /// declares a sender per new token. Fails only when no robot granted
+    /// any.
     async fn grant(&self, participant: &Participant) -> Result<Vec<Lease>, SessionError> {
         let _request = self.request.lock().await;
         let ttl_ns = self
             .ttl
             .map(|ttl| u64::try_from(ttl.as_nanos()).unwrap_or(u64::MAX));
-        let command = self.group().request(
-            participant.binding_fingerprint(),
-            ttl_ns,
-            participant.clock().now_ns(),
-        );
-        let reply = participant.command(command).await?;
-        self.group().on_reply(
-            &reply,
-            participant.clock_estimate().as_ref(),
-            participant.clock().now_ns(),
-        );
-        reply.result.clone()?;
-        for lease in &reply.leases {
+        let unheld = self.group().unheld(participant.clock().now_ns());
+        // One request per robot, for its present parts.
+        let mut robots: Vec<(ParticipantId, Vec<ChannelId>)> = Vec::new();
+        participant.authority_view().with(|view| {
+            let Some(view) = view else {
+                return;
+            };
+            for channel in &unheld {
+                let Some(part) = view.part(*channel) else {
+                    continue;
+                };
+                if !view.participant(&part.owner).is_some_and(|p| p.present) {
+                    continue;
+                }
+                match robots.iter_mut().find(|(r, _)| *r == part.owner) {
+                    Some((_, channels)) => channels.push(*channel),
+                    None => robots.push((part.owner.clone(), vec![*channel])),
+                }
+            }
+        });
+        let mut granted = Vec::new();
+        let mut refused = None;
+        for (_, channels) in robots {
+            let command = self.group().request_some(
+                &channels,
+                participant.binding_fingerprint(),
+                ttl_ns,
+                participant.clock().now_ns(),
+            );
+            let reply = match participant.command(command).await {
+                Ok(reply) => reply,
+                Err(err) => {
+                    refused = Some(err);
+                    continue;
+                }
+            };
+            self.group().on_reply_some(
+                &channels,
+                &reply,
+                participant.clock_estimate().as_ref(),
+                participant.clock().now_ns(),
+            );
+            match &reply.result {
+                Ok(()) => granted.extend(reply.leases.iter().cloned()),
+                Err(err) => refused = Some(SessionError::Rejected(err.clone())),
+            }
+        }
+        if granted.is_empty()
+            && let Some(err) = refused
+        {
+            return Err(err);
+        }
+        for lease in &granted {
             let current = self
                 .publishers()
                 .get(&lease.channel)
@@ -274,7 +316,7 @@ impl Leases {
             info!(participant = %participant.id(), channel = %lease.channel, token = %lease.token, "lease granted");
             self.publishers().insert(lease.channel, publisher);
         }
-        Ok(reply.leases)
+        Ok(granted)
     }
 
     /// Gives every held lease back.
@@ -403,6 +445,7 @@ impl Controller {
         config: ControllerConfig,
     ) -> Result<Self, ControllerError> {
         let robot: Option<ParticipantId> = options.robot.clone();
+        let deadline = tokio::time::Instant::now() + config.bind_timeout;
         participant
             .wait_for("the robot's parts", config.bind_timeout, |view| {
                 view.parts
@@ -410,7 +453,23 @@ impl Controller {
                     .any(|p| robot.as_ref().is_none_or(|r| &p.owner == r))
             })
             .await?;
-        let binding = participant.bind(policy, options)?;
+        // Robots declare one by one: a binding that names robots not
+        // declared yet is tried again on each new view until it stands or
+        // the timeout passes.
+        let mut view = participant.watch();
+        let binding = loop {
+            match participant.bind(policy, options) {
+                Ok(binding) => break binding,
+                Err(err) => {
+                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if left.is_zero()
+                        || !matches!(tokio::time::timeout(left, view.changed()).await, Ok(Ok(())))
+                    {
+                        return Err(err.into());
+                    }
+                }
+            }
+        };
         participant.declare_bound(&binding).await?;
         let inputs = Inputs::open(&participant, &binding).await?;
         let leases = Arc::new(Leases {
@@ -499,6 +558,11 @@ impl Controller {
     pub fn holds(&self) -> bool {
         self.leases.sync(&self.participant);
         self.leases.holds_all(&self.participant)
+    }
+
+    /// Whether it holds at least one of its leases.
+    pub fn holds_any(&self) -> bool {
+        !self.leases().is_empty()
     }
 
     /// The leases held now.
@@ -705,7 +769,9 @@ impl Controller {
             // Warm before authority: the first complete snapshot asks for
             // the leases.
             self.want_leases();
-            if commands && !self.holds() {
+            // Any lease held is enough: a robot that is gone or stopped on
+            // its own never starves the others (its actions go unsent).
+            if commands && !self.holds_any() {
                 self.skip(t - off, SkipReason::NoLease);
                 if let Some(phase) = phase.as_mut() {
                     phase.update();

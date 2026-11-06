@@ -649,13 +649,15 @@ async fn a_lost_robot_stays_in_the_roster_and_a_lost_host_is_reported() {
     let transport = robot.transport().clone();
     drop(robot);
     transport.close().await.expect("close");
+    // Only the robot stops: its lease ends, and the session, with no lease
+    // left, is ARMED again.
     let view = policy
-        .wait_for("SAFE after the robot's loss", WAIT, |s| {
-            s.mode == Mode::Safe
+        .wait_for("the robot lost", WAIT, |s| {
+            s.participant(&id).is_some_and(|p| !p.present)
         })
         .await
-        .expect("safe");
-    assert_eq!(view.mode_reason.code, ReasonCode::RobotLost);
+        .expect("lost");
+    assert_eq!(view.mode, Mode::Armed);
     let entry = view.participant(&id).expect("kept in the roster");
     assert!(!entry.present);
     assert_eq!(
@@ -1893,8 +1895,9 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
         CtlStatus::Unauthenticated
     );
 
-    // A robot's new process: a new epoch voids every lease, and ACTIVE
-    // becomes ARMED (never more).
+    // A robot's new process: its own leases end (it may be another
+    // embodiment), and with no lease left ACTIVE becomes ARMED (never
+    // more). The epoch stays: other robots never stop for it.
     let rearmed = twin.call(71, Command::Arm).await.state;
     let binding = rearmed
         .binding(policy.id())
@@ -1922,10 +1925,7 @@ async fn a_retry_is_answered_once_and_a_new_process_replaces_the_old_one() {
     let swapped = robot.call(1, attach("robot", Role::Embodiment)).await;
     swapped.result.expect("attached");
     let swapped = swapped.state;
-    assert_eq!(
-        (swapped.mode, swapped.epoch),
-        (Mode::Armed, rearmed.epoch.next())
-    );
+    assert_eq!((swapped.mode, swapped.epoch), (Mode::Armed, rearmed.epoch));
     assert!(swapped.leases.is_empty());
     assert!(swapped.ended.iter().any(|e| {
         e.lease.token == granted.leases[0].token && e.reason.code == ReasonCode::VoidedByEpoch

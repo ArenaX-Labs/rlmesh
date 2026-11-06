@@ -730,18 +730,27 @@ pub fn bind_in(
     options: &RunOptions,
 ) -> Result<Binding, BindError> {
     let parts = target.parts;
-    let view = match options.robot {
-        None if !target.places.is_empty() => {
-            Some(view::parts(parts, target.places).map_err(BindError::Options)?)
-        }
-        _ => None,
-    };
     let mut owners: Vec<&ParticipantId> = Vec::new();
     for part in parts {
         if !owners.contains(&&part.owner) {
             owners.push(&part.owner);
         }
     }
+    // A plain session's several robots with no robot named: each in the
+    // view under its own name, so one policy drives them all (its actions
+    // name their robots: `eye-1:gaze`).
+    let implicit;
+    let places: &[Place] =
+        if target.places.is_empty() && options.robot.is_none() && owners.len() > 1 {
+            implicit = view::each_at_its_name(&owners);
+            &implicit
+        } else {
+            target.places
+        };
+    let view = match options.robot {
+        None if !places.is_empty() => Some(view::parts(parts, places).map_err(BindError::Options)?),
+        _ => None,
+    };
     let robot = match (&options.robot, owners.as_slice()) {
         (None, _) if view.is_some() => {
             ParticipantId::new(VIEW).map_err(|e| BindError::Options(e.to_string()))?
@@ -781,7 +790,7 @@ pub fn bind_in(
         robot,
         parts,
         view: view.as_deref(),
-        places: if view.is_some() { target.places } else { &[] },
+        places: if view.is_some() { places } else { &[] },
         scope: options
             .under
             .as_ref()

@@ -834,7 +834,7 @@ pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credenti
                 CtlStatus::Unauthenticated,
                 format!(
                     "no key for the session at {base}: join with the address its host printed \
-                     (it ends in #key), run rlmeshd on this machine, or pair this machine with \
+                     (it ends in #key), run `rlmesh host` on this machine, or pair this machine with \
                      the robot's (rlmesh pair HOST)"
                 ),
             ))
@@ -1442,7 +1442,7 @@ mod tests {
         let err = host_at(wide, "lan", grace, false)
             .await
             .expect_err("off loopback");
-        assert!(err.to_string().contains("rlmeshd"), "{err}");
+        assert!(err.to_string().contains("rlmesh host"), "{err}");
 
         let mut placed = host_at("127.0.0.1:0".parse().expect("addr"), "gated", grace, false)
             .await

@@ -17,7 +17,9 @@
 //!   command is never continued, not even for one tick), and a delta mode
 //!   dispatches nothing.
 //! - `Safe`: the safe behaviour, latched until the epoch moves on (a
-//!   re-arm). Entered when the wait exceeds `hold_max`, when the lease
+//!   session re-arm) or the host grants the group a lease newer than any
+//!   it had seen when it latched (the robot re-armed on its own: the host
+//!   grants none to a robot it holds). Entered when the wait exceeds `hold_max`, when the lease
 //!   lapses by the edge's clock, when a handover overruns `hold_max`, or
 //!   when the host says SAFE. When the active member's lease was released
 //!   (not lapsed), the ladder still holds and then runs the safe behaviour,
@@ -196,6 +198,11 @@ pub struct Fallback {
     mode: EdgeMode,
     /// The epoch the edge latched SAFE in.
     safe_epoch: Option<Epoch>,
+    /// The newest lease token the group had seen when it latched: a later
+    /// one is a grant after the latch, which releases it.
+    safe_token: LeaseToken,
+    /// The newest lease token the group has seen.
+    newest_token: LeaseToken,
     safe_cause: Option<SafeCause>,
     /// The code of that latch (the host's for [`SafeCause::HostSafe`]).
     safe_reason: ReasonCode,
@@ -230,6 +237,8 @@ impl Fallback {
             members,
             mode: EdgeMode::Idle,
             safe_epoch: None,
+            safe_token: LeaseToken(0),
+            newest_token: LeaseToken(0),
             safe_cause: None,
             safe_reason: ReasonCode::Unspecified,
             latch: None,
@@ -345,14 +354,19 @@ impl Fallback {
             self.stopped = false;
             self.stop_epoch = None;
         }
+        let granted_after = view.lease.is_some_and(|l| l.token > self.safe_token);
+        if let Some(lease) = view.lease {
+            self.newest_token = self.newest_token.max(lease.token);
+        }
         if let Some(epoch) = self.safe_epoch {
-            if view.epoch <= epoch {
+            if view.epoch <= epoch && !granted_after {
                 clear(queues);
                 let mut decision = self.decision(EdgeMode::Safe, None, None, true);
                 decision.reason = self.safe_reason;
                 return decision;
             }
-            // Re-armed: a fresh epoch releases the latch.
+            // Re-armed: a fresh epoch, or a lease granted after the latch,
+            // releases it.
             self.safe_epoch = None;
             self.safe_cause = None;
         }
@@ -524,6 +538,9 @@ impl Fallback {
     ) -> Decision {
         clear(queues);
         self.safe_epoch = Some(view.epoch);
+        self.safe_token = self
+            .newest_token
+            .max(view.lease.map_or(LeaseToken(0), |l| l.token));
         self.safe_cause = Some(cause);
         self.safe_reason = match cause {
             SafeCause::HostSafe => view.reason,

@@ -212,6 +212,11 @@ pub struct HostConfig {
     /// embodiment's device for the host instance. Change one at runtime with
     /// [`SessionHost::pin`].
     pub pins: BTreeMap<ParticipantId, Pin>,
+    /// Whether a robot that went safe, restarted or came back from a loss
+    /// may be leased again at once ([`AuthorityConfig::rearm_robots`]).
+    /// Off by default: it waits for the next arm. Other robots never stop
+    /// for it either way.
+    pub rearm_robots: bool,
     /// Where each placed robot's parts appear in the session's view (scene
     /// design §5): one binding drives every placed robot. Empty by default:
     /// no view.
@@ -259,6 +264,7 @@ impl HostConfig {
             seal: SealPolicy::None,
             devices: Vec::new(),
             pins: BTreeMap::new(),
+            rearm_robots: false,
             places: Vec::new(),
             #[cfg(feature = "fleet")]
             scene: None,
@@ -313,6 +319,7 @@ impl std::fmt::Debug for HostConfig {
             .field("seal", &self.seal)
             .field("devices", &self.devices)
             .field("pins", &self.pins)
+            .field("rearm_robots", &self.rearm_robots)
             .field("places", &self.places);
         #[cfg(feature = "fleet")]
         f.field("scene", &self.scene)
@@ -375,6 +382,7 @@ impl SessionHost {
                 virtual_clock: config.virtual_clock,
                 seal: config.seal.clone(),
                 access: access.clone(),
+                rearm_robots: config.rearm_robots,
                 places: config.places.clone(),
                 #[cfg(feature = "fleet")]
                 scene: config.scene.clone(),

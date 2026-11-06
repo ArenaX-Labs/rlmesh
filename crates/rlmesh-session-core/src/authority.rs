@@ -324,6 +324,11 @@ pub struct AuthorityConfig {
     pub seal: SealPolicy,
     /// What each device may do (design §4); `local` may do everything.
     pub access: Access,
+    /// Whether a robot that went safe, restarted or came back from a loss
+    /// may be leased again at once. Off by default: its leases ended and it
+    /// waits for the next `Arm`, which re-arms it alone in an ARMED or
+    /// ACTIVE session. Other robots never stop for it either way.
+    pub rearm_robots: bool,
     /// Where each placed robot's parts appear in the view (scene design
     /// §5): one binding drives several robots through it. Empty: no view.
     pub places: Vec<Place>,
@@ -373,6 +378,7 @@ impl Default for AuthorityConfig {
             virtual_clock: None,
             seal: SealPolicy::None,
             access: Access::default(),
+            rearm_robots: false,
             places: Vec::new(),
             #[cfg(feature = "fleet")]
             scene: None,
@@ -443,6 +449,9 @@ pub struct Authority {
     clock: Option<VirtualClock>,
     /// Virtual ticks to publish.
     ticks: Vec<VirtualTick>,
+    /// Robots stopped on their own (a fallback, a restart, a loss) and not
+    /// re-armed yet: their parts take no lease until the next `Arm`.
+    held: BTreeMap<ParticipantId, Reason>,
     /// The scene run's closing and rejoin window.
     #[cfg(feature = "fleet")]
     scene: scene::SceneState,
@@ -485,9 +494,16 @@ impl Authority {
             sealed: BTreeSet::new(),
             clock,
             ticks: Vec::new(),
+            held: BTreeMap::new(),
             #[cfg(feature = "fleet")]
             scene: scene::SceneState::default(),
         }
+    }
+
+    /// Why `robot` waits for an `Arm` before its parts take a lease, if it
+    /// does.
+    pub fn held(&self, robot: &ParticipantId) -> Option<&Reason> {
+        self.held.get(robot)
     }
 
     /// The session.
@@ -775,12 +791,20 @@ impl Authority {
                             "leaving ESTOP needs a disarm before arm",
                         ));
                     }
+                    // Re-arms the robots stopped on their own; the others
+                    // and their leases are untouched.
+                    Mode::Armed | Mode::Active if !self.held.is_empty() => {
+                        self.held.clear();
+                    }
                     Mode::Armed | Mode::Active => {
                         return Err(CtlError::new(
                             CtlStatus::InvalidTransition,
                             format!("already {}", self.mode),
                         ));
                     }
+                }
+                if matches!(self.mode, Mode::Armed) {
+                    self.held.clear();
                 }
             }
             Command::Disarm => {
@@ -912,11 +936,16 @@ impl Authority {
                 }
                 let why = self.reason(code, &from, &reason);
                 match self.mode {
-                    // A device fault between episodes is visible at once,
-                    // and the next drive needs an arm.
+                    // Only this robot stops: its leases end, and it waits
+                    // for an arm (unless robots re-arm on their own). The
+                    // session and the other robots go on.
                     Mode::Active | Mode::Armed | Mode::Disarmed => {
-                        self.revoke_all(ReasonCode::VoidedBySafe, &why, &mut applied.events);
-                        self.set_mode(Mode::Safe, why, &mut applied.events);
+                        self.stop_robot(&from, ReasonCode::VoidedBySafe, &why, &mut applied.events);
+                        self.settle_after_release(
+                            &from,
+                            "its robot went safe",
+                            &mut applied.events,
+                        );
                     }
                     Mode::Safe | Mode::Estop => {
                         self.mode_reason = why.clone();
@@ -1098,7 +1127,11 @@ impl Authority {
                 info.present = false;
                 info.left = Some(why.clone());
             }
-            self.enter_safe(why, events);
+            // Only this robot stops; it is re-armed once it is back.
+            if !self.config.rearm_robots {
+                self.held.insert(id.clone(), why);
+            }
+            self.settle_after_release(id, "its robot was lost", events);
         } else {
             self.roster.remove(id);
             if lapsed {
@@ -1260,15 +1293,11 @@ impl Authority {
     /// SAFE.
     fn replace_generation(&mut self, id: &ParticipantId, events: &mut Vec<AuthorityEvent>) {
         if self.parts.values().any(|p| &p.owner == id) {
+            // Its new process may be another embodiment: its own leases end
+            // and it waits for an arm. Every other robot goes on.
             let why = self.reason(ReasonCode::VoidedByEpoch, id, "the robot restarted");
-            self.epoch = self.epoch.next();
-            if let Some(clock) = &mut self.clock {
-                clock.reset(self.epoch, self.now_ns);
-            }
-            self.revoke_all(ReasonCode::VoidedByEpoch, &why, events);
-            if self.mode == Mode::Active {
-                self.set_mode(Mode::Armed, why, events);
-            }
+            self.stop_robot(id, ReasonCode::VoidedByEpoch, &why, events);
+            self.settle_after_release(id, "its robot restarted", events);
         } else {
             let why = self.reason(
                 ReasonCode::HolderDetached,
@@ -1415,17 +1444,17 @@ impl Authority {
             .map(|p| (p.path.as_str(), p))
             .collect();
         let armed = matches!(self.mode, Mode::Armed | Mode::Active);
-        let refuse_armed = |path: &str| {
+        // A part under a lease never changes; anything else may, armed or
+        // not: a robot joins or comes back into an armed session.
+        let refuse_leased = |path: &str| {
             CtlError::new(
                 CtlStatus::InvalidTransition,
-                format!(
-                    "{path}: a commandable part is not re-declared while {}; disarm first",
-                    self.mode
-                ),
+                format!("{path}: a commandable part is not re-declared while it is leased"),
             )
         };
         let mut keep = BTreeSet::new();
         let mut fresh = Vec::new();
+        let mut commands = false;
         for mut spec in declared {
             match current.get(spec.path.as_str()) {
                 Some(old) => {
@@ -1435,15 +1464,14 @@ impl Authority {
                         keep.insert(old.channel);
                         continue;
                     }
-                    if armed && (old.command.is_some() || spec.command.is_some()) {
-                        return Err(refuse_armed(spec.path.as_str()));
+                    if self.leases.contains_key(&old.channel) {
+                        return Err(refuse_leased(spec.path.as_str()));
                     }
+                    commands |= old.command.is_some() || spec.command.is_some();
                     fresh.push(spec);
                 }
                 None => {
-                    if armed && spec.command.is_some() {
-                        return Err(refuse_armed(spec.path.as_str()));
-                    }
+                    commands |= spec.command.is_some();
                     fresh.push(spec);
                 }
             }
@@ -1452,13 +1480,23 @@ impl Authority {
             .values()
             .filter(|p| !keep.contains(&p.channel))
             .map(|p| {
-                if armed && p.command.is_some() && !fresh.iter().any(|f| f.path == p.path) {
-                    Err(refuse_armed(p.path.as_str()))
+                if self.leases.contains_key(&p.channel) && !fresh.iter().any(|f| f.path == p.path) {
+                    Err(refuse_leased(p.path.as_str()))
                 } else {
                     Ok(p.channel)
                 }
             })
             .collect::<Result<_, _>>()?;
+        // New commands in an armed session wait for an arm, unless robots
+        // re-arm on their own.
+        if armed && commands && !self.config.rearm_robots {
+            let why = self.reason(
+                ReasonCode::Unspecified,
+                from,
+                "declared commandable parts while armed",
+            );
+            self.held.insert(from.clone(), why);
+        }
         // Validated: mutate.
         let mut added = Vec::with_capacity(fresh.len());
         for mut spec in fresh {
@@ -1876,6 +1914,24 @@ impl Authority {
             let Some(part) = self.commandable(*channel) else {
                 return Err(invalid(format!("{channel} is not a commandable part")));
             };
+            if !self.is_attached(&part.owner) {
+                return Err(CtlError::new(
+                    CtlStatus::NotReady,
+                    format!(
+                        "{} is not present: its parts take a lease once it is back",
+                        part.owner
+                    ),
+                ));
+            }
+            if let Some(why) = self.held.get(&part.owner) {
+                return Err(CtlError::new(
+                    CtlStatus::NotReady,
+                    format!(
+                        "{} stopped on its own ({}): arm to drive it again",
+                        part.owner, why.code
+                    ),
+                ));
+            }
             // Before pre-emption and busy checks: a device pre-empts only
             // with a class it is authorized for on that part.
             self.config
@@ -2253,6 +2309,36 @@ impl Authority {
         }
     }
 
+    /// Ends every lease on `robot`'s parts (`code`, carrying who and why
+    /// from `cause`) and, unless robots re-arm on their own, holds it until
+    /// the next `Arm`.
+    fn stop_robot(
+        &mut self,
+        robot: &ParticipantId,
+        code: ReasonCode,
+        cause: &Reason,
+        events: &mut Vec<AuthorityEvent>,
+    ) {
+        let channels: Vec<ChannelId> = self
+            .parts
+            .values()
+            .filter(|p| &p.owner == robot)
+            .map(|p| p.channel)
+            .collect();
+        for channel in channels {
+            if let Some(lease) = self.leases.remove(&channel) {
+                let why = Reason {
+                    code,
+                    ..cause.clone()
+                };
+                self.end(lease, why, events);
+            }
+        }
+        if !self.config.rearm_robots {
+            self.held.insert(robot.clone(), cause.clone());
+        }
+    }
+
     /// ACTIVE with no lease left drops back to ARMED.
     fn settle_after_release(
         &mut self,
@@ -2571,14 +2657,25 @@ mod tests {
             r#""cmd1": {"kind": "joints", "hz": 500"#,
             r#""cmd1": {"kind": "joints", "hz": 250"#,
         );
+        // A sensor hot-plug holds nothing: the robot is leased at once.
+        let lease = f.grant("policy", "cmd1", 3).expect("lease");
         assert_eq!(
             Fixture::status(f.run("robot", declare(&changed), 3)),
             CtlStatus::InvalidTransition,
-            "a commandable part is not re-declared while armed"
+            "a commandable part is not re-declared while it is leased"
         );
-        f.run("operator", Command::Disarm, 4).expect("disarm");
+        f.run(
+            "policy",
+            Command::ReleaseLease {
+                channels: vec![lease.channel],
+                token: lease.token,
+            },
+            4,
+        )
+        .expect("release");
         let cmd1 = f.ch("cmd1");
-        f.run("robot", declare(&changed), 5).expect("disarmed");
+        f.run("robot", declare(&changed), 5)
+            .expect("no longer leased");
         assert!(f.ch("cmd1") > cmd1);
         assert!(f.auth.part(cmd1).is_none());
 
@@ -3138,7 +3235,7 @@ mod tests {
     }
 
     #[test]
-    fn an_embodiments_fallback_goes_safe_from_any_mode_and_estop_records_it() {
+    fn an_embodiments_fallback_stops_its_robot_alone_until_an_arm_and_estop_records_it() {
         let mut f = Fixture::new();
         let safe = |code| Command::EnterSafe {
             reason: "board link".into(),
@@ -3153,39 +3250,45 @@ mod tests {
                 }
             );
         };
-        // Between episodes too: DISARMED and ARMED go SAFE, so a device
-        // fault is visible at once and the next drive needs an arm.
+        // Between episodes: the robot is held, the session's mode stays,
+        // and its next drive needs an arm.
         f.run("robot", safe(ReasonCode::DeviceWatchdog), 1)
             .expect("from DISARMED");
-        assert_eq!(f.auth.mode(), Mode::Safe);
-        let reason = f.auth.mode_reason();
+        assert_eq!(f.auth.mode(), Mode::Disarmed);
+        let held = f.auth.held(&pid("robot")).expect("held");
         assert_eq!(
-            (reason.code, reason.by.as_str(), reason.revision),
-            (ReasonCode::DeviceWatchdog, "robot", f.auth.revision())
+            (held.code, held.by.as_str()),
+            (ReasonCode::DeviceWatchdog, "robot")
         );
-        stopped_now(&f);
         f.run("operator", Command::Arm, 2).expect("arm");
-        assert_eq!(f.auth.last_stop().epoch.next(), f.auth.epoch(), "kept");
-        f.run("robot", safe(ReasonCode::DeviceWatchdog), 3)
-            .expect("from ARMED");
-        assert_eq!(f.auth.mode(), Mode::Safe);
-        stopped_now(&f);
-        f.run("operator", Command::Arm, 4).expect("arm");
-        f.grant("policy", "cmd1", 4).expect("lease");
+        assert!(f.auth.held(&pid("robot")).is_none(), "an arm re-arms it");
+        f.grant("policy", "cmd1", 2).expect("lease");
+        f.grant("script", "cmd2", 2).expect("lease");
         assert_eq!(
-            Fixture::status(f.run("policy", safe(ReasonCode::QueueDry), 5)),
+            Fixture::status(f.run("policy", safe(ReasonCode::QueueDry), 3)),
             CtlStatus::Forbidden
         );
-        f.run("robot", safe(ReasonCode::QueueDry), 6)
+        // From ACTIVE: only this robot's leases end; the session goes on.
+        let epoch = f.auth.epoch();
+        f.run("robot", safe(ReasonCode::QueueDry), 4)
             .expect("from ACTIVE");
-        assert_eq!(f.auth.mode(), Mode::Safe);
-        stopped_now(&f);
-        assert!(f.auth.lease(f.ch("cmd1")).is_none(), "SAFE revokes leases");
-        let ended = f.auth.snapshot(Vec::new(), 6).ended;
+        assert_eq!((f.auth.mode(), f.auth.epoch()), (Mode::Armed, epoch));
+        assert!(f.auth.lease(f.ch("cmd1")).is_none(), "its leases end");
+        let ended = f.auth.snapshot(Vec::new(), 4).ended;
         assert_eq!(
             ended.last().map(|e| (e.reason.code, e.reason.by.as_str())),
             Some((ReasonCode::VoidedBySafe, "robot"))
         );
+        assert_eq!(
+            Fixture::status(f.grant("policy", "cmd1", 5)),
+            CtlStatus::NotReady,
+            "held until an arm"
+        );
+        // An arm in an armed session re-arms the robot alone, in its epoch.
+        f.run("operator", Command::Arm, 6)
+            .expect("re-arm the robot");
+        assert_eq!(f.auth.epoch(), epoch);
+        f.grant("policy", "cmd1", 6).expect("leased again");
         // ESTOP stays ESTOP and records the cause; recording is no new stop.
         let estop = Command::Estop {
             reason: "button".into(),
@@ -3281,11 +3384,12 @@ mod tests {
         f.auth.presence_hint(&pid("robot"), 150);
         beat(&mut f, &everyone[1..], 200);
         f.auth.expire(251);
-        assert_eq!(f.auth.mode(), Mode::Safe);
-        let reason = f.auth.mode_reason();
+        // Only the robot stops: its lease ends and it is held; the session
+        // has no lease left, so it is ARMED.
+        assert_eq!(f.auth.mode(), Mode::Armed);
         assert_eq!(
-            (reason.code, reason.by.as_str()),
-            (ReasonCode::RobotLost, "robot")
+            f.auth.held(&pid("robot")).map(|r| (r.code, r.by.as_str())),
+            Some((ReasonCode::RobotLost, "robot"))
         );
         let view = f.auth.snapshot(Vec::new(), 251);
         let robot = view.participant(&pid("robot")).expect("kept");

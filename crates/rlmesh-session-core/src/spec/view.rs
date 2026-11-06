@@ -16,7 +16,7 @@
 use crate::prelude::*;
 
 use crate::wire::path::{MAX_SEGMENT_LEN, is_identifier};
-use crate::wire::{PartPath, PartSpec, Place};
+use crate::wire::{PartPath, PartSpec, ParticipantId, Place};
 
 /// The view's name: a binding against it targets `scene`.
 pub const VIEW: &str = "scene";
@@ -57,6 +57,45 @@ pub fn check_place(place: &Place) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The view of a plain session's robots, when it has no places: each robot
+/// at its own name (`eye-1` at `eye_1`: a path segment is
+/// `[a-z][a-z0-9_]*`), its root placed, at the origin. Selectors name the
+/// robot (`eye-1:gaze`); two names that read alike get a numbered suffix.
+pub fn each_at_its_name(robots: &[&ParticipantId]) -> Vec<Place> {
+    let mut places: Vec<Place> = Vec::with_capacity(robots.len());
+    for robot in robots {
+        let mut base: String = robot
+            .as_str()
+            .chars()
+            .map(|c| match c.to_ascii_lowercase() {
+                c @ ('a'..='z' | '0'..='9') => c,
+                _ => '_',
+            })
+            .collect();
+        if !base.starts_with(|c: char| c.is_ascii_lowercase()) {
+            base.insert(0, 'r');
+        }
+        base.truncate(MAX_SEGMENT_LEN - 4);
+        let mut at = base.clone();
+        let mut n = 1;
+        while places.iter().any(|p| p.at == at) {
+            n += 1;
+            at = alloc::format!("{base}_{n}");
+        }
+        places.push(Place {
+            robot: (*robot).clone(),
+            at,
+            from: String::new(),
+            frame: String::new(),
+            pose: crate::wire::Pose {
+                xyz: [0.0; 3],
+                quat_xyzw: [0.0, 0.0, 0.0, 1.0],
+            },
+        });
+    }
+    places
 }
 
 /// Whether a place table is well formed: each place ([`check_place`]),
