@@ -17,16 +17,17 @@ or `-DZENOH_*` flags are needed.
    select your board and **Minimal SPIFFS** partition scheme, and upload.
    Connect pan to GPIO 18 and tilt to GPIO 19, adjusting pins for your board.
    Power the servos separately from the board's 3.3 V supply, with common ground.
-3. Start your PC's `rlmesh daemon`. With the board running and Serial Monitor
+3. Start `rlmesh host` on your PC. With the board running and Serial Monitor
    closed, provision it once over USB:
 
    ```sh
    rlmesh devices provision --port /dev/ttyUSB0 --name eyes
    ```
 
-4. The board remembers its device key and home in NVS, waits in the lobby,
-   and joins assigned runs after every reboot. Start your scene and its
-   controller on the PC; `Robot` applies pan/tilt targets at 50 Hz.
+4. The board remembers its device key and home in NVS and joins the host's
+   session with its own key after every reboot. Run your policy on the PC
+   (`Policy.bind()` with no robot drives every eye at once); `Robot` applies
+   pan/tilt targets at 50 Hz.
 
 Provisioning currently requires the sketch's compiled robot name (`eyes`) to
 match `--name`. The current provisioning wire message carries only the home's
@@ -81,12 +82,9 @@ stop. The example clears it only after BOOT is held for two seconds with
 the e-stop released. Disarm and arm the session before driving again.
 A controller's e-stop also reaches the board through the session transport.
 
-The board tries stored home addresses and then mDNS (`_rlmesh._tcp`), checking
-the stored host id and authenticating the host. For a one-off session instead,
-set `kAddress` to the keyed address printed by
-`rlmesh host --insecure --listen <lan-ip>:7447`. That option permits plain TCP
-links; session authentication and sealing still apply. Keep the printed
-address secret. Four consecutive TCP ports must be reachable.
+The board tries its stored home addresses in order, authenticating the host
+by the key it was provisioned with. Four consecutive TCP ports from the
+host's base port must be reachable.
 
 ## Building and verifying from source
 
