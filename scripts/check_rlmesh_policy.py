@@ -802,7 +802,7 @@ def _validate_workflow_editions(
             ) and edition not in _dropped_editions(workflow):
                 errors.append(
                     f"{prefix}: a sealed edition must stay in [workflow].supported_editions "
-                    "(retained forever, never pruned)"
+                    "(retained within a major line; a major break names it in [workflow.dropped_editions])"
                 )
         elif sealed_in is not None:
             errors.append(
@@ -1086,8 +1086,8 @@ def _validate_sealed_edition_retention(
 ) -> list[str]:
     """No edition sealed by the previous release may leave ``supported_editions``.
 
-    A sealed edition is retained forever: a peer pinned to it must keep finding it in
-    every later build's offer. The intra-manifest rule in ``_validate_workflow_editions``
+    A sealed edition is retained within a major line: a peer pinned to it must keep
+    finding it in every later build's offer until a major break drops it by name. The intra-manifest rule in ``_validate_workflow_editions``
     only sees editions this manifest still declares, so deleting a whole
     ``[workflow.editions."…"]`` table slips past it — this compares against the previous
     release tag instead. Skipped when there is no tag yet (or no git).
@@ -1110,7 +1110,7 @@ def _validate_sealed_edition_retention(
         return []
     return [
         f"[workflow].supported_editions dropped sealed edition {edition!r}, retained in "
-        f"{tag}; sealed editions are kept forever"
+        f"{tag}; a sealed edition stays within a major line unless [workflow.dropped_editions] names it"
         for edition in _dropped_sealed_editions(
             previous, supported, _dropped_editions(workflow)
         )
