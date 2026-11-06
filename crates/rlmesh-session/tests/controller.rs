@@ -659,3 +659,117 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     stop.store(true, Ordering::Relaxed);
     loop_one.join().expect("eye 1 loop");
 }
+
+/// A robot the host dropped (its heartbeats stopped past the presence
+/// grace) joins again on its own through the SDK, and after an arm the same
+/// policy drives it again; the other eye never stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
+    use rlmesh_session::address::Address;
+    use rlmesh_session::sdk;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
+        .with_test_writer()
+        .try_init();
+    let host = sdk::EmbeddedHost::start(
+        &Address::session(":0").expect("address"),
+        Duration::from_millis(300),
+    )
+    .await
+    .expect("host");
+    let address = host.address().clone();
+    let join = |name: &'static str| {
+        let address = address.clone();
+        async move {
+            let slot: sdk::RobotSlot = Arc::new(Mutex::new(Some(Arc::new(
+                sdk::connect_robot(&address, name, EYE, WAIT)
+                    .await
+                    .expect("declare"),
+            ))));
+            let keeper = sdk::keep_joined(slot.clone(), address, name.into(), EYE.into());
+            (slot, keeper)
+        }
+    };
+    let ((one, keep_one), (two, keep_two)) = (join("eye-1").await, join("eye-2").await);
+    let current = |slot: &sdk::RobotSlot| slot.lock().expect("slot").clone().expect("robot");
+    current(&one).participant().arm().await.expect("arm");
+    let tracker = Arc::new(
+        sdk::bind_policy(
+            &address,
+            "tracker",
+            EYES,
+            &RunOptions::named("tracker"),
+            PriorityClass::Model,
+            WAIT,
+        )
+        .await
+        .expect("one binding over both eyes"),
+    );
+    // Each eye's loop reads its slot every tick, as a binding does.
+    let spin = |slot: sdk::RobotSlot, stop: Arc<AtomicBool>, log: Log| {
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let robot = slot.lock().expect("slot").clone().expect("robot");
+                let now = robot.participant().clock().now_ns();
+                let _ = robot.publish("eyes", now, &[&f32s(&[0.0, 0.0])]);
+                let due = robot.due("eyes").ok().flatten();
+                let value = due
+                    .as_ref()
+                    .and_then(|d| d.action.as_ref())
+                    .map(|a| f32::from_le_bytes(a.value[..4].try_into().expect("4 bytes")));
+                let mode = due.map_or(EdgeMode::Idle, |d| d.mode);
+                log.lock()
+                    .expect("log")
+                    .push((Instant::now(), mode, value, None));
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        })
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let (log_one, log_two): (Log, Log) = (Arc::default(), Arc::default());
+    let loops = [
+        spin(one.clone(), stop.clone(), log_one.clone()),
+        spin(two.clone(), stop.clone(), log_two.clone()),
+    ];
+    let run = {
+        let tracker = tracker.clone();
+        std::thread::spawn(move || {
+            tracker.run(&mut Gaze { target: 0.25 }, Some(Duration::from_secs(60)))
+        })
+    };
+    let started = Instant::now();
+    wait_until("both eyes driven", || {
+        driven_since(&log_one, 0.25, started) && driven_since(&log_two, 0.25, started)
+    })
+    .await;
+
+    // Eye 2's heartbeats stop: the host drops it, and it joins again.
+    let first = current(&two);
+    first.participant().set_heartbeats_enabled(false);
+    wait_until("eye 2 joined again", || {
+        !Arc::ptr_eq(&current(&two), &first)
+    })
+    .await;
+    drop(first);
+    let back = Instant::now();
+    // It waits for an arm (robots don't re-arm on their own by default).
+    current(&one)
+        .participant()
+        .arm()
+        .await
+        .expect("re-arm eye 2");
+    wait_until("eye 2 driven again", || driven_since(&log_two, 0.25, back)).await;
+    assert!(driven_since(&log_one, 0.25, back), "eye 1 never stopped");
+
+    tracker.stop();
+    run.join().expect("run thread").expect("a clean stop");
+    stop.store(true, Ordering::Relaxed);
+    for spin in loops {
+        spin.join().expect("eye loop");
+    }
+    keep_one.abort();
+    keep_two.abort();
+    host.close().await.expect("close");
+}

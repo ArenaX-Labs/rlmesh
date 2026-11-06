@@ -307,6 +307,10 @@ class Robot:
     on each control tick. ``on_handover(group, from_path, to_path)`` runs
     when a command group's lease moves between members (switch the device's
     control mode there); the group dispatches nothing until it returns.
+
+    When the host drops the robot (a network gap past its presence grace)
+    it joins again on its own; meanwhile its edge holds, then goes safe.
+    The host has it wait for an arm unless ``rlmesh host --rearm-robots``.
     """
 
     def __init__(

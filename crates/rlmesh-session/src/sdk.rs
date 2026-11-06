@@ -264,21 +264,122 @@ impl EmbeddedHost {
 }
 
 /// Joins as robot `name` and declares `robot_json` (the authored map, §3).
+/// Every robot `name` this process joins to one host shares its e-stop
+/// latch, so a stop outlives a rejoin until it is cleared locally.
 pub async fn connect_robot(
     address: &SessionAddress,
     name: &str,
     robot_json: &str,
     timeout: Duration,
 ) -> Result<Robot, EdgeError> {
+    let latch = address
+        .credential()
+        .ok()
+        .map(|c| process_latch(*c.host_static(), name));
     let participant = address
-        .join(
+        .join_with(
             name,
             vec![Role::Embodiment],
             PriorityClass::Scripted,
             timeout,
+            |config| config.latch = latch,
         )
         .await?;
     Robot::declare(participant, robot_json, EdgeConfig::default()).await
+}
+
+/// The robot a binding drives: read on every call, swapped by
+/// [`keep_joined`] when it rejoins, emptied when it closes.
+pub type RobotSlot = Arc<std::sync::Mutex<Option<Arc<Robot>>>>;
+
+/// How long each rejoin waits for the host.
+const REJOIN_ATTACH: Duration = Duration::from_secs(5);
+/// How often the robot's presence is checked.
+const PRESENCE_CHECK: Duration = Duration::from_millis(250);
+
+/// Whether the host has dropped `robot` (its roster entry gone or absent,
+/// or the host itself gone); `None` when another process took its name
+/// over, which it never takes back.
+fn dropped(robot: &Robot) -> Option<bool> {
+    let participant = robot.participant();
+    if participant.host_lost().is_some() {
+        return Some(true);
+    }
+    let mine = participant.generation();
+    participant.authority_view().with(|view| {
+        let Some(view) = view else {
+            return Some(false);
+        };
+        match view.participant(participant.id()) {
+            None => Some(true),
+            Some(me) if !me.present => Some(true),
+            Some(me) if mine.is_some_and(|g| g != me.generation) => None,
+            Some(_) => Some(false),
+        }
+    })
+}
+
+/// Keeps the robot in `slot` joined to the session at `address`: when the
+/// host drops it (a Wi-Fi gap longer than its presence grace) or goes away
+/// and comes back, it joins again as `name`, declares `robot_json` and is
+/// swapped into `slot`, so the binding's next call uses it. Runs until the
+/// slot empties (the robot closed) or another process takes the name over.
+pub fn keep_joined(
+    slot: RobotSlot,
+    address: SessionAddress,
+    name: String,
+    robot_json: String,
+) -> tokio::task::JoinHandle<()> {
+    let current = move |slot: &RobotSlot| {
+        slot.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(PRESENCE_CHECK);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let Some(robot) = current(&slot) else {
+                return;
+            };
+            match dropped(&robot) {
+                Some(false) => continue,
+                None => {
+                    tracing::warn!(robot = %name, "another process took this robot's name over");
+                    return;
+                }
+                Some(true) => {}
+            }
+            tracing::warn!(robot = %name, "the host dropped this robot: joining again");
+            // Its old presence would refuse the new one; the binding keeps
+            // the old robot (its edge holds, then goes safe) until then.
+            robot.participant().withdraw();
+            drop(robot);
+            loop {
+                if current(&slot).is_none() {
+                    return;
+                }
+                match connect_robot(&address, &name, &robot_json, REJOIN_ATTACH).await {
+                    Ok(robot) => {
+                        let mut held = slot
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if held.is_none() {
+                            return;
+                        }
+                        *held = Some(Arc::new(robot));
+                        tracing::info!(robot = %name, "joined again");
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::debug!(robot = %name, %err, "rejoin failed; trying again");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+    })
 }
 
 #[cfg(feature = "fleet")]
@@ -303,10 +404,9 @@ pub async fn robot_from_lobby(
     robot_from_lobby_at(&find_home(home).await?, name, robot_json, timeout).await
 }
 
-#[cfg(feature = "fleet")]
-/// The e-stop latch of robot `name` in this process, for the lobby whose
-/// host key is `home`: one per robot process (design §6), so it outlives
-/// each run's participant until cleared locally.
+/// The e-stop latch of robot `name` in this process, for the host whose
+/// key is `home`: one per robot process (design §6), so it outlives each
+/// participant (a rejoin, a lobby's run) until cleared locally.
 fn process_latch(home: [u8; 32], name: &str) -> Arc<crate::participant::LocalLatch> {
     type Latches =
         std::collections::HashMap<([u8; 32], String), Arc<crate::participant::LocalLatch>>;

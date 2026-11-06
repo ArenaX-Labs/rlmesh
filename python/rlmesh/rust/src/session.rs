@@ -502,7 +502,10 @@ pub(crate) fn values_from_py(output: &Bound<'_, PyAny>) -> PyResult<Vec<(String,
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Robot", frozen)]
 pub struct PyRobot {
     name: String,
-    robot: Mutex<Option<Arc<Robot>>>,
+    /// The robot now: a rejoin swaps it ([`sdk::keep_joined`]).
+    robot: sdk::RobotSlot,
+    /// Joins it again when the host drops it.
+    keeper: Mutex<Option<tokio::task::JoinHandle<()>>>,
     session: EmbeddedHost,
 }
 
@@ -522,7 +525,8 @@ impl PyRobot {
 impl PyRobot {
     /// Attaches as `name` (the robot's participant id), declares
     /// `robot_json` (the authored map, §3) and starts its publishers and
-    /// edges.
+    /// edges. When the host drops it (a network gap past its presence
+    /// grace) it joins again on its own.
     #[new]
     #[pyo3(signature = (address, name, robot_json, timeout_s=10.0))]
     fn new(
@@ -535,6 +539,7 @@ impl PyRobot {
         let session = place(py, address, LEASE_GRACE, false)?;
         let address = session.address().clone();
         let wait = timeout(timeout_s)?;
+        let (rejoin, json) = (address.clone(), robot_json.clone());
         let robot = block_on(py, async move {
             sdk::connect_robot(&address, name, &robot_json, wait)
                 .await
@@ -543,9 +548,15 @@ impl PyRobot {
                     other => SessionException::new_err(other.to_string()),
                 })
         })?;
+        let slot: sdk::RobotSlot = Arc::new(Mutex::new(Some(Arc::new(robot))));
+        let keeper = {
+            let _runtime = runtime().enter();
+            sdk::keep_joined(slot.clone(), rejoin, name.to_string(), json)
+        };
         Ok(Self {
             name: name.to_string(),
-            robot: Mutex::new(Some(Arc::new(robot))),
+            robot: slot,
+            keeper: Mutex::new(Some(keeper)),
             session,
         })
     }
@@ -576,7 +587,8 @@ impl PyRobot {
         })?;
         Ok(Self {
             name: name.to_string(),
-            robot: Mutex::new(Some(Arc::new(robot))),
+            robot: Arc::new(Mutex::new(Some(Arc::new(robot)))),
+            keeper: Mutex::new(None),
             session: EmbeddedHost::joined(address),
         })
     }
@@ -779,6 +791,9 @@ impl PyRobot {
 
     /// Detaches: the edges and publishers go, the host drops the parts.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
+        if let Some(keeper) = self.keeper.lock().ok().and_then(|mut k| k.take()) {
+            keeper.abort();
+        }
         let taken = self.robot.lock().map(|mut r| r.take()).unwrap_or(None);
         block_on(py, async move {
             if let Some(robot) = taken {
