@@ -94,17 +94,17 @@ pub struct Config {
 
 impl Config {
     /// A board provisioned for its home (tether spec §14): its device key,
-    /// and the home's static key, host id and addresses from the stored
+    /// and the robot name, home's static key, host id and addresses from the stored
     /// `record`. It joins the home's default session directly, so every
     /// board runs the same firmware and only its provisioning differs; a
     /// `fleet` build waits in the home's lobby instead (unreleased).
     ///
     /// # Errors
-    /// [`ConfigError::NoHome`] when the record has no usable address.
+    /// [`ConfigError::NoHome`] when the record has no usable address, or
+    /// [`ConfigError::Name`] when its robot name is invalid.
     pub fn provisioned(
         device_key: &[u8; 32],
         record: &crate::provision::Record,
-        name: ParticipantId,
         robot_json: String,
         heartbeat_ms: u32,
     ) -> Result<Self, ConfigError> {
@@ -121,7 +121,7 @@ impl Config {
             tenant: TenantId::new(crate::address::TENANT)
                 .map_err(|_| ConfigError::Map(String::from("tenant")))?,
             session: SessionId::named(crate::address::DEFAULT_SESSION),
-            name,
+            name: ParticipantId::new(record.name.clone()).map_err(|_| ConfigError::Name)?,
             credential: Credential::new(
                 rlmesh_session_core::crypto::StaticKeypair::from_private(&mut private),
                 record.host_key,
@@ -145,6 +145,8 @@ pub enum ConfigError {
     Heartbeat,
     /// No home address.
     NoHome,
+    /// An invalid provisioned robot participant id.
+    Name,
 }
 
 /// What the transport is asked to do, on traffic class `class` (0 control,

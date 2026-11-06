@@ -584,19 +584,14 @@ async fn a_provisioned_board_joins_its_homes_default_session_without_the_lobby()
         host,
     };
     let record = Record {
+        name: "eye-1".into(),
         payload: Vec::new(),
         host_key: *world.identity.static_public(),
         host_id: world.identity.host_id(),
         addresses: vec![base.to_string()],
     };
-    let config = Config::provisioned(
-        &private,
-        &record,
-        ParticipantId::new("eye-1").expect("id"),
-        MAP.to_owned(),
-        50,
-    )
-    .expect("a provisioned config");
+    let config =
+        Config::provisioned(&private, &record, MAP.to_owned(), 50).expect("a provisioned config");
     let robot = Robot::new(config).expect("a valid map");
     let robot = drive(
         &world,

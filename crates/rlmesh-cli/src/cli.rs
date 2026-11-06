@@ -588,14 +588,14 @@ pub enum DevicesCommand {
         robot: String,
     },
     /// Provision a networked board (an ESP32) plugged in over USB: give it
-    /// this rlmeshd's key, id and addresses, enroll its key as a board and
+    /// a robot name and this rlmeshd's key, id and addresses, enroll its key as a board and
     /// pin its robot name to it. Run it on the robot's machine, with
     /// rlmeshd running; the board keeps its key when provisioned again.
     Provision {
         /// The board's serial port (`/dev/ttyUSB0`, `/dev/ttyACM0`).
         #[arg(long, value_name = "TTY")]
         port: std::path::PathBuf,
-        /// The robot name compiled into the board's sketch.
+        /// Assign this robot name (1–128 bytes of [A-Za-z0-9._-]); may rename a board.
         #[arg(long, value_name = "ROBOT")]
         name: String,
         /// The highest class it may attach and lease at (default: model,
