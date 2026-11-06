@@ -11,7 +11,7 @@ set -euo pipefail
 
 crates=(rlmesh-session-core rlmesh-tether rlmesh-device)
 # A bare-metal target with atomics (ESP32-C6 class), for the no_std build an
-# embedded robot uses. Xtensa needs the esp toolchain, so it stays local.
+# embedded robot uses. The board CI step builds Xtensa with the esp toolchain separately.
 bare=riscv32imac-unknown-none-elf
 toolchain="$(mise current rust)"
 rustup target list --installed --toolchain "$toolchain" | grep -qx "$bare" ||

@@ -11,6 +11,10 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -223,6 +227,42 @@ jobs:
       - name: Minimize uv cache
         if: always()
         run: uv cache prune --ci
+
+  esp32:
+    name: ESP32 Arduino libraries
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: publish
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+
+      - name: Install board toolchains
+        run: mise run --skip-tools setup:esp32
+
+      - name: Build precompiled libraries and compile examples
+        env:
+          RLMESH_ESP32_REQUIRE_XTENSA: "1"
+        run: mise exec arduino-cli@1.5.1 -- mise run --skip-tools build:esp32
+
+      - name: Upload board libraries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: esp32-libraries
+          path: target/esp32/dist/RLMesh-*.zip
+          if-no-files-found: error
+
+      - name: Attach board libraries to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" target/esp32/dist/RLMesh-*.zip --clobber
 
   publish:
     name: Publish crates.io + PyPI + NuGet + npm + GitHub Release
