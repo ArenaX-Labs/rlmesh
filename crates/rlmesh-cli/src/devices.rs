@@ -299,7 +299,7 @@ pub fn edit<R>(dir: &Path, change: impl FnOnce(&mut Table) -> Result<R>) -> Resu
 
 /// `rlmesh devices`.
 pub fn devices(args: &DevicesArgs, stdout: &mut impl Write) -> Result<()> {
-    let dir = crate::daemon::state_dir(args.state_dir.as_deref())?;
+    let dir = crate::host::state_dir(args.state_dir.as_deref())?;
     match &args.command {
         DevicesCommand::Ls => {
             let table = Table::read(&dir)?;

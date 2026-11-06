@@ -600,7 +600,16 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     monkeypatch.setenv("RLMESH_STATE_DIR", state)
     base = _free_base()
     proc = subprocess.Popen(
-        [sys.executable, "-m", "rlmesh", "daemon", "--listen", f"127.0.0.1:{base}"],
+        [
+            sys.executable,
+            "-m",
+            "rlmesh",
+            "host",
+            "--lobby",
+            "--no-record",
+            "--listen",
+            f"127.0.0.1:{base}",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -608,7 +617,7 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     try:
         assert proc.stdout is not None
         line = proc.stdout.readline()
-        assert "rlmeshd on" in line, line
+        assert "rlmesh host on" in line, line
         yield f"127.0.0.1:{base}"
     finally:
         proc.terminate()

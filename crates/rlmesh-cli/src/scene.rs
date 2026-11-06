@@ -173,7 +173,7 @@ pub fn scene(args: &SceneArgs, stdout: &mut impl Write) -> Result<i32> {
         SceneCommand::Check { file } => {
             let text = std::fs::read_to_string(file)
                 .with_context(|| format!("reading {}", file.display()))?;
-            let dir = crate::daemon::state_dir(args.state_dir.as_deref())?;
+            let dir = crate::host::state_dir(args.state_dir.as_deref())?;
             let table = Table::read(&dir)?;
             let refusal = match Scene::parse(&text) {
                 Ok(scene) => {

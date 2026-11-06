@@ -1419,7 +1419,7 @@ mod tests {
         dir: &std::path::Path,
         gated: bool,
     ) -> (Arc<SessionServer>, SessionAddress, Arc<Home>) {
-        let identity = Arc::new(crate::daemon::identity(dir).expect("identity"));
+        let identity = Arc::new(crate::host::identity(dir).expect("identity"));
         let key = AddressKey::of(&identity);
         let password = gated.then(|| key.link_password());
         let (transport, base) = address::open_listeners(
@@ -1987,7 +1987,7 @@ mod tests {
         SocketAddr,
         Vec<tokio::task::JoinHandle<()>>,
     ) {
-        let identity = crate::daemon::identity(home).expect("identity");
+        let identity = crate::host::identity(home).expect("identity");
         let paired = Paired {
             info: PairInfo {
                 device: device.into(),

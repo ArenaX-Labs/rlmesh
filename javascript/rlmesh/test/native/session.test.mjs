@@ -379,7 +379,7 @@ async function freeBase() {
   throw new Error('no four free ports');
 }
 
-/** An rlmeshd on loopback, whose `local.key` this process attaches with (Python's `rlmesh daemon`). */
+/** A host with its lobby on loopback, whose `local.key` this process attaches with (`rlmesh host --lobby`). */
 async function startDaemon() {
   const { spawn } = await import('node:child_process');
   // Short: its local channel is a Unix socket in there.
@@ -387,14 +387,14 @@ async function startDaemon() {
   process.env.RLMESH_STATE_DIR = state;
   const base = await freeBase();
   const repo = new URL('../../../../', import.meta.url).pathname;
-  const proc = spawn('uv', ['run', '--no-sync', 'python', '-m', 'rlmesh', 'daemon', '--listen', `127.0.0.1:${base}`], {
+  const proc = spawn('uv', ['run', '--no-sync', 'python', '-m', 'rlmesh', 'host', '--lobby', '--no-record', '--listen', `127.0.0.1:${base}`], {
     cwd: repo,
     env: process.env,
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   await new Promise((resolve, reject) => {
-    proc.stdout.once('data', (line) => (String(line).includes('rlmeshd on') ? resolve() : reject(new Error(String(line)))));
-    proc.once('exit', (code) => reject(new Error(`rlmeshd exited with ${code}`)));
+    proc.stdout.once('data', (line) => (String(line).includes('rlmesh host on') ? resolve() : reject(new Error(String(line)))));
+    proc.once('exit', (code) => reject(new Error(`rlmesh host exited with ${code}`)));
   });
   return {
     home: `127.0.0.1:${base}`,

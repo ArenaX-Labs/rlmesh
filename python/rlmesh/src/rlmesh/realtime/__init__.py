@@ -105,7 +105,7 @@ class Host:
     process or another. Use it as a context manager, or ``close()``.
 
     It listens on loopback only: an address on another interface is refused
-    unless ``insecure=True`` (sessions other machines join are rlmeshd's).
+    unless ``insecure=True`` (sessions other machines join are ``rlmesh host``'s).
     On loopback every link presents the password the address's key derives;
     a host bound beyond it gates no link, and only the handshake admits.
     """

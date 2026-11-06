@@ -91,7 +91,7 @@ pub async fn pair(args: &PairArgs, stdout: &mut impl Write) -> Result<()> {
             max,
             state_dir,
         }) => {
-            let dir = crate::daemon::state_dir(state_dir.as_deref())?;
+            let dir = crate::host::state_dir(state_dir.as_deref())?;
             approve(&dir, code.as_deref(), max.as_deref(), stdout)
         }
         None => {
