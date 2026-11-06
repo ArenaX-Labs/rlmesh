@@ -53,11 +53,11 @@ class Provisioning {
   // robot `name`. Start Wi-Fi first: the RNG is cryptographic only with the
   // radio on. False if NVS fails.
   bool begin(const char* name);
-  // Answers the daemon on `port` (the USB serial port): call it every loop.
+  // Answers the host on `port` (the USB serial port): call it every loop.
   // True on the call that stored a new record.
   bool poll(Stream& port);
   bool provisioned() const { return recordLen_ > 0; }
-  // The public key the daemon enrolls.
+  // The public key the host enrolls.
   void publicKey(uint8_t out[32]) const;
 
  private:

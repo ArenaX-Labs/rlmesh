@@ -2,14 +2,13 @@
 // servos (pan on GPIO 18, tilt on 19) driven by whoever holds the lease.
 // Power the servos separately, not from the board's 3.3 V.
 //
-// Its home is the `rlmesh daemon` it was provisioned for. With the board on
-// USB, on the daemon's computer (close the Serial Monitor first):
+// Its home is the `rlmesh host` it was provisioned for. With the board on
+// USB, on the host's computer (close the Serial Monitor first):
 //
 //   rlmesh devices provision --port /dev/ttyUSB0 --name eyes
 //
-// It joins as soon as it is provisioned, and on every boot after. For a
-// one-off host instead, run `rlmesh host --insecure --listen <lan-ip>:7447`
-// and paste the address it prints into kAddress.
+// It joins the host's session with its own device key as soon as it is
+// provisioned, and on every boot after. The firmware holds no secret.
 
 #include <RLMesh.h>
 #include <WiFi.h>
@@ -20,7 +19,6 @@
 
 const char* kSsid = "your-wifi";
 const char* kPassword = "your-password";
-const char* kAddress = "";  // empty: the provisioned home
 
 const char kMap[] =
     "{\"eyes\":{\"kind\":\"joints\",\"names\":[\"pan\",\"tilt\"],\"fields\":[\"pos\"],"
@@ -46,7 +44,7 @@ const char* const kPhases[] = {"reading the host",
                                "declaring parts",
                                "running",
                                "retrying",
-                               "waiting in the lobby for a run",
+                               "waiting for a run (lobby)",
                                "stopped: another board has its name"};
 const char* const kFaults[] = {
     "",
@@ -98,12 +96,9 @@ void setup() {
 void join() {
   // A latch outlives a new home: the next robot starts latched.
   bool latched = robot.estopLatched();
-  bool ok = kAddress[0] != '\0' ? robot.begin(kAddress, "eyes", kMap)
-                                : robot.begin(provisioning, "eyes", kMap);
+  bool ok = robot.begin(provisioning, "eyes", kMap);
   if (latched) robot.estop("e-stop latched before a new home");
-  if (!ok && kAddress[0] != '\0') {
-    Serial.println("check kAddress: it is what `rlmesh host` printed, ending in #key");
-  } else if (!ok) {
+  if (!ok) {
     Serial.println("not provisioned: rlmesh devices provision --port <this port> --name eyes");
   }
   eyes = robot.part("eyes");
@@ -155,7 +150,7 @@ void estopButton() {
 }
 
 void loop() {
-  // The daemon provisions over this port at any time; a new home is joined
+  // The host provisions over this port at any time; a new home is joined
   // at once.
   if (provisioning.poll(Serial)) {
     Serial.println("provisioned");
