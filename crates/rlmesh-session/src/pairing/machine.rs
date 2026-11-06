@@ -1,5 +1,4 @@
-//! Machine pairing over the network (design §3), fenced behind `fleet`:
-//! the laptop's side ([`pair`]), rlmeshd's pairing endpoint
+//! Machine pairing over the network (design §3): the laptop's side ([`pair`]), rlmeshd's pairing endpoint
 //! ([`PairService`]), and the host file a paired machine keeps
 //! ([`HostFile`]), which its participants attach with
 //! ([`paired_credential`]).

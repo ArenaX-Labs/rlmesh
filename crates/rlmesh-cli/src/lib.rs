@@ -93,6 +93,7 @@ pub async fn run_cli_in(
         | Command::Host(_)
         | Command::Daemon(_)
         | Command::Devices(_)
+        | Command::Pair(_)
         | Command::Eval(cli::EvalArgs {
             command: cli::EvalCommand::Run(_) | cli::EvalCommand::Report(_),
         })
@@ -104,8 +105,7 @@ pub async fn run_cli_in(
         | Command::Run(_)
         | Command::Lobby(_)
         | Command::Stop(_)
-        | Command::Arm(_)
-        | Command::Pair(_) => None,
+        | Command::Arm(_) => None,
         _ => match ProfileStore::load(&settings) {
             Ok(profiles) => Some(profiles),
             Err(error) => {
@@ -215,7 +215,6 @@ pub async fn run_cli_in(
         Command::Stop(args) => scene::stop(&args, stdout).await,
         #[cfg(feature = "fleet")]
         Command::Arm(args) => scene::arm(&args, stdout).await.map(|()| 0),
-        #[cfg(feature = "fleet")]
         Command::Pair(args) => pair::pair(&args, stdout).await.map(|()| 0),
         Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
         Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),

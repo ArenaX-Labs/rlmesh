@@ -43,7 +43,6 @@ use rlmesh_session::auth::HostIdentity;
 use rlmesh_session::auth::address::{base32, unbase32};
 #[cfg(feature = "fleet")]
 use rlmesh_session::discovery;
-#[cfg(feature = "fleet")]
 use rlmesh_session::pairing::PairService;
 use rlmesh_session::server::SessionServer;
 use rlmesh_session::wire::{PairInfo, Role, TenantId};
@@ -178,16 +177,16 @@ pub async fn daemon(
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
     let server = Arc::new(SessionServer::start(transport.clone(), config.clone()).await?);
+    let service = Arc::new(PairService::start(&transport, identity.clone()).await?);
     #[cfg(feature = "fleet")]
-    let fleet = Fleet::start(&server, &transport, &dir, config, base, stderr).await?;
+    let fleet = Fleet::start(&server, &dir, config, base, stderr).await?;
     #[cfg(not(feature = "fleet"))]
     drop(config);
     let (apply, mut applying) = tokio::sync::mpsc::channel(4);
     #[cfg(unix)]
     let local = crate::pair::serve_local(crate::pair::Local {
         dir: dir.clone(),
-        #[cfg(feature = "fleet")]
-        service: fleet.service.clone(),
+        service: service.clone(),
         host: PairInfo {
             device: String::new(),
             host_key: *identity.static_public(),
@@ -197,7 +196,7 @@ pub async fn daemon(
         apply,
     })?;
     #[cfg(not(unix))]
-    drop(apply);
+    drop((apply, service));
     writeln!(
         stdout,
         "rlmeshd on {base} as {}, state in {}",
@@ -279,13 +278,11 @@ async fn reload(
 }
 
 /// The daemon's fleet services (feature `fleet`): the lobby and its
-/// scenes, its satellite side, the pairing endpoint and its mDNS
-/// advertisement.
+/// scenes, its satellite side and its mDNS advertisement.
 #[cfg(feature = "fleet")]
 struct Fleet {
     home: Arc<Home>,
     satellite: Vec<tokio::task::JoinHandle<()>>,
-    service: Arc<PairService>,
     advertised: Option<discovery::Advertisement>,
 }
 
@@ -293,7 +290,6 @@ struct Fleet {
 impl Fleet {
     async fn start(
         server: &Arc<SessionServer>,
-        transport: &rlmesh_session::Transport,
         dir: &Path,
         config: HostConfig,
         base: SocketAddr,
@@ -307,7 +303,6 @@ impl Fleet {
             &identity.host_id(),
             advertised(base),
         );
-        let service = Arc::new(PairService::start(transport, identity.clone()).await?);
         // Without multicast it is found at its stored addresses only.
         let advertised = discovery::advertise(&identity.host_id(), base)
             .map_err(|err| {
@@ -317,7 +312,6 @@ impl Fleet {
         Ok(Self {
             home,
             satellite,
-            service,
             advertised,
         })
     }

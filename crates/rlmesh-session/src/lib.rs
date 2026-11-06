@@ -55,9 +55,8 @@
 //!   reading a recording back.
 //! - [`report`]: observer telemetry (§8.10), the publisher and controller
 //!   counters an observer cannot measure itself.
-//! - [`pairing`]: a browser's page token and, with `fleet`, machine
-//!   pairing with rlmeshd (design §3) and the host files paired machines
-//!   attach with.
+//! - [`pairing`]: machine pairing with the host (design §3), the host
+//!   files paired machines attach with, and a browser's page token.
 //! - With the unreleased `fleet` feature: `discovery` (rlmeshd's mDNS
 //!   advertisement, and a paired machine finding its host by id), `lobby`
 //!   (the home daemon's lobby: its verbs' service, a client that runs

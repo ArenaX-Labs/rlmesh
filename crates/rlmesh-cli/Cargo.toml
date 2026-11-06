@@ -28,8 +28,8 @@ name = "docker-credential-rlmesh"
 path = "src/bin/docker_credential_rlmesh.rs"
 
 [features]
-# Unreleased: the lobby, scene runs, satellites, machine pairing and mDNS
-# (`rlmesh scene|run|lobby|stop|arm|pair`, and the daemon's side of them).
+# Unreleased: the lobby, scene runs, satellites and mDNS
+# (`rlmesh scene|run|lobby|stop|arm`, and the daemon's side of them).
 # Off in every release; CI builds and tests it.
 fleet = ["rlmesh-session/fleet"]
 

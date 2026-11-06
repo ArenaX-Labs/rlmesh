@@ -1,9 +1,9 @@
-//! Pairing: a browser token (design §5), whose key stays on the machine
-//! whose gateway serves the browser, beside a hash of the token
-//! ([`BrowserToken`]), and, with the `fleet` feature, machine pairing over
-//! the network (design §3): the laptop's side (`pair`), rlmeshd's pairing
-//! endpoint (`PairService`), and the host file a paired machine keeps
-//! (`HostFile`), which its participants attach with (`paired_credential`).
+//! Pairing over the network (design §3): a machine's (the laptop's side,
+//! [`pair`]; the host's pairing endpoint, [`PairService`]; the host file a
+//! paired machine keeps, [`HostFile`], which its participants attach with,
+//! [`paired_credential`]), and a browser token's (design §5), whose key
+//! stays on the machine whose gateway serves the browser, beside a hash of
+//! the token ([`BrowserToken`]).
 
 use std::path::{Path, PathBuf};
 
@@ -18,9 +18,7 @@ use crate::error::SessionError;
 use crate::host::OsRng;
 use crate::wire::PairInfo;
 
-#[cfg(feature = "fleet")]
 mod machine;
-#[cfg(feature = "fleet")]
 pub use machine::{HostFile, PairService, pair, paired_credential};
 
 /// A machine rlmeshd approved: what it stores.

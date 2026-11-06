@@ -96,7 +96,7 @@ gateway = [
   "dep:tracing-subscriber",
   "tokio/net",
 ]
-# Unreleased: the lobby, scene runs, satellites, machine pairing and mDNS
+# Unreleased: the lobby, scene runs, satellites and mDNS
 # (`fleet`). Off in every release; CI builds and tests it.
 fleet = ["dep:mdns-sd", "rlmesh-session-core/fleet"]
 # MCAP recording of a session (`record`).

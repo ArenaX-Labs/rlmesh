@@ -37,7 +37,6 @@ use zeroize::{Zeroize, Zeroizing};
 pub mod address;
 pub mod issuer;
 pub mod keyring;
-#[cfg(feature = "fleet")]
 pub mod pairing;
 
 pub use address::AddressKey;
