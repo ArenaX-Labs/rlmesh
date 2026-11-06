@@ -185,51 +185,51 @@ message BindingRecord {
 // Why a mode changed, the edge or the host went SAFE, or a lease ended
 // (one enum for all three, so the cockpit and the browser never infer).
 enum ReasonCode {
-  REASON_UNSPECIFIED = 0;
+  REASON_CODE_UNSPECIFIED = 0;
   // Mode changes.
-  REASON_ARMED = 1;
-  REASON_DISARMED = 2;
-  REASON_FIRST_LEASE = 3;
-  REASON_LAST_RELEASE = 4;
+  REASON_CODE_ARMED = 1;
+  REASON_CODE_DISARMED = 2;
+  REASON_CODE_FIRST_LEASE = 3;
+  REASON_CODE_LAST_RELEASE = 4;
   // A ctl Estop through the host.
-  REASON_ESTOP_REMOTE = 5;
+  REASON_CODE_ESTOP_REMOTE = 5;
   // robot.estop() or a hardware input at the edge.
-  REASON_ESTOP_LOCAL = 6;
+  REASON_CODE_ESTOP_LOCAL = 6;
   // An e-stop signal latched at the edge.
-  REASON_ESTOP_SIGNAL = 7;
-  REASON_ESTOP_CLEARED = 8;
+  REASON_CODE_ESTOP_SIGNAL = 7;
+  REASON_CODE_ESTOP_CLEARED = 8;
   // SAFE causes (host or edge). The lease holder's heartbeats lapsed.
-  REASON_HOLDER_LOST = 10;
+  REASON_CODE_HOLDER_LOST = 10;
   // The holder was silent past its lease's ttl.
-  REASON_HEARTBEAT_LAPSE = 11;
+  REASON_CODE_HEARTBEAT_LAPSE = 11;
   // Edge: no valid action within hold_max.
-  REASON_QUEUE_DRY = 12;
-  REASON_EDGE_LEASE_LAPSED = 13;
-  REASON_HANDOVER_TIMEOUT = 14;
-  REASON_DEVICE_WATCHDOG = 15;
+  REASON_CODE_QUEUE_DRY = 12;
+  REASON_CODE_EDGE_LEASE_LAPSED = 13;
+  REASON_CODE_HANDOVER_TIMEOUT = 14;
+  REASON_CODE_DEVICE_WATCHDOG = 15;
   // An embodiment's heartbeats lapsed.
-  REASON_ROBOT_LOST = 16;
+  REASON_CODE_ROBOT_LOST = 16;
   // Participant side only, never on the host's wire.
-  REASON_HOST_LOST = 17;
+  REASON_CODE_HOST_LOST = 17;
   // Lease endings.
-  REASON_RELEASED = 20;
-  REASON_PREEMPTED = 21;
-  REASON_REBOUND = 22;
-  REASON_VOIDED_BY_SAFE = 23;
-  REASON_VOIDED_BY_ESTOP = 24;
-  REASON_VOIDED_BY_DISARM = 25;
+  REASON_CODE_RELEASED = 20;
+  REASON_CODE_PREEMPTED = 21;
+  REASON_CODE_REBOUND = 22;
+  REASON_CODE_VOIDED_BY_SAFE = 23;
+  REASON_CODE_VOIDED_BY_ESTOP = 24;
+  REASON_CODE_VOIDED_BY_DISARM = 25;
   // Arm or reset.
-  REASON_VOIDED_BY_EPOCH = 26;
-  REASON_PART_REMOVED = 27;
-  REASON_HOLDER_DETACHED = 28;
+  REASON_CODE_VOIDED_BY_EPOCH = 26;
+  REASON_CODE_PART_REMOVED = 27;
+  REASON_CODE_HOLDER_DETACHED = 28;
   // The owner revoked the device.
-  REASON_REVOKED = 29;
+  REASON_CODE_REVOKED = 29;
   // The owner changed the device's entry.
-  REASON_ACCESS_CHANGED = 30;
+  REASON_CODE_ACCESS_CHANGED = 30;
   // A scene's run ended (a stop) or failed: its mode change, its lease
   // endings and its closing (scene design §4.2).
-  REASON_SCENE_ENDED = 31;
-  REASON_SCENE_FAILED = 32;
+  REASON_CODE_SCENE_ENDED = 31;
+  REASON_CODE_SCENE_FAILED = 32;
 }
 
 message Reason {

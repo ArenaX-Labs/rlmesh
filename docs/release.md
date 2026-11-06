@@ -45,6 +45,14 @@ mise run bump X.Y.Z
 
 It rewrites every manifest and install snippet, updates the workflow cohort, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. Prereleases use an exact provisional cohort (`YYYY.MM-X.Y.Z-beta.N`); a stable release seals the bare edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See [workflow editions](editions/index.md).
 
+## Freeze a wire protocol
+
+The real-time session protocol (`rlmesh.session.v2`, `[protocols."rlmesh-realtime-v1"]` in `rlmesh.toml`) is provisional until the 0.2.0 release freezes it. Anything in `session.proto` then is permanent, so delete dead messages and values before. In the release commit:
+
+1. Set its `status = "frozen"` and `frozen_in = "v0.2.0"`.
+2. Run `mise run protocol:baseline-regen rlmesh-realtime-v1` to snapshot `crates/rlmesh-session-core/baselines/rlmesh-realtime-v1`.
+3. Run `mise run check`. From then on `protocol:baseline-verify` keeps the live tree byte-identical to the baseline, and `protocol:breaking` checks it against the tag. The byte goldens (`crates/rlmesh-session-core/tests/vectors/wire`) already catch any change to an encoding.
+
 ## Tag scheme
 
 One unscoped annotated tag per release: `vX.Y.Z`. The legacy `rust/v*` and `python/v*` tags are history — do not add more.
