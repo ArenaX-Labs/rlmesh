@@ -92,6 +92,49 @@ pub struct Config {
     pub home_id: String,
 }
 
+impl Config {
+    /// A board provisioned for its home (tether spec §14): its device key,
+    /// and the home's static key, host id and addresses from the stored
+    /// `record`. It joins the home's default session directly, so every
+    /// board runs the same firmware and only its provisioning differs; a
+    /// `fleet` build waits in the home's lobby instead (unreleased).
+    ///
+    /// # Errors
+    /// [`ConfigError::NoHome`] when the record has no usable address.
+    pub fn provisioned(
+        device_key: &[u8; 32],
+        record: &crate::provision::Record,
+        name: ParticipantId,
+        robot_json: String,
+        heartbeat_ms: u32,
+    ) -> Result<Self, ConfigError> {
+        let homes: Vec<(String, u16)> = record
+            .addresses
+            .iter()
+            .filter_map(|a| crate::address::host_port(a))
+            .collect();
+        if homes.is_empty() {
+            return Err(ConfigError::NoHome);
+        }
+        let mut private = zeroize::Zeroizing::new(*device_key);
+        Ok(Self {
+            tenant: TenantId::new(crate::address::TENANT)
+                .map_err(|_| ConfigError::Map(String::from("tenant")))?,
+            session: SessionId::named(crate::address::DEFAULT_SESSION),
+            name,
+            credential: Credential::new(
+                rlmesh_session_core::crypto::StaticKeypair::from_private(&mut private),
+                record.host_key,
+            ),
+            robot_json,
+            heartbeat_ms,
+            lobby: cfg!(feature = "fleet"),
+            homes,
+            home_id: record.host_id.clone(),
+        })
+    }
+}
+
 /// Why a [`Config`] can't make a robot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {

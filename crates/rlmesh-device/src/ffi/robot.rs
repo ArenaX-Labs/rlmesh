@@ -196,7 +196,8 @@ struct Target {
     session: String,
     credential: Credential,
     name: Option<String>,
-    /// A provisioned board waits in its home's lobby for runs.
+    /// A provisioned board of a `fleet` build waits in its home's lobby
+    /// for runs; otherwise it joins the home's default session.
     lobby: bool,
     /// Every base address of the home, and its host id (empty: unknown).
     homes: Vec<(String, u16)>,
@@ -204,8 +205,8 @@ struct Target {
 }
 
 /// The target of `address` (device `local`), or of a provisioned board's
-/// device key and record (session `default` on the record's first
-/// address).
+/// device key and record: the home's session `default`, at the record's
+/// addresses in order (see `Config::provisioned`).
 ///
 /// # Safety
 /// The config's key and record are null or valid for their lengths.
@@ -248,7 +249,7 @@ unsafe fn target(address: Option<&str>, c: &RlmeshDeviceRobotConfig) -> Result<T
         session: String::from(address::DEFAULT_SESSION),
         credential: Credential::new(StaticKeypair::from_private(&mut private), record.host_key),
         name: None,
-        lobby: true,
+        lobby: cfg!(feature = "fleet"),
         homes,
         home_id: record.host_id.clone(),
     })
