@@ -200,10 +200,7 @@ impl Satellite {
                     }
                 }
                 Assignment::Stop(order) => self.stop(home, order).await,
-                // TODO: serve members are refused at home until a catalog
-                // model can bind as a scene controller; start `serve` here
-                // then.
-                Assignment::Serve(_) | Assignment::Join(_) => {}
+                Assignment::Join(_) => {}
             }
         }
     }

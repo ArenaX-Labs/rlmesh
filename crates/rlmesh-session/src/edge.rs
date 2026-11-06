@@ -33,8 +33,7 @@ pub mod robot;
 pub mod runtime;
 
 pub use crate::edge::core::{
-    AppliedAction, AppliedSample, EdgeConfig, EdgeCore, EdgeStats, EdgeTick, GroupHandover,
-    Rejection,
+    AppliedSample, EdgeConfig, EdgeCore, EdgeStats, EdgeTick, GroupHandover, Rejection,
 };
 pub use crate::wire::EdgeMode;
 pub use error::EdgeError;

@@ -401,7 +401,6 @@ async fn embodiment(args: &Args) -> Result<Value, BoxError> {
             &robot,
             "cmd",
             EdgeConfig {
-                log_capacity: 0,
                 ..EdgeConfig::default()
             },
             Some({

@@ -50,7 +50,6 @@ enum ClockMode {
   CLOCK_MODE_UNSPECIFIED = 0;
   CLOCK_MODE_WALL = 1;
   CLOCK_MODE_VIRTUAL = 2;
-  CLOCK_MODE_LOCKSTEP = 3;
 }
 
 message ParticipantInfo {
@@ -147,9 +146,6 @@ enum PlanKind {
   PLAN_KIND_UNSPECIFIED = 0;
   // Each sample immediately (any every or history contract).
   PLAN_KIND_EVERY = 1;
-  // Was INCREMENTS: wire batching of history windows, removed.
-  reserved 2;
-  reserved "PLAN_KIND_INCREMENTS";
   // The newest sample at latest_hz, coalescing older ones.
   PLAN_KIND_LATEST = 3;
 }
@@ -162,9 +158,6 @@ message Demand {
   // Bumps whenever the plan changes; from 1.
   uint64 revision = 2;
   PlanKind plan = 3;
-  // Were the INCREMENTS flush interval and caps.
-  reserved 4, 5, 6;
-  reserved "flush_ns", "max_records", "max_bytes";
   // LATEST.
   double latest_hz = 7;
   // How long the publisher's ring retains samples.
@@ -490,8 +483,6 @@ enum ChannelPriority {
 enum MergePolicy {
   MERGE_POLICY_UNSPECIFIED = 0;
   MERGE_POLICY_REPLACE = 1;
-  MERGE_POLICY_BLEND = 2;
-  MERGE_POLICY_RTC_PREFIX = 3;
 }
 
 // One field of a sample or an action: a dense little-endian row-major
@@ -724,7 +715,6 @@ message CtlRequest {
     DeclareParts declare_parts = 18;
     EnterSafe enter_safe = 19;
     DeclareBinding declare_binding = 20;
-    // 21-23 are reserved below.
     DemandAck demand_ack = 24;
     Ready ready = 25;
     Decided decided = 26;
@@ -738,9 +728,6 @@ message CtlRequest {
     HostStarted host_started = 33;
     ArmScene arm_scene = 34;
   }
-  // The spec's Reset, EndEpisode and Mark (§10.5), not built yet: the
-  // change that adds them takes these numbers.
-  reserved 21 to 23;
 }
 
 enum CtlStatus {
@@ -823,8 +810,6 @@ enum KeyPurpose {
   KEY_PURPOSE_LOCKSTEP_REPLY = 2;
   // `k_stream`: one part's samples and `_applied` entries.
   KEY_PURPOSE_STREAM = 3;
-  // `k_session_stream`: one host session stream.
-  KEY_PURPOSE_SESSION_STREAM = 4;
   // `k_estop`: one participant generation's e-stop signals.
   KEY_PURPOSE_ESTOP = 5;
 }
@@ -977,7 +962,6 @@ message Assignment {
   oneof order {
     Join join = 1;
     HostOrder host = 2;
-    ServeOrder serve = 3;
     StopOrder stop = 4;
   }
 }
@@ -1003,16 +987,6 @@ message HostOrder {
   string scene_toml = 3;
   repeated DeviceRecord devices = 4;
   repeated RobotPin pins = 5;
-}
-
-// A satellite's order to serve a catalog model as a scene member.
-message ServeOrder {
-  string run = 1;
-  string member = 2;
-  string model = 3;
-  string session = 4;
-  repeated string addresses = 5;
-  bytes host_key = 6;
 }
 
 // A satellite's order to close what it runs for `run`.

@@ -202,17 +202,6 @@ pub enum Layout {
     PerClass([Endpoints; 4]),
 }
 
-/// TLS material for `tls/` and `quic/` endpoints.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TlsFiles {
-    /// The CA that signs peers' certificates.
-    pub root_ca: PathBuf,
-    /// This peer's certificate.
-    pub certificate: PathBuf,
-    /// Its private key.
-    pub private_key: PathBuf,
-}
-
 /// Link settings applied to every session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportTuning {
@@ -226,8 +215,6 @@ pub struct TransportTuning {
     /// dropped (Zenoh's default, 1 ms, stalls a 1 kHz publisher on a
     /// congested link). `None` keeps Zenoh's default.
     pub drop_wait: Option<Duration>,
-    /// TLS material for `tls/` and `quic/` endpoints.
-    pub tls: Option<TlsFiles>,
     /// Join as a Zenoh client: listen nowhere and reach everyone through
     /// the host dialed, which routes for its clients. A peer (the default)
     /// talks to the other peers directly, once the gossip of the peers it
@@ -270,7 +257,6 @@ impl Default for TransportTuning {
             lease: Duration::from_secs(1),
             keep_alive: 4,
             drop_wait: None,
-            tls: None,
             client: false,
             connect_timeout: None,
             link: None,
@@ -428,24 +414,6 @@ pub fn zenoh_config(
                 format!("{:?}", dictionary.display().to_string()),
             )?;
         }
-    }
-    if let Some(tls) = &tuning.tls {
-        let path = |p: &PathBuf| format!("{:?}", p.display().to_string());
-        set(
-            &mut config,
-            "transport/link/tls/root_ca_certificate",
-            path(&tls.root_ca),
-        )?;
-        set(
-            &mut config,
-            "transport/link/tls/listen_certificate",
-            path(&tls.certificate),
-        )?;
-        set(
-            &mut config,
-            "transport/link/tls/listen_private_key",
-            path(&tls.private_key),
-        )?;
     }
     Ok(config)
 }
@@ -672,11 +640,6 @@ mod tests {
         let tuning = TransportTuning {
             lease: Duration::from_millis(1500),
             keep_alive: 3,
-            tls: Some(TlsFiles {
-                root_ca: "ca.pem".into(),
-                certificate: "cert.pem".into(),
-                private_key: "key.pem".into(),
-            }),
             drop_wait: Some(Duration::from_micros(50)),
             client: false,
             connect_timeout: None,
@@ -694,7 +657,6 @@ mod tests {
             get("transport/link/tx/queue/congestion_control/drop/wait_before_drop"),
             "50"
         );
-        assert_eq!(get("transport/link/tls/root_ca_certificate"), "\"ca.pem\"");
         assert!(get("connect/endpoints").contains("tcp/10.0.0.1:7447"));
         assert_eq!(get("scouting/multicast/enabled"), "false");
         assert_eq!(get("mode"), "\"peer\"");

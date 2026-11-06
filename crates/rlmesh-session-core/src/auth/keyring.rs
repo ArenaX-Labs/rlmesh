@@ -49,7 +49,6 @@ pub fn kinds(purpose: KeyPurpose) -> KindSet {
         KeyPurpose::Command => KindSet::of(&[Kind::ActionChunk, Kind::LockstepRequest]),
         KeyPurpose::LockstepReply => KindSet::of(&[Kind::LockstepReply]),
         KeyPurpose::Stream => KindSet::of(&[Kind::Sample, Kind::Applied]),
-        KeyPurpose::SessionStream => KindSet::of(&[Kind::HostSessionStream]),
         KeyPurpose::Estop => KindSet::of(&[Kind::EstopSignal]),
     }
 }

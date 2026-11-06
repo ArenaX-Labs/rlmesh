@@ -72,8 +72,6 @@ pub enum Kind {
     LockstepReply = 12,
     /// An e-stop signal.
     EstopSignal = 13,
-    /// A host session stream entry.
-    HostSessionStream = 14,
     /// A history query.
     HistoryQuery = 15,
     /// Pairing: `PairCommit` (§3).
@@ -130,7 +128,6 @@ impl Kind {
             11 => LockstepRequest,
             12 => LockstepReply,
             13 => EstopSignal,
-            14 => HostSessionStream,
             15 => HistoryQuery,
             16 => PairCommit,
             17 => PairNonce,
@@ -147,7 +144,7 @@ impl Kind {
 
     /// The kind's level: kinds under `k_up`/`k_down` (1–6, 10, 15) and
     /// pairing (16–19) are always encrypted, e-stop signals (13) never, and
-    /// 7, 8, 9, 11, 12 and 14 follow their key's [`Security`].
+    /// 7, 8, 9, 11 and 12 follow their key's [`Security`]. 14 is unassigned.
     pub fn protection(self) -> Protection {
         use Kind::*;
         match self {
@@ -156,8 +153,9 @@ impl Kind {
                 Protection::Encrypted
             }
             EstopSignal => Protection::IntegrityOnly,
-            ActionChunk | Sample | Applied | LockstepRequest | LockstepReply
-            | HostSessionStream => Protection::Configured,
+            ActionChunk | Sample | Applied | LockstepRequest | LockstepReply => {
+                Protection::Configured
+            }
         }
     }
 
@@ -847,7 +845,6 @@ mod tests {
             Kind::Applied,
             Kind::LockstepRequest,
             Kind::LockstepReply,
-            Kind::HostSessionStream,
         ] {
             let mut clear = sign.seal(kind, KEYEXPR, b"x").unwrap();
             assert_eq!(

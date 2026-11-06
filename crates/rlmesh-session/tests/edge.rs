@@ -395,7 +395,8 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let stop = Arc::new(AtomicBool::new(false));
-    let ticker = tick_at_1khz(edge.clone(), stop.clone(), None);
+    let ticks = Arc::new(Mutex::new(Vec::new()));
+    let ticker = tick_at_1khz(edge.clone(), stop.clone(), Some(ticks.clone()));
     // The model re-plans a 50 ms horizon every 10 ms.
     let streaming = Arc::new(AtomicBool::new(true));
     let model_loop = tokio::spawn({
@@ -427,8 +428,8 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
     stop.store(true, Ordering::Relaxed);
     ticker.join().expect("ticker");
 
-    let log = edge.drain_log();
-    let driving: Vec<(String, u8)> = log
+    let ticks = std::mem::take(&mut *ticks.lock().expect("ticks"));
+    let driving: Vec<(String, u8)> = ticks
         .iter()
         .filter(|a| a.mode == EdgeMode::Driving)
         .filter_map(|a| a.action.as_ref())
@@ -793,15 +794,19 @@ async fn a_controller_in_another_process_drives_the_edge_and_its_crash_falls_bac
         driven.edge.stats().mode(EdgeMode::Safe).entries == 1
     })
     .await;
-    driven.stop();
+    let ticks = driven.stop();
     assert!(child.wait().expect("child").success());
 
-    let log = driven.edge.drain_log();
     assert!(
-        log.iter()
+        ticks
+            .iter()
             .filter_map(|a| a.action.as_ref())
             .all(|q| q.chunk.source == remote && q.value[0] == 7),
         "every applied action is attributed to the remote controller"
+    );
+    assert!(
+        ticks.iter().any(|t| t.action.is_some()),
+        "the remote controller drove"
     );
     let stats = driven.edge.stats();
     assert_eq!(stats.mode(EdgeMode::Safe).entries, 1, "{stats:?}");

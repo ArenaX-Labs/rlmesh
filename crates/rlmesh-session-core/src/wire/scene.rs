@@ -25,8 +25,6 @@ pub enum Assignment {
     Join(Join),
     /// A satellite's: host a scene's session.
     Host(HostOrder),
-    /// A satellite's: serve a model as a scene member.
-    Serve(ServeOrder),
     /// A satellite's: close what it runs for a run.
     Stop(StopOrder),
 }
@@ -64,23 +62,6 @@ pub struct HostOrder {
     pub devices: Vec<DeviceRecord>,
     /// The robots' pins.
     pub pins: Vec<RobotPin>,
-}
-
-/// A satellite's order to serve a catalog model as a scene member.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServeOrder {
-    /// The run.
-    pub run: String,
-    /// The member it serves as.
-    pub member: ParticipantId,
-    /// The catalog model (`prebuilt/smolvla/so100`).
-    pub model: String,
-    /// The run's session.
-    pub session: SessionId,
-    /// The scene host's base addresses.
-    pub addresses: Vec<String>,
-    /// The scene host's static X25519 key.
-    pub host_key: [u8; 32],
 }
 
 /// A satellite's order to close what it runs for `run`.

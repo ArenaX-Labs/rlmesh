@@ -13,7 +13,6 @@
 //! | `/{robot}/{path}/_chunks` | `rlmesh.session.v2.ActionChunk` | chunk sent to the edge |
 //! | `/_session/authority` | `rlmesh.session.v2.AuthorityState` | authority change |
 //! | `/_session/bindings` | `rlmesh.session.v2.BindingRecord` | new or changed binding |
-//! | `/_session/heartbeats` | `rlmesh.session.v2.Heartbeat` | participant heartbeat |
 //! | `/_session/reports` | `rlmesh.session.v2.ParticipantReport` | observer report |
 //!
 //! Schemas are the `rlmesh.session.v2` protobuf descriptors. A new MCAP
@@ -51,8 +50,8 @@ use std::time::Duration;
 use crate::transport::{TrafficClass, payload_bytes};
 use crate::wire::codec::{self, schema};
 use crate::wire::{
-    ActionChunk, AuthoritySnapshot, ChannelId, DType, Encoding, Fingerprint, Health, Heartbeat,
-    Mode, PartSpec, ParticipantId, ParticipantReport, Sample, SessionId, StreamSpec,
+    ActionChunk, AuthoritySnapshot, ChannelId, DType, Encoding, Fingerprint, Health, Mode,
+    PartSpec, ParticipantId, ParticipantReport, Sample, SessionId, StreamSpec,
 };
 use crate::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use bytes::Bytes;
@@ -123,7 +122,6 @@ enum TopicKey {
     Chunks(ChannelId),
     Authority,
     Bindings,
-    Heartbeats,
     Reports,
 }
 
@@ -236,7 +234,7 @@ struct Misses {
 }
 
 /// Subscribes to a `_session` topic of every participant's envelopes
-/// (heartbeats, reports), `publish_time` its log time (the send time, on
+/// (reports), `publish_time` its log time (the send time, on
 /// the sender's clock, is in the envelope): `sequence` decodes one into
 /// its sequence, or `None` to skip it.
 async fn subscribe_envelopes(
@@ -280,7 +278,7 @@ pub struct Recorder {
     writer: Option<JoinHandle<Result<RecordStats, RecordError>>>,
     watcher: Option<tokio::task::JoinHandle<Subscriptions>>,
     cancel: tokio::sync::watch::Sender<bool>,
-    /// Authority, heartbeats and reports.
+    /// Authority and reports.
     subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
     /// Every robot declared while recording, as metadata records.
     robots: Arc<Mutex<Metadata>>,
@@ -475,25 +473,6 @@ impl Recorder {
             }
             subscriber
         };
-        // TODO: heartbeats are sealed to the host since session auth (design
-        // §8.2), so none decodes here and recordings carry no heartbeats;
-        // have the host relay its per-participant link health to observers
-        // (the cockpit's TODO too), then record that instead.
-        let heartbeats = subscribe_envelopes(
-            &participant,
-            &tx,
-            &stamp,
-            TrafficClass::Control,
-            participant.keys().heartbeats(),
-            Topic {
-                key: TopicKey::Heartbeats,
-                name: "/_session/heartbeats".into(),
-                schema: schema::HEARTBEAT,
-                metadata: BTreeMap::new(),
-            },
-            |data| codec::decode_heartbeat(data).ok().map(|hb| hb.seq),
-        )
-        .await?;
         let reports = subscribe_envelopes(
             &participant,
             &tx,
@@ -523,7 +502,7 @@ impl Recorder {
             writer: Some(writer),
             watcher: Some(watcher),
             cancel,
-            subscribers: vec![authority, heartbeats, reports],
+            subscribers: vec![authority, reports],
             robots,
         })
     }
@@ -1612,7 +1591,6 @@ pub fn summarize(path: impl AsRef<Path>) -> Result<Summary, RecordError> {
             schema::SAMPLE => codec::decode_sample(data).is_ok(),
             schema::ACTION_CHUNK => codec::decode_chunk(data).is_ok(),
             schema::BINDING_RECORD => codec::decode_binding(&data).is_ok(),
-            schema::HEARTBEAT => codec::decode_heartbeat(&data).is_ok(),
             schema::PARTICIPANT_REPORT => codec::decode_report(&data).is_ok(),
             schema::AUTHORITY_STATE => match codec::decode_state(&data) {
                 Ok(state) => {
@@ -1645,8 +1623,6 @@ pub enum Recorded {
     Chunk(ActionChunk),
     /// An authority snapshot (it carries the bindings too).
     Authority(Box<AuthoritySnapshot>),
-    /// A participant's heartbeat.
-    Heartbeat(Heartbeat),
     /// A participant's observer report.
     Report(ParticipantReport),
 }
@@ -1662,7 +1638,7 @@ pub struct RecordedMessage {
     pub message: Recorded,
 }
 
-/// Every sample, chunk, authority snapshot, heartbeat and report of a
+/// Every sample, chunk, authority snapshot and report of a
 /// recording (one MCAP file, or a directory of them: rolling segments, an
 /// incident, an episode), ordered by
 /// log time (stable, so each channel keeps its recorded order). Binding
@@ -1728,7 +1704,6 @@ fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
             Some(schema::AUTHORITY_STATE) => codec::decode_state(&data)
                 .ok()
                 .map(|s| Recorded::Authority(Box::new(s))),
-            Some(schema::HEARTBEAT) => codec::decode_heartbeat(&data).ok().map(Recorded::Heartbeat),
             Some(schema::PARTICIPANT_REPORT) => {
                 codec::decode_report(&data).ok().map(Recorded::Report)
             }

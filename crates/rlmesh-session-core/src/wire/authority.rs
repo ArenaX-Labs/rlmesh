@@ -83,8 +83,6 @@ pub enum ClockMode {
     Wall,
     /// `tick × tick_ns`, advanced by the host tick by tick (§11.3).
     Virtual,
-    /// `step × tick_ns`, advanced by the lockstep exchange (§12).
-    Lockstep,
 }
 
 /// Why a mode changed, an edge or the host went SAFE, or a lease ended: one
