@@ -414,6 +414,8 @@ pub struct Authority {
     revision: u64,
     mode: Mode,
     estop_latched: bool,
+    /// Who latched the e-stop: only that robot, or `local`, clears it.
+    estop_by: Option<ParticipantId>,
     mode_reason: Reason,
     /// The latest lease endings, oldest first.
     ended: VecDeque<LeaseEnd>,
@@ -471,6 +473,7 @@ impl Authority {
             revision: 0,
             mode: Mode::Disarmed,
             estop_latched: false,
+            estop_by: None,
             mode_reason: Reason::default(),
             ended: VecDeque::with_capacity(ENDED),
             // A fresh session is stopped (DISARMED) in its first epoch.
@@ -920,7 +923,25 @@ impl Authority {
                         "no latched e-stop to clear",
                     ));
                 }
+                // The robot that latched it clears it, or this machine's
+                // own robot process (`local`); no other robot can.
+                if sender.device != crate::auth::LOCAL_DEVICE
+                    && self.estop_by.as_ref() != Some(&from)
+                {
+                    let by = self
+                        .estop_by
+                        .as_ref()
+                        .map_or_else(|| "someone else".into(), ToString::to_string);
+                    return Err(CtlError::new(
+                        CtlStatus::Forbidden,
+                        format!(
+                            "{by} latched this e-stop: only {by}, or a robot process on the \
+                             host's own machine, clears it"
+                        ),
+                    ));
+                }
                 self.estop_latched = false;
+                self.estop_by = None;
                 self.mode_reason = self.reason(ReasonCode::EstopCleared, &from, "");
                 applied
                     .events
@@ -1174,6 +1195,7 @@ impl Authority {
         };
         self.revoke_all(ReasonCode::VoidedByEstop, &why, events);
         self.estop_latched = true;
+        self.estop_by = Some(by.clone());
         events.push(AuthorityEvent::EstopLatched {
             by: by.clone(),
             reason,
@@ -3434,6 +3456,92 @@ mod tests {
         assert_eq!(f.auth.mode(), Mode::Armed);
         f.run("policy", Command::Detach, 2).expect("detach");
         assert!(f.auth.binding(&pid("policy")).is_none());
+    }
+
+    #[test]
+    fn only_the_robot_that_latched_an_estop_or_local_clears_it() {
+        let mut f = Fixture::new();
+        let mut access = Access::default();
+        for board in ["eye-1", "eye-2"] {
+            access.set(board, DeviceAccess::new(Some(PriorityClass::Model)));
+        }
+        f.auth.config.access = access;
+        let as_board = |f: &mut Fixture, board: &str, command: Command, now: i64| {
+            let sender = Identity {
+                device: board.into(),
+                generation: 1,
+            };
+            f.auth.apply_from(
+                Request {
+                    from: pid(board),
+                    epoch: None,
+                    request_id: 0,
+                    command,
+                },
+                &sender,
+                now,
+            )
+        };
+        for (board, now) in [("eye-1", 1), ("eye-2", 2)] {
+            as_board(
+                &mut f,
+                board,
+                attach(board, vec![Role::Embodiment], PriorityClass::Scripted),
+                now,
+            )
+            .expect("attach");
+        }
+        let estop = Command::Estop {
+            reason: "button".into(),
+            code: ReasonCode::EstopLocal,
+            origin: None,
+            at_ns: 0,
+        };
+        as_board(&mut f, "eye-1", estop, 3).expect("eye 1 latches");
+        assert_eq!(
+            Fixture::status(as_board(&mut f, "eye-2", Command::Clear, 4)),
+            CtlStatus::Forbidden,
+            "another robot never clears it"
+        );
+        assert!(f.auth.estop_latched());
+        as_board(&mut f, "eye-1", Command::Clear, 5).expect("the robot that latched it");
+        assert!(!f.auth.estop_latched());
+
+        // A local robot process clears any latch.
+        let estop = Command::Estop {
+            reason: "button".into(),
+            code: ReasonCode::EstopLocal,
+            origin: None,
+            at_ns: 0,
+        };
+        as_board(&mut f, "eye-2", estop, 6).expect("eye 2 latches");
+        f.run("robot", Command::Clear, 7).expect("local clears");
+    }
+
+    #[test]
+    fn a_device_attaches_only_with_the_roles_its_entry_allows() {
+        let mut access = Access::default();
+        access.set(
+            "eye-1",
+            DeviceAccess {
+                roles: vec![Role::Embodiment, Role::Observer],
+                ..DeviceAccess::new(Some(PriorityClass::Model))
+            },
+        );
+        let status = |r: Result<(), CtlError>| r.err().map(|e| e.status);
+        assert_eq!(
+            status(access.check_attach("eye-1", &[Role::Embodiment], PriorityClass::Scripted)),
+            None
+        );
+        assert_eq!(
+            status(access.check_attach("eye-1", &[Role::Observer], PriorityClass::Scripted)),
+            None
+        );
+        assert_eq!(
+            status(access.check_attach("eye-1", &[Role::Controller], PriorityClass::Model)),
+            Some(CtlStatus::NotAuthorized),
+            "a stolen board never drives other robots"
+        );
     }
 
     #[test]

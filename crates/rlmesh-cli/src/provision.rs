@@ -211,6 +211,7 @@ fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(
             max_priority: BOARD_CAP.into(),
             parts: None,
             verbs: None,
+            roles: None,
         });
         entry.kind = Some("board".into());
         entry.name = Some(name.into());

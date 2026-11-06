@@ -373,6 +373,7 @@ async fn approve_local(local: &Local, code: u32, max: Option<&str>) -> Answer {
             max_priority: max.to_string(),
             parts: None,
             verbs: None,
+            roles: None,
         };
         table.devices.insert(id.clone(), entry);
         Ok(id)

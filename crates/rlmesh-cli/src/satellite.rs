@@ -230,9 +230,9 @@ impl Satellite {
                 id: record.id.clone(),
                 public: record.public_key,
                 access: DeviceAccess {
-                    max_priority: record.max_priority,
                     parts: record.parts.clone(),
                     verbs: verbs(&record.verbs),
+                    ..DeviceAccess::new(record.max_priority)
                 },
             })
             .collect();

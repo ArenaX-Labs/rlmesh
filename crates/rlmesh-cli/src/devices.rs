@@ -28,7 +28,7 @@ use rlmesh_session::address::write_private;
 use rlmesh_session::auth::address::unbase32;
 use rlmesh_session::auth::{Device, LOCAL_DEVICE, Pin as HostPin};
 use rlmesh_session::authority::{DeviceAccess, Verb};
-use rlmesh_session::wire::{ParticipantId, PriorityClass};
+use rlmesh_session::wire::{ParticipantId, PriorityClass, Role};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{DevicesArgs, DevicesCommand};
@@ -74,6 +74,11 @@ pub struct Entry {
     /// `arm`, `disarm`; both from `operator` up when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verbs: Option<Vec<String>>,
+    /// `embodiment`, `controller` (an observer always may attach); by its
+    /// kind when absent: a board embodies, a browser controls, a machine
+    /// does both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<String>>,
 }
 
 /// A robot name's pin (design §4, tether spec §7).
@@ -112,6 +117,15 @@ fn board_id(hex: &str) -> Option<[u8; 8]> {
     Some(id)
 }
 
+fn role(name: &str) -> Result<Role> {
+    match name {
+        "embodiment" => Ok(Role::Embodiment),
+        "controller" => Ok(Role::Controller),
+        "observer" => Ok(Role::Observer),
+        other => bail!("role {other:?}: embodiment, controller or observer"),
+    }
+}
+
 fn verb(name: &str) -> Result<Verb> {
     match name {
         "arm" => Ok(Verb::Arm),
@@ -130,6 +144,15 @@ impl Entry {
         if let Some(verbs) = &self.verbs {
             access.verbs = verbs.iter().map(|v| verb(v)).collect::<Result<_>>()?;
         }
+        access.roles = match &self.roles {
+            Some(roles) => roles.iter().map(|r| role(r)).collect::<Result<_>>()?,
+            None => match self.kind.as_deref() {
+                Some("board") => vec![Role::Embodiment],
+                Some("browser") => vec![Role::Controller],
+                _ => vec![Role::Embodiment, Role::Controller],
+            },
+        };
+        access.roles.push(Role::Observer);
         Ok(access)
     }
 }
