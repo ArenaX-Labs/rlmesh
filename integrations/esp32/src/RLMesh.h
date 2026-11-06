@@ -1,15 +1,16 @@
-// RLMeshESP32: an ESP32 on Wi-Fi as an RLMesh robot. The session's
+// RLMesh: an ESP32 on Wi-Fi as an RLMesh robot. The session's
 // protocol and crypto are RLMesh's Rust core, linked as a precompiled
 // library (`rlmesh_device.h`); this wraps it with the board's clock and
 // randomness, and zenoh-pico (`rlmesh_zenoh.h`) for its network.
 
-#ifndef RLMESH_ESP32_H_
-#define RLMESH_ESP32_H_
+#ifndef RLMESH_H_
+#define RLMESH_H_
 
 #include <sdkconfig.h>
 
-#if !defined(CONFIG_IDF_TARGET_ESP32) && !defined(CONFIG_IDF_TARGET_ESP32C6)
-#error "RLMeshESP32 runs on the classic ESP32 (ESP32-WROOM-32) and the ESP32-C6 so far"
+#if !defined(CONFIG_IDF_TARGET_ESP32) && !defined(CONFIG_IDF_TARGET_ESP32C6) && \
+    !defined(CONFIG_IDF_TARGET_ESP32S3)
+#error "RLMesh runs on the classic ESP32 (ESP32-WROOM-32) ESP32-C6 and ESP32-S3"
 #endif
 
 #include <Stream.h>
@@ -67,6 +68,14 @@ class Provisioning {
   rlmesh_device_provision_t* responder_ = nullptr;
 };
 
+// The C ABI's tick result, including the reason no tick was produced.
+enum class TickResult : int {
+  Ready = 1,
+  Idle = 0,
+  InvalidArgument = RLMESH_DEVICE_ERR_ARG,
+  NotReady = RLMESH_DEVICE_ERR_NOT_READY,
+};
+
 // The board as a robot in a session, over Wi-Fi. Start Wi-Fi first.
 class Robot {
  public:
@@ -94,10 +103,10 @@ class Robot {
   // take, or -1.
   int part(const char* path) const;
   // One control tick of `part`'s command group, at the part's control rate:
-  // true with `out` filled (valid until the next call) when there is an
+  // Ready with `out` filled (valid until the next call) when there is an
   // action to dispatch, a safe behaviour to run, or a handover. It also
   // publishes what was applied.
-  bool tick(int part, rlmesh_device_tick_t& out);
+  TickResult tick(int part, rlmesh_device_tick_t& out);
   // The robot switched its control mode for a handover: the group may
   // dispatch again.
   void handoverDone(int part);
@@ -137,4 +146,4 @@ class Robot {
 
 }  // namespace rlmesh
 
-#endif  // RLMESH_ESP32_H_
+#endif  // RLMESH_H_

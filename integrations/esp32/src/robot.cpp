@@ -7,8 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "RLMeshESP32.h"
-#include "rlmesh_zenoh.h"
+#include "RLMesh.h"
+#include "rlmesh_transport.h"
 
 namespace rlmesh {
 
@@ -40,7 +40,7 @@ bool Robot::start(const rlmesh_device_robot_config_t& config) {
     robot_ = nullptr;
     return false;
   }
-  zenoh_ = static_cast<rlmesh_zenoh_t*>(malloc(sizeof(rlmesh_zenoh_t)));
+  zenoh_ = static_cast<rlmesh_zenoh_t*>(malloc(rlmesh_zenoh_size()));
   if (zenoh_ == nullptr || rlmesh_zenoh_open(zenoh_, robot_, &esp32::nowUs) != 0) {
     free(zenoh_);
     zenoh_ = nullptr;
@@ -90,9 +90,11 @@ int Robot::part(const char* path) const {
   return robot_ != nullptr ? rlmesh_device_robot_part(robot_, path) : -1;
 }
 
-bool Robot::tick(int part, rlmesh_device_tick_t& out) {
-  if (robot_ == nullptr || part < 0 || part >= RLMESH_DEVICE_NO_PART) return false;
-  return rlmesh_device_robot_tick(robot_, uint8_t(part), esp32::nowUs(), &out) == 1;
+TickResult Robot::tick(int part, rlmesh_device_tick_t& out) {
+  if (robot_ == nullptr || part < 0 || part >= RLMESH_DEVICE_NO_PART)
+    return TickResult::InvalidArgument;
+  return static_cast<TickResult>(
+      rlmesh_device_robot_tick(robot_, uint8_t(part), esp32::nowUs(), &out));
 }
 
 void Robot::handoverDone(int part) {
@@ -124,6 +126,8 @@ rlmesh_device_robot_status_t Robot::status() const {
   return s;
 }
 
-uint32_t Robot::transportFailures() const { return zenoh_ != nullptr ? zenoh_->failed : 0; }
+uint32_t Robot::transportFailures() const {
+  return zenoh_ != nullptr ? rlmesh_zenoh_failures(zenoh_) : 0;
+}
 
 }  // namespace rlmesh

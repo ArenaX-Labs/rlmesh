@@ -4,6 +4,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+size_t rlmesh_zenoh_size(void) { return sizeof(rlmesh_zenoh_t); }
+
+uint32_t rlmesh_zenoh_failures(rlmesh_zenoh_t* z) {
+  z_mutex_lock(z_loan_mut(z->lock));
+  uint32_t failed = z->failed;
+  z_mutex_unlock(z_loan_mut(z->lock));
+  return failed;
+}
+
 enum { EV_SAMPLE = 1, EV_REPLY = 2, EV_DONE = 3 };
 
 typedef struct rlmesh_zenoh_event {
