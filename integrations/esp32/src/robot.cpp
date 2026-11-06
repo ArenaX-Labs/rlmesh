@@ -2,6 +2,7 @@
 // randomness.
 
 #include <ESPmDNS.h>
+#include <Preferences.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,27 @@
 #include "rlmesh_transport.h"
 
 namespace rlmesh {
+
+namespace {
+// The NVS namespace and key of the e-stop latch.
+const char* const kLatchSpace = "rlmesh-estop";
+const char* const kLatchKey = "latched";
+
+bool storedLatch() {
+  Preferences nvs;
+  if (!nvs.begin(kLatchSpace, true)) return false;
+  bool latched = nvs.getBool(kLatchKey, false);
+  nvs.end();
+  return latched;
+}
+
+void storeLatch(bool latched) {
+  Preferences nvs;
+  if (!nvs.begin(kLatchSpace, false)) return;
+  nvs.putBool(kLatchKey, latched);
+  nvs.end();
+}
+}  // namespace
 
 bool Robot::begin(const char* address, const char* name, const char* robotJson,
                   uint32_t heartbeatMs) {
@@ -47,6 +69,11 @@ bool Robot::start(const rlmesh_device_robot_config_t& config) {
     robot_ = nullptr;
     return false;
   }
+  // A latch from before a reboot still holds, until a local clear.
+  if (storedLatch()) {
+    rlmesh_device_robot_estop(robot_, "latched before a reboot", esp32::nowUs());
+    persisted_ = 1;
+  }
   zenoh_ = static_cast<rlmesh_zenoh_t*>(malloc(rlmesh_zenoh_size()));
   if (zenoh_ == nullptr || rlmesh_zenoh_open(zenoh_, robot_, &esp32::nowUs) != 0) {
     free(zenoh_);
@@ -61,6 +88,14 @@ void Robot::poll() {
   if (zenoh_ == nullptr) return;
   rlmesh_zenoh_poll(zenoh_);
   discover();
+  persistLatch();
+}
+
+void Robot::persistLatch() {
+  int8_t latched = estopLatched() ? 1 : 0;
+  if (latched == persisted_) return;
+  storeLatch(latched == 1);
+  persisted_ = latched;
 }
 
 // Every stored home address failed: ask mDNS for `_rlmesh._tcp`, and keep only
@@ -125,6 +160,7 @@ void Robot::estop(const char* reason) {
 
 void Robot::clearEstop() {
   if (robot_ != nullptr) rlmesh_device_robot_clear_estop(robot_);
+  persistLatch();
 }
 
 rlmesh_device_robot_status_t Robot::status() const {
