@@ -8,6 +8,9 @@
 //!
 //! - `Idle`: no lease, or nothing applied under it yet. The wait timer is
 //!   not armed, so a fresh grant does not trip SAFE before the first chunk.
+//!   A preempting holder's wait isn't timed from the old holder's last
+//!   action either: the edge holds as below, without the timeout, until its
+//!   first action.
 //! - `Driving`: an action is due and dispatched.
 //! - `Hold`: nothing valid is due. The edge waits at most `hold_max` for a
 //!   valid action. A position-type part (`hold_last`) repeats its last
@@ -217,6 +220,9 @@ pub struct Fallback {
     stop_epoch: Option<Epoch>,
     /// Safe without the latch: the lease was released.
     parked: bool,
+    /// A new holder's token, until its first action is due: its wait is not
+    /// timed from the old holder's last action.
+    awaiting: Option<LeaseToken>,
     /// The last dispatched action and its member.
     last: Option<(usize, QueuedAction)>,
     /// When valid coverage ended (edge clock), while waiting.
@@ -245,6 +251,7 @@ impl Fallback {
             stopped: false,
             stop_epoch: None,
             parked: false,
+            awaiting: None,
             last: None,
             dry_since_ns: None,
             active: None,
@@ -426,12 +433,24 @@ impl Fallback {
             }
             None => return self.go_safe(view, SafeCause::LeaseLapsed, queues),
         }
+        // A new holder (a preemption, a re-grant): the edge holds (or runs
+        // the safe behaviour) as before, but its wait is not timed from the
+        // old holder's last action: hold_max counts from the new holder's
+        // first one, as after a fresh grant.
+        if self.last.as_ref().is_some_and(|(member, last)| {
+            *member == lease.member && last.chunk.lease_token != lease.token
+        }) && self.awaiting != Some(lease.token)
+        {
+            self.awaiting = Some(lease.token);
+            self.dry_since_ns = None;
+        }
         let Some(queue) = queues.get_mut(lease.member) else {
             return self.idle(None);
         };
         queue.fence(view.epoch, lease.token);
         if let Some(due) = queue.due(now_ns) {
             self.dry_since_ns = None;
+            self.awaiting = None;
             let ladder = self.ladder(lease.member);
             let deliver = ladder.delivery == Delivery::EveryTick || due.first;
             self.last = Some((lease.member, due.action.clone()));
@@ -472,7 +491,9 @@ impl Fallback {
             covered_until = covered_until.min(now_ns);
         }
         let dry_since = *self.dry_since_ns.get_or_insert(covered_until.min(now_ns));
-        if now_ns.saturating_sub(dry_since) >= self.hold_max_ns {
+        // A new holder that sent nothing yet: no timeout from the old one's.
+        let new_holder = lease.is_some_and(|l| self.awaiting == Some(l.token));
+        if !new_holder && now_ns.saturating_sub(dry_since) >= self.hold_max_ns {
             if lease.is_some() {
                 return self.go_safe(view, SafeCause::QueueDry, queues);
             }
@@ -727,6 +748,27 @@ mod tests {
         let d = f.tick(MS, held(2), &mut q);
         assert_eq!(d.mode, EdgeMode::Hold);
         assert_eq!(d.action.map(|a| a.chunk.lease_token), Some(LeaseToken(1)));
+    }
+
+    #[test]
+    fn a_preempting_holders_wait_is_timed_from_its_own_first_action() {
+        let (mut f, mut q) = ladder(20 * MS, true);
+        q[0].splice(splice(1, 0, 1, i64::MAX), 0);
+        assert_eq!(f.tick(0, held(1), &mut q).mode, EdgeMode::Driving);
+        // Token 2 takes over and sends nothing for longer than hold_max: the
+        // part holds its target, and nothing latches.
+        for t in [MS, 30 * MS, 60 * MS] {
+            let d = f.tick(t, held(2), &mut q);
+            assert_eq!((d.mode, d.went_safe), (EdgeMode::Hold, None), "at {t}");
+        }
+        // Its first action drives; from then on its own silence counts.
+        q[0].splice(splice(2, 61 * MS, 1, i64::MAX), 61 * MS);
+        assert_eq!(f.tick(61 * MS, held(2), &mut q).mode, EdgeMode::Driving);
+        let d = f.tick(100 * MS, held(2), &mut q);
+        assert_eq!(
+            (d.mode, d.went_safe),
+            (EdgeMode::Safe, Some(SafeCause::QueueDry))
+        );
     }
 
     #[test]
