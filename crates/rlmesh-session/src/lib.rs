@@ -50,19 +50,19 @@
 //!   background), its chunks and its run loop.
 //! - [`edge`]: the edge runtime next to an embodiment (§9): the timed
 //!   action queue, command limits, the hold-then-safe ladder, the applied
-//!   stream and log, and the [`Robot`](edge::Robot) bindings wrap.
+//!   stream, and the [`Robot`](edge::Robot) bindings wrap.
 //! - `record` (feature `record`): MCAP recording of a session (§13) and
 //!   reading a recording back.
 //! - [`report`]: observer telemetry (§8.10), the publisher and controller
 //!   counters an observer cannot measure itself.
-//! - [`pairing`]: machine pairing with rlmeshd (design §3), and the host
-//!   files paired machines attach with.
-//! - [`discovery`]: rlmeshd's mDNS advertisement, and a paired machine
-//!   finding its host by id (scene design §3.1).
-//! - [`lobby`]: the home daemon's lobby (scene design §3): its verbs'
-//!   service, a client that runs scenes, and a robot waiting for a run.
-//! - [`scene`]: scene files (scene design §2), read and checked without
-//!   IO, and what a scene's session host carries for one run.
+//! - [`pairing`]: a browser's page token and, with `fleet`, machine
+//!   pairing with rlmeshd (design §3) and the host files paired machines
+//!   attach with.
+//! - With the unreleased `fleet` feature: `discovery` (rlmeshd's mDNS
+//!   advertisement, and a paired machine finding its host by id), `lobby`
+//!   (the home daemon's lobby: its verbs' service, a client that runs
+//!   scenes, and a robot waiting for a run) and `scene` (scene files, and
+//!   what a scene's session host carries for one run).
 //! - [`sdk`]: what the language bindings share (Python's extension, the
 //!   Node addon), so each only converts values.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can

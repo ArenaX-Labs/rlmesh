@@ -5,19 +5,42 @@ and importing this module there raises :class:`ImportError`. Nothing here is
 part of the public API.
 """
 
+# It reaches into Robot, and the release stubs have no fleet natives.
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import json
 import os
 from collections.abc import Callable, Mapping
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from .._rlmesh import V2Robot, V2Scene  # type: ignore[attr-defined]
+from .. import _rlmesh
 from . import Robot
 
 if TYPE_CHECKING:
     from typing_extensions import Self
+
+
+class _NativeScene(Protocol):
+    run: str
+
+    def address(self) -> str | None: ...
+    def status(self) -> dict[str, Any]: ...
+    def wait_until(self, stage: str, timeout: float) -> dict[str, Any]: ...
+    def arm(self) -> dict[str, Any]: ...
+    def stop(self, timeout: float) -> dict[str, Any]: ...
+    def close(self) -> None: ...
+
+
+try:
+    _V2Scene: Callable[..., _NativeScene] = getattr(_rlmesh, "V2Scene")  # noqa: B009
+    _from_lobby: Callable[..., Any] = getattr(_rlmesh.V2Robot, "from_lobby")  # noqa: B009
+except AttributeError as exc:  # pragma: no cover - a release wheel
+    raise ImportError(
+        "rlmesh.realtime._fleet needs an extension built with the fleet feature"
+    ) from exc
 
 __all__ = ["Scene", "leaving", "run_scene", "wait_in_lobby"]
 
@@ -39,7 +62,7 @@ def wait_in_lobby(
     """
     robot = Robot.__new__(Robot)
     robot._lockstep = None
-    robot._native = V2Robot.from_lobby(home, name, json.dumps(parts), timeout)
+    robot._native = _from_lobby(home, name, json.dumps(parts), timeout)
     robot._adopt(on_handover)
     return robot
 
@@ -54,7 +77,7 @@ def leaving(robot: Robot) -> str | None:
     """
     if robot._lockstep is not None:
         return None
-    return robot._native.leaving  # type: ignore[attr-defined, no-any-return]
+    return cast("str | None", getattr(robot._native, "leaving"))  # noqa: B009
 
 
 class Scene:
@@ -67,7 +90,7 @@ class Scene:
     ``message``).
     """
 
-    def __init__(self, native: V2Scene) -> None:
+    def __init__(self, native: _NativeScene) -> None:
         self._native = native
 
     @property
@@ -137,4 +160,4 @@ def run_scene(
         raise ValueError(f"arm {arm!r}: auto or manual")
     with open(path, encoding="utf-8") as file:
         text = file.read()
-    return Scene(V2Scene(home, text, arm == "manual", timeout))
+    return Scene(_V2Scene(home, text, arm == "manual", timeout))
