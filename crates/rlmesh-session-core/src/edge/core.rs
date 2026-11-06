@@ -1,5 +1,5 @@
 //! The edge of one command group, sans-IO: chunk intake, the action queues,
-//! the fallback ladder, the applied stream and the applied-action log.
+//! the fallback ladder and the applied stream.
 //!
 //! A group is the robot's commandable parts that drive the same actuators
 //! (`command.group`, §9.7); an ungrouped part is a group of one.
@@ -47,13 +47,12 @@
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::time::Duration;
 
 use crate::wire::{
-    ActionChunk, Applied, AuthorityView, ChannelId, ChunkRef, ClockMode, EdgeMode, Epoch,
-    FenceError, LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
+    ActionChunk, Applied, AuthorityView, ChannelId, ClockMode, EdgeMode, Epoch, FenceError,
+    LeaseToken, Mode, PartSpec, ParticipantId, ReasonCode,
 };
 use bytes::Bytes;
 
@@ -64,16 +63,9 @@ use crate::edge::queue::{
     ActionQueue, ChunkMeta, Delivery, QueueStats, QueuedAction, Splice, SpliceOutcome,
 };
 
-/// Chunks remembered as judged (accepted or rejected), for the virtual-mode
-/// barrier.
-const JUDGED: usize = 1024;
-
 /// How an edge runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeConfig {
-    /// Ticks kept in the applied-action log (oldest dropped first; 0 keeps
-    /// none).
-    pub log_capacity: usize,
     /// Refuse chunks until this participant (and the chunk's source) has a
     /// clock mapping. Turn off only when every participant shares one clock
     /// (one machine, or PTP with `SystemMonotonicClock`): without a mapping,
@@ -88,7 +80,6 @@ pub struct EdgeConfig {
 impl Default for EdgeConfig {
     fn default() -> Self {
         Self {
-            log_capacity: 4096,
             require_clock_mapping: true,
             max_clock_error: Duration::from_millis(5),
         }
@@ -217,23 +208,6 @@ impl EdgeStats {
     }
 }
 
-/// One control tick, as the edge logs it: what was dispatched and on whose
-/// authority (the action carries its chunk's source, token, seq and
-/// `based_on`).
-#[derive(Clone, Debug)]
-pub struct AppliedAction {
-    /// Edge clock at the tick.
-    pub at_ns: i64,
-    /// The mode.
-    pub mode: EdgeMode,
-    /// The part the tick concerned.
-    pub channel: Option<ChannelId>,
-    /// The action dispatched (`Driving`, or a position-type `Hold`).
-    pub action: Option<QueuedAction>,
-    /// Whether the safe behaviour ran.
-    pub ran_safe: bool,
-}
-
 /// One sample of a part's applied stream (§9.4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppliedSample {
@@ -320,8 +294,6 @@ pub struct EdgeCore {
     config: EdgeConfig,
     safe_behavior: Arc<str>,
     fallback: Fallback,
-    log: VecDeque<AppliedAction>,
-    judged: VecDeque<ChunkRef>,
     accepted: u64,
     rejected: [u64; Rejection::ALL.len()],
     safe_reports: u64,
@@ -396,8 +368,6 @@ impl EdgeCore {
             config,
             safe_behavior: Arc::from(first_command.safe_behavior.as_str()),
             fallback: Fallback::new(duration_i64(first_command.hold_max), ladders),
-            log: VecDeque::with_capacity(config.log_capacity.min(1 << 16)),
-            judged: VecDeque::with_capacity(JUDGED),
             accepted: 0,
             rejected: [0; Rejection::ALL.len()],
             safe_reports: 0,
@@ -425,12 +395,6 @@ impl EdgeCore {
     /// decode).
     pub fn count_rejection(&mut self, reason: Rejection) {
         self.rejected[reason.index()] += 1;
-    }
-
-    /// Whether the edge has judged (accepted or rejected) `chunk`: what an
-    /// embodiment waits for before stepping in virtual mode (§11.3).
-    pub fn has_judged(&self, chunk: &ChunkRef) -> bool {
-        self.judged.contains(chunk)
     }
 
     /// The robot finished a handover: the group may dispatch again.
@@ -517,17 +481,10 @@ impl EdgeCore {
         view: Option<&V>,
         observed_local_ns: i64,
     ) -> Result<SpliceOutcome, Rejection> {
-        let reference = chunk.reference();
         let result = self.validate_and_splice(chunk, receive_ns, view, observed_local_ns);
         match result {
             Ok(_) => self.accepted += 1,
             Err(reason) => self.rejected[reason.index()] += 1,
-        }
-        if result != Err(Rejection::WrongChannel) {
-            if self.judged.len() == JUDGED {
-                self.judged.pop_front();
-            }
-            self.judged.push_back(reference);
         }
         result
     }
@@ -731,18 +688,6 @@ impl EdgeCore {
                 }
             })
             .collect();
-        if self.config.log_capacity > 0 {
-            if self.log.len() >= self.config.log_capacity {
-                self.log.pop_front();
-            }
-            self.log.push_back(AppliedAction {
-                at_ns: now_ns,
-                mode: decision.mode,
-                channel,
-                action: decision.action.clone(),
-                ran_safe: decision.run_safe,
-            });
-        }
         EdgeTick {
             mode: decision.mode,
             channel,
@@ -782,11 +727,6 @@ impl EdgeCore {
             clamped: self.clamped,
             handovers: self.handovers,
         }
-    }
-
-    /// Takes the applied-action log: one entry per tick, oldest first.
-    pub fn drain_log(&mut self) -> Vec<AppliedAction> {
-        self.log.drain(..).collect()
     }
 }
 
@@ -1105,27 +1045,6 @@ mod tests {
         assert_eq!(stats.rejected(Rejection::WrongSource), 1);
         assert_eq!(stats.rejected(Rejection::WrongBinding), 1);
         assert_eq!(stats.queue.fenced, 49, "{stats:?}");
-
-        // The log attributes every tick.
-        let log = f.edge.drain_log();
-        let sources: Vec<_> = log
-            .iter()
-            .map(|a| {
-                (
-                    a.mode,
-                    a.action.as_ref().map(|q| q.chunk.source.to_string()),
-                    a.ran_safe,
-                )
-            })
-            .collect();
-        assert_eq!(
-            sources,
-            vec![
-                (EdgeMode::Driving, Some("policy".into()), false),
-                (EdgeMode::Hold, None, true),
-                (EdgeMode::Driving, Some("operator".into()), false),
-            ]
-        );
     }
 
     #[test]
@@ -1253,11 +1172,6 @@ mod tests {
         let stats = f.edge.stats();
         assert_eq!(stats.accepted, 2);
         assert_eq!(stats.rejected(Rejection::StaleSeq), 2);
-        assert!(f.edge.has_judged(&ChunkRef {
-            channel: f.ch("cmd"),
-            lease_token: human.token,
-            seq: 1
-        }));
         // A closing scene's view fences every lease, before the host ends
         // them.
         if let Some(view) = f.snapshot.as_mut() {

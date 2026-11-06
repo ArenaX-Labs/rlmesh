@@ -22,7 +22,7 @@ use std::io::Write;
 
 use anyhow::{Context, Result};
 use rlmesh_session::auth::LOCAL_DEVICE;
-use rlmesh_session::scene::{Problem, Refusal, Role, Scene, Source};
+use rlmesh_session::scene::{Problem, Refusal, Role, Scene};
 use rlmesh_session::wire::{CtlStatus, PriorityClass};
 
 use std::time::Duration;
@@ -115,15 +115,11 @@ pub fn check(scene: &Scene, table: &Table) -> Vec<Problem> {
                 (None, _) => {}
             },
             Role::Controller {
-                source,
+                device,
                 max_priority,
                 ..
             } => {
-                let (device, key) = match source {
-                    Source::Device(device) => (device.as_str(), "device"),
-                    Source::Serve { on, .. } if on == "home" => (LOCAL_DEVICE, "on"),
-                    Source::Serve { on, .. } => (on.as_str(), "on"),
-                };
+                let (device, key) = (device.as_str(), "device");
                 let Some(entry) = table.devices.get(device) else {
                     if device != LOCAL_DEVICE {
                         refuse(
@@ -374,7 +370,8 @@ mod tests {
     use super::*;
     use rlmesh_session::auth::address::base32;
 
-    /// The scene design's §2 example, as written there.
+    /// The scene design's §2 example, without its unbuilt `record` and
+    /// served member.
     const EYEBALL_RIG: &str = include_str!("../tests/fixtures/eyeball-rig.toml");
 
     fn devices(skull_board: &str) -> Table {
@@ -450,7 +447,7 @@ device = "local"
         );
         assert!(
             text.contains(
-                "  [NOT_AUTHORIZED] line 23, members.arm.device: arm is pinned to local, not arm-pc\n    fix: if it moved, on rig-pi.local: rlmesh devices move arm --to arm-pc; a scene never moves a pin"
+                "  [NOT_AUTHORIZED] line 22, members.arm.device: arm is pinned to local, not arm-pc\n    fix: if it moved, on rig-pi.local: rlmesh devices move arm --to arm-pc; a scene never moves a pin"
             ),
             "{text}"
         );

@@ -101,9 +101,6 @@ gateway = [
 fleet = ["dep:mdns-sd", "rlmesh-session-core/fleet"]
 # MCAP recording of a session (`record`).
 record = ["dep:mcap"]
-# QUIC links (one stream per Zenoh priority, so one connection can carry
-# every class across NAT); needs TLS certificates.
-quic = ["zenoh/transport_quic"]
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

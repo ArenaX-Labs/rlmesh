@@ -23,8 +23,7 @@ pub mod fallback;
 pub mod queue;
 
 pub use self::core::{
-    AppliedAction, AppliedSample, EdgeConfig, EdgeCore, EdgeStats, EdgeTick, GroupHandover,
-    Rejection,
+    AppliedSample, EdgeConfig, EdgeCore, EdgeStats, EdgeTick, GroupHandover, Rejection,
 };
 pub use crate::wire::EdgeMode;
 pub use command::ActionError;

@@ -423,10 +423,6 @@ impl ChannelPriority {
 pub enum MergePolicy {
     /// Keep committed actions before `replace_from`, replace from there on.
     Replace,
-    /// Later (§19): refused at declaration.
-    Blend,
-    /// Later (§19): refused at declaration.
-    RtcPrefix,
 }
 
 /// Bounds on one command field (§3.2, §9.6).

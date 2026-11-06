@@ -109,7 +109,7 @@ pub use report::{ParticipantReport, PublisherCounters, RunCounters};
 pub use sample::{Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange};
 pub use scene::{
     Assignment, DeviceRecord, HostOrder, HostStarted, Join, LobbyWait, MemberStage, MemberState,
-    Place, Pose, RobotPin, RunStage, RunState, SceneInfo, ServeOrder, StopOrder,
+    Place, Pose, RobotPin, RunStage, RunState, SceneInfo, StopOrder,
 };
 pub use tick::{Step, TickState, VirtualTick};
 pub use timing::EndpointTiming;

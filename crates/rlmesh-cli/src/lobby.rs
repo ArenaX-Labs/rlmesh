@@ -48,7 +48,7 @@ use rlmesh_session::lobby::{
     LOBBY_SESSION, LobbyAnswer, LobbyReply, LobbyResult, LobbyService, SATELLITE_PREFIX,
 };
 use rlmesh_session::participant::Participant;
-use rlmesh_session::scene::{Arm, Role as SceneRole, Scene, Source};
+use rlmesh_session::scene::{Arm, Role as SceneRole, Scene};
 use rlmesh_session::server::SessionServer;
 use rlmesh_session::wire::{
     Assignment, AuthoritySnapshot, Command, CtlError, CtlStatus, DeviceRecord, HostOrder,
@@ -390,27 +390,6 @@ impl Home {
                 },
             ));
         }
-        // TODO: a served member needs a catalog model that binds as a scene
-        // controller; send its ServeOrder (scene design §4.1 stage 4) once
-        // `rlmesh serve` can run one.
-        if let Some(m) = scene.members.iter().find(|m| {
-            matches!(
-                m.role,
-                SceneRole::Controller {
-                    source: Source::Serve { .. },
-                    ..
-                }
-            )
-        }) {
-            return Err(refused(
-                CtlStatus::Unsupported,
-                format!(
-                    "{} is served, and no daemon serves a catalog model as a scene controller \
-                     yet: run the model yourself as a device member",
-                    m.name
-                ),
-            ));
-        }
         let (_, pins) = table
             .host()
             .map_err(|err| refused(CtlStatus::InvalidRequest, format!("{err:#}")))?;
@@ -471,8 +450,6 @@ impl Home {
         });
         rooms.runs.insert(id.clone(), run.clone());
         drop(rooms);
-        // TODO: `record` is not acted on: rlmeshd records no session yet;
-        // start the run's recorder once the daemon takes a recording directory.
         let manual = manual_arm || scene.arm == Arm::Manual;
         let mut host = scene.host(&id, &pins);
         for (name, member) in &mut host.members {

@@ -38,8 +38,7 @@ use core::time::Duration;
 
 use crate::wire::part::{DType, Encoding, FieldSpec, MAX_CHUNK_BYTES, PartSpec};
 use crate::wire::{
-    ActionGrid, AuthoritySnapshot, ChannelId, ClockMode, Fingerprint, ParticipantId, Place,
-    StreamContract,
+    ActionGrid, AuthoritySnapshot, ChannelId, Fingerprint, ParticipantId, Place, StreamContract,
 };
 use serde_json::{Value, json};
 
@@ -679,7 +678,6 @@ struct Binder<'a> {
     /// The view's parts under their view paths, when binding a view.
     view: Option<&'a [PartSpec]>,
     places: &'a [Place],
-    lockstep: bool,
     scope: Vec<String>,
     run: RunCall,
     problems: Vec<Problem>,
@@ -694,9 +692,6 @@ pub struct Target<'a> {
     pub parts: &'a [PartSpec],
     /// Where each placed robot's parts appear in the view.
     pub places: &'a [Place],
-    /// How session time advances: a lockstep session's actions stay on one
-    /// robot.
-    pub clock_mode: ClockMode,
 }
 
 impl<'a> Target<'a> {
@@ -705,7 +700,6 @@ impl<'a> Target<'a> {
         Self {
             parts: &state.parts,
             places: &state.places,
-            clock_mode: state.clock_mode,
         }
     }
 }
@@ -788,7 +782,6 @@ pub fn bind_in(
         parts,
         view: view.as_deref(),
         places: if view.is_some() { target.places } else { &[] },
-        lockstep: target.clock_mode == ClockMode::Lockstep,
         scope: options
             .under
             .as_ref()
@@ -1204,9 +1197,8 @@ impl<'a> Binder<'a> {
             }
         }
 
-        // Step 7: duplicate targets, and one robot per lockstep policy.
+        // Step 7: duplicate targets.
         self.duplicates(&slots, &actions);
-        self.lockstep_robots(&slots, &actions);
 
         // Contracts, one per bound input stream.
         let contracts = self.contracts(&slots, &inputs, replan);
@@ -2905,44 +2897,6 @@ impl<'a> Binder<'a> {
                     ],
                 ));
             }
-        }
-    }
-
-    /// A lockstep session steps one robot (§12): a view's actions there
-    /// target one robot (scene design §5).
-    fn lockstep_robots(&mut self, slots: &[Slot<'a>], actions: &[ActionRow]) {
-        if !self.lockstep {
-            return;
-        }
-        let mut targets = actions
-            .iter()
-            .filter_map(|a| a.part.as_ref().map(|p| (a, &p.owner)));
-        let Some((first, robot)) = targets.next() else {
-            return;
-        };
-        for (a, other) in targets.filter(|(_, o)| *o != robot) {
-            let Some(slot) = slots
-                .iter()
-                .find(|s| s.dir == Dir::Out && s.entry.name == a.entry)
-            else {
-                continue;
-            };
-            self.problems.push(problem(
-                Code::Incompatible,
-                slot,
-                format!(
-                    "{}: targets {other}, but action {:?} targets {robot}.",
-                    slot.name(),
-                    first.entry
-                ),
-                vec![
-                    "    A lockstep session steps one robot, so a policy's actions target one robot there.".into(),
-                    format!(
-                        "    fix: bind each robot on its own: rlmesh.run(..., robot={:?})",
-                        robot.as_str()
-                    ),
-                ],
-            ));
         }
     }
 

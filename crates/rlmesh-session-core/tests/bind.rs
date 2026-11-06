@@ -12,9 +12,7 @@ use rlmesh_session_core::spec::bind::{BindError, Binding, Code, Status};
 use rlmesh_session_core::spec::policy::Allow;
 use rlmesh_session_core::spec::{Policy, RunOptions, Target, bind, bind_in, normalise};
 use rlmesh_session_core::wire::version::SPEC_VERSION;
-use rlmesh_session_core::wire::{
-    ChannelId, ClockMode, ContractMode, PartSpec, ParticipantId, Place, Pose,
-};
+use rlmesh_session_core::wire::{ChannelId, ContractMode, PartSpec, ParticipantId, Place, Pose};
 
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
@@ -817,7 +815,6 @@ fn one_policy_binds_across_placed_robots() {
     let target = Target {
         parts: &parts,
         places: &places,
-        ..Target::default()
     };
     let b = bind_in(
         &policy("eyeball_tracker"),
@@ -858,10 +855,9 @@ fn one_policy_binds_across_placed_robots() {
 #[test]
 fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
     let (parts, places) = eyeball_rig(&[("ur10e", "ur10e")]);
-    let mut target = Target {
+    let target = Target {
         parts: &parts,
         places: &places,
-        ..Target::default()
     };
     let spans = Policy::parse(
         r#"{"hz": 30, "actions": {
@@ -881,27 +877,4 @@ fn a_view_refuses_ambiguous_unplaced_and_lockstep_spans() {
         ]
     );
     golden("spans__eyeball_rig__refused", &refusal.to_string());
-
-    target.clock_mode = ClockMode::Lockstep;
-    let refusal = match bind_in(
-        &policy("eyeball_tracker"),
-        &target,
-        &RunOptions::named("tracker"),
-    ) {
-        Err(BindError::Refused(refusal)) => *refusal,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(
-        codes(&refusal),
-        [
-            (Code::Incompatible, "right".into()),
-            (Code::Incompatible, "jaw".into())
-        ]
-    );
-    assert!(
-        refusal
-            .to_string()
-            .contains("action \"jaw\": targets skull, but action \"left\" targets eye-l."),
-        "{refusal}"
-    );
 }

@@ -7,7 +7,6 @@ security = "sign"              # session-wide default for data and chunks: "sign
 wait = "30s"                   # how long each stage may wait for robots, declares and bindings
 arm = "auto"                   # "auto": arm once everyone declared and bound | "manual"
 rejoin = "60s"                 # how long a run waits for a lost member before it fails (§4.3)
-record = true                  # the host daemon's recorder joins
 
 [members.eye-l]                # ESP32 on Wi-Fi, provisioned as eye-l; map: gaze (joints pan, tilt)
 role = "robot"
@@ -33,9 +32,8 @@ role = "controller"
 device = "laptop-josh"
 max_priority = "model"
 
-[members.grasp]                # a catalog model the satellite starts
+[members.grasp]                # a model process on the GPU desktop
 role = "controller"
-serve = "prebuilt/smolvla/so100"
-on = "gpu-desktop"
+device = "gpu-desktop"
 max_priority = "model"
 robot = "arm"                  # binds against one robot rather than the view

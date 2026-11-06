@@ -16,13 +16,13 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::participant::{LocalLatch, Sealer};
-use crate::wire::{ActionChunk, ChannelId, ChunkRef, ClockMode};
+use crate::wire::{ActionChunk, ChannelId, ClockMode};
 use crate::{
     AuthorityView, Clock, EdgeReport, Participant, SafeReporter, SamplePublisher, TrafficClass,
 };
 use tracing::{debug, info};
 
-use crate::edge::core::{AppliedAction, EdgeConfig, EdgeCore, EdgeStats, EdgeTick, Rejection};
+use crate::edge::core::{EdgeConfig, EdgeCore, EdgeStats, EdgeTick, Rejection};
 use crate::edge::error::EdgeError;
 
 /// Called with every accepted chunk and its edge receive time, on the
@@ -235,16 +235,5 @@ impl Edge {
     /// dispatch again.
     pub fn handover_done(&self) {
         self.shared.core().handover_done();
-    }
-
-    /// Whether the edge has judged `chunk` (virtual mode: wait for every
-    /// chunk a `Step` lists before stepping).
-    pub fn has_judged(&self, chunk: &ChunkRef) -> bool {
-        self.shared.core().has_judged(chunk)
-    }
-
-    /// Takes the applied-action log: one entry per tick, oldest first.
-    pub fn drain_log(&self) -> Vec<AppliedAction> {
-        self.shared.core().drain_log()
     }
 }

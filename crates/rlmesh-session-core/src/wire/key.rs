@@ -21,8 +21,6 @@ pub enum KeyPurpose {
     LockstepReply,
     /// `k_stream`: one part's samples and `_applied` entries.
     Stream,
-    /// `k_session_stream`: one host session stream.
-    SessionStream,
     /// `k_estop`: one participant generation's e-stop signals.
     Estop,
 }
@@ -31,7 +29,7 @@ impl KeyPurpose {
     /// Whether keys of this purpose rotate (they belong to a slot that
     /// outlives a key) rather than live and die with a token or generation.
     pub fn rotates(self) -> bool {
-        matches!(self, Self::Stream | Self::SessionStream)
+        matches!(self, Self::Stream)
     }
 }
 

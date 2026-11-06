@@ -70,7 +70,7 @@ use crate::wire::sample::{
 };
 use crate::wire::scene::{
     Assignment, DeviceRecord, HostOrder, HostStarted, Join, LobbyWait, MemberStage, MemberState,
-    Place, Pose, RobotPin, RunStage, RunState, SceneInfo, ServeOrder, StopOrder,
+    Place, Pose, RobotPin, RunStage, RunState, SceneInfo, StopOrder,
 };
 use crate::wire::tick::{Step, TickState, VirtualTick};
 use crate::wire::timing::EndpointTiming;
@@ -277,7 +277,6 @@ fn key_to_pb(k: &IssuedKey) -> pb::Key {
         KeyPurpose::Command => pb::KeyPurpose::Command,
         KeyPurpose::LockstepReply => pb::KeyPurpose::LockstepReply,
         KeyPurpose::Stream => pb::KeyPurpose::Stream,
-        KeyPurpose::SessionStream => pb::KeyPurpose::SessionStream,
         KeyPurpose::Estop => pb::KeyPurpose::Estop,
     };
     let security = match k.security {
@@ -312,7 +311,6 @@ fn key_from_pb(k: pb::Key) -> Result<IssuedKey, WireError> {
         Ok(pb::KeyPurpose::Command) => KeyPurpose::Command,
         Ok(pb::KeyPurpose::LockstepReply) => KeyPurpose::LockstepReply,
         Ok(pb::KeyPurpose::Stream) => KeyPurpose::Stream,
-        Ok(pb::KeyPurpose::SessionStream) => KeyPurpose::SessionStream,
         Ok(pb::KeyPurpose::Estop) => KeyPurpose::Estop,
         _ => return Err(bad_enum("key purpose", k.purpose)),
     };
@@ -1666,7 +1664,6 @@ fn clock_mode_to_pb(mode: ClockMode) -> pb::ClockMode {
     match mode {
         ClockMode::Wall => pb::ClockMode::Wall,
         ClockMode::Virtual => pb::ClockMode::Virtual,
-        ClockMode::Lockstep => pb::ClockMode::Lockstep,
     }
 }
 
@@ -1674,7 +1671,6 @@ fn clock_mode_from_pb(raw: i32) -> Result<ClockMode, WireError> {
     match pb::ClockMode::try_from(raw) {
         Ok(pb::ClockMode::Wall | pb::ClockMode::Unspecified) => Ok(ClockMode::Wall),
         Ok(pb::ClockMode::Virtual) => Ok(ClockMode::Virtual),
-        Ok(pb::ClockMode::Lockstep) => Ok(ClockMode::Lockstep),
         Err(_) => Err(bad_enum("clock mode", raw)),
     }
 }
@@ -2541,8 +2537,6 @@ fn command_to_pb(c: &CommandSpec) -> pb::Command {
         max_action_age_ns: duration_ns(c.max_action_age),
         merge: match c.merge {
             MergePolicy::Replace => pb::MergePolicy::Replace,
-            MergePolicy::Blend => pb::MergePolicy::Blend,
-            MergePolicy::RtcPrefix => pb::MergePolicy::RtcPrefix,
         } as i32,
         reference: c.reference.clone(),
         group: c.group.clone().unwrap_or_default(),
@@ -2570,8 +2564,6 @@ fn command_from_pb(c: pb::Command) -> Result<CommandSpec, WireError> {
         max_action_age: Duration::from_nanos(c.max_action_age_ns),
         merge: match pb::MergePolicy::try_from(c.merge) {
             Ok(pb::MergePolicy::Replace | pb::MergePolicy::Unspecified) => MergePolicy::Replace,
-            Ok(pb::MergePolicy::Blend) => MergePolicy::Blend,
-            Ok(pb::MergePolicy::RtcPrefix) => MergePolicy::RtcPrefix,
             Err(_) => return Err(bad_enum("merge policy", c.merge)),
         },
         reference: c.reference,
@@ -2730,14 +2722,6 @@ fn assignment_to_pb(a: &Assignment) -> pb::Assignment {
                 })
                 .collect(),
         }),
-        Assignment::Serve(s) => Order::Serve(pb::ServeOrder {
-            run: s.run.clone(),
-            member: s.member.to_string(),
-            model: s.model.clone(),
-            session: s.session.to_string(),
-            addresses: s.addresses.clone(),
-            host_key: Bytes::copy_from_slice(&s.host_key),
-        }),
         Assignment::Stop(s) => Order::Stop(pb::StopOrder {
             run: s.run.clone(),
             reason: Some(reason_to_pb(&s.reason)),
@@ -2785,14 +2769,6 @@ fn assignment_from_pb(a: pb::Assignment) -> Result<Assignment, WireError> {
                         board_id: board_id_from_pb("robot pin", &p.board_id)?,
                     })
                 })?,
-            }),
-            Order::Serve(s) => Assignment::Serve(ServeOrder {
-                run: s.run,
-                member: ParticipantId::new(s.member)?,
-                model: s.model,
-                session: s.session.parse()?,
-                addresses: s.addresses,
-                host_key: bytes32("serve order", "host_key", &s.host_key)?,
             }),
             Order::Stop(s) => Assignment::Stop(StopOrder {
                 run: s.run,
@@ -3408,14 +3384,6 @@ mod tests {
                         board_id: None,
                     },
                 ],
-            }),
-            Assignment::Serve(ServeOrder {
-                run: "r-7k2m".into(),
-                member: pid("grasp"),
-                model: "prebuilt/smolvla/so100".into(),
-                session,
-                addresses: vec!["10.0.0.3:7447".into()],
-                host_key: [9; 32],
             }),
             Assignment::Stop(StopOrder {
                 run: "r-7k2m".into(),
