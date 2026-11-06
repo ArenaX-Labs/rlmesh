@@ -18,9 +18,9 @@ use crate::wire::{ClockMapping, ParticipantId, TimingSample};
 pub struct OffsetEstimatorConfig {
     /// Samples kept; the estimate comes from the best of them.
     pub window: usize,
-    /// Assumed worst-case relative drift between two monotonic clocks. Linux
-    /// `CLOCK_MONOTONIC` is NTP-slewed by at most 500 ppm; free-running
-    /// crystals are typically within ±50 ppm.
+    /// Assumed worst-case relative drift between two monotonic clocks.
+    /// Linux `CLOCK_MONOTONIC` is NTP-slewed by at most 500 ppm, so that is
+    /// the default; free-running crystals are typically within ±50 ppm.
     pub drift_bound_ppm: f64,
 }
 
@@ -28,7 +28,7 @@ impl Default for OffsetEstimatorConfig {
     fn default() -> Self {
         Self {
             window: 32,
-            drift_bound_ppm: 100.0,
+            drift_bound_ppm: 500.0,
         }
     }
 }
