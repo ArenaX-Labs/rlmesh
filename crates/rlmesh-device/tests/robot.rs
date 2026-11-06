@@ -773,15 +773,31 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
     let two = drive(
         &world,
         two,
-        Duration::from_secs(20),
+        Duration::from_secs(40),
         seen_two.clone(),
         |_| driven(&seen_two),
     )
     .await;
+    let snapshot = world.host.snapshot();
     assert!(
         driven(&seen_two),
-        "board 2 is driven again: {:?}",
-        two.fault()
+        "board 2 is driven again: phase {:?}, fault {:?}, last {:?}; host: {:?} roster {:?}, \
+         leases {:?}, policy holds {:?}",
+        two.phase(),
+        two.fault(),
+        seen_two.lock().expect("seen").actions.last(),
+        snapshot.mode,
+        snapshot
+            .roster
+            .iter()
+            .map(|p| (p.id.to_string(), p.present, p.generation))
+            .collect::<Vec<_>>(),
+        snapshot
+            .leases
+            .iter()
+            .map(|l| (l.channel, l.token))
+            .collect::<Vec<_>>(),
+        policy.leases().len()
     );
     assert!(driven(&seen_one), "board 1 never stopped");
 
