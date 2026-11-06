@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Rehearse a board's lobby (scene design §3) against a real rlmesh daemon on loopback: the device robot (rlmesh-device's examples/lobby_board) waits in the lobby, is assigned a run, joins and declares, comes back when the run stops, and rejoins through the lobby after a reboot mid-run"
+#MISE description="Rehearse a board's lobby (scene design §3) against a real rlmesh host --lobby on loopback: the device robot (rlmesh-device's examples/lobby_board) waits in the lobby, is assigned a run, joins and declares, comes back when the run stops, and rejoins through the lobby after a reboot mid-run"
 #MISE dir="{{ config_root }}"
 # Local only: it runs the daemon and the CLI.
 set -euo pipefail
@@ -32,9 +32,9 @@ home="127.0.0.1:$port"
 pids=()
 trap 'kill "${pids[@]}" 2>/dev/null || true' EXIT
 
-"$rlmesh" daemon --state-dir "$out/state" --listen "$home" >"$out/daemon.log" 2>&1 &
+"$rlmesh" host --lobby --no-record --state-dir "$out/state" --listen "$home" >"$out/daemon.log" 2>&1 &
 pids+=($!)
-for _ in $(seq 50); do [ -s "$out/state/local.key" ] && grep -q rlmeshd "$out/daemon.log" && break; sleep 0.1; done
+for _ in $(seq 50); do [ -s "$out/state/local.key" ] && grep -q "rlmesh host on" "$out/daemon.log" && break; sleep 0.1; done
 
 board() {
   "$board_bin" "$home" "$out/state/local.key" >"$1" 2>&1 &

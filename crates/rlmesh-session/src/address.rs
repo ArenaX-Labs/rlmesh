@@ -1036,8 +1036,8 @@ async fn serve_at(
     if !base.ip().is_loopback() && !insecure && launched.is_none() {
         return Err(SessionError::Config(format!(
             "an embedded host listens on loopback only, not {base}: for a session other \
-             machines join, run rlmeshd; to accept that anyone who can reach {base} can try \
-             this host, pass insecure (Host(insecure=True), rlmesh host --insecure)"
+             machines join, run `rlmesh host`; to accept that anyone who can reach {base} can \
+             try this host, pass insecure (Host(insecure=True))"
         )));
     }
     let mut config = HostConfig::new(TenantId::new(TENANT)?, session_id(name));

@@ -41,7 +41,9 @@ struct HostProcess {
     base: std::net::SocketAddr,
     /// Where it records its sessions.
     recordings: tempfile::TempDir,
-    /// The address it printed, with its key.
+    /// Its state directory: its keys and device table.
+    _state: tempfile::TempDir,
+    /// Its address with `local`'s key.
     address: SessionAddress,
 }
 
@@ -60,9 +62,12 @@ impl HostProcess {
     fn try_spawn() -> Option<Self> {
         let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
         let recordings = tempfile::tempdir().expect("tempdir");
+        let state = tempfile::tempdir().expect("tempdir");
         let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
             .args(["host", "--listen", &base.to_string(), "--record-dir"])
             .arg(recordings.path())
+            .arg("--state-dir")
+            .arg(state.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -73,15 +78,18 @@ impl HostProcess {
         // Read the rest as it comes: a closed pipe would fail the host's
         // next line ("recording to ...") with EPIPE.
         std::thread::spawn(move || std::io::copy(&mut stdout, &mut std::io::sink()));
-        if let Ok(address) = line.trim().parse::<SessionAddress>()
-            && address.base == base
-            && address.key.is_some()
+        // This user's processes attach as `local`, with the key the host
+        // keeps in its state directory.
+        let key = std::fs::read_to_string(state.path().join("local.key")).unwrap_or_default();
+        if line.starts_with(&format!("rlmesh host on {base} "))
+            && let Ok(address) = format!("{base}#{}", key.trim()).parse::<SessionAddress>()
         {
             return Some(Self {
                 child,
                 session: session_id(DEFAULT_SESSION),
                 base,
                 recordings,
+                _state: state,
                 address,
             });
         }
@@ -124,11 +132,10 @@ async fn join(
     roles: Vec<Role>,
     priority: PriorityClass,
 ) -> Participant {
-    // A client of the host, as the SDK joins, presenting the password the
-    // printed key derives.
+    // A client of the host, as the SDK joins one: the host gates no link,
+    // and the handshake under `local`'s key admits it.
     let tuning = TransportTuning {
         client: true,
-        link: host.address.link_auth(),
         ..TransportTuning::default()
     };
     let transport = Transport::open(
@@ -146,7 +153,7 @@ async fn join(
         priority,
     );
     config.heartbeat_period = Duration::from_millis(20);
-    config.credential = Some(host.address.credential().expect("the printed key"));
+    config.credential = Some(host.address.credential().expect("local's key"));
     Participant::attach(transport, config)
         .await
         .expect("attach")
@@ -510,6 +517,7 @@ impl Daemon {
             let base = base
                 .unwrap_or_else(|| free_local_base("0.0.0.0".parse().expect("ip")).expect("ports"));
             let mut child = Command::new(env!("CARGO_BIN_EXE_rlmeshd"))
+                .arg("--no-record")
                 .arg("--listen")
                 .arg(base.to_string())
                 .env("RLMESH_STATE_DIR", state)
@@ -521,7 +529,7 @@ impl Daemon {
             BufReader::new(child.stdout.take().expect("stdout"))
                 .read_line(&mut line)
                 .expect("its first line");
-            if line.starts_with("rlmeshd on") {
+            if line.starts_with("rlmesh host on") {
                 return Self { child, base };
             }
             let _ = child.kill();
@@ -561,6 +569,44 @@ impl Daemon {
         config.credential = Some(credential);
         Participant::attach(transport, config).await
     }
+}
+
+/// Runs `rlmesh host` with its state in `state` on `base` until its first
+/// line, then stops it: the line.
+fn host_first_line(state: &std::path::Path, base: std::net::SocketAddr) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
+        .args(["host", "--no-record", "--state-dir"])
+        .arg(state)
+        .arg("--listen")
+        .arg(base.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn rlmesh host");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut line)
+        .expect("its first line");
+    let _ = child.kill();
+    let _ = child.wait();
+    line
+}
+
+#[test]
+fn the_host_keeps_its_identity_across_a_restart_with_no_key_flag() {
+    let state = tempfile::tempdir().expect("tempdir");
+    let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
+    let first = host_first_line(state.path(), base);
+    assert!(first.starts_with("rlmesh host on "), "{first}");
+    assert!(!first.contains('#'), "the host prints no key: {first}");
+    let key = std::fs::read_to_string(state.path().join("local.key")).expect("local.key");
+    let again = host_first_line(state.path(), base);
+    assert_eq!(again, first, "the same host id after a restart");
+    assert_eq!(
+        std::fs::read_to_string(state.path().join("local.key")).expect("local.key"),
+        key,
+        "the same keys after a restart"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

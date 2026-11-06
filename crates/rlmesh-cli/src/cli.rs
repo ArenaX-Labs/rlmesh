@@ -43,13 +43,11 @@ pub enum Command {
     /// Print a class's describe envelope, or its `dev.rlmesh.describe` label
     /// for a custom-entrypoint image build.
     Describe(DescribeArgs),
-    /// Host v2 sessions on this machine until Ctrl-C: the default session,
-    /// and any other a participant names. Prints the address it listens on.
+    /// Host real-time sessions on this machine until Ctrl-C (also installed
+    /// as `rlmeshd`, to run as a service): on the LAN, under a host identity
+    /// kept in its state directory, admitting the devices of its device
+    /// table.
     Host(HostArgs),
-    /// Run rlmeshd in the foreground (also installed as `rlmeshd`): v2
-    /// sessions on the LAN under this machine's host identity, admitting the
-    /// devices of its device table.
-    Daemon(DaemonArgs),
     /// List and change the devices and robot pins of this machine's
     /// rlmeshd, and provision boards over USB; it applies a change at once.
     #[command(visible_alias = "device")]
@@ -467,8 +465,14 @@ pub struct BenchArgs {
 /// Flags for `rlmesh host`.
 #[derive(Args, Debug)]
 pub struct HostArgs {
-    /// Listen here (this port and the next three) instead of 127.0.0.1 on
-    /// the well-known port (`RLMESH_PORT`, else 7447). Port 0: OS-assigned.
+    /// Keep the host's keys and device table here (default: `rlmesh/daemon`
+    /// in the user state directory). They are made on first start and
+    /// kept, so boards provisioned for this host stay valid across restarts.
+    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
+    pub state_dir: Option<std::path::PathBuf>,
+    /// Listen here (this port and the next three) instead of every
+    /// interface on the well-known port (`RLMESH_PORT`, else 7447). Only the
+    /// devices in `devices.toml` (and this user, `local`) can attach.
     #[arg(long, value_name = "ADDR")]
     pub listen: Option<std::net::SocketAddr>,
     /// Record every session here, always on: the newest 30 minutes or
@@ -479,24 +483,37 @@ pub struct HostArgs {
     /// Do not record.
     #[arg(long, conflicts_with = "record_dir")]
     pub no_record: bool,
-    /// Listen beyond loopback anyway (`--listen 0.0.0.0:…`): anyone who can
-    /// reach it can try this host. Sessions for other machines are
-    /// rlmeshd's.
+    /// How long a participant's heartbeats may stop before it is lost
+    /// (`3s`, `1500ms`; default 1 s). Raise it for robots on Wi-Fi.
+    #[arg(long, value_name = "DURATION", value_parser = duration)]
+    pub presence_grace: Option<std::time::Duration>,
+    /// How long a lease holder's heartbeats may stop before its leases lapse
+    /// (default 250 ms).
+    #[arg(long, value_name = "DURATION", value_parser = duration)]
+    pub lease_grace: Option<std::time::Duration>,
+    /// Also host the lobby and run scenes (unreleased).
+    #[cfg(feature = "fleet")]
     #[arg(long)]
-    pub insecure: bool,
+    pub lobby: bool,
 }
 
-/// Flags for `rlmesh daemon`.
-#[derive(Args, Debug)]
-pub struct DaemonArgs {
-    /// Keep the host's keys and device table here (default: `rlmesh/daemon`
-    /// in the user state directory).
-    #[arg(long, value_name = "DIR", env = "RLMESH_STATE_DIR")]
-    pub state_dir: Option<std::path::PathBuf>,
-    /// Listen here (this port and the next three) instead of every
-    /// interface on the well-known port (`RLMESH_PORT`, else 7447).
-    #[arg(long, value_name = "ADDR")]
-    pub listen: Option<std::net::SocketAddr>,
+/// A duration flag: a number with `ms` or `s` (`250ms`, `1.5s`).
+fn duration(text: &str) -> Result<std::time::Duration, String> {
+    let (number, scale) = if let Some(ms) = text.strip_suffix("ms") {
+        (ms, 1e-3)
+    } else if let Some(s) = text.strip_suffix('s') {
+        (s, 1.0)
+    } else {
+        return Err(format!("{text:?}: a duration with its unit, 250ms or 1.5s"));
+    };
+    let value: f64 = number
+        .trim()
+        .parse()
+        .map_err(|_| format!("{text:?}: a duration with its unit, 250ms or 1.5s"))?;
+    if !value.is_finite() || value <= 0.0 || value * scale > 3600.0 {
+        return Err(format!("{text:?}: between 1ms and 1 hour"));
+    }
+    Ok(std::time::Duration::from_secs_f64(value * scale))
 }
 
 /// Flags for `rlmesh devices`.
