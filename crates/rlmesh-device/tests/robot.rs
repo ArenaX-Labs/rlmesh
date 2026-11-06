@@ -343,8 +343,16 @@ async fn a_board_joins_declares_its_parts_and_heartbeats() {
 async fn a_board_latched_before_it_joins_still_joins_and_reports_the_latch() {
     let world = World::start().await;
     let mut robot = world.robot(AddressKey::of(&world.identity));
-    // Its e-stop pin held at boot: latched before it has a link.
+    // Its e-stop pin held at boot: latched before it has a link, and read
+    // as pressed on every loop after. One latch, its first reason.
     robot.estop("pin held at boot", 0);
+    for t in 1..1000 {
+        robot.estop("pin still held", t);
+    }
+    assert_eq!(
+        robot.estop_reason().map(|r| r.detail.as_str()),
+        Some("pin held at boot")
+    );
     let robot = drive(
         &world,
         robot,
