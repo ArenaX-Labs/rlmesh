@@ -74,7 +74,6 @@ pub enum Command {
     Arm(RunIdArgs),
     /// Pair this machine with a robot's rlmeshd (shows a code to type on
     /// the robot), or, on the robot, approve a machine by its code.
-    #[cfg(feature = "fleet")]
     Pair(PairArgs),
     /// Run an env or model image and check it the way the platform's probe
     /// does: handshake, describe, conformance, reproducibility, and an env's
@@ -635,7 +634,6 @@ pub struct RunIdArgs {
     pub home: HomeArgs,
 }
 
-#[cfg(feature = "fleet")]
 /// Flags for `rlmesh pair`.
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
@@ -655,7 +653,6 @@ pub struct PairArgs {
     pub command: Option<PairCommand>,
 }
 
-#[cfg(feature = "fleet")]
 #[derive(Subcommand, Debug)]
 pub enum PairCommand {
     /// On the robot: list the machines and browsers waiting, and approve

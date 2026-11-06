@@ -14,7 +14,6 @@ use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use rlmesh_session_core::auth::open_view;
 use rlmesh_session_core::crypto::handshake::{self, IkInitiator, IkResponder};
-#[cfg(feature = "fleet")]
 use rlmesh_session_core::crypto::pairing::{
     self, DaemonCommit, LaptopCommit, PairInitiator, PairResponder, commitment, sas,
 };
@@ -32,7 +31,6 @@ use std::time::Duration;
 
 const REGENERATE: &str = "RLMESH_REGENERATE_CRYPTO_VECTORS";
 const IK: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
-#[cfg(feature = "fleet")]
 const XX: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
 /// Every fixed input is `BLAKE2s-256("rlmesh/v2 vector: " ‖ name)`.
@@ -434,12 +432,10 @@ fn ik_vector() -> Value {
     })
 }
 
-#[cfg(feature = "fleet")]
 fn exchange_id() -> [u8; 16] {
     fixed("pair exchange")[..16].try_into().expect("16")
 }
 
-#[cfg(feature = "fleet")]
 fn pairing_vector() -> Value {
     let names = [
         "pair laptop static",
@@ -506,21 +502,15 @@ fn pairing_vector() -> Value {
     })
 }
 
-/// The vectors this build makes: machine pairing's only with `fleet`.
 fn generate() -> Value {
-    #[allow(unused_mut)]
-    let mut vectors = json!({
+    json!({
         "about": ABOUT,
         "sealed": [sealed_vector(true), sealed_vector(false)],
         "signed": signed_vector(),
         "signed_view": signed_view_vector(),
         "ik": ik_vector(),
-    });
-    #[cfg(feature = "fleet")]
-    {
-        vectors["pairing"] = pairing_vector();
-    }
-    vectors
+        "pairing": pairing_vector(),
+    })
 }
 
 fn path() -> PathBuf {
@@ -535,16 +525,7 @@ fn load() -> Value {
 #[test]
 fn this_build_reproduces_the_vectors() {
     let fresh = generate();
-    #[allow(unused_mut)]
-    let mut want = load();
-    #[cfg(not(feature = "fleet"))]
-    {
-        assert!(
-            std::env::var_os(REGENERATE).is_none(),
-            "regenerate with --features fleet: the file keeps pairing's vector"
-        );
-        want.as_object_mut().expect("object").remove("pairing");
-    }
+    let want = load();
     if std::env::var_os(REGENERATE).is_some() {
         let mut text = serde_json::to_string_pretty(&fresh).expect("json");
         text.push('\n');
@@ -713,7 +694,6 @@ fn the_ik_vector_matches_snow_directly() {
     );
 }
 
-#[cfg(feature = "fleet")]
 #[test]
 fn the_pairing_vector_matches_snow_and_blake2_directly() {
     let v = &load()["pairing"];

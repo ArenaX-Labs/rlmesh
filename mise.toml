@@ -3,7 +3,7 @@
 # ──────────────────────────────────────────────
 # Unreleased work stays behind off-by-default features that CI still lints
 # and tests (lint:rust, test:rust); no release turns them on. `fleet`: the
-# lobby, scene runs, satellites, machine pairing and mDNS; `board`: the
+# lobby, scene runs, satellites and mDNS; `board`: the
 # tether's board link; `collect`: the cockpit's episode collection.
 [vars]
 fenced_test = "rlmesh-tether/board,rlmesh-cockpit/collect,rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet"

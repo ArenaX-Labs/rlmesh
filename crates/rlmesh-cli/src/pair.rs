@@ -24,27 +24,21 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-#[cfg(feature = "fleet")]
 use rlmesh_session::address::Address;
-#[cfg(feature = "fleet")]
 use rlmesh_session::auth::pairing::{BROWSER, MACHINE};
-#[cfg(feature = "fleet")]
 use rlmesh_session::pairing::{self, BrowserToken, HostFile};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "fleet")]
 use crate::cli::{PairArgs, PairCommand};
 
 /// The local channel's socket in rlmeshd's state directory.
 pub const SOCKET: &str = "pair.sock";
-#[cfg(feature = "fleet")]
 /// The default cap of a device of `kind` (design §12 decision 6):
 /// `operator` for a machine approved on the robot, `model` for a browser.
 fn default_cap(kind: &str) -> &'static str {
     if kind == BROWSER { "model" } else { "operator" }
 }
 
-#[cfg(feature = "fleet")]
 /// The port `rlmesh-gateway` serves on by default.
 const GATEWAY_PORT: u16 = 18080;
 
@@ -89,7 +83,6 @@ struct Waiting {
     age_s: u64,
 }
 
-#[cfg(feature = "fleet")]
 /// `rlmesh pair`.
 pub async fn pair(args: &PairArgs, stdout: &mut impl Write) -> Result<()> {
     match &args.command {
@@ -108,7 +101,6 @@ pub async fn pair(args: &PairArgs, stdout: &mut impl Write) -> Result<()> {
     }
 }
 
-#[cfg(feature = "fleet")]
 async fn pair_machine(
     host: &str,
     name: Option<&str>,
@@ -170,17 +162,16 @@ async fn pair_machine(
     Ok(())
 }
 
-#[cfg(all(unix, feature = "fleet"))]
+#[cfg(unix)]
 fn hostname() -> Option<String> {
     crate::sys::hostname()
 }
 
-#[cfg(all(not(unix), feature = "fleet"))]
+#[cfg(not(unix))]
 fn hostname() -> Option<String> {
     std::env::var("COMPUTERNAME").ok().filter(|n| !n.is_empty())
 }
 
-#[cfg(feature = "fleet")]
 fn approve(
     dir: &Path,
     code: Option<&str>,
@@ -281,13 +272,11 @@ pub struct Local {
     /// The state directory.
     pub dir: std::path::PathBuf,
     /// The pairing endpoint.
-    #[cfg(feature = "fleet")]
     pub service: std::sync::Arc<pairing::PairService>,
     /// The host's static key, id and addresses.
     pub host: rlmesh_session::wire::PairInfo,
     /// Asks the daemon to apply `devices.toml` now, and answers once it
     /// has.
-    #[cfg_attr(not(feature = "fleet"), allow(dead_code))]
     pub apply: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
 }
 
@@ -327,7 +316,6 @@ async fn answer_local(stream: tokio::net::UnixStream, local: std::sync::Arc<Loca
         return;
     }
     let answer = match serde_json::from_str::<Ask>(&line) {
-        #[cfg(feature = "fleet")]
         Ok(Ask::Pending) => Answer::Pending {
             machines: local
                 .service
@@ -340,12 +328,7 @@ async fn answer_local(stream: tokio::net::UnixStream, local: std::sync::Arc<Loca
                 })
                 .collect(),
         },
-        #[cfg(feature = "fleet")]
         Ok(Ask::Approve { code, max }) => approve_local(&local, code, max.as_deref()).await,
-        #[cfg(not(feature = "fleet"))]
-        Ok(Ask::Pending | Ask::Approve { .. }) => Answer::Error {
-            message: "this rlmeshd pairs no machines (built without fleet)".into(),
-        },
         Ok(Ask::Host) => Answer::Host {
             host_key: rlmesh_session::auth::address::base32(&local.host.host_key),
             host_id: local.host.host_id.clone(),
@@ -361,7 +344,6 @@ async fn answer_local(stream: tokio::net::UnixStream, local: std::sync::Arc<Loca
     }
 }
 
-#[cfg(feature = "fleet")]
 /// Approves the machine showing `code` at `max` (its kind's default when
 /// `None`): enrolls it, applies the table, and sends the machine its
 /// result.
