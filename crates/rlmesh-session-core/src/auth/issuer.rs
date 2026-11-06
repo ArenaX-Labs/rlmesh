@@ -373,7 +373,7 @@ impl KeyIssuer {
             Some(_) => self.detach(participant),
             None => Vec::new(),
         };
-        let mut estop = self.draw(rng, KeyPurpose::Estop, Security::Sign)?;
+        let mut estop = self.draw(rng, KeyPurpose::Estop, Security::Mac)?;
         estop.sender = Some(participant.clone());
         estop.generation = generation;
         let estop_id = estop.key_id;
@@ -957,7 +957,7 @@ impl KeyIssuer {
         let security = if request.parts.iter().any(|p| p.security == Security::Seal) {
             Security::Seal
         } else {
-            Security::Sign
+            Security::Mac
         };
         let mut keys = Vec::new();
         for robot in &robots {
@@ -1155,7 +1155,7 @@ mod tests {
             robot: pid("arm"),
             path: "j".into(),
             channels: vec![ChannelId(1), ChannelId(2)],
-            security: Security::Sign,
+            security: Security::Mac,
         }]
     }
 
@@ -1408,7 +1408,7 @@ mod tests {
                 robot: pid("arm"),
                 channel: ChannelId(1),
                 priority: ChannelPriority::Realtime,
-                security: Security::Sign,
+                security: Security::Mac,
             }],
             reads_all: vec![pid("arm")],
         };

@@ -107,8 +107,8 @@ impl std::error::Error for Refusal {}
 /// The session-wide default for data and chunks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Security {
-    /// Integrity only.
-    Sign,
+    /// Integrity only: a MAC every reader of a part can make.
+    Mac,
     /// Encrypted.
     Seal,
 }
@@ -653,8 +653,8 @@ impl Scene {
             "scene",
             s,
             "security",
-            &[("sign", Security::Sign), ("seal", Security::Seal)],
-            Security::Sign,
+            &[("mac", Security::Mac), ("seal", Security::Seal)],
+            Security::Mac,
         );
         let wait = r.duration(
             "scene",
@@ -804,7 +804,7 @@ impl Scene {
             "name": self.name,
             "home": self.home,
             "host": self.host,
-            "security": match self.security { Security::Sign => "sign", Security::Seal => "seal" },
+            "security": match self.security { Security::Mac => "mac", Security::Seal => "seal" },
             "wait_ns": ns(self.wait),
             "arm": match self.arm { Arm::Auto => "auto", Arm::Manual => "manual" },
             "rejoin_ns": ns(self.rejoin),

@@ -797,7 +797,7 @@ message CtlReply {
 // lockstep): integrity only, or encrypted.
 enum Security {
   SECURITY_UNSPECIFIED = 0;
-  SECURITY_SIGN = 1;
+  SECURITY_MAC = 1;
   SECURITY_SEAL = 2;
 }
 

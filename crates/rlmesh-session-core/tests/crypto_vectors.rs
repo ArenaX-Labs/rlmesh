@@ -170,7 +170,7 @@ fn sealed_vector(encrypted: bool) -> Value {
     } else {
         (
             Kind::ActionChunk,
-            Security::Sign,
+            Security::Mac,
             "rlmesh/v2/acme/s/demo/d/7/cmd",
             b"\x08\x01\x12\x04\x00\x00\x80\x3f",
         )
@@ -187,7 +187,7 @@ fn sealed_vector(encrypted: bool) -> Value {
         "key_id": key_id,
         "kind": kind.as_u8(),
         "seq": 3,
-        "security": if encrypted { "seal" } else { "sign" },
+        "security": if encrypted { "seal" } else { "mac" },
         "encrypted": encrypted,
         "keyexpr": keyexpr,
         "body": hex(body),
@@ -571,7 +571,7 @@ fn sealed_vectors_match_chacha20poly1305_directly() {
         let security = if text(&v["security"]) == "seal" {
             Security::Seal
         } else {
-            Security::Sign
+            Security::Mac
         };
         let mut rx = SealReceiver::new(key_id, Key::from_bytes(key), KindSet::ALL, security);
         let mut msg = message.clone();

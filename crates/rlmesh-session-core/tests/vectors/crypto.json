@@ -87,7 +87,7 @@
       "keyexpr": "rlmesh/v2/acme/s/demo/d/7/cmd",
       "kind": 7,
       "message": "010007010203040300000000000000080112040000803f0500cebba17c5e5e010c05d625af4b90",
-      "security": "sign",
+      "security": "mac",
       "seq": 3
     }
   ],

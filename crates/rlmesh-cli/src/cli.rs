@@ -496,9 +496,9 @@ pub struct HostArgs {
     /// never stop for one either way.
     #[arg(long)]
     pub rearm_robots: bool,
-    /// Sign parts' samples and chunks instead of encrypting them. Beyond
-    /// loopback a host seals (encrypts) every part by default; on loopback
-    /// it signs.
+    /// Only authenticate parts' samples and chunks (a MAC every reader of a
+    /// part can make) instead of encrypting them. Beyond loopback a host
+    /// seals (encrypts) every part by default; on loopback it MACs.
     #[arg(long)]
     pub no_seal: bool,
     /// Host at most this many sessions: the default one and those its
