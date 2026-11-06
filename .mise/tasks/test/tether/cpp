@@ -163,3 +163,13 @@ if [ -z "${CXX:-}" ] && "$cli" version >/dev/null 2>&1; then
 else
   echo "==> board compile skipped (CXX set, or arduino-cli not found)"
 fi
+
+# Networked ESP32 boards use the Rust provisioning responder through its C
+# ABI. Pin C++ record construction, NVS bytes and CRC replies to the same vectors.
+echo "==> ESP32 provisioning C ABI vectors"
+cargo build -q -p rlmesh-device --lib
+${CXX:-g++} -std=c++11 -g -Wall -Wextra -Werror -pedantic -Wshadow -Wconversion \
+  -Icrates/rlmesh-device/include "$lib/test/provision_vectors.cpp" \
+  "${sources[@]}" "${CARGO_TARGET_DIR:-target}/debug/librlmesh_device.a" \
+  -lpthread -ldl -lm -o "$out/provision_vectors"
+"$out/provision_vectors" "$vectors"
