@@ -19,5 +19,18 @@ publish = true
 [dev-dependencies]
 serde_json = { workspace = true }
 
+[features]
+# Unreleased: the board link's messages and dense packing (the Arduino
+# tether runtime's wire). Off in every release; CI builds and tests it.
+board = []
+
+[[test]]
+name = "vectors"
+required-features = ["board"]
+
+[[example]]
+name = "board_check"
+required-features = ["board"]
+
 [lints]
 workspace = true

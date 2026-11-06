@@ -37,6 +37,7 @@ struct Args {
     record_dir: Option<PathBuf>,
     /// The dataset episodes are collected into (`collected/{dataset}/`
     /// under the recordings directory).
+    #[cfg(feature = "collect")]
     #[arg(long, default_value = "default")]
     dataset: String,
 }
@@ -113,7 +114,10 @@ fn run(args: &Args, address: &SessionAddress) -> Result<(), Box<dyn std::error::
                 feed,
                 Model::new(me, ModelConfig::default()),
                 recordings.map(Rolling::new),
+                #[cfg(feature = "collect")]
                 args.dataset.clone(),
+                #[cfg(not(feature = "collect"))]
+                String::new(),
             )))
         }),
     )?;

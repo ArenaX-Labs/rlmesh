@@ -41,5 +41,9 @@ bytes = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu"] }
 image = { workspace = true, features = ["png"] }
 
+[features]
+# Unreleased: episode collection into a dataset from the live bar.
+collect = []
+
 [lints]
 workspace = true
