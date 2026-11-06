@@ -727,8 +727,13 @@ fn captures_scope_and_qualified_selectors() {
             "actions": {"legs": {"kind": "joints", "at": "legs", "horizon": 1}}}"#,
     )
     .expect("policy");
+    // No robot named: the session's view, every robot under its name, so
+    // an unqualified path names no part and the refusal says which.
     let err = bind(&policy, &session, &RunOptions::named("loco")).expect_err("which robot");
-    assert!(err.to_string().contains("pass robot="), "{err}");
+    assert!(
+        err.to_string().contains(r#"at={"legs": "go2/legs"}"#),
+        "{err}"
+    );
     let b = bind(
         &policy,
         &session,

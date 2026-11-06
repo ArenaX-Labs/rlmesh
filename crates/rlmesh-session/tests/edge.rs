@@ -460,7 +460,7 @@ async fn chunks_stream_through_a_preemption_mid_chunk_and_the_old_queue_is_fence
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_controller_that_stops_sending_holds_then_the_edge_takes_the_session_safe() {
+async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_its_lease() {
     let world = World::start().await;
     let robot = world.robot().await;
     let policy = world.controller("policy", PriorityClass::Model).await;
@@ -486,26 +486,26 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_takes_the_session_s
     // would never lapse the lease).
     tx.send(horizon(&policy, 20, 1, Duration::from_millis(150)))
         .expect("send");
+    // The edge's EnterSafe ends this robot's lease alone; the session is
+    // not taken SAFE for it.
     let snapshot = robot
         .wait_for("the edge's EnterSafe reaches the host", WAIT, |s| {
-            s.mode == Mode::Safe
+            s.ended.iter().any(|e| e.lease.token == lease.token)
         })
         .await
-        .expect("SAFE");
-    assert!(snapshot.lease(cmd).is_none(), "SAFE revokes the lease");
+        .expect("the lease ended");
+    assert!(snapshot.lease(cmd).is_none(), "its lease ends");
+    assert_ne!(snapshot.mode, Mode::Safe);
     // Every observer sees why, without inferring it.
-    let reason = &snapshot.mode_reason;
+    let ended = snapshot
+        .ended
+        .iter()
+        .find(|e| e.lease.token == lease.token)
+        .expect("ended");
     assert_eq!(
-        (reason.code, reason.by.as_str()),
-        (ReasonCode::QueueDry, robot.id().as_str())
+        (ended.reason.code, ended.reason.by.as_str()),
+        (ReasonCode::VoidedBySafe, robot.id().as_str())
     );
-    assert!(
-        snapshot
-            .ended
-            .iter()
-            .any(|e| { e.lease.token == lease.token && e.reason.code == ReasonCode::VoidedBySafe })
-    );
-    assert_eq!(snapshot.last_stop.epoch, snapshot.epoch);
     stop.store(true, Ordering::Relaxed);
     ticker.join().expect("ticker");
     let stats = edge.stats();
@@ -518,7 +518,8 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_takes_the_session_s
         "held {} ms",
         hold.time_ns / 1_000_000
     );
-    assert_eq!(world.host.snapshot().mode, Mode::Safe);
+    // The session, with no lease left, is ARMED; the robot waits for an arm.
+    assert_eq!(world.host.snapshot().mode, Mode::Armed);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -779,16 +780,18 @@ async fn a_controller_in_another_process_drives_the_edge_and_its_crash_falls_bac
         driven.edge.stats().mode(EdgeMode::Driving).ticks > 100
     })
     .await;
-    // Its crash: the queue runs dry (or its lease lapses) and the session
-    // goes SAFE.
+    // Its crash: the queue runs dry (or its lease lapses) and its lease
+    // ends.
+    let cmd = channel(&driven.robot, "cmd");
     let snapshot = driven
         .robot
-        .wait_for("SAFE after the controller process died", WAIT, |s| {
-            s.mode == Mode::Safe
-        })
+        .wait_for(
+            "the lease ended after the controller process died",
+            WAIT,
+            |s| s.lease(cmd).is_none(),
+        )
         .await
-        .expect("safe");
-    let cmd = channel(&driven.robot, "cmd");
+        .expect("ended");
     assert!(snapshot.lease(cmd).is_none());
     wait_until("the edge latches safe", || {
         driven.edge.stats().mode(EdgeMode::Safe).entries == 1

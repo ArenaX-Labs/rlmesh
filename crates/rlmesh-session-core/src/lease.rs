@@ -463,9 +463,10 @@ impl LeaseClient {
     }
 }
 
-/// A binding's leases held together, as a controller holds them: one
-/// all-or-none `GrantLease` for every part, then one [`LeaseClient`] per
-/// part for its deadline, renewal, loss and release.
+/// A binding's leases, as a controller holds them: a `GrantLease` for every
+/// part ([`Self::request`]) or for one robot's ([`Self::request_some`]),
+/// then one [`LeaseClient`] per part for its deadline, renewal, loss and
+/// release.
 #[derive(Clone, Debug)]
 pub struct LeaseGroup {
     clients: Vec<LeaseClient>,
@@ -499,6 +500,62 @@ impl LeaseGroup {
             binding,
             ttl_ns,
         }
+    }
+
+    /// Starts a request for `channels` only (one robot's parts): their
+    /// `GrantLease` verb, sent at `now_ns`. The other parts keep what they
+    /// hold.
+    pub fn request_some(
+        &mut self,
+        channels: &[ChannelId],
+        binding: Fingerprint,
+        ttl_ns: Option<u64>,
+        now_ns: i64,
+    ) -> Command {
+        for client in self
+            .clients
+            .iter_mut()
+            .filter(|c| channels.contains(&c.channel()))
+        {
+            client.request(binding, ttl_ns, now_ns);
+        }
+        Command::GrantLease {
+            channels: channels.to_vec(),
+            release: Vec::new(),
+            binding,
+            ttl_ns,
+        }
+    }
+
+    /// The host's reply to [`Self::request_some`] for `channels`. Returns
+    /// whether every one of them is now held.
+    pub fn on_reply_some(
+        &mut self,
+        channels: &[ChannelId],
+        reply: &CtlReply,
+        clock: Option<&OffsetEstimate>,
+        now_ns: i64,
+    ) -> bool {
+        let mut all = true;
+        for client in self
+            .clients
+            .iter_mut()
+            .filter(|c| channels.contains(&c.channel()))
+        {
+            all &= client.on_reply(reply, clock, now_ns);
+        }
+        all
+    }
+
+    /// The parts not held at `now_ns`, in order.
+    pub fn unheld(&mut self, now_ns: i64) -> Vec<ChannelId> {
+        self.clients
+            .iter_mut()
+            .filter_map(|client| {
+                client.tick(now_ns);
+                client.lease().is_none().then(|| client.channel())
+            })
+            .collect()
     }
 
     /// The host's reply to the request. Returns whether every lease is now

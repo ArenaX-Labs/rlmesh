@@ -46,6 +46,11 @@ struct World {
 
 impl World {
     async fn start() -> Self {
+        Self::start_with(|_| {}).await
+    }
+
+    /// A host with `configure`d rules.
+    async fn start_with(configure: impl FnOnce(&mut HostConfig)) -> Self {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
@@ -62,6 +67,7 @@ impl World {
         config.clock = SystemMonotonicClock.shared();
         config.lease_grace = Duration::from_millis(300);
         config.health_log = None;
+        configure(&mut config);
         let host = SessionHost::start(transport, config).await.expect("host");
         Self {
             base,
@@ -486,4 +492,170 @@ async fn camera_frames_keep_flowing_under_a_send_ceiling_and_a_contract() {
             newest = observation.meta.based_on[0].seq_last;
         }
     }
+}
+
+/// An eye: two joints at 500 Hz, held then safe on its own.
+const EYE: &str = r#"{
+    "eyes": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"], "hz": 500,
+             "command": "position", "safe": "hold", "hold_max_ms": 100}
+}"#;
+
+/// One policy for two eyes: no robot named, so it binds the session's
+/// view, and each action targets its eye by a qualified selector.
+const EYES: &str = r#"{
+    "hz": 50,
+    "actions": {
+        "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 100,
+                "horizon": 5},
+        "two": {"kind": "joints", "at": "eye-2:eyes", "command": "position", "hz": 100,
+                "horizon": 5}
+    }
+}"#;
+
+/// Both eyes to `target`, for the whole horizon.
+struct Gaze {
+    target: f32,
+}
+
+impl Predictor for Gaze {
+    type Error = String;
+
+    fn predict(&mut self, _: Observation, _: i64) -> Result<Vec<(String, Value)>, String> {
+        let gaze = || {
+            Value::Tensor(Tensor::from_f64(
+                DType::F32,
+                vec![5, 2],
+                &[f64::from(self.target); 10],
+            ))
+        };
+        Ok(vec![("one".into(), gaze()), ("two".into(), gaze())])
+    }
+}
+
+/// An eye's 500 Hz loop: publish its gaze, then apply what is due.
+fn spin_eye(robot: Arc<Robot>, stop: Arc<AtomicBool>, log: Log) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let clock = robot.participant().clock().clone();
+        let mut gaze = [0.0_f32; 2];
+        while !stop.load(Ordering::Relaxed) {
+            let _ = robot.publish("eyes", clock.now_ns(), &[&f32s(&gaze)]);
+            let due = robot.due("eyes").ok().flatten();
+            let entry = match &due {
+                Some(due) => {
+                    let value = due
+                        .action
+                        .as_ref()
+                        .map(|a| f32::from_le_bytes(a.value[..4].try_into().expect("4 bytes")));
+                    if let Some(v) = value {
+                        gaze[0] = v;
+                    }
+                    (
+                        due.mode,
+                        value,
+                        due.action.as_ref().map(|a| a.chunk.lease_token),
+                    )
+                }
+                None => (EdgeMode::Idle, None, None),
+            };
+            log.lock()
+                .expect("log")
+                .push((Instant::now(), entry.0, entry.1, entry.2));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    })
+}
+
+/// The last five ticks since `since` dispatched `target`.
+fn driven_since(log: &Log, target: f32, since: Instant) -> bool {
+    let log = log.lock().expect("log");
+    let recent: Vec<_> = log.iter().filter(|(at, ..)| *at >= since).collect();
+    recent.len() >= 5
+        && recent
+            .iter()
+            .rev()
+            .take(5)
+            .all(|(_, mode, value, _)| *mode == EdgeMode::Driving && *value == Some(target))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_off() {
+    let world = World::start().await;
+    let eye = |name: &'static str| {
+        let world = &world;
+        async move {
+            let p = world
+                .join(name, Role::Embodiment, PriorityClass::Scripted)
+                .await;
+            Arc::new(
+                Robot::declare(p, EYE, EdgeConfig::default())
+                    .await
+                    .expect("declare"),
+            )
+        }
+    };
+    let (one, two) = (eye("eye-1").await, eye("eye-2").await);
+    one.participant().arm().await.expect("arm");
+
+    // No robot named: the policy binds the view of both eyes.
+    let p = world
+        .join("tracker", Role::Controller, PriorityClass::Model)
+        .await;
+    let tracker = Arc::new(
+        Controller::bind(
+            Arc::new(p),
+            &Policy::parse(EYES).expect("policy"),
+            &RunOptions::named("tracker"),
+            ControllerConfig::default(),
+        )
+        .await
+        .expect("one binding over both eyes"),
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let (log_one, log_two): (Log, Log) = (Arc::default(), Arc::default());
+    let loop_one = spin_eye(one.clone(), stop.clone(), log_one.clone());
+    let stop_two = Arc::new(AtomicBool::new(false));
+    let loop_two = spin_eye(two.clone(), stop_two.clone(), log_two.clone());
+    let run = {
+        let tracker = tracker.clone();
+        std::thread::spawn(move || {
+            tracker.run(&mut Gaze { target: 0.25 }, Some(Duration::from_secs(60)))
+        })
+    };
+    let started = Instant::now();
+    wait_until("both eyes driven by one policy", || {
+        driven_since(&log_one, 0.25, started) && driven_since(&log_two, 0.25, started)
+    })
+    .await;
+
+    // Eye 2 drops off the network: no more heartbeats, no more ticks.
+    two.participant().set_heartbeats_enabled(false);
+    stop_two.store(true, Ordering::Relaxed);
+    loop_two.join().expect("eye 2 loop");
+    let eye_two = rlmesh_session::wire::ParticipantId::new("eye-2").expect("id");
+    wait_until("the host loses eye 2", || {
+        world
+            .host
+            .snapshot()
+            .participant(&eye_two)
+            .is_some_and(|p| !p.present)
+    })
+    .await;
+    let lost = Instant::now();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        driven_since(&log_one, 0.25, lost + Duration::from_millis(300)),
+        "eye 1 keeps moving after eye 2 is lost"
+    );
+    let snapshot = world.host.snapshot();
+    assert_ne!(
+        snapshot.mode,
+        Mode::Safe,
+        "one lost eye never stops the session"
+    );
+    assert!(!run.is_finished(), "the policy keeps running");
+
+    tracker.stop();
+    run.join().expect("run thread").expect("a clean stop");
+    stop.store(true, Ordering::Relaxed);
+    loop_one.join().expect("eye 1 loop");
 }
