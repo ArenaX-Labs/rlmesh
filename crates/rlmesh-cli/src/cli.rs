@@ -491,6 +491,11 @@ pub struct HostArgs {
     /// (default 250 ms).
     #[arg(long, value_name = "DURATION", value_parser = duration)]
     pub lease_grace: Option<std::time::Duration>,
+    /// A robot that went safe, restarted or came back from a loss is driven
+    /// again at once, instead of waiting for the next arm. Other robots
+    /// never stop for one either way.
+    #[arg(long)]
+    pub rearm_robots: bool,
     /// Also host the lobby and run scenes (unreleased).
     #[cfg(feature = "fleet")]
     #[arg(long)]

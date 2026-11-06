@@ -174,8 +174,9 @@ pub fn tensor(entry: &str, dtype: &str, shape: Vec<u32>, data: Vec<u8>) -> Resul
 pub struct BindOptions<'a> {
     /// The policy's participant id.
     pub name: &'a str,
-    /// The robot to bind to.
-    pub robot: &'a str,
+    /// The robot to bind to; `None`: the session's view of every robot
+    /// (each under its name; actions name theirs, `eye-1:gaze`).
+    pub robot: Option<&'a str>,
     /// A subtree every `at` is under.
     pub under: Option<&'a str>,
     /// Explicit paths, by entry.
@@ -191,7 +192,10 @@ pub struct BindOptions<'a> {
 impl BindOptions<'_> {
     /// The options as the binder takes them.
     pub fn run_options(mut self) -> Result<RunOptions, String> {
-        let mut options = RunOptions::named(self.name).robot(self.robot)?;
+        let mut options = RunOptions::named(self.name);
+        if let Some(robot) = self.robot {
+            options = options.robot(robot)?;
+        }
         if let Some(under) = self.under {
             options = options.under(under)?;
         }

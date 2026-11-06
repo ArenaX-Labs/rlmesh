@@ -1192,7 +1192,7 @@ impl PyController {
         address: &str,
         name: &str,
         policy_json: &str,
-        robot: &str,
+        robot: Option<&str>,
         priority: &str,
         under: Option<&str>,
         at: BTreeMap<String, String>,
