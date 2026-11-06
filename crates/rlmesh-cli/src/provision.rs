@@ -1,6 +1,6 @@
 //! `rlmesh devices provision`: a networked board's USB provisioning
 //! (tether spec §14, design §3 item 3). The board answers `GET_DEVICE` with
-//! its device key and compiled robot name; it stores the home host's key,
+//! its device key; it stores the assigned robot name and home host's key,
 //! id and base addresses from `PROVISION`, and confirms with the record's
 //! CRC. Only then is its key enrolled in `devices.toml`, as a board
 //! (`kind = "board"`, default cap `model`) whose robot name is pinned to
@@ -23,7 +23,7 @@ use rlmesh_tether::cobs::Decoder;
 use rlmesh_tether::frame::{Frame, MAX_DECODED, MAX_PAYLOAD};
 use rlmesh_tether::msg::Receiver;
 use rlmesh_tether::provision::{
-    self, Addresses, MAX_ADDRESSES, Prov, Provision, record_crc, status, valid_address,
+    self, Addresses, MAX_ADDRESSES, Prov, Provision, record_crc, status, valid_address, valid_name,
 };
 
 use crate::devices::{DEVICES, Entry, Pin, edit};
@@ -107,26 +107,24 @@ fn frame(msg: &Prov<'_>) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The tether §14.4 exchange with the board behind `port`, which must be
-/// robot `name`.
+/// The tether §14.4 exchange, assigning robot `name` to the board behind `port`.
 fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
+    if !valid_name(name.as_bytes()) {
+        bail!("robot name must be 1–128 bytes of [A-Za-z0-9._-]");
+    }
     let info = ask(port, &frame(&Prov::GetDevice)?, |msg| match msg {
         Prov::DeviceInfo(info) => Some((
             info.device_key,
-            String::from_utf8_lossy(info.name).into_owned(),
             String::from_utf8_lossy(info.host_id).into_owned(),
         )),
         _ => None,
     })?;
-    let Some((device_key, board_name, previous)) = info else {
+    let Some((device_key, previous)) = info else {
         bail!(
             "the board never answered: is it running an RLMesh sketch, at 115200 baud, and is \
              the port right?"
         );
     };
-    if board_name != name {
-        bail!("the board is robot {board_name:?}, not {name:?}: its name is compiled in");
-    }
     // As many addresses as fit the payload.
     let usable: Vec<&[u8]> = home
         .addresses
@@ -142,6 +140,7 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
             flags: 0,
             host_key: home.host_key,
             host_id: home.host_id.as_bytes(),
+            name: name.as_bytes(),
             addresses: Addresses::new(&usable[..count]).context("at most 4 addresses")?,
         };
         if let Ok(n) = provision::payload(&Prov::Provision(record), &mut payload) {
@@ -151,7 +150,8 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
     }
     let Some((record, n)) = fitted else {
         bail!(
-            "rlmeshd has no address a board can store (host:port, at most 63 bytes): run it with \
+            "no host address fits the board record with this name (252 bytes total; host:port, \
+             at most 63 bytes per address): run rlmeshd with \
              --listen <LAN IP>:<port>"
         );
     };
@@ -213,6 +213,13 @@ fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(
             verbs: None,
             roles: None,
         });
+        // Remove only the old name's pin, and only if this device still owns it.
+        if let Some(old) = entry.name.as_deref()
+            && old != name
+            && table.robots.get(old).is_some_and(|pin| pin.device == id)
+        {
+            table.robots.remove(old);
+        }
         entry.kind = Some("board".into());
         entry.name = Some(name.into());
         if let Some(max) = max {
@@ -312,8 +319,7 @@ mod tests {
             .collect()
     }
 
-    /// A board on a fake port: `DEVICE_INFO` from the vectors (robot
-    /// `eye-3`), after the sketch's text, and `PROVISIONED` with the CRC
+    /// A board on a fake port: unassigned `DEVICE_INFO` from the vectors, after the sketch's text, and `PROVISIONED` with the CRC
     /// `crc` makes of the payload it got.
     struct FakeBoard {
         decoder: Decoder<MAX_DECODED>,
@@ -342,7 +348,7 @@ mod tests {
                 let frame = Frame::parse(decoded).expect("a valid frame");
                 match provision::decode(&frame, Receiver::Board).expect("a message") {
                     Prov::GetDevice => {
-                        self.out.extend(b"booting eye-3\r\n");
+                        self.out.extend(b"booting RLMesh\r\n");
                         self.out.extend(vector("DEVICE_INFO, not provisioned"));
                     }
                     Prov::Provision(_) => {
@@ -385,21 +391,7 @@ mod tests {
         let mut out = Vec::new();
         let enrolled = |dir: &Path| Table::read(dir).expect("table").devices.len();
 
-        // Another robot's board, and a board confirming another record:
-        // nothing is enrolled.
-        let err = provision_on(
-            &mut FakeBoard::new(|c| c),
-            dir.path(),
-            "eye-4",
-            None,
-            &home(),
-            &mut out,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("\"eye-3\", not \"eye-4\""),
-            "{err}"
-        );
+        // A board confirming another record: nothing is enrolled.
         let err = provision_on(
             &mut FakeBoard::new(|c| c ^ 1),
             dir.path(),
@@ -417,6 +409,19 @@ mod tests {
         provision_on(&mut board, dir.path(), "eye-3", None, &home(), &mut out)
             .expect("provisioned");
         let record = &board.stored[0];
+        let parsed = provision::decode(
+            &Frame {
+                ty: provision::ty::PROVISION,
+                seq: 0,
+                payload: record,
+            },
+            Receiver::Board,
+        )
+        .unwrap();
+        let Prov::Provision(parsed) = parsed else {
+            panic!("PROVISION")
+        };
+        assert_eq!(parsed.name, b"eye-3");
         assert!(record.windows(17).any(|w| w == b"192.168.1.20:7447"));
         let table = Table::read(dir.path()).expect("table");
         let entry = &table.devices["eye-3"];
@@ -437,11 +442,11 @@ mod tests {
             }
         );
 
-        // Provisioned again, with a cap: the same device.
+        // Provisioned with a new name and cap: the same device, old pin dropped.
         provision_on(
             &mut FakeBoard::new(|c| c),
             dir.path(),
-            "eye-3",
+            "eye-4",
             Some("operator"),
             &home(),
             &mut out,
@@ -450,5 +455,87 @@ mod tests {
         let table = Table::read(dir.path()).expect("table");
         assert_eq!(table.devices.len(), 1);
         assert_eq!(table.devices["eye-3"].max_priority, "operator");
+        assert_eq!(table.devices["eye-3"].name.as_deref(), Some("eye-4"));
+        assert!(!table.robots.contains_key("eye-3"));
+        assert_eq!(table.robots["eye-4"].device, "eye-3");
+    }
+
+    #[test]
+    fn renaming_preserves_a_pin_reassigned_to_another_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7; 32];
+        let (id, _) = enroll(dir.path(), &key, "old-eye", None).unwrap();
+        edit(dir.path(), |table| {
+            let mut other = table.devices[&id].clone();
+            other.public_key = base32(&[8; 32]);
+            table.devices.insert("other".into(), other);
+            table.robots.get_mut("old-eye").unwrap().device = "other".into();
+            let entry = table.devices.get_mut(&id).unwrap();
+            entry.parts = Some(vec!["**/pos".into()]);
+            entry.verbs = Some(vec!["arm".into()]);
+            entry.roles = Some(vec!["embodiment".into()]);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            enroll(dir.path(), &key, "new-eye", None).unwrap(),
+            (id.clone(), false)
+        );
+        let table = Table::read(dir.path()).unwrap();
+        assert_eq!(table.robots["old-eye"].device, "other");
+        assert_eq!(table.robots["new-eye"].device, id);
+        let entry = &table.devices[&id];
+        assert_eq!(entry.parts.as_ref().unwrap(), &["**/pos"]);
+        assert_eq!(entry.verbs.as_ref().unwrap(), &["arm"]);
+        assert_eq!(entry.roles.as_ref().unwrap(), &["embodiment"]);
+    }
+
+    #[test]
+    fn names_are_validated_before_any_usb_write() {
+        for name in ["", "bad/name", "with space", "œil", &"x".repeat(129)] {
+            let mut board = FakeBoard::new(|crc| crc);
+            assert!(
+                run(&mut board, name, &home())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("robot name")
+            );
+            assert!(board.stored.is_empty());
+            assert!(board.out.is_empty());
+        }
+    }
+
+    #[test]
+    fn long_names_keep_only_addresses_that_fit_the_record() {
+        let mut home = home();
+        home.addresses = vec!["h:7447".into(); 4];
+        let mut board = FakeBoard::new(|crc| crc);
+        run(&mut board, &"x".repeat(128), &home).unwrap();
+        let payload = &board.stored[0];
+        let frame = Frame {
+            ty: provision::ty::PROVISION,
+            seq: 0,
+            payload,
+        };
+        let Prov::Provision(p) = provision::decode(&frame, Receiver::Board).unwrap() else {
+            panic!("PROVISION")
+        };
+        assert_eq!(p.name.len(), 128);
+        assert_eq!(p.addresses.as_slice().len(), 4);
+        // All four long addresses are valid on their own; only one fits with the name.
+        home.addresses = vec![format!("{}:7447", "h".repeat(58)); 4];
+        run(&mut board, &"x".repeat(128), &home).unwrap();
+        let payload = &board.stored[1];
+        let frame = Frame {
+            ty: provision::ty::PROVISION,
+            seq: 0,
+            payload,
+        };
+        let Prov::Provision(p) = provision::decode(&frame, Receiver::Board).unwrap() else {
+            panic!("PROVISION")
+        };
+        assert_eq!(p.name.len(), 128);
+        assert_eq!(p.addresses.as_slice().len(), 1);
+        assert!(payload.len() <= MAX_PAYLOAD);
     }
 }

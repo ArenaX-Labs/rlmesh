@@ -75,7 +75,8 @@ typedef struct rlmesh_device_robot_config_t {
   const uint8_t* device_key;
   const uint8_t* record;
   size_t record_len;
-  /* This robot's name; NULL takes the address's. */
+  /* Name for an address (NULL takes the address's); provisioned boards use
+   * the stored record's name, ignoring this field. */
   const char* name;
   /* The robot's map, as authored JSON. */
   const char* robot_json;
@@ -253,12 +254,11 @@ typedef struct rlmesh_device_provision rlmesh_device_provision_t;
 int rlmesh_device_key_public(const uint8_t* device_key, uint8_t* public_key);
 /* Whether record (len bytes) is a valid provisioning record: 1 or 0. */
 int rlmesh_device_record_valid(const uint8_t* record, size_t len);
-/* A responder for robot name with device_key (32 bytes), holding record (NULL
+/* A responder with device_key (32 bytes), holding record (NULL
  * or 0 when not provisioned). arch as in the tether's HELLO: 3 RISC-V, 4
  * Xtensa. */
-int rlmesh_device_provision_new(const char* name, const uint8_t* device_key, uint8_t arch,
-                                const uint8_t* record, size_t record_len,
-                                rlmesh_device_provision_t** out);
+int rlmesh_device_provision_new(const uint8_t* device_key, uint8_t arch, const uint8_t* record,
+                                size_t record_len, rlmesh_device_provision_t** out);
 void rlmesh_device_provision_free(rlmesh_device_provision_t* p);
 /* One byte from the serial port: RLMESH_DEVICE_PROVISION_NONE, or _REPLY /
  * _STORE with *data and *len set (valid until the next call on p). */
