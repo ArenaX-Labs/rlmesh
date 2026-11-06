@@ -120,7 +120,8 @@ class Robot {
 
   // Latches this robot's e-stop (an e-stop pin): every part stops at once,
   // with or without the host, and the host is told. Only clearEstop()
-  // clears it.
+  // clears it. A latch (this one, or a session e-stop the board received)
+  // is kept in NVS: the board comes back latched after a reboot.
   void estop(const char* reason = "e-stop pin");
   // Clears the e-stop latch, whoever set it: call it only from a local
   // action on the board, with the e-stop released.
@@ -136,6 +137,9 @@ class Robot {
   bool start(const rlmesh_device_robot_config_t& config);
   // Looks for the home over mDNS when no stored address answers.
   void discover();
+  // Keeps the e-stop latch in NVS, writing only when it changes.
+  void persistLatch();
+  int8_t persisted_ = -1;
   uint32_t lastDiscovery_ = 0;
   bool mdns_ = false;
   char mdnsName_[40] = {0};
