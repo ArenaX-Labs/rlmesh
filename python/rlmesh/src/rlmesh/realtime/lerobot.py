@@ -16,7 +16,7 @@ Takes marked failed are skipped unless ``include_failed``. The dataset is
 written through the ``lerobot`` package (``pip install lerobot``), in the
 format that package writes::
 
-    python -m rlmesh.v2.lerobot COLLECTED_DIR OUT --repo-id me/ur10e-sweeps --fps 30
+    python -m rlmesh.realtime.lerobot COLLECTED_DIR OUT --repo-id me/ur10e-sweeps --fps 30
 
 ``COLLECTED_DIR`` is ``collected/{dataset}`` under the recordings directory
 (by default ``~/.local/share/rlmesh/recordings`` on Linux).
@@ -223,7 +223,7 @@ def export(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m rlmesh.v2.lerobot",
+        prog="python -m rlmesh.realtime.lerobot",
         description="Export collected episodes as a LeRobot dataset.",
     )
     parser.add_argument(

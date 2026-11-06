@@ -26,7 +26,7 @@ gym = pytest.importorskip("gymnasium")
 
 import rlmesh  # noqa: E402
 import rlmesh.numpy  # noqa: E402
-import rlmesh.v2 as v2  # noqa: E402
+import rlmesh.realtime as v2  # noqa: E402
 
 
 def _digest(value: Any) -> str:

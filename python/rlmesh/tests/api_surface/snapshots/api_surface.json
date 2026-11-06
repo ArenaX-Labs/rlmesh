@@ -4152,6 +4152,403 @@
       }
     }
   },
+  "rlmesh.realtime": {
+    "exports": [
+      "Binding",
+      "BindingRefused",
+      "Due",
+      "Host",
+      "Meta",
+      "Observation",
+      "Policy",
+      "Rate",
+      "Recorder",
+      "Robot",
+      "SessionException",
+      "SessionLost",
+      "SessionRefused",
+      "StartSkipped",
+      "parse_address",
+      "read_recording",
+      "run"
+    ],
+    "objects": {
+      "Binding": {
+        "kind": "class",
+        "members": {
+          "fingerprint": {
+            "kind": "attribute",
+            "signature": "fingerprint: str"
+          },
+          "json": {
+            "kind": "attribute",
+            "signature": "json: dict[str, Any]"
+          },
+          "replan_hz": {
+            "kind": "attribute",
+            "signature": "replan_hz: float"
+          },
+          "table": {
+            "kind": "attribute",
+            "signature": "table: str"
+          },
+          "warnings": {
+            "kind": "attribute",
+            "signature": "warnings: list[str]"
+          }
+        },
+        "signature": "Binding(native: V2Controller)",
+        "stability": "Experimental"
+      },
+      "BindingRefused": {
+        "kind": "class",
+        "members": {
+          "problems": {
+            "kind": "attribute",
+            "signature": "problems: list[tuple[str, str, str]]"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "Due": {
+        "kind": "class",
+        "members": {
+          "based_on": {
+            "kind": "attribute",
+            "signature": "based_on: list[tuple[str, int, int]]"
+          },
+          "chunk_seq": {
+            "kind": "attribute",
+            "signature": "chunk_seq: int | None"
+          },
+          "handover": {
+            "kind": "attribute",
+            "signature": "handover: tuple[str, str, str] | None"
+          },
+          "index": {
+            "kind": "attribute",
+            "signature": "index: int | None"
+          },
+          "lease_token": {
+            "kind": "attribute",
+            "signature": "lease_token: int | None"
+          },
+          "mode": {
+            "kind": "attribute",
+            "signature": "mode: str"
+          },
+          "path": {
+            "kind": "attribute",
+            "signature": "path: str"
+          },
+          "received_ns": {
+            "kind": "attribute",
+            "signature": "received_ns: int | None"
+          },
+          "safe": {
+            "kind": "attribute",
+            "signature": "safe: str | None"
+          },
+          "slot_ns": {
+            "kind": "attribute",
+            "signature": "slot_ns: int | None"
+          },
+          "value": {
+            "kind": "attribute",
+            "signature": "value: Array | dict[str, Array] | None"
+          }
+        },
+        "signature": "Due(native: V2Due)",
+        "stability": "Experimental"
+      },
+      "Host": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          }
+        },
+        "signature": "Host(address: str = ':0', *, lease_grace_ms: int = 250, insecure: bool = False)",
+        "stability": "Experimental"
+      },
+      "Meta": {
+        "kind": "class",
+        "members": {
+          "ages_ns": {
+            "kind": "attribute",
+            "signature": "ages_ns: dict[str, int | None]"
+          },
+          "based_on": {
+            "kind": "attribute",
+            "signature": "based_on: list[tuple[int, int, int]]"
+          },
+          "blank": {
+            "kind": "attribute",
+            "signature": "blank: frozenset[str]"
+          },
+          "padded": {
+            "kind": "attribute",
+            "signature": "padded: dict[str, int]"
+          },
+          "skew_ns": {
+            "kind": "attribute",
+            "signature": "skew_ns: int"
+          },
+          "stale": {
+            "kind": "attribute",
+            "signature": "stale: frozenset[str]"
+          },
+          "time_ns": {
+            "kind": "attribute",
+            "signature": "time_ns: int"
+          }
+        },
+        "signature": "Meta(native: V2Observation)",
+        "stability": "Experimental"
+      },
+      "Observation": {
+        "kind": "class",
+        "members": {
+          "meta": {
+            "kind": "attribute",
+            "signature": "meta: Meta"
+          }
+        },
+        "signature": "Observation(native: V2Observation)",
+        "stability": "Experimental"
+      },
+      "Policy": {
+        "kind": "class",
+        "members": {
+          "acquire": {
+            "kind": "function",
+            "signature": "acquire() -> dict[str, int]"
+          },
+          "bind": {
+            "kind": "function",
+            "signature": "bind(robot: str, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, **captures: str) -> Binding"
+          },
+          "binding": {
+            "kind": "property",
+            "signature": "property binding: Binding"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "events": {
+            "kind": "function",
+            "signature": "events() -> list[dict[str, Any]]"
+          },
+          "holds": {
+            "kind": "property",
+            "signature": "property holds: bool"
+          },
+          "name": {
+            "kind": "property",
+            "signature": "property name: str"
+          },
+          "observe": {
+            "kind": "function",
+            "signature": "observe() -> Observation"
+          },
+          "release": {
+            "kind": "function",
+            "signature": "release() -> None"
+          },
+          "run": {
+            "kind": "function",
+            "signature": "run(predict: Predict, *, duration: float | None = None) -> dict[str, Any]"
+          },
+          "send": {
+            "kind": "function",
+            "signature": "send(actions: Mapping[str, Any], observation: Observation) -> dict[str, int | None]"
+          },
+          "stats": {
+            "kind": "function",
+            "signature": "stats() -> dict[str, Any]"
+          },
+          "stop": {
+            "kind": "function",
+            "signature": "stop() -> None"
+          }
+        },
+        "signature": "Policy(policy: Mapping[str, Any], *, session: Host | str, name: str = 'policy', priority: str = 'model', timeout: float = 10.0)",
+        "stability": "Experimental"
+      },
+      "Rate": {
+        "kind": "class",
+        "members": {
+          "missed": {
+            "kind": "property",
+            "signature": "property missed: int"
+          },
+          "sleep": {
+            "kind": "function",
+            "signature": "sleep() -> int"
+          }
+        },
+        "signature": "Rate(hz: float)",
+        "stability": "Experimental"
+      },
+      "Recorder": {
+        "kind": "class",
+        "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close() -> dict[str, Any] | None"
+          },
+          "path": {
+            "kind": "property",
+            "signature": "property path: str"
+          },
+          "stats": {
+            "kind": "attribute",
+            "signature": "stats: dict[str, Any] | None"
+          }
+        },
+        "signature": "Recorder(path: str | os.PathLike[str], *, session: Host | str, name: str = 'recorder', timeout: float = 10.0)",
+        "stability": "Experimental"
+      },
+      "Robot": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "arm": {
+            "kind": "function",
+            "signature": "arm() -> None"
+          },
+          "clear_estop": {
+            "kind": "function",
+            "signature": "clear_estop() -> None"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "disarm": {
+            "kind": "function",
+            "signature": "disarm() -> None"
+          },
+          "due": {
+            "kind": "function",
+            "signature": "due(path: str) -> Due | None"
+          },
+          "edge_stats": {
+            "kind": "function",
+            "signature": "edge_stats(path: str) -> dict[str, Any]"
+          },
+          "estop": {
+            "kind": "function",
+            "signature": "estop(reason: str = 'estop') -> None"
+          },
+          "mode": {
+            "kind": "property",
+            "signature": "property mode: str"
+          },
+          "mode_reason": {
+            "kind": "property",
+            "signature": "property mode_reason: str"
+          },
+          "name": {
+            "kind": "property",
+            "signature": "property name: str"
+          },
+          "now_ns": {
+            "kind": "function",
+            "signature": "now_ns() -> int"
+          },
+          "parts": {
+            "kind": "property",
+            "signature": "property parts: dict[str, str]"
+          },
+          "publish": {
+            "kind": "function",
+            "signature": "publish(path: str, value: object = None, /, *, capture_ns: int | None = None, **fields: object) -> int | None"
+          },
+          "report_safe": {
+            "kind": "function",
+            "signature": "report_safe(reason: str) -> None"
+          },
+          "serve_lockstep": {
+            "kind": "function",
+            "signature": "serve_lockstep(step: Callable[[dict[str, Any]], Any], reset: Callable[[int | None, dict[str, Any] | None], Any] | None = None, *, background: bool = False, timeout: float = 10.0) -> None"
+          }
+        },
+        "signature": "Robot(name: str, parts: Mapping[str, Any], *, session: Host | str = '', timeout: float = 10.0, on_handover: Callable[[str, str, str], None] | None = None, clock: str = 'wall')",
+        "stability": "Experimental"
+      },
+      "SessionException": {
+        "kind": "class",
+        "stability": "Experimental"
+      },
+      "SessionLost": {
+        "kind": "class",
+        "members": {
+          "reason": {
+            "kind": "attribute",
+            "signature": "reason: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "SessionRefused": {
+        "kind": "class",
+        "members": {
+          "status": {
+            "kind": "attribute",
+            "signature": "status: str"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "StartSkipped": {
+        "kind": "class",
+        "members": {
+          "gaps": {
+            "kind": "attribute",
+            "signature": "gaps: list[str]"
+          },
+          "reason": {
+            "kind": "attribute",
+            "signature": "reason: str"
+          },
+          "stale": {
+            "kind": "attribute",
+            "signature": "stale: list[str]"
+          },
+          "waiting": {
+            "kind": "attribute",
+            "signature": "waiting: list[str]"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "parse_address": {
+        "kind": "function",
+        "signature": "parse_address(text: str, session: bool = False) -> dict[str, Any]",
+        "stability": "Experimental"
+      },
+      "read_recording": {
+        "kind": "function",
+        "signature": "read_recording(path: str | os.PathLike[str]) -> dict[str, Any]",
+        "stability": "Experimental"
+      },
+      "run": {
+        "kind": "function",
+        "signature": "run(policy: Mapping[str, Any], robot: str, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, timeout: float = 10.0, **captures: str) -> dict[str, Any]",
+        "stability": "Experimental"
+      }
+    }
+  },
   "rlmesh.recorder": {
     "exports": [
       "SCHEMA",

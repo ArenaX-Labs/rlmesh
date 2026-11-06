@@ -42,7 +42,7 @@ The same views over a recorded session, with play/pause, speed, previous/next me
 With the host on this machine, the live bar collects episodes: type the task, **Start episode**, then **Success**, **Fail** or **Discard** (a bad take, dropped). A success or a failure links the host's recording of the take into `collected/DATASET/UNIXMS/` with an `episode.json` (`--dataset`, default `default`); nothing purges it. Export the takes as a LeRobot dataset through the `lerobot` package (`pip install 'lerobot[dataset]'`); failed takes are left out unless `--include-failed`:
 
 ```sh
-python -m rlmesh.v2.lerobot ~/.local/share/rlmesh/recordings/collected/default ./ur10e-sweeps --repo-id me/ur10e-sweeps --fps 30
+python -m rlmesh.realtime.lerobot ~/.local/share/rlmesh/recordings/collected/default ./ur10e-sweeps --repo-id me/ur10e-sweeps --fps 30
 ```
 
 Each frame holds the newest sample of every stream at its time: `observation.state` is every numeric stream (`--state TOPIC...` to choose), `action` every `_applied` stream (what the edges dispatched) and `observation.images.PATH` every camera, as video.

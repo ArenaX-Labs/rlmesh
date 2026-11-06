@@ -6,7 +6,7 @@ Status: Experimental (protocol v2). The `rlmesh` npm package
 In Node 22+ and Electron's main process, `rlmesh` runs real-time sessions
 in-process: a session host, robots with their edges, and bound policies, on
 the session's own transport (Zenoh, one session per traffic class). It is
-Python's `rlmesh.v2`, one to one, over a Node-API addon
+Python's `rlmesh.realtime`, one to one, over a Node-API addon
 (`javascript/rlmesh/native`, napi-rs) that binds `rlmesh-session`
 (its edge included) directly, as PyO3 does. Every rule (normalisation, binding,
 conversions, leases, the edge, the run loop) runs in Rust.
@@ -60,7 +60,7 @@ block instead of the `finally`.
 
 ## How it maps to Python
 
-| Python (`rlmesh.v2`)                               | Node (`rlmesh`)                                               |
+| Python (`rlmesh.realtime`)                         | Node (`rlmesh`)                                               |
 | -------------------------------------------------- | ------------------------------------------------------------- |
 | `with Host() as host`                              | `const host = await Host.open()` … `await host.close()`       |
 | `Robot(name, parts, session=host)`                 | `await Robot.connect(name, parts, { session: host })`         |

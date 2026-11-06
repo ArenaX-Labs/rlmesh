@@ -450,7 +450,7 @@ run = [
 ]
 
 [tasks."bench:js:native"]
-description = "Benchmark the Node binding against Python's rlmesh.v2: a 1 kHz robot loop and a 50 Hz policy with a camera, in one process each (BENCH_SECONDS, default 10)"
+description = "Benchmark the Node binding against Python's rlmesh.realtime: a 1 kHz robot loop and a 50 Hz policy with a camera, in one process each (BENCH_SECONDS, default 10)"
 depends = ["setup:js"]
 run = [
   "mise run build:js:native",
@@ -495,7 +495,7 @@ description = "Remove installed-artifact system venvs, logs, and reports"
 run = "uv run rlmesh-system clean"
 
 # The cockpit (protocol v2): one live session's channels, rates, timeline and
-# arm/e-stop. ADDRESS is what `rlmesh.v2.Host.address` prints; `--replay FILE`
+# arm/e-stop. ADDRESS is what `rlmesh.realtime.Host.address` prints; `--replay FILE`
 # opens a recording instead.
 [tasks."cockpit"]
 description = "Open the cockpit on a running v2 session or a recording: mise run cockpit -- ADDRESS | --replay FILE"

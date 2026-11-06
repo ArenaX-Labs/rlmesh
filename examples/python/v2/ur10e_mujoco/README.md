@@ -29,7 +29,7 @@ Rendering uses EGL (`MUJOCO_GL=egl`); without a GPU, Mesa's llvmpipe renders a f
 
 ## The recording
 
-`rlmesh.v2.Recorder` attaches as an observer and writes each envelope as it travelled (§13): `/ur10e/{path}` samples, `/ur10e/arm/_applied` (what the edge dispatched each tick), `/ur10e/arm/_chunks` (every chunk sent to the edge), `/_session/authority` and `/_session/bindings`. Schemas are the `rlmesh.session.v2` protobuf descriptors, so Foxglove and the `mcap` tools read it. `rlmesh.v2.read_recording(path)` counts messages per topic, checks time order and decoding, and lists the lease timeline.
+`rlmesh.realtime.Recorder` attaches as an observer and writes each envelope as it travelled (§13): `/ur10e/{path}` samples, `/ur10e/arm/_applied` (what the edge dispatched each tick), `/ur10e/arm/_chunks` (every chunk sent to the edge), `/_session/authority` and `/_session/bindings`. Schemas are the `rlmesh.session.v2` protobuf descriptors, so Foxglove and the `mcap` tools read it. `rlmesh.realtime.read_recording(path)` counts messages per topic, checks time order and decoding, and lists the lease timeline.
 
 ## The model
 

@@ -1,4 +1,4 @@
-"""rlmesh.v2 on loopback: a Python robot and Python policies in one session.
+"""rlmesh.realtime on loopback: a Python robot and Python policies in one session.
 
 The robot is the §14.1 UR10e (the conformance fixture), faked: its control
 loop publishes joints, wrench, gripper and two JPEG cameras, and applies
@@ -23,7 +23,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-import rlmesh.v2 as rlmesh
+import rlmesh.realtime as rlmesh
 from rlmesh import _rlmesh
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -436,7 +436,7 @@ def test_a_recorder_writes_the_session_to_mcap_and_reads_it_back(
     assert arm[0]["holder"] == "model" and arm[0]["priority"] == "model"
 
     # The same recording as a collected episode, resampled for LeRobot.
-    from rlmesh.v2 import lerobot
+    from rlmesh.realtime import lerobot
 
     take = tmp_path / "collected" / "default" / "1"
     take.mkdir(parents=True)
@@ -622,7 +622,7 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
 def test_a_scene_runs_a_lobby_robot_and_a_python_policy_on_one_machine(
     daemon: str, tmp_path: Path
 ) -> None:
-    from rlmesh.v2 import _fleet
+    from rlmesh.realtime import _fleet
 
     scene_file = tmp_path / "bench.toml"
     scene_file.write_text(

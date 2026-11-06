@@ -18,7 +18,7 @@ use rlmesh_session::wire::{ParticipantId, PriorityClass, Role};
 #[command(version)]
 struct Args {
     /// The session address, `[host/][session]` (what
-    /// `rlmesh.v2.Host.address` prints).
+    /// `rlmesh.realtime.Host.address` prints).
     #[arg(required_unless_present = "replay")]
     address: Option<SessionAddress>,
     /// Replay a recording instead of joining a session: an MCAP file, or a

@@ -554,7 +554,7 @@ def test_horizon_defaults_use_rust_selection_and_preserve_action_bytes(
 
 SERVE_IN_ITS_OWN_PROCESS = """
 import sys, rlmesh
-from rlmesh.v2 import Host
+from rlmesh.realtime import Host
 
 class Policy(rlmesh.Model):
     workflow_edition = "2026.10"

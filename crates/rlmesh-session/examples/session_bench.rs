@@ -39,7 +39,7 @@
 //!
 //! `--controller raw` (the default) re-plans from the transport callback on
 //! every `replan`-th ft sample. `--controller bound` is a bound policy
-//! instead, the shape `rlmesh.v2` runs from Python: the binder's delivery
+//! instead, the shape `rlmesh.realtime` runs from Python: the binder's delivery
 //! contracts (ft `latest@R`, the camera an input too), the
 //! [`Controller`](rlmesh_session::Controller) run loop at the replan rate,
 //! and `t0` at the snapshot. It is the Rust baseline of

@@ -16,7 +16,7 @@ import threading
 from typing import Any
 
 import numpy as np
-import rlmesh.v2 as rlmesh
+from rlmesh import realtime
 
 UR_JOINTS = [
     "shoulder_pan_joint",
@@ -50,10 +50,10 @@ SINE = {
 
 
 def robot_loop(
-    robot: rlmesh.Robot, stop: threading.Event, applied: list[float]
+    robot: realtime.Robot, stop: threading.Event, applied: list[float]
 ) -> None:
     q = np.array([0.0, -1.57, 1.57, -1.57, -1.57, 0.0])
-    rate = rlmesh.Rate(500)
+    rate = realtime.Rate(500)
     robot.publish("task", "wave the first joint")
     while not stop.is_set():
         robot.publish("arm", pos=q, vel=np.zeros(6))
@@ -70,20 +70,20 @@ def main() -> None:
     parser.add_argument("--seconds", type=float, default=3.0)
     args = parser.parse_args()
 
-    with rlmesh.Host() as host:
-        robot = rlmesh.Robot("ur10e", UR10E, session=host)
+    with realtime.Host() as host:
+        robot = realtime.Robot("ur10e", UR10E, session=host)
         robot.arm()
         stop, applied = threading.Event(), list[float]()
         loop = threading.Thread(target=robot_loop, args=(robot, stop, applied))
         loop.start()
 
-        def predict(obs: rlmesh.Observation) -> dict[str, Any]:
+        def predict(obs: realtime.Observation) -> dict[str, Any]:
             t = obs.meta.time_ns / 1e9 + np.arange(10) * 0.01
             arm = np.repeat(obs["q"][None], 10, axis=0)
             arm[:, 0] = 0.2 * np.sin(2 * np.pi * 0.5 * t)
             return {"arm": arm}
 
-        with rlmesh.Policy(SINE, session=host, name="sine") as policy:
+        with realtime.Policy(SINE, session=host, name="sine") as policy:
             print(policy.bind("ur10e"))
             stats = policy.run(predict, duration=args.seconds)
         stop.set()

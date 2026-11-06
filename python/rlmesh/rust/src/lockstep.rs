@@ -1,6 +1,6 @@
 //! PyO3 bindings for the lockstep clock (protocol v2 §12): a v2 robot that
 //! serves the lockstep exchange from Python callbacks
-//! (`rlmesh.v2.Robot(..., clock="lockstep")` wraps it). Gym envs, models and
+//! (`rlmesh.realtime.Robot(..., clock="lockstep")` wraps it). Gym envs, models and
 //! `RemoteEnv` (a Gym env, or any robot through its Gym view) reach lockstep
 //! through their own servers, runs and clients (participant addresses).
 
