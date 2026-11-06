@@ -9,8 +9,9 @@ out="$target_dir/esp32-lobby"
 rm -rf "$out"
 mkdir -p "$out/state"
 # Separately: `--example` would limit every listed package to its examples.
-cargo build -q -p rlmesh-cli --bin rlmesh
-cargo build -q -p rlmesh-device --example lobby_board
+# The lobby is unreleased: both builds need `fleet`.
+cargo build -q -p rlmesh-cli --bin rlmesh --features fleet
+cargo build -q -p rlmesh-device --example lobby_board --features fleet
 rlmesh="$target_dir/debug/rlmesh"
 board_bin="$target_dir/debug/examples/lobby_board"
 export RLMESH_STATE_DIR="$out/state"

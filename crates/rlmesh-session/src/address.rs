@@ -814,19 +814,27 @@ pub fn remember_credential(address: &SessionAddress, credential: Credential) {
         .insert((address.base, address.session), credential);
 }
 
+/// This machine's key from pairing with the host at `base`.
+#[cfg(feature = "fleet")]
+fn paired(base: SocketAddr) -> Option<Credential> {
+    crate::pairing::hosts_dir().and_then(|dir| crate::pairing::paired_credential(&dir, base))
+}
+
+#[cfg(not(feature = "fleet"))]
+fn paired(_: SocketAddr) -> Option<Credential> {
+    None
+}
+
 /// The credential of a participant of the host at `base`: `key` (an
 /// address's), else the key of a host on this machine (one this process
-/// runs, or rlmeshd's), else this machine's key from pairing with the host
-/// ([`crate::pairing::paired_credential`]).
+/// runs, or rlmeshd's), else, with `fleet`, this machine's key from pairing
+/// with the host (`crate::pairing::paired_credential`).
 pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credential, SessionError> {
     key.cloned()
         .or_else(|| hosted_key(base))
         .or_else(|| base.ip().is_loopback().then(daemon_key).flatten())
         .map(|key| key.credential())
-        .or_else(|| {
-            crate::pairing::hosts_dir()
-                .and_then(|dir| crate::pairing::paired_credential(&dir, base))
-        })
+        .or_else(|| paired(base))
         .ok_or_else(|| {
             SessionError::Rejected(CtlError::new(
                 CtlStatus::Unauthenticated,

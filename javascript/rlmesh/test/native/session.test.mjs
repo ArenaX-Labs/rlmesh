@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -406,7 +407,11 @@ async function startDaemon() {
   };
 }
 
-test('a scene runs a lobby robot and a Node policy on one machine', async () => {
+// The lobby and scenes are unreleased (`fleet`): only an addon built with it runs this.
+const fleetAddon = typeof createRequire(import.meta.url)(
+  process.env.RLMESH_NATIVE ?? `../../dist/rlmesh.${process.platform}-${process.arch}.node`,
+).runScene === 'function';
+test('a scene runs a lobby robot and a Node policy on one machine', { skip: !fleetAddon && 'needs an addon built with fleet' }, async () => {
   await using daemon = await startDaemon();
   const dir = mkdtempSync(join(tmpdir(), 'rlmesh-scene-'));
   const path = join(dir, 'bench.toml');

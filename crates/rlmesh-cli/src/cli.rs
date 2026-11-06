@@ -56,19 +56,25 @@ pub enum Command {
     Devices(DevicesArgs),
     /// Check scene files against this machine's rlmeshd: its devices and
     /// robot pins.
+    #[cfg(feature = "fleet")]
     Scene(SceneArgs),
     /// Run a scene on its robots' home rlmeshd and follow its stages until
     /// it ends; Ctrl-C stops it.
+    #[cfg(feature = "fleet")]
     Run(RunArgs),
     /// List the robots waiting in the home rlmeshd's lobby.
+    #[cfg(feature = "fleet")]
     Lobby(HomeArgs),
     /// Stop a run.
+    #[cfg(feature = "fleet")]
     Stop(RunIdArgs),
     /// Arm a run that waits for an explicit arm (`--arm manual`, or after a
     /// lost member rejoined).
+    #[cfg(feature = "fleet")]
     Arm(RunIdArgs),
     /// Pair this machine with a robot's rlmeshd (shows a code to type on
     /// the robot), or, on the robot, approve a machine by its code.
+    #[cfg(feature = "fleet")]
     Pair(PairArgs),
     /// Run an env or model image and check it the way the platform's probe
     /// does: handshake, describe, conformance, reproducibility, and an env's
@@ -568,6 +574,7 @@ pub enum DevicesCommand {
     },
 }
 
+#[cfg(feature = "fleet")]
 /// Flags for `rlmesh scene`.
 #[derive(Args, Debug)]
 pub struct SceneArgs {
@@ -579,6 +586,7 @@ pub struct SceneArgs {
     pub command: SceneCommand,
 }
 
+#[cfg(feature = "fleet")]
 #[derive(Subcommand, Debug)]
 pub enum SceneCommand {
     /// Check a scene file offline, as a run's first stage will: its
@@ -592,6 +600,7 @@ pub enum SceneCommand {
     },
 }
 
+#[cfg(feature = "fleet")]
 /// Where the home rlmeshd is.
 #[derive(Args, Debug)]
 pub struct HomeArgs {
@@ -602,6 +611,7 @@ pub struct HomeArgs {
     pub home: Option<String>,
 }
 
+#[cfg(feature = "fleet")]
 /// Flags for `rlmesh run`.
 #[derive(Args, Debug)]
 pub struct RunArgs {
@@ -615,6 +625,7 @@ pub struct RunArgs {
     pub home: HomeArgs,
 }
 
+#[cfg(feature = "fleet")]
 /// Flags for `rlmesh stop` and `rlmesh arm`.
 #[derive(Args, Debug)]
 pub struct RunIdArgs {
@@ -624,6 +635,7 @@ pub struct RunIdArgs {
     pub home: HomeArgs,
 }
 
+#[cfg(feature = "fleet")]
 /// Flags for `rlmesh pair`.
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
@@ -643,6 +655,7 @@ pub struct PairArgs {
     pub command: Option<PairCommand>,
 }
 
+#[cfg(feature = "fleet")]
 #[derive(Subcommand, Debug)]
 pub enum PairCommand {
     /// On the robot: list the machines and browsers waiting, and approve

@@ -91,6 +91,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyObservation>()?;
     m.add_class::<PyRate>()?;
     m.add_class::<PyRecorder>()?;
+    #[cfg(feature = "fleet")]
     m.add_class::<PyScene>()?;
     m.add_function(wrap_pyfunction!(parse_address, m)?)?;
     m.add_function(wrap_pyfunction!(is_v2_address, m)?)?;
@@ -549,6 +550,7 @@ impl PyRobot {
         })
     }
 
+    #[cfg(feature = "fleet")]
     /// Waits in the lobby of the home daemon `home` names (`None`: this
     /// machine's rlmeshd) as robot `name` until a run assigns it, then joins
     /// the run and declares `robot_json`. A refused join (its pin, another
@@ -579,6 +581,7 @@ impl PyRobot {
         })
     }
 
+    #[cfg(feature = "fleet")]
     /// Why this robot should leave its scene's run: the run is closing (its
     /// reason, `scene_ended` or `scene_failed`), the host lost it
     /// (`robot_lost`: wait in the lobby again, where its run re-sends its
@@ -786,6 +789,7 @@ impl PyRobot {
     }
 }
 
+#[cfg(feature = "fleet")]
 /// A run's state as a dict: `run`, `version`, `stage`, `members` (each
 /// `name`, `stage`, `error`) and `error` (each error `status`, `message`).
 fn run_state<'py>(
@@ -820,6 +824,7 @@ fn run_state<'py>(
     Ok(d)
 }
 
+#[cfg(feature = "fleet")]
 /// A scene run started from this process on the home daemon's lobby.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Scene", frozen)]
@@ -828,6 +833,7 @@ pub struct PyScene {
     scene: tokio::sync::Mutex<Option<sdk::SceneRun>>,
 }
 
+#[cfg(feature = "fleet")]
 impl PyScene {
     async fn with<T>(
         &self,
@@ -841,6 +847,7 @@ impl PyScene {
     }
 }
 
+#[cfg(feature = "fleet")]
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]

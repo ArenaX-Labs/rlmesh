@@ -17,6 +17,7 @@ use rlmesh_session::crypto::{
 };
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
+#[cfg(feature = "fleet")]
 use rlmesh_session::scene::Scene;
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::transport::open_local_listeners;
@@ -2176,6 +2177,7 @@ async fn a_devices_entry_bounds_its_class_verbs_and_reads_and_a_change_detaches_
     );
 }
 
+#[cfg(feature = "fleet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_scene_admits_its_members_binds_its_view_and_closes_into_every_device_view() {
     const SCENE: &str = r#"
@@ -2198,7 +2200,11 @@ device = "local"
     const EYE: &str = r#"{"gaze": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"],
         "hz": 50, "command": "position"}}"#;
     let scene = Scene::parse(SCENE).unwrap_or_else(|refusal| panic!("{refusal}"));
-    let world = World::start_with(|c| c.scene = Some(scene.host("r-7k2m", &c.pins))).await;
+    let world = World::start_with(|c| {
+        c.scene = Some(scene.host("r-7k2m", &c.pins));
+        c.places = scene.places();
+    })
+    .await;
     let eye_l = ParticipantId::new("eye-l").expect("id");
     let mut config = world.config("eye-l", vec![Role::Embodiment], PriorityClass::Scripted, 0);
     config.supports.push(VIEW_DEVICE.into());

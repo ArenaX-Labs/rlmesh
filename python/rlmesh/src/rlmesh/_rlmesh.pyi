@@ -85,7 +85,6 @@ __all__ = [
     "V2Rate",
     "V2Recorder",
     "V2Robot",
-    "V2Scene",
     "Value",
     "adapters_join_check",
     "adapters_render_size",
@@ -1231,50 +1230,6 @@ class V2Robot:
     def close(self) -> None:
         r"""
         Detaches: the edges and publishers go, the host drops the parts.
-        """
-
-@typing.final
-class V2Scene:
-    r"""
-    A scene run started from this process on the home daemon's lobby.
-    """
-    @property
-    def run(self) -> builtins.str:
-        r"""
-        The run's id.
-        """
-    def __new__(cls, home: typing.Optional[builtins.str], scene_toml: builtins.str, manual_arm: builtins.bool = ..., timeout_s: builtins.float = ...) -> V2Scene:
-        r"""
-        Runs the scene file's text `scene_toml` on the home daemon `home`
-        names (`None`: this machine's rlmeshd), waiting up to `timeout_s` for
-        it (`manual_arm`: wait for `arm()`). A refused scene raises
-        `SessionRefused` with its code.
-        """
-    def address(self) -> typing.Optional[builtins.str]:
-        r"""
-        Where the run's members join, once its host is up (`None` before).
-        """
-    def status(self) -> builtins.dict[builtins.str, typing.Any]:
-        r"""
-        The run's state now.
-        """
-    def wait_until(self, stage: builtins.str, timeout_s: builtins.float) -> builtins.dict[builtins.str, typing.Any]:
-        r"""
-        Waits up to `timeout_s` for the run to be at `stage` (`running`);
-        its state then. A run that ends first raises `SessionRefused` with
-        its error; the timeout raises `TimeoutError`.
-        """
-    def arm(self) -> builtins.dict[builtins.str, typing.Any]:
-        r"""
-        Arms the run (`manual`, or after a lost member rejoined); its state.
-        """
-    def stop(self, timeout_s: builtins.float = ...) -> builtins.dict[builtins.str, typing.Any]:
-        r"""
-        Stops the run and waits up to `timeout_s` for it to end; its state.
-        """
-    def close(self, timeout_s: builtins.float = ...) -> None:
-        r"""
-        Stops the run unless it ended, and leaves the lobby. Idempotent.
         """
 
 def _set_python_peer_info(*, language: str | None = None, language_version: str | None = None, package_version: str | None = None, os: str | None = None, os_version: str | None = None, arch: str | None = None, framework_versions: dict[str, str] | None = None, extra: dict[str, str] | None = None) -> None: ...

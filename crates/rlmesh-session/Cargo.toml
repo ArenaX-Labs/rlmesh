@@ -34,7 +34,7 @@ jpeg-encoder = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true, optional = true }
 # rlmeshd's mDNS advertisement, and finding a paired host by its id.
-mdns-sd = { workspace = true }
+mdns-sd = { workspace = true, optional = true }
 # Session recordings (§13), feature `record`.
 mcap = { workspace = true, optional = true }
 # The OS RNG: host keys and handshake ephemerals.
@@ -82,7 +82,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 # The library's optional parts are on for the crate itself (its binaries
 # and tests); the workspace dependency turns them off, so a binding opts in
 # to what it ships.
-default = ["gateway", "record"]
+default = ["record"]
 # The browser gateway (`gateway`, bin `rlmesh-gateway`): one WebSocket per
 # traffic class, each browser a session participant.
 gateway = [
@@ -96,6 +96,9 @@ gateway = [
   "dep:tracing-subscriber",
   "tokio/net",
 ]
+# Unreleased: the lobby, scene runs, satellites, machine pairing and mDNS
+# (`fleet`). Off in every release; CI builds and tests it.
+fleet = ["dep:mdns-sd", "rlmesh-session-core/fleet"]
 # MCAP recording of a session (`record`).
 record = ["dep:mcap"]
 # QUIC links (one stream per Zenoh priority, so one connection can carry

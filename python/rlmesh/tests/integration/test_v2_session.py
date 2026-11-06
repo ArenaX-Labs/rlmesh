@@ -24,6 +24,7 @@ from typing import Any
 import numpy as np
 import pytest
 import rlmesh.v2 as rlmesh
+from rlmesh import _rlmesh
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SPEC = REPO_ROOT / "crates" / "rlmesh-session-core" / "tests"
@@ -615,9 +616,14 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
         shutil.rmtree(state, ignore_errors=True)
 
 
+@pytest.mark.skipif(
+    not hasattr(_rlmesh, "V2Scene"), reason="the lobby and scenes need a fleet build"
+)
 def test_a_scene_runs_a_lobby_robot_and_a_python_policy_on_one_machine(
     daemon: str, tmp_path: Path
 ) -> None:
+    from rlmesh.v2 import _fleet
+
     scene_file = tmp_path / "bench.toml"
     scene_file.write_text(
         '[scene]\nformat = 1\nname = "bench"\nwait = "20s"\n\n'
@@ -626,16 +632,16 @@ def test_a_scene_runs_a_lobby_robot_and_a_python_policy_on_one_machine(
     )
 
     def robot() -> str | None:
-        with rlmesh.Robot.wait_in_lobby(
+        with _fleet.wait_in_lobby(
             "arm", LOBBY_ARM, home=daemon, timeout=3 * WAIT
         ) as arm:
-            while arm.leaving is None:
+            while _fleet.leaving(arm) is None:
                 arm.publish("arm", pos=np.zeros(2, dtype=np.float32))
                 time.sleep(0.01)
-            return arm.leaving
+            return _fleet.leaving(arm)
 
     thread, out = in_thread(robot)
-    with rlmesh.run_scene(scene_file, home=daemon) as scene:
+    with _fleet.run_scene(scene_file, home=daemon) as scene:
         assert scene.wait_until("binding", timeout=WAIT)["members"][0] == {
             "name": "arm",
             "stage": "declared",
@@ -648,7 +654,7 @@ def test_a_scene_runs_a_lobby_robot_and_a_python_policy_on_one_machine(
             stats = policy.run(lambda obs: {"arm": np.zeros((2, 2))}, duration=1.0)
             assert stats["starts"] > 0
             with pytest.raises(rlmesh.SessionRefused, match="arm is in run") as busy:
-                rlmesh.run_scene(scene_file, home=daemon)
+                _fleet.run_scene(scene_file, home=daemon)
             assert busy.value.status == "ROBOT_BUSY"
         assert scene.stop()["stage"] == "ended"
     thread.join(WAIT)

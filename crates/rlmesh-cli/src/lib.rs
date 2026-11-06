@@ -8,6 +8,7 @@ mod doctor;
 mod eval_run;
 mod host;
 pub mod image_check;
+#[cfg(feature = "fleet")]
 mod lobby;
 mod manifest;
 mod pair;
@@ -17,7 +18,9 @@ mod provision;
 mod publish;
 mod registry;
 mod render;
+#[cfg(feature = "fleet")]
 mod satellite;
+#[cfg(feature = "fleet")]
 mod scene;
 #[cfg(unix)]
 mod sys;
@@ -90,18 +93,19 @@ pub async fn run_cli_in(
         | Command::Host(_)
         | Command::Daemon(_)
         | Command::Devices(_)
-        | Command::Scene(_)
-        | Command::Run(_)
-        | Command::Lobby(_)
-        | Command::Stop(_)
-        | Command::Arm(_)
-        | Command::Pair(_)
         | Command::Eval(cli::EvalArgs {
             command: cli::EvalCommand::Run(_) | cli::EvalCommand::Report(_),
         })
         | Command::Registry(cli::RegistryArgs {
             command: cli::RegistryCommand::Publish(_),
         }) => None,
+        #[cfg(feature = "fleet")]
+        Command::Scene(_)
+        | Command::Run(_)
+        | Command::Lobby(_)
+        | Command::Stop(_)
+        | Command::Arm(_)
+        | Command::Pair(_) => None,
         _ => match ProfileStore::load(&settings) {
             Ok(profiles) => Some(profiles),
             Err(error) => {
@@ -201,11 +205,17 @@ pub async fn run_cli_in(
         Command::Host(args) => host::host(&args, stdout).await.map(|()| 0),
         Command::Daemon(args) => daemon::daemon(&args, stdout, stderr).await.map(|()| 0),
         Command::Devices(args) => devices::devices(&args, stdout).map(|()| 0),
+        #[cfg(feature = "fleet")]
         Command::Scene(args) => scene::scene(&args, stdout),
+        #[cfg(feature = "fleet")]
         Command::Run(args) => scene::run(&args, stdout).await,
+        #[cfg(feature = "fleet")]
         Command::Lobby(args) => scene::lobby(&args, stdout).await.map(|()| 0),
+        #[cfg(feature = "fleet")]
         Command::Stop(args) => scene::stop(&args, stdout).await,
+        #[cfg(feature = "fleet")]
         Command::Arm(args) => scene::arm(&args, stdout).await.map(|()| 0),
+        #[cfg(feature = "fleet")]
         Command::Pair(args) => pair::pair(&args, stdout).await.map(|()| 0),
         Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
         Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),
