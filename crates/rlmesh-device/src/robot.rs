@@ -966,8 +966,13 @@ impl Robot {
     }
 
     /// Latches the e-stop for `reason`, and queues its report to the host
-    /// (in order: before any `Clear` queued after it).
+    /// (in order: before any `Clear` queued after it). Already latched, it
+    /// keeps the first reason and queues nothing: a held button or a stream
+    /// of e-stop signals never floods the control queue.
     fn latch(&mut self, reason: Reason) {
+        if self.estop.is_some() {
+            return;
+        }
         let origin = (reason.code == ReasonCode::EstopSignal)
             .then(|| ParticipantId::new(&reason.by).ok())
             .flatten();
@@ -1370,6 +1375,11 @@ impl Robot {
         if refused {
             pause = self.refused_ms;
             self.refused_ms = (self.refused_ms * 2).min(MAX_BACKOFF_MS);
+        } else if matches!(self.fault, Some(Fault::Internal | Fault::HostLost)) {
+            // A host that keeps going quiet, or a fault of its own: back off
+            // (1 s doubling to 30 s) until it reaches its home again.
+            pause = self.backoff_ms;
+            self.backoff_ms = (self.backoff_ms * 2).min(MAX_BACKOFF_MS);
         }
         if unreachable && self.config.homes.len() > 1 {
             // The home's next address, at once; after a whole round,
