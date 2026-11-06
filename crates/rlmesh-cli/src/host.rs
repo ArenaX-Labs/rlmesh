@@ -227,7 +227,8 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
         writeln!(stdout, "recording to {}", dir.display())?;
     }
     stdout.flush()?;
-    let mut applied = table;
+    // The table applied, and the day it was: an entry may expire overnight.
+    let mut applied = (table, crate::devices::today());
     let mut refused: Option<String> = None;
     let mut shutdown = std::pin::pin!(shutdown_signal());
     loop {
@@ -284,23 +285,24 @@ fn recordings(args: &HostArgs) -> Result<Option<PathBuf>> {
 }
 
 /// Applies `devices.toml` to every session if it changed since `applied`,
-/// and returns the table it applied.
+/// or the day did (a device may have expired), and returns the table it
+/// applied.
 async fn reload(
     dir: &Path,
     server: &SessionServer,
-    applied: &mut Table,
+    applied: &mut (Table, i64),
     refused: &mut Option<String>,
     stderr: &mut impl Write,
 ) -> Option<Table> {
     match Table::read(dir) {
-        Ok(table) if table != *applied => {
+        Ok(table) if table != applied.0 || crate::devices::today() != applied.1 => {
             // Read checked it.
             let Ok((devices, pins)) = table.host() else {
                 return None;
             };
             server.set_devices(devices, pins).await;
             let _ = writeln!(stderr, "rlmesh host: {DEVICES} applied");
-            *applied = table.clone();
+            *applied = (table.clone(), crate::devices::today());
             *refused = None;
             return Some(table);
         }

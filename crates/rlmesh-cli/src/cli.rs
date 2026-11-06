@@ -561,6 +561,10 @@ pub enum DevicesCommand {
         /// The verbs it may send besides estop: arm, disarm, comma-separated.
         #[arg(long, value_name = "VERBS", value_delimiter = ',')]
         verbs: Option<Vec<String>>,
+        /// The day (YYYY-MM-DD, UTC) from which it may no longer attach, or
+        /// `never`.
+        #[arg(long, value_name = "DATE")]
+        expires: Option<String>,
     },
     /// Remove a device: it is detached at once, and its robot pins stay.
     Revoke {
