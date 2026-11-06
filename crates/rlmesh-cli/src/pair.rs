@@ -31,6 +31,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::{PairArgs, PairCommand};
 
+/// How long a pairing lasts before the machine pairs again.
+const PAIRED_DAYS: i64 = 180;
+
 /// The local channel's socket in rlmeshd's state directory.
 pub const SOCKET: &str = "pair.sock";
 /// The default cap of a device of `kind` (design §12 decision 6):
@@ -374,6 +377,8 @@ async fn approve_local(local: &Local, code: u32, max: Option<&str>) -> Answer {
             parts: None,
             verbs: None,
             roles: None,
+            // A paired machine or browser pairs again within half a year.
+            expires: Some(crate::devices::date_in(PAIRED_DAYS)),
         };
         table.devices.insert(id.clone(), entry);
         Ok(id)

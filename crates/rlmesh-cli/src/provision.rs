@@ -212,6 +212,7 @@ fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(
             parts: None,
             verbs: None,
             roles: None,
+            expires: None,
         });
         // Remove only the old name's pin, and only if this device still owns it.
         if let Some(old) = entry.name.as_deref()
