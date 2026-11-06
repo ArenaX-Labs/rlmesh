@@ -702,7 +702,7 @@ async fn estop_latches_until_a_local_clear_then_disarm_and_arm() {
             key_id,
             Key::from_bytes([7; 32]),
             KindSet::ALL,
-            Security::Sign,
+            Security::Mac,
         );
         let sealed = forger.seal(Kind::EstopSignal, &key, &signal).expect("seal");
         let put = operator.transport().control().put(&key, sealed).await;

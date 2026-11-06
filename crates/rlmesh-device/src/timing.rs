@@ -63,7 +63,7 @@ pub fn run(now_us: &mut dyn FnMut() -> u64, rng: &mut dyn Rng) -> Result<Timing,
     let mut out = Timing::default();
     handshakes(now_us, rng, &mut out)?;
     states(now_us, rng, &mut out)?;
-    out.chunk_open_sign_us = open_chunks(now_us, rng, Security::Sign)?;
+    out.chunk_open_sign_us = open_chunks(now_us, rng, Security::Mac)?;
     out.chunk_open_seal_us = open_chunks(now_us, rng, Security::Seal)?;
     out.sample_seal_sign_us = seal_samples(now_us, rng)?;
     Ok(out)
@@ -155,7 +155,7 @@ fn open_chunks(
 }
 
 fn seal_samples(now_us: &mut dyn FnMut() -> u64, rng: &mut dyn Rng) -> Result<u32, TimingError> {
-    let (mut robot, mut reader) = pair(rng, Kind::Sample, Security::Sign)?;
+    let (mut robot, mut reader) = pair(rng, Kind::Sample, Security::Mac)?;
     let body = body(rng, SAMPLE_LEN)?;
     let mut msg = Vec::new();
     let mut total = 0;

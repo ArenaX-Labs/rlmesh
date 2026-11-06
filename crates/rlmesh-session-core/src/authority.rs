@@ -1406,7 +1406,7 @@ impl Authority {
         if self.sealed.contains(&channel) {
             crate::wire::Security::Seal
         } else {
-            crate::wire::Security::Sign
+            crate::wire::Security::Mac
         }
     }
 

@@ -280,7 +280,7 @@ fn key_to_pb(k: &IssuedKey) -> pb::Key {
         KeyPurpose::Estop => pb::KeyPurpose::Estop,
     };
     let security = match k.security {
-        Security::Sign => pb::Security::Sign,
+        Security::Mac => pb::Security::Mac,
         Security::Seal => pb::Security::Seal,
     };
     pb::Key {
@@ -315,7 +315,7 @@ fn key_from_pb(k: pb::Key) -> Result<IssuedKey, WireError> {
         _ => return Err(bad_enum("key purpose", k.purpose)),
     };
     let security = match pb::Security::try_from(k.security) {
-        Ok(pb::Security::Sign) => Security::Sign,
+        Ok(pb::Security::Mac) => Security::Mac,
         Ok(pb::Security::Seal) => Security::Seal,
         _ => return Err(bad_enum("key security", k.security)),
     };

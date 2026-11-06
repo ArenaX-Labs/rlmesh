@@ -335,7 +335,7 @@ async fn the_edge_fences_a_preempted_controller_and_drops_expired_chunks() {
         human.key_id,
         Key::from_bytes([7; 32]),
         KindSet::ALL,
-        Security::Sign,
+        Security::Mac,
     );
     let key = robot.keys().commands(robot.id(), "cmd");
     let body = codec::encode_chunk(&forged).expect("encode").to_vec();
