@@ -2813,6 +2813,28 @@ impl<'a> Binder<'a> {
         }
         let span = dt * action.horizon;
         let valid = action.ttl.map_or(span, |ttl| ttl.min(span));
+        // A part that can't hold its target (a velocity, a torque; not a
+        // delta, which keeps its target) runs its safe behaviour whenever
+        // no action is due: each chunk must outlast the replan period, or
+        // the robot stutters between chunks and goes safe after hold_max.
+        let period = Duration::from_secs_f64(1.0 / replan);
+        if !command.hold_last && !command.is_delta() && valid <= period {
+            let needed = period.as_nanos() / dt.as_nanos().max(1) + 2;
+            self.incompatible(
+                slot,
+                format!(
+                    "{}: a chunk covers {} ms, no longer than the replan period of {} ms, and {path} can't hold its target between chunks.",
+                    slot.name(),
+                    ms(valid),
+                    ms(period)
+                ),
+                vec![format!(
+                    "    fix: \"horizon\": {needed} (or more) on {:?}, so each chunk outlasts the next replan.",
+                    slot.entry.name
+                )],
+            );
+            return None;
+        }
         let stride = command.layout().ok().and_then(|l| l.stride()).unwrap_or(0);
         if (action.horizon as usize).saturating_mul(stride) > MAX_CHUNK_BYTES {
             self.incompatible(

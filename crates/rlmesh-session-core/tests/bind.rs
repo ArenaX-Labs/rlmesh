@@ -500,6 +500,27 @@ fn two_actions_on_one_command_group_are_refused() {
 }
 
 #[test]
+fn a_part_that_cannot_hold_its_target_needs_chunks_that_outlast_a_replan() {
+    // A velocity command runs its safe behaviour whenever nothing is due:
+    // one 20 Hz action per 20 Hz replan leaves it waiting between chunks.
+    let text = refusal_text(
+        r#"{"hz": 20, "actions": {"walk": {"kind": "velocity", "at": "base/twist",
+            "hz": 20, "horizon": 1}}}"#,
+        "go2",
+    );
+    assert!(
+        text.contains("can't hold its target between chunks") && text.contains("\"horizon\": 3"),
+        "{text}"
+    );
+    inline(
+        r#"{"hz": 20, "actions": {"walk": {"kind": "velocity", "at": "base/twist",
+            "hz": 20, "horizon": 3}}}"#,
+        "go2",
+    )
+    .expect("three actions outlast a replan");
+}
+
+#[test]
 fn conversions_need_allow_unless_lossless() {
     // Degrees convert automatically; millimetres need allow units.
     let ok = inline(
