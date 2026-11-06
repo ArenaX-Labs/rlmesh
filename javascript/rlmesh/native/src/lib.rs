@@ -486,7 +486,10 @@ pub struct EdgeStats {
 #[napi]
 pub struct NativeRobot {
     name: String,
-    robot: Mutex<Option<Arc<Robot>>>,
+    /// The robot now: a rejoin swaps it ([`sdk::keep_joined`]).
+    robot: sdk::RobotSlot,
+    /// Joins it again when the host drops it.
+    keeper: Mutex<Option<tokio::task::JoinHandle<()>>>,
     encoder: Mutex<Option<Encoder>>,
 }
 
@@ -508,12 +511,16 @@ impl Encoder {
     /// sent.
     const QUEUE: usize = 2;
 
-    fn start(robot: Arc<Robot>) -> std::io::Result<Self> {
+    fn start(slot: sdk::RobotSlot) -> std::io::Result<Self> {
         let (frames, queued) = mpsc::sync_channel::<Frame>(Self::QUEUE);
         let thread = std::thread::Builder::new()
             .name("rlmesh-encoder".into())
             .spawn(move || {
                 for (path, capture, pixels) in queued {
+                    // The robot now: a rejoin may have swapped it.
+                    let Some(robot) = slot.lock().ok().and_then(|r| r.clone()) else {
+                        break;
+                    };
                     // Its outcome is in the publisher's own counters.
                     let _ = robot.publish(&path, capture, &[pixels.as_slice()]);
                 }
@@ -523,7 +530,9 @@ impl Encoder {
 }
 
 /// Attaches as `name` (the robot's participant id), declares `robot_json`
-/// (the authored map, §3) and starts its publishers and edges.
+/// (the authored map, §3) and starts its publishers and edges. When the
+/// host drops it (a network gap past its presence grace) it joins again on
+/// its own.
 #[napi]
 pub async fn connect_robot(
     address: String,
@@ -539,9 +548,12 @@ pub async fn connect_robot(
             rlmesh_session::edge::EdgeError::Session(err) => session_err(err),
             other => exception(other.to_string()),
         })?;
+    let slot: sdk::RobotSlot = Arc::new(Mutex::new(Some(Arc::new(robot))));
+    let keeper = sdk::keep_joined(slot.clone(), address, name.clone(), robot_json);
     Ok(NativeRobot {
         name,
-        robot: Mutex::new(Some(Arc::new(robot))),
+        robot: slot,
+        keeper: Mutex::new(Some(keeper)),
         encoder: Mutex::new(None),
     })
 }
@@ -568,7 +580,8 @@ pub async fn robot_from_lobby(
         })?;
     Ok(NativeRobot {
         name,
-        robot: Mutex::new(Some(Arc::new(robot))),
+        robot: Arc::new(Mutex::new(Some(Arc::new(robot)))),
+        keeper: Mutex::new(None),
         encoder: Mutex::new(None),
     })
 }
@@ -640,7 +653,8 @@ impl NativeRobot {
             let frame = (path, capture, std::mem::take(pixels));
             let mut encoder = self.encoder.lock().map_err(|_| exception("poisoned"))?;
             if encoder.is_none() {
-                *encoder = Some(Encoder::start(robot).map_err(|e| exception(e.to_string()))?);
+                *encoder =
+                    Some(Encoder::start(self.robot.clone()).map_err(|e| exception(e.to_string()))?);
             }
             if let Some(encoder) = encoder.as_ref() {
                 // A full queue drops this frame: the encoder is behind.
@@ -782,6 +796,9 @@ impl NativeRobot {
     /// Detaches: the edges and publishers go, the host drops the parts.
     #[napi]
     pub async fn close(&self) -> Result<()> {
+        if let Some(keeper) = self.keeper.lock().ok().and_then(|mut k| k.take()) {
+            keeper.abort();
+        }
         // The encoder finishes its queued frames and lets go of the robot.
         let encoder = self.encoder.lock().map(|mut e| e.take()).unwrap_or(None);
         if let Some(Encoder { frames, thread }) = encoder {

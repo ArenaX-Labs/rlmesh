@@ -1102,7 +1102,8 @@ pub struct Participant {
     _host: zenoh::pubsub::Subscriber<()>,
     /// A robot process's e-stop signal subscription.
     _estops: Option<zenoh::pubsub::Subscriber<()>>,
-    _liveliness: zenoh::liveliness::LivelinessToken,
+    /// Its presence; [`Participant::withdraw`] takes it back.
+    liveliness: std::sync::Mutex<Option<zenoh::liveliness::LivelinessToken>>,
     _state: zenoh::pubsub::Subscriber<()>,
     _echo: zenoh::pubsub::Subscriber<()>,
     _keys: zenoh::pubsub::Subscriber<()>,
@@ -1367,7 +1368,7 @@ impl Participant {
                 tokio::spawn(work_keys(shared.clone(), key_rx, cancel.clone())),
             ],
             cancel,
-            _liveliness: liveliness,
+            liveliness: std::sync::Mutex::new(Some(liveliness)),
             _state: state,
             _echo: echo,
             _keys: deliveries,
@@ -1419,6 +1420,21 @@ impl Participant {
         )));
         info!(participant = %config.id, session = %config.session, generation, "attached");
         Ok(participant)
+    }
+
+    /// Withdraws its liveliness token: the host and everyone else see it
+    /// leave, and a new process may join under its id (a robot rejoining
+    /// after its host dropped it). It stops heartbeating too.
+    pub fn withdraw(&self) {
+        self.set_heartbeats_enabled(false);
+        let token = self
+            .liveliness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(token) = token {
+            let _ = zenoh::Wait::wait(token.undeclare());
+        }
     }
 
     /// This participant's id.

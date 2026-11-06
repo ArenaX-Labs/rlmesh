@@ -1160,7 +1160,8 @@ class V2Robot:
         r"""
         Attaches as `name` (the robot's participant id), declares
         `robot_json` (the authored map, §3) and starts its publishers and
-        edges.
+        edges. When the host drops it (a network gap past its presence
+        grace) it joins again on its own.
         """
     @staticmethod
     def from_lobby(home: typing.Optional[builtins.str], name: builtins.str, robot_json: builtins.str, timeout_s: typing.Optional[builtins.float] = None) -> V2Robot:
