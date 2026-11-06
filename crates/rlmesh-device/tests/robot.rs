@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+#[cfg(not(feature = "fleet"))]
+use rlmesh_device::provision::Record;
 use rlmesh_device::robot::{Action, Config, Fault, Phase, Robot};
 use rlmesh_session::address::AddressKey;
 use rlmesh_session::auth::{Credential, Device, HostIdentity};
@@ -551,4 +553,66 @@ async fn a_provisioned_board_joins_with_its_device_key() {
         "{:?}",
         robot.fault()
     );
+}
+
+/// A board provisioned for its home joins the home's default session
+/// directly, with its own device key and no lobby (only a `fleet` build
+/// waits there), so one firmware serves every eye.
+#[cfg(not(feature = "fleet"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_provisioned_board_joins_its_homes_default_session_without_the_lobby() {
+    let private = [0x43_u8; 32];
+    let board = Device {
+        id: "board-eye-1".into(),
+        public: rlmesh_device::provision::public_key(&private),
+        access: DeviceAccess::new(Some(PriorityClass::Model)),
+    };
+    let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+        .await
+        .expect("host transport");
+    let tenant = TenantId::new(rlmesh_device::address::TENANT).expect("tenant");
+    let session = SessionId::named(rlmesh_device::address::DEFAULT_SESSION);
+    let mut config = HostConfig::new(tenant.clone(), session);
+    config.devices = vec![board];
+    let identity = config.identity.clone();
+    let host = SessionHost::start(transport, config).await.expect("host");
+    let world = World {
+        tenant,
+        session,
+        base,
+        identity,
+        host,
+    };
+    let record = Record {
+        payload: Vec::new(),
+        host_key: *world.identity.static_public(),
+        host_id: world.identity.host_id(),
+        addresses: vec![base.to_string()],
+    };
+    let config = Config::provisioned(
+        &private,
+        &record,
+        ParticipantId::new("eye-1").expect("id"),
+        MAP.to_owned(),
+        50,
+    )
+    .expect("a provisioned config");
+    let robot = Robot::new(config).expect("a valid map");
+    let robot = drive(
+        &world,
+        robot,
+        Duration::from_secs(10),
+        Arc::default(),
+        |r| r.phase() == Phase::Running,
+    )
+    .await;
+    assert_eq!(robot.phase(), Phase::Running, "fault: {:?}", robot.fault());
+    let eye = world
+        .host
+        .snapshot()
+        .roster
+        .into_iter()
+        .find(|p| p.id.as_str() == "eye-1")
+        .expect("the board is in the default session");
+    assert_eq!(eye.device, "board-eye-1");
 }
