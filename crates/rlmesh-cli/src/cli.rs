@@ -496,6 +496,16 @@ pub struct HostArgs {
     /// never stop for one either way.
     #[arg(long)]
     pub rearm_robots: bool,
+    /// Sign parts' samples and chunks instead of encrypting them. Beyond
+    /// loopback a host seals (encrypts) every part by default; on loopback
+    /// it signs.
+    #[arg(long)]
+    pub no_seal: bool,
+    /// Host at most this many sessions: the default one and those its
+    /// participants name. A session no participant attaches to within 10 s
+    /// stops.
+    #[arg(long, value_name = "N", default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_sessions: u32,
     /// Also host the lobby and run scenes (unreleased).
     #[cfg(feature = "fleet")]
     #[arg(long)]

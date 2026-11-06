@@ -78,9 +78,21 @@ pub struct SessionServer {
     ),
     #[cfg(feature = "record")]
     recorders: Recorders,
+    /// How many sessions it hosts at most ([`Self::limit_sessions`]).
+    limit: Arc<std::sync::atomic::AtomicUsize>,
+    /// How long, in ns, a session started for a token waits for a
+    /// participant ([`Self::stop_unclaimed_after`]).
+    unclaimed_ns: Arc<std::sync::atomic::AtomicU64>,
+    reaper: tokio::task::JoinHandle<()>,
     _server: zenoh::query::Queryable<()>,
     _watch: zenoh::pubsub::Subscriber<()>,
 }
+
+/// How long a session started for a liveliness token waits for a
+/// participant to attach (the handshake proves its device) before it stops:
+/// a token alone, which anyone on the network can declare, keeps no
+/// session.
+const UNCLAIMED: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Removes `key` from `members` when its token left: not when its
 /// participant rejoined and its new token is declared ahead of the old one's
@@ -185,12 +197,22 @@ impl SessionServer {
         let control = transport.control().clone();
         let tenant_id = config.tenant.clone();
         let tenant = config.tenant.to_string();
+        let limit = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let unclaimed_ns = Arc::new(std::sync::atomic::AtomicU64::new(
+            u64::try_from(UNCLAIMED.as_nanos()).unwrap_or(u64::MAX),
+        ));
+        // When each session started for a token, until a participant
+        // attaches to it.
+        let unclaimed: Arc<std::sync::Mutex<HashMap<SessionId, std::time::Instant>>> =
+            Arc::default();
         // Presence changes are applied in order, by one task.
         let (presence, mut changes) = tokio::sync::mpsc::unbounded_channel::<Presence>();
         tokio::spawn({
             let hosts = hosts.clone();
             let kept = kept.clone();
             let table = table.clone();
+            let limit = limit.clone();
+            let unclaimed = unclaimed.clone();
             let transport = transport.clone();
             #[cfg(feature = "record")]
             let recorders = recorders.clone();
@@ -217,6 +239,11 @@ impl SessionServer {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .contains_key(&session);
                     if !empty && !explicit && !hosts.contains_key(&session) {
+                        let max = limit.load(std::sync::atomic::Ordering::Relaxed);
+                        if hosts.len() >= max {
+                            warn!(%session, max, "session not started: at the session limit");
+                            continue;
+                        }
                         let (devices, pins) = table
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -231,6 +258,10 @@ impl SessionServer {
                             Ok(host) => {
                                 info!(%session, "session started for its first participant");
                                 hosts.insert(session, host);
+                                unclaimed
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .insert(session, std::time::Instant::now());
                                 #[cfg(feature = "record")]
                                 if let Some(started) = record(session) {
                                     recorders.lock().await.insert(session, started);
@@ -267,6 +298,58 @@ impl SessionServer {
                 let _ = presence.send((joined, session, key.to_string()));
             })
             .await?;
+        // A session started for a token stops unless a participant attached
+        // within UNCLAIMED.
+        let reaper = tokio::spawn({
+            let (hosts, kept, unclaimed) = (hosts.clone(), kept.clone(), unclaimed.clone());
+            let after = unclaimed_ns.clone();
+            #[cfg(feature = "record")]
+            let recorders = recorders.clone();
+            async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    tick.tick().await;
+                    let due: Vec<SessionId> = unclaimed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .iter()
+                        .filter(|(_, at)| {
+                            at.elapsed()
+                                >= std::time::Duration::from_nanos(
+                                    after.load(std::sync::atomic::Ordering::Relaxed),
+                                )
+                        })
+                        .map(|(s, _)| *s)
+                        .collect();
+                    for session in due {
+                        unclaimed
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&session);
+                        let explicit = kept
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .contains_key(&session);
+                        let mut hosts = hosts.lock().await;
+                        let claimed = hosts.get(&session).is_none_or(|host| {
+                            host.snapshot()
+                                .roster
+                                .iter()
+                                .any(|p| p.id.as_str() != RECORDER)
+                        });
+                        if explicit || claimed {
+                            continue;
+                        }
+                        if let Some(host) = hosts.remove(&session) {
+                            warn!(%session, "session stopped: no participant attached to it");
+                            #[cfg(feature = "record")]
+                            finish_recorder(&recorders, session).await;
+                            host.shutdown().await;
+                        }
+                    }
+                }
+            }
+        });
         let server = control
             .declare_queryable(session_server(&tenant_id))
             .callback(|query| {
@@ -283,9 +366,31 @@ impl SessionServer {
             transport,
             #[cfg(feature = "record")]
             recorders,
+            limit,
+            unclaimed_ns,
+            reaper,
             _server: server,
             _watch: watch,
         })
+    }
+
+    /// Hosts at most `max` sessions: a participant naming another session
+    /// past it finds no host. Every session started for a participant's
+    /// token stops within 10 s unless a participant attached to it (a
+    /// device the handshake admitted), so a token alone, which anyone on
+    /// the network can declare, keeps no session.
+    pub fn limit_sessions(&self, max: usize) {
+        self.limit
+            .store(max.max(1), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How long a session started for a participant's token waits for a
+    /// participant to attach before it stops (default 10 s).
+    pub fn stop_unclaimed_after(&self, after: std::time::Duration) {
+        self.unclaimed_ns.store(
+            u64::try_from(after.as_nanos()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// The sessions it hosts.
@@ -457,6 +562,7 @@ impl SessionServer {
 
     /// Stops every session (participants see their hosts leave).
     pub async fn shutdown(&self) {
+        self.reaper.abort();
         #[cfg(feature = "record")]
         {
             let sessions: Vec<SessionId> = self.recorders.lock().await.keys().copied().collect();
@@ -516,6 +622,12 @@ async fn finish_recorder(recorders: &Recorders, session: SessionId) {
     }
 }
 
+impl Drop for SessionServer {
+    fn drop(&mut self) {
+        self.reaper.abort();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -542,6 +654,60 @@ mod tests {
         token.undeclare().await.expect("undeclare");
         assert!(member_left(&mut members, a, control).await);
         assert!(members.is_empty(), "{members:?}");
+        transport.close().await.expect("close");
+    }
+
+    /// A liveliness token, which anyone on the network can declare, starts
+    /// at most `limit` sessions, and none of them outlives the unclaimed
+    /// wait without a participant.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_token_alone_keeps_no_session_and_sessions_stop_at_the_limit() {
+        let (transport, _) = open_local_listeners(IpAddr::from(Ipv4Addr::LOCALHOST))
+            .await
+            .expect("transport");
+        let tenant = crate::wire::TenantId::new("limits").expect("tenant");
+        let config = HostConfig::new(tenant.clone(), SessionId::new());
+        let server = SessionServer::start(transport.clone(), config)
+            .await
+            .expect("server");
+        server.stop_unclaimed_after(std::time::Duration::from_millis(300));
+        let token = |session: SessionId| {
+            let control = transport.control().clone();
+            let key = format!("rlmesh/v2/{tenant}/s/{session}/p/stranger");
+            async move {
+                control
+                    .liveliness()
+                    .declare_token(key)
+                    .await
+                    .expect("token")
+            }
+        };
+        let wait_for = |want: usize| {
+            let server = &server;
+            async move {
+                for _ in 0..200 {
+                    if server.sessions().await.len() == want {
+                        return true;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                false
+            }
+        };
+        let stranger = SessionId::new();
+        let _token = token(stranger).await;
+        assert!(wait_for(2).await, "a token starts its session");
+        assert!(wait_for(1).await, "no participant attached: it stops");
+
+        server.limit_sessions(1);
+        let _other = token(SessionId::new()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            server.sessions().await.len(),
+            1,
+            "at the limit, none starts"
+        );
+        server.shutdown().await;
         transport.close().await.expect("close");
     }
 }

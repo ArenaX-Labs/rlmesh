@@ -43,6 +43,7 @@ use rlmesh_session::address::{
 };
 use rlmesh_session::auth::HostIdentity;
 use rlmesh_session::auth::address::{base32, unbase32};
+use rlmesh_session::authority::SealPolicy;
 #[cfg(feature = "fleet")]
 use rlmesh_session::discovery;
 use rlmesh_session::pairing::PairService;
@@ -175,6 +176,11 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
         config.presence_grace = grace;
     }
     config.rearm_robots = args.rearm_robots;
+    // Beyond loopback every part is sealed: anyone on the LAN sees the
+    // traffic.
+    if !base.ip().is_loopback() && !args.no_seal {
+        config.seal = SealPolicy::All;
+    }
     config.health_log = None;
     let (transport, base) = address::open_listeners(base, None)
         .await
@@ -187,6 +193,7 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
         }
         None => SessionServer::start(transport.clone(), config.clone()).await?,
     });
+    server.limit_sessions(usize::try_from(args.max_sessions).unwrap_or(usize::MAX));
     let service = Arc::new(PairService::start(&transport, identity.clone()).await?);
     #[cfg(feature = "fleet")]
     let fleet = match args.lobby {
