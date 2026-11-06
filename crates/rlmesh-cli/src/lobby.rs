@@ -489,6 +489,7 @@ impl Home {
         let config = HostConfig {
             session: SessionId::new(),
             scene: Some(host),
+            places: scene.places(),
             seal: scene.seal(),
             lobby: None,
             ..self.template.clone()

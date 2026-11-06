@@ -15,16 +15,17 @@ use crate::address::{Address, Placed, SessionAddress, place};
 use crate::controller::{Controller, ControllerConfig, ControllerError};
 use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Rejection, Robot};
 use crate::error::SessionError;
+#[cfg(feature = "fleet")]
 use crate::lobby::{Leave, Lobby, LobbyClient, find_home, leave, run_address, wait_for_join};
+#[cfg(feature = "fleet")]
 use crate::participant::Participant;
 use crate::spec::apply::Tensor;
 use crate::spec::bind::Dir;
 use crate::spec::policy::Allow;
 use crate::spec::{BindError, Policy, RunOptions};
-use crate::wire::{
-    AuthorityView, CtlStatus, DType, MemberStage, ParticipantId, PriorityClass, ReasonCode, Role,
-    RunStage, RunState,
-};
+#[cfg(feature = "fleet")]
+use crate::wire::{AuthorityView, MemberStage, ParticipantId, RunStage, RunState};
+use crate::wire::{CtlStatus, DType, PriorityClass, ReasonCode, Role};
 
 /// How a binding reports a [`SessionError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,11 +79,13 @@ pub fn status_name(status: CtlStatus) -> String {
     snake(&format!("{status:?}"), true)
 }
 
+#[cfg(feature = "fleet")]
 /// A run's stage as bindings name it (`rejoining`).
 pub fn run_stage_name(stage: RunStage) -> String {
     snake(&format!("{stage:?}"), false)
 }
 
+#[cfg(feature = "fleet")]
 /// A run member's stage as bindings name it (`declared`).
 pub fn member_stage_name(stage: MemberStage) -> String {
     snake(&format!("{stage:?}"), false)
@@ -274,9 +277,11 @@ pub async fn connect_robot(
     Robot::declare(participant, robot_json, EdgeConfig::default()).await
 }
 
+#[cfg(feature = "fleet")]
 /// How long a robot from the lobby waits for its run's host.
 const RUN_ATTACH: Duration = Duration::from_secs(10);
 
+#[cfg(feature = "fleet")]
 /// Waits in the lobby of the home daemon `home` names (`None`: this
 /// machine's) as robot `name` until a run assigns it, then joins the run and
 /// declares `robot_json`: the robot, and its run's session. A refused join
@@ -294,6 +299,7 @@ pub async fn robot_from_lobby(
     robot_from_lobby_at(&find_home(home).await?, name, robot_json, timeout).await
 }
 
+#[cfg(feature = "fleet")]
 /// The e-stop latch of robot `name` in this process, for the lobby whose
 /// host key is `home`: one per robot process (design §6), so it outlives
 /// each run's participant until cleared locally.
@@ -310,6 +316,7 @@ fn process_latch(home: [u8; 32], name: &str) -> Arc<crate::participant::LocalLat
         .clone()
 }
 
+#[cfg(feature = "fleet")]
 /// [`robot_from_lobby`] at the lobby `lobby_address`. Every run's robot
 /// shares this process's latch for the name: a stop not cleared locally
 /// starts the next run in ESTOP.
@@ -352,6 +359,7 @@ pub async fn robot_from_lobby_at(
     }
 }
 
+#[cfg(feature = "fleet")]
 /// Why `participant`, a robot in a scene's run, should leave it (scene
 /// design §3.5): the run is closing, the host lost it (it waits in the lobby
 /// again, where its run re-sends its join), or another process took its
@@ -372,6 +380,7 @@ pub fn leaving(participant: &Participant) -> Option<Leave> {
     })
 }
 
+#[cfg(feature = "fleet")]
 /// A [`Leave`] as bindings name it: the closing reason (`scene_ended`),
 /// `robot_lost` or `superseded`.
 pub fn leave_name(leave: &Leave) -> String {
@@ -382,6 +391,7 @@ pub fn leave_name(leave: &Leave) -> String {
     }
 }
 
+#[cfg(feature = "fleet")]
 /// A run's stages, as [`run_stage_name`] names them.
 const RUN_STAGES: [RunStage; 11] = [
     RunStage::Checking,
@@ -397,6 +407,7 @@ const RUN_STAGES: [RunStage; 11] = [
     RunStage::Rejoining,
 ];
 
+#[cfg(feature = "fleet")]
 /// The run stage `name` names (`running`).
 ///
 /// # Errors
@@ -411,6 +422,7 @@ pub fn run_stage(name: &str) -> Result<RunStage, String> {
         })
 }
 
+#[cfg(feature = "fleet")]
 /// A scene run this process started from the home daemon's lobby
 /// (`run_scene`, `runScene`).
 pub struct SceneRun {
@@ -418,6 +430,7 @@ pub struct SceneRun {
     run: String,
 }
 
+#[cfg(feature = "fleet")]
 impl SceneRun {
     /// Runs `scene_toml` at the home daemon `home` names (`None`: this
     /// machine's), waiting up to `timeout` for it (`manual_arm`: wait for

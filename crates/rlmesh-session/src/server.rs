@@ -423,6 +423,7 @@ impl SessionServer {
     }
 
     /// Closes the scene `session` runs (see [`SessionHost::close_scene`]).
+    #[cfg(feature = "fleet")]
     ///
     /// # Errors
     /// [`SessionError::Closed`] when it isn't hosted here, or what closing

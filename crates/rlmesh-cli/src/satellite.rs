@@ -260,6 +260,7 @@ impl Satellite {
         config.lease_grace = LEASE_GRACE;
         config.health_log = None;
         config.scene = Some(scene.host(&order.run, &pins));
+        config.places = scene.places();
         config.seal = scene.seal();
         config.devices = devices;
         config.pins = pins;

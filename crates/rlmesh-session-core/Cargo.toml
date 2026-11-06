@@ -54,6 +54,9 @@ zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 [features]
 default = ["std"]
+# Unreleased: the lobby, scene runs and machine pairing. Off in every
+# release; CI builds and tests it.
+fleet = []
 std = [
   "blake2/std",
   "blake3/std",

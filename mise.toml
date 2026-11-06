@@ -1,4 +1,14 @@
 # ──────────────────────────────────────────────
+# Fenced features
+# ──────────────────────────────────────────────
+# Unreleased work stays behind off-by-default features that CI still lints
+# and tests (lint:rust, test:rust); no release turns them on. `fleet`: the
+# lobby, scene runs, satellites, machine pairing and mDNS.
+[vars]
+fenced_test = "rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet"
+fenced_lint = "rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet,rlmesh-python/fleet,rlmesh-node/fleet"
+
+# ──────────────────────────────────────────────
 # Tools
 # ──────────────────────────────────────────────
 [tools]
@@ -174,9 +184,12 @@ description = "Lint source files without modifying them"
 depends = ["lint:rust", "lint:python", "lint:proto", "lint:spelling", "lint:deps"]
 
 [tasks."lint:rust"]
-description = "Lint Rust code"
+description = "Lint Rust code, and again with the unreleased features (fleet, gateway) on"
 env = { CARGO_TARGET_DIR = "target/clippy", CARGO_INCREMENTAL = "0" }
-run = "cargo clippy --workspace --all-targets -- -D warnings"
+run = [
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo clippy --workspace --all-targets --features {{vars.fenced_lint}} -- -D warnings",
+]
 
 [tasks."lint:python"]
 description = "Lint Python code"
@@ -331,6 +344,7 @@ wait_for = ["setup:python"]
 run = '''
 export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" &&
   cargo nextest run --workspace --all-targets -E 'not (binary(parity_fixtures) | binary(parity_defaults))' &&
+  cargo nextest run -p rlmesh-session-core -p rlmesh-session -p rlmesh-cli -p rlmesh-device --all-targets --features {{vars.fenced_test}} &&
   cargo test --workspace --doc
 '''
 

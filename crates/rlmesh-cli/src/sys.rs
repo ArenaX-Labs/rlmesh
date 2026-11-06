@@ -156,6 +156,7 @@ impl Port for Tty {
 }
 
 /// This machine's host name, without its domain.
+#[cfg(feature = "fleet")]
 pub fn hostname() -> Option<String> {
     let mut buf = [0_u8; 256];
     // SAFETY: `buf` is writable for its whole length.

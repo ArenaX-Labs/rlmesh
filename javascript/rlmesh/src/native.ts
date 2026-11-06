@@ -123,7 +123,7 @@ interface NativeStats {
 }
 interface NativeHost { readonly address: string; close(): Promise<void> }
 interface NativeRobot {
-  readonly name: string; readonly mode: string; readonly modeReason: string; readonly leaving: string | null;
+  readonly name: string; readonly mode: string; readonly modeReason: string; readonly leaving?: string | null;
   parts(): NativePart[];
   publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
   due(path: string): NativeDue | null;
@@ -163,8 +163,9 @@ interface NativeScene {
 interface Addon {
   openHost(address: string, leaseGraceMs: number): Promise<NativeHost>;
   connectRobot(address: string, name: string, robotJson: string, timeoutS: number): Promise<NativeRobot>;
-  robotFromLobby(home: string | null, name: string, robotJson: string, timeoutS: number | null): Promise<NativeRobot>;
-  runScene(home: string | null, sceneToml: string, manualArm: boolean, timeoutS: number): Promise<NativeScene>;
+  // The lobby and scene runs: only in an addon built with the `fleet` feature (unreleased).
+  robotFromLobby?(home: string | null, name: string, robotJson: string, timeoutS: number | null): Promise<NativeRobot>;
+  runScene?(home: string | null, sceneToml: string, manualArm: boolean, timeoutS: number): Promise<NativeScene>;
   bindPolicy(address: string, name: string, policyJson: string, robot: string, options: object): Promise<NativePolicy>;
   NativeRate: new (hz: number) => NativeRate;
   startRecorder(address: string, path: string, name: string, timeoutS: number): Promise<NativeRecorder>;
@@ -454,7 +455,7 @@ export class Robot implements AsyncDisposable {
     parts: Record<string, unknown>,
     opts: { home?: string; timeout?: number; onHandover?: (group: string, from: string, to: string) => void } = {},
   ): Promise<Robot> {
-    const robot = await wait(() => native().robotFromLobby(opts.home ?? null, name, JSON.stringify(parts), opts.timeout ?? null));
+    const robot = await wait(() => fleet('robotFromLobby')(opts.home ?? null, name, JSON.stringify(parts), opts.timeout ?? null));
     return new Robot(robot, opts.onHandover);
   }
 
@@ -1038,7 +1039,15 @@ export async function runScene(
   const arm = opts.arm ?? 'auto';
   if (arm !== 'auto' && arm !== 'manual') throw new RangeError(`arm ${String(arm)}: auto or manual`);
   const text = await readFile(path, 'utf8');
-  return new Scene(await wait(() => native().runScene(opts.home ?? null, text, arm === 'manual', opts.timeout ?? 10)));
+  return new Scene(await wait(() => fleet('runScene')(opts.home ?? null, text, arm === 'manual', opts.timeout ?? 10)));
+}
+
+/** A lobby or scene call of the addon, which only a `fleet` build has (unreleased). */
+function fleet<K extends 'robotFromLobby' | 'runScene'>(name: K): NonNullable<Addon[K]> {
+  const addon = native();
+  const f = addon[name];
+  if (f === undefined) throw new Error(`${name}: this rlmesh build has no lobby or scenes (the unreleased fleet feature)`);
+  return f.bind(addon) as NonNullable<Addon[K]>;
 }
 
 /** Read a recording back: messages per topic, time ordering, the lease timeline. */

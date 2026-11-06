@@ -546,6 +546,7 @@ pub async fn connect_robot(
     })
 }
 
+#[cfg(feature = "fleet")]
 /// Waits in the lobby of the home daemon `home` names (`null`: this
 /// machine's rlmeshd) as robot `name` until a run assigns it, then joins the
 /// run and declares `robot_json`. A refused join (its pin, another map) is
@@ -739,14 +740,6 @@ impl NativeRobot {
         ))
     }
 
-    /// Why this robot should leave its scene's run (`scene_ended`,
-    /// `scene_failed`, `robot_lost`, `superseded`); `null` while it is in
-    /// the run, and outside a scene.
-    #[napi(getter)]
-    pub fn leaving(&self) -> Result<Option<String>> {
-        Ok(sdk::leaving(self.robot()?.participant()).map(|l| sdk::leave_name(&l)))
-    }
-
     /// Now on this robot's clock (`process.hrtime.bigint()`).
     #[napi]
     pub fn now_ns(&self) -> Result<BigInt> {
@@ -803,6 +796,19 @@ impl NativeRobot {
     }
 }
 
+#[cfg(feature = "fleet")]
+#[cfg(feature = "fleet")]
+#[napi]
+impl NativeRobot {
+    /// Why this robot should leave its scene's run (`scene_ended`,
+    /// `scene_failed`, `robot_lost`, `superseded`); `null` while it is in
+    /// the run, and outside a scene.
+    #[napi(getter)]
+    pub fn leaving(&self) -> Result<Option<String>> {
+        Ok(sdk::leaving(self.robot()?.participant()).map(|l| sdk::leave_name(&l)))
+    }
+}
+
 /// A refusal: its status and message.
 #[napi(object)]
 pub struct RefusalInfo {
@@ -810,6 +816,7 @@ pub struct RefusalInfo {
     pub message: String,
 }
 
+#[cfg(feature = "fleet")]
 /// One member of a run.
 #[napi(object)]
 pub struct MemberInfo {
@@ -818,6 +825,7 @@ pub struct MemberInfo {
     pub error: Option<RefusalInfo>,
 }
 
+#[cfg(feature = "fleet")]
 /// A run's state.
 #[napi(object)]
 pub struct RunInfo {
@@ -828,6 +836,7 @@ pub struct RunInfo {
     pub error: Option<RefusalInfo>,
 }
 
+#[cfg(feature = "fleet")]
 fn refusal(e: &Option<rlmesh_session::wire::CtlError>) -> Option<RefusalInfo> {
     e.as_ref().map(|e| RefusalInfo {
         status: sdk::status_name(e.status),
@@ -835,6 +844,7 @@ fn refusal(e: &Option<rlmesh_session::wire::CtlError>) -> Option<RefusalInfo> {
     })
 }
 
+#[cfg(feature = "fleet")]
 fn run_info(state: &rlmesh_session::wire::RunState) -> RunInfo {
     RunInfo {
         run: state.run.clone(),
@@ -855,6 +865,7 @@ fn run_info(state: &rlmesh_session::wire::RunState) -> RunInfo {
     }
 }
 
+#[cfg(feature = "fleet")]
 /// A scene run started from this process on the home daemon's lobby.
 #[napi]
 pub struct NativeScene {
@@ -862,6 +873,7 @@ pub struct NativeScene {
     scene: tokio::sync::Mutex<Option<sdk::SceneRun>>,
 }
 
+#[cfg(feature = "fleet")]
 /// Runs the scene file's text `scene_toml` on the home daemon `home` names
 /// (`null`: this machine's rlmeshd), waiting up to `timeout_s` for it
 /// (`manual_arm`: wait for `arm()`). A refused scene is `SessionRefused`
@@ -883,6 +895,7 @@ pub async fn run_scene(
     })
 }
 
+#[cfg(feature = "fleet")]
 impl NativeScene {
     async fn with<T>(
         &self,
@@ -896,6 +909,7 @@ impl NativeScene {
     }
 }
 
+#[cfg(feature = "fleet")]
 #[napi]
 impl NativeScene {
     /// The run's id.

@@ -886,8 +886,8 @@ impl Scene {
         }
     }
 
-    /// What run `run`'s session host carries for it: its identity, its
-    /// places and its member table, robots on their pinned devices (`pins`,
+    /// What run `run`'s session host carries for it: its identity and its
+    /// member table (its places are [`Self::places`], the host's own), robots on their pinned devices (`pins`,
     /// rlmeshd's `[robots.*]`; an unpinned robot binds to its first
     /// embodiment's device, `local` unless the caller allows more).
     pub fn host(&self, run: &str, pins: &BTreeMap<ParticipantId, Pin>) -> SceneConfig {
@@ -920,7 +920,6 @@ impl Scene {
                 closing: None,
                 rejoin_until_ns: None,
             },
-            places: self.places(),
             members,
             rejoin_ns: u64::try_from(self.rejoin.as_nanos()).unwrap_or(u64::MAX),
         }

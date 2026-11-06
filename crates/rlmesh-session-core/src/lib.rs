@@ -128,6 +128,7 @@ pub mod clock;
 pub mod crypto;
 pub mod edge;
 pub mod lease;
+#[cfg(feature = "fleet")]
 pub mod lobby;
 pub mod schedule;
 pub mod spec;

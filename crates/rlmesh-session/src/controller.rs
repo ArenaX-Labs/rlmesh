@@ -768,6 +768,14 @@ impl Controller {
     }
 
     /// Whether this process stopped the scene's run this controller is in.
+    #[cfg(not(feature = "fleet"))]
+    #[allow(clippy::unused_self)]
+    fn stopped_here(&self) -> bool {
+        false
+    }
+
+    /// Whether this process stopped the scene's run this controller is in.
+    #[cfg(feature = "fleet")]
     fn stopped_here(&self) -> bool {
         self.participant.authority_view().with(|view| {
             view.and_then(|v| v.scene.as_ref())

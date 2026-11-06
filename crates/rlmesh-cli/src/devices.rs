@@ -213,6 +213,7 @@ impl Table {
 
     /// Whether `device` may be a satellite (scene design §3.2, §4.4): a
     /// paired machine (not a board or a browser) with the `arm` verb.
+    #[cfg(feature = "fleet")]
     pub fn may_host(&self, device: &str) -> bool {
         self.devices.get(device).is_some_and(|entry| {
             matches!(entry.kind.as_deref(), None | Some("machine"))

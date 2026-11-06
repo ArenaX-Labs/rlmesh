@@ -18,6 +18,7 @@ use zeroize::Zeroize;
 pub mod handshake;
 pub mod lp;
 mod noise;
+#[cfg(feature = "fleet")]
 pub mod pairing;
 pub mod replay;
 pub mod sealed;
@@ -25,6 +26,7 @@ pub mod signed;
 
 pub use handshake::{HandshakeError, HostKeys, IkInitiator, IkResponder, ParticipantKeys};
 pub use lp::{LpTooLong, lp};
+#[cfg(feature = "fleet")]
 pub use pairing::{PairLink, PairingError, Sas};
 pub use replay::ReplayWindow;
 pub use sealed::{

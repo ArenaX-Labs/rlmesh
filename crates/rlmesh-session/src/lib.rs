@@ -83,12 +83,14 @@ pub mod chunk;
 pub mod clock;
 pub mod controller;
 pub use rlmesh_session_core::crypto;
+#[cfg(feature = "fleet")]
 pub mod discovery;
 pub mod edge;
 pub mod error;
 #[cfg(feature = "gateway")]
 pub mod gateway;
 pub mod host;
+#[cfg(feature = "fleet")]
 pub mod lobby;
 pub mod media;
 pub mod metrics;
@@ -98,6 +100,7 @@ pub mod participant;
 pub mod record;
 pub mod report;
 pub mod sample;
+#[cfg(feature = "fleet")]
 pub mod scene;
 pub mod sdk;
 pub mod server;

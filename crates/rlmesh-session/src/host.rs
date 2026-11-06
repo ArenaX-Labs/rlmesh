@@ -64,8 +64,8 @@ use crate::wire::version::VIEW_DEVICE;
 use crate::wire::{
     Applied, AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
     DeviceView, Epoch, HeartbeatEcho, HistoryQuery, IssuedKey, Lease, LeaseToken, ParticipantId,
-    ReasonCode, Role, SampleBatch, SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec,
-    TenantId, ViewReply,
+    Role, SampleBatch, SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec, TenantId,
+    ViewReply,
 };
 use bytes::Bytes;
 use rlmesh_session_core::auth::issuer::{
@@ -89,16 +89,21 @@ use zenoh::sample::SampleKind;
 
 use crate::authority::{
     Access, Applied as Accepted, Authority, AuthorityConfig, AuthorityEvent, DeviceAccess,
-    Identity, SceneConfig, SealPolicy, Verb,
+    Identity, SealPolicy,
 };
+#[cfg(feature = "fleet")]
+use crate::authority::{SceneConfig, Verb};
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
 use crate::error::SessionError;
+#[cfg(feature = "fleet")]
 use crate::lobby::{LobbyAnswer, LobbyReply, LobbyResult, LobbyService, is_lobby_verb};
 use crate::metrics::{LinkStats, ParticipantHealth, Report};
 use crate::transport::{
     CONTROL_CONGESTION, CONTROL_PRIORITY, HEARTBEAT_CONGESTION, TrafficClass, Transport,
 };
 use crate::virtual_clock::VirtualConfig;
+#[cfg(feature = "fleet")]
+use crate::wire::ReasonCode;
 
 /// Heartbeats queued between the Zenoh callback and the host task. Beyond
 /// this the host is overloaded and drops them (the echo was already sent).
@@ -207,13 +212,19 @@ pub struct HostConfig {
     /// embodiment's device for the host instance. Change one at runtime with
     /// [`SessionHost::pin`].
     pub pins: BTreeMap<ParticipantId, Pin>,
-    /// The scene this session runs (scene design §4): its places, its
-    /// member table and its identity. `None` by default: an ordinary
-    /// session. [`crate::scene::Scene::host`] builds one from a scene file.
+    /// Where each placed robot's parts appear in the session's view (scene
+    /// design §5): one binding drives every placed robot. Empty by default:
+    /// no view.
+    pub places: Vec<crate::wire::Place>,
+    /// The scene this session runs (scene design §4): its member table and
+    /// its identity. `None` by default: an ordinary session.
+    /// `crate::scene::Scene::host` builds one from a scene file.
+    #[cfg(feature = "fleet")]
     pub scene: Option<SceneConfig>,
     /// The home daemon's lobby (scene design §3), on its `_lobby` session
     /// only: the lobby verbs go to it. `None` by default: the session
     /// refuses them.
+    #[cfg(feature = "fleet")]
     pub lobby: Option<Arc<dyn LobbyService>>,
 }
 
@@ -248,7 +259,10 @@ impl HostConfig {
             seal: SealPolicy::None,
             devices: Vec::new(),
             pins: BTreeMap::new(),
+            places: Vec::new(),
+            #[cfg(feature = "fleet")]
             scene: None,
+            #[cfg(feature = "fleet")]
             lobby: None,
         }
     }
@@ -284,8 +298,8 @@ impl HostConfig {
 
 impl std::fmt::Debug for HostConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HostConfig")
-            .field("tenant", &self.tenant)
+        let mut f = f.debug_struct("HostConfig");
+        f.field("tenant", &self.tenant)
             .field("session", &self.session)
             .field("lease_grace", &self.lease_grace)
             .field("presence_grace", &self.presence_grace)
@@ -299,9 +313,11 @@ impl std::fmt::Debug for HostConfig {
             .field("seal", &self.seal)
             .field("devices", &self.devices)
             .field("pins", &self.pins)
-            .field("scene", &self.scene)
-            .field("lobby", &self.lobby.is_some())
-            .finish_non_exhaustive()
+            .field("places", &self.places);
+        #[cfg(feature = "fleet")]
+        f.field("scene", &self.scene)
+            .field("lobby", &self.lobby.is_some());
+        f.finish_non_exhaustive()
     }
 }
 
@@ -333,6 +349,7 @@ enum Change {
     /// A robot name's new pin, or none.
     Pin(ParticipantId, Option<Pin>),
     /// The scene closes: the reason's code, who, and why.
+    #[cfg(feature = "fleet")]
     Close(ReasonCode, String, String),
 }
 
@@ -340,6 +357,7 @@ impl SessionHost {
     /// Declares the host's queryables, subscribers and liveliness token, and
     /// starts its task. The authority snapshot is queryable once this
     /// returns.
+    #[allow(clippy::needless_update)]
     pub async fn start(transport: Transport, config: HostConfig) -> Result<Self, SessionError> {
         config.validate()?;
         let keys = SessionKeys::new(&config.tenant, config.session);
@@ -357,7 +375,12 @@ impl SessionHost {
                 virtual_clock: config.virtual_clock,
                 seal: config.seal.clone(),
                 access: access.clone(),
+                places: config.places.clone(),
+                #[cfg(feature = "fleet")]
                 scene: config.scene.clone(),
+                // The core's `scene`, when another crate turned its `fleet`
+                // on (a board's) and this crate's is off.
+                ..AuthorityConfig::default()
             },
         );
         let epoch = Arc::new(AtomicU64::new(authority.epoch().0));
@@ -448,7 +471,8 @@ impl SessionHost {
         let (events, _) = broadcast::channel(256);
         let cancel = CancellationToken::new();
         let (access_tx, access_rx) = mpsc::unbounded_channel();
-        let (lobby_done, lobby_rx) = mpsc::unbounded_channel();
+        #[cfg_attr(not(feature = "fleet"), allow(unused_variables))]
+        let (lobby_done, lobby_rx) = mpsc::unbounded_channel::<LobbyDone>();
 
         let identity = config.identity.clone();
         let mut actor = HostActor {
@@ -473,7 +497,9 @@ impl SessionHost {
             host_keys,
             waiting: HashMap::new(),
             failed: Vec::new(),
+            #[cfg(feature = "fleet")]
             lobby: HashMap::new(),
+            #[cfg(feature = "fleet")]
             lobby_done,
         };
         actor.publish().await;
@@ -562,6 +588,7 @@ impl SessionHost {
         self.change(Change::Pin(robot.clone(), pin)).await
     }
 
+    #[cfg(feature = "fleet")]
     /// Closes the scene this session runs (scene design §4.2), in one
     /// revision: DISARMED (ESTOP stays) with `code` (`SCENE_ENDED`, or
     /// `SCENE_FAILED` with the error in `detail`) and `by`, every lease
@@ -1089,16 +1116,27 @@ struct HostActor {
     failed: Vec<GrantId>,
     /// Lobby verbs waiting for their answer (a long poll), by sender
     /// generation and request id.
+    #[cfg(feature = "fleet")]
     lobby: HashMap<LobbyKey, LobbyWaiting>,
     /// Where a waiting lobby verb's answer comes back to the host task.
-    lobby_done: mpsc::UnboundedSender<(LobbyKey, LobbyResult)>,
+    #[cfg(feature = "fleet")]
+    lobby_done: mpsc::UnboundedSender<LobbyDone>,
 }
 
 /// A lobby verb: its sender, the sender's generation and the request id.
+#[cfg(feature = "fleet")]
 type LobbyKey = (ParticipantId, u32, u64);
+
+/// A waiting lobby verb's answer, back at the host task. Without `fleet`
+/// nothing waits: the channel never yields.
+#[cfg(feature = "fleet")]
+type LobbyDone = (LobbyKey, LobbyResult);
+#[cfg(not(feature = "fleet"))]
+type LobbyDone = std::convert::Infallible;
 
 /// A lobby verb waiting for its answer, and the latest query asking for it
 /// (a retry replaces it: the earlier one's caller has timed out).
+#[cfg(feature = "fleet")]
 struct LobbyWaiting {
     peer: Arc<Peer>,
     query: Option<Query>,
@@ -1125,8 +1163,10 @@ enum Outcome {
     /// A grant waiting for its robots: answered once they acknowledged.
     Deferred(GrantId),
     /// A lobby verb, answered now.
+    #[cfg(feature = "fleet")]
     Lobby(LobbyResult),
     /// A lobby verb answered later (a long poll).
+    #[cfg(feature = "fleet")]
     Later(tokio::sync::oneshot::Receiver<LobbyResult>),
 }
 
@@ -1142,7 +1182,7 @@ impl HostActor {
         cancel: CancellationToken,
         mut heartbeats: mpsc::Receiver<(ParticipantId, crate::wire::Heartbeat, i64)>,
         mut access: mpsc::UnboundedReceiver<AccessChange>,
-        mut lobby: mpsc::UnboundedReceiver<(LobbyKey, LobbyResult)>,
+        mut lobby: mpsc::UnboundedReceiver<LobbyDone>,
         (handshakes, ctl, state, views): (Queries, Queries, Queries, Queries),
         presence: zenoh::pubsub::Subscriber<Fifo<zenoh::sample::Sample>>,
     ) {
@@ -1182,7 +1222,7 @@ impl HostActor {
                 Some((id, heartbeat, t2)) = heartbeats.recv() => {
                     self.on_heartbeat(id, heartbeat, t2);
                 }
-                Some((key, result)) = lobby.recv() => self.finish_lobby(key, result).await,
+                Some(done) = lobby.recv() => self.finish_lobby(done).await,
                 Some((change, done)) = access.recv() => {
                     let applied = match change {
                         Change::Access(device, entry) => self.set_access(&device, entry).await,
@@ -1192,6 +1232,7 @@ impl HostActor {
                             self.pin(&robot, pin).await;
                             Ok(())
                         }
+                        #[cfg(feature = "fleet")]
                         Change::Close(code, by, detail) => {
                             self.close_scene(code, &by, &detail).await
                         }
@@ -1425,11 +1466,13 @@ impl HostActor {
             Admit::Execute => None,
         };
         // A retry of a lobby verb still waiting joins it.
+        #[cfg(feature = "fleet")]
         let lobby_key = (
             peer.participant.clone(),
             peer.identity.generation,
             request_id,
         );
+        #[cfg(feature = "fleet")]
         if admitted.is_none()
             && let Some(waiting) = self.lobby.get_mut(&lobby_key)
             && Arc::ptr_eq(&waiting.peer, &peer)
@@ -1477,6 +1520,7 @@ impl HostActor {
                         return;
                     }
                     Outcome::Reply(result, leases, keys) => (result, leases, keys),
+                    #[cfg(feature = "fleet")]
                     Outcome::Lobby(result) => {
                         let encoded = self.answer_lobby(&peer.participant, result, request_id);
                         lock(&peer.requests).complete(request_id, encoded.clone());
@@ -1490,6 +1534,7 @@ impl HostActor {
                         }
                         return;
                     }
+                    #[cfg(feature = "fleet")]
                     Outcome::Later(answer) => {
                         lock(&peer.requests).begin(request_id);
                         let done = self.lobby_done.clone();
@@ -1560,6 +1605,7 @@ impl HostActor {
             }
         }
         debug!(from = %request.from, command = ?request.command, "ctl");
+        #[cfg(feature = "fleet")]
         if is_lobby_verb(&request.command)
             && let Some(lobby) = self.config.lobby.clone()
         {
@@ -1967,6 +2013,7 @@ impl HostActor {
     }
 
     /// Closes the scene: see [`SessionHost::close_scene`].
+    #[cfg(feature = "fleet")]
     async fn close_scene(
         &mut self,
         code: ReasonCode,
@@ -2048,16 +2095,18 @@ impl HostActor {
         keys: Vec<IssuedKey>,
         request_id: u64,
     ) -> Vec<u8> {
-        self.answer_with(to, result, (leases, keys), request_id, None)
+        self.answer_with(to, result, (leases, keys), request_id, (None, None))
     }
 
     /// A lobby verb's reply: its order or its run's state.
+    #[cfg(feature = "fleet")]
     fn answer_lobby(&self, to: &ParticipantId, result: LobbyResult, request_id: u64) -> Vec<u8> {
-        let (result, reply) = match result {
-            Ok(reply) => (Ok(()), Some(reply)),
-            Err(err) => (Err(err), None),
+        let (result, lobby) = match result {
+            Ok(LobbyReply::Assignment(assignment)) => (Ok(()), (Some(assignment), None)),
+            Ok(LobbyReply::Run(run)) => (Ok(()), (None, Some(run))),
+            Err(err) => (Err(err), (None, None)),
         };
-        self.answer_with(to, result, (Vec::new(), Vec::new()), request_id, reply)
+        self.answer_with(to, result, (Vec::new(), Vec::new()), request_id, lobby)
     }
 
     fn answer_with(
@@ -2066,13 +2115,11 @@ impl HostActor {
         result: Result<(), CtlError>,
         (leases, keys): (Vec<Lease>, Vec<IssuedKey>),
         request_id: u64,
-        lobby: Option<LobbyReply>,
+        (assignment, run): (
+            Option<crate::wire::Assignment>,
+            Option<crate::wire::RunState>,
+        ),
     ) -> Vec<u8> {
-        let (assignment, run) = match lobby {
-            Some(LobbyReply::Assignment(assignment)) => (Some(assignment), None),
-            Some(LobbyReply::Run(run)) => (None, Some(run)),
-            None => (None, None),
-        };
         let state = self.snapshot();
         // A robot that takes its device view gets it in place of the state
         // (scene design §3.4): a board never decodes the state.
@@ -2100,6 +2147,7 @@ impl HostActor {
 
     /// Hands a lobby verb to the lobby: `RunScene`, `StopScene` and
     /// `ArmScene` need the `arm` verb (scene design §3.2).
+    #[cfg(feature = "fleet")]
     fn lobby_verb(&self, peer: &Peer, lobby: &dyn LobbyService, command: Command) -> Outcome {
         if matches!(
             command,
@@ -2120,7 +2168,16 @@ impl HostActor {
 
     /// Answers a lobby verb that waited, once, if its sender is still the
     /// generation that sent it.
-    async fn finish_lobby(&mut self, key: LobbyKey, result: LobbyResult) {
+    #[cfg(not(feature = "fleet"))]
+    #[allow(clippy::unused_async)]
+    async fn finish_lobby(&mut self, done: LobbyDone) {
+        match done {}
+    }
+
+    /// Answers a lobby verb that waited, once, if its sender is still the
+    /// generation that sent it.
+    #[cfg(feature = "fleet")]
+    async fn finish_lobby(&mut self, (key, result): LobbyDone) {
         let Some(waiting) = self.lobby.remove(&key) else {
             return;
         };
@@ -2290,6 +2347,7 @@ impl HostActor {
                     self.links.remove(participant);
                     // Its waiting lobby verbs end with it: the lobby sees
                     // their answers' receivers closed.
+                    #[cfg(feature = "fleet")]
                     self.lobby.retain(|(id, _, _), waiting| {
                         let keep = id != participant;
                         if !keep {

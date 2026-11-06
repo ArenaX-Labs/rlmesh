@@ -53,10 +53,12 @@
 //!   DISARMED or ESTOP, so clients never infer why. An embodiment's
 //!   `EnterSafe` takes ACTIVE, ARMED and DISARMED to SAFE; SAFE and ESTOP
 //!   stay and record its reason.
-//! - **Scenes** ([`scene`]): a session a daemon runs for a scene admits
-//!   only its members, each from its device, publishes its places, refuses
-//!   declarations whose placed paths collide, and closes in one revision
-//!   ([`Authority::close_scene`]).
+//! - **Places** ([`AuthorityConfig::places`]) go out in every snapshot, so
+//!   every binder builds the same view of several robots; a declaration
+//!   whose placed paths collide is refused (`INCOMPATIBLE`).
+//! - **Scenes** (`scene`, feature `fleet`): a session a daemon runs for a
+//!   scene admits only its members, each from its device, and closes in one
+//!   revision (`Authority::close_scene`).
 //! - In **virtual** clock mode the authority also runs the tick barrier
 //!   ([`crate::virtual_clock`]); the ticks it emits are drained with
 //!   [`Authority::take_ticks`].
@@ -75,15 +77,19 @@ use crate::wire::version::{PROTOCOL_MINOR, missing_features};
 use crate::wire::{
     AuthoritySnapshot, BindingRecord, ChannelId, ClockMapping, ClockMode, Command, CtlError,
     CtlStatus, Demand, Epoch, FenceError, Fingerprint, LastStop, Lease, LeaseEnd, LeaseToken, Mode,
-    ParticipantId, ParticipantInfo, PriorityClass, Reason, ReasonCode, Request, Role, SceneInfo,
+    ParticipantId, ParticipantInfo, Place, PriorityClass, Reason, ReasonCode, Request, Role,
     SessionId,
 };
 
 use crate::virtual_clock::{Participants, VirtualClock, VirtualConfig};
 
 pub mod access;
+#[cfg(not(feature = "fleet"))]
+mod no_scene;
+#[cfg(feature = "fleet")]
 pub mod scene;
 pub use access::{Access, DeviceAccess, Verb};
+#[cfg(feature = "fleet")]
 pub use scene::{Member, SceneConfig};
 
 /// The highest replan rate a binding declares.
@@ -318,7 +324,11 @@ pub struct AuthorityConfig {
     pub seal: SealPolicy,
     /// What each device may do (design §4); `local` may do everything.
     pub access: Access,
+    /// Where each placed robot's parts appear in the view (scene design
+    /// §5): one binding drives several robots through it. Empty: no view.
+    pub places: Vec<Place>,
     /// The scene this session runs, when a daemon started it for one.
+    #[cfg(feature = "fleet")]
     pub scene: Option<SceneConfig>,
 }
 
@@ -363,6 +373,8 @@ impl Default for AuthorityConfig {
             virtual_clock: None,
             seal: SealPolicy::None,
             access: Access::default(),
+            places: Vec::new(),
+            #[cfg(feature = "fleet")]
             scene: None,
         }
     }
@@ -431,12 +443,9 @@ pub struct Authority {
     clock: Option<VirtualClock>,
     /// Virtual ticks to publish.
     ticks: Vec<VirtualTick>,
-    /// Why the scene is ending, once it is.
-    closing: Option<Reason>,
-    /// Scene members lost and not back yet (a robot is back once it
-    /// declared again), and when the run stops waiting for them.
-    rejoining: BTreeSet<ParticipantId>,
-    rejoin_until_ns: Option<i64>,
+    /// The scene run's closing and rejoin window.
+    #[cfg(feature = "fleet")]
+    scene: scene::SceneState,
 }
 
 impl Authority {
@@ -476,9 +485,8 @@ impl Authority {
             sealed: BTreeSet::new(),
             clock,
             ticks: Vec::new(),
-            closing: None,
-            rejoining: BTreeSet::new(),
-            rejoin_until_ns: None,
+            #[cfg(feature = "fleet")]
+            scene: scene::SceneState::default(),
         }
     }
 
@@ -599,19 +607,8 @@ impl Authority {
             mode_reason: self.mode_reason.clone(),
             ended: self.ended.iter().cloned().collect(),
             last_stop: self.last_stop,
-            places: self
-                .config
-                .scene
-                .as_ref()
-                .map(|s| s.places.clone())
-                .unwrap_or_default(),
-            scene: self.config.scene.as_ref().map(|s| {
-                Box::new(SceneInfo {
-                    closing: self.closing.clone(),
-                    rejoin_until_ns: self.rejoin_until_ns,
-                    ..s.info.clone()
-                })
-            }),
+            places: self.config.places.clone(),
+            scene: self.scene_info(),
         }
     }
 
@@ -635,16 +632,7 @@ impl Authority {
     ) -> Result<Applied, CtlError> {
         self.now_ns = now_ns;
         let mut applied = Applied::default();
-        // A closing scene is over (scene design §4.2): nothing arms it or
-        // takes a lease in it again, a grant waiting for its keys included.
-        if let Some(closing) = &self.closing
-            && matches!(request.command, Command::Arm | Command::GrantLease { .. })
-        {
-            return Err(CtlError::new(
-                CtlStatus::InvalidTransition,
-                format!("the scene's run is closing ({})", closing.code),
-            ));
-        }
+        self.scene_refuses(&request.command)?;
         let from = request.from;
         match request.command {
             Command::Attach {
@@ -674,9 +662,7 @@ impl Authority {
                 self.config
                     .access
                     .check_attach(&sender.device, &roles, priority)?;
-                if let Some(scene) = &self.config.scene {
-                    scene.admit(&from, &sender.device, &roles, priority)?;
-                }
+                self.scene_admit(&from, sender, &roles, priority)?;
                 // A re-attach of the same generation (a reconnect) keeps the
                 // participant's leases; a new generation replaces the old.
                 if self
@@ -687,12 +673,7 @@ impl Authority {
                     // A scene member's restart is its loss and rejoin
                     // (scene design §4.3), seen or not: SAFE, waited for
                     // until it declared again, and armed only when asked.
-                    if self
-                        .config
-                        .scene
-                        .as_ref()
-                        .is_some_and(|s| s.members.contains_key(&from))
-                    {
+                    if self.scene_member(&from) {
                         // The old generation ends as any replaced one does,
                         // not as a detach of the new one.
                         let before = applied.events.len();
@@ -713,7 +694,7 @@ impl Authority {
                     .roster
                     .get(&from)
                     .and_then(|p| p.left.clone())
-                    .filter(|_| self.rejoining.contains(&from));
+                    .filter(|_| self.scene_rejoining(&from));
                 if left.is_none() {
                     self.rejoined(&from);
                 }
@@ -772,14 +753,7 @@ impl Authority {
             Command::Arm => {
                 self.require_attached(&from)?;
                 self.config.access.check_verb(&sender.device, Verb::Arm)?;
-                if let Some(member) = self.rejoining.first() {
-                    return Err(CtlError::new(
-                        CtlStatus::NotReady,
-                        format!(
-                            "{member} has not rejoined the run: it arms once every member is back"
-                        ),
-                    ));
-                }
+                self.scene_arm_ready()?;
                 match self.mode {
                     Mode::Disarmed | Mode::Safe => {
                         self.epoch = self.epoch.next();
@@ -1096,17 +1070,7 @@ impl Authority {
         if !self.is_attached(id) {
             return;
         }
-        let scene = self
-            .config
-            .scene
-            .as_ref()
-            .filter(|s| s.members.contains_key(id));
-        let in_scene = scene.is_some();
-        if let Some(scene) = scene {
-            self.rejoining.insert(id.clone());
-            let until = self.now_ns.saturating_add_unsigned(scene.rejoin_ns);
-            self.rejoin_until_ns.get_or_insert(until);
-        }
+        let in_scene = self.scene_lost(id);
         self.seen.remove(id);
         let before = events.len();
         let held = self.reason(ReasonCode::HolderLost, id, "");
@@ -1262,34 +1226,6 @@ impl Authority {
         (events, detached)
     }
 
-    /// Closes the scene this session runs (scene design §4.2) with `code`
-    /// (`SCENE_ENDED`, or `SCENE_FAILED` with the stage's error in
-    /// `detail`), `by` whoever stopped it, in one revision: the mode goes
-    /// DISARMED (ESTOP stays), every lease ends with the reason, and
-    /// `scene.closing` is set, which tells robots to detach and return to the
-    /// lobby. Nothing happens outside a scene or once it is closing.
-    pub fn close_scene(
-        &mut self,
-        code: ReasonCode,
-        by: &str,
-        detail: &str,
-        now_ns: i64,
-    ) -> Vec<AuthorityEvent> {
-        self.now_ns = now_ns;
-        let mut events = Vec::new();
-        if self.config.scene.is_none() || self.closing.is_some() {
-            return events;
-        }
-        let why = self.reason(code, by, detail);
-        self.revoke_all(code, &why, &mut events);
-        if self.mode != Mode::Estop {
-            self.set_mode(Mode::Disarmed, why.clone(), &mut events);
-        }
-        self.closing = Some(why);
-        self.revision += 1;
-        events
-    }
-
     /// The owner revoked `device` (design §4, §8.5): its entry goes, and
     /// every participant of it is detached (`REVOKED`), robots it embodies
     /// too. Returns what it caused and who it detached.
@@ -1344,14 +1280,6 @@ impl Authority {
             if events.len() > before {
                 self.enter_safe(why, events);
             }
-        }
-    }
-
-    /// `id` is back in the run: the window closes once every lost member
-    /// is.
-    fn rejoined(&mut self, id: &ParticipantId) {
-        if self.rejoining.remove(id) && self.rejoining.is_empty() {
-            self.rejoin_until_ns = None;
         }
     }
 
@@ -1468,20 +1396,8 @@ impl Authority {
             ));
         }
         let fingerprint = crate::spec::normalise::fingerprint(&declared);
-        // A scene's robot keeps its map for the run: bindings were made
-        // against it (scene design §4.3).
-        if self.config.scene.is_some()
-            && let Some(before) = self.contract.get(from).filter(|f| **f != fingerprint)
-        {
-            return Err(CtlError::new(
-                CtlStatus::Incompatible,
-                format!(
-                    "{from} declared another map (contract {fingerprint}, and this run's is \
-                     {before}): flash the map it ran with, or start a new run"
-                ),
-            ));
-        }
-        if let Some(scene) = self.config.scene.as_ref().filter(|s| !s.places.is_empty()) {
+        self.scene_keeps_map(from, &fingerprint)?;
+        if !self.config.places.is_empty() {
             let mut session: Vec<PartSpec> = self
                 .parts
                 .values()
@@ -1489,7 +1405,7 @@ impl Authority {
                 .cloned()
                 .collect();
             session.extend(declared.iter().cloned());
-            crate::spec::view::parts(&session, &scene.places)
+            crate::spec::view::parts(&session, &self.config.places)
                 .map_err(|why| CtlError::new(CtlStatus::Incompatible, why))?;
         }
         let current: BTreeMap<&str, &PartSpec> = self
@@ -3628,18 +3544,18 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fleet")]
     #[test]
     fn closing_a_scene_disarms_ends_every_lease_and_reaches_the_device_view() {
         let mut f = Fixture::new();
         f.auth.config.scene = Some(SceneConfig {
-            info: SceneInfo {
+            info: crate::wire::SceneInfo {
                 run: "r-7k2m".into(),
                 name: "eyeball-rig".into(),
                 fingerprint: Fingerprint::from(7),
                 closing: None,
                 rejoin_until_ns: None,
             },
-            places: Vec::new(),
             members: BTreeMap::new(),
             rejoin_ns: 0,
         });
@@ -3683,6 +3599,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fleet")]
     #[test]
     fn a_lost_scene_member_is_waited_for_and_back_only_with_its_map_and_an_explicit_arm() {
         let mut f = Fixture::new();
@@ -3691,14 +3608,13 @@ mod tests {
             max_priority: PriorityClass::Operator,
         };
         f.auth.config.scene = Some(SceneConfig {
-            info: SceneInfo {
+            info: crate::wire::SceneInfo {
                 run: "r-7k2m".into(),
                 name: "rig".into(),
                 fingerprint: Fingerprint::from(7),
                 closing: None,
                 rejoin_until_ns: None,
             },
-            places: Vec::new(),
             members: [
                 (
                     pid("robot"),

@@ -32,6 +32,9 @@ default = ["cli"]
 abi3-py311 = ["pyo3/abi3-py311"]
 cli = ["dep:rlmesh-cli"]
 stub-gen = ["dep:pyo3-stub-gen"]
+# Unreleased: the lobby and scene runs (`rlmesh-session/fleet`). Never in a
+# release wheel; CI builds it.
+fleet = ["rlmesh-cli?/fleet", "rlmesh-session/fleet"]
 
 [dependencies]
 # No `managed`: the package has its own platform client (`rlmesh.managed`);

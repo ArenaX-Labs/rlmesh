@@ -41,7 +41,9 @@ use rlmesh_session::address::{
 };
 use rlmesh_session::auth::HostIdentity;
 use rlmesh_session::auth::address::{base32, unbase32};
+#[cfg(feature = "fleet")]
 use rlmesh_session::discovery;
+#[cfg(feature = "fleet")]
 use rlmesh_session::pairing::PairService;
 use rlmesh_session::server::SessionServer;
 use rlmesh_session::wire::{PairInfo, Role, TenantId};
@@ -50,6 +52,7 @@ use zeroize::Zeroizing;
 
 use crate::cli::DaemonArgs;
 use crate::devices::{DEVICES, Pin, Table};
+#[cfg(feature = "fleet")]
 use crate::lobby::Home;
 
 /// The host's own keys in the state directory.
@@ -175,25 +178,16 @@ pub async fn daemon(
         .await
         .with_context(|| format!("could not listen on {base} (is a host already there?)"))?;
     let server = Arc::new(SessionServer::start(transport.clone(), config.clone()).await?);
-    let home = Home::start(&server, dir.clone(), config, advertised(base)).await?;
-    let satellite = crate::satellite::Satellite::start(
-        server.clone(),
-        rlmesh_session::pairing::hosts_dir(),
-        &identity.host_id(),
-        advertised(base),
-    );
-    let service = Arc::new(PairService::start(&transport, identity.clone()).await?);
-    // Without multicast it is found at its stored addresses only.
-    let advertised_on_lan = discovery::advertise(&identity.host_id(), base)
-        .map_err(|err| {
-            let _ = writeln!(stderr, "rlmeshd: not advertised over mDNS: {err}");
-        })
-        .ok();
+    #[cfg(feature = "fleet")]
+    let fleet = Fleet::start(&server, &transport, &dir, config, base, stderr).await?;
+    #[cfg(not(feature = "fleet"))]
+    drop(config);
     let (apply, mut applying) = tokio::sync::mpsc::channel(4);
     #[cfg(unix)]
     let local = crate::pair::serve_local(crate::pair::Local {
         dir: dir.clone(),
-        service: service.clone(),
+        #[cfg(feature = "fleet")]
+        service: fleet.service.clone(),
         host: PairInfo {
             device: String::new(),
             host_key: *identity.static_public(),
@@ -203,7 +197,7 @@ pub async fn daemon(
         apply,
     })?;
     #[cfg(not(unix))]
-    drop((apply, service));
+    drop(apply);
     writeln!(
         stdout,
         "rlmeshd on {base} as {}, state in {}",
@@ -228,7 +222,12 @@ pub async fn daemon(
         {
             let _ = writeln!(stderr, "rlmeshd: robot pins not written: {err:#}");
         }
-        reload(&dir, (&server, &home), &mut applied, &mut refused, stderr).await;
+        if let Some(table) = reload(&dir, &server, &mut applied, &mut refused, stderr).await {
+            #[cfg(feature = "fleet")]
+            fleet.home.devices_changed(&table);
+            #[cfg(not(feature = "fleet"))]
+            drop(table);
+        }
         if let Some(done) = now {
             let _ = done.send(());
         }
@@ -238,34 +237,33 @@ pub async fn daemon(
         local.abort();
         let _ = std::fs::remove_file(dir.join(crate::pair::SOCKET));
     }
-    drop(advertised_on_lan);
-    for task in satellite {
-        task.abort();
-    }
+    #[cfg(feature = "fleet")]
+    fleet.stop();
     server.shutdown().await;
     transport.close().await?;
     Ok(())
 }
 
-/// Applies `devices.toml` to every session if it changed since `applied`.
+/// Applies `devices.toml` to every session if it changed since `applied`,
+/// and returns the table it applied.
 async fn reload(
     dir: &Path,
-    (server, home): (&SessionServer, &Home),
+    server: &SessionServer,
     applied: &mut Table,
     refused: &mut Option<String>,
     stderr: &mut impl Write,
-) {
+) -> Option<Table> {
     match Table::read(dir) {
         Ok(table) if table != *applied => {
             // Read checked it.
             let Ok((devices, pins)) = table.host() else {
-                return;
+                return None;
             };
             server.set_devices(devices, pins).await;
-            home.devices_changed(&table);
             let _ = writeln!(stderr, "rlmeshd: {DEVICES} applied");
-            *applied = table;
+            *applied = table.clone();
             *refused = None;
+            return Some(table);
         }
         Ok(_) => *refused = None,
         Err(err) => {
@@ -275,6 +273,59 @@ async fn reload(
                 let _ = writeln!(stderr, "rlmeshd: {DEVICES} not applied: {err}");
             }
             *refused = Some(err);
+        }
+    }
+    None
+}
+
+/// The daemon's fleet services (feature `fleet`): the lobby and its
+/// scenes, its satellite side, the pairing endpoint and its mDNS
+/// advertisement.
+#[cfg(feature = "fleet")]
+struct Fleet {
+    home: Arc<Home>,
+    satellite: Vec<tokio::task::JoinHandle<()>>,
+    service: Arc<PairService>,
+    advertised: Option<discovery::Advertisement>,
+}
+
+#[cfg(feature = "fleet")]
+impl Fleet {
+    async fn start(
+        server: &Arc<SessionServer>,
+        transport: &rlmesh_session::Transport,
+        dir: &Path,
+        config: HostConfig,
+        base: SocketAddr,
+        stderr: &mut impl Write,
+    ) -> Result<Self> {
+        let identity = config.identity.clone();
+        let home = Home::start(server, dir.to_path_buf(), config, advertised(base)).await?;
+        let satellite = crate::satellite::Satellite::start(
+            server.clone(),
+            rlmesh_session::pairing::hosts_dir(),
+            &identity.host_id(),
+            advertised(base),
+        );
+        let service = Arc::new(PairService::start(transport, identity.clone()).await?);
+        // Without multicast it is found at its stored addresses only.
+        let advertised = discovery::advertise(&identity.host_id(), base)
+            .map_err(|err| {
+                let _ = writeln!(stderr, "rlmeshd: not advertised over mDNS: {err}");
+            })
+            .ok();
+        Ok(Self {
+            home,
+            satellite,
+            service,
+            advertised,
+        })
+    }
+
+    fn stop(self) {
+        drop(self.advertised);
+        for task in self.satellite {
+            task.abort();
         }
     }
 }
