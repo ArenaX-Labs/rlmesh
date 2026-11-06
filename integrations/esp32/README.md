@@ -21,7 +21,7 @@ or `-DZENOH_*` flags are needed.
    closed, provision it once over USB:
 
    ```sh
-   rlmesh devices provision --port /dev/ttyUSB0 --name eyes
+   rlmesh devices provision --port /dev/ttyUSB0 --name eye-3
    ```
 
 4. The board remembers its device key and home in NVS and joins the host's
@@ -29,11 +29,12 @@ or `-DZENOH_*` flags are needed.
    (`Policy.bind()` with no robot drives every eye at once); `Robot` applies
    pan/tilt targets at 50 Hz.
 
-Provisioning currently requires the sketch's compiled robot name (`eyes`) to
-match `--name`. The current provisioning wire message carries only the home's
-key, id and addresses; assigning the robot name during provisioning requires a
-coordinated protocol update. Boards can share this firmware only when that
-name is appropriate; distinct names still require changing the sketch.
+Every eye runs the same firmware. USB provisioning assigns its robot name
+(`eye-3`, `eye-4`, …), stored with the home's key, id and addresses in NVS.
+Names are 1–128 bytes of `[A-Za-z0-9._-]`; the whole record must fit 252 bytes.
+Provision again with a new `--name` to rename a board: it keeps its device key,
+and the host moves its pin if the board still owns the old name.
+Old provisioning records are refused: provision again after upgrading.
 
 The sketch must run before the first provisioning exchange. Later uploads
 keep NVS unless you explicitly erase all flash. A full erase makes a new device
@@ -49,6 +50,10 @@ Keep `partitions.csv` when copying an example into another sketch folder.
 `build:esp32` prints measured sizes and explains a partition overflow.
 
 ## C++ loop
+
+After Wi-Fi starts, call `provisioning.begin()` and then
+`robot.begin(provisioning, kMap)`. The stored record supplies the robot name;
+no name is compiled into the provisioned path.
 
 ```cpp
 #include <RLMesh.h>

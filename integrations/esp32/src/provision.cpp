@@ -27,7 +27,7 @@ Provisioning::~Provisioning() {
   memset(key_, 0, sizeof key_);
 }
 
-bool Provisioning::begin(const char* name) {
+bool Provisioning::begin() {
   rlmesh_device_provision_free(responder_);
   responder_ = nullptr;
   Preferences nvs;
@@ -45,10 +45,12 @@ bool Provisioning::begin(const char* name) {
   recordLen_ = nvs.getBytesLength(kRecord);
   if (recordLen_ > sizeof record_ || nvs.getBytes(kRecord, record_, recordLen_) != recordLen_ ||
       !rlmesh_device_record_valid(record_, recordLen_)) {
+    if (recordLen_ > 0)
+      Serial.println("RLMesh: invalid or old provisioning record; provision again");
     recordLen_ = 0;
   }
   nvs.end();
-  return rlmesh_device_provision_new(name, key_, kArch, record_, recordLen_, &responder_) ==
+  return rlmesh_device_provision_new(key_, kArch, record_, recordLen_, &responder_) ==
          RLMESH_DEVICE_OK;
 }
 

@@ -1,14 +1,15 @@
-// The board joins an RLMesh session over Wi-Fi as robot "eyes": two hobby
+// The board joins an RLMesh session over Wi-Fi under its provisioned name: two hobby
 // servos (pan on GPIO 18, tilt on 19) driven by whoever holds the lease.
 // Power the servos separately, not from the board's 3.3 V.
 //
 // Its home is the `rlmesh host` it was provisioned for. With the board on
 // USB, on the host's computer (close the Serial Monitor first):
 //
-//   rlmesh devices provision --port /dev/ttyUSB0 --name eyes
+//   rlmesh devices provision --port /dev/ttyUSB0 --name eye-3
 //
 // It joins the host's session with its own device key as soon as it is
-// provisioned, and on every boot after. The firmware holds no secret.
+// provisioned, and on every boot after. Every eye uses this same firmware;
+// its name comes from USB provisioning. The firmware holds no secret.
 
 #include <RLMesh.h>
 #include <WiFi.h>
@@ -89,17 +90,17 @@ void setup() {
   }
   Serial.printf(" %s\n", WiFi.localIP().toString().c_str());
   // After Wi-Fi: a first boot draws the device key from the RNG.
-  if (!provisioning.begin("eyes")) Serial.println("NVS failed: no device key");
+  if (!provisioning.begin()) Serial.println("NVS failed: no device key");
   join();
 }
 
 void join() {
   // A latch outlives a new home: the next robot starts latched.
   bool latched = robot.estopLatched();
-  bool ok = robot.begin(provisioning, "eyes", kMap);
+  bool ok = robot.begin(provisioning, kMap);
   if (latched) robot.estop("e-stop latched before a new home");
   if (!ok) {
-    Serial.println("not provisioned: rlmesh devices provision --port <this port> --name eyes");
+    Serial.println("not provisioned: rlmesh devices provision --port <this port> --name eye-3");
   }
   eyes = robot.part("eyes");
 }

@@ -49,10 +49,10 @@ class Provisioning {
   Provisioning& operator=(const Provisioning&) = delete;
   ~Provisioning();
 
-  // Loads the device key, making it on first boot, and the record, for
-  // robot `name`. Start Wi-Fi first: the RNG is cryptographic only with the
+  // Loads the device key, making it on first boot, and the named record.
+  // Start Wi-Fi first: the RNG is cryptographic only with the
   // radio on. False if NVS fails.
-  bool begin(const char* name);
+  bool begin();
   // Answers the host on `port` (the USB serial port): call it every loop.
   // True on the call that stored a new record.
   bool poll(Stream& port);
@@ -92,9 +92,9 @@ class Robot {
   bool begin(const char* address, const char* name, const char* robotJson,
              uint32_t heartbeatMs = 50);
   // Joins the home host `provisioning` holds, as its own device (session
-  // "default" on the record's first address). False when not provisioned.
-  bool begin(const Provisioning& provisioning, const char* name, const char* robotJson,
-             uint32_t heartbeatMs = 50);
+  // "default" on the record's first address), using the stored robot name.
+  // False when not provisioned.
+  bool begin(const Provisioning& provisioning, const char* robotJson, uint32_t heartbeatMs = 50);
   // Runs the robot: call it every loop().
   void poll();
   void end();
