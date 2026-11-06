@@ -36,6 +36,13 @@ for crate in "${crates[@]}"; do
     exit 1
   fi
 done
+# The fenced features stay sans-IO too: the core's `fleet` and the
+# tether's `board`.
+for fenced in rlmesh-session-core:fleet rlmesh-tether:board; do
+  crate="${fenced%%:*}" feature="${fenced#*:}"
+  echo "==> $crate --features $feature builds without std for $bare"
+  cargo clippy -q -p "$crate" --no-default-features --features "$feature" --target "$bare" -- -D warnings -D clippy::disallowed_methods
+done
 # The device runtime links as a board's static library (its allocator and
 # panic handler included) on upstream Rust: the ESP32-C6's target.
 echo "==> rlmesh-device links as a static library for $bare"

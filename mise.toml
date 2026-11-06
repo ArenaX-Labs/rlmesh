@@ -3,10 +3,11 @@
 # ──────────────────────────────────────────────
 # Unreleased work stays behind off-by-default features that CI still lints
 # and tests (lint:rust, test:rust); no release turns them on. `fleet`: the
-# lobby, scene runs, satellites, machine pairing and mDNS.
+# lobby, scene runs, satellites, machine pairing and mDNS; `board`: the
+# tether's board link; `collect`: the cockpit's episode collection.
 [vars]
-fenced_test = "rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet"
-fenced_lint = "rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet,rlmesh-python/fleet,rlmesh-node/fleet"
+fenced_test = "rlmesh-tether/board,rlmesh-cockpit/collect,rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet"
+fenced_lint = "rlmesh-tether/board,rlmesh-cockpit/collect,rlmesh-session-core/fleet,rlmesh-session/fleet,rlmesh-session/gateway,rlmesh-cli/fleet,rlmesh-device/fleet,rlmesh-python/fleet,rlmesh-node/fleet"
 
 # ──────────────────────────────────────────────
 # Tools
@@ -344,7 +345,7 @@ wait_for = ["setup:python"]
 run = '''
 export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" &&
   cargo nextest run --workspace --all-targets -E 'not (binary(parity_fixtures) | binary(parity_defaults))' &&
-  cargo nextest run -p rlmesh-session-core -p rlmesh-session -p rlmesh-cli -p rlmesh-device --all-targets --features {{vars.fenced_test}} &&
+  cargo nextest run -p rlmesh-tether -p rlmesh-cockpit -p rlmesh-session-core -p rlmesh-session -p rlmesh-cli -p rlmesh-device --all-targets --features {{vars.fenced_test}} &&
   cargo test --workspace --doc
 '''
 

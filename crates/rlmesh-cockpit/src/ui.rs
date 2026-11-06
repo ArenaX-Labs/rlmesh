@@ -157,14 +157,17 @@ pub enum LiveAction {
     Resume,
     /// Keep the host's recent recording as an incident.
     Keep,
-    /// Start an episode of [`LiveBar::task`].
+    /// Start an episode of `LiveBar::task`.
+    #[cfg(feature = "collect")]
     Start,
     /// End the episode and collect it, a success or not.
+    #[cfg(feature = "collect")]
     Finish {
         /// The operator's verdict.
         success: bool,
     },
     /// End the episode and drop it.
+    #[cfg(feature = "collect")]
     Discard,
 }
 
@@ -177,15 +180,76 @@ pub struct LiveBar {
     /// and episodes work.
     pub local: bool,
     /// The next or running episode's task.
+    #[cfg(feature = "collect")]
     pub task: String,
     /// Seconds into the running episode.
+    #[cfg(feature = "collect")]
     pub episode_s: Option<f64>,
     /// The last Keep's or episode's answer.
     pub note: Option<Result<String, String>>,
 }
 
-/// A live session's bar: pause or resume, Keep, and the episode controls
-/// (start with a task; success, fail or discard).
+/// The episode controls: start with a task; success, fail or discard.
+#[cfg(feature = "collect")]
+fn episode_controls(
+    ui: &mut egui::Ui,
+    bar: &mut LiveBar,
+    local_only: &str,
+    action: &mut Option<LiveAction>,
+) {
+    ui.separator();
+    match bar.episode_s {
+        None => {
+            ui.add_enabled(
+                bar.local,
+                egui::TextEdit::singleline(&mut bar.task)
+                    .hint_text("task")
+                    .desired_width(260.0),
+            )
+            .on_hover_text("The episode's task, as a policy is told it");
+            if ui
+                .add_enabled(bar.local, Button::new("Start episode"))
+                .on_hover_text("Collect from now until Success, Fail or Discard")
+                .on_disabled_hover_text(local_only)
+                .clicked()
+            {
+                *action = Some(LiveAction::Start);
+            }
+        }
+        Some(seconds) => {
+            ui.label(
+                RichText::new(format!("EPISODE {seconds:.1} s"))
+                    .strong()
+                    .color(tone_color(Tone::Bad)),
+            );
+            ui.label(RichText::new(&bar.task).weak());
+            if ui
+                .add(Button::new("Success").fill(tone_color(Tone::Good)))
+                .clicked()
+            {
+                *action = Some(LiveAction::Finish { success: true });
+            }
+            if ui
+                .button("Fail")
+                .on_hover_text("Collected, marked failed")
+                .clicked()
+            {
+                *action = Some(LiveAction::Finish { success: false });
+            }
+            if ui
+                .button("Discard")
+                .on_hover_text("A bad take: not collected")
+                .clicked()
+            {
+                *action = Some(LiveAction::Discard);
+            }
+        }
+    }
+}
+
+/// A live session's bar: pause or resume, Keep, and, with `collect`
+/// (unreleased), the episode controls (start with a task; success, fail or
+/// discard).
 pub fn live_bar(ui: &mut egui::Ui, bar: &mut LiveBar) -> Option<LiveAction> {
     let mut action = None;
     let local_only = "The host does not record into this machine's recordings";
@@ -220,54 +284,8 @@ pub fn live_bar(ui: &mut egui::Ui, bar: &mut LiveBar) -> Option<LiveAction> {
         {
             action = Some(LiveAction::Keep);
         }
-        ui.separator();
-        match bar.episode_s {
-            None => {
-                ui.add_enabled(
-                    bar.local,
-                    egui::TextEdit::singleline(&mut bar.task)
-                        .hint_text("task")
-                        .desired_width(260.0),
-                )
-                .on_hover_text("The episode's task, as a policy is told it");
-                if ui
-                    .add_enabled(bar.local, Button::new("Start episode"))
-                    .on_hover_text("Collect from now until Success, Fail or Discard")
-                    .on_disabled_hover_text(local_only)
-                    .clicked()
-                {
-                    action = Some(LiveAction::Start);
-                }
-            }
-            Some(seconds) => {
-                ui.label(
-                    RichText::new(format!("EPISODE {seconds:.1} s"))
-                        .strong()
-                        .color(tone_color(Tone::Bad)),
-                );
-                ui.label(RichText::new(&bar.task).weak());
-                if ui
-                    .add(Button::new("Success").fill(tone_color(Tone::Good)))
-                    .clicked()
-                {
-                    action = Some(LiveAction::Finish { success: true });
-                }
-                if ui
-                    .button("Fail")
-                    .on_hover_text("Collected, marked failed")
-                    .clicked()
-                {
-                    action = Some(LiveAction::Finish { success: false });
-                }
-                if ui
-                    .button("Discard")
-                    .on_hover_text("A bad take: not collected")
-                    .clicked()
-                {
-                    action = Some(LiveAction::Discard);
-                }
-            }
-        }
+        #[cfg(feature = "collect")]
+        episode_controls(ui, bar, local_only, &mut action);
         match &bar.note {
             Some(Ok(note)) => {
                 ui.label(RichText::new(note).weak());

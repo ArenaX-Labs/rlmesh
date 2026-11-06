@@ -17,7 +17,7 @@ if [ ! -r "$port" ] || [ ! -w "$port" ]; then
   echo "can't open $port: is the board plugged in, and are you in its group ($(stat -c %G "$port" 2>/dev/null || echo dialout))?" >&2
   exit 1
 fi
-cargo build -q -p rlmesh-tether --example board_check
+cargo build -q -p rlmesh-tether --features board --example board_check
 if [ "${usage_no_upload:-false}" != true ]; then
   echo "==> arduino-cli: examples/Eyes to $fqbn on $port"
   "$cli" compile --fqbn "$fqbn" --library "$lib" --build-path target/tether-board \

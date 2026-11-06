@@ -9,9 +9,10 @@
 //! - [`cobs`]: COBS encoding without a copy of the source, and a
 //!   byte-at-a-time decoder into a fixed buffer;
 //! - [`frame`]: `type | seq | payload | crc` frames on top of both;
-//! - [`msg`]: the messages, with exact lengths and reserved-bit checks;
-//! - [`pack`]: a part's dense cable form against the session's 8-byte
-//!   aligned layout;
+//! - [`msg`]: the messages, with exact lengths and reserved-bit checks
+//!   (a board link's only with `board`);
+//! - `pack` (feature `board`): a part's dense cable form against the
+//!   session's 8-byte aligned layout;
 //! - [`provision`]: a networked board's USB provisioning (spec §14), on the
 //!   same framing.
 
@@ -22,5 +23,6 @@ pub mod cobs;
 pub mod crc;
 pub mod frame;
 pub mod msg;
+#[cfg(feature = "board")]
 pub mod pack;
 pub mod provision;

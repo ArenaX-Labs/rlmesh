@@ -303,7 +303,8 @@ mod tests {
     fn tether_frames_and_noise_are_ignored() {
         let mut board = Responder::new("eye-3", &[7; 32], 4, None);
         let mut ping = alloc::vec![0];
-        rlmesh_tether::frame::write(rlmesh_tether::msg::ty::PING, 0, &[&[1]], |b| ping.push(b));
+        // A tether `PING` (type 0x85): not a provisioning frame.
+        rlmesh_tether::frame::write(0x85, 0, &[&[1]], |b| ping.push(b));
         assert!(feed(&mut board, &ping).is_empty());
         assert!(feed(&mut board, b"\x00garbage\x00\x01\x00").is_empty());
     }
