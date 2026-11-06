@@ -166,7 +166,7 @@ interface Addon {
   // The lobby and scene runs: only in an addon built with the `fleet` feature (unreleased).
   robotFromLobby?(home: string | null, name: string, robotJson: string, timeoutS: number | null): Promise<NativeRobot>;
   runScene?(home: string | null, sceneToml: string, manualArm: boolean, timeoutS: number): Promise<NativeScene>;
-  bindPolicy(address: string, name: string, policyJson: string, robot: string, options: object): Promise<NativePolicy>;
+  bindPolicy(address: string, name: string, policyJson: string, robot: string | null, options: object): Promise<NativePolicy>;
   NativeRate: new (hz: number) => NativeRate;
   startRecorder(address: string, path: string, name: string, timeoutS: number): Promise<NativeRecorder>;
   readRecording(path: string): Promise<RecordingSummary>;
@@ -750,8 +750,12 @@ export class Policy implements AsyncDisposable {
     this.timeout = opts.timeout ?? 10;
   }
 
-  /** Attach, bind to `robot`'s parts and declare the binding. Rejects with `BindingRefused` (§6.7). */
-  async bind(robot: string, opts: BindOptions = {}): Promise<Binding> {
+  /**
+   * Attach, bind to `robot`'s parts and declare the binding. Rejects with `BindingRefused` (§6.7).
+   * With no robot it binds the session's view of every robot, each under its name, so one policy
+   * drives several: its actions name their robot (`eye-1:eyes`).
+   */
+  async bind(robot?: string | null, opts: BindOptions = {}): Promise<Binding> {
     if (this.native) throw new SessionException(`policy ${this.name} is already bound`);
     const positional = Object.entries(opts.names ?? {}).map(([entry, mode]) => {
       if (mode !== 'positional') {
@@ -760,7 +764,7 @@ export class Policy implements AsyncDisposable {
       return entry;
     });
     this.native = await wait(() =>
-      native().bindPolicy(this.#address, this.name, this.policyJson, robot, {
+      native().bindPolicy(this.#address, this.name, this.policyJson, robot ?? null, {
         priority: this.priority,
         under: opts.under,
         at: opts.at,
@@ -1061,10 +1065,10 @@ export function readRecording(path: string): Promise<RecordingSummary> {
   });
 }
 
-/** Bind `policy` to `robot` and run `predict` until `duration` (§6.4 options). Shorthand for `Policy` + `bind` + `run`. */
+/** Bind `policy` to `robot` (`null`: every robot's view) and run `predict` until `duration` (§6.4 options). Shorthand for `Policy` + `bind` + `run`. */
 export async function run(
   policy: Record<string, unknown>,
-  robot: string,
+  robot: string | null,
   predict: Predict,
   opts: BindOptions & { session: Host | string; name?: string; priority?: Priority; duration?: number; timeout?: number },
 ): Promise<RunStats> {

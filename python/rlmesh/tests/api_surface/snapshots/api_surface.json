@@ -4331,7 +4331,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(robot: str, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, **captures: str) -> Binding"
+            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, **captures: str) -> Binding"
           },
           "binding": {
             "kind": "property",
@@ -4544,7 +4544,7 @@
       },
       "run": {
         "kind": "function",
-        "signature": "run(policy: Mapping[str, Any], robot: str, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, timeout: float = 10.0, **captures: str) -> dict[str, Any]",
+        "signature": "run(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, timeout: float = 10.0, **captures: str) -> dict[str, Any]",
         "stability": "Experimental"
       }
     }

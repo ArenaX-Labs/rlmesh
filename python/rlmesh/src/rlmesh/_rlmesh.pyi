@@ -822,7 +822,7 @@ class V2Controller:
         r"""
         The replan rate R.
         """
-    def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: builtins.str, *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ...) -> V2Controller:
+    def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: typing.Optional[builtins.str], *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ...) -> V2Controller:
         r"""
         Attaches as `name` at `priority`, waits for `robot`'s parts, binds
         `policy_json` (the policy map, §6) with the run-time options, and

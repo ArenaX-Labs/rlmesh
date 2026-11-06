@@ -1118,7 +1118,7 @@ pub struct BindOptions {
 
 fn run_options(
     name: &str,
-    robot: &str,
+    robot: Option<&str>,
     opts: &BindOptions,
 ) -> std::result::Result<RunOptions, String> {
     let pairs = |map: &Option<HashMap<String, String>>| {
@@ -1270,21 +1270,22 @@ pub struct NativePolicy {
     closing: Arc<AtomicBool>,
 }
 
-/// Attaches as `name` at `options.priority`, waits for `robot`'s parts,
-/// binds `policy_json` (the policy map, §6) with the run-time options, and
+/// Attaches as `name` at `options.priority`, waits for `robot`'s parts
+/// (`null`: the session's view of every robot, each under its name), binds
+/// `policy_json` (the policy map, §6) with the run-time options, and
 /// declares the binding.
 #[napi]
 pub async fn bind_policy(
     address: String,
     name: String,
     policy_json: String,
-    robot: String,
+    robot: Option<String>,
     options: BindOptions,
 ) -> Result<NativePolicy> {
     let address = self::address(&address)?;
     let wait = timeout(options.timeout_s.unwrap_or(10.0))?;
     let class = priority(options.priority.as_deref().unwrap_or("model"))?;
-    let run_options = run_options(&name, &robot, &options)
+    let run_options = run_options(&name, robot.as_deref(), &options)
         .map_err(|why| binding_refused(format!("binding refused: {why}")))?;
     let controller = sdk::bind_policy(&address, &name, &policy_json, &run_options, class, wait)
         .await

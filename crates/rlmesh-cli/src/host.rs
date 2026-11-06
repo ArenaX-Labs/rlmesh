@@ -174,6 +174,7 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     if let Some(grace) = args.presence_grace {
         config.presence_grace = grace;
     }
+    config.rearm_robots = args.rearm_robots;
     config.health_log = None;
     let (transport, base) = address::open_listeners(base, None)
         .await

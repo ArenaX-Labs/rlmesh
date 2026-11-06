@@ -669,3 +669,62 @@ def test_a_scene_runs_a_lobby_robot_and_a_python_policy_on_one_machine(
     thread.join(WAIT)
     assert not raised(out)
     assert out == ["scene_ended"]
+
+
+EYE = {
+    "eyes": {
+        "kind": "joints",
+        "names": ["pan", "tilt"],
+        "fields": ["pos"],
+        "hz": 200,
+        "command": "position",
+        "safe": "hold",
+        "hold_max_ms": 200,
+    }
+}
+
+EYES = {
+    "hz": 25,
+    "actions": {
+        "one": {"kind": "joints", "at": "eye-1:eyes", "command": "position", "hz": 50},
+        "two": {"kind": "joints", "at": "eye-2:eyes", "command": "position", "hz": 50},
+    },
+}
+
+
+def test_one_policy_bound_with_no_robot_drives_two_robots(host: rlmesh.Host) -> None:
+    eyes = [rlmesh.Robot(name, EYE, session=host) for name in ("eye-1", "eye-2")]
+    try:
+        eyes[0].arm()
+        with rlmesh.Policy(EYES, session=host, name="tracker") as policy:
+            binding = policy.bind()
+            assert "binding tracker on scene" in str(binding)
+            gaze = np.full((1, 2), 0.25, dtype=np.float32)
+            thread, result = in_thread(
+                lambda: policy.run(
+                    lambda obs: {"one": gaze, "two": gaze}, duration=30.0
+                )
+            )
+            driven = [False, False]
+
+            def both() -> bool:
+                for i, eye in enumerate(eyes):
+                    eye.publish("eyes", pos=np.zeros(2, dtype=np.float32))
+                    due = eye.due("eyes")
+                    if (
+                        due is not None
+                        and due.mode == "driving"
+                        and due.value is not None
+                    ):
+                        driven[i] |= abs(float(np.asarray(due.value)[0]) - 0.25) < 1e-6
+                return all(driven)
+
+            wait_until(
+                "both eyes driven by one policy", lambda: raised(result) or both()
+            )
+            policy.stop()
+            thread.join(WAIT)
+            assert not raised(result)
+    finally:
+        for eye in eyes:
+            eye.close()

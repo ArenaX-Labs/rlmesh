@@ -659,7 +659,7 @@ class Policy:
 
     def bind(
         self,
-        robot: str,
+        robot: str | None = None,
         *,
         under: str | None = None,
         at: Mapping[str, str] | None = None,
@@ -669,6 +669,9 @@ class Policy:
     ) -> Binding:
         """Attach, bind to ``robot``'s parts and declare the binding.
 
+        With no ``robot`` it binds the session's view of every robot, each
+        under its name, so one policy drives several: its actions name
+        their robot (``"at": "eye-1:eyes"``).
         ``under`` scopes relative selectors, ``at`` overrides an entry's
         path, ``names={"entry": "positional"}`` binds joints by index,
         ``allow`` adds conversions for every entry, and keyword captures
@@ -884,7 +887,7 @@ class Rate:
 
 def run(
     policy: Mapping[str, Any],
-    robot: str,
+    robot: str | None,
     predict: Predict,
     *,
     session: Host | str,
@@ -898,7 +901,7 @@ def run(
     timeout: float = 10.0,
     **captures: str,
 ) -> dict[str, Any]:
-    """Bind ``policy`` to ``robot`` and run ``predict`` until ``duration`` (§6.4 options).
+    """Bind ``policy`` to ``robot`` (``None``: every robot's view) and run ``predict`` until ``duration``.
 
     Shorthand for :class:`Policy` + :meth:`Policy.bind` + :meth:`Policy.run`.
     """
