@@ -44,6 +44,6 @@ refreshes it (`test` and `test:affected` do this themselves).
   (`python/rlmesh/tests/api_surface/snapshots/`) with the change it records.
 - Conventional commit titles; squash-merged PR titles become the commit. The
   changelog is hand-written (`mise run changelog:draft` only drafts bullets).
-- Half-built features get removed, not left behind flags.
+- Unreleased work may be fenced if CI builds and tests it; nothing half-built ships.
 
 Maintainer docs: `docs/local-dev.md`, `docs/testing.md`, `CONTRIBUTING.md`.
