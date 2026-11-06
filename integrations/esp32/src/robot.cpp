@@ -19,13 +19,12 @@ bool Robot::begin(const char* address, const char* name, const char* robotJson,
   return start(config);
 }
 
-bool Robot::begin(const Provisioning& provisioning, const char* name, const char* robotJson,
-                  uint32_t heartbeatMs) {
+bool Robot::begin(const Provisioning& provisioning, const char* robotJson, uint32_t heartbeatMs) {
   end();
   if (!provisioning.provisioned()) return false;
   rlmesh_device_robot_config_t config = {
       nullptr, provisioning.key_, provisioning.record_, provisioning.recordLen_,
-      name,    robotJson,         heartbeatMs,          &esp32::fillRandom};
+      nullptr, robotJson,         heartbeatMs,          &esp32::fillRandom};
   return start(config);
 }
 
@@ -33,6 +32,14 @@ bool Robot::start(const rlmesh_device_robot_config_t& config) {
   end();
   // A hostname: letters, digits and '-'.
   snprintf(mdnsName_, sizeof mdnsName_, "rlmesh-%s", config.name != nullptr ? config.name : "");
+  if (config.device_key != nullptr) {
+    uint8_t publicKey[32];
+    rlmesh_device_key_public(config.device_key, publicKey);
+    // The device key gives each copy of the firmware its own hostname.
+    snprintf(mdnsName_, sizeof mdnsName_, "rlmesh-%02x%02x%02x%02x%02x%02x%02x%02x", publicKey[0],
+             publicKey[1], publicKey[2], publicKey[3], publicKey[4], publicKey[5], publicKey[6],
+             publicKey[7]);
+  }
   for (char* c = mdnsName_; *c != '\0'; ++c) {
     if (!isalnum(static_cast<unsigned char>(*c))) *c = '-';
   }
