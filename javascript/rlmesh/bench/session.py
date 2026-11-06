@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-import rlmesh.v2 as rlmesh
+from rlmesh import realtime
 
 SECONDS = float(os.environ.get("BENCH_SECONDS", "10"))
 SPEC = Path(__file__).resolve().parents[3] / "crates" / "rlmesh-session-core" / "tests" / "fixtures"
@@ -61,7 +61,7 @@ def quantiles(xs: list[float]) -> dict[str, float]:
 
 def main() -> None:
     cpu0 = resource.getrusage(resource.RUSAGE_SELF)
-    with rlmesh.Host() as host, rlmesh.Robot("ur10e", UR10E, session=host) as robot:
+    with realtime.Host() as host, realtime.Robot("ur10e", UR10E, session=host) as robot:
         robot.arm()
         stop = threading.Event()
         work: list[float] = []
@@ -69,7 +69,7 @@ def main() -> None:
         missed: list[int] = []
 
         def control() -> None:
-            rate = rlmesh.Rate(1000)
+            rate = realtime.Rate(1000)
             q = HOME
             zeros = np.zeros(6, dtype=np.float32)
             force = np.array([0, 0, 9.8], dtype=np.float32)
@@ -91,7 +91,7 @@ def main() -> None:
         def cameras() -> None:
             wrist = np.zeros((480, 640, 3), dtype=np.uint8)
             scene = np.zeros((720, 1280, 3), dtype=np.uint8)
-            rate = rlmesh.Rate(30)
+            rate = realtime.Rate(30)
             while not stop.is_set():
                 robot.publish("wrist/cam", wrist)
                 robot.publish("scene/cam", scene)
@@ -101,11 +101,11 @@ def main() -> None:
         threads = [threading.Thread(target=f, daemon=True) for f in (control, cameras)]
         for t in threads:
             t.start()
-        with rlmesh.Policy(POLICY, session=host, name="bench") as policy:
+        with realtime.Policy(POLICY, session=host, name="bench") as policy:
             policy.bind("ur10e")
             hold = np.zeros((10, 6), dtype=np.float32)
 
-            def predict(obs: rlmesh.Observation) -> dict[str, np.ndarray]:
+            def predict(obs: realtime.Observation) -> dict[str, np.ndarray]:
                 hold[:] = obs["q"]
                 return {"arm": hold}
 

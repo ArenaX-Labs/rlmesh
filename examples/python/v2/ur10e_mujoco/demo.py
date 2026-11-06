@@ -63,7 +63,7 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 os.environ.setdefault("LP_NUM_THREADS", "2")
 
 import numpy as np
-import rlmesh.v2 as rlmesh
+from rlmesh import realtime
 
 HERE = Path(__file__).resolve().parent
 ROBOT = "ur10e"
@@ -189,7 +189,7 @@ def percentiles(ns: list[int]) -> dict[str, float] | None:
 class Sim:
     """The UR10e in MuJoCo, published as ``ROBOT``, its edge ticked every 1 ms."""
 
-    def __init__(self, args: argparse.Namespace, session: rlmesh.Host | str) -> None:
+    def __init__(self, args: argparse.Namespace, session: realtime.Host | str) -> None:
         # MuJoCo is the demo's optional dependency (`uv sync --group mujoco`).
         mujoco: Any = importlib.import_module("mujoco")
         self.mj = mujoco
@@ -204,7 +204,7 @@ class Sim:
         self.extras = [f"extra/s{i}" for i in range(args.extra_streams)]
         self.lock = threading.Lock()
         self.stop = threading.Event()
-        self.robot = rlmesh.Robot(ROBOT, robot_map(args), session=session)
+        self.robot = realtime.Robot(ROBOT, robot_map(args), session=session)
         self.ticks: list[
             tuple[int, int, str, int | None]
         ] = []  # capture, late, mode, token
@@ -250,7 +250,7 @@ class Sim:
             viewer = importlib.import_module("mujoco.viewer").launch_passive(
                 model, data
             )
-        rate = rlmesh.Rate(CONTROL_HZ)
+        rate = realtime.Rate(CONTROL_HZ)
         late = rate.sleep()
         tick = 0
         while not self.stop.is_set():
@@ -316,7 +316,7 @@ class Sim:
         for flag in ("mjRND_SHADOW", "mjRND_REFLECTION", "mjRND_SKYBOX"):
             renderer.scene.flags[getattr(mj.mjtRndFlag, flag)] = 0
         scratch = mj.MjData(model)
-        rate = rlmesh.Rate(self.args.camera_hz)
+        rate = realtime.Rate(self.args.camera_hz)
         try:
             while not self.stop.is_set():
                 with self.lock:
@@ -626,8 +626,8 @@ def run_robot(args: argparse.Namespace) -> int:
         args.record or Path(tempfile.mkdtemp(prefix="rlmesh-ur10e-")) / "session.mcap"
     )
     cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
-    with rlmesh.Host() as host:
-        recorder = rlmesh.Recorder(record, session=host)
+    with realtime.Host() as host:
+        recorder = realtime.Recorder(record, session=host)
         sim = Sim(args, host)
         sim.start()
         children: dict[str, Any] = {}
@@ -669,7 +669,7 @@ def run_robot(args: argparse.Namespace) -> int:
         edge = sim.finish()
         robot_cpu = cpu_share(cpu0, wall0)
         recorded = recorder.close()
-    recording = rlmesh.read_recording(record)
+    recording = realtime.read_recording(record)
     out = report(args, sim, edge, recorded, recording, children)
     out["cpu"] = {
         "robot_process": robot_cpu,
@@ -746,7 +746,7 @@ def run_policy(args: argparse.Namespace) -> int:
     # Per start, the age of the newest sample in each window input.
     window_ages: dict[str, list[int]] = {}
 
-    def predict(obs: rlmesh.Observation) -> dict[str, Any]:
+    def predict(obs: realtime.Observation) -> dict[str, Any]:
         for entry, age in obs.meta.ages_ns.items():
             if age is not None and (entry == "ft" or entry.startswith("x")):
                 window_ages.setdefault(entry, []).append(age)
@@ -764,7 +764,9 @@ def run_policy(args: argparse.Namespace) -> int:
         step = MAX_SPEED * dt * np.arange(1, horizon + 1)[:, None]
         return {"arm": (q + np.clip(target - q, -step, step)).astype(np.float32)}
 
-    with rlmesh.Policy(policy_map(args), session=args.address, name="policy") as policy:
+    with realtime.Policy(
+        policy_map(args), session=args.address, name="policy"
+    ) as policy:
         binding = policy.bind(ROBOT)
         print(binding, file=sys.stderr, flush=True)
         cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
@@ -844,7 +846,7 @@ def run_operator(args: argparse.Namespace) -> int:
     haptic = args.operator == "haptic"
     hz = CONTROL_HZ if haptic else OPERATOR_HZ
     horizon = 1 if haptic else OPERATOR_HORIZON
-    with rlmesh.Policy(
+    with realtime.Policy(
         operator_map(args), session=args.address, name="operator", priority="operator"
     ) as op:
         op.bind(ROBOT)
@@ -867,7 +869,7 @@ def run_operator(args: argparse.Namespace) -> int:
                 target=feed_script, args=(script, keys, start), daemon=True
             )
         feeder.start()
-        rate = rlmesh.Rate(hz)
+        rate = realtime.Rate(hz)
         active, joint = False, 0
         # The jog target and the last commanded pose, set from the measured
         # pose on the first start after a takeover (`fresh`).
@@ -884,7 +886,7 @@ def run_operator(args: argparse.Namespace) -> int:
                         try:
                             op.acquire()
                             break
-                        except rlmesh.SessionRefused:
+                        except realtime.SessionRefused:
                             time.sleep(0.02)
                     active, fresh = True, True
                     events.append((stamp, "take"))
@@ -905,7 +907,7 @@ def run_operator(args: argparse.Namespace) -> int:
             if active:
                 try:
                     obs = op.observe()
-                except rlmesh.StartSkipped:
+                except realtime.StartSkipped:
                     rate.sleep()
                     continue
                 if fresh:

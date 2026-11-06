@@ -1,18 +1,17 @@
-"""Real-time sessions (protocol v2): robots, policies and the edge.
+"""Real-time sessions: robots, policies and the edge (Experimental).
 
-The v0.2 physical-AI API, side by side with the v1 SDK (Gym envs, model
-servers) in the same package. A robot is a flat map ``path -> part``; a
-policy declares what it wants by kind and path, binds to a robot, and sends
-timed action chunks that the robot's edge plays, holds, or replaces with
-its safe behaviour. ``import rlmesh.v2 as rlmesh`` runs the spec's examples
-as written::
+The physical-AI API, beside the evaluation API (Gym envs, model servers)
+of the top-level package. A robot is a flat map ``path -> part``; a policy
+declares what it wants by kind and path, binds to a robot, and sends timed
+action chunks that the robot's edge plays, holds, or replaces with its safe
+behaviour::
 
-    import rlmesh.v2 as rlmesh
+    from rlmesh import realtime
 
-    with rlmesh.Host() as host:
-        robot = rlmesh.Robot("ur10e", UR10E, session=host)
+    with realtime.Host() as host:
+        robot = realtime.Robot("ur10e", UR10E, session=host)
         robot.arm()
-        policy = rlmesh.Policy(HOLD, session=host, name="hold")
+        policy = realtime.Policy(HOLD, session=host, name="hold")
         print(policy.bind("ur10e"))  # the binding table
         # robot loop: robot.publish("arm", pos=q, vel=dq); due = robot.due("arm")
         policy.run(lambda obs: {"arm": obs["q"][None]}, duration=5.0)
@@ -41,7 +40,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 try:
     import numpy as np
 except ImportError as exc:  # pragma: no cover - import guard
-    raise ImportError("rlmesh.v2 requires numpy. Install rlmesh[numpy].") from exc
+    raise ImportError("rlmesh.realtime requires numpy. Install rlmesh[numpy].") from exc
 
 from .._client._endpoint import redact_address
 from .._rlmesh import (

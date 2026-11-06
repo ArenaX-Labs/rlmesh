@@ -1,4 +1,4 @@
-"""Python in the loop: the bench2 T1/T2 shape through ``rlmesh.v2``.
+"""Python in the loop: the bench2 T1/T2 shape through ``rlmesh.realtime``.
 
 The Rust ``session_bench`` (``crates/rlmesh-session/examples``) on the same
 shape, with Python on both sides: an embodiment process (the session host,
@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import rlmesh.v2 as rlmesh
+from rlmesh import realtime
 
 ROBOT = "ur10"
 RING = 1 << 16
@@ -89,15 +89,15 @@ def percentiles(ns: list[int]) -> dict[str, float] | None:
     }
 
 
-def embodiment(args: argparse.Namespace, host: rlmesh.Host | str) -> dict[str, Any]:
-    robot = rlmesh.Robot(ROBOT, robot_map(args), session=host)
+def embodiment(args: argparse.Namespace, host: realtime.Host | str) -> dict[str, Any]:
+    robot = realtime.Robot(ROBOT, robot_map(args), session=host)
     robot.arm()
     ft_capture = np.zeros(RING, dtype=np.int64)
     stop = threading.Event()
 
     def cameras() -> None:
         frames = [np.full((480, 640, 3), t * 16, dtype=np.uint8) for t in range(16)]
-        rate = rlmesh.Rate(args.camera_hz)
+        rate = realtime.Rate(args.camera_hz)
         i = 0
         while not stop.is_set():
             robot.publish("camera", frames[i % len(frames)])
@@ -116,7 +116,7 @@ def embodiment(args: argparse.Namespace, host: rlmesh.Host | str) -> dict[str, A
     ] = {}  # (token, seq) -> capture, receipt, t0
     work: list[int] = []
     value = np.zeros(18, dtype=np.float32)
-    rate = rlmesh.Rate(1000)
+    rate = realtime.Rate(1000)
     start = time.monotonic_ns()
     end = start + int((args.warmup_s + args.duration_s) * 1e9) + 200_000_000
     late = rate.sleep()
@@ -196,11 +196,13 @@ def embodiment(args: argparse.Namespace, host: rlmesh.Host | str) -> dict[str, A
 def controller(args: argparse.Namespace) -> dict[str, Any]:
     horizon = args.horizon
 
-    def predict(obs: rlmesh.Observation) -> dict[str, Any]:
+    def predict(obs: realtime.Observation) -> dict[str, Any]:
         # The "model": hold the first six floats of the wrench.
         return {"cmd": np.broadcast_to(obs["ft"][:6], (horizon, 6))}
 
-    with rlmesh.Policy(policy_map(args), session=args.address, name="policy") as policy:
+    with realtime.Policy(
+        policy_map(args), session=args.address, name="policy"
+    ) as policy:
         policy.bind(ROBOT)
         stats = policy.run(predict, duration=args.warmup_s + args.duration_s + 2.0)
         return {"run": stats, "events": policy.events()}
@@ -228,7 +230,7 @@ def main() -> None:
     elif args.role == "embodiment" and args.address:
         result = embodiment(args, args.address)
     else:
-        with rlmesh.Host() as host:
+        with realtime.Host() as host:
             child = None
             out = Path(tempfile.mkdtemp()) / "controller.json"
             if args.role == "both":

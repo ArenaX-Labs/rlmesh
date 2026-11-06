@@ -2186,7 +2186,7 @@ condition (Node 22+, Electron's main process): `Host`, `Robot`, `Policy`, `Rate`
 binds `rlmesh-session` (its edge included) directly, as PyO3 does. It is
 Experimental, binds the v2 session like R-29, and has no manifest column.
 
-- **Python's `rlmesh.v2`, one to one.** The same classes, verbs and
+- **Python's `rlmesh.realtime`, one to one.** The same classes, verbs and
   options, with JS names (`now_ns` is `nowNs`, `edge_stats` is `edgeStats`,
   keyword arguments are an options object). Python's keyword fields
   (`publish("arm", pos=q, vel=dq)`) are an object (`publish('arm', { pos, vel

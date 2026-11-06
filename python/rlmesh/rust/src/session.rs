@@ -1,7 +1,7 @@
 //! PyO3 bindings for real-time sessions (protocol v2, the v0.2 spec): an
 //! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound
 //! policy ([`rlmesh_session::Controller`]) and an MCAP recorder
-//! ([`rlmesh_session::record::Recorder`]). The `rlmesh.v2` package wraps
+//! ([`rlmesh_session::record::Recorder`]). The `rlmesh.realtime` package wraps
 //! them; every rule (packing, binding, the edge, leases, the run loop)
 //! stays in the Rust crates.
 //!

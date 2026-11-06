@@ -1,5 +1,5 @@
 // Real-time sessions (protocol v2) in-process, over the native addon (Node >= 22, Electron, Bun):
-// a host, robots and policies on Zenoh directly, the twin of Python's `rlmesh.v2`.
+// a host, robots and policies on Zenoh directly, the twin of Python's `rlmesh.realtime`.
 //
 //   import { Host, Robot, Policy, Rate } from 'rlmesh';
 //   const host = await Host.open();  // Node 24: `await using host = ...` closes it for you

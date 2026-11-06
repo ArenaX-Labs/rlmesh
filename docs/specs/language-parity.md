@@ -1,6 +1,6 @@
 # Language parity
 
-Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (all **Approved by the user, 2026-10-19**). JS (browser) binding: Experimental, 2026-10-20; a client of the v2 session, not of this surface (R-29). JS (Node) binding: Experimental, 2026-10-20; Python's `rlmesh.v2` over a native addon (R-30).
+Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (all **Approved by the user, 2026-10-19**). JS (browser) binding: Experimental, 2026-10-20; a client of the v2 session, not of this surface (R-29). JS (Node) binding: Experimental, 2026-10-20; Python's `rlmesh.realtime` over a native addon (R-30).
 
 RLMesh is one library in five languages: Python (the reference), Rust (the
 `rlmesh` facade crate), C (`crates/rlmesh-capi/include/rlmesh.h`), C++
@@ -112,7 +112,7 @@ has a Stable surface.
 The Node binding (R-30) is the same package's other half: in Node 22+ and
 Electron's main process, `Host`, `Robot`, `Policy` and `Rate` bind
 `rlmesh-session` (its edge included) directly through a Node-API addon
-(`javascript/rlmesh/native`), one to one with Python's `rlmesh.v2` and
+(`javascript/rlmesh/native`), one to one with Python's `rlmesh.realtime` and
 async-first like the browser. Robots, edges and device loops run here, not in
 a page. Its gate is `mise run test:js:native` (docs: [the Node
 binding](../node.md)).
