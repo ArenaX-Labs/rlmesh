@@ -118,9 +118,6 @@ def main():
                         "test",
                         "-p",
                         "rlmesh",
-                        # The C ABI's build: sessions, as C and C++ run them.
-                        "--features",
-                        "lockstep",
                         "--test",
                         "parity_fixtures",
                         "--test",
