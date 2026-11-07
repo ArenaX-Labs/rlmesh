@@ -92,9 +92,13 @@ Workflow semantics are governed by a negotiated workflow edition. Each base edit
 
 An edition is a sticky declaration in a participant's source, not a version: it records the contract an env or model was authored against, and upgrading the rlmesh package never moves it. How to declare one, and which surface wins when several are set, is in [workflow editions](editions/index.md).
 
-### The guarantee
+### What you can rely on
 
-A participant authored against a sealed edition keeps working with any later participant, as long as the later one does not require something the older one cannot express. The session runs at the older participant's declared edition. A genuinely new type the old side never knew is a clean refusal, not a silent conversion.
+RLMesh is pre-1.0, so the promises are in three tiers, from strongest to weakest:
+
+1. **A frozen environment image reproduces its results.** The environment never changes inside its container, whatever RLMesh release drives it later, as long as that release still speaks the image's protocol.
+2. **An edition locks default behaviour within a release line.** A participant authored against a sealed edition keeps running at that edition with any later release of the same line (for example, every 0.2.x), as long as the other side does not require something the older one cannot express. The session runs at the older participant's declared edition; a genuinely new type the old side never knew is a clean refusal, not a silent conversion. Keeping an edition across every future release is the goal for 1.0, not a promise yet.
+3. **Before 1.0, the wire can change between minor versions.** A minor release may replace the protocol, as 0.2 replaced the 0.1 gRPC wire with real-time sessions, and may stop offering an older edition. Upgrading `rlmesh` never forces your simulator or model framework to move with it: they stay in their own images. The managed platform keeps older environments runnable on their own runner, and a bridge so 0.1 and 0.2 components can be evaluated together is on its roadmap; it does not exist yet.
 
 ### How the session edition is chosen
 
@@ -106,7 +110,7 @@ only 2026.10, so no separate env pin is needed. See [workflow editions](editions
 
 ### What is part of the contract
 
-- **Sealed editions are retained within a major line.** Every later release of the line keeps offering a sealed edition; only a new major line (each 0.x minor, before 1.0) may drop one, by name and with its reason in `[workflow.dropped_editions]`. `rlmesh.toml` lists the retained editions, the `rlmesh-proto` crate ships a copy of that list, and every build generates its offer from it at build time. `mise run policy:check` fails if the generated list and the manifest disagree, if a sealed edition leaves the list, or if the list lost an edition the last release tag's manifest had sealed.
+- **Sealed editions are retained within a release line.** Every later release of the line keeps offering a sealed edition; only a new line (each 0.x minor, before 1.0) may drop one, by name and with its reason in `[workflow.dropped_editions]`. `rlmesh.toml` lists the retained editions, the `rlmesh-proto` crate ships a copy of that list, and every build generates its offer from it at build time. `mise run policy:check` fails if the generated list and the manifest disagree, if a sealed edition leaves the list, or if the list lost an edition the last release tag's manifest had sealed.
 
 ### Across 0.1 and 0.2
 
@@ -120,7 +124,13 @@ driver messages remain protobuf data types for now; they are not served remotely
 ## Versioning roadmap
 
 0.2.0 seals the 2026.10 workflow edition and freezes the realtime session
-protocol. The published 0.1 crates continue to support the 0.1 wire independently.
+protocol for the 0.2 line: every 0.2.x release speaks it unchanged. A later
+minor may still change it before 1.0. The published 0.1 crates continue to
+support the 0.1 wire independently.
+
+Open: whether 0.2 keeps offering the `2026.06` edition, and how editions
+(lockable behaviour) and wire versions (rewrites) relate long term. 0.2 drops
+`2026.06` today; that decision is not final.
 Native Rust APIs remain Preview; C, C++ and C# remain Experimental. The fenced
 C ABI is not released in 0.2 and will ship as ABI 7 in a later release.
 
