@@ -1426,11 +1426,11 @@ spans (Spaces SPC-31); an engine-specific bridge belongs to its integration
 ### R-25 Language-only extras are fenced
 
 - Rust: `rlmesh::ext` holds documented user-facing extras (`CancelToken`,
-  address types, endpoint-token constants, `remove_stale_socket`; each area
+  session address parsing; each area
   lists its own).
   `rlmesh::binding` is `#[doc(hidden)]` and semver-exempt, for the in-repo
   bindings (Python, C ABI). So is `rlmesh::lockstep`, the v2 session protocol
-  engine behind the `lockstep` feature that the bindings drive; users reach
+  engine that the bindings drive; users reach
   it through the shared `Model`, `Binding` and `EnvServer`. The live viewer
   engine (`rlmesh::viewer`, behind `View`) and the recorder's video writer
   (`rlmesh::recorder::video`, behind `Recorder.capture`) are hidden plumbing
@@ -1512,7 +1512,7 @@ spans (Spaces SPC-31); an engine-specific bridge belongs to its integration
   | `RenderFrame` (`:166`)                                                                                                                                                                                                                                                                                                                     | `binding` with `RenderRequest` / `RenderResult`; removed once `render` returns a `Value` ([Env](env.md)) |
   | `CURRENT_WORKFLOW_EDITION`, `parse_declared_edition` (`:149`); `PROTOCOL_GENERATION`, `PeerInfoOverride`, `peer_info_override`, `update_peer_info_override`, `supported_workflow_editions` (`:152-155`)                                                                                                                                    | `binding` (`build_info()` and `current_workflow_edition()` are the shared surface)                       |
   | `telemetry` (`:157`), `PeerCeiling`, `TRIAL_INDEX_OPTION` (`:164`)                                                                                                                                                                                                                                                                         | `binding`                                                                                                |
-  | `remove_stale_socket` (`:132`), `BindAddress`, `ConnectAddress` (`:133`), `ENV_ENDPOINT_TOKEN_ENV`, `MODEL_ENDPOINT_TOKEN_ENV` (`:165`)                                                                                                                                                                                                    | `ext`                                                                                                    |
+  | `ConnectAddress` (session address parsing; v1 address helpers and endpoint-token constants are removed)                                                                                                                                                                                                                                    | `ext`                                                                                                    |
   | `async_trait` (`:134`), `CancellationToken` (`:167`)                                                                                                                                                                                                                                                                                       | removed; `ext::CancelToken` replaces the token                                                           |
   | `RuntimeHooks`, `HookError`, `NoopRuntimeHooks`, the `*Event` types (`:159-162`), `RuntimeReport` (`:164`), `RunLocalOptions`, `ServeModelOptions` (`:146`), `BoundEnvServer`, `BoundModelServer`                                                                                                                                          | `binding` until their replacements land, then removed                                                    |
 

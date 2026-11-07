@@ -115,7 +115,7 @@ Neither side cares what language the other is written in: the same model can dri
 
 **Duck-typed authoring.** You do not inherit from a base class to write an env or a policy. The header detects the members a class or lambda has: `predict`, `predict_batch`, `predict_chunk` and `predict_chunk_batch` for a policy, with or without a context parameter; `reset`, `step`, optional `render`, `close`, `id`, `render_mode` and `metadata` for an env. A class without the required members does not compile.
 
-**`rlmesh::ext`** holds native-only extras: `ext::CancelToken` for cancellation, `ext::CancelledError`, bearer-token options (`ext::EnvServerOptions`, `ext::ModelServeOptions`), DLPack ownership (`ext::DlpackPtr`), `ext::env_server_describe_json` and `ext::register_entrypoint`.
+**`rlmesh::ext`** holds native-only extras: `ext::CancelToken` for cancellation, `ext::CancelledError`, server describe publication and model concurrency options, DLPack ownership (`ext::DlpackPtr`), `ext::env_server_describe_json` and `ext::register_entrypoint`.
 
 ## Core concepts
 
