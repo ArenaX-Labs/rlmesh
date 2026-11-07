@@ -4,11 +4,11 @@
 //!
 //! A live session can be paused: the cockpit replays its recent history
 //! ([`History`]) while the feed keeps draining underneath, and only the
-//! e-stop stays on. Keep, and with `collect` (unreleased) the episode
-//! controls, work on the host's recording, through this machine's
-//! recordings directory: Keep keeps the last minutes as an incident, an
-//! episode is collected into `collected/{dataset}/` when the operator marks
-//! it a success or a failure.
+//! e-stop stays on. Keep asks the host to keep the last minutes of its
+//! recording as an incident. With `collect` (unreleased) the episode
+//! controls work on the host's recording through this machine's recordings
+//! directory: an episode is collected into `collected/{dataset}/` when the
+//! operator marks it a success or a failure.
 
 use std::path::{Path, PathBuf};
 #[cfg(feature = "collect")]
@@ -21,7 +21,7 @@ use rlmesh_session::record::{self, Rolling};
 use rlmesh_session::wire::SessionId;
 
 use crate::feed::Feed;
-use crate::model::{Model, ModelConfig};
+use crate::model::{Model, ModelConfig, Verb};
 use crate::replay::{History, Replay};
 use crate::ui::{self, LiveAction, LiveBar, UiState};
 
@@ -138,12 +138,11 @@ impl eframe::App for CockpitApp {
                         live.paused = Some((replay, Instant::now()));
                     }
                     Some(LiveAction::Resume) => live.paused = None,
+                    // The host keeps its own recording, wherever it runs;
+                    // its answer reaches the header.
                     Some(LiveAction::Keep) => {
-                        live.bar.note = live.session().map(|(session, rolling)| {
-                            record::keep(rolling, session, "keep")
-                                .map(|dir| format!("kept in {}", dir.display()))
-                                .map_err(|err| format!("not kept: {err}"))
-                        });
+                        live.feed.send(Verb::Keep);
+                        live.bar.note = None;
                     }
                     #[cfg(feature = "collect")]
                     Some(LiveAction::Start) => {

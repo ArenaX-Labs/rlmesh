@@ -1202,9 +1202,8 @@ impl RollingSink {
 /// `incidents/{session}/{unix_ms}-{label}/`, out of the rolling purge's
 /// reach; returns that directory. The segments are hard links, so the one
 /// being written keeps growing in the incident until it rotates.
-// TODO: works on the recordings directory, so only on the host's machine;
-// carry Keep (and episode marks) on the wire once the spec's Mark message
-// is built.
+// A recording server answers the `Keep` host verb with this, so a cockpit
+// on any machine can keep.
 pub fn keep(rolling: &Rolling, session: SessionId, label: &str) -> Result<PathBuf, RecordError> {
     let now = std::time::SystemTime::now();
     let since = now.checked_sub(rolling.incident_before).unwrap_or(now);

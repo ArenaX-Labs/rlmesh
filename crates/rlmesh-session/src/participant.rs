@@ -1680,6 +1680,19 @@ impl Participant {
         Ok(self.shared.ctl(Command::Clear).await?.0)
     }
 
+    /// Asks the host to keep its recent recording of this session as an
+    /// incident named `label`, out of the rolling purge's reach (the
+    /// cockpit's Keep). Whoever may arm may keep, at most every 5 s; a host
+    /// that records nothing refuses it (`UNSUPPORTED`).
+    pub async fn keep(&self, label: &str) -> Result<(), SessionError> {
+        self.shared
+            .ctl(Command::Keep {
+                label: label.to_string(),
+            })
+            .await
+            .map(|_| ())
+    }
+
     /// Declares this embodiment's robot map (the authored JSON, §3): the
     /// host normalises it and assigns channel ids. Re-declaring identically
     /// is a no-op; the parts are part of the authority snapshot.

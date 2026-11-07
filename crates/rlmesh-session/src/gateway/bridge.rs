@@ -728,6 +728,7 @@ fn verb_name(command: &Command) -> &'static str {
         Command::EnterSafe { .. } => "enter_safe",
         Command::Ready { .. } => "ready",
         Command::Decided { .. } => "decided",
+        Command::Keep { .. } => "keep",
         _ => "this verb",
     }
 }

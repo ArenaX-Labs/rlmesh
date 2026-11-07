@@ -4386,6 +4386,10 @@
             "kind": "function",
             "signature": "estop(reason: str = 'estop') -> None"
           },
+          "keep": {
+            "kind": "function",
+            "signature": "keep(label: str = 'keep') -> None"
+          },
           "mode": {
             "kind": "property",
             "signature": "property mode: str"

@@ -2317,3 +2317,50 @@ device = "local"
         Some((ReasonCode::SceneEnded, "cli.1a2b3c4d".to_string()))
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn keep_is_a_host_verb_rate_limited_and_refused_by_a_host_that_records_nothing() {
+    // A host that records nothing.
+    let world = World::start().await;
+    let cockpit = world
+        .join("cockpit", vec![Role::Observer], PriorityClass::Scripted, 0)
+        .await;
+    assert_eq!(
+        status(cockpit.keep("froze").await.expect_err("nothing to keep")),
+        CtlStatus::Unsupported
+    );
+    drop(cockpit);
+    drop(world);
+
+    let kept: Arc<std::sync::Mutex<Vec<(SessionId, String)>>> = Arc::default();
+    let world = World::start_with({
+        let kept = kept.clone();
+        move |config| {
+            config.keep = Some(Arc::new(move |session, label| {
+                kept.lock()
+                    .expect("kept")
+                    .push((session, label.to_string()));
+                Ok(format!("incidents/{session}/{label}"))
+            }));
+        }
+    })
+    .await;
+    let cockpit = world
+        .join("cockpit", vec![Role::Observer], PriorityClass::Scripted, 0)
+        .await;
+    cockpit.keep("eye-2 froze").await.expect("kept");
+    assert_eq!(
+        *kept.lock().expect("kept"),
+        [(world.session, "eye-2 froze".to_string())]
+    );
+    // At most every 5 s, and a label of at most 64 bytes.
+    assert_eq!(
+        status(cockpit.keep("again").await.expect_err("too soon")),
+        CtlStatus::NotReady
+    );
+    assert_eq!(
+        status(cockpit.keep(&"x".repeat(65)).await.expect_err("too long")),
+        CtlStatus::InvalidRequest
+    );
+    assert_eq!(kept.lock().expect("kept").len(), 1);
+}

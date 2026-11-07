@@ -753,6 +753,13 @@ pub enum Command {
         /// The run.
         run: String,
     },
+    /// Keep the host's recent recording as an incident (the cockpit's
+    /// Keep): whoever may arm may keep. The host that records answers it;
+    /// the authority only checks the sender.
+    Keep {
+        /// Names the incident.
+        label: String,
+    },
 }
 
 /// A verb from a participant.

@@ -1188,6 +1188,11 @@ class V2Robot:
         r"""
         Back to DISARMED.
         """
+    def keep(self, label: builtins.str) -> None:
+        r"""
+        Asks the host to keep its recent recording as an incident named
+        `label` (the cockpit's Keep).
+        """
     def estop(self, reason: builtins.str) -> None:
         r"""
         Emergency stop, latched locally with no network (any thread): the

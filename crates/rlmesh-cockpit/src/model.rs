@@ -34,6 +34,8 @@ pub enum Verb {
     Disarm,
     /// Emergency stop: latches until the robot clears it.
     Estop,
+    /// Keep the host's recent recording as an incident.
+    Keep,
 }
 
 impl Verb {
@@ -43,6 +45,7 @@ impl Verb {
             Self::Arm => "arm",
             Self::Disarm => "disarm",
             Self::Estop => "e-stop",
+            Self::Keep => "keep",
         }
     }
 }

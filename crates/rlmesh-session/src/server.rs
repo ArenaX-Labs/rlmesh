@@ -134,9 +134,18 @@ impl SessionServer {
 
     async fn serve(
         transport: Transport,
-        config: HostConfig,
+        #[cfg_attr(not(feature = "record"), allow(unused_mut))] mut config: HostConfig,
         #[cfg(feature = "record")] rolling: Option<Rolling>,
     ) -> Result<Self, SessionError> {
+        // Every session it hosts answers Keep from its recording.
+        #[cfg(feature = "record")]
+        if let Some(rolling) = rolling.clone() {
+            config.keep = Some(Arc::new(move |session, label| {
+                crate::record::keep(&rolling, session, label)
+                    .map(|dir| dir.display().to_string())
+                    .map_err(|err| err.to_string())
+            }));
+        }
         let hosts: Hosts = Arc::default();
         let kept: Kept = Arc::default();
         let own = (

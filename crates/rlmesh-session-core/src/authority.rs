@@ -998,6 +998,12 @@ impl Authority {
             Command::KeysAck(_) | Command::GetKeys => {
                 self.require_attached(&from)?;
             }
+            // The host keeps the recording once the sender checks out:
+            // whoever may arm may keep.
+            Command::Keep { .. } => {
+                self.require_attached(&from)?;
+                self.config.access.check_verb(&sender.device, Verb::Arm)?;
+            }
             // The home daemon's `_lobby` host answers these before they
             // reach the authority; every other session refuses them.
             Command::LobbyWait(_)
