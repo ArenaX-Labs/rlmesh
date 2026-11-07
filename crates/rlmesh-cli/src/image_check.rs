@@ -523,7 +523,7 @@ pub struct RuntimeOffer {
     /// The `rlmesh` package the image was described with.
     #[serde(default)]
     pub package_version: Option<String>,
-    /// The wire generation the image speaks (`rlmesh-wire-v1`).
+    /// The wire generation the image speaks (`rlmesh-realtime-v1`).
     #[serde(default)]
     pub protocol_generation: Option<String>,
     /// Every edition the image's rlmesh can drive a session at.
@@ -822,6 +822,9 @@ pub fn check_editions(
             "editions: describe carries no protocol_generation (built with an rlmesh before \
              the field); the runtime probe verifies the handshake"
                 .to_owned(),
+        ),
+        Some("rlmesh-wire-v1") => report.failed.push(
+            "editions: this rlmesh-wire-v1 image needs a RLMesh 0.1 runner; rebuild it with RLMesh 0.2 to use realtime sessions".to_owned(),
         ),
         Some(generation) if generation != PROTOCOL_GENERATION => report.failed.push(format!(
             "editions: image speaks protocol generation {generation}, the platform speaks \
@@ -1356,6 +1359,15 @@ mod tests {
         assert!(
             report.failed[0].contains("protocol generation"),
             "{report:?}"
+        );
+        let legacy = check_editions(
+            &offer(Some("rlmesh-wire-v1"), &["2026.06"], None),
+            Some(Kind::Env),
+            &platform,
+        );
+        assert!(
+            legacy.failed.iter().any(|m| m.contains("0.1 runner")),
+            "{legacy:?}"
         );
         // No fields at all: not checked, twice (generation and editions).
         let report = check_editions(&offer(None, &[], None), None, &platform);

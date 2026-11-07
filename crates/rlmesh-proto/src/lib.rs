@@ -4,23 +4,8 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-/// Identity of the frozen wire substrate: the `core` handshake plus the `spaces`
-/// value transport the runtime relays between env and model. NOT the package
-/// version, NOT the product semver, and NOT a per-service version — it names the
-/// one shared byte contract every component is built against, decoupled from all
-/// of them.
-///
-/// Compatibility is plain equality: a peer is compatible iff its token equals
-/// this. There is no support window and no range negotiation. The wire grows
-/// additively forever under this single token; workflow *behavior* rides on
-/// editions and optional *features* on capabilities, so neither forces a bump.
-///
-/// This is a failsafe, not a version counter: in the normal course it is never
-/// bumped. Bumping it to `rlmesh-wire-v2` is a deliberate, public hard pivot — a
-/// build that intentionally will not interoperate with `rlmesh-wire-v1` — reserved
-/// for a wire break that additive growth, editions, and capabilities genuinely
-/// cannot absorb.
-pub const PROTOCOL_GENERATION: &str = "rlmesh-wire-v1";
+/// Identity of the realtime session wire used by this build.
+pub const PROTOCOL_GENERATION: &str = "rlmesh-realtime-v1";
 
 /// Current workflow semantics edition.
 ///

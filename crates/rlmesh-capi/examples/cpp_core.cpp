@@ -27,7 +27,7 @@ int main() {
 
   rlmesh::BuildInfo info = rlmesh::build_info();
   CHECK(info.version == rlmesh::VERSION);
-  CHECK(info.protocol_generation == "rlmesh-wire-v1");
+  CHECK(info.protocol_generation == "rlmesh-realtime-v1");
   CHECK(info.workflow_edition_base == rlmesh::current_workflow_edition());
   CHECK(!info.supported_workflow_editions.empty());
   CHECK(info.supported_workflow_editions.front() == info.workflow_edition);
