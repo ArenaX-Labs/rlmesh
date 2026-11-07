@@ -594,10 +594,11 @@ run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set m
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
 env = { RLMESH_RELEASE_BUILD = "1" }
-# Packaged together, so the facade resolves rlmesh-session from this tree.
-# Skipped: the bindings' crates (rlmesh-wasm, rlmesh-node, rlmesh-python, a
-# wasm package, an addon and a maturin wheel) and the cockpit.
-run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wasm --exclude rlmesh-node --exclude rlmesh-cockpit --exclude rlmesh-python'
+# Packaged together, so the facade resolves rlmesh-session from this tree
+# and the CLI its optional cockpit. Skipped: the bindings' crates
+# (rlmesh-wasm, rlmesh-node, rlmesh-python: a wasm package, an addon and a
+# maturin wheel).
+run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wasm --exclude rlmesh-node --exclude rlmesh-python'
 
 [tasks."release:artifacts:licenses"]
 description = "Validate release artifact license files before publishing"
