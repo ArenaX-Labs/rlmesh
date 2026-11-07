@@ -353,7 +353,7 @@ class BuildInfo:
     @property
     def protocol_generation(self) -> builtins.str:
         r"""
-        The wire protocol generation this build speaks (`rlmesh-wire-v1`).
+        The wire protocol generation this build speaks (`rlmesh-realtime-v1`).
         """
     @property
     def workflow_edition(self) -> builtins.str:

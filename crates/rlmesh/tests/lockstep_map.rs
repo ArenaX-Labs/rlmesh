@@ -1,4 +1,3 @@
-#![cfg(feature = "lockstep")]
 //! A Gym env as a robot (§12.5): paths, kinds, attrs, and bit-exact slabs.
 
 use bytes::Bytes;

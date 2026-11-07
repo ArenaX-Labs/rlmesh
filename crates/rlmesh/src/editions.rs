@@ -39,7 +39,6 @@ pub fn current_workflow_edition() -> &'static str {
 /// What a participant declaring `declared` offers: the edition it runs
 /// (this build's current when it declares none) and every edition this
 /// build runs.
-#[cfg(feature = "lockstep")]
 pub(crate) fn offer(declared: Option<&str>) -> (String, Vec<String>) {
     (
         rlmesh_proto::declared_workflow_edition(declared).to_string(),
@@ -51,7 +50,6 @@ pub(crate) fn offer(declared: Option<&str>) -> (String, Vec<String>) {
 /// against `declared` (the driver's WANT) exactly as the gRPC env client
 /// negotiates it: the env's offer, the selected edition and its retained
 /// base. A refusal is the message to report.
-#[cfg(feature = "lockstep")]
 pub(crate) fn negotiate_env(
     info: &crate::lockstep::GymEnvInfo,
     declared: Option<&str>,

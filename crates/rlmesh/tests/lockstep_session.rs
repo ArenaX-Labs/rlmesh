@@ -1,4 +1,3 @@
-#![cfg(feature = "lockstep")]
 //! A lockstep env in a session: one lease grant, then per-step checks of
 //! the epoch, the lease token and the e-stop: the direct link in one
 //! process, the lockstep session otherwise.

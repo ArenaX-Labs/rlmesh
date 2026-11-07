@@ -1,7 +1,7 @@
 //! Rust SDK for RLMesh model-environment evaluation workflows.
 //!
 //! RLMesh connects a model to an environment over a session: participant
-//! addresses such as `:0/env` (the `lockstep` feature), or `tcp://` and
+//! addresses such as `:0/env`, or `tcp://` and
 //! `unix://` addresses on the v1 gRPC bridge. This crate is the Rust facade
 //! over the transport, wire, and runtime crates. RLMesh uses
 //! the same nouns and constructs in every language, following each
@@ -19,7 +19,7 @@
 //!
 //! - **Run a model against an env.** [`Model::run`] (or [`run`]) drives
 //!   episodes on the native loop and returns a [`RunResult`]; [`RunHooks`]
-//!   observe it. `Model::bind` (with the `lockstep` feature) binds it to
+//!   observe it. `Model::bind` binds it to
 //!   one env to step by hand.
 //!
 //! Use [`RemoteEnv`] when you want to step an environment server directly.
@@ -140,7 +140,6 @@ mod build_info;
 mod credentials;
 mod describe;
 mod dlpack;
-#[cfg(feature = "lockstep")]
 mod doctor;
 mod dtype;
 mod editions;
@@ -149,7 +148,6 @@ mod error;
 pub mod ext;
 /// The v2 session protocol engine the bindings drive (R-25 binding
 /// plumbing, like [`binding`]): hidden and semver-exempt.
-#[cfg(feature = "lockstep")]
 #[doc(hidden)]
 pub mod lockstep;
 #[cfg(feature = "managed")]
@@ -210,7 +208,6 @@ pub use run::{
     ReadFn, ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult,
     RunResultSaveOptions, StepEvent, TelemetryRow, run, run_async,
 };
-#[cfg(feature = "lockstep")]
 pub use run::{Binding, bind};
 pub use serve_options::{BatchOptions, ServeOptions};
 pub use specs::EnvContract;

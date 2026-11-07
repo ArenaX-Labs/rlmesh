@@ -257,7 +257,6 @@ fn a_run_dials_an_address_or_an_env_server() {
 /// One model served in process answers four routes at once. The route whose
 /// env dies mid-episode fails alone; its siblings finish, and their trials
 /// and seeds are the ones a single route over the whole range would draw.
-#[cfg(feature = "lockstep")]
 #[test]
 fn a_failed_route_leaves_its_siblings_running_against_a_shared_served_model() {
     use crate::binding::routes::{Route, merge_results, run_routes};
@@ -955,7 +954,6 @@ fn steps_server() -> EnvServer {
 
 /// A `base_seed` derives the same reset seeds on every run, in any process on
 /// any machine: these values follow from `(4242, the env's id, slot)` alone.
-#[cfg(feature = "lockstep")]
 #[tokio::test]
 async fn a_base_seed_derives_the_same_reset_seeds_in_every_process() {
     use crate::model::random::RandomSampleHandler;
@@ -978,7 +976,6 @@ async fn a_base_seed_derives_the_same_reset_seeds_in_every_process() {
     assert_eq!(seeds, [Some(3_549_056_084), Some(3_732_510_325)]);
 }
 
-#[cfg(feature = "lockstep")]
 #[tokio::test]
 async fn a_v2_handle_connects_and_drops_inside_a_current_thread_runtime() {
     let server = crate::EnvServer::new(Steps::new(), quick()).unwrap();
@@ -992,46 +989,6 @@ async fn a_v2_handle_connects_and_drops_inside_a_current_thread_runtime() {
     server.shutdown_async().await.unwrap();
 }
 
-#[cfg(not(feature = "lockstep"))]
-#[test]
-fn a_native_run_dials_a_borrowed_remote_env_s_address() {
-    let server = steps_server();
-    let mut remote =
-        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
-            .unwrap();
-    // An idle handle holds no session slot: the run dials its address.
-    let result = ones()
-        .run(
-            &mut remote,
-            RunOptions {
-                episodes: Some(1),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert_eq!(result.num_episodes(), 1);
-    // A handle that was driven holds the slot, and the run says so.
-    remote.reset(None, None).unwrap();
-    let err = ones()
-        .run(
-            &mut remote,
-            RunOptions {
-                episodes: Some(1),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(err.class(), ErrorClass::RuntimeError, "{err}");
-    assert!(
-        err.to_string()
-            .starts_with("the target env already has an active session"),
-        "{err}"
-    );
-    remote.close().unwrap();
-    server.shutdown().unwrap();
-}
-
-#[cfg(feature = "lockstep")]
 #[test]
 fn a_native_run_through_an_open_v2_handle_says_the_handle_holds_the_env() {
     let server = steps_server();

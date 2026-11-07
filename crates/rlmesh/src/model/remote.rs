@@ -106,7 +106,6 @@ impl RemoteModelOptions {
 
 struct RemoteModelInner {
     address: String,
-    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     connect_timeout: Option<Duration>,
 }
 
@@ -152,7 +151,6 @@ impl RemoteModel {
         &self.0.address
     }
 
-    #[cfg(feature = "lockstep")]
     pub(crate) fn connect_timeout(&self) -> Option<Duration> {
         self.0.connect_timeout
     }

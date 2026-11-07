@@ -67,7 +67,6 @@ impl Mode {
 /// which the run invites into its env's session.
 pub(crate) enum Driven<'m> {
     Local(&'m Model),
-    #[cfg(feature = "lockstep")]
     Served(&'m crate::RemoteModel),
     Random,
     Prepared(crate::binding::model::PreparedModel),
@@ -108,7 +107,6 @@ pub(crate) async fn run_route(
     };
     let shared = match &model {
         Driven::Local(model) => Some(model.shared()),
-        #[cfg(feature = "lockstep")]
         Driven::Served(_) => None,
         Driven::Random | Driven::Prepared(_) => None,
     };
@@ -166,7 +164,6 @@ pub(crate) async fn run_route(
     let execution_horizon = match (execution_horizon, &model) {
         (Some(horizon), _) => horizon,
         (None, Driven::Local(model)) => model.shared().decl.resolve_horizon(None)?,
-        #[cfg(feature = "lockstep")]
         (None, Driven::Served(model)) => {
             let probe = crate::lockstep::ServedModel::default_execution_horizon(
                 model.address(),
@@ -203,7 +200,6 @@ pub(crate) async fn run_route(
                 ))
             })
         }
-        #[cfg(feature = "lockstep")]
         Driven::Served(model) => {
             served_options(trust_entrypoints, instruction.as_deref())?;
             let served = crate::lockstep::ServedModel::new(
@@ -313,12 +309,10 @@ pub(crate) async fn run_route(
 
 /// How long a run waits to reach a served model when its `RemoteModel` sets
 /// no connect timeout, as Python's `Model(address)`.
-#[cfg(feature = "lockstep")]
 pub(crate) const SERVED_CONNECT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Refuses what a served model cannot take from its driver: it owns its
 /// adapter, and its instruction is its own.
-#[cfg(feature = "lockstep")]
 pub(crate) fn served_options(
     trust_entrypoints: Option<bool>,
     instruction: Option<&str>,
@@ -376,9 +370,6 @@ struct Plan {
 /// Where the driver dials, and what the run releases afterwards.
 struct Dial<'e> {
     address: String,
-    /// The v1 endpoint token a run's own loopback checks.
-    #[cfg(not(feature = "lockstep"))]
-    token: String,
     loopback: Option<EnvServer>,
     /// A served env to shut down afterwards (`close_env` on an `EnvServer`).
     shutdown: Option<&'e EnvServer>,
@@ -425,8 +416,6 @@ async fn run_body(
     let remote = match &env {
         EnvKind::Address(address) => Some(Dial {
             address: address.clone(),
-            #[cfg(not(feature = "lockstep"))]
-            token: String::new(),
             loopback: None,
             shutdown: None,
         }),
@@ -434,14 +423,11 @@ async fn run_body(
             let server: &EnvServer = server;
             Some(Dial {
                 address: server.address().to_string(),
-                #[cfg(not(feature = "lockstep"))]
-                token: server.token().unwrap_or_default().to_string(),
                 loopback: None,
                 shutdown: None,
             })
         }
         // An open client holds a session env's lease, which the run needs.
-        #[cfg(feature = "lockstep")]
         EnvKind::Remote(handle) if crate::address::is_v2(handle.remote_address()) => {
             return Err(Error::Type(
                 "run(RemoteEnv(address)) is gone in rlmesh 0.2: an open RemoteEnv holds its \
@@ -452,8 +438,6 @@ async fn run_body(
         // The native loop dials a caller's client's address itself.
         EnvKind::Remote(handle) => Some(Dial {
             address: handle.remote_address().to_string(),
-            #[cfg(not(feature = "lockstep"))]
-            token: String::new(),
             loopback: None,
             shutdown: None,
         }),
@@ -496,8 +480,6 @@ async fn run_body(
             server.start()?;
             Dial {
                 address: server.address().to_string(),
-                #[cfg(not(feature = "lockstep"))]
-                token: server.token().unwrap_or_default().to_string(),
                 loopback: Some(server),
                 shutdown: None,
             }
@@ -507,8 +489,6 @@ async fn run_body(
     let is_local = local.is_some();
     let run = LocalRun {
         address: dial.address.clone(),
-        #[cfg(not(feature = "lockstep"))]
-        token: dial.token.clone(),
         episodes: plan.budget,
         base_seed: plan.route.base_seed,
         seed_key: plan.route.seed_key,

@@ -10,10 +10,7 @@ use crate::{Error, Result};
 /// `:0/gym`, `lab:7447/bench-3/ur10`) rather than a v1 endpoint
 /// (`host:port`, a port, `tcp://`, `unix://`, `https://`).
 pub(crate) fn is_v2(text: &str) -> bool {
-    #[cfg(feature = "lockstep")]
-    return rlmesh_session::address::is_v2_address(text);
-    #[cfg(not(feature = "lockstep"))]
-    return text.starts_with("rlmesh://") || text.starts_with("lockstep://");
+    rlmesh_session::address::is_v2_address(text)
 }
 
 /// A client-side address for connecting to a running server.

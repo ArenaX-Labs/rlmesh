@@ -1,4 +1,3 @@
-#![cfg(feature = "lockstep")]
 //! A model served on a session: routes resolve once, a predict carries
 //! several routes' rows and gets one outcome each, chunks come back as
 //! frames.

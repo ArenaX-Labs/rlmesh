@@ -823,7 +823,6 @@ impl Environment for WireLaneAdapter {
 
 /// The lockstep path serves both adapters natively (§12.4): the same checks,
 /// conformance and env calls as their wire shells, without the v1 messages.
-#[cfg(feature = "lockstep")]
 mod served {
     use async_trait::async_trait;
 
