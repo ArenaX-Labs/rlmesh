@@ -1,14 +1,11 @@
 //! Conversions for the driver's temporary, in-memory protobuf data types.
 #![allow(missing_docs)]
 
-pub use rlmesh_grpc::error::ProtocolError;
+mod error;
+pub use error::{EnvError, EnvErrorCode, ProtocolError};
 
 pub mod spaces;
 pub mod value;
-
-/// Re-exported so consumers can name the leaf byte type without a direct `prost`
-/// dependency (the wire value's leaves are `bytes::Bytes`).
-pub use bytes::Bytes;
 
 pub use spaces::{
     env_contract_from_proto, env_contract_to_proto, env_spec_from_proto, env_spec_to_proto,

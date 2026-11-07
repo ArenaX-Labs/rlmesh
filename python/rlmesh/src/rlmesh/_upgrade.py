@@ -12,9 +12,8 @@ def refuse_v1_address(where: str, address: str) -> None:
     if is_v2_address(address):
         return
     raise ValueError(
-        f"{where}({address!r}): {address!r} is a v1 endpoint, which rlmesh 0.2 no "
-        "longer serves or dials; use a session address such as ':0/name' (an "
-        "OS-assigned local port), 'host:port/name' or 'session/name'"
+        f"{where}({address!r}): v1 endpoints need RLMesh 0.1; "
+        "serve with rlmesh.serve / pass the session address"
     )
 
 

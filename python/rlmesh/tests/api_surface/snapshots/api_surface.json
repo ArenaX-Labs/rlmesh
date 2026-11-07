@@ -279,7 +279,7 @@
             "signature": "wait(timeout: float | None = None) -> bool"
           }
         },
-        "signature": "EnvServer(env: EnvLike[Any, Any] | VectorServerEnvLike | Sequence[EnvLike[Any, Any]], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None, framework: str | ValueBridge | None = None, device: object | None = None, close_env_on_shutdown: bool = True)",
+        "signature": "EnvServer(env: EnvLike[Any, Any] | VectorServerEnvLike | Sequence[EnvLike[Any, Any]], address: str | None = None, *, options: ServeOptions | None = None, tags: EnvTags | None = None, framework: str | ValueBridge | None = None, device: object | None = None, close_env_on_shutdown: bool = True)",
         "stability": "Stable"
       },
       "EnvironmentException": {
@@ -696,10 +696,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -709,7 +705,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteModel": {
@@ -780,10 +776,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -801,7 +793,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
       "RunContext": {
@@ -1008,10 +1000,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "source": {
             "kind": "property",
             "signature": "property source: str"
@@ -1157,10 +1145,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -1188,32 +1172,16 @@
       "ServeOptions": {
         "kind": "class",
         "members": {
-          "allow_remote_shutdown": {
-            "kind": "property",
-            "signature": "property allow_remote_shutdown: bool"
-          },
           "close_timeout_seconds": {
             "kind": "property",
             "signature": "property close_timeout_seconds: Optional[float]"
-          },
-          "compress_responses": {
-            "kind": "property",
-            "signature": "property compress_responses: bool"
-          },
-          "drain_timeout_seconds": {
-            "kind": "property",
-            "signature": "property drain_timeout_seconds: Optional[float]"
-          },
-          "idle_timeout_seconds": {
-            "kind": "property",
-            "signature": "property idle_timeout_seconds: Optional[float]"
           },
           "workflow_edition": {
             "kind": "property",
             "signature": "property workflow_edition: Optional[str]"
           }
         },
-        "signature": "ServeOptions(*, allow_remote_shutdown: bool = ..., idle_timeout_seconds: Optional[float] = None, drain_timeout_seconds: Optional[float] = None, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None, compress_responses: bool = ...) -> ServeOptions",
+        "signature": "ServeOptions(*, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None) -> ServeOptions",
         "stability": "Stable"
       },
       "Session": {
@@ -2885,10 +2853,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -2898,7 +2862,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteModel": {
@@ -2969,10 +2933,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -2990,7 +2950,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Experimental"
       },
       "SandboxBuild": {
@@ -3086,10 +3046,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -3258,10 +3214,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "single_action_space": {
             "kind": "property",
@@ -3627,10 +3579,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -3640,7 +3588,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteModel": {
@@ -3711,10 +3659,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -3732,7 +3676,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
       "SandboxBuild": {
@@ -3828,10 +3772,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -4000,10 +3940,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "single_action_space": {
             "kind": "property",
@@ -5506,10 +5442,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -5519,7 +5451,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteModel": {
@@ -5590,10 +5522,6 @@
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
           },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -5611,7 +5539,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Experimental"
       },
       "SandboxBuild": {
@@ -5707,10 +5635,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -5879,10 +5803,6 @@
           "selected_workflow_edition": {
             "kind": "property",
             "signature": "property selected_workflow_edition: str"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "single_action_space": {
             "kind": "property",

@@ -1,12 +1,11 @@
-//! The §12 acceptance bench: bench2's T1 shape, free-running, on v1 direct
-//! (gRPC Join stream) and on the v2 lockstep path, in the same build.
+//! The §12 acceptance bench: bench2's T1 shape in a realtime session.
 //!
 //! T1 (bench2-spec.md): the env is the embodiment, observation
 //! `Dict(ft: Box(18) f32, stamp: Box(4) i64)`, action `Box(6) f32`; the
 //! model copies `ft` into the command and tags it with the step seq. No
 //! camera, no pacing: one step as fast as env and model allow. Two
 //! processes: the env server (a child) and `Model::run` with the model in
-//! process (v1's `direct` topology, bench2's v1 best).
+//! process.
 //!
 //! Loop latency is bench2's `cmd_age`: the time the env receives an action
 //! minus the capture time of the observation it was computed from.
@@ -17,7 +16,7 @@
 //!
 //! ```text
 //! cargo run --release -p rlmesh --example lockstep_bench -- \
-//!     --transport grpc|lockstep [--lanes 1] [--warmup 3] [--measure 30]
+//!     [--lanes 1] [--warmup 3] [--measure 30]
 //! ```
 //!
 //! It spawns its own env child, prints one JSON line and exits.
@@ -353,7 +352,7 @@ impl Policy for Controller {
 fn run_env(args: &Args) -> rlmesh::Result<()> {
     let lanes: usize = args.num("lanes", 1);
     let (obs, act) = spaces_t1()?;
-    let address = args.get("addr", "tcp://127.0.0.1:0");
+    let address = args.get("addr", ":0/embodiment");
     let options = EnvServerOptions {
         address: Some(address),
         ..Default::default()
@@ -380,12 +379,7 @@ fn run_env(args: &Args) -> rlmesh::Result<()> {
 }
 
 fn run(args: &Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let transport = args.get("transport", "grpc");
-    let addr = match transport.as_str() {
-        "grpc" => "tcp://127.0.0.1:0",
-        "lockstep" => ":0/embodiment",
-        other => return Err(format!("unknown transport {other}").into()),
-    };
+    let addr = ":0/embodiment";
     let out = format!("/tmp/lockstep_bench-{}.json", std::process::id());
     let mut child = Command::new(std::env::current_exe()?)
         .args(["env", "--addr", addr, "--out", &out])
@@ -423,7 +417,7 @@ fn run(args: &Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let measured = std::fs::read_to_string(&out)?;
     let _ = std::fs::remove_file(&out);
     println!(
-        "{{\"transport\":\"{transport}\",\"total_steps\":{},\"result\":{measured}}}",
+        "{{\"transport\":\"lockstep\",\"total_steps\":{},\"result\":{measured}}}",
         result.total_steps()
     );
     Ok(())

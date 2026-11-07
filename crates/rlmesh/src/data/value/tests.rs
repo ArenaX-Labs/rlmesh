@@ -1,13 +1,13 @@
 use bytes::Bytes;
+use rlmesh_spaces::leaves::{decode_leaves, encode_leaves};
 use rlmesh_spaces::spaces::{
     BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder, TextBuilder, TupleSpaceBuilder,
 };
 use rlmesh_spaces::{BinaryPayload, DType, RenderRequest, SpaceValue, Tensor};
 
 use super::{
-    binary_to_bytes, decode_batched_partial_values, decode_leaves, encode_batched_partial_values,
-    encode_leaves, leaves_value, optional_bytes_to_binary, render_request_to_proto,
-    render_result_from_proto,
+    binary_to_bytes, decode_batched_partial_values, encode_batched_partial_values, leaves_value,
+    optional_bytes_to_binary, render_request_to_proto, render_result_from_proto,
 };
 use crate::data::ProtocolError;
 

@@ -29,7 +29,7 @@ them on its own.
 `test:python:conformance` holds the gates other code is measured against. The
 Gymnasium gate (`python/rlmesh/tests/conformance/test_gym_conformance.py`) runs
 plain gymnasium and the same env behind `rlmesh.numpy.RemoteEnv` /
-`RemoteVectorEnv`, over gRPC and a v2 session, and compares every
+`RemoteVectorEnv`, over realtime sessions, and compares every
 observation, reward, flag and info bit for bit; its docstring lists the
 documented differences. MuJoCo cases skip when `mujoco` is not installed
 (`uv sync --group mujoco`). `native_gate.py` beside it runs the same rows

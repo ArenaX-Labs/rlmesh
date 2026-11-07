@@ -281,33 +281,11 @@ static void *serve_model(void *arg) {
   return NULL;
 }
 /* A run refuses an https:// env endpoint (v1) before any dial. */
-static void https_env(RLMeshModel *model, const RLMeshEnvVtable *ev, Script *s,
-                      const RLMeshEnvAttributes *attrs) {
+static void https_env(RLMeshModel *model) {
   RLMeshRunResult *result = NULL;
-  Script other = *s;
-  RLMeshEnv *plain = NULL;
-  OK(rlmesh_env_new(ev, &other, attrs, &plain));
-  RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
-  so.address = "tcp://127.0.0.1:0";
-  RLMeshEnvServer *server = NULL;
-  OK(rlmesh_env_server_new(&plain, 1, &so, &server));
-  OK(rlmesh_env_server_start(server));
-  RLMeshBytes address = {NULL, 0, 0};
-  OK(rlmesh_env_server_address(server, &address));
-  char port[16] = {0}, url[64];
-  size_t colon = address.len;
-  while (colon > 0 && ((const char *)address.data)[colon - 1] != ':')
-    --colon;
-  REQUIRE(colon > 0 && address.len - colon < sizeof port);
-  memcpy(port, (const char *)address.data + colon, address.len - colon);
-  snprintf(url, sizeof url, "https://127.0.0.1:%s", port);
-  REQUIRE(rlmesh_model_run(model, rlmesh_address_target(url), NULL, &result) !=
-          RLMESH_OK);
-  error_fields_masked(port, "PORT");
-  OK(rlmesh_env_server_shutdown(server));
-  rlmesh_env_server_free(server);
-  rlmesh_bytes_free(address);
-  rlmesh_env_free(plain);
+  REQUIRE(rlmesh_model_run(model, rlmesh_address_target("https://127.0.0.1:1"),
+                           NULL, &result) != RLMESH_OK);
+  error_fields_masked(":1", ":PORT");
 }
 /* A model served as the participant "policy" of a session this process
  * hosts, reached by its address and driving a local env. */
@@ -429,7 +407,7 @@ int main(int argc, char **argv) {
   putchar('{');
   if (!strcmp(op, "dict_error")) {
     RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
-    so.address = "tcp://127.0.0.1:0";
+    so.address = ":0/env";
     RLMeshEnvServer *server = NULL;
     OK(rlmesh_env_server_new(&env, 1, &so, &server));
     OK(rlmesh_env_server_start(server));
@@ -598,7 +576,7 @@ int main(int argc, char **argv) {
     OK(rlmesh_env_server_shutdown(server));
     rlmesh_env_server_free(server);
   } else if (!strcmp(op, "https_env")) {
-    https_env(model, &ev, &s, &attrs);
+    https_env(model);
   } else if (!strcmp(op, "served_model")) {
     served_model(env, model, &ev, &s, &attrs);
   } else if (!strcmp(op, "busy_remote")) {
@@ -729,7 +707,7 @@ int main(int argc, char **argv) {
     OK(rlmesh_env_factory_new(&fv, &s, &fa, &factory));
     RLMeshEnvFactoryServeOptions fo = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
     fo.cancel = s.cancel;
-    REQUIRE(rlmesh_env_factory_serve(factory, "tcp://127.0.0.1:0", &fo) ==
+    REQUIRE(rlmesh_env_factory_serve(factory, ":0/env", &fo) ==
             RLMESH_ERR_CANCELLED);
     error_fields();
     printf(",\"env_closes\":%d,\"prepares\":%d", s.env_closes, s.prepares);
@@ -746,17 +724,16 @@ int main(int argc, char **argv) {
       printf("\"episodes\":%llu",
              (unsigned long long)rlmesh_run_result_num_episodes(result));
     } else if (!strcmp(variant, "abi5_remote")) {
-      /* An ABI-5 caller's struct_size stops before the appended api_key and
-       * tls_ca_file; a size ending inside one is refused. */
+      /* A partial session options allocation is refused before I/O. */
       RLMeshRemoteEnvOptions eo = RLMESH_REMOTE_ENV_OPTIONS_INIT;
-      eo.struct_size = RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE + 1;
+      eo.struct_size = RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE - 1;
       RLMeshRemoteEnv *renv = NULL;
       REQUIRE(rlmesh_remote_env_new(&eo, &renv) != RLMESH_OK);
       /* The size differs per target; the text masks it. */
       char inside[32];
       snprintf(inside, sizeof inside, "%zu",
-               (size_t)(RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE + 1));
-      error_fields_masked(inside, "MIN_SIZE+1");
+               (size_t)(RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE - 1));
+      error_fields_masked(inside, "MIN_SIZE-1");
     } else if (!strcmp(variant, "out")) {
       OK(rlmesh_model_run(model, rlmesh_env_target(env), NULL, &result));
       struct ExtendedOut {

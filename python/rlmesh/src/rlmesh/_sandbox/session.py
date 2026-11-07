@@ -26,9 +26,6 @@ from ._sources import (
     run_docker,
 )
 
-if TYPE_CHECKING:
-    from .._client._endpoint import Transport
-
 #: Default seconds a sandbox waits for its container to start serving. The
 #: server only joins its session after the env factory's ``make()`` (or the
 #: model's ``load()``) runs, so a heavy env (large sim/asset load -- e.g. a
@@ -324,15 +321,9 @@ class SandboxLifecycle:
             self,
             address: str | None = None,
             *,
-            host: str | None = None,
-            port: int | None = None,
-            path: str | None = None,
-            transport: Transport | None = None,
             connect_timeout_seconds: float | None,
             request_timeout_seconds: float | None = None,
             workflow_edition: str | None = None,
-            api_key: str | None = None,
-            tls_ca_file: str | os.PathLike[str] | None = None,
         ) -> None: ...
 
     def _detach(self) -> None:

@@ -247,7 +247,6 @@ pub struct RLMeshModelOptions {
 #[derive(Clone, Copy)]
 pub struct RLMeshExtModelServeOptions {
     pub struct_size: usize,
-    pub token: *const c_char,
     pub predict_concurrency: usize,
     pub has_predict_concurrency: bool,
     pub _reserved: [u8; std::mem::size_of::<usize>() - 1],
@@ -915,7 +914,6 @@ pub unsafe extern "C" fn rlmesh_model_serve(
                 .map(|e| -> Result<_, CapiError> {
                     no_signal_handlers = e.no_signal_handlers;
                     Ok(rlmesh::ext::ModelServeOptions {
-                        token: unsafe { ffi::text(e.token) }?,
                         predict_concurrency: e
                             .has_predict_concurrency
                             .then_some(e.predict_concurrency),

@@ -279,7 +279,7 @@ run = [
 ]
 
 [tasks."protocol:baseline-regen"]
-description = "Re-snapshot the frozen proto baseline for the current protocol generation"
+description = "Re-snapshot a governed realtime protocol baseline"
 run = "python scripts/protocol_baseline.py regen"
 
 [tasks."protocol:baseline-verify"]
@@ -369,7 +369,7 @@ description = "Run Python integration tests"
 run = "uv run pytest python/rlmesh/tests/integration -q"
 
 [tasks."test:python:conformance"]
-description = "Run Python conformance gates: adapter-spec vectors (cross-engine parity) and Gymnasium (served envs behave as plain gymnasium, over gRPC and lockstep)"
+description = "Run Python conformance gates: adapter-spec vectors (cross-engine parity) and Gymnasium (served envs behave as plain gymnasium, over lockstep)"
 run = "uv run pytest python/rlmesh/tests/conformance -q"
 
 [tasks."test:python:perf"]

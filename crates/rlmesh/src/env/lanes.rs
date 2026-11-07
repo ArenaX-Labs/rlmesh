@@ -350,14 +350,8 @@ pub(super) fn fold_phases(lane_phases: Vec<EndpointPhases>) -> EndpointPhases {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binding::env::WireLaneAdapter;
     use async_trait::async_trait;
-    use rlmesh_grpc::wire::encode_batched_partial_values;
-    use rlmesh_proto::env::v1::{ResetRequest, StepRequest};
-    use rlmesh_proto::has_capability;
     use std::time::Duration;
-    use tokio::net::TcpListener;
-    use tokio_stream::wrappers::TcpListenerStream;
 
     /// A scalar env whose step takes `delay` and records the thread it ran on.
     struct SleepyEnv {
@@ -587,105 +581,5 @@ mod tests {
             .await
             .expect("step");
         assert_eq!(result.reward, 1.0);
-    }
-
-    #[tokio::test]
-    async fn lanes_step_concurrently_on_their_own_threads_over_one_join_stream() {
-        // Wide enough that even a slow runner's overhead cannot make two
-        // overlapping steps look sequential.
-        let delay = Duration::from_millis(300);
-        let lane_threads: Vec<_> = (0..2)
-            .map(|_| std::sync::Arc::new(std::sync::Mutex::new(Vec::new())))
-            .collect();
-        let envs = lane_threads
-            .iter()
-            .map(|threads| SleepyEnv::new(delay, std::sync::Arc::clone(threads)))
-            .collect();
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let address = format!("tcp://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            tonic::transport::Server::builder()
-                .add_service(rlmesh_grpc::env::env_service(
-                    WireLaneAdapter::new(envs).unwrap(),
-                ))
-                .serve_with_incoming(TcpListenerStream::new(listener))
-                .await
-                .unwrap()
-        });
-
-        let mut client = rlmesh_grpc::EnvClient::connect(&address).await.unwrap();
-        let handshake = client.handshake().await.unwrap();
-        assert_eq!(handshake.num_envs, 2);
-        assert!(has_capability(
-            &handshake.capabilities,
-            rlmesh_proto::capabilities::ENV_SUBSET_STEP,
-        ));
-        let contract =
-            rlmesh_grpc::wire::env_contract_from_proto(handshake.env_contract.clone()).unwrap();
-        let action_space = contract.action_space.unwrap();
-
-        // One handle per lane on the same session: reset each lane, then step
-        // both at once. The steps overlap on the server, so the pair completes
-        // in about one env delay rather than two.
-        let mut lanes: Vec<rlmesh_grpc::EnvClient> = vec![client.clone(), client];
-        for (lane, handle) in lanes.iter_mut().enumerate() {
-            let reset = handle
-                .reset(ResetRequest {
-                    seeds: vec![lane as i64],
-                    env_indices: vec![lane as u32],
-                    episode_ids: vec![format!("ep-{lane}")],
-                    ..Default::default()
-                })
-                .await
-                .unwrap();
-            assert!(reset.observation.is_some());
-        }
-        let action = spaces::SpaceValue::Box(
-            spaces::Tensor::from_vec(vec![1], vec![1], spaces::DType::Uint8).unwrap(),
-        );
-        let started = Instant::now();
-        let steps = lanes
-            .into_iter()
-            .enumerate()
-            .map(|(lane, mut handle)| {
-                let action =
-                    encode_batched_partial_values(std::slice::from_ref(&action), &action_space)
-                        .unwrap();
-                tokio::spawn(async move {
-                    handle
-                        .step(StepRequest {
-                            action: Some(action),
-                            env_indices: vec![lane as u32],
-                            episode_ids: vec![format!("ep-{lane}")],
-                            ..Default::default()
-                        })
-                        .await
-                        .unwrap()
-                })
-            })
-            .collect::<Vec<_>>();
-        for (lane, step) in steps.into_iter().enumerate() {
-            let response = step.await.unwrap();
-            assert_eq!(response.env_indices, vec![lane as u32]);
-            assert_eq!(response.rewards, vec![1.0]);
-            assert_eq!(response.terminated_mask.len(), 1);
-        }
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < delay * 2,
-            "two lane steps should overlap: took {elapsed:?} for delay {delay:?}"
-        );
-        // Every op of a lane ran on that lane's own thread, and the two lanes
-        // never shared one.
-        let threads: Vec<Vec<std::thread::ThreadId>> = lane_threads
-            .iter()
-            .map(|t| t.lock().unwrap().clone())
-            .collect();
-        for lane in &threads {
-            assert_eq!(lane.len(), 2, "reset + step");
-            assert_eq!(lane[0], lane[1], "a lane stays on its thread");
-        }
-        assert_ne!(threads[0][0], threads[1][0], "lanes have their own threads");
-        server.abort();
     }
 }

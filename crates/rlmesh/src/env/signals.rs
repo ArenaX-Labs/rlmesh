@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use rlmesh_grpc::lifecycle::ShutdownTrigger;
+use crate::lifecycle::ShutdownTrigger;
 
 /// One foreground serve's registration; dropping it unregisters and, for the
 /// last one of a signal, restores that signal's saved disposition.
@@ -70,7 +70,7 @@ mod unix {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use rlmesh_grpc::lifecycle::ShutdownTrigger;
+    use crate::lifecycle::ShutdownTrigger;
 
     /// Monotonic delivery generations, independent of handler installations.
     static SIGINTS: AtomicUsize = AtomicUsize::new(0);

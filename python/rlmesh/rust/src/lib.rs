@@ -125,7 +125,7 @@ impl std::io::Write for PyStream {
 ///
 /// CPython ignores SIGPIPE at startup, but an embedded interpreter initialized
 /// without signal handlers (`Py_InitializeEx(0)`) keeps the default action:
-/// terminate. The gRPC transport's vectored writes cannot opt out of the
+/// terminate. The session transport's vectored writes cannot opt out of the
 /// signal, so a peer hanging up mid-write would kill that host process instead
 /// of failing the write with `EPIPE`.
 // The libc signal calls are the only way to read and set the disposition; the

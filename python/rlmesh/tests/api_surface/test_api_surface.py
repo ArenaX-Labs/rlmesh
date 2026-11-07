@@ -211,10 +211,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
 
 
 def test_api_key_never_appears_in_repr_or_errors() -> None:
-    """The remote clients take a shared ``api_key`` (RMT-22): it must never
-    reach a repr, an attribute dump or error text, and no snapshotted public
-    module exports a token- or credential-named symbol.
-    """
+    """Remote session clients expose no legacy endpoint credentials."""
     import importlib
     import inspect
     import json
@@ -225,13 +222,13 @@ def test_api_key_never_appears_in_repr_or_errors() -> None:
 
     for cls in (rlmesh.RemoteEnv, rlmesh.RemoteVectorEnv):
         parameters = inspect.signature(cls.__init__).parameters
-        assert parameters["api_key"].default is None, cls.__name__
-        assert parameters["tls_ca_file"].default is None, cls.__name__
+        assert "api_key" not in parameters, cls.__name__
+        assert "tls_ca_file" not in parameters, cls.__name__
         for name in ("token", "bearer", "auth"):
             assert name not in parameters, (cls.__name__, name)
 
     for bad in ("hidden-key\n", " hidden-key", "hidden\u00e9key"):
-        with pytest.raises(ValueError) as raised:
+        with pytest.raises(TypeError) as raised:
             rlmesh.RemoteEnv("https://localhost:1", api_key=bad)
         assert "hidden" not in str(raised.value), str(raised.value)
 

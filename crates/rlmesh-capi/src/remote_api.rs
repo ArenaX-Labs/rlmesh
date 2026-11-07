@@ -20,33 +20,11 @@ use std::sync::{Arc, Mutex};
 pub struct RLMeshRemoteEnvOptions {
     pub struct_size: usize,
     pub address: *const c_char,
-    pub host: *const c_char,
-    pub has_port: bool,
-    pub port: u16,
-    pub path: *const c_char,
-    pub has_transport: bool,
-    pub transport: i32,
     pub has_connect_timeout_seconds: bool,
     pub connect_timeout_seconds: f64,
     pub has_request_timeout_seconds: bool,
     pub request_timeout_seconds: f64,
     pub workflow_edition: *const c_char,
-    /// Appended after ABI 5; starts at the ABI-5 sizeof on every target.
-    pub _reserved: u64,
-    /// Appended after ABI 5: read only when `struct_size` covers it.
-    pub api_key: *const c_char,
-    /// Appended after ABI 5: read only when `struct_size` covers it.
-    pub tls_ca_file: *const c_char,
-}
-fn transport(has: bool, t: i32) -> Result<Option<rlmesh::Transport>, CapiError> {
-    if !has {
-        return Ok(None);
-    }
-    match t {
-        1 => Ok(Some(rlmesh::Transport::Tcp)),
-        2 => Ok(Some(rlmesh::Transport::Unix)),
-        _ => Err(CapiError::invalid_arg("invalid transport")),
-    }
 }
 unsafe fn env_options(p: *const RLMeshRemoteEnvOptions) -> Result<RemoteEnvOptions, CapiError> {
     let Some(o) = unsafe { sizing::read(p, "RLMeshRemoteEnvOptions") }? else {
@@ -54,10 +32,6 @@ unsafe fn env_options(p: *const RLMeshRemoteEnvOptions) -> Result<RemoteEnvOptio
     };
     Ok(RemoteEnvOptions {
         address: unsafe { ffi::text(o.address) }?,
-        host: unsafe { ffi::text(o.host) }?,
-        port: o.has_port.then_some(o.port),
-        path: unsafe { ffi::text(o.path) }?,
-        transport: transport(o.has_transport, o.transport)?,
         connect_timeout: rlmesh::binding::env::client_timeout_from_secs(
             o.has_connect_timeout_seconds
                 .then_some(o.connect_timeout_seconds),
@@ -69,8 +43,6 @@ unsafe fn env_options(p: *const RLMeshRemoteEnvOptions) -> Result<RemoteEnvOptio
             "request_timeout_seconds",
         )?,
         workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
-        api_key: unsafe { ffi::text(o.api_key) }?,
-        tls_ca_file: unsafe { ffi::text(o.tls_ca_file) }?.map(Into::into),
     })
 }
 struct Common {
@@ -415,26 +387,6 @@ pub unsafe extern "C" fn rlmesh_remote_env_render(
 pub unsafe extern "C" fn rlmesh_remote_env_close(p: *mut RLMeshRemoteEnv) -> RLMeshStatus {
     guard(|| unsafe { borrow_env(p) }?.get().close().map_err(Into::into))
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_remote_env_shutdown(
-    p: *mut RLMeshRemoteEnv,
-    reason: *const c_char,
-    out: *mut bool,
-) -> RLMeshStatus {
-    guard(|| {
-        if out.is_null() {
-            return Err(CapiError::invalid_arg("null out"));
-        }
-        let reason = unsafe { ffi::text(reason) }?;
-        let v = unsafe { borrow_env(p) }?
-            .get()
-            .shutdown(reason.as_deref())?;
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, v)
-        }
-    })
-}
 common_text!(
     rlmesh_remote_vector_env_address,
     RLMeshRemoteVectorEnv,
@@ -559,26 +511,6 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_close(
             .get()
             .close()
             .map_err(Into::into)
-    })
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_remote_vector_env_shutdown(
-    p: *mut RLMeshRemoteVectorEnv,
-    reason: *const c_char,
-    out: *mut bool,
-) -> RLMeshStatus {
-    guard(|| {
-        if out.is_null() {
-            return Err(CapiError::invalid_arg("null out"));
-        }
-        let reason = unsafe { ffi::text(reason) }?;
-        let v = unsafe { borrow_vector(p) }?
-            .get()
-            .shutdown(reason.as_deref())?;
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, v)
-        }
     })
 }
 common_ptr!(

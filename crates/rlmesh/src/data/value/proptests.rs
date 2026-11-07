@@ -1,10 +1,9 @@
 use proptest::prelude::*;
 use rlmesh_spaces as native;
+use rlmesh_spaces::leaves::{decode_leaves, encode_leaves};
 use rlmesh_spaces::{DType, Tensor, dtype_size};
 
-use super::{
-    decode_batched_partial_values, decode_leaves, encode_batched_partial_values, encode_leaves,
-};
+use super::{decode_batched_partial_values, encode_batched_partial_values};
 
 fn concrete_dtype() -> impl Strategy<Value = DType> {
     prop::sample::select(

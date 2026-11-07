@@ -729,7 +729,7 @@ mod tests {
         env
     }
     #[test]
-    fn facade_server_roundtrips_typed_callbacks_over_grpc() {
+    fn facade_server_roundtrips_typed_callbacks_over_session() {
         let p = Probe::default();
         let env = new_env(&p);
         let mut server = null_mut();
@@ -775,29 +775,17 @@ mod tests {
         let env = new_env(&p);
         let serve = RLMeshServeOptions {
             struct_size: std::mem::size_of::<RLMeshServeOptions>(),
-            allow_remote_shutdown: false,
-            has_idle_timeout_seconds: false,
-            has_drain_timeout_seconds: false,
             has_close_timeout_seconds: true,
-            compress_responses: false,
-            _reserved: [0; 3],
-            idle_timeout_seconds: 0.0,
-            drain_timeout_seconds: 0.0,
+            _reserved: [0; 7],
             close_timeout_seconds: 0.001,
             workflow_edition: null(),
         };
         let opts = RLMeshEnvServerOptions {
             struct_size: std::mem::size_of::<RLMeshEnvServerOptions>(),
             address: null(),
-            host: null(),
-            path: null(),
             options: &serve,
             tags: null(),
             ext: null(),
-            port: 0,
-            has_port: false,
-            has_transport: false,
-            transport: 0,
             close_env_on_shutdown: true,
             _reserved: [0; 7],
         };

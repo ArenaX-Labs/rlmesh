@@ -32,9 +32,6 @@ impl<H> ModelWorker<H> {
 pub struct RunLocalOptions {
     /// Address of the environment server to connect to.
     pub env_address: ConnectAddress,
-    /// Bearer token sent on every request to that environment server;
-    /// empty/`""` connects unauthenticated.
-    pub token: String,
     /// The exact number of episodes the run executes (see
     /// [`RunLocalOptions::episode_budget`]): `None` runs one episode, or one
     /// per seed when `episode_seeds` is non-empty; `Some(0)` runs nothing
@@ -102,7 +99,6 @@ impl RunLocalOptions {
     pub fn new(env_address: ConnectAddress) -> Self {
         Self {
             env_address,
-            token: String::new(),
             max_episodes: None,
             base_seed: None,
             episode_seeds: Vec::new(),
@@ -118,16 +114,9 @@ impl RunLocalOptions {
         }
     }
 
-    /// Parse a string env address (e.g. `"tcp://host:50051"`).
+    /// Parse a string env address (e.g. `"host:7447/env"`).
     pub fn parse(env_address: &str) -> Result<Self> {
         Ok(Self::new(ConnectAddress::parse(env_address)?))
-    }
-
-    /// Send `token` on the `authorization` header of every env request (empty
-    /// connects unauthenticated).
-    pub fn token(mut self, token: impl Into<String>) -> Self {
-        self.token = token.into();
-        self
     }
 
     /// Run exactly `max_episodes` episodes (0 runs nothing).

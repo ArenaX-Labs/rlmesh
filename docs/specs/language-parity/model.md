@@ -639,24 +639,9 @@ rules are Python's (`py/_models/base.py:1475-1500`,
   `forwardWallMs` is the batch's call to settle and `endpointTotalMs` the
   handler call, as there is no wire between them. Only a session address
   batches; `batching` on another is the `ValueError` class.
-- **Endpoint token.** `RLMESH_MODEL_ENDPOINT_TOKEN`, when set, requires that
-  bearer token on every model RPC and wins over `ext.token` (which is then
-  not checked). The classes split as in Env's construction step 8: a set
-  variable that is empty, whitespace-only, not Unicode or cannot travel in an
-  HTTP header fails startup before bind with the `RLMeshException` class
-  (`Error::Internal`, `RLMESH_ERR_INTERNAL`), as Python's does
-  (`base.py:1487-1489`, `rs/serve_options.rs:141-170`). With the variable
-  unset, an `ext.token` that cannot travel in an HTTP header is an invalid
-  options field (R-6), so it fails before bind with the `ValueError` class
-  (`Error::InvalidArgument`, `RLMESH_ERR_INVALID_ARGUMENT`,
-  `rlmesh::ValueError`; R-21). A valid nonempty `ext.token` becomes the
-  required bearer token; `None`, NULL or `""` serves without authentication.
-  Python has no `ext`; it reads only the variable.
-- **`ext.predict_concurrency`** caps the Join-stream requests the served model
-  processes at once per connection; `None` is the build's default cap
-  (`rlmesh_grpc::DEFAULT_PREDICT_CONCURRENCY`), and `Some(0)` fails with the
-  ValueError class. Corner calls stay serialized (R-17); the cap bounds
-  decode, encode and the critical sections that overlap them.
+- **Session lifecycle.** Model serving accepts only session participant
+  addresses. Endpoint tokens are removed. `ext.predict_concurrency` remains a
+  migration refusal: session model calls are serialized by the session driver.
 
 ### Attributes
 
@@ -1032,7 +1017,7 @@ stays builtin `RuntimeError`.
 - `rlmesh_model_serve(model, bind_address, const RLMeshServeOptions*)`
   (`h:485-496`) carries `token` and `predict_concurrency` inline. Target:
   `const RLMeshModelServeOptions*`, with both in `RLMeshExtModelServeOptions`
-  (MDL-20). Its `drain_timeout_ms` / `close_timeout_ms` of 0 ("unset") reach
+  (MDL-20). Its `close_timeout_ms` of 0 ("unset") reach
   the server as `None`, waiting indefinitely (`h:482-493`,
   `capi/model.rs:823`). Target: an unset timeout in Env's
   `RLMeshServeOptions` takes ENV-7's 5 s cap, applied by the facade (Serve).

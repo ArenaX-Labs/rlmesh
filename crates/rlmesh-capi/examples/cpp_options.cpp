@@ -50,60 +50,40 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::ServeOptions>);
   {
     rlmesh::ServeOptions options;
-    options.with_allow_remote_shutdown(options.allow_remote_shutdown)
-        .with_idle_timeout(options.idle_timeout)
-        .with_drain_timeout(options.drain_timeout)
-        .with_close_timeout(options.close_timeout)
-        .with_compress_responses(options.compress_responses)
+    options.with_close_timeout(options.close_timeout)
         .with_workflow_edition(options.workflow_edition);
     std::move(options)
-        .with_allow_remote_shutdown(options.allow_remote_shutdown)
-        .with_idle_timeout(options.idle_timeout)
-        .with_drain_timeout(options.drain_timeout)
         .with_close_timeout(options.close_timeout)
-        .with_compress_responses(options.compress_responses)
         .with_workflow_edition(options.workflow_edition);
   }
   static_assert(std::is_aggregate_v<rlmesh::ext::EnvServerOptions>);
   {
     rlmesh::ext::EnvServerOptions options;
-    options.with_token(options.token)
-        .with_peer_info_extra(options.peer_info_extra)
-        .with_publish_describe(options.publish_describe);
-    std::move(options)
-        .with_token(options.token)
-        .with_peer_info_extra(options.peer_info_extra)
-        .with_publish_describe(options.publish_describe);
+    options.with_publish_describe(options.publish_describe);
+    std::move(options).with_publish_describe(options.publish_describe);
   }
   static_assert(std::is_aggregate_v<rlmesh::ext::ModelServeOptions>);
   {
     rlmesh::ext::ModelServeOptions options;
-    options.with_token(options.token)
-        .with_predict_concurrency(options.predict_concurrency)
+    options.with_predict_concurrency(options.predict_concurrency)
         .with_no_signal_handlers(options.no_signal_handlers);
     std::move(options)
-        .with_token(options.token)
         .with_predict_concurrency(options.predict_concurrency)
         .with_no_signal_handlers(options.no_signal_handlers);
   }
   static_assert(std::is_aggregate_v<rlmesh::EnvServerOptions>);
   {
     rlmesh::EnvServerOptions options;
-    options.with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
+    options
+        .with_address(options.address)
+
         .with_options(options.options)
         .with_tags(options.tags)
         .with_close_env_on_shutdown(options.close_env_on_shutdown)
         .with_ext(options.ext);
     std::move(options)
         .with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
+
         .with_options(options.options)
         .with_tags(options.tags)
         .with_close_env_on_shutdown(options.close_env_on_shutdown)
@@ -153,20 +133,15 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::RemoteEnvOptions>);
   {
     rlmesh::RemoteEnvOptions options;
-    options.with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
+    options
+        .with_address(options.address)
+
         .with_connect_timeout(options.connect_timeout)
         .with_request_timeout(options.request_timeout)
         .with_workflow_edition(options.workflow_edition);
     std::move(options)
         .with_address(options.address)
-        .with_host(options.host)
-        .with_port(options.port)
-        .with_path(options.path)
-        .with_transport(options.transport)
+
         .with_connect_timeout(options.connect_timeout)
         .with_request_timeout(options.request_timeout)
         .with_workflow_edition(options.workflow_edition);

@@ -207,7 +207,7 @@ fn execute(case: &Json) -> Json {
             let server = EnvServer::new(
                 env,
                 EnvServerOptions {
-                    address: Some("tcp://127.0.0.1:0".into()),
+                    address: Some(":0/env".into()),
                     ..Default::default()
                 },
             )
@@ -590,9 +590,8 @@ fn drop_serve(variant: &str) -> Json {
         }
         let mut out = if variant == "factory_drop" {
             futures::executor::block_on(async {
-                let mut serving = Box::pin(
-                    factory.serve_async("tcp://127.0.0.1:0", EnvFactoryServeOptions::default()),
-                );
+                let mut serving =
+                    Box::pin(factory.serve_async(":0/env", EnvFactoryServeOptions::default()));
                 assert!(futures::poll!(serving.as_mut()).is_pending());
                 drop(serving);
             });
@@ -600,7 +599,7 @@ fn drop_serve(variant: &str) -> Json {
         } else {
             error_record(
                 futures::executor::block_on(factory.serve_async(
-                    "tcp://127.0.0.1:0",
+                    ":0/env",
                     EnvFactoryServeOptions {
                         cancel: Some(token),
                         ..Default::default()
@@ -620,7 +619,7 @@ fn drop_serve(variant: &str) -> Json {
     let server = EnvServer::new(
         ScriptedEnv::new(&counts),
         EnvServerOptions {
-            address: Some("tcp://127.0.0.1:0".into()),
+            address: Some(":0/env".into()),
             ..Default::default()
         },
     )
@@ -962,7 +961,7 @@ fn serve_drop_nonblocking() -> Json {
                 release: blocked,
             },
             EnvServerOptions {
-                address: Some("tcp://127.0.0.1:0".into()),
+                address: Some(":0/env".into()),
                 ..Default::default()
             },
         )
@@ -1003,22 +1002,8 @@ fn masked(mut record: Json, value: &str, mask: &str) -> Json {
 
 /// A run refuses an https:// env endpoint (v1) before any dial.
 fn https_env(model: &Model) -> Json {
-    let server = EnvServer::new(
-        ScriptedEnv::new(&Arc::default()),
-        EnvServerOptions {
-            address: Some("tcp://127.0.0.1:0".into()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    server.start().unwrap();
-    let port = server.address().rsplit(':').next().unwrap().to_string();
     let error = model
-        .run(
-            format!("https://127.0.0.1:{port}").as_str(),
-            RunOptions::default(),
-        )
+        .run("https://127.0.0.1:1", RunOptions::default())
         .unwrap_err();
-    server.shutdown().unwrap();
-    masked(error_record(error), &port, "PORT")
+    masked(error_record(error), ":1", ":PORT")
 }

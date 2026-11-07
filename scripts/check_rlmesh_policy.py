@@ -33,24 +33,6 @@ STR_CONST_RE = re.compile(
 )
 PY_STR_CONST_RE = re.compile(r'(?P<name>[A-Z0-9_]+)\s*=\s*"(?P<value>[^"]+)"')
 INT_CONST_RE = re.compile(r"(?P<name>[A-Z0-9_]+)\s*=\s*(?P<value>\d+)")
-# A proto package path: `rlmesh.<pkg>.vN`. The generation token must NOT match
-# this shape (it is an opaque handshake value, not a package namespace).
-PACKAGE_PATH_TOKEN_RE = re.compile(r"^rlmesh\.[a-z]+\.v\d+$")
-PROTO_PACKAGE_RE = re.compile(
-    r"^\s*package\s+(?P<package>[A-Za-z0-9_.]+)\s*;", re.MULTILINE
-)
-PROTO_BLOCK_RE = re.compile(r"^(?P<kind>message|enum|oneof)\s+(?P<name>\w+)\s*\{")
-# An enum value (`NAME = 1;`) or a field/oneof arm (`Type name = 1;`), with any
-# label words and an optional `[option]` block; `reserved` lines never match.
-PROTO_ENTRY_RE = re.compile(
-    r"^(?:[\w.]+(?:<[^>]*>)?\s+)*\w+\s*=\s*\d+\s*(?:\[.*\])?\s*;"
-)
-MAX_MESSAGE_SIZE_RE = re.compile(
-    r"pub const MAX_MESSAGE_SIZE: usize = (?P<expr>[^;]+);"
-)
-# Oneofs whose new arm an old peer cannot refuse: `MetaValue.kind` reads as null
-# and `SpaceSpec.spec` as an unset spec, so their arm counts stay manifest-pinned.
-FROZEN_ONEOFS = ("rlmesh.spaces.v1.MetaValue.kind", "rlmesh.spaces.v1.SpaceSpec.spec")
 # Workflow edition name shapes. A SEALED edition is the bare `YYYY.MM` base; an
 # official PROVISIONAL prerelease edition appends the full Rust SemVer
 # prerelease cohort (`YYYY.MM-X.Y.Z-{alpha,beta,rc}.N`). Local dev cohorts are
@@ -135,7 +117,7 @@ class Artifact:
     publish: bool
 
     @classmethod
-    def from_manifest(cls, repo_root: Path, raw: dict[str, Any]) -> "Artifact":
+    def from_manifest(cls, repo_root: Path, raw: dict[str, Any]) -> Artifact:
         return cls(
             id=_required_str(raw, "id"),
             name=_required_str(raw, "name"),
@@ -262,86 +244,6 @@ status = "provisional"
     assert _current_edition_not_highest("2026.06", ["2026.06", cohort]) is not None
     assert _current_edition_not_highest(cohort, [cohort, "2026.06"]) is None
 
-    # The proto line scan: nested enums are qualified by their message, comments
-    # and map/labelled fields are not entries, a service block nests nothing.
-    sample = """syntax = "proto3";
-package rlmesh.t.v1;
-// enum Ghost { A = 0; }
-message Outer {
-  oneof kind {
-    int64 integer = 1; // a = 9;
-    Inner inner = 2 [deprecated = true];
-  }
-  enum Mode {
-    MODE_UNSPECIFIED = 0;
-    MODE_ON = 1;
-  }
-  map<string, Outer> entries = 3;
-  optional uint64 total_ns = 4;
-  reserved 5;
-}
-message Empty {}
-enum Top {
-  TOP_UNSPECIFIED = 0;
-  TOP_A = 1;
-  TOP_B = 10;
-}
-service S {
-  rpc Call(Outer) returns (stream Empty) {}
-}
-"""
-    enums, oneofs = _scan_proto_vocabulary(sample)
-    assert enums == {"rlmesh.t.v1.Outer.Mode": 2, "rlmesh.t.v1.Top": 3}
-    assert oneofs == {"rlmesh.t.v1.Outer.kind": 2}
-
-    frozen = {name: 1 for name in FROZEN_ONEOFS}
-    wire: dict[str, Any] = {
-        "max_message_bytes": 256 * 1024 * 1024,
-        "enums": {"rlmesh.t.v1.Outer.Mode": 2, "rlmesh.t.v1.Top": 3},
-        "oneofs": {"rlmesh.t.v1.Outer.kind": 2, **frozen},
-    }
-    live_oneofs = {**oneofs, **frozen}
-    assert not _check_wire_vocabulary(wire, enums, live_oneofs)
-    # A new enum value, a new enum, a stale entry, and a new oneof arm each need
-    # the manifest edited in the same change.
-    grown = {**enums, "rlmesh.t.v1.Top": 4}
-    assert _check_wire_vocabulary(wire, grown, live_oneofs) == [
-        '[wire.enums]."rlmesh.t.v1.Top" is 3, the proto declares 4 values; a new '
-        "value is a wire-v1 vocabulary change: record the count here in the same "
-        "change and emit it only when the target leg's edition covers it "
-        '(docs/editions/index.md, "Additive-forever rules")'
-    ]
-    assert _check_wire_vocabulary(wire, {**enums, "rlmesh.t.v1.New": 1}, live_oneofs)
-    assert _check_wire_vocabulary(wire, {"rlmesh.t.v1.Top": 3}, live_oneofs)
-    assert _check_wire_vocabulary(
-        wire, enums, {**live_oneofs, "rlmesh.t.v1.Outer.kind": 3}
-    )
-    # An error-code enum names the silent fold in its message.
-    fold = _check_wire_vocabulary(
-        {**wire, "enums": {**wire["enums"], "rlmesh.t.v1.EnvErrorCode": 2}},
-        {**enums, "rlmesh.t.v1.EnvErrorCode": 3},
-        live_oneofs,
-    )
-    assert len(fold) == 1 and "folds an unknown value to UNSPECIFIED" in fold[0]
-    # The frozen oneofs must stay recorded even if the manifest is trimmed.
-    assert _check_wire_vocabulary(
-        {**wire, "oneofs": {"rlmesh.t.v1.Outer.kind": 2}}, enums, live_oneofs
-    ) == [f'[wire.oneofs] must record "{name}"' for name in FROZEN_ONEOFS]
-    # A listed oneof only the manifest knows is stale, and a type error is named.
-    assert _check_wire_vocabulary(wire, enums, frozen)
-    assert _check_wire_vocabulary({**wire, "enums": []}, enums, live_oneofs)
-
-    # The gRPC cap: the Rust constant expression must equal the pinned bytes.
-    lib = "pub const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;"
-    assert _int_expr("256 * 1024 * 1024") == 268435456
-    assert _int_expr("1 + 2") == 3
-    assert _int_expr("1 << 20") is None
-    assert not _check_message_cap(wire, lib)
-    assert _check_message_cap({**wire, "max_message_bytes": 4 * 1024 * 1024}, lib)
-    assert _check_message_cap(wire, "pub const MAX_MESSAGE_SIZE: usize = 1 << 28;")
-    assert _check_message_cap(wire, "")
-    assert _check_message_cap({**wire, "max_message_bytes": "256 MiB"}, lib)
-
     # rust-version tracks the mise toolchain at major.minor precision.
     assert not _check_rust_version("1.99", "1.99")
     assert not _check_rust_version({"version": "1.99.0"}, "1.99")
@@ -349,7 +251,9 @@ service S {
     assert _check_rust_version("stable", "1.99")
     assert _check_rust_version(None, "1.99")
     assert _check_rust_version("1.99", None)
-    assert not _check_capi_version('#define RLMESH_VERSION "0.2.0-rc.1"\n', "0.2.0-rc.1")
+    assert not _check_capi_version(
+        '#define RLMESH_VERSION "0.2.0-rc.1"\n', "0.2.0-rc.1"
+    )
     assert _check_capi_version('#define RLMESH_VERSION "0.1.0"\n', "0.2.0")
     assert _check_capi_version("/* no macro */\n", "0.2.0")
 
@@ -362,7 +266,6 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
 
     release = _required_table(manifest, "release", errors)
     workflow = _required_table(manifest, "workflow", errors)
-    protocol = _required_table(manifest, "protocol", errors)
     api_surface = _required_table(manifest, "api_surface", errors)
     raw_artifacts = manifest.get("artifact")
     if not isinstance(raw_artifacts, list) or not raw_artifacts:
@@ -399,7 +302,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
                 )
 
     errors.extend(_validate_release_crate_order(repo_root, artifacts))
-    errors.extend(_validate_protocol_and_workflow(repo_root, protocol))
+    errors.extend(_validate_edition_source(repo_root))
     errors.extend(
         _validate_workflow_editions(repo_root, workflow, release, workspace_version)
     )
@@ -410,7 +313,6 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
     errors.extend(
         _validate_sealed_edition_retention(repo_root, manifest_path, workflow)
     )
-    errors.extend(_validate_wire(repo_root, _required_table(manifest, "wire", errors)))
     errors.extend(_validate_adapters(repo_root))
     errors.extend(_validate_python_public_modules(repo_root))
     errors.extend(
@@ -608,28 +510,10 @@ def _defines_dunder_all(path: Path) -> bool:
     return False
 
 
-def _validate_protocol_and_workflow(
-    repo_root: Path, protocol: dict[str, Any]
-) -> list[str]:
+def _validate_edition_source(repo_root: Path) -> list[str]:
     errors: list[str] = []
     source = repo_root / "crates/rlmesh-proto/src/lib.rs"
     source_text = source.read_text(encoding="utf-8")
-    constants = dict(STR_CONST_RE.findall(source_text))
-    expected = {
-        "PROTOCOL_GENERATION": (
-            "[protocol].current_generation",
-            protocol.get("current_generation"),
-        ),
-    }
-    for name, (manifest_key, value) in expected.items():
-        if not isinstance(value, str):
-            errors.append(f"{manifest_key} must be a string")
-            continue
-        if constants.get(name) != value:
-            errors.append(
-                f"{name} is {constants.get(name)!r}, manifest declares {value!r}"
-            )
-
     if "CURRENT_WORKFLOW_EDITION_SPEC_SHA256" in source_text:
         errors.append(
             f"{source}: remove CURRENT_WORKFLOW_EDITION_SPEC_SHA256; provisional "
@@ -639,35 +523,6 @@ def _validate_protocol_and_workflow(
         errors.append(
             f"{source}: CURRENT_WORKFLOW_EDITION must come from build-time cohort env"
         )
-
-    # Guard the protocol-generation token's *shape*. The token is an opaque
-    # handshake value, not a proto package path: it must not look like a
-    # per-package namespace (`rlmesh.<pkg>.vN`) and must not collide with any
-    # declared proto package. This keeps Axis 1 (generation) visually and
-    # semantically distinct from Axis 4 (package vN). See versioning-governance §3.
-    declared_packages = _declared_proto_packages(repo_root)
-    for manifest_key, value in (
-        ("[protocol].current_generation", protocol.get("current_generation")),
-    ):
-        if not isinstance(value, str):
-            continue
-        if PACKAGE_PATH_TOKEN_RE.match(value):
-            errors.append(
-                f"{manifest_key} {value!r} is shaped like a proto package path "
-                "(rlmesh.<pkg>.vN); the generation token must be an opaque "
-                "non-package string (e.g. rlmesh-wire-v1)"
-            )
-        if value in declared_packages:
-            errors.append(
-                f"{manifest_key} {value!r} collides with a declared proto package; "
-                "the generation token must not name a real package"
-            )
-
-    for token in _forbidden_unpublished_protocol_tokens():
-        if token in source_text:
-            errors.append(
-                f"{source}: remove unpublished legacy protocol token {token!r}"
-            )
 
     buf_config = repo_root / "buf.yaml"
     if not buf_config.exists():
@@ -1117,152 +972,6 @@ def _validate_sealed_edition_retention(
     ]
 
 
-def _validate_wire(repo_root: Path, wire: dict[str, Any]) -> list[str]:
-    """The additive-forever shapes of ``rlmesh-wire-v1`` match ``[wire]``.
-
-    The message cap, every enum's value count, and the frozen oneofs' arm counts
-    are pinned in the manifest so none of them changes without a deliberate edit
-    in the same change. The manifest edit is the paperwork; emitting the new
-    value only to a peer whose edition covers it is the house rule the gate
-    cannot see (``docs/editions/index.md``).
-    """
-    enums: dict[str, int] = {}
-    oneofs: dict[str, int] = {}
-    proto_root = repo_root / "crates/rlmesh-proto/proto"
-    for proto_file in sorted(proto_root.rglob("*.proto")):
-        file_enums, file_oneofs = _scan_proto_vocabulary(
-            proto_file.read_text(encoding="utf-8")
-        )
-        enums.update(file_enums)
-        oneofs.update(file_oneofs)
-    lib = repo_root / "crates/rlmesh-grpc/src/lib.rs"
-    return _check_wire_vocabulary(wire, enums, oneofs) + [
-        f"{lib.relative_to(repo_root)}: {error}"
-        for error in _check_message_cap(wire, lib.read_text(encoding="utf-8"))
-    ]
-
-
-def _scan_proto_vocabulary(text: str) -> tuple[dict[str, int], dict[str, int]]:
-    """Enum value counts and oneof arm counts of one proto file, package-qualified.
-
-    A line scan, like ``build_manifest.rs``: comments are stripped, each ``{``
-    opens a block and each ``}`` closes one, and an entry line counts toward the
-    innermost enum or oneof. Keys are ``<package>.<Message...>.<name>``.
-    """
-    package = ""
-    stack: list[tuple[str, str]] = []
-    enums: dict[str, int] = {}
-    oneofs: dict[str, int] = {}
-    for raw in text.splitlines():
-        line = raw.split("//", 1)[0].strip()
-        if not line:
-            continue
-        if declared := PROTO_PACKAGE_RE.match(line):
-            package = declared.group("package")
-        if opened := PROTO_BLOCK_RE.match(line):
-            kind, name = opened.group("kind"), opened.group("name")
-            stack.append((kind, name))
-            path = ".".join([package, *(n for _, n in stack if n)])
-            if kind == "enum":
-                enums[path] = 0
-            elif kind == "oneof":
-                oneofs[path] = 0
-        elif "{" in line:
-            stack.append(("block", ""))
-        elif stack and PROTO_ENTRY_RE.match(line):
-            kind = stack[-1][0]
-            path = ".".join([package, *(n for _, n in stack if n)])
-            if kind == "enum":
-                enums[path] += 1
-            elif kind == "oneof":
-                oneofs[path] += 1
-        for _ in range(line.count("}")):
-            if stack:
-                stack.pop()
-    return enums, oneofs
-
-
-def _check_wire_vocabulary(
-    wire: dict[str, Any], enums: dict[str, int], oneofs: dict[str, int]
-) -> list[str]:
-    errors: list[str] = []
-    recorded_enums = wire.get("enums")
-    if not isinstance(recorded_enums, dict):
-        errors.append(
-            '[wire.enums] must be a table of `"<package>.<Enum>" = <value count>`'
-        )
-        recorded_enums = {}
-    recorded_oneofs = wire.get("oneofs")
-    if not isinstance(recorded_oneofs, dict):
-        errors.append(
-            '[wire.oneofs] must be a table of `"<package>.<Message>.<oneof>" = <arm count>`'
-        )
-        recorded_oneofs = {}
-    for name in FROZEN_ONEOFS:
-        if name not in recorded_oneofs:
-            errors.append(f'[wire.oneofs] must record "{name}"')
-
-    for table, live, noun in (
-        ("enums", enums, "value"),
-        ("oneofs", oneofs, "arm"),
-    ):
-        recorded = recorded_enums if table == "enums" else recorded_oneofs
-        for name in sorted(recorded.keys() - live.keys()):
-            errors.append(
-                f'[wire.{table}]."{name}" names no {table[:-1]} under crates/rlmesh-proto/proto'
-            )
-        for name, count in sorted(live.items()):
-            if name not in recorded:
-                if table == "enums":
-                    errors.append(
-                        f'[wire.enums] has no entry for proto enum "{name}" ({count} '
-                        "values); every wire-v1 enum's vocabulary is pinned: record it"
-                    )
-                continue
-            pinned = recorded[name]
-            if not isinstance(pinned, int):
-                errors.append(
-                    f'[wire.{table}]."{name}" must be an integer {noun} count'
-                )
-            elif pinned != count:
-                errors.append(
-                    f'[wire.{table}]."{name}" is {pinned}, the proto declares {count} '
-                    f"{noun}s; a new {noun} is a wire-v1 vocabulary change: record the "
-                    "count here in the same change and emit it only when the target "
-                    "leg's edition covers it (docs/editions/index.md, "
-                    '"Additive-forever rules")'
-                    + (
-                        "; a 0.1.0 peer folds an unknown value to UNSPECIFIED, so a new "
-                        "code must never carry error semantics an old peer needs"
-                        if name.endswith("ErrorCode")
-                        else ""
-                    )
-                )
-    return errors
-
-
-def _check_message_cap(wire: dict[str, Any], lib_text: str) -> list[str]:
-    pinned = wire.get("max_message_bytes")
-    if not isinstance(pinned, int):
-        return ["[wire].max_message_bytes must be an integer byte count"]
-    match = MAX_MESSAGE_SIZE_RE.search(lib_text)
-    if match is None:
-        return ["MAX_MESSAGE_SIZE constant not found"]
-    actual = _int_expr(match.group("expr"))
-    if actual is None:
-        return [
-            f"MAX_MESSAGE_SIZE expression {match.group('expr').strip()!r} is not a "
-            "sum or product of integer literals; policy:check cannot pin it"
-        ]
-    if actual != pinned:
-        return [
-            f"MAX_MESSAGE_SIZE is {actual} bytes, rlmesh.toml [wire].max_message_bytes "
-            f"pins {pinned}; the gRPC message cap is part of the rlmesh-wire-v1 "
-            "contract, so change both deliberately in the same change"
-        ]
-    return []
-
-
 def _int_expr(expr: str) -> int | None:
     """Value of a Rust integer expression made of literals, ``*`` and ``+``."""
 
@@ -1478,40 +1187,6 @@ def _package_family_for_version(version: str) -> str:
     if major == 0:
         return f"0.{minor}"
     return str(major)
-
-
-def _declared_proto_packages(repo_root: Path) -> set[str]:
-    """Collect every `package` declared under the proto tree."""
-    proto_root = repo_root / "crates/rlmesh-proto/proto"
-    packages: set[str] = set()
-    if not proto_root.exists():
-        return packages
-    for proto_file in proto_root.rglob("*.proto"):
-        text = proto_file.read_text(encoding="utf-8")
-        packages.update(
-            match.group("package") for match in PROTO_PACKAGE_RE.finditer(text)
-        )
-    return packages
-
-
-def _forbidden_unpublished_protocol_tokens() -> list[str]:
-    """Legacy protocol identifiers that must never reappear in `rlmesh-proto`.
-
-    Each token is assembled from fragments ON PURPOSE, not for cleverness: the
-    whole point of this guard is that these legacy names are eradicated from the
-    tree, so the literals must not appear verbatim *anywhere* — including in this
-    checker. A literal here would make a plain "is `<token>` gone yet?" grep/audit
-    false-positive on the guard's own source, and would self-match if the scan
-    were ever widened beyond `rlmesh-proto/src/lib.rs`. Read the fragments below to
-    recover each legacy name; do not inline them.
-    """
-    return [
-        "_".join(["LEGACY", "0", "1", "A" + "BI", "VERSION"]),
-        "".join(["A", "BI", "_VERSION"]),
-        "_".join(["MIN", "SUPPORTED", "A" + "BI", "VERSION"]),
-        "_".join(["is", "a" + "bi", "compatible"]),
-        ".".join(["rlmesh", "v1"]),
-    ]
 
 
 def _release_status_for_version(version: str) -> str | None:

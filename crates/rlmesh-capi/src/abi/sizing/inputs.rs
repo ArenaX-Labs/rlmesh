@@ -104,8 +104,6 @@ input!(crate::env_factory::RLMeshEnvFactoryVtable);
 input!(crate::env_factory::RLMeshTagParam);
 input!(
     crate::env_server::RLMeshEnvServerOptions,
-    has_port,
-    has_transport,
     close_env_on_shutdown
 );
 input!(
@@ -114,11 +112,7 @@ input!(
 );
 input!(
     crate::env_server::RLMeshServeOptions,
-    allow_remote_shutdown,
-    has_idle_timeout_seconds,
-    has_drain_timeout_seconds,
-    has_close_timeout_seconds,
-    compress_responses
+    has_close_timeout_seconds
 );
 input!(
     crate::model_api::RLMeshExtModelServeOptions;
@@ -169,10 +163,9 @@ input!(
 );
 input!(crate::recorder::records::RLMeshWorkloadRecordOptions);
 input!(
-    crate::remote_api::RLMeshRemoteEnvOptions;
-    first_appended = _reserved;
-    appended = [_reserved, api_key, tls_ca_file];
-    bools = [has_port, has_transport, has_connect_timeout_seconds, has_request_timeout_seconds]
+    crate::remote_api::RLMeshRemoteEnvOptions,
+    has_connect_timeout_seconds,
+    has_request_timeout_seconds
 );
 input!(
     crate::run_api::RLMeshRunOptions,
@@ -223,40 +216,4 @@ input!(crate::view::RLMeshView, has_step_hz);
 /// The size of the field `get` projects, in a const context.
 pub(crate) const fn field_size<T, F>(_get: fn(&T) -> &F) -> usize {
     std::mem::size_of::<F>()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::SizedInput;
-    use crate::remote_api::RLMeshRemoteEnvOptions;
-    use std::ffi::c_char;
-
-    /// The ABI-5 layouts, as an ABI-5 caller compiled them.
-    #[repr(C)]
-    #[allow(dead_code)]
-    struct Abi5Env {
-        struct_size: usize,
-        address: *const c_char,
-        host: *const c_char,
-        has_port: bool,
-        port: u16,
-        path: *const c_char,
-        has_transport: bool,
-        transport: i32,
-        has_connect_timeout_seconds: bool,
-        connect_timeout_seconds: f64,
-        has_request_timeout_seconds: bool,
-        request_timeout_seconds: f64,
-        workflow_edition: *const c_char,
-    }
-    #[test]
-    fn appended_remote_fields_start_past_the_abi5_sizeof_on_this_target() {
-        assert_eq!(
-            <RLMeshRemoteEnvOptions as SizedInput>::MIN_SIZE,
-            std::mem::size_of::<Abi5Env>()
-        );
-        assert!(
-            std::mem::offset_of!(RLMeshRemoteEnvOptions, api_key) >= std::mem::size_of::<Abi5Env>()
-        );
-    }
 }

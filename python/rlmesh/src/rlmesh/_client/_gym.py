@@ -2,7 +2,7 @@
 
 With gymnasium installed, :class:`rlmesh.numpy.RemoteEnv` is a
 ``gymnasium.Env`` and :class:`rlmesh.numpy.RemoteVectorEnv` a
-``gymnasium.vector.VectorEnv``, over gRPC and v2 sessions alike. This
+``gymnasium.vector.VectorEnv``, over realtime sessions. This
 module rebuilds the env's own spaces from its contract and converts values
 at the boundary, so code written against Gymnasium cannot tell the
 difference:
@@ -23,7 +23,7 @@ Not part of the public API.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from ..spaces import to_gymnasium_space
 from ..spaces._internals import spec_details
@@ -55,7 +55,6 @@ __all__ = [
     "action_converter",
     "gym_space",
     "observation_converter",
-    "vector_info",
 ]
 
 Convert = Callable[[Any], Any]
@@ -103,24 +102,6 @@ def observation_converter(space: Any, batched: bool = False) -> Convert | None:
     if isinstance(space, spaces.MultiBinary):
         return lambda value: np.asarray(value).astype(np.int8, copy=False)
     return None
-
-
-def vector_info(info: dict[str, Any], num_envs: int) -> dict[str, Any]:
-    """A vector env's info with its per-lane lists as arrays again (v1 wire)."""
-    import numpy as np
-
-    out: dict[str, Any] = {}
-    for key, value in info.items():
-        if isinstance(value, dict):
-            out[key] = vector_info(cast("dict[str, Any]", value), num_envs)
-        elif isinstance(value, list) and len(cast("list[Any]", value)) == num_envs:
-            try:
-                out[key] = np.asarray(cast("list[Any]", value))
-            except ValueError:
-                out[key] = value
-        else:
-            out[key] = value
-    return out
 
 
 def _refuse(where: str, what: str) -> TypeError:

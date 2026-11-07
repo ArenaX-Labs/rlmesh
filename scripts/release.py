@@ -45,14 +45,12 @@ CHANGELOG = ROOT / "CHANGELOG.md"
 SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
 # crates.io publish order: dependencies before dependents.
 CRATE_ORDER = [
-    "rlmesh-proto",
     "rlmesh-spaces",
     "rlmesh-tether",
     "rlmesh-session-core",
     "rlmesh-adapters",
     "rlmesh-session",
     "rlmesh-cli",
-    "rlmesh-grpc",
     "rlmesh",
 ]
 

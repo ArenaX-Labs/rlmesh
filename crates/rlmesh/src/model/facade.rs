@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
-use rlmesh_grpc::lifecycle::ShutdownTrigger;
+use crate::lifecycle::ShutdownTrigger;
 
 use super::context::{BatchPredictContext, EpisodeStore, OwnedContext, PredictContext};
 use super::policy::{Corners, LoadKey, Policy, SpecArg};
@@ -1269,11 +1269,6 @@ fn serve_blocking(
     }
     let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
     {
-        crate::binding::check_session_model_serve(&serve)?;
-        crate::serve_options::check_session_token(
-            crate::serve_options::MODEL_ENDPOINT_TOKEN_ENV,
-            ext.token.is_some(),
-        )?;
         if ext.predict_concurrency.is_some() {
             return Err(Error::invalid_argument(
                 "predict_concurrency: a session model runs one forward at a time (gone in \

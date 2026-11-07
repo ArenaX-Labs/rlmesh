@@ -309,8 +309,6 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
         let made = factory.make_env(&options.make_kwargs)?;
         let publish = Publish {
             envelope: describe_with(factory, crate::env::ServedEnv::from(&made)),
-            peer_runtime: (host.language != "rust")
-                .then(|| super::server::peer_runtime(host.language, &host.extra)),
         };
         match made {
             MadeEnv::Env(env) => EnvServer::lanes_resolved(vec![env], server_options, publish)?,
@@ -335,8 +333,6 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
         );
         let publish = Publish {
             envelope: describe_with(factory, served),
-            peer_runtime: (host.language != "rust")
-                .then(|| super::server::peer_runtime(host.language, &host.extra)),
         };
         EnvServer::lanes_resolved(lanes, server_options, publish)?
     };

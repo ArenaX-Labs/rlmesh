@@ -12,7 +12,6 @@ public API.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from typing import Any, ClassVar, Generic, Literal, TypeVar, cast
 
@@ -23,7 +22,7 @@ from ..spaces import Space, space_from_spec
 from ..specs import EnvContract, SpaceSpec
 from ..types import Metadata
 from . import _gym
-from ._endpoint import Transport, normalize_connect_address
+from ._endpoint import normalize_connect_address
 from ._metadata import EMPTY_METADATA
 
 # The contract metadata key the served env's `EnvSpec` travels under.
@@ -53,42 +52,24 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         self,
         address: str | None = None,
         *,
-        host: str | None = None,
-        port: int | None = None,
-        path: str | None = None,
-        transport: Transport | None = None,
         connect_timeout_seconds: float | None = None,
         request_timeout_seconds: float | None = None,
         workflow_edition: str | None = None,
-        api_key: str | None = None,
-        tls_ca_file: str | os.PathLike[str] | None = None,
     ) -> None:
         self._initialize(
             address,
-            host=host,
-            port=port,
-            path=path,
-            transport=transport,
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
             workflow_edition=workflow_edition,
-            api_key=api_key,
-            tls_ca_file=tls_ca_file,
         )
 
     def _initialize(
         self,
         address: str | None = None,
         *,
-        host: str | None = None,
-        port: int | None = None,
-        path: str | None = None,
-        transport: Transport | None = None,
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None = None,
         workflow_edition: str | None = None,
-        api_key: str | None = None,
-        tls_ca_file: str | os.PathLike[str] | None = None,
     ) -> None:
         self._bridge.ensure_available()
         # This client is the runtime tier of its session, so it declares an
@@ -97,26 +78,15 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         workflow_edition = resolve_workflow_edition(call=workflow_edition)
         normalized_address = normalize_connect_address(
             address,
-            host=host,
-            port=port,
-            path=path,
-            transport=transport,
         )
         refuse_v1_address(type(self).__name__, normalized_address)
         # Dials, handshakes and checks the arity; a dial failure already
         # reads "could not connect to an env at ...".
-        # Only the credentials given travel, as keywords.
-        credentials: dict[str, str] = {}
-        if api_key is not None:
-            credentials["api_key"] = api_key
-        if tls_ca_file is not None:
-            credentials["tls_ca_file"] = os.fspath(tls_ca_file)
         self._client = self._make_client(
             normalized_address,
             connect_timeout_seconds,
             request_timeout_seconds,
             workflow_edition,
-            **credentials,
         )
         self._address = self._client.address()
         # A local conversion of the handshake's contract; no I/O.
@@ -135,12 +105,8 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None,
         workflow_edition: str | None,
-        **credentials: str,
     ) -> Any:
-        """Build and return the native client. Overridden per arity.
-
-        ``credentials`` carries ``api_key`` and ``tls_ca_file`` when given.
-        """
+        """Build and return the native client. Overridden per arity."""
         raise NotImplementedError
 
     def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
@@ -236,10 +202,6 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
     def close(self) -> None:
         """Detach this client from the remote endpoint."""
         self._client.close()
-
-    def shutdown(self, reason: str = "owner shutdown") -> bool:
-        """Request owner-level shutdown of the remote environment endpoint."""
-        return bool(self._client.shutdown(reason))
 
     def _space_spec(self, kind: Literal["observation", "action"]) -> SpaceSpec:
         return (

@@ -100,8 +100,6 @@ impl ClientCore {
         connect_timeout_seconds: Option<f64>,
         request_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
-        api_key: Option<&str>,
-        tls_ca_file: Option<&std::path::Path>,
         runtime_info: bool,
     ) -> PyResult<Self> {
         init_tracing(role);
@@ -126,16 +124,11 @@ impl ClientCore {
         )
         .map_err(to_py_err)?;
         let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
-        let auth =
-            rlmesh::binding::client_auth(address, api_key, tls_ca_file, true).map_err(to_py_err)?;
-
         let mut client = Python::attach(|py| {
             py.detach(|| {
                 runtime.block_on(EnvClientCore::connect_with(
                     address,
                     CoreConnect {
-                        token: auth.token(),
-                        trust: auth.trust().clone(),
                         declared: declared.as_deref(),
                         connect_timeout,
                         request_timeout,
@@ -273,14 +266,6 @@ impl ClientCore {
         self.profiler.log_summary_once();
         Ok(())
     }
-
-    fn shutdown_rpc(&mut self, py: Python<'_>, reason: String) -> PyResult<bool> {
-        let accepted = self.run_rpc(py, move |client| {
-            Box::pin(async move { client.shutdown(reason.as_str()).await })
-        })?;
-        self.profiler.log_summary_once();
-        Ok(accepted)
-    }
 }
 
 enum RpcOutcome<T> {
@@ -303,15 +288,13 @@ macro_rules! client_class {
         #[pymethods]
         impl $Class {
             #[new]
-            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, api_key=None, tls_ca_file=None, runtime_info=true))]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, runtime_info=true))]
             #[allow(clippy::too_many_arguments)]
             fn new(
                 address: &str,
                 connect_timeout_seconds: Option<f64>,
                 request_timeout_seconds: Option<f64>,
                 workflow_edition: Option<String>,
-                api_key: Option<String>,
-                tls_ca_file: Option<String>,
                 runtime_info: bool,
             ) -> PyResult<Self> {
                 Ok(Self {
@@ -322,8 +305,6 @@ macro_rules! client_class {
                         connect_timeout_seconds,
                         request_timeout_seconds,
                         workflow_edition,
-                        api_key.as_deref(),
-                        tls_ca_file.as_deref().map(std::path::Path::new),
                         runtime_info,
                     )?,
                 })
@@ -394,12 +375,6 @@ macro_rules! client_class {
                 this.core.close_rpc(py)
             }
 
-            #[pyo3(signature = (reason="owner shutdown"))]
-            fn shutdown(slf: &Bound<'_, Self>, py: Python<'_>, reason: &str) -> PyResult<bool> {
-                let mut this = Self::lock(slf)?;
-                let _span = this.core.span("shutdown");
-                this.core.shutdown_rpc(py, reason.to_string())
-            }
 
             $($extra)*
         }
@@ -574,7 +549,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None, runtime_info: bool = True) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -586,7 +561,6 @@ class PyEnvClient:
     def step(self, actions: Value) -> tuple[Value, float, bool, bool, StepInfo]: ...
     def render(self, env_index: int = 0) -> Value | None: ...
     def close(self) -> None: ...
-    def shutdown(self, reason: str = "owner shutdown") -> bool: ...
 "#
     }
 }
@@ -596,7 +570,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None, runtime_info: bool = True) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -609,7 +583,6 @@ class PyVectorEnvClient:
     def step(self, actions: object) -> tuple[Value, Value, Value, Value, StepInfo]: ...
     def render(self, env_index: int = 0) -> Value | None: ...
     def close(self) -> None: ...
-    def shutdown(self, reason: str = "owner shutdown") -> bool: ...
 "#
     }
 }
@@ -629,26 +602,9 @@ class PyEditionCell:
 /// has checked `port`'s type and range and `transport`'s spelling.
 #[cfg_attr(feature = "stub-gen", pyo3_stub_gen::derive::gen_stub_pyfunction)]
 #[pyfunction]
-#[pyo3(signature = (address=None, *, host=None, port=None, path=None, transport=None))]
-pub fn normalize_connect_address(
-    address: Option<&str>,
-    host: Option<&str>,
-    port: Option<u16>,
-    path: Option<&str>,
-    transport: Option<&str>,
-) -> PyResult<String> {
-    let transport = match transport {
-        None => None,
-        Some("tcp") => Some(rlmesh::Transport::Tcp),
-        Some("unix") => Some(rlmesh::Transport::Unix),
-        Some(_) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "transport must be 'tcp', 'unix', or None",
-            ));
-        }
-    };
-    rlmesh::binding::env::normalize_connect_address(address, host, port, path, transport)
-        .map_err(to_py_err)
+#[pyo3(signature = (address=None))]
+pub fn normalize_connect_address(address: Option<&str>) -> PyResult<String> {
+    rlmesh::binding::env::normalize_connect_address(address).map_err(to_py_err)
 }
 
 fn decode_options(

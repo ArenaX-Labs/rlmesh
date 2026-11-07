@@ -71,7 +71,7 @@ predicts, including the env's reset between episodes.
 
 ## Rust
 
-Grab the [`rlmesh`](crates/rlmesh/README.md) crate. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the gRPC stubs are generated at build time.
+Grab the [`rlmesh`](crates/rlmesh/README.md) crate. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the session protobuf messages are generated at build time.
 
 ## C and C++
 

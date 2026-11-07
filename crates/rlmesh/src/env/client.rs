@@ -3,20 +3,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rlmesh_grpc::env::{ResetRequest as ProtoResetRequest, StepRequest as ProtoStepRequest};
-use rlmesh_grpc::wire::{
-    decode_batched_partial_values, encode_batched_partial_values, meta_map_to_proto,
-    render_request_to_proto, render_result_from_proto,
-};
 use rlmesh_spaces::{MetaMap, MetaValue};
 use tokio_util::sync::CancellationToken;
 
-use super::server::Transport;
 use super::types::{
-    RenderRequest, ResetRequest as VectorResetRequest, ResetResult as VectorResetResult,
+    ResetRequest as VectorResetRequest, ResetResult as VectorResetResult,
     StepRequest as VectorStepRequest, StepResult as VectorStepResult,
 };
-use super::wire::{proto_episode_metadata_to_public, validate_action_count, validate_count};
+use super::wire::{validate_action_count, validate_count};
 use crate::run::drive::{
     CancelWatch, block_on_library, in_async_context, in_library, refuse_in_async_context, runtime,
 };
@@ -36,51 +30,27 @@ const RUNTIME_INFO_KEYS: [&str; 2] = ["episode_ids", "completed_episodes"];
 
 /// Options for connecting to a single or vector environment.
 ///
-/// `address` excludes the helpers (`host`, `port`, `path`, `transport`);
-/// without either the constructor fails with the ValueError class. A zero
-/// timeout means no timeout, as `None` does. `Debug` never prints the
-/// `api_key`.
+/// `address` names a session participant. A zero timeout means no timeout.
 #[derive(Clone, Default)]
 pub struct RemoteEnvOptions {
-    /// The endpoint (`tcp://host:port`, `host:port`, `https://host[:port]`
-    /// or `unix:///path`).
+    /// A session participant address, such as `localhost:5555/env`.
     pub address: Option<String>,
-    /// TCP host helper (default `127.0.0.1`); needs `port`.
-    pub host: Option<String>,
-    /// TCP port helper.
-    pub port: Option<u16>,
-    /// Unix socket path helper; excludes `host` and `port`.
-    pub path: Option<String>,
-    /// Explicit transport; `Unix` needs `path`, `Tcp` refuses it.
-    pub transport: Option<Transport>,
     /// Bound on the dial and handshake.
     pub connect_timeout: Option<Duration>,
-    /// Bound on each `reset`, `step`, `render` and `shutdown`, also sent to
-    /// the server as the request deadline; `close` uses it too.
+    /// Local bound on each reset, step, render and close.
     pub request_timeout: Option<Duration>,
     /// The workflow edition this client declares on the handshake; empty or
     /// whitespace declares nothing and resolution continues.
     pub workflow_edition: Option<String>,
-    /// The key sent as `authorization: Bearer <key>` on every request; `None`
-    /// reads `RLMESH_API_KEY` for an `https://` address only, `""` sends none.
-    pub api_key: Option<String>,
-    /// A PEM bundle an `https://` dial trusts instead of the system roots.
-    pub tls_ca_file: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for RemoteEnvOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteEnvOptions")
             .field("address", &self.address)
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("path", &self.path)
-            .field("transport", &self.transport)
             .field("connect_timeout", &self.connect_timeout)
             .field("request_timeout", &self.request_timeout)
             .field("workflow_edition", &self.workflow_edition)
-            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
-            .field("tls_ca_file", &self.tls_ca_file)
             .finish()
     }
 }
@@ -89,30 +59,6 @@ impl RemoteEnvOptions {
     /// Set `address`.
     pub fn address(mut self, address: impl Into<String>) -> Self {
         self.address = Some(address.into());
-        self
-    }
-
-    /// Set `host`.
-    pub fn host(mut self, host: impl Into<String>) -> Self {
-        self.host = Some(host.into());
-        self
-    }
-
-    /// Set `port`.
-    pub fn port(mut self, port: u16) -> Self {
-        self.port = Some(port);
-        self
-    }
-
-    /// Set `path`.
-    pub fn path(mut self, path: impl Into<String>) -> Self {
-        self.path = Some(path.into());
-        self
-    }
-
-    /// Set `transport`.
-    pub fn transport(mut self, transport: Transport) -> Self {
-        self.transport = Some(transport);
         self
     }
 
@@ -133,82 +79,14 @@ impl RemoteEnvOptions {
         self.workflow_edition = Some(edition.into());
         self
     }
-
-    /// Set `api_key`.
-    pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.api_key = Some(api_key.into());
-        self
-    }
-
-    /// Set `tls_ca_file`.
-    pub fn tls_ca_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
-        self.tls_ca_file = Some(path.into());
-        self
-    }
 }
 
 /// Normalize a connect address: one connect string from an address or the
 /// helpers, every refusal the ValueError class.
-pub(crate) fn normalize_connect_address(
-    address: Option<&str>,
-    host: Option<&str>,
-    port: Option<u16>,
-    path: Option<&str>,
-    transport: Option<Transport>,
-) -> Result<String> {
-    let helpers = host.is_some() || port.is_some() || path.is_some() || transport.is_some();
-    if let Some(address) = address {
-        if address.is_empty() {
-            return Err(Error::invalid_argument("address cannot be empty"));
-        }
-        if helpers {
-            return Err(Error::invalid_argument(
-                "address cannot be combined with host, port, path, or transport",
-            ));
-        }
-        return Ok(address.to_string());
-    }
-    let tcp_helpers = host.is_some() || port.is_some();
-    if path.is_some() && tcp_helpers {
-        return Err(Error::invalid_argument(
-            "path cannot be combined with host or port",
-        ));
-    }
-    if path.is_some() && transport == Some(Transport::Tcp) {
-        return Err(Error::invalid_argument(
-            "path cannot be combined with transport='tcp'",
-        ));
-    }
-    if transport == Some(Transport::Unix) && tcp_helpers {
-        return Err(Error::invalid_argument(
-            "unix transport cannot be combined with host or port",
-        ));
-    }
-    if path.is_some() || transport == Some(Transport::Unix) {
-        let Some(path) = path else {
-            return Err(Error::invalid_argument(
-                "path is required when transport='unix'",
-            ));
-        };
-        if cfg!(windows) {
-            return Err(Error::invalid_argument(
-                "unix sockets are not supported on Windows; use tcp://host:port instead",
-            ));
-        }
-        return Ok(format!("unix://{path}"));
-    }
-    if !tcp_helpers {
-        return Err(Error::invalid_argument("address or host/port is required"));
-    }
-    let Some(port) = port else {
-        return Err(Error::invalid_argument(
-            "port is required when connecting with host/path helpers",
-        ));
-    };
-    Ok(format!(
-        "tcp://{}:{port}",
-        host.filter(|host| !host.is_empty()).unwrap_or("127.0.0.1")
-    ))
+pub(crate) fn normalize_connect_address(address: Option<&str>) -> Result<String> {
+    let address = address.ok_or_else(|| Error::invalid_argument("address is required"))?;
+    ConnectAddress::parse(address)?;
+    Ok(address.to_string())
 }
 
 /// Zero means no timeout, as `None` does.
@@ -231,14 +109,6 @@ pub(crate) fn timeout_from_secs(value: Option<f64>, field: &str) -> Result<Optio
     }
 }
 
-/// The wire `timeout_ms` for a request deadline: rounded up to whole
-/// milliseconds, 0 for none.
-fn wire_timeout_ms(timeout: Option<Duration>) -> u64 {
-    timeout.map_or(0, |timeout| {
-        u64::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX)
-    })
-}
-
 /// Bound `future` by `timeout`: a reply handled at or after the deadline is
 /// discarded and the call fails with the TimeoutError class.
 async fn bounded<T>(
@@ -248,12 +118,9 @@ async fn bounded<T>(
     match timeout {
         Some(timeout) => {
             let deadline = tokio::time::Instant::now() + timeout;
-            rlmesh_grpc::env::client::with_request_deadline(
-                deadline,
-                tokio::time::timeout_at(deadline, future),
-            )
-            .await
-            .map_err(|_| Error::Timeout(timeout))?
+            tokio::time::timeout_at(deadline, future)
+                .await
+                .map_err(|_| Error::Timeout(timeout))?
         }
         None => future.await,
     }
@@ -292,7 +159,6 @@ pub struct EditionCell(Edition);
 
 #[derive(Clone, Debug)]
 enum Edition {
-    Grpc(rlmesh_grpc::env::PinnedEdition),
     Local(Arc<std::sync::Mutex<String>>),
 }
 
@@ -300,7 +166,6 @@ impl EditionCell {
     /// The current selection.
     pub fn get(&self) -> String {
         match &self.0 {
-            Edition::Grpc(pinned) => pinned.get(),
             Edition::Local(edition) => edition
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -309,17 +174,8 @@ impl EditionCell {
     }
 }
 
-/// How a client reaches its env: a v1 gRPC Join stream, or (with the
-/// `lockstep` feature) a v2 lockstep driver (a participant address, §12). Both take
-/// and answer native values; the proto conversion is the gRPC arm's.
-#[derive(Clone)]
+/// A session participant driver or a native robot view.
 enum Link {
-    Grpc {
-        client: Box<rlmesh_grpc::EnvClient>,
-        observation_space: Arc<spaces::SpaceSpec>,
-        action_space: Arc<spaces::SpaceSpec>,
-        num_envs: usize,
-    },
     Lockstep {
         client: crate::lockstep::LockstepClient,
         address: String,
@@ -375,17 +231,8 @@ pub(crate) fn lockstep_error(error: crate::lockstep::GymError) -> Error {
 }
 
 impl Link {
-    /// The gRPC client, unless this link is lockstep.
-    fn grpc(&mut self) -> Option<&mut rlmesh_grpc::EnvClient> {
-        match self {
-            Self::Grpc { client, .. } => Some(client),
-            Self::Lockstep { .. } | Self::View { .. } => None,
-        }
-    }
-
     fn address(&self) -> &str {
         match self {
-            Self::Grpc { client, .. } => client.address(),
             Self::Lockstep { address, .. } | Self::View { address, .. } => address,
         }
     }
@@ -400,31 +247,6 @@ impl Link {
         timeout: Option<Duration>,
     ) -> Result<(Vec<spaces::SpaceValue>, Option<MetaMap>)> {
         match self {
-            Self::Grpc {
-                client,
-                observation_space,
-                num_envs,
-                ..
-            } => {
-                let request = ProtoResetRequest {
-                    seeds,
-                    options: options.as_ref().map(meta_map_to_proto),
-                    timeout_ms: wire_timeout_ms(timeout),
-                    env_indices: lanes,
-                    episode_ids,
-                };
-                let response = client.reset(request).await.map_err(Error::from_grpc)?;
-                let observations = decode_batched_partial_values(
-                    response.observation.as_ref(),
-                    observation_space,
-                    *num_envs,
-                )
-                .map_err(|err| Error::Protocol(err.to_string()))?;
-                Ok((
-                    observations,
-                    response.infos.map(rlmesh_grpc::wire::meta_map_from_proto),
-                ))
-            }
             Self::Lockstep {
                 client, episodes, ..
             } => {
@@ -467,44 +289,6 @@ impl Link {
         timeout: Option<Duration>,
     ) -> Result<VectorStepResult> {
         match self {
-            Self::Grpc {
-                client,
-                observation_space,
-                action_space,
-                num_envs,
-            } => {
-                let action = encode_batched_partial_values(actions, action_space)
-                    .map_err(|err| Error::invalid_argument(err.to_string()))?;
-                let request = ProtoStepRequest {
-                    action: Some(action),
-                    timeout_ms: wire_timeout_ms(timeout),
-                    // Full-width step; subset-stepping is reserved-but-deferred.
-                    env_indices: Vec::new(),
-                    episode_ids,
-                };
-                let response = client.step(request).await.map_err(Error::from_grpc)?;
-                let observations = decode_batched_partial_values(
-                    response.observation.as_ref(),
-                    observation_space,
-                    *num_envs,
-                )
-                .map_err(|err| Error::Protocol(err.to_string()))?;
-                let flags = |mask: &[u8]| mask.iter().map(|value| *value != 0).collect();
-                Ok(VectorStepResult {
-                    observations,
-                    rewards: response.rewards,
-                    terminated: flags(&response.terminated_mask),
-                    truncated: flags(&response.truncated_mask),
-                    info: response.infos.map(rlmesh_grpc::wire::meta_map_from_proto),
-                    completed_episodes: response
-                        .completed_episodes
-                        .into_iter()
-                        .map(proto_episode_metadata_to_public)
-                        .collect::<std::result::Result<Vec<_>, _>>()
-                        .map_err(Error::Protocol)?,
-                    episode_ids: Vec::new(),
-                })
-            }
             Self::Lockstep {
                 client, episodes, ..
             } => {
@@ -554,16 +338,6 @@ impl Link {
     /// Lane `lane`'s frame as PNG bytes, if it has one.
     async fn render(&mut self, lane: u32, timeout: Option<Duration>) -> Result<Option<Vec<u8>>> {
         match self {
-            Self::Grpc { client, .. } => {
-                let request = render_request_to_proto(&RenderRequest {
-                    env_index: Some(lane as usize),
-                    timeout_ms: i64::try_from(wire_timeout_ms(timeout)).unwrap_or(i64::MAX),
-                });
-                let response = client.render(request).await.map_err(Error::from_grpc)?;
-                let result = render_result_from_proto(response)
-                    .map_err(|err| Error::Protocol(err.to_string()))?;
-                Ok(result.frame.map(|frame| frame.frame))
-            }
             Self::Lockstep { client, .. } => client
                 .render(lane, timeout)
                 .await
@@ -727,10 +501,6 @@ impl Episodes {
 /// How [`EnvClientCore::connect_with`] dials.
 #[derive(Clone, Debug, Default)]
 pub struct CoreConnect<'a> {
-    /// Endpoint token (empty: none).
-    pub token: &'a str,
-    /// The certificate authorities an `https://` dial trusts.
-    pub trust: rlmesh_grpc::TlsTrust,
     /// The workflow edition this side declares (already resolved).
     pub declared: Option<&'a str>,
     /// Bound on the dial and handshake.
@@ -782,29 +552,12 @@ impl EnvClientCore {
         Self::connect_with(address, CoreConnect::default()).await
     }
 
-    /// Dial `address` sending `token` on every request.
-    pub async fn connect_with_token(address: &str, token: &str) -> Result<Self> {
-        Self::connect_with(
-            address,
-            CoreConnect {
-                token,
-                ..CoreConnect::default()
-            },
-        )
-        .await
-    }
-
     /// Dial `address` and handshake. A dial failure is the ConnectionError
     /// class, a refused handshake the ProtocolException class, an expired
     /// `connect_timeout` the TimeoutError class.
     pub async fn connect_with(address: &str, options: CoreConnect<'_>) -> Result<Self> {
         let parsed = ConnectAddress::parse(address)?;
-        check_token(options.token)?;
-        let credentials = rlmesh_grpc::Credentials {
-            token: options.token.to_string(),
-            trust: options.trust,
-        };
-        let dial = Self::dial(parsed, &credentials, options.declared);
+        let dial = Self::dial(parsed, options.declared);
         let mut core = match normalize_timeout(options.connect_timeout) {
             Some(timeout) => tokio::time::timeout(timeout, dial)
                 .await
@@ -818,11 +571,7 @@ impl EnvClientCore {
         Ok(core)
     }
 
-    async fn dial(
-        address: ConnectAddress,
-        credentials: &rlmesh_grpc::Credentials,
-        declared: Option<&str>,
-    ) -> Result<Self> {
+    async fn dial(address: ConnectAddress, declared: Option<&str>) -> Result<Self> {
         let (inner, env_contract, spaces, num_envs, session_offer, selected) = match address {
             ConnectAddress::Lockstep(address) => {
                 let client = match crate::lockstep::connect_driver(&address, Default::default())
@@ -847,38 +596,6 @@ impl EnvClientCore {
                     episodes: Episodes::new(num_envs),
                 };
                 (link, env_contract, spaces, num_envs, offer, selected)
-            }
-            address => {
-                let mut client =
-                    rlmesh_grpc::EnvClient::connect_with(&address.to_string(), credentials)
-                        .await
-                        .map_err(Error::from_grpc)?;
-                client.declare_workflow_edition(declared.map(str::to_string));
-                let handshake = client.handshake().await.map_err(Error::from_grpc)?;
-                let session_offer = handshake.session_offer();
-                // The handshake refuses a contract without spaces; one that
-                // does not decode is a malformed handshake too.
-                let env_contract = rlmesh_grpc::wire::env_contract_from_proto(
-                    handshake.env_contract,
-                )
-                .map_err(|error| {
-                    Error::Protocol(format!("invalid spaces spec from remote env: {error}"))
-                })?;
-                let spaces = spaces_of(&env_contract)?;
-                let link = Link::Grpc {
-                    client: Box::new(client),
-                    observation_space: Arc::clone(&spaces.0),
-                    action_space: Arc::clone(&spaces.1),
-                    num_envs: handshake.num_envs,
-                };
-                (
-                    link,
-                    env_contract,
-                    spaces,
-                    handshake.num_envs,
-                    session_offer,
-                    handshake.selected_workflow_edition,
-                )
             }
         };
         Ok(Self {
@@ -1009,7 +726,7 @@ impl EnvClientCore {
         self.request_timeout
     }
 
-    /// Whether `close` (or an accepted `shutdown`) ran.
+    /// Whether `close` ran.
     pub fn is_closed(&self) -> bool {
         self.closed
     }
@@ -1025,9 +742,6 @@ impl EnvClientCore {
     pub fn pin_workflow_edition(&mut self, edition: &str) {
         self.selected_workflow_edition = edition.trim().to_string();
         match &mut self.inner {
-            Link::Grpc { client, .. } => {
-                client.pin_workflow_edition(self.selected_workflow_edition.clone());
-            }
             Link::Lockstep { edition, .. } | Link::View { edition, .. } => {
                 *edition
                     .lock()
@@ -1045,7 +759,6 @@ impl EnvClientCore {
     /// A shared handle on the selected edition, reading every pin.
     pub fn edition_cell(&self) -> EditionCell {
         EditionCell(match &self.inner {
-            Link::Grpc { client, .. } => Edition::Grpc(client.pinned_edition()),
             Link::Lockstep { edition, .. } | Link::View { edition, .. } => {
                 Edition::Local(Arc::clone(edition))
             }
@@ -1265,75 +978,19 @@ impl EnvClientCore {
         }
         self.closed = true;
         let bound = self.request_timeout.unwrap_or(CLOSE_GRACE);
-        if let Link::Lockstep { client, .. } = &self.inner {
-            // Releases the lease, so the robot re-arms for the next driver.
-            if tokio::time::timeout(bound, client.close()).await.is_err() {
-                tracing::debug!("lockstep detach did not complete within {bound:?}");
-            }
-            return Ok(());
-        }
-        if let Link::View { view, .. } = &self.inner {
-            // Dropping the view releases its lease.
-            view.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            return Ok(());
-        }
-        let Some(inner) = self.inner.grpc() else {
-            return Ok(());
-        };
-        let outcome = tokio::time::timeout(bound, inner.close()).await;
-        match outcome {
-            Ok(Ok(_)) => Ok(()),
-            Err(_) => {
-                tracing::debug!("close did not complete within {bound:?}; detaching locally");
-                inner.detach();
-                Ok(())
-            }
-            Ok(Err(err)) => {
-                let err = Error::from_grpc(err);
-                inner.detach();
-                match err {
-                    Error::Connection(_) | Error::Timeout(_) => {
-                        tracing::debug!("close did not complete ({err}); detaching locally");
-                        Ok(())
-                    }
-                    other => Err(other),
+        match &self.inner {
+            Link::Lockstep { client, .. } => {
+                if tokio::time::timeout(bound, client.close()).await.is_err() {
+                    tracing::debug!("lockstep detach did not complete within {bound:?}");
                 }
             }
+            Link::View { view, .. } => {
+                view.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+            }
         }
-    }
-
-    /// Register owned cleanup before it is queued by a nonblocking Drop.
-    pub(crate) fn prepare_close(&self) {
-        match &self.inner {
-            Link::Grpc { client, .. } => client.prepare_close(),
-            Link::Lockstep { .. } | Link::View { .. } => {}
-        }
-    }
-
-    /// Ask the server to shut itself down; an accepted request closes this
-    /// client locally.
-    pub async fn shutdown<'r>(&mut self, reason: impl Into<Option<&'r str>>) -> Result<bool> {
-        self.check_open()?;
-        let timeout = self.request_timeout;
-        let reason = reason.into().unwrap_or("owner shutdown").to_string();
-        let Some(inner) = self.inner.grpc() else {
-            // A lockstep robot is its server's to stop; a driver cannot.
-            return Err(Error::Type(
-                "RemoteEnv.shutdown() is gone in rlmesh 0.2 for a session address: an owner \
-                 shutdown is server.shutdown() in the serving process"
-                    .into(),
-            ));
-        };
-        let response = bounded(timeout, async {
-            inner.shutdown(reason).await.map_err(Error::from_grpc)
-        })
-        .await?;
-        if response.accepted {
-            self.closed = true;
-        }
-        Ok(response.accepted)
+        Ok(())
     }
 
     /// Reset as [`reset`](Self::reset) and decode to shared values: one
@@ -1391,12 +1048,6 @@ impl EnvClientCore {
         ))
     }
 
-    /// The transport client, for tests that reach below the facade.
-    #[cfg(test)]
-    pub(crate) fn grpc(&mut self) -> &mut rlmesh_grpc::EnvClient {
-        self.inner.grpc().expect("a gRPC client")
-    }
-
     /// Render lane `env_index` decoded to a uint8 frame.
     pub(crate) async fn render_value(&mut self, env_index: u64) -> Result<Option<Value>> {
         match self.render(env_index).await? {
@@ -1442,20 +1093,7 @@ pub(crate) fn decode_render_png(png: &[u8]) -> Result<Value> {
 /// Resolve the client's own declaration (Core's chain: the call, then the
 /// process and project surfaces) and dial with `options`.
 async fn connect_core(options: RemoteEnvOptions) -> Result<EnvClientCore> {
-    let address = normalize_connect_address(
-        options.address.as_deref(),
-        options.host.as_deref(),
-        options.port,
-        options.path.as_deref(),
-        options.transport,
-    )?;
-    ConnectAddress::parse(&address)?;
-    let auth = crate::credentials::resolve(
-        &address,
-        options.api_key.as_deref(),
-        options.tls_ca_file.as_deref(),
-        true,
-    )?;
+    let address = normalize_connect_address(options.address.as_deref())?;
     let declared = crate::editions::resolve_native(
         crate::editions::EditionSources {
             call: options.workflow_edition.as_deref(),
@@ -1467,8 +1105,6 @@ async fn connect_core(options: RemoteEnvOptions) -> Result<EnvClientCore> {
     EnvClientCore::connect_with(
         &address,
         CoreConnect {
-            token: auth.token(),
-            trust: auth.trust().clone(),
             declared: declared.as_deref(),
             connect_timeout: options.connect_timeout,
             request_timeout: options.request_timeout,
@@ -1499,7 +1135,6 @@ fn teardown(mut core: Box<EnvClientCore>) {
         return;
     }
     if in_async_context() {
-        core.prepare_close();
         runtime().spawn(async move {
             if let Err(err) = core.close().await {
                 tracing::warn!("closing a dropped remote env client failed: {err}");
@@ -1688,24 +1323,6 @@ macro_rules! client_common {
 
             async fn close_in(&mut self) -> Result<()> {
                 self.core_mut()?.close().await
-            }
-
-            /// Ask the server to shut itself down (`None` = `"owner
-            /// shutdown"`); true when it accepted, which closes this client.
-            pub fn shutdown(&mut self, reason: Option<&str>) -> Result<bool> {
-                refuse_in_async_context(concat!($name, "::shutdown"))?;
-                block_on_library(self.shutdown_in(reason))
-            }
-
-            /// The async twin of [`shutdown`](Self::shutdown).
-            pub async fn shutdown_async(&mut self, reason: Option<&str>) -> Result<bool> {
-                in_library(self.shutdown_in(reason)).await
-            }
-
-            async fn shutdown_in(&mut self, reason: Option<&str>) -> Result<bool> {
-                let reason = reason.map(str::to_string);
-                self.io(move |core| Box::pin(async move { core.shutdown(reason.as_deref()).await }))
-                    .await
             }
 
             pub(crate) fn core_ref(&self) -> Option<&EnvClientCore> {
@@ -2118,18 +1735,6 @@ pub(crate) async fn reset_lanes_in(
     env.reset_in(seed, options, lanes, None).await
 }
 
-/// Refuse a token the authorization header cannot carry.
-fn check_token(token: &str) -> Result<()> {
-    if !token.is_empty()
-        && let Some(problem) = rlmesh_grpc::helpers::auth::token_header_problem(token)
-    {
-        return Err(Error::invalid_argument(format!(
-            "the endpoint token cannot be sent in the authorization header: it {problem}"
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2151,68 +1756,11 @@ mod tests {
     }
 
     #[test]
-    fn connect_address_follows_python_endpoint_rules() {
-        let ok = |a: Option<&str>, h: Option<&str>, p: Option<u16>, path: Option<&str>, t| {
-            normalize_connect_address(a, h, p, path, t)
-        };
-        assert_eq!(
-            ok(Some("tcp://x:1"), None, None, None, None).unwrap(),
-            "tcp://x:1"
-        );
-        assert_eq!(
-            ok(None, None, Some(5), None, None).unwrap(),
-            "tcp://127.0.0.1:5"
-        );
-        assert_eq!(
-            ok(None, Some("h"), Some(5), None, Some(Transport::Tcp)).unwrap(),
-            "tcp://h:5"
-        );
-        for (args, text) in [
-            (
-                (Some(""), None, None, None, None),
-                "address cannot be empty",
-            ),
-            ((Some("x"), None, Some(1), None, None), "cannot be combined"),
-            (
-                (None, None, None, None, None),
-                "address or host/port is required",
-            ),
-            (
-                (None, None, None, None, Some(Transport::Tcp)),
-                "address or host/port is required",
-            ),
-            ((None, Some("h"), None, None, None), "port is required"),
-            (
-                (None, None, None, Some("/s"), Some(Transport::Tcp)),
-                "transport='tcp'",
-            ),
-            (
-                (None, Some("h"), None, Some("/s"), None),
-                "path cannot be combined",
-            ),
-            (
-                (None, None, None, None, Some(Transport::Unix)),
-                "path is required",
-            ),
-        ] {
-            let err = ok(args.0, args.1, args.2, args.3, args.4).unwrap_err();
-            assert!(matches!(err, Error::InvalidArgument(_)), "{err:?}");
-            assert!(err.to_string().contains(text), "{err} lacks {text:?}");
-        }
-        #[cfg(unix)]
-        assert_eq!(ok(None, None, None, Some("/s"), None).unwrap(), "unix:///s");
-    }
-
-    #[test]
-    fn timeouts_read_zero_as_none_and_round_up_on_the_wire() {
+    fn timeouts_read_zero_as_none() {
         assert_eq!(normalize_timeout(Some(Duration::ZERO)), None);
         assert_eq!(timeout_from_secs(Some(0.0), "t").unwrap(), None);
         assert!(timeout_from_secs(Some(-1.0), "t").is_err());
         assert!(timeout_from_secs(Some(f64::NAN), "t").is_err());
-        assert_eq!(wire_timeout_ms(None), 0);
-        assert_eq!(wire_timeout_ms(Some(Duration::from_micros(1))), 1);
-        assert_eq!(wire_timeout_ms(Some(Duration::from_micros(1500))), 2);
-        assert_eq!(wire_timeout_ms(Some(Duration::from_secs(5))), 5000);
     }
 
     #[test]
@@ -2242,15 +1790,6 @@ mod tests {
         assert_eq!(shape, vec![2, 2]);
         let err = decode_render_frame(b"not a png").unwrap_err();
         assert!(matches!(err, Error::Protocol(_)), "{err:?}");
-    }
-
-    #[test]
-    fn invalid_tokens_are_refused_before_any_dial() {
-        assert!(check_token("").is_ok());
-        assert!(check_token("s3cret").is_ok());
-        let err = check_token("s3cret\n").unwrap_err();
-        assert!(matches!(err, Error::InvalidArgument(_)), "{err:?}");
-        assert!(!err.to_string().contains("s3cret"), "{err}");
     }
 
     fn assert_send_sync<T: Send + Sync>() {}

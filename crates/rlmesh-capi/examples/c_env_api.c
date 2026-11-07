@@ -63,10 +63,8 @@ static void wait_error_outputs(const RLMeshEnvVtable* vtable, const RLMeshEnvAtt
   CHECK(rlmesh_env_new(&vt, &state, attrs, &env) == RLMESH_OK);
   RLMeshServeOptions serve = RLMESH_SERVE_OPTIONS_INIT;
   serve.workflow_edition = rlmesh_current_workflow_edition();
-  serve.has_idle_timeout_seconds = true;
-  serve.idle_timeout_seconds = 0.01;
   RLMeshEnvServerOptions options = RLMESH_ENV_SERVER_OPTIONS_INIT;
-  options.address = "tcp://127.0.0.1:0"; /* idle shutdown is v1-only */
+  options.address = ":0/env";
   options.options = &serve;
   RLMeshEnvServer* server = NULL;
   CHECK(rlmesh_env_server_new(&env, 1, &options, &server) == RLMESH_OK);
@@ -81,13 +79,12 @@ static void wait_error_outputs(const RLMeshEnvVtable* vtable, const RLMeshEnvAtt
         stopped);
   CHECK(rlmesh_env_server_wait(server, NULL, NULL) == RLMESH_ERR_INVALID_ARGUMENT);
   CHECK(rlmesh_env_server_start(server) == RLMESH_OK);
-  /* Idle shutdown invokes the failing close on the background serve thread. */
+  CHECK(rlmesh_env_server_shutdown(server) == RLMESH_ERR_INTERNAL);
+  CHECK(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_RLMESH_EXCEPTION);
+  CHECK(strstr(rlmesh_last_error_message(), "forced close failure") != NULL);
   stopped = false;
   double timeout = 10;
-  CHECK(rlmesh_env_server_wait(server, &timeout, &stopped) == RLMESH_ERR_INTERNAL && stopped);
-  CHECK(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_RLMESH_EXCEPTION);
-  CHECK(strstr(rlmesh_last_error_message(), "serve failed:") != NULL);
-  CHECK(strstr(rlmesh_last_error_message(), "forced close failure") != NULL);
+  CHECK(rlmesh_env_server_wait(server, &timeout, &stopped) == RLMESH_OK && stopped);
   CHECK(state.closes == 1);
   /* Validation errors still leave output untouched on a stopped server. */
   stopped = false;
@@ -193,8 +190,8 @@ int main(void) {
   extended.tail[3] = 1;
   CHECK(rlmesh_env_new(&vt, &state, &extended.attrs, &env) == RLMESH_ERR_TYPE);
   CHECK(strstr(rlmesh_last_error_message(), "RLMeshEnvAttributes") != NULL);
-  serve.has_idle_timeout_seconds = true;
-  serve.idle_timeout_seconds = NAN;
+  serve.has_close_timeout_seconds = true;
+  serve.close_timeout_seconds = NAN;
   State invalid = {0, 0};
   CHECK(rlmesh_env_new(&vt, &invalid, &attrs, &env) == RLMESH_OK);
   CHECK(rlmesh_env_server_new(&env, 1, &opts, &server) == RLMESH_ERR_INVALID_ARGUMENT);
