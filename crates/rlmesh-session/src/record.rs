@@ -79,7 +79,27 @@ pub enum RecordError {
     /// The writer thread is gone.
     #[error("the recording writer stopped: {0}")]
     Writer(String),
+    /// A recording in a newer format than this build reads.
+    #[error(
+        "recording {path} is in format {format}; this rlmesh reads format {RECORDING_FORMAT} \
+         (upgrade rlmesh)"
+    )]
+    Format {
+        /// The file.
+        path: PathBuf,
+        /// Its format.
+        format: String,
+    },
 }
+
+/// The recording format this build writes and reads: an `rlmesh.recording`
+/// metadata record at the start of every file carries it, with the protocol
+/// generation and minor. A reader refuses a newer format; a file without
+/// one is format 1.
+pub const RECORDING_FORMAT: u32 = 1;
+
+/// The name of the metadata record that carries [`RECORDING_FORMAT`].
+pub const RECORDING_METADATA: &str = "rlmesh.recording";
 
 /// What a finished recording holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -933,11 +953,28 @@ impl Segment {
             path: path.to_path_buf(),
             source,
         })?;
-        let writer = mcap::WriteOptions::new()
-            .compression(None)
+        // zstd at level 1: numeric topics shrink several times over, and
+        // JPEG frames, already compressed, cost little time to pass through.
+        let mut writer = mcap::WriteOptions::new()
+            .compression(Some(mcap::Compression::Zstd))
+            .compression_level(1)
             .profile("rlmesh")
             .library(concat!("rlmesh-session ", env!("CARGO_PKG_VERSION")))
             .create(BufWriter::new(file))?;
+        writer.write_metadata(&mcap::records::Metadata {
+            name: RECORDING_METADATA.into(),
+            metadata: BTreeMap::from([
+                ("format".to_string(), RECORDING_FORMAT.to_string()),
+                (
+                    "protocol_generation".to_string(),
+                    crate::wire::version::GENERATION.to_string(),
+                ),
+                (
+                    "protocol_minor".to_string(),
+                    crate::wire::version::PROTOCOL_MINOR.to_string(),
+                ),
+            ]),
+        })?;
         Ok(Self {
             writer,
             path: path.to_path_buf(),
@@ -1037,8 +1074,8 @@ impl Rolling {
     /// The defaults (newest 30 min or 20 GB, one-minute segments, pause
     /// below 2 GB free; incidents of the 2 min before and 30 s after, kept
     /// 14 days or 10 GB) under `dir`.
-    // TODO: fixed budgets; add per-host profiles (smaller budgets, lower
-    // camera rate) when a low-storage host needs them.
+    // `rlmesh host` overrides the budgets with its `--record-*` and
+    // `--incidents-*` flags.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
@@ -1650,6 +1687,30 @@ pub fn mcap_files(path: &Path) -> Result<Vec<PathBuf>, RecordError> {
     Ok(files)
 }
 
+/// Refuses a recording in a newer format than [`RECORDING_FORMAT`]: its
+/// `rlmesh.recording` record comes before the first chunk. A file without
+/// one (written before formats were marked) is format 1.
+fn check_format(path: &Path, bytes: &[u8]) -> Result<(), RecordError> {
+    for record in mcap::read::LinearReader::new(bytes)? {
+        match record {
+            Ok(mcap::records::Record::Metadata(m)) if m.name == RECORDING_METADATA => {
+                let format = m.metadata.get("format").cloned().unwrap_or_default();
+                return match format.parse::<u32>() {
+                    Ok(n) if n <= RECORDING_FORMAT => Ok(()),
+                    _ => Err(RecordError::Format {
+                        path: path.to_path_buf(),
+                        format,
+                    }),
+                };
+            }
+            Ok(mcap::records::Record::Chunk { .. } | mcap::records::Record::Message { .. })
+            | Err(_) => return Ok(()),
+            Ok(_) => {}
+        }
+    }
+    Ok(())
+}
+
 fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
     // TODO: reads the whole file into memory; stream it chunk by chunk when
     // recordings outgrow RAM (long camera sessions, rolling segments).
@@ -1657,6 +1718,7 @@ fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
         path: path.to_path_buf(),
         source,
     })?;
+    check_format(path, &bytes)?;
     let mut out = Vec::new();
     for message in mcap::MessageStream::new(&bytes)? {
         let message = match message {

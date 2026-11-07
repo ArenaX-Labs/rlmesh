@@ -188,8 +188,12 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
     let recordings = recordings(args)?;
     let server = Arc::new(match &recordings {
         Some(dir) => {
-            SessionServer::start_recording(transport.clone(), config.clone(), Rolling::new(dir))
-                .await?
+            SessionServer::start_recording(
+                transport.clone(),
+                config.clone(),
+                rolling(args, dir.clone()),
+            )
+            .await?
         }
         None => SessionServer::start(transport.clone(), config.clone()).await?,
     });
@@ -272,6 +276,27 @@ pub async fn host(args: &HostArgs, stdout: &mut impl Write, stderr: &mut impl Wr
 }
 
 /// Where to record (`None`: `--no-record`).
+/// The rolling budgets, with the flags' overrides.
+fn rolling(args: &HostArgs, dir: PathBuf) -> Rolling {
+    let mut rolling = Rolling::new(dir);
+    if let Some(keep) = args.record_keep {
+        rolling.max_age = keep;
+    }
+    if let Some(bytes) = args.record_max_size {
+        rolling.max_bytes = bytes;
+    }
+    if let Some(bytes) = args.record_min_free {
+        rolling.min_free_bytes = bytes;
+    }
+    if let Some(keep) = args.incidents_keep {
+        rolling.incident_max_age = keep;
+    }
+    if let Some(bytes) = args.incidents_max_size {
+        rolling.incident_max_bytes = bytes;
+    }
+    rolling
+}
+
 fn recordings(args: &HostArgs) -> Result<Option<PathBuf>> {
     if args.no_record {
         return Ok(None);
