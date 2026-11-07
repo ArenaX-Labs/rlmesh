@@ -266,6 +266,7 @@ fn heartbeat(me: &ParticipantId, seq: u64, epoch: Epoch, t1_ns: i64) -> Vec<u8> 
             last_chunk_applied: 0,
             queue_depth: 0,
             health: Health::Ok,
+            rejected: Vec::new(),
         }),
     )
 }

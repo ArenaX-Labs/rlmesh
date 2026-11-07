@@ -861,6 +861,7 @@ impl ControlSession {
             last_chunk_applied: 0,
             queue_depth: 0,
             health: Health::Ok,
+            rejected: Vec::new(),
         };
         Some(frame::tagged(
             frame::HEARTBEAT,

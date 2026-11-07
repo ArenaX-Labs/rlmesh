@@ -6,12 +6,13 @@
 //! rlmesh/v2/{tenant}/s/{session}/host/state                    authority snapshot (queryable) + updates, signed
 //! rlmesh/v2/{tenant}/s/{session}/host/tick                     virtual-mode ticks (§11.3), signed
 //! rlmesh/v2/{tenant}/s/{session}/host/view/{robot}             a robot's device view (queryable) + updates, signed
+//! rlmesh/v2/{tenant}/s/{session}/host/health                   every link's health, relayed to observers, signed
 //! rlmesh/v2/{tenant}/s/{session}/hs                            the attach handshake (query/reply)
 //! rlmesh/v2/{tenant}/s/{session}/ctl                           control verbs (query/reply, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}               participant liveliness
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb            heartbeats (participant -> host, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb/echo       heartbeat echoes (host -> participant, sealed)
-//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/report        observer telemetry (§8.10)
+//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/report        observer telemetry (participant -> host, sealed, §8.10)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/keys          key deliveries (host -> participant, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/estop/{participant}           e-stop signals (member -> every edge, signed)
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}           samples
@@ -85,6 +86,12 @@ impl SessionKeys {
     /// The authority snapshot: queryable, and published on every change.
     pub fn host_state(&self) -> String {
         format!("{}/host/state", self.prefix)
+    }
+
+    /// Every participant's link and edge health, published by the host
+    /// (signed) about once a second.
+    pub fn host_health(&self) -> String {
+        format!("{}/host/health", self.prefix)
     }
 
     /// Virtual-mode ticks, published by the host.

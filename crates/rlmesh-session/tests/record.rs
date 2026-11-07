@@ -393,8 +393,7 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     );
 
     // Both incidents outlive the purge, the e-stop's with the segments
-    // written after it, reports included (heartbeats are sealed to the
-    // host).
+    // written after it, the host's health included.
     let incidents = files_in(&dir.path().join("incidents").join(world.session.to_string()));
     assert_eq!(incidents.len(), 2, "{incidents:?}");
     assert!(incidents.contains(&kept));
@@ -408,7 +407,7 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     assert!(
         messages
             .iter()
-            .any(|m| matches!(m.message, Recorded::Report(_)))
+            .any(|m| matches!(m.message, Recorded::Health(_)))
     );
 
     // The episode keeps its segments, decoded into the declared fields.

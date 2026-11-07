@@ -6,12 +6,13 @@
 
 use bytes::Bytes;
 use rlmesh_cockpit::{Input, Model, ModelConfig};
+use rlmesh_session::edge::Rejection;
 use rlmesh_session::spec::{Policy, RunOptions};
 use rlmesh_session::wire::version::{PROTOCOL_MINOR, SPEC_VERSION};
 use rlmesh_session::wire::{
     ActionChunk, Applied, ChannelId, ClockMapping, Command, DType, EdgeMode, Epoch, Health,
-    Heartbeat, LeaseToken, ParticipantId, ParticipantReport, PriorityClass, PublisherCounters,
-    ReasonCode, Request, Role, RunCounters, Sample, SessionId, StreamSpec,
+    HostHealth, LeaseToken, LinkHealth, ParticipantId, ParticipantReport, PriorityClass,
+    PublisherCounters, ReasonCode, Request, Role, RunCounters, Sample, SessionId, StreamSpec,
 };
 use rlmesh_session::{Authority, AuthorityConfig};
 
@@ -57,6 +58,10 @@ pub struct World {
     pub stall_until: i64,
     /// The edge mode `_applied` reports.
     pub edge_mode: EdgeMode,
+    /// Why, as `_applied` says.
+    pub edge_reason: ReasonCode,
+    /// The robot's refused chunks, as the host relays them.
+    pub rejected: Vec<(Rejection, u64)>,
     /// What a recorder would have written (snapshots, samples, chunks), by
     /// receipt time, in ingest order.
     pub recorded: Vec<(i64, Input)>,
@@ -76,6 +81,8 @@ impl World {
             coalesced: 0,
             stall_until: 0,
             edge_mode: EdgeMode::Driving,
+            edge_reason: ReasonCode::Unspecified,
+            rejected: Vec::new(),
             recorded: Vec::new(),
         };
         for (id, role, priority) in [
@@ -326,27 +333,26 @@ impl World {
         self.model.ingest(input, at);
     }
 
-    fn heartbeat(&mut self, who: &str, seen: Vec<(ChannelId, u64)>, queue_depth: u32) {
-        let heartbeat = Heartbeat {
-            participant: pid(who),
-            epoch: self.auth.epoch(),
-            mode: self.auth.mode(),
-            seq: 0,
-            t1_ns: self.now,
-            previous: None,
-            last_seq_seen: seen,
+    /// The host's view of one participant's link.
+    fn link(
+        &self,
+        who: &str,
+        seen: Vec<(ChannelId, u64)>,
+        queue_depth: u32,
+        report: ParticipantReport,
+    ) -> LinkHealth {
+        LinkHealth {
+            participant: Some(pid(who)),
+            heartbeats: 1,
+            last_heartbeat_age_ns: MS.unsigned_abs(),
             last_chunk_accepted: self.chunk_seq,
             last_chunk_applied: self.chunk_seq,
             queue_depth,
             health: Health::Ok,
-        };
-        self.model.ingest(
-            Input::Heartbeat {
-                heartbeat,
-                receive_ns: self.now,
-            },
-            self.now,
-        );
+            report: Some(report),
+            last_seq_seen: seen,
+            ..LinkHealth::default()
+        }
     }
 
     /// `ms` milliseconds of a healthy loop: arm, ft and `_applied` at
@@ -380,10 +386,13 @@ impl World {
                             lease_token: token,
                             chunk_seq: self.chunk_seq,
                             action_index: 0,
-                            reason: ReasonCode::Unspecified,
+                            reason: self.edge_reason,
                         }
                     } else {
-                        Applied::absent(self.edge_mode)
+                        Applied {
+                            reason: self.edge_reason,
+                            ..Applied::absent(self.edge_mode)
+                        }
                     };
                     self.sample(applied, Some(a), MS / 2);
                 }
@@ -408,8 +417,6 @@ impl World {
                     .iter()
                     .map(|c| (*c, self.seqs.get(c).copied().unwrap_or(0)))
                     .collect();
-                self.heartbeat("policy", seen, 0);
-                self.heartbeat("ur10e", vec![], 18);
                 let epoch = self.auth.epoch();
                 let streams = [arm, ft, cam]
                     .iter()
@@ -419,23 +426,31 @@ impl World {
                         coalesced: if *c == cam { self.coalesced } else { 0 },
                     })
                     .collect();
-                for (who, streams, run) in
-                    [("ur10e", streams, None), ("policy", vec![], Some(self.run))]
-                {
-                    self.model.ingest(
-                        Input::Report {
-                            report: ParticipantReport {
-                                participant: pid(who),
-                                epoch: Epoch(epoch.0),
-                                sent_ns: self.now,
-                                streams,
-                                run,
-                            },
-                            receive_ns: self.now,
+                let report = |who: &str, streams, run| ParticipantReport {
+                    participant: pid(who),
+                    epoch: Epoch(epoch.0),
+                    sent_ns: self.now,
+                    streams,
+                    run,
+                };
+                let links = vec![
+                    self.link("policy", seen, 0, report("policy", vec![], Some(self.run))),
+                    LinkHealth {
+                        rejected: self.rejected.clone(),
+                        ..self.link("ur10e", vec![], 18, report("ur10e", streams, None))
+                    },
+                ];
+                self.model.ingest(
+                    Input::Health {
+                        health: HostHealth {
+                            epoch: Epoch(epoch.0),
+                            host_ns: self.now,
+                            links,
                         },
-                        self.now,
-                    );
-                }
+                        receive_ns: self.now,
+                    },
+                    self.now,
+                );
             }
             if t % 50 == 0 {
                 // Holders' heartbeats renew their leases; the host

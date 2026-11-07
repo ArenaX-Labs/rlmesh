@@ -63,9 +63,9 @@ use crate::wire::part::{MAX_BATCH, MAX_CHUNK_BYTES};
 use crate::wire::version::VIEW_DEVICE;
 use crate::wire::{
     Applied, AuthoritySnapshot, ChannelId, ChannelPriority, Command, CtlError, CtlReply, CtlStatus,
-    DeviceView, Epoch, HeartbeatEcho, HistoryQuery, IssuedKey, Lease, LeaseToken, ParticipantId,
-    Role, SampleBatch, SampleMeta, SeqRange, SessionId, SessionKeys, StreamSpec, TenantId,
-    ViewReply,
+    DeviceView, Epoch, HeartbeatEcho, HistoryQuery, HostHealth, IssuedKey, Lease, LeaseToken,
+    LinkHealth, ParticipantId, ParticipantReport, Role, SampleBatch, SampleMeta, SeqRange,
+    SessionId, SessionKeys, StreamSpec, TenantId, ViewReply,
 };
 use bytes::Bytes;
 use rlmesh_session_core::auth::issuer::{
@@ -94,6 +94,7 @@ use crate::authority::{
 #[cfg(feature = "fleet")]
 use crate::authority::{SceneConfig, Verb};
 use crate::clock::{Clock, MonotonicClock, OffsetEstimator, OffsetEstimatorConfig};
+use crate::edge::core::Rejection;
 use crate::error::SessionError;
 #[cfg(feature = "fleet")]
 use crate::lobby::{LobbyAnswer, LobbyReply, LobbyResult, LobbyService, is_lobby_verb};
@@ -429,6 +430,16 @@ impl SessionHost {
                 }
             })
             .await?;
+        // Observer reports, sealed to the host: the newest per generation is
+        // relayed in `host/health`.
+        let reports = transport
+            .session(TrafficClass::Data)
+            .declare_subscriber(keys.reports())
+            .callback({
+                let (keys, peers) = (keys.clone(), peers.clone());
+                move |sample| on_report_sample(&keys, &peers, &sample)
+            })
+            .await?;
         let handshakes = control.declare_queryable(keys.handshake()).await?;
         let ctl = control.declare_queryable(keys.ctl()).await?;
         let state = control.declare_queryable(keys.host_state()).await?;
@@ -449,6 +460,12 @@ impl SessionHost {
             .priority(CONTROL_PRIORITY)
             .congestion_control(CONTROL_CONGESTION)
             .express(true)
+            .await?;
+        // Observers only: a dropped health message is replaced within a
+        // second, so it never blocks control traffic.
+        let health_out = control
+            .declare_publisher(keys.host_health())
+            .congestion_control(zenoh::qos::CongestionControl::Drop)
             .await?;
         let host_keys = Arc::new(Mutex::new(Keyring::new(None, 0)));
         let store = HistoryStore {
@@ -497,6 +514,7 @@ impl SessionHost {
             epoch,
             publisher,
             ticks,
+            health_out,
             snapshot_tx,
             health_tx,
             events: events.clone(),
@@ -530,6 +548,7 @@ impl SessionHost {
                 // host that no longer answers, then the rest.
                 drop(token);
                 drop(heartbeats);
+                drop(reports);
                 drop(history);
                 actor.recorded.clear();
                 actor.store.clear();
@@ -685,7 +704,7 @@ struct Peer {
     identity: Identity,
     /// Host clock at the handshake.
     created_ns: i64,
-    /// `k_up`: requests and heartbeats.
+    /// `k_up`: requests, heartbeats and reports.
     up: Mutex<SealReceiver>,
     /// `k_down`: replies and echoes. One lock per key: a seq is allocated
     /// and its message sent under it.
@@ -695,6 +714,8 @@ struct Peer {
     requests: Mutex<RequestWindow<Vec<u8>>>,
     /// The echo publisher, once in effect.
     echo: std::sync::OnceLock<zenoh::pubsub::Publisher<'static>>,
+    /// Its latest observer report, relayed in `host/health`.
+    report: Mutex<Option<ParticipantReport>>,
 }
 
 /// Every generation with keys.
@@ -707,6 +728,37 @@ struct Peers {
 }
 
 type SharedPeers = Arc<RwLock<Peers>>;
+
+/// How often the host publishes `host/health`.
+const HEALTH_PERIOD: Duration = Duration::from_secs(1);
+
+/// The report callback: open it under the sender's `k_up` and keep it as
+/// that generation's latest. Anything that doesn't open is dropped.
+fn on_report_sample(keys: &SessionKeys, peers: &SharedPeers, sample: &zenoh::sample::Sample) {
+    let key = sample.key_expr().as_str();
+    let Some(id) = keys.participant_of(key) else {
+        return;
+    };
+    let Some(peer) = peers.read().ok().and_then(|p| p.current.get(&id).cloned()) else {
+        return;
+    };
+    let mut bytes = sample.payload().to_bytes().into_owned();
+    let report = match lock(&peer.up).open(&keys.report(&id), &mut bytes) {
+        Ok(opened) if opened.header.kind == Kind::ParticipantReport => {
+            codec::decode_report(opened.body)
+        }
+        Ok(_) => return,
+        Err(err) => {
+            debug!(%id, %err, "report dropped");
+            return;
+        }
+    };
+    match report {
+        Ok(report) if report.participant == id => *lock(&peer.report) = Some(report),
+        Ok(_) => warn!(%id, "report key and body disagree"),
+        Err(err) => debug!(%id, %err, "undecodable report"),
+    }
+}
 
 type HeartbeatTx = mpsc::Sender<(ParticipantId, crate::wire::Heartbeat, i64)>;
 
@@ -1086,6 +1138,8 @@ struct Link {
     generation: u32,
     estimator: OffsetEstimator,
     stats: LinkStats,
+    /// Edges: chunks refused since attach, by reason (its latest heartbeat).
+    rejected: Vec<(Rejection, u64)>,
 }
 
 type Fifo<T> = zenoh::handlers::FifoChannelHandler<T>;
@@ -1110,6 +1164,8 @@ struct HostActor {
     epoch: Arc<AtomicU64>,
     publisher: zenoh::pubsub::Publisher<'static>,
     ticks: zenoh::pubsub::Publisher<'static>,
+    /// Signed `host/health`.
+    health_out: zenoh::pubsub::Publisher<'static>,
     snapshot_tx: watch::Sender<AuthoritySnapshot>,
     health_tx: watch::Sender<Vec<ParticipantHealth>>,
     events: broadcast::Sender<AuthorityEvent>,
@@ -1203,6 +1259,7 @@ impl HostActor {
         let mut republish = interval(self.config.republish);
         let health_log = self.config.health_log;
         let mut health = interval(health_log.unwrap_or(Duration::from_secs(1)));
+        let mut health_out = interval(HEALTH_PERIOD);
 
         loop {
             tokio::select! {
@@ -1264,6 +1321,7 @@ impl HostActor {
                     self.publish_renewals().await;
                 }
                 _ = republish.tick() => self.publish().await,
+                _ = health_out.tick() => self.publish_health().await,
                 _ = health.tick() => {
                     let rows = self.health_rows();
                     if health_log.is_some() {
@@ -1398,6 +1456,7 @@ impl HostActor {
                     down: Mutex::new(candidate.down),
                     requests: Mutex::default(),
                     echo: std::sync::OnceLock::new(),
+                    report: Mutex::default(),
                 });
                 if let Ok(mut peers) = self.peers.write() {
                     let Peers { by_key, current } = &mut *peers;
@@ -2293,6 +2352,7 @@ impl HostActor {
             return;
         };
         link.stats.on_heartbeat(t2);
+        link.rejected = heartbeat.rejected;
         link.stats.on_report(Report {
             last_seq_seen: heartbeat.last_seq_seen,
             last_chunk_accepted: heartbeat.last_chunk_accepted,
@@ -2347,6 +2407,7 @@ impl HostActor {
                                 generation,
                                 estimator: OffsetEstimator::new(offset),
                                 stats: LinkStats::new(offset.window),
+                                rejected: Vec::new(),
                             },
                         );
                     }
@@ -2416,6 +2477,66 @@ impl HostActor {
             })
             .collect();
         self.authority.snapshot(clocks, now)
+    }
+
+    /// What `host/health` says now.
+    fn health(&self, now: i64) -> HostHealth {
+        let peers = self.peers.read().ok();
+        let links = self
+            .links
+            .iter()
+            .map(|(id, link)| {
+                let row = link.stats.health(id, link.estimator.estimate(now), now);
+                let report = peers
+                    .as_ref()
+                    .and_then(|p| p.current.get(id))
+                    .and_then(|peer| lock(&peer.report).clone());
+                LinkHealth {
+                    participant: Some(id.clone()),
+                    heartbeats: row.heartbeats,
+                    rtt_ns: row.rtt_ns.unwrap_or(0),
+                    jitter_ns: row.jitter_ns,
+                    heartbeat_gap_max_ns: row.heartbeat_gap_max_ns,
+                    last_heartbeat_age_ns: row.last_heartbeat_age_ns.unwrap_or(0),
+                    offset: row.offset.map(|o| (o.offset_ns, o.error_ns)),
+                    last_chunk_accepted: row.report.last_chunk_accepted,
+                    last_chunk_applied: row.report.last_chunk_applied,
+                    queue_depth: row.report.queue_depth,
+                    health: row.report.health,
+                    rejected: link.rejected.clone(),
+                    report,
+                    last_seq_seen: row.report.last_seq_seen,
+                }
+            })
+            .collect();
+        HostHealth {
+            epoch: self.authority.epoch(),
+            host_ns: now,
+            links,
+        }
+    }
+
+    /// Signs and publishes `host/health`: every attached participant's link
+    /// as measured here, its edge counters and its latest observer report.
+    async fn publish_health(&mut self) {
+        let now = self.now();
+        let health = self.health(now);
+        let signed = self.signer.sign(
+            SignedKind::HostHealth,
+            &self.keys.host_health(),
+            &codec::encode_health(&health),
+        );
+        let sent = match signed {
+            Ok(signed) => self
+                .health_out
+                .put(signed)
+                .await
+                .map_err(|err| err.to_string()),
+            Err(err) => Err(err.to_string()),
+        };
+        if let Err(err) = sent {
+            debug!(%err, "health publish failed");
+        }
     }
 
     fn health_rows(&self) -> Vec<ParticipantHealth> {

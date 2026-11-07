@@ -969,6 +969,24 @@ impl Robot {
     /// (in order: before any `Clear` queued after it). Already latched, it
     /// keeps the first reason and queues nothing: a held button or a stream
     /// of e-stop signals never floods the control queue.
+    /// Chunks its edges refused, by reason (nonzero only): a compact report
+    /// riding each heartbeat.
+    fn rejected(&self) -> Vec<(rlmesh_session_core::edge::Rejection, u64)> {
+        use rlmesh_session_core::edge::Rejection;
+        Rejection::ALL
+            .iter()
+            .map(|r| {
+                let n = self
+                    .edges
+                    .iter()
+                    .map(|e| e.core.stats().rejected(*r))
+                    .sum::<u64>();
+                (*r, n)
+            })
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    }
+
     fn latch(&mut self, reason: Reason) {
         if self.estop.is_some() {
             return;
@@ -1324,6 +1342,7 @@ impl Robot {
             last_chunk_applied: self.applied,
             queue_depth,
             health: Health::Ok,
+            rejected: self.rejected(),
         };
         let key = self.keys.heartbeat(&self.config.name);
         let Some(link) = self.link.as_mut() else {

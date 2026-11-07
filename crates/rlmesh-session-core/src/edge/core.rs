@@ -149,7 +149,8 @@ impl Rejection {
         Self::Unauthenticated,
     ];
 
-    fn index(self) -> usize {
+    /// Its place in [`Self::ALL`] (stats order).
+    pub fn index(self) -> usize {
         self as usize
     }
 }

@@ -70,6 +70,7 @@ impl Shared {
             Err(err) => {
                 debug!(%err, "chunk refused");
                 self.core().count_rejection(Rejection::Unauthenticated);
+                self.report.count_rejection(Rejection::Unauthenticated);
                 return;
             }
         };
@@ -94,7 +95,10 @@ impl Shared {
                     on_accept(&chunk, receive_ns);
                 }
             }
-            Err(reason) => debug!(channel = %chunk.channel, ?reason, "chunk rejected"),
+            Err(reason) => {
+                self.report.count_rejection(reason);
+                debug!(channel = %chunk.channel, ?reason, "chunk rejected");
+            }
         }
     }
 }

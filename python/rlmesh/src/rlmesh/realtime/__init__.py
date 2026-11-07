@@ -814,9 +814,10 @@ class Recorder:
 
     Records every robot's streams (``/{robot}/{path}``, with the edge's
     ``/{robot}/{path}/_applied``), every action chunk sent to an edge
-    (``/{robot}/{path}/_chunks``), and the authority and binding changes
-    (``/_session/authority``, ``/_session/bindings``), each envelope as it
-    travelled. It declares no delivery contract: a stream a policy reads at
+    (``/{robot}/{path}/_chunks``), the authority and binding changes
+    (``/_session/authority``, ``/_session/bindings``) and the host's health
+    (``/_session/health``: every link, edge refusal and observer report),
+    each envelope as it travelled. It declares no delivery contract: a stream a policy reads at
     ``latest@R`` is recorded at the rate it is published. Use it as a
     context manager, or :meth:`close` to finish the file.
     """

@@ -12,11 +12,11 @@ use std::sync::Arc;
 use rlmesh_session::server::RECORDER;
 use rlmesh_session::wire::{
     BindingRecord, ChannelId, ClockMode, ContractMode, EdgeMode, Health, Mode, PartSpec, Plan,
-    PriorityClass, Role,
+    PriorityClass, ReasonCode, Role,
 };
 use serde_json::Value as Json;
 
-use crate::model::{Model, Verb, ns};
+use crate::model::{Model, Verb, ns, rejection_name};
 use crate::timeline::Tone;
 use crate::values::{Thumbnail, Value};
 
@@ -75,6 +75,8 @@ pub struct Header {
     pub clock: String,
     /// The mode.
     pub mode: Option<Mode>,
+    /// Why the session is in its mode (`ROBOT_LOST by eye-2`, ...).
+    pub mode_reason: Option<String>,
     /// The epoch.
     pub epoch: u64,
     /// An e-stop is latched.
@@ -242,6 +244,11 @@ pub struct EdgeRow {
     pub fenced: u64,
     /// The robot's reported queue depth.
     pub queue_depth: Option<u32>,
+    /// Why the edge is not driving (`QUEUE_DRY`, `ESTOP_LOCAL`, ...), as its
+    /// newest tick says.
+    pub reason: Option<String>,
+    /// Chunks the robot refused since it attached, by reason.
+    pub rejected: Vec<(String, u64)>,
     /// `hold_max`, ms, and the safe behaviour.
     pub hold: (f64, String),
 }
@@ -263,8 +270,12 @@ pub struct ParticipantRow {
     pub rtt_ms: Option<f64>,
     /// Self-reported health.
     pub health: Option<String>,
-    /// Since its newest heartbeat arrived here, ms.
+    /// Since its newest heartbeat reached the host, ms.
     pub heartbeat_age_ms: Option<f64>,
+    /// Smoothed round-trip jitter to the host, ms.
+    pub jitter_ms: Option<f64>,
+    /// The largest recent gap between its heartbeats at the host, ms.
+    pub heartbeat_gap_max_ms: Option<f64>,
 }
 
 /// One timeline entry.
@@ -418,6 +429,8 @@ impl Model {
             session: s.session.to_string(),
             clock,
             mode: Some(s.mode),
+            mode_reason: (s.mode_reason.code != ReasonCode::Unspecified)
+                .then(|| s.mode_reason.to_string()),
             epoch: s.epoch.0,
             estop_latched: s.estop_latched,
             revision: s.revision,
@@ -439,8 +452,8 @@ impl Model {
             overrun: self.overrun,
             recording: match s.roster.iter().find(|p| p.id.as_str() == RECORDER) {
                 None => Recording::Off,
-                Some(p) => match self.heartbeats.get(&p.id) {
-                    Some((hb, _)) if hb.health == Health::Degraded => Recording::Paused,
+                Some(p) => match self.links.get(&p.id) {
+                    Some((link, _)) if link.health == Health::Degraded => Recording::Paused,
                     _ => Recording::On,
                 },
             },
@@ -810,9 +823,25 @@ impl Model {
                         .map(|c| format!("{} {} #{}", c.source, c.token, c.seq)),
                     fenced: self.chunks.get(&part.channel).map_or(0, |c| c.fenced),
                     queue_depth: self
-                        .heartbeats
+                        .links
                         .get(&part.owner)
-                        .map(|(hb, _)| hb.queue_depth),
+                        .map(|(link, _)| link.queue_depth),
+                    reason: edge
+                        .filter(|e| {
+                            e.reason != ReasonCode::Unspecified
+                                && e.mode.is_some_and(|(m, _)| m != EdgeMode::Driving)
+                        })
+                        .map(|e| e.reason.to_string()),
+                    rejected: self
+                        .links
+                        .get(&part.owner)
+                        .map(|(link, _)| {
+                            link.rejected
+                                .iter()
+                                .map(|&(r, n)| (rejection_name(r), n))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     hold: (ms(ns(command.hold_max)), command.safe_behavior.clone()),
                 }
             })
@@ -827,7 +856,7 @@ impl Model {
             .iter()
             .map(|p| {
                 let clock = s.clock(&p.id);
-                let hb = self.heartbeats.get(&p.id);
+                let link = self.links.get(&p.id);
                 ParticipantRow {
                     id: if p.id == self.me {
                         format!("{} (this cockpit)", p.id)
@@ -844,8 +873,13 @@ impl Model {
                     offset_ms: clock.map(|c| ms(c.offset_ns)),
                     error_ms: clock.map(|c| c.error_ns as f64 * 1e-6),
                     rtt_ms: clock.map(|c| c.rtt_ns as f64 * 1e-6),
-                    health: hb.map(|(hb, _)| format!("{:?}", hb.health).to_lowercase()),
-                    heartbeat_age_ms: hb.map(|(_, at)| ms(now_ns - at)),
+                    health: link.map(|(l, _)| format!("{:?}", l.health).to_lowercase()),
+                    // As the host measured it, plus the time since it said.
+                    heartbeat_age_ms: link
+                        .filter(|(l, _)| l.heartbeats > 0)
+                        .map(|(l, at)| l.last_heartbeat_age_ns as f64 * 1e-6 + ms(now_ns - at)),
+                    jitter_ms: link.map(|(l, _)| l.jitter_ns as f64 * 1e-6),
+                    heartbeat_gap_max_ms: link.map(|(l, _)| l.heartbeat_gap_max_ns as f64 * 1e-6),
                 }
             })
             .collect()

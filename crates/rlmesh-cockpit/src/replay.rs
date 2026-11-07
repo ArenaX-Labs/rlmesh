@@ -166,8 +166,8 @@ fn input(m: RecordedMessage) -> (i64, Input) {
             receive_ns: m.log_ns,
         },
         Recorded::Authority(snapshot) => Input::Authority(snapshot),
-        Recorded::Report(report) => Input::Report {
-            report,
+        Recorded::Health(health) => Input::Health {
+            health: *health,
             receive_ns: m.log_ns,
         },
     };
