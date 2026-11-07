@@ -66,6 +66,8 @@ impl HostProcess {
         let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh"))
             .args(["host", "--listen", &base.to_string(), "--record-dir"])
             .arg(recordings.path())
+            // Record whatever the runner's disk has free.
+            .args(["--record-min-free", "1B"])
             .arg("--state-dir")
             .arg(state.path())
             .stdout(Stdio::piped())
