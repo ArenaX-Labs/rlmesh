@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::data::env_contract_to_proto;
 use crate::run::runtime::{
     EnvResetRequest, EnvStepRequest, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
     RuntimeError, RuntimeHooks, RuntimeReport, RuntimeSessionSpec,
 };
 use async_trait::async_trait;
-use rlmesh_grpc::wire::env_contract_to_proto;
 
 use super::handler::ModelHandler;
 use crate::lockstep::GymError;
@@ -336,7 +336,7 @@ impl LockstepEnv {
             ));
         }
         // The driver checks the env's contract as a v1 handshake did.
-        rlmesh_grpc::wire::check_proto_contract(&info.contract)
+        crate::data::validate_driver_contract(&info.contract)
             .map_err(|err| Error::invalid_argument(err.to_string()))?;
         let (env, selected, _) =
             crate::editions::negotiate_env(info, declared).map_err(Error::Protocol)?;
@@ -391,7 +391,7 @@ impl RuntimeEnv for LockstepEnv {
         let (endpoint_total_ns, phases) = self.timing();
         Ok(RuntimeEnvReset {
             observation,
-            infos: info.as_ref().map(rlmesh_grpc::wire::meta_map_to_proto),
+            infos: info.as_ref().map(crate::data::meta_map_to_proto),
             endpoint_total_ns,
             phases,
         })
@@ -412,7 +412,7 @@ impl RuntimeEnv for LockstepEnv {
             rewards: step.rewards,
             terminated: step.terminated,
             truncated: step.truncated,
-            infos: step.info.as_ref().map(rlmesh_grpc::wire::meta_map_to_proto),
+            infos: step.info.as_ref().map(crate::data::meta_map_to_proto),
             endpoint_total_ns,
             phases,
         })
@@ -543,10 +543,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
             .inner
             .reset(rlmesh_proto::env::v1::ResetRequest {
                 seeds: request.seeds,
-                options: request
-                    .options
-                    .as_ref()
-                    .map(rlmesh_grpc::wire::meta_map_to_proto),
+                options: request.options.as_ref().map(crate::data::meta_map_to_proto),
                 timeout_ms: 0,
                 env_indices: request.env_indices,
                 episode_ids: Vec::new(),
@@ -568,7 +565,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
         let response = self
             .inner
             .step(rlmesh_proto::env::v1::StepRequest {
-                action: Some(rlmesh_grpc::wire::leaves_value(request.action)),
+                action: Some(crate::data::leaves_value(request.action)),
                 timeout_ms: 0,
                 env_indices: request.env_indices,
                 episode_ids: Vec::new(),

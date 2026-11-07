@@ -5457,6 +5457,7 @@ dependencies = [
  "keyring",
  "libc",
  "parquet",
+ "proptest",
  "prost",
  "rand 0.10.1",
  "rav1e",

@@ -26,10 +26,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
-use rlmesh_grpc::wire::{
+use crate::data::{
     decode_batched_partial_values, leaves_value, meta_map_from_proto, space_spec_from_proto,
 };
+use chrono::{DateTime, Utc};
 use rlmesh_proto::spaces::v1::{MetaMap, SpaceSpec as ProtoSpaceSpec, meta_value};
 use rlmesh_spaces::{DType, MetaValue, SpaceKind, SpaceSpec, SpaceValue};
 use serde::Serialize;

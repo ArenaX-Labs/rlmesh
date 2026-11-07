@@ -555,3 +555,8 @@ pub fn client_auth(
 
 /// Explicit per-call cancellation for native bindings.
 pub mod calls;
+
+/// Internal driver data conversions; no transport or wire contract.
+pub mod data {
+    pub use crate::data::*;
+}

@@ -75,6 +75,7 @@ uuid = { workspace = true, features = ["v4", "v7"] }
 libc = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 re_mp4 = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tonic-health = { workspace = true }
