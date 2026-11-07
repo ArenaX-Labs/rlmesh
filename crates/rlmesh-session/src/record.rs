@@ -1712,6 +1712,9 @@ pub struct DecodedSample {
     pub topic: String,
     /// When the recorder received it (session time).
     pub log_ns: i64,
+    /// When it was captured, mapped to session time (the MCAP
+    /// `publish_time`): what frames align on.
+    pub capture_ns: i64,
     /// Its fields, in declared order; a JPEG frame decoded to raw RGB.
     /// None for an `_applied` tick that dispatched nothing.
     pub fields: Vec<Field>,
@@ -1722,9 +1725,25 @@ pub struct DecodedSample {
 /// A sample of a channel not declared yet, or that does not decode, is
 /// skipped.
 pub fn decode_samples(messages: &[RecordedMessage]) -> Vec<DecodedSample> {
-    let mut streams: BTreeMap<ChannelId, StreamSpec> = BTreeMap::new();
-    let mut out = Vec::new();
-    for m in messages {
+    let mut decoder = SampleDecoder::default();
+    messages.iter().filter_map(|m| decoder.decode(m)).collect()
+}
+
+/// Splits recorded samples into their fields, one message at a time, through
+/// the parts the authority snapshots before them declare.
+#[derive(Clone, Debug, Default)]
+pub struct SampleDecoder {
+    streams: BTreeMap<ChannelId, StreamSpec>,
+    /// Leave camera frames encoded: their field comes with its shape and no
+    /// bytes.
+    pub skip_images: bool,
+}
+
+impl SampleDecoder {
+    /// Takes `m` in log-time order: an authority snapshot declares parts, a
+    /// sample decodes. `None` for anything else, a sample of a channel not
+    /// declared yet, or one that does not decode.
+    pub fn decode(&mut self, m: &RecordedMessage) -> Option<DecodedSample> {
         let sample = match &m.message {
             Recorded::Authority(snapshot) => {
                 for part in &snapshot.parts {
@@ -1735,38 +1754,41 @@ pub fn decode_samples(messages: &[RecordedMessage]) -> Vec<DecodedSample> {
                     .into_iter()
                     .flatten()
                     {
-                        streams.insert(stream.channel, stream);
+                        self.streams.insert(stream.channel, stream);
                     }
                 }
-                continue;
+                return None;
             }
             Recorded::Sample(sample) => sample,
-            _ => continue,
+            _ => return None,
         };
-        let Some(spec) = streams.get(&sample.channel) else {
-            continue;
-        };
+        let spec = self.streams.get(&sample.channel)?;
         let fields = if sample.applied.is_some_and(|a| !a.present) {
             // An edge tick that dispatched nothing (hold, safe, e-stop).
             Vec::new()
         } else if matches!(spec.encoding, Encoding::Jpeg { .. }) {
-            let Ok(rgb) = crate::media::decode_payload(spec, &sample.payload) else {
-                debug!(channel = %spec.channel, "undecodable frame");
-                continue;
-            };
-            vec![(0, rgb)]
+            if self.skip_images {
+                vec![(0, Vec::new())]
+            } else {
+                let Ok(rgb) = crate::media::decode_payload(spec, &sample.payload) else {
+                    debug!(channel = %spec.channel, "undecodable frame");
+                    return None;
+                };
+                vec![(0, rgb)]
+            }
         } else {
             match spec.layout.stride() {
                 None => vec![(0, sample.payload.to_vec())],
                 Some(stride) if stride == sample.payload.len() => (0..spec.fields.len())
                     .filter_map(|i| Some((i, sample.payload.get(spec.layout.field(i)?)?.to_vec())))
                     .collect(),
-                Some(_) => continue,
+                Some(_) => return None,
             }
         };
-        out.push(DecodedSample {
+        Some(DecodedSample {
             topic: format!("{}/{}", spec.owner, spec.path),
             log_ns: m.log_ns,
+            capture_ns: m.publish_ns,
             fields: fields
                 .into_iter()
                 .map(|(i, bytes)| Field {
@@ -1776,9 +1798,70 @@ pub fn decode_samples(messages: &[RecordedMessage]) -> Vec<DecodedSample> {
                     bytes,
                 })
                 .collect(),
-        });
+        })
     }
-    out
+}
+
+/// Every sample of a recording (one MCAP file, or a directory of them) split
+/// into its fields, one at a time: only one file's messages, still encoded,
+/// are held at once, and each camera frame is decoded as it is taken.
+/// Within a file samples come in log-time order; files in name (opening)
+/// order. A segment still being written that holds no finished chunk is
+/// skipped, as [`read`] does.
+pub struct Samples {
+    files: std::collections::VecDeque<PathBuf>,
+    messages: std::vec::IntoIter<RecordedMessage>,
+    decoder: SampleDecoder,
+    dir: bool,
+}
+
+/// [`Samples`] over the recording at `path`.
+///
+/// # Errors
+/// [`RecordError::Io`] when `path` can't be listed.
+pub fn samples(path: impl AsRef<Path>) -> Result<Samples, RecordError> {
+    let path = path.as_ref();
+    Ok(Samples {
+        files: mcap_files(path)?.into(),
+        messages: Vec::new().into_iter(),
+        decoder: SampleDecoder::default(),
+        dir: path.is_dir(),
+    })
+}
+
+impl Samples {
+    /// Leaves camera frames encoded: each comes with its shape and no bytes
+    /// (a pass that only needs to know the streams).
+    #[must_use]
+    pub fn skip_images(mut self) -> Self {
+        self.decoder.skip_images = true;
+        self
+    }
+}
+
+impl Iterator for Samples {
+    type Item = Result<DecodedSample, RecordError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            for m in self.messages.by_ref() {
+                if let Some(sample) = self.decoder.decode(&m) {
+                    return Some(Ok(sample));
+                }
+            }
+            let file = self.files.pop_front()?;
+            match read_file(&file) {
+                Ok(mut messages) => {
+                    messages.sort_by_key(|m| m.log_ns);
+                    self.messages = messages.into_iter();
+                }
+                Err(err) if self.dir => {
+                    warn!(%err, file = %file.display(), "segment skipped");
+                }
+                Err(err) => return Some(Err(err)),
+            }
+        }
+    }
 }
 
 fn lease_changes(

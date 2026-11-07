@@ -392,7 +392,7 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
 
 
 def test_a_recorder_writes_the_session_to_mcap_and_reads_it_back(
-    host: rlmesh.Host, tmp_path: Path
+    host: rlmesh.Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "session.mcap"
     with rlmesh.Recorder(path, session=host) as recorder:
@@ -435,7 +435,8 @@ def test_a_recorder_writes_the_session_to_mcap_and_reads_it_back(
     arm = [lease for lease in summary["leases"] if lease["part"] == "ur10e/arm"]
     assert arm[0]["holder"] == "model" and arm[0]["priority"] == "model"
 
-    # The same recording as a collected episode, resampled for LeRobot.
+    # The same recording as a collected episode, resampled for LeRobot on
+    # capture time, and written through the lerobot package's dataset API.
     from rlmesh.realtime import lerobot
 
     take = tmp_path / "collected" / "default" / "1"
@@ -462,6 +463,187 @@ def test_a_recorder_writes_the_session_to_mcap_and_reads_it_back(
         "observation.images.wrist_cam": "ur10e/wrist/cam",
     }
     np.testing.assert_allclose(lerobot._numbers(frames[-1]["ur10e/arm/_applied"]), 0.25)
+
+    datasets = fake_lerobot(monkeypatch)
+    out = tmp_path / "dataset"
+    assert lerobot.export(take.parent, out, repo_id="me/ur10e", fps=30) == 1
+    [dataset] = datasets
+    assert dataset.root == out and dataset.fps == 30
+    assert dataset.robot_type == "ur10e"
+    assert dataset.features["action"]["shape"] == (6,)
+    assert dataset.features["observation.images.wrist_cam"]["shape"] == (480, 640, 3)
+    [rows] = dataset.episodes
+    assert rows and all(row["task"] == "hold" for row in rows)
+    assert rows[-1]["observation.images.scene_cam"].shape == (720, 1280, 3)
+    np.testing.assert_allclose(rows[-1]["action"], 0.25)
+    assert dataset.finalized
+
+    # The whole recording, with no episode.json, is one episode of `task`.
+    segment = next(take.glob("*.mcap"))
+    whole = fake_lerobot(monkeypatch)
+    assert (
+        lerobot.export(segment, tmp_path / "whole", repo_id="me/ur10e", task="wave")
+        == 1
+    )
+    assert len(whole[0].episodes[0]) >= len(rows)
+    assert whole[0].episodes[0][0]["task"] == "wave"
+
+
+class FakeDataset:
+    """What ``lerobot.datasets.lerobot_dataset.LeRobotDataset`` is asked to write."""
+
+    def __init__(
+        self,
+        repo_id: str,
+        fps: int,
+        features: dict[str, Any],
+        root: Path,
+        robot_type: str,
+    ) -> None:
+        self.repo_id, self.fps, self.features = repo_id, fps, features
+        self.root, self.robot_type = Path(root), robot_type
+        self.episodes: list[list[dict[str, Any]]] = []
+        self.frames: list[dict[str, Any]] = []
+        self.finalized = False
+
+    def add_frame(self, row: dict[str, Any]) -> None:
+        for key, feature in self.features.items():
+            assert tuple(np.shape(row[key])) == tuple(feature["shape"]), key
+        self.frames.append(row)
+
+    def save_episode(self) -> None:
+        self.episodes.append(self.frames)
+        self.frames = []
+
+    def finalize(self) -> None:
+        self.finalized = True
+
+
+def fake_lerobot(monkeypatch: pytest.MonkeyPatch) -> list[FakeDataset]:
+    """Stands in for the ``lerobot`` package; returns the datasets it creates."""
+    import types
+
+    created: list[FakeDataset] = []
+
+    class LeRobotDataset:
+        @staticmethod
+        def create(
+            repo_id: str,
+            fps: int,
+            *,
+            features: dict[str, Any],
+            root: Path,
+            robot_type: str,
+            use_videos: bool,
+        ) -> FakeDataset:
+            assert use_videos
+            created.append(FakeDataset(repo_id, fps, features, root, robot_type))
+            return created[-1]
+
+    module = types.ModuleType("lerobot.datasets.lerobot_dataset")
+    module.LeRobotDataset = LeRobotDataset  # type: ignore[attr-defined]
+    for name in ("lerobot", "lerobot.datasets"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    return created
+
+
+def test_eyes_with_no_state_export_and_an_idle_eye_keeps_its_last_action(
+    host: rlmesh.Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rlmesh.realtime import lerobot
+
+    gaze = {
+        "hz": 25,
+        "actions": {
+            "gaze": {"kind": "joints", "at": "eyes", "command": "position", "hz": 50}
+        },
+    }
+    eye = {**EYE, "eyes": {**EYE["eyes"], "safe": "stop"}}
+    path = tmp_path / "eyes.mcap"
+    stop = threading.Event()
+    eyes = [rlmesh.Robot(name, eye, session=host) for name in ("eye-1", "eye-2")]
+    camera = rlmesh.Robot(
+        "pi",
+        {"cam": {"kind": "camera", "width": 64, "height": 48, "hz": 20}},
+        session=host,
+    )
+
+    def loop() -> None:
+        # No state: the eyes only take actions; the Pi only sees.
+        rate = rlmesh.Rate(200)
+        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        tick = 0
+        while not stop.is_set():
+            for e in eyes:
+                e.due("eyes")
+            if tick % 10 == 0:
+                camera.publish("cam", frame)
+            tick += 1
+            rate.sleep()
+
+    try:
+        eyes[0].arm()
+        with rlmesh.Recorder(path, session=host):
+            ticker = threading.Thread(target=loop, daemon=True)
+            ticker.start()
+            with (
+                rlmesh.Policy(gaze, session=host, name="one") as one,
+                rlmesh.Policy(gaze, session=host, name="two") as two,
+            ):
+                one.bind("eye-1")
+                two.bind("eye-2")
+                runs = [
+                    in_thread(
+                        lambda p=p, v=v: p.run(
+                            lambda obs, v=v: {"gaze": np.full((1, 2), v, np.float32)},
+                            duration=30.0,
+                        )
+                    )
+                    for p, v in ((one, 0.25), (two, 0.5))
+                ]
+                time.sleep(1.0)
+                # Eye 2's policy stops: its edge holds, then goes safe and
+                # dispatches nothing, while eye 1 is still driven.
+                two.stop()
+                runs[1][0].join(WAIT)
+                time.sleep(1.5)
+                one.stop()
+                runs[0][0].join(WAIT)
+                for _, out in runs:
+                    assert not raised(out)
+            stop.set()
+            ticker.join(WAIT)
+    finally:
+        stop.set()
+        for robot in (*eyes, camera):
+            robot.close()
+
+    datasets = fake_lerobot(monkeypatch)
+    assert lerobot.export(path, tmp_path / "out", repo_id="me/eyes", task="track") == 1
+    [dataset] = datasets
+    assert "observation.state" not in dataset.features
+    assert dataset.features["action"]["names"] == [
+        "eye-1/eyes/_applied.pos[0]",
+        "eye-1/eyes/_applied.pos[1]",
+        "eye-2/eyes/_applied.pos[0]",
+        "eye-2/eyes/_applied.pos[1]",
+    ]
+    assert dataset.features["observation.images.pi_cam"]["shape"] == (48, 64, 3)
+    assert dataset.robot_type == "eye-1+eye-2+pi"
+    [rows] = dataset.episodes
+    # Eye 2 dispatched nothing for over a second while eye 1 was driven, and
+    # those frames are all there: eye 2's last action carried over.
+    dispatched: dict[str, list[int]] = {}
+    for topic, _, capture_ns, fields in _rlmesh.V2Recorder.samples(str(path), False):
+        if fields:
+            dispatched.setdefault(topic, []).append(capture_ns)
+    one_last = max(dispatched["eye-1/eyes/_applied"])
+    two_last = max(dispatched["eye-2/eyes/_applied"])
+    assert one_last - two_last > 1_000_000_000
+    first = max(min(times) for times in dispatched.values())
+    assert len(rows) >= 0.9 * (one_last - first) * 30 / 1e9, len(rows)
+    np.testing.assert_allclose(rows[-1]["action"], [0.25, 0.25, 0.5, 0.5])
 
 
 def test_a_raising_predict_releases_the_leases_and_propagates(
