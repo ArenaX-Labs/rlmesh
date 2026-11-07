@@ -15,7 +15,7 @@ dotnet backend resolves its SDK installer itself and writes no platform URLs;
 locked installation has been checked on the development host.
 
 Python integration uses the root `uv.lock` csharp dependency group (including
-pinned grpcio), a non-editable package, and `uv run --no-sync` in the isolated
+the session client), a non-editable package, and `uv run --no-sync` in the isolated
 environment. It leaves the developer's editable extension intact. Both native
 artifacts use the release protocol cohort. Scratch goes under `~/.cache`.
 

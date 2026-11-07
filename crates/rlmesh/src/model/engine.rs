@@ -296,7 +296,7 @@ fn annotate_predict_error(err: Error, summary: &str) -> Error {
 /// here, once per call).
 ///
 /// Every lane must carry a non-empty episode_id: the engine keys all
-/// per-episode state (frame windows) by it. The grpc wire layer already
+/// per-episode state (frame windows) by it. The session layer already
 /// enforces `num_envs == slots.len()` with non-empty ids, but the engine must
 /// not silently fall back to a shared "" buffer (which would cross-contaminate
 /// lanes) if any other producer violates that.

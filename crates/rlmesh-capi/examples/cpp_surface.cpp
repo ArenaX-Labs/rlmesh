@@ -31,7 +31,7 @@ struct Planner {
 };
 void planner_shape(const rlmesh::Kwargs& config) {
   auto model = rlmesh::Model::from_config<Planner>(config);
-  model.serve("tcp://0.0.0.0:50051");
+  model.serve(":50051/model");
 }
 
 struct Greedy {

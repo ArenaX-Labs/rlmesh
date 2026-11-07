@@ -1,7 +1,5 @@
 //! PyEnvServer - Python-facing RLMesh environment server.
 
-#[cfg(unix)]
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -11,18 +9,8 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh::ServeOptions;
 use rlmesh::binding::env::{WireEnvAdapter, WireLaneAdapter};
-use rlmesh::ext::BindAddress;
-use rlmesh_grpc::env::{Environment, env_service_from_shared};
-use rlmesh_grpc::lifecycle::{
-    ShutdownTrigger, await_close_with_timeout, await_server_shutdown, start_idle_shutdown,
-};
+use rlmesh::binding::lifecycle::{ShutdownTrigger, await_close_with_timeout};
 use rlmesh_spaces::EnvContract;
-use tokio::net::TcpListener;
-#[cfg(unix)]
-use tokio::net::UnixListener;
-#[cfg(unix)]
-use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::server::TcpIncoming;
 
 use super::py_environment::{
     PyServerEnv, build_lane_server_env, build_vector_server_env, run_foreground,
@@ -32,13 +20,6 @@ use crate::spaces::env_contract_to_py;
 use crate::types::to_py_err;
 
 enum BoundListener {
-    Tcp(TcpListener),
-    #[cfg(unix)]
-    Unix {
-        listener: UnixListener,
-        path: PathBuf,
-    },
-    /// A v2 lockstep robot in a session (its participant address, protocol v2 §12).
     Lockstep(Box<rlmesh::lockstep::LockstepBinding>),
 }
 
@@ -52,8 +33,6 @@ struct ServerResources {
     runtime: tokio::runtime::Runtime,
     listener: BoundListener,
     options: ServeOptions,
-    /// The endpoint token `RLMESH_ENV_ENDPOINT_TOKEN` sets, if any.
-    token: Option<String>,
     /// Call the env's `close()` when the server stops (the default). Off for a
     /// server standing in front of an env its caller owns and closes.
     close_env_on_shutdown: bool,
@@ -154,13 +133,7 @@ fn construct_server(
     close_env_on_shutdown: bool,
 ) -> PyResult<PyEnvServer> {
     crate::telemetry::init_tracing("env_server");
-    // Resolve the deployment token before binding, so an invalid
-    // `RLMESH_ENV_ENDPOINT_TOKEN` fails construction without holding the port.
     let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
-    if address.is_some_and(rlmesh_session::address::is_v2_address) {
-        rlmesh::binding::check_session_env_serve(&options).map_err(to_py_err)?;
-    }
-    let token = rlmesh::binding::env_endpoint_token().map_err(to_py_err)?;
     let shutdown = ShutdownTrigger::new();
     let id = NEXT_SERVER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     py_env.set_server_id(id);
@@ -177,116 +150,27 @@ fn construct_server(
         ))
     })?;
 
-    if let Some(address) = address.filter(|a| rlmesh::lockstep::is_v2_address(a)) {
-        rlmesh::lockstep::check(env_contract.clone())
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-        let binding = runtime
-            .block_on(rlmesh::lockstep::bind(address))
-            .map_err(|e| match e {
-                rlmesh::lockstep::GymError::Config(why) => {
-                    PyErr::new::<pyo3::exceptions::PyValueError, _>(why)
-                }
-                other => PyErr::new::<pyo3::exceptions::PyConnectionError, _>(other.to_string()),
-            })?;
-        return Ok(PyEnvServer {
-            id,
-            address: binding.address(),
-            env_contract,
-            state: StdMutex::new(ServerState::Ready(Box::new(ServerResources {
-                env: py_env,
-                runtime,
-                listener: BoundListener::Lockstep(Box::new(binding)),
-                options,
-                token,
-                close_env_on_shutdown,
-            }))),
-            shutdown,
-        });
-    }
-    rlmesh_grpc::wire::check_proto_contract(&env_contract)
+    let address = address.unwrap_or(":0/env");
+    rlmesh::ext::ConnectAddress::parse(address).map_err(to_py_err)?;
+    rlmesh::lockstep::check(env_contract.clone())
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    let bind_target = match address {
-        Some(address) => BindAddress::parse(address).map_err(to_py_err)?,
-        None => BindAddress::Tcp {
-            host: "127.0.0.1".to_string(),
-            port: 0,
-        },
-    };
-
-    let (address, listener) = match bind_target {
-        BindAddress::Tcp { host, port } => {
-            let host_owned = host.to_string();
-            let listener: TcpListener = runtime
-                .block_on(async { TcpListener::bind((host_owned.as_str(), port)).await })
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
-                        "failed to bind tcp listener: {}",
-                        e
-                    ))
-                })?;
-            let bound_addr = listener.local_addr().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "failed to read bound tcp address: {}",
-                    e
-                ))
-            })?;
-
-            (
-                format!("tcp://{}", bound_addr),
-                BoundListener::Tcp(listener),
-            )
-        }
-        BindAddress::Unix { path: socket_path } => {
-            #[cfg(not(unix))]
-            {
-                let _ = socket_path;
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    "unix sockets are not supported on Windows; use tcp://host:port instead",
-                ));
+    let binding = runtime
+        .block_on(rlmesh::lockstep::bind(address))
+        .map_err(|e| match e {
+            rlmesh::lockstep::GymError::Config(why) => {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(why)
             }
-
-            #[cfg(unix)]
-            {
-                // Unlink only a socket we can prove is dead: a live socket is
-                // refused and a non-socket file is left for `bind` to reject,
-                // matching the Rust facade's bind path exactly.
-                rlmesh::ext::remove_stale_socket(&socket_path).map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyConnectionError, _>(e.to_string())
-                })?;
-
-                // UnixListener registration requires an entered Tokio runtime.
-                let listener = {
-                    let _guard = runtime.enter();
-                    UnixListener::bind(&socket_path).map_err(|e| {
-                        PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
-                            "failed to bind unix socket '{}': {}",
-                            socket_path.display(),
-                            e
-                        ))
-                    })?
-                };
-
-                (
-                    format!("unix://{}", socket_path.display()),
-                    BoundListener::Unix {
-                        listener,
-                        path: socket_path,
-                    },
-                )
-            }
-        }
-    };
-
+            other => PyErr::new::<pyo3::exceptions::PyConnectionError, _>(other.to_string()),
+        })?;
     Ok(PyEnvServer {
         id,
-        address,
+        address: binding.address(),
         env_contract,
         state: StdMutex::new(ServerState::Ready(Box::new(ServerResources {
             env: py_env,
             runtime,
-            listener,
+            listener: BoundListener::Lockstep(Box::new(binding)),
             options,
-            token,
             close_env_on_shutdown,
         }))),
         shutdown,
@@ -610,7 +494,7 @@ fn take_resources(
 ///
 /// In the foreground the calling thread is the one that built the env, so the
 /// env keeps it: its Python calls (lane 0's, for lanes) are queued back here
-/// while the gRPC server runs on a helper thread. Simulators that only work
+/// while the session server runs on a helper thread. Simulators that only work
 /// from the thread that created them (typically the Python main thread) then
 /// need no wrapper. Between calls the thread polls Python's signal handlers,
 /// so a Ctrl-C deferred by `EnvServer.serve()` still requests shutdown while
@@ -627,7 +511,6 @@ fn run_server(
         runtime,
         listener,
         options,
-        token,
         close_env_on_shutdown,
     } = resources;
 
@@ -660,22 +543,13 @@ fn run_server(
             match env {
                 PyServerEnv::Lanes(lanes) => {
                     let lanes = WireLaneAdapter::new(lanes).map_err(|err| err.to_string())?;
-                    run_env_server(
-                        lanes,
-                        listener,
-                        options,
-                        token,
-                        shutdown,
-                        close_env_on_shutdown,
-                    )
-                    .await
+                    run_env_server(lanes, listener, options, shutdown, close_env_on_shutdown).await
                 }
                 PyServerEnv::Vector(env) => {
                     run_env_server(
                         WireEnvAdapter::new(*env),
                         listener,
                         options,
-                        token,
                         shutdown,
                         close_env_on_shutdown,
                     )
@@ -712,31 +586,17 @@ async fn run_env_server<E>(
     env: E,
     listener: BoundListener,
     options: ServeOptions,
-    token: Option<String>,
     shutdown: ShutdownTrigger,
     close_env_on_shutdown: bool,
 ) -> ServeResult
 where
-    E: Environment + rlmesh::lockstep::Served,
+    E: rlmesh::lockstep::Served,
 {
-    let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
-    // Bound both teardown phases so the background serve thread always terminates
-    // and EnvServer.shutdown()'s join (and interpreter exit) can never hang on a
-    // lingering client connection or a blocking close hook.
-    let drain_timeout = Some(options.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let env = Arc::new(env);
     let workflow_edition = options.workflow_edition.clone();
-    let grpc_options = rlmesh::binding::serve_options_to_grpc(options, token);
-    let service = env_service_from_shared(
-        Arc::clone(&env),
-        shutdown.clone(),
-        grpc_options,
-        activity_tx,
-    );
     let serve_result = match listener {
         BoundListener::Lockstep(binding) => {
-            drop(service);
             let cancel = tokio_util::sync::CancellationToken::new();
             let stop = {
                 let (shutdown, cancel) = (shutdown.clone(), cancel.clone());
@@ -759,39 +619,6 @@ where
             stop.abort();
             served
         }
-        BoundListener::Tcp(listener) => await_server_shutdown(
-            rlmesh_grpc::lifecycle::server_builder()
-                .add_service(service)
-                // Nagle off on accepted connections. A step response is one
-                // large write (an image observation is ~200 KB); with Nagle on,
-                // its tail waits for the client's delayed ACK and a loopback
-                // step stalls ~40 ms about one time in ten. tonic only warns
-                // when the option cannot be set; the connection still serves.
-                .serve_with_incoming_shutdown(
-                    TcpIncoming::from(listener).with_nodelay(Some(true)),
-                    shutdown.cancelled_owned(),
-                ),
-            shutdown.clone(),
-            drain_timeout,
-        )
-        .await
-        .map_err(|err| err.to_string()),
-        #[cfg(unix)]
-        BoundListener::Unix { listener, path } => {
-            let result = await_server_shutdown(
-                rlmesh_grpc::lifecycle::server_builder()
-                    .add_service(service)
-                    .serve_with_incoming_shutdown(
-                        UnixListenerStream::new(listener),
-                        shutdown.cancelled_owned(),
-                    ),
-                shutdown.clone(),
-                drain_timeout,
-            )
-            .await;
-            let _ = std::fs::remove_file(path);
-            result.map_err(|err| err.to_string())
-        }
     };
 
     let close_result = if close_env_on_shutdown {
@@ -811,9 +638,9 @@ where
 
 async fn close_env<E>(env: Arc<E>, close_timeout: Option<std::time::Duration>) -> ServeResult
 where
-    E: Environment,
+    E: rlmesh::lockstep::Served,
 {
-    let close = async { env.close().await.map(|_| ()) };
+    let close = async { rlmesh::lockstep::Served::close(env.as_ref()).await };
     await_close_with_timeout(close, close_timeout)
         .await
         .map_err(|timeout| format!("close timed out after {}ms", timeout.as_millis()))?
@@ -831,15 +658,7 @@ fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
     } = resources;
 
     match listener {
-        BoundListener::Tcp(listener) => {
-            drop(listener);
-        }
         BoundListener::Lockstep(binding) => runtime.block_on(binding.close()),
-        #[cfg(unix)]
-        BoundListener::Unix { listener, path } => {
-            drop(listener);
-            let _ = std::fs::remove_file(path);
-        }
     }
 
     if !close_env_on_shutdown {

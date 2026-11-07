@@ -3,13 +3,13 @@
 use async_trait::async_trait;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use rlmesh::binding::data::{EnvError, EnvErrorCode};
 use rlmesh::binding::env::{
     EndpointPhases, Env as RLMeshEnv, VectorCloseResult as EnvCloseResult,
     VectorEnv as RLMeshVectorEnv, VectorResetRequest as EnvResetRequest,
     VectorResetResult as EnvResetResult, VectorStepRequest as EnvStepRequest,
     VectorStepResult as EnvStepResult,
 };
-use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_spaces::errors::EnvRuntimeError;
 use rlmesh_spaces::spaces::{PolicyOutcome, SpaceSpec, ValidationPolicy};
 use rlmesh_spaces::{

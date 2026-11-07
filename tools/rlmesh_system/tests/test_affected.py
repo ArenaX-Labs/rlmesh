@@ -11,12 +11,12 @@ from scripts.dev.affected import (
     write_github_output,
 )
 
-# spaces <- runtime <- grpc <- python; viewer stands alone.
+# spaces <- runtime <- session <- python; viewer stands alone.
 WORKSPACE = Workspace(
     dirs={
         "rlmesh-spaces": PurePosixPath("crates/rlmesh-spaces"),
         "rlmesh-runtime": PurePosixPath("crates/rlmesh-runtime"),
-        "rlmesh-grpc": PurePosixPath("crates/rlmesh-grpc"),
+        "rlmesh-session": PurePosixPath("crates/rlmesh-session"),
         "rlmesh-viewer": PurePosixPath("crates/rlmesh-viewer"),
         "rlmesh-python": PurePosixPath("python/rlmesh/rust"),
         "rlmesh": PurePosixPath("crates/rlmesh"),
@@ -24,10 +24,10 @@ WORKSPACE = Workspace(
     },
     dependents={
         "rlmesh-spaces": {"rlmesh-runtime"},
-        "rlmesh-runtime": {"rlmesh-grpc", "rlmesh"},
+        "rlmesh-runtime": {"rlmesh-session", "rlmesh"},
         "rlmesh": {"rlmesh-capi"},
         "rlmesh-capi": set(),
-        "rlmesh-grpc": {"rlmesh-python"},
+        "rlmesh-session": {"rlmesh-python"},
         "rlmesh-viewer": set(),
         "rlmesh-python": set(),
     },
@@ -45,7 +45,7 @@ def test_change_reaches_every_dependent_and_the_extension() -> None:
         rust=[
             "rlmesh",
             "rlmesh-capi",
-            "rlmesh-grpc",
+            "rlmesh-session",
             "rlmesh-python",
             "rlmesh-runtime",
             "rlmesh-spaces",

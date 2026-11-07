@@ -1,6 +1,6 @@
 # rlmesh
 
-RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. This crate is the Rust API: write environments and policies as ordinary Rust types, serve them over gRPC, and run evaluations against anything else that speaks RLMesh.
+RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. This crate is the Rust API: write environments and policies as ordinary Rust types, serve them in realtime sessions, and run evaluations against anything else that speaks RLMesh.
 
 RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Binding`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
@@ -11,7 +11,7 @@ RLMesh aims to feel familiar in whichever language you use it from. Python, Rust
 rlmesh = "0.1"
 ```
 
-The build generates gRPC stubs, so it needs `protoc` on `PATH` (`apt install protobuf-compiler` or `brew install protobuf`). The minimum supported Rust version is the crate's `rust-version`.
+The build generates session protobuf messages, so it needs `protoc` on `PATH` (`apt install protobuf-compiler` or `brew install protobuf`). The minimum supported Rust version is the crate's `rust-version`.
 
 ## Quickstart
 

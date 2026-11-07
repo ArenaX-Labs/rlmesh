@@ -258,9 +258,7 @@ impl RunEdition {
             // TODO: pin the env to the floor on reset once an edition changes
             // what an env does; while one edition exists, the floor is the env's.
             (Some(env), Some(model)) => {
-                rlmesh_grpc::env_floor(env, &model, declared)
-                    .map_err(Error::from_grpc)?
-                    .selected_workflow_edition
+                crate::floor::env_floor(env, &model, declared)?.selected_workflow_edition
             }
             _ => self.selected,
         };
@@ -425,16 +423,14 @@ impl RuntimeEnv for LockstepEnv {
     }
 }
 
-/// Maps a lockstep failure onto the runtime's env error, classified as the
-/// gRPC env client classifies the same failure.
+/// Preserve a session failure's class and recoverability in the driver.
 fn lockstep_runtime_error(operation: &'static str, error: GymError) -> RuntimeError {
-    use rlmesh_grpc::error::{Error as GrpcError, ProtocolError, TransportError};
     let recoverable = error.is_recoverable();
     let source = match error {
-        GymError::Env(error) => GrpcError::Environment(error.to_wire()),
-        GymError::Timeout(t) => GrpcError::Timeout(t),
-        GymError::Closed(why) => GrpcError::Transport(TransportError::ConnectFailed(why)),
-        other => GrpcError::Protocol(ProtocolError::DecodeError(other.to_string())),
+        GymError::Env(error) => Error::Environment(error),
+        GymError::Timeout(t) => Error::Timeout(t),
+        GymError::Closed(why) => Error::Connection(why),
+        other => Error::Protocol(other.to_string()),
     };
     RuntimeError::env_rpc_with_recoverability(operation, 0, recoverable, source)
 }
@@ -479,8 +475,8 @@ fn run_error(error: RuntimeError) -> Error {
         // Keep the driver's message (it names the op and the step) and take only
         // the classification from the structured source.
         RuntimeError::EnvRpc { source, .. } => match source
-            .and_then(|source| source.downcast::<rlmesh_grpc::error::Error>().ok())
-            .map(|error| Error::from_grpc(*error))
+            .and_then(|source| source.downcast::<Error>().ok())
+            .map(|error| *error)
         {
             Some(Error::Connection(_)) => Error::Connection(message),
             Some(Error::Timeout(timeout)) => Error::Timeout(timeout),
@@ -500,97 +496,5 @@ fn run_error(error: RuntimeError) -> Error {
         // vector-env refusals): ValueError at connect (RUN-P1).
         RuntimeError::InvalidSpec(_) => Error::invalid_argument(message),
         _ => Error::Internal(message),
-    }
-}
-
-/// A connected [`rlmesh_grpc::EnvClient`] as the driver's env: the v1 wire
-/// until v1 env serving goes.
-#[derive(Clone)]
-pub struct EnvClientRuntimeEnv {
-    inner: rlmesh_grpc::EnvClient,
-}
-
-impl EnvClientRuntimeEnv {
-    /// Wrap a connected (and handshaked) env client.
-    pub fn new(client: rlmesh_grpc::EnvClient) -> Self {
-        Self { inner: client }
-    }
-
-    /// Consume the adapter and return the underlying client.
-    pub fn into_inner(self) -> rlmesh_grpc::EnvClient {
-        self.inner
-    }
-}
-
-fn env_rpc(operation: &'static str, error: rlmesh_grpc::error::Error) -> RuntimeError {
-    let recoverable = error.is_recoverable();
-    RuntimeError::env_rpc_with_recoverability(operation, 0, recoverable, error)
-}
-
-fn mask(bytes: &[u8], lanes: usize) -> Vec<bool> {
-    (0..lanes)
-        .map(|lane| bytes.get(lane).is_some_and(|bit| *bit != 0))
-        .collect()
-}
-
-#[async_trait]
-impl RuntimeEnv for EnvClientRuntimeEnv {
-    async fn reset(
-        &mut self,
-        request: EnvResetRequest,
-    ) -> std::result::Result<RuntimeEnvReset, RuntimeError> {
-        let response = self
-            .inner
-            .reset(rlmesh_proto::env::v1::ResetRequest {
-                seeds: request.seeds,
-                options: request.options.as_ref().map(crate::data::meta_map_to_proto),
-                timeout_ms: 0,
-                env_indices: request.env_indices,
-                episode_ids: Vec::new(),
-            })
-            .await
-            .map_err(|err| env_rpc("env.reset", err))?;
-        Ok(RuntimeEnvReset {
-            observation: response.observation.map(|v| v.leaves).unwrap_or_default(),
-            infos: response.infos,
-            endpoint_total_ns: self.inner.take_last_endpoint_total_ns(),
-            phases: self.inner.take_last_phases(),
-        })
-    }
-
-    async fn step(
-        &mut self,
-        request: EnvStepRequest,
-    ) -> std::result::Result<RuntimeEnvStep, RuntimeError> {
-        let response = self
-            .inner
-            .step(rlmesh_proto::env::v1::StepRequest {
-                action: Some(crate::data::leaves_value(request.action)),
-                timeout_ms: 0,
-                env_indices: request.env_indices,
-                episode_ids: Vec::new(),
-            })
-            .await
-            .map_err(|err| env_rpc("env.step", err))?;
-        let lanes = response.rewards.len();
-        Ok(RuntimeEnvStep {
-            observation: response.observation.map(|v| v.leaves).unwrap_or_default(),
-            terminated: mask(&response.terminated_mask, lanes),
-            truncated: mask(&response.truncated_mask, lanes),
-            rewards: response.rewards,
-            infos: response.infos,
-            endpoint_total_ns: self.inner.take_last_endpoint_total_ns(),
-            phases: self.inner.take_last_phases(),
-        })
-    }
-
-    async fn close(&mut self, timeout: Duration) -> std::result::Result<(), String> {
-        match tokio::time::timeout(timeout, self.inner.close()).await {
-            Ok(result) => result.map(|_| ()).map_err(|err| err.to_string()),
-            Err(err) => {
-                self.inner.detach();
-                Err(err.to_string())
-            }
-        }
     }
 }

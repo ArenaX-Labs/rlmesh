@@ -15,10 +15,6 @@ fn defaults_match_python_literals() {
     );
     let value = rlmesh::env::EnvServerOptions::default();
     assert!(value.address.is_none(), "rlmesh:EnvServer.address");
-    assert!(value.host.is_none(), "rlmesh:EnvServer.host");
-    assert!(value.port.is_none(), "rlmesh:EnvServer.port");
-    assert!(value.path.is_none(), "rlmesh:EnvServer.path");
-    assert!(value.transport.is_none(), "rlmesh:EnvServer.transport");
     assert!(value.options.is_none(), "rlmesh:EnvServer.options");
     assert!(value.tags.is_none(), "rlmesh:EnvServer.tags");
     assert!(
@@ -133,10 +129,6 @@ fn defaults_match_python_literals() {
     );
     let value = rlmesh::env::RemoteEnvOptions::default();
     assert!(value.address.is_none(), "rlmesh:RemoteEnv.address");
-    assert!(value.host.is_none(), "rlmesh:RemoteEnv.host");
-    assert!(value.port.is_none(), "rlmesh:RemoteEnv.port");
-    assert!(value.path.is_none(), "rlmesh:RemoteEnv.path");
-    assert!(value.transport.is_none(), "rlmesh:RemoteEnv.transport");
     assert!(
         value.connect_timeout.is_none(),
         "rlmesh:RemoteEnv.connect_timeout_seconds"
@@ -149,8 +141,6 @@ fn defaults_match_python_literals() {
         value.workflow_edition.is_none(),
         "rlmesh:RemoteEnv.workflow_edition"
     );
-    assert!(value.api_key.is_none(), "rlmesh:RemoteEnv.api_key");
-    assert!(value.tls_ca_file.is_none(), "rlmesh:RemoteEnv.tls_ca_file");
     let value = rlmesh::RunResult::default();
     assert!(value.episodes.is_empty(), "rlmesh:RunResult.episodes");
     assert!(value.telemetry.is_empty(), "rlmesh:RunResult.telemetry");
@@ -165,28 +155,12 @@ fn defaults_match_python_literals() {
     assert!(value.config.is_none(), "rlmesh:RunResult.save.config");
     let value = rlmesh::serve_options::ServeOptions::default();
     assert!(
-        !value.allow_remote_shutdown,
-        "rlmesh:ServeOptions.allow_remote_shutdown"
-    );
-    assert!(
-        value.idle_timeout.is_none(),
-        "rlmesh:ServeOptions.idle_timeout_seconds"
-    );
-    assert!(
-        value.drain_timeout.is_none(),
-        "rlmesh:ServeOptions.drain_timeout_seconds"
-    );
-    assert!(
         value.close_timeout.is_none(),
         "rlmesh:ServeOptions.close_timeout_seconds"
     );
     assert!(
         value.workflow_edition.is_none(),
         "rlmesh:ServeOptions.workflow_edition"
-    );
-    assert!(
-        !value.compress_responses,
-        "rlmesh:ServeOptions.compress_responses"
     );
     let value = rlmesh::View::default();
     assert_eq!(value.backend.to_string(), "terminal", "rlmesh:View.backend");

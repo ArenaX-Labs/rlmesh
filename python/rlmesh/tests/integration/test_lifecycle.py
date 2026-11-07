@@ -345,7 +345,7 @@ def test_remote_close_detaches_without_stopping_endpoint() -> None:
     server.start()
     try:
         remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-        with pytest.raises(TypeError, match=r"server\.shutdown\(\)"):
+        with pytest.raises(AttributeError, match="shutdown"):
             remote.shutdown("an owner shutdown")
         remote.close()
 
@@ -830,7 +830,7 @@ def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
     server.start()
     try:
         remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address)
-        with pytest.raises(TypeError, match=r"server\.shutdown\(\)"):
+        with pytest.raises(AttributeError, match="shutdown"):
             remote.shutdown("an owner shutdown")
         remote.close()
 

@@ -2,8 +2,8 @@
 //! dtype, v1 tags a LIBERO-style `ModelSpec` resolves against, NEXT_STEP or
 //! DISABLED autoreset, scalar, vector or lane endpoints, and deterministic
 //! dynamics (a pure function of seed, lane, step and the last action), so
-//! two runs fed the same requests answer the same bytes. It answers the v1
-//! env service and, through the same code, the lockstep path's [`Served`].
+//! two runs fed the same requests answer the same bytes. It implements the
+//! lockstep path's [`Served`] on native values.
 
 #![allow(dead_code, clippy::unwrap_used)]
 
@@ -12,15 +12,15 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use rlmesh::lockstep::{Reset, Served, Step};
-use rlmesh_grpc::env::{
-    CloseEnvsResponse, EndpointPhases, Environment, RenderRequest, RenderResponse, ResetRequest,
-    ResetResponse, StepRequest, StepResponse,
-};
-use rlmesh_grpc::error::EnvError;
-use rlmesh_grpc::wire::{
-    decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
+use rlmesh::binding::data::{
+    EnvError, decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
     meta_map_to_proto,
+};
+use rlmesh::lockstep::{Reset, Served, Step};
+use rlmesh_proto::EndpointPhases;
+use rlmesh_proto::env::v1::{
+    CloseEnvsResponse, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
+    StepResponse,
 };
 use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue as ProtoMeta, meta_value::Kind};
 use rlmesh_spaces::{
@@ -387,7 +387,7 @@ impl CatalogEnv {
 
     fn observe(&self, lanes: &[usize], state: &[Lane]) -> rlmesh_proto::spaces::v1::SpaceValue {
         let values: Vec<SpaceValue> = lanes.iter().map(|l| state[*l].value(*l)).collect();
-        rlmesh_grpc::wire::encode_batched_partial_values(
+        rlmesh::binding::data::encode_batched_partial_values(
             &values,
             self.contract.observation_space.as_ref().unwrap(),
         )
@@ -417,8 +417,7 @@ fn leaves_hex(value: &rlmesh_proto::spaces::v1::SpaceValue) -> String {
         .join(",")
 }
 
-#[async_trait]
-impl Environment for CatalogEnv {
+impl CatalogEnv {
     fn observation_space(&self) -> &SpaceSpec {
         self.contract.observation_space.as_ref().unwrap()
     }
@@ -623,7 +622,7 @@ impl Served for CatalogEnv {
         } else {
             lanes.len()
         };
-        let (ok, _) = Environment::reset(
+        let (ok, _) = CatalogEnv::reset(
             self,
             ResetRequest {
                 seeds,
@@ -652,7 +651,7 @@ impl Served for CatalogEnv {
     ) -> Result<Step, rlmesh::EnvironmentError> {
         let width = actions.len();
         let action = encode_batched_partial_values(&actions, self.action_space()).unwrap();
-        let (ok, _) = Environment::step(
+        let (ok, _) = CatalogEnv::step(
             self,
             StepRequest {
                 action: Some(action),

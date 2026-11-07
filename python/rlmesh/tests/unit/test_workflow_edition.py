@@ -344,11 +344,11 @@ class TestServeOptionsDeclaring:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, "")
-        given = ServeOptions(workflow_edition=EDITION, idle_timeout_seconds=2.5)
+        given = ServeOptions(workflow_edition=EDITION, close_timeout_seconds=2.5)
         options = serve_options_declaring(given)
         assert options is not None
         assert options.workflow_edition is None
-        assert options.idle_timeout_seconds == 2.5
+        assert options.close_timeout_seconds == 2.5
         assert given.workflow_edition == EDITION
 
     def test_stamps_the_resolved_declaration_onto_fresh_options(self) -> None:
@@ -357,12 +357,11 @@ class TestServeOptionsDeclaring:
         assert options.workflow_edition == EDITION
 
     def test_preserves_the_other_lifecycle_fields(self) -> None:
-        given = ServeOptions(allow_remote_shutdown=True, idle_timeout_seconds=2.5)
+        given = ServeOptions(close_timeout_seconds=2.5)
         options = serve_options_declaring(given, declared=EDITION)
         assert options is not None
         assert options.workflow_edition == EDITION
-        assert options.allow_remote_shutdown
-        assert options.idle_timeout_seconds == 2.5
+        assert options.close_timeout_seconds == 2.5
 
     def test_an_explicit_option_outranks_the_class_declaration(self) -> None:
         given = ServeOptions(workflow_edition=EDITION)
@@ -371,7 +370,7 @@ class TestServeOptionsDeclaring:
         assert options.workflow_edition == EDITION
 
     def test_declaring_nothing_leaves_the_options_untouched(self) -> None:
-        given = ServeOptions(allow_remote_shutdown=True)
+        given = ServeOptions(close_timeout_seconds=2.5)
         with pytest.warns(UserWarning, match="no workflow edition declared"):
             assert serve_options_declaring(given) is given
 

@@ -774,9 +774,9 @@ fn a_binding_reaches_a_served_env_and_refuses_what_it_cannot_drive() {
         .bind("127.0.0.1:1", BindOptions::default())
         .unwrap_err();
     assert_eq!(error.class(), ErrorClass::ValueError);
-    let v1 = crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
-        .unwrap();
-    let error = bind(&v1, &server, BindOptions::default()).unwrap_err();
+    let error =
+        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
+            .unwrap_err();
     assert_eq!(error.class(), ErrorClass::ValueError);
     server.shutdown().unwrap();
 }
@@ -1309,36 +1309,6 @@ fn closure_resolution_does_not_consume_the_authored_warning() {
     drop(authored.bind(&mut env, BindOptions::default()).unwrap());
     crate::set_warning_handler(None);
     assert_eq!(warnings.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn plaintext_api_keys_warn_once_per_address() {
-    let _lock = crate::warnings::tests::HANDLER_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
-    let record = Arc::clone(&seen);
-    crate::warnings::set_warning_handler(Some(Box::new(move |w: &crate::Warning| {
-        record.lock().unwrap().push(w.message.clone());
-        Ok(())
-    })));
-    let address = "10.255.255.7:5555";
-    for _ in 0..2 {
-        crate::RemoteModel::new(
-            crate::RemoteModelOptions::default()
-                .address(address)
-                .api_key("some-key"),
-        )
-        .unwrap();
-    }
-    crate::warnings::set_warning_handler(None);
-    assert_eq!(
-        seen.lock().unwrap().as_slice(),
-        [
-            "api_key is sent unencrypted to tcp://10.255.255.7:5555; use an https:// address to \
-          keep it private"
-        ]
-    );
 }
 
 #[test]

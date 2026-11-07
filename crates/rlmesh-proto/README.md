@@ -1,6 +1,9 @@
 # rlmesh-proto
 
-Protobuf definitions and generated gRPC stubs for RLMesh model-environment protocols.
+Unpublished internal data types and workflow edition logic for the RLMesh run driver.
+
+The driver still uses these protobuf messages in memory. Remote envs and models use
+`rlmesh-realtime-v1` sessions; this crate defines no services or governed wire.
 
 This crate is an internal component of `rlmesh`. The Rust API exposed here is unstable and will have frequent breaking changes.
 

@@ -1,16 +1,14 @@
 //! One non-generic environment server for an env, a list of lane envs, or a
 //! vector env.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use rlmesh_adapters::v1::{DESCRIBE_METADATA_KEY, ENV_BRANCH_METADATA_KEY};
-use rlmesh_grpc::env::Environment;
-use rlmesh_grpc::lifecycle::{ShutdownTrigger, await_close_with_timeout, start_idle_shutdown};
+use crate::lifecycle::{ShutdownTrigger, await_close_with_timeout};
+use rlmesh_adapters::v1::ENV_BRANCH_METADATA_KEY;
 
 use super::envelope::{DescribingHost, env_envelope};
 use super::single_lane::SingleLaneEnv;
@@ -20,60 +18,22 @@ use super::sync_wire::{
 use super::wire::{WireEnvAdapter, WireLaneAdapter};
 use super::{Env, VectorEnv, signals};
 use crate::adapters::EnvTags;
-use crate::bound::BoundListener;
 use crate::editions::EditionSources;
-use crate::serve_options::{WireExtras, env_endpoint_token};
 use crate::specs::{EnvContract, value_to_json};
-use crate::{BindAddress, Error, Result, ServeOptions};
+use crate::{Error, Result, ServeOptions};
 
 /// The bound an env server puts on a drain or close the options leave unset.
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-/// Endpoint transport: TCP or Unix-domain sockets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Transport {
-    /// TCP.
-    Tcp,
-    /// A Unix-domain socket.
-    Unix,
-}
-
-impl Transport {
-    /// The canonical spelling: `"tcp"` or `"unix"`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Transport::Tcp => "tcp",
-            Transport::Unix => "unix",
-        }
-    }
-}
-
-impl fmt::Display for Transport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// Options for constructing an environment server.
 ///
-/// Defaults: the address `tcp://127.0.0.1:0`, no serve options or tags, and
+/// Defaults: the session address `:0/env`, no serve options or tags, and
 /// `close_env_on_shutdown` true. Build one with `..Default::default()`;
 /// appending a field is a minor change by project policy.
 #[derive(Clone, Debug)]
 pub struct EnvServerOptions {
-    /// The bind address: a session participant address (`:0/env`,
-    /// `host:port/session/name`), or a v1 `tcp://host:port` or
-    /// `unix:///path`; `None` uses the helpers below, or `:0/env` (a session
-    /// of its own on an OS-assigned local port). Excludes the helpers.
+    /// Session participant address; `None` binds `:0/env`.
     pub address: Option<String>,
-    /// TCP host helper (default `127.0.0.1`).
-    pub host: Option<String>,
-    /// TCP port helper (default 0, an OS-assigned port).
-    pub port: Option<u16>,
-    /// Unix socket path helper; excludes `host` and `port`.
-    pub path: Option<String>,
-    /// Explicit transport; `Unix` needs `path`.
-    pub transport: Option<Transport>,
     /// Transport lifecycle policy.
     pub options: Option<ServeOptions>,
     /// Tags to merge into each served env's metadata, validated against a
@@ -90,10 +50,6 @@ impl Default for EnvServerOptions {
     fn default() -> Self {
         EnvServerOptions {
             address: None,
-            host: None,
-            port: None,
-            path: None,
-            transport: None,
             options: None,
             tags: None,
             close_env_on_shutdown: true,
@@ -106,40 +62,6 @@ impl Default for EnvServerOptions {
 /// why it could not be built (step 5 is best-effort).
 pub(crate) struct Publish {
     pub(crate) envelope: Result<String>,
-    pub(crate) peer_runtime: Option<rlmesh_grpc::lifecycle::PeerRuntime>,
-}
-
-pub(crate) fn peer_runtime(
-    language: &str,
-    extra: &serde_json::Map<String, serde_json::Value>,
-) -> rlmesh_grpc::lifecycle::PeerRuntime {
-    rlmesh_grpc::lifecycle::PeerRuntime {
-        language: extra
-            .get("language")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(language)
-            .into(),
-        language_version: extra
-            .get("language_version")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .into(),
-        framework_versions: extra
-            .get("framework_versions")
-            .and_then(serde_json::Value::as_object)
-            .into_iter()
-            .flatten()
-            .filter_map(|(key, value)| value.as_str().map(|v| (key.clone(), v.into())))
-            .collect(),
-    }
-}
-
-#[allow(clippy::print_stderr)]
-fn describe_failed(err: &Error) {
-    eprintln!(
-        "RLMesh could not describe the served env ({err}); the handshake carries no describe \
-         envelope"
-    );
 }
 
 /// What the server serves.
@@ -148,10 +70,8 @@ enum Served {
     Vector(Box<dyn VectorEnv + Send>),
 }
 
-/// Where a server listens: a gRPC listener, or (with the `lockstep`
-/// feature) a v2 lockstep robot in a session (its participant address, §12).
+/// A bound robot participant in a session.
 enum Listener {
-    Grpc(BoundListener),
     Lockstep(Box<crate::lockstep::LockstepBinding>),
 }
 
@@ -161,36 +81,27 @@ impl Listener {
         runtime: &tokio::runtime::Runtime,
         contract: &crate::EnvContract,
     ) -> Result<(Self, String)> {
-        if crate::address::is_v2(address) {
-            {
-                crate::lockstep::check(contract.to_wire()?)
-                    .map_err(|err| Error::invalid_argument(err.to_string()))?;
-                // Off the caller's thread: a server built inside an async
-                // context (an in-process run's env) cannot block on it.
-                let binding = std::thread::scope(|scope| {
-                    scope
-                        .spawn(|| runtime.block_on(crate::lockstep::bind(address)))
-                        .join()
-                })
-                .map_err(|_| Error::Internal("binding the lockstep env panicked".into()))?
-                .map_err(|err| match err {
-                    crate::lockstep::GymError::Config(why) => Error::invalid_argument(why),
-                    other => Error::Connection(other.to_string()),
-                })?;
-                let bound = binding.address();
-                return Ok((Self::Lockstep(Box::new(binding)), bound));
-            }
+        if !crate::address::is_v2(address) {
+            return Err(Error::invalid_argument(crate::address::V1_REFUSAL));
         }
-        rlmesh_grpc::wire::check_proto_contract(&contract.to_wire()?)
+        crate::lockstep::check(contract.to_wire()?)
             .map_err(|err| Error::invalid_argument(err.to_string()))?;
-        let listener = BoundListener::bind_sync(BindAddress::parse(address)?, runtime.handle())?;
-        let bound = listener.local_addr()?.to_string();
-        Ok((Self::Grpc(listener), bound))
+        let binding = std::thread::scope(|scope| {
+            scope
+                .spawn(|| runtime.block_on(crate::lockstep::bind(address)))
+                .join()
+        })
+        .map_err(|_| Error::Internal("binding the lockstep env panicked".into()))?
+        .map_err(|err| match err {
+            crate::lockstep::GymError::Config(why) => Error::invalid_argument(why),
+            other => Error::Connection(other.to_string()),
+        })?;
+        let bound = binding.address();
+        Ok((Self::Lockstep(Box::new(binding)), bound))
     }
 
     fn release(self, runtime: &tokio::runtime::Runtime) {
         match self {
-            Self::Grpc(listener) => listener.release(),
             // Off this thread: a failed serve_async start releases from
             // inside an executor.
             Self::Lockstep(binding) => std::thread::scope(|scope| {
@@ -204,9 +115,7 @@ struct Resources {
     served: Served,
     runtime: tokio::runtime::Runtime,
     listener: Listener,
-    grpc: rlmesh_grpc::ServeOptions,
-    idle_timeout: Option<Duration>,
-    drain_timeout: Duration,
+    options: ServeOptions,
     close_timeout: Duration,
     close_env_on_shutdown: bool,
 }
@@ -416,7 +325,6 @@ impl EnvServer {
         let State::Ready(resources) = &mut *state else {
             return Err(Error::Runtime("server has already started".into()));
         };
-        resources.grpc.peer_runtime = Some(peer_runtime(language, &extra));
         let envelope = env_envelope(
             &self.shared.contract,
             None,
@@ -426,20 +334,10 @@ impl EnvServer {
                 language,
                 extra,
             },
-            resources.grpc.workflow_edition.as_deref(),
+            resources.options.workflow_edition.as_deref(),
             matches!(resources.served, Served::Vector(_)),
         )?;
         *lock(&self.shared.binding_description) = Some(envelope.clone());
-        if resources
-            .grpc
-            .peer_info_extra
-            .contains_key(DESCRIBE_METADATA_KEY)
-        {
-            resources
-                .grpc
-                .peer_info_extra
-                .insert(DESCRIBE_METADATA_KEY.into(), envelope);
-        }
         Ok(())
     }
 
@@ -574,10 +472,6 @@ impl EnvServer {
         let address = normalize_bind_address(&options)?;
         let serve = options.options.clone().unwrap_or_default();
         serve.validate()?;
-        let session = crate::address::is_v2(&address);
-        if session {
-            serve.check_session()?;
-        }
 
         // Step 6: the edition. An explicit options value is the call's own;
         // a served env is an authored participant, so a float warns.
@@ -590,44 +484,22 @@ impl EnvServer {
             !resolved_by_caller,
         )?;
 
-        // Step 8: the endpoint token, before binding.
-        let ext = options.ext.clone().unwrap_or_default();
-        if session {
-            crate::serve_options::check_session_token(
-                crate::serve_options::ENV_ENDPOINT_TOKEN_ENV,
-                ext.token.is_some(),
-            )?;
-        }
-        let token = env_endpoint_token(ext.token.clone())?;
-        let mut peer_info_extra: BTreeMap<String, String> = ext.peer_info_extra.clone();
-        match &factory {
-            // A factory serve's describe is best-effort (step 5).
-            Some(publish) => match &publish.envelope {
-                Ok(envelope) => {
-                    peer_info_extra.insert(DESCRIBE_METADATA_KEY.to_string(), envelope.clone());
-                }
-                Err(err) => describe_failed(err),
-            },
-            None if ext.publish_describe => {
-                let envelope = env_envelope(
+        // Retain the full factory envelope for binding server introspection.
+        // Rebuilding it from the contract would lose branches and variants.
+        let binding_description = match factory.as_ref() {
+            Some(publish) => publish.envelope.as_ref().ok().cloned(),
+            None if options.ext.as_ref().is_some_and(|ext| ext.publish_describe) => {
+                Some(env_envelope(
                     &contract,
                     None,
                     None,
                     &DescribingHost::rust(),
                     edition.as_deref(),
                     matches!(served, Served::Vector(_)),
-                )?;
-                peer_info_extra.insert(DESCRIBE_METADATA_KEY.to_string(), envelope);
+                )?)
             }
-            None => {}
-        }
-
-        // Retain the full factory envelope for binding server introspection.
-        // Rebuilding it from the contract would lose branches and variants.
-        let binding_description = factory
-            .as_ref()
-            .and_then(|publish| publish.envelope.as_ref().ok())
-            .cloned();
+            None => None,
+        };
 
         // Step 9: bind.
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -637,21 +509,12 @@ impl EnvServer {
             .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;
         let (listener, address) = Listener::bind(&address, &runtime, &contract)?;
 
-        let idle_timeout = serve.idle_timeout;
-        let drain_timeout = serve.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE);
         let close_timeout = serve.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE);
-        let mut grpc = ServeOptions {
+        let close_env_on_shutdown = options.close_env_on_shutdown;
+        let options = ServeOptions {
             workflow_edition: edition,
             ..serve
-        }
-        .to_grpc(WireExtras {
-            token,
-            predict_concurrency: None,
-            peer_info_extra,
-        });
-        grpc.peer_runtime = factory
-            .as_ref()
-            .and_then(|publish| publish.peer_runtime.clone());
+        };
         let (done, _) = tokio::sync::watch::channel(false);
         Ok(EnvServer {
             shared: Arc::new(Shared {
@@ -665,11 +528,9 @@ impl EnvServer {
                     served,
                     runtime,
                     listener,
-                    grpc,
-                    idle_timeout,
-                    drain_timeout,
+                    options,
                     close_timeout,
-                    close_env_on_shutdown: options.close_env_on_shutdown,
+                    close_env_on_shutdown,
                 }))),
                 detached: Mutex::new(None),
                 abandoned: Arc::new(Mutex::new(Vec::new())),
@@ -679,7 +540,7 @@ impl EnvServer {
         })
     }
 
-    /// The bound address (`tcp://127.0.0.1:<port>` for port 0).
+    /// The bound session participant address.
     pub fn address(&self) -> &str {
         &self.shared.address
     }
@@ -1131,61 +992,10 @@ fn check_expected_branch(metadata: Option<&crate::Metadata>) -> Result<()> {
     Ok(())
 }
 
-/// Normalize the bind address.
 fn normalize_bind_address(options: &EnvServerOptions) -> Result<String> {
-    let helpers = options.host.is_some()
-        || options.port.is_some()
-        || options.path.is_some()
-        || options.transport.is_some();
-    if let Some(address) = &options.address {
-        if address.is_empty() {
-            return Err(Error::invalid_argument("address cannot be empty"));
-        }
-        if helpers {
-            return Err(Error::invalid_argument(
-                "address cannot be combined with host, port, path, or transport",
-            ));
-        }
-        return Ok(address.clone());
-    }
-    // In a session of its own on an OS-assigned local port, as Python's.
-    if !helpers {
-        return Ok(":0/env".to_string());
-    }
-    let tcp_helpers = options.host.is_some() || options.port.is_some();
-    if options.path.is_some() && tcp_helpers {
-        return Err(Error::invalid_argument(
-            "path cannot be combined with host or port",
-        ));
-    }
-    if options.transport == Some(Transport::Unix) && tcp_helpers {
-        return Err(Error::invalid_argument(
-            "unix transport cannot be combined with host or port",
-        ));
-    }
-    if options.transport == Some(Transport::Tcp) && options.path.is_some() {
-        return Err(Error::invalid_argument(
-            "path cannot be combined with transport='tcp'",
-        ));
-    }
-    if options.path.is_some() || options.transport == Some(Transport::Unix) {
-        let Some(path) = &options.path else {
-            return Err(Error::invalid_argument(
-                "path is required when transport='unix'",
-            ));
-        };
-        if cfg!(windows) {
-            return Err(Error::invalid_argument(
-                "unix sockets are not supported on Windows; use tcp://host:port instead",
-            ));
-        }
-        return Ok(format!("unix://{path}"));
-    }
-    Ok(format!(
-        "tcp://{}:{}",
-        options.host.as_deref().unwrap_or("127.0.0.1"),
-        options.port.unwrap_or(0)
-    ))
+    let address = options.address.as_deref().unwrap_or(":0/env");
+    crate::ConnectAddress::parse(address)?;
+    Ok(address.to_string())
 }
 
 /// An env with tags merged into its metadata.
@@ -1449,9 +1259,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
         served,
         runtime,
         listener,
-        grpc,
-        idle_timeout,
-        drain_timeout,
+        options,
         close_timeout,
         close_env_on_shutdown,
     } = resources;
@@ -1460,9 +1268,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
     let parts = ServeParts {
         runtime,
         listener,
-        grpc,
-        idle_timeout,
-        drain_timeout,
+        options,
         close_timeout,
         close_env_on_shutdown,
         shutdown: shared.shutdown.clone(),
@@ -1512,9 +1318,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
 struct ServeParts {
     runtime: tokio::runtime::Runtime,
     listener: Listener,
-    grpc: rlmesh_grpc::ServeOptions,
-    idle_timeout: Option<Duration>,
-    drain_timeout: Duration,
+    options: ServeOptions,
     close_timeout: Duration,
     close_env_on_shutdown: bool,
     shutdown: ShutdownTrigger,
@@ -1522,8 +1326,8 @@ struct ServeParts {
 
 /// What [`drive`] serves: a transport env, natively too with the `lockstep`
 /// feature.
-trait Driven: Environment + crate::lockstep::Served {}
-impl<E: Environment + crate::lockstep::Served> Driven for E {}
+trait Driven: crate::lockstep::Served {}
+impl<E: crate::lockstep::Served> Driven for E {}
 
 /// Serve `environment`; with a foreground runner, the transport runs on a
 /// helper thread while this thread runs the runner's jobs.
@@ -1535,9 +1339,7 @@ fn drive<E: Driven + Send + Sync + 'static>(
     let ServeParts {
         runtime,
         listener,
-        grpc,
-        idle_timeout,
-        drain_timeout,
+        options,
         close_timeout,
         close_env_on_shutdown,
         shutdown,
@@ -1546,25 +1348,7 @@ fn drive<E: Driven + Send + Sync + 'static>(
         runtime.block_on(async move {
             let environment = Arc::new(environment);
             let serve_result = match listener {
-                Listener::Grpc(listener) => {
-                    let activity_tx = start_idle_shutdown(idle_timeout, shutdown.clone());
-                    let service = rlmesh_grpc::env::env_service_from_shared(
-                        Arc::clone(&environment),
-                        shutdown.clone(),
-                        grpc,
-                        activity_tx,
-                    );
-                    let (_health, health_service) =
-                        rlmesh_grpc::health::serving_health_service().await;
-                    let router = rlmesh_grpc::lifecycle::server_builder()
-                        .add_service(health_service)
-                        .add_service(service);
-                    listener
-                        .serve(router, shutdown.clone(), Some(drain_timeout))
-                        .await
-                }
                 Listener::Lockstep(binding) => {
-                    let _ = (idle_timeout, drain_timeout);
                     let cancel = tokio_util::sync::CancellationToken::new();
                     let stop = {
                         let (shutdown, cancel) = (shutdown.clone(), cancel.clone());
@@ -1574,7 +1358,7 @@ fn drive<E: Driven + Send + Sync + 'static>(
                         })
                     };
                     let options = crate::lockstep::ServeOptions {
-                        workflow_edition: grpc.workflow_edition.clone(),
+                        workflow_edition: options.workflow_edition.clone(),
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
                     };
                     let served = binding
@@ -1589,7 +1373,7 @@ fn drive<E: Driven + Send + Sync + 'static>(
             // Later token firings cannot replace that selected serve error.
             shutdown.trigger("serve ended");
             let close_result = if close_env_on_shutdown {
-                let close = async { Environment::close(&*environment).await.map(|_| ()) };
+                let close = async { crate::lockstep::Served::close(&*environment).await };
                 match await_close_with_timeout(close, Some(close_timeout)).await {
                     Ok(Ok(())) => Ok(()),
                     Ok(Err(err)) => Err(Error::Internal(err.message)),
@@ -1751,7 +1535,6 @@ mod cancellation_tests {
         token: &CancelToken,
         cancel_on_close: bool,
         fail_close: bool,
-        idle: bool,
     ) -> (EnvServer, Arc<AtomicUsize>) {
         let closes = Arc::new(AtomicUsize::new(0));
         let server = EnvServer::new(
@@ -1763,11 +1546,9 @@ mod cancellation_tests {
                 close_gate: None,
             },
             EnvServerOptions {
-                address: Some("tcp://127.0.0.1:0".into()),
+                address: Some(":0/env".into()),
                 options: Some(crate::ServeOptions {
                     workflow_edition: Some(crate::current_workflow_edition().into()),
-                    idle_timeout: idle.then_some(Duration::from_millis(20)),
-                    drain_timeout: Some(Duration::from_millis(50)),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1779,7 +1560,7 @@ mod cancellation_tests {
     #[test]
     fn subscribed_start_samples_before_local_shutdown_and_reports_once() {
         let token = CancelToken::new();
-        let (server, closes) = server(&token, false, false, false);
+        let (server, closes) = server(&token, false, false);
         server.start_subscribed(Some(token.subscribe())).unwrap();
         token.cancel();
         assert!(matches!(server.shutdown(), Err(Error::Cancelled)));
@@ -1844,32 +1625,27 @@ mod cancellation_tests {
         assert!(token.take(), "joined drain releases its subscription");
     }
     #[test]
-    fn local_and_idle_stops_ignore_cancellation_during_close() {
-        for idle in [false, true] {
-            let token = CancelToken::new();
-            let (server, closes) = server(&token, true, false, idle);
-            server.start_subscribed(Some(token.subscribe())).unwrap();
-            if idle {
-                assert!(server.wait(Some(Duration::from_secs(2))).unwrap());
-            }
-            server.shutdown().unwrap();
-            assert_eq!(closes.load(Ordering::SeqCst), 1);
-            assert!(!token.take(), "late firing is consumed through cleanup");
-            token.cancel();
-            assert!(token.take());
-        }
+    fn local_stop_ignores_cancellation_during_close() {
+        let token = CancelToken::new();
+        let (server, closes) = server(&token, true, false);
+        server.start_subscribed(Some(token.subscribe())).unwrap();
+        server.shutdown().unwrap();
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        assert!(!token.take(), "late firing is consumed through cleanup");
+        token.cancel();
+        assert!(token.take());
     }
     #[test]
     fn late_cancellation_does_not_replace_a_close_error() {
         let token = CancelToken::new();
-        let (server, _) = server(&token, true, true, false);
+        let (server, _) = server(&token, true, true);
         server.start_subscribed(Some(token.subscribe())).unwrap();
         assert!(matches!(server.shutdown(), Err(Error::Internal(_))));
     }
     #[test]
     fn dropped_subscribed_server_closes_and_releases_subscription() {
         let token = CancelToken::new();
-        let (server, closes) = server(&token, true, false, false);
+        let (server, closes) = server(&token, true, false);
         server.start_subscribed(Some(token.subscribe())).unwrap();
         drop(server);
         assert_eq!(closes.load(Ordering::SeqCst), 1);
@@ -1880,7 +1656,7 @@ mod cancellation_tests {
     #[test]
     fn drop_samples_a_firing_before_its_local_stop() {
         let token = CancelToken::new();
-        let (server, closes) = server(&token, false, false, false);
+        let (server, closes) = server(&token, false, false);
         server.start_subscribed(Some(token.subscribe())).unwrap();
         let trigger = server.shutdown_handle();
         token.cancel();
@@ -1894,7 +1670,7 @@ mod cancellation_tests {
     fn refused_subscribed_start_releases_only_its_own_subscription() {
         let token = CancelToken::new();
         let other = CancelToken::new();
-        let (server, _) = server(&token, false, false, false);
+        let (server, _) = server(&token, false, false);
         server.start_subscribed(Some(token.subscribe())).unwrap();
         assert!(server.start_subscribed(Some(other.subscribe())).is_err());
         other.cancel();
@@ -1931,7 +1707,7 @@ mod cancellation_tests {
     fn early_serve_error_is_not_replaced_while_retiring_the_watcher() {
         use std::sync::atomic::AtomicBool;
         let token = CancelToken::new();
-        let (server, _) = server(&token, false, false, false);
+        let (server, _) = server(&token, false, false);
         let stop = Arc::new(AtomicBool::new(false));
         let probe = Arc::new(CancelProbe {
             subscription: token.subscribe(),
@@ -1967,7 +1743,7 @@ mod cancellation_tests {
     #[test]
     fn watcher_startup_failure_closes_ready_envs_and_notifies_waiters() {
         let token = CancelToken::new();
-        let (server, closes) = server(&token, false, true, false);
+        let (server, closes) = server(&token, false, true);
         let mut done = server.shared.done.subscribe();
         assert!(!*done.borrow_and_update());
         let result = server.spawn_background_with_watcher(
@@ -1987,38 +1763,5 @@ mod cancellation_tests {
         assert!(server.start().is_err());
         token.cancel();
         assert!(token.take(), "failed startup releases its subscription");
-    }
-    #[test]
-    fn rust_factory_leaves_endpoint_runtime_identity_unset() {
-        struct Factory;
-        impl super::super::EnvFactory for Factory {
-            fn make(&mut self, _: &crate::Kwargs) -> Result<super::super::MadeEnv> {
-                Ok(super::super::MadeEnv::env(ClosingEnv {
-                    token: CancelToken::new(),
-                    closes: Arc::new(AtomicUsize::new(0)),
-                    cancel_on_close: false,
-                    fail_close: false,
-                    close_gate: None,
-                }))
-            }
-        }
-        for num_envs in [1, 2] {
-            let server = super::super::factory::prepare_serve(
-                &mut Factory,
-                "tcp://127.0.0.1:0",
-                &crate::EnvFactoryServeOptions {
-                    num_envs,
-                    workflow_edition: Some(crate::current_workflow_edition().into()),
-                    ..Default::default()
-                },
-                &crate::describe::Host::rust(),
-            )
-            .unwrap();
-            let state = lock(&server.shared.state);
-            let State::Ready(resources) = &*state else {
-                panic!("expected ready server")
-            };
-            assert!(resources.grpc.peer_runtime.is_none());
-        }
     }
 }

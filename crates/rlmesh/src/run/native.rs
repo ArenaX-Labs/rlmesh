@@ -575,15 +575,15 @@ async fn run_body(
     }
     // Explicit close has run; disarm the cancellation cleanup.
     made.1 = true;
-    // A caller's remote client shuts its env down on the opt-in.
+    // Close the caller's remote session on the opt-in.
     if plan.close_env
         && let Some(handle) = remote_handle
     {
         let shut = match handle.lend() {
             Ok(mut client) => {
                 let out = match mode {
-                    Mode::Sync => drive::block_on_library(client.shutdown(None)),
-                    Mode::Async => client.shutdown(None).await,
+                    Mode::Sync => drive::block_on_library(client.close()),
+                    Mode::Async => client.close().await,
                 };
                 handle.give_back(client);
                 out.map(|_| ())

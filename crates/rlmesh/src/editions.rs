@@ -47,7 +47,7 @@ pub(crate) fn offer(declared: Option<&str>) -> (String, Vec<String>) {
 }
 
 /// A lockstep env's offer (its `gym_env` edition answers), negotiated
-/// against `declared` (the driver's WANT) exactly as the gRPC env client
+/// against `declared` (the driver's WANT) with the same edition ordering the env client
 /// negotiates it: the env's offer, the selected edition and its retained
 /// base. A refusal is the message to report.
 pub(crate) fn negotiate_env(

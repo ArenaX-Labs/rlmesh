@@ -24,9 +24,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
-SEMVER_PARTS = re.compile(
-    r"^\d+\.\d+\.\d+(?:-(?P<channel>alpha|beta|rc)\.\d+)?$"
-)
+SEMVER_PARTS = re.compile(r"^\d+\.\d+\.\d+(?:-(?P<channel>alpha|beta|rc)\.\d+)?$")
 # Docs that name past versions as history, not as the current release: the
 # changelog and the policy pages that record which release sealed the wire
 # generation and the workflow edition. A bump must not rewrite those sentences.
@@ -105,9 +103,7 @@ def _workflow_supported_value(editions: list[str]) -> str:
     return "[" + ", ".join(f'"{edition}"' for edition in editions) + "]"
 
 
-def _replace_workflow_edition_block(
-    text: str, match: re.Match[str], block: str
-) -> str:
+def _replace_workflow_edition_block(text: str, match: re.Match[str], block: str) -> str:
     return text[: match.start()] + block + text[match.end() :]
 
 
@@ -160,7 +156,7 @@ def _update_workflow_manifest(text: str, version: str) -> str:
         flags=re.MULTILINE,
     )
     text = re.sub(
-        r'^supported_editions = \[[^\]]*\]$',
+        r"^supported_editions = \[[^\]]*\]$",
         f"supported_editions = {_workflow_supported_value(supported)}",
         text,
         count=1,
@@ -274,7 +270,10 @@ def bump(old: str, new: str) -> None:
         sub_file(ROOT / py, [(rf'version = "{op}"', f'version = "{new_pep}"')])
 
     # The npm package (release:js:package also stamps the workspace version at pack time).
-    for npm in ("javascript/rlmesh/package.json", "javascript/rlmesh/package-lock.json"):
+    for npm in (
+        "javascript/rlmesh/package.json",
+        "javascript/rlmesh/package-lock.json",
+    ):
         sub_file(ROOT / npm, [(rf'"version": "{o}"', f'"version": "{new}"')])
 
     # Policy manifest: cargo artifacts use SemVer; the pypi artifact uses PEP 440.
@@ -301,7 +300,10 @@ def bump(old: str, new: str) -> None:
 
     # Crate README install snippets: cargo dependency + `cargo install --version`.
     for readme in sorted((ROOT / "crates").glob("*/README.md")):
-        sub_file(readme, [(rf'= "{o}"', f'= "{new}"'), (rf"--version {o}", f"--version {new}")])
+        sub_file(
+            readme,
+            [(rf'= "{o}"', f'= "{new}"'), (rf"--version {o}", f"--version {new}")],
+        )
 
     # Prose (docs + example READMEs): every literal version mention — pip specs,
     # cohort examples, "this documents X" claims — tracks the release. Both the
@@ -329,7 +331,9 @@ def bump(old: str, new: str) -> None:
     print("sync lockfiles + policy check")
     subprocess.run(["cargo", "update", "--workspace"], cwd=ROOT, check=True)
     subprocess.run(["uv", "lock"], cwd=ROOT, check=True)
-    subprocess.run([sys.executable, "scripts/check_rlmesh_policy.py"], cwd=ROOT, check=True)
+    subprocess.run(
+        [sys.executable, "scripts/check_rlmesh_policy.py"], cwd=ROOT, check=True
+    )
     print(f"done ({new}) — review the diff, then commit")
 
 
@@ -341,10 +345,13 @@ def selfcheck() -> None:
     # A stable version reads the same in both spellings: each prose site keeps
     # its own form when bumped to a prerelease, and back again.
     stable_to_rc = re.compile(r'(?P<pep>(?<===)|(?<="package_version": "))?0\.1\.0')
-    assert stable_to_rc.sub(
-        lambda m: "0.1.0rc13" if m.group("pep") is not None else "0.1.0-rc.13",
-        'rlmesh==0.1.0 "package_version": "0.1.0" 2026.06-0.1.0',
-    ) == 'rlmesh==0.1.0rc13 "package_version": "0.1.0rc13" 2026.06-0.1.0-rc.13'
+    assert (
+        stable_to_rc.sub(
+            lambda m: "0.1.0rc13" if m.group("pep") is not None else "0.1.0-rc.13",
+            'rlmesh==0.1.0 "package_version": "0.1.0" 2026.06-0.1.0',
+        )
+        == 'rlmesh==0.1.0rc13 "package_version": "0.1.0rc13" 2026.06-0.1.0-rc.13'
+    )
     assert _release_status("0.1.0-alpha.1") == "alpha"
     assert _release_status("0.1.0-beta.2") == "beta"
     assert _release_status("0.1.0-rc.3") == "rc"
@@ -374,8 +381,8 @@ spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
 spec_sha256 = "already-sealed"
 
-[protocol]
-current_generation = "rlmesh-wire-v1"
+[protocols."rlmesh-realtime-v1"]
+status = "provisional"
 """
     prerelease_manifest = _update_workflow_manifest(
         sealed_manifest,

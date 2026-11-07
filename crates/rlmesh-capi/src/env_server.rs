@@ -1,8 +1,5 @@
 //! Facade-backed environment servers and sized serve options. A server is a
 //! session participant (`:0/env` by default), as Python's `EnvServer` is.
-//!
-//! TODO: delete the v1 binds (`tcp://`, `unix://`) with v1 env serving in
-//! `rlmesh-grpc`.
 #![allow(unsafe_code)] // C strings, sized options and borrowed handles.
 use crate::abi::{
     sizing,
@@ -12,8 +9,8 @@ use crate::codec::RLMeshBytes;
 use crate::contract::RLMeshEnvContract;
 use crate::env_api::{BorrowedEnv, BorrowedVectorEnv, Claim, RLMeshEnv, RLMeshVectorEnv};
 use crate::ffi;
-use crate::value::handle::{RLMeshValue, write_out};
-use rlmesh::{EnvServer, EnvServerOptions, ServeOptions, Transport};
+use crate::value::handle::write_out;
+use rlmesh::{EnvServer, EnvServerOptions, ServeOptions};
 use std::ffi::c_char;
 use std::sync::{
     Arc,
@@ -26,14 +23,8 @@ pub(crate) use crate::adapters::RLMeshEnvTags;
 #[derive(Clone, Copy)]
 pub struct RLMeshServeOptions {
     pub struct_size: usize,
-    pub allow_remote_shutdown: bool,
-    pub has_idle_timeout_seconds: bool,
-    pub has_drain_timeout_seconds: bool,
     pub has_close_timeout_seconds: bool,
-    pub compress_responses: bool,
-    pub _reserved: [u8; 3],
-    pub idle_timeout_seconds: f64,
-    pub drain_timeout_seconds: f64,
+    pub _reserved: [u8; 7],
     pub close_timeout_seconds: f64,
     pub workflow_edition: *const c_char,
 }
@@ -41,8 +32,6 @@ pub struct RLMeshServeOptions {
 #[derive(Clone, Copy)]
 pub struct RLMeshExtEnvServerOptions {
     pub struct_size: usize,
-    pub token: *const c_char,
-    pub peer_info_extra: *const RLMeshValue,
     pub host_runtime_json: *const c_char,
     pub publish_describe: bool,
     pub _reserved: [u8; std::mem::size_of::<usize>() - 1],
@@ -52,15 +41,9 @@ pub struct RLMeshExtEnvServerOptions {
 pub struct RLMeshEnvServerOptions {
     pub struct_size: usize,
     pub address: *const c_char,
-    pub host: *const c_char,
-    pub path: *const c_char,
     pub options: *const RLMeshServeOptions,
     pub tags: *const RLMeshEnvTags,
     pub ext: *const RLMeshExtEnvServerOptions,
-    pub port: u16,
-    pub has_port: bool,
-    pub has_transport: bool,
-    pub transport: i32,
     pub close_env_on_shutdown: bool,
     pub _reserved: [u8; 7],
 }
@@ -78,24 +61,12 @@ pub(crate) unsafe fn serve_options(
         }
     };
     Ok(Some(ServeOptions {
-        allow_remote_shutdown: o.allow_remote_shutdown,
-        idle_timeout: duration(
-            o.has_idle_timeout_seconds,
-            o.idle_timeout_seconds,
-            "idle_timeout_seconds",
-        )?,
-        drain_timeout: duration(
-            o.has_drain_timeout_seconds,
-            o.drain_timeout_seconds,
-            "drain_timeout_seconds",
-        )?,
         close_timeout: duration(
             o.has_close_timeout_seconds,
             o.close_timeout_seconds,
             "close_timeout_seconds",
         )?,
         workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
-        compress_responses: o.compress_responses,
     }))
 }
 unsafe fn options(
@@ -104,35 +75,13 @@ unsafe fn options(
     let Some(o) = unsafe { sizing::read(ptr, "RLMeshEnvServerOptions") }? else {
         return Ok((EnvServerOptions::default(), serde_json::Map::new()));
     };
-    let transport = if o.has_transport {
-        Some(match o.transport {
-            1 => Transport::Tcp,
-            2 => Transport::Unix,
-            _ => return Err(CapiError::invalid_arg("invalid transport")),
-        })
-    } else {
-        None
-    };
     let ext = unsafe { sizing::read(o.ext, "RLMeshExtEnvServerOptions") }?;
     let ext = ext
         .map(|e| -> Result<_, CapiError> {
-            let peer_info_extra = ffi::dict(e.peer_info_extra)?
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(key, v)| {
-                    let value = v
-                        .as_text()
-                        .map_err(|_| CapiError::invalid_arg("peer_info_extra values must be TEXT"))?
-                        .to_string();
-                    Ok((key, value))
-                })
-                .collect::<Result<_, CapiError>>()?;
             // The publication's host declaration is applied by the C binding
             // after the facade has validated and constructed the server.
             Ok((
                 rlmesh::ext::EnvServerOptions {
-                    token: unsafe { ffi::text(e.token) }?,
-                    peer_info_extra,
                     publish_describe: e.publish_describe,
                 },
                 unsafe { ffi::text(e.host_runtime_json) }?,
@@ -149,10 +98,6 @@ unsafe fn options(
     Ok((
         EnvServerOptions {
             address: unsafe { ffi::text(o.address) }?,
-            host: unsafe { ffi::text(o.host) }?,
-            path: unsafe { ffi::text(o.path) }?,
-            port: o.has_port.then_some(o.port),
-            transport,
             options: unsafe { serve_options(o.options) }?,
             tags: unsafe { o.tags.as_ref() }.map(|t| t.0.clone()),
             close_env_on_shutdown: o.close_env_on_shutdown,
@@ -439,13 +384,4 @@ pub unsafe extern "C" fn rlmesh_env_server_free(server: *mut RLMeshEnvServer) {
             drop(unsafe { Box::from_raw(server) });
         }
     });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rlmesh_transport_str(value: i32) -> *const c_char {
-    match value {
-        1 => c"tcp".as_ptr(),
-        2 => c"unix".as_ptr(),
-        _ => std::ptr::null(),
-    }
 }

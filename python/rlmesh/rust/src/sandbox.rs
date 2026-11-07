@@ -4,7 +4,7 @@
 //!
 //! [`start_env`] resolves an [`EnvironmentSourceRef`] (a gymnasium env id or an
 //! `hf://` HuggingFace repo), builds a sandbox image around it, and starts a
-//! container that serves the env over gRPC. The image bundles a pinned `rlmesh`
+//! container that serves the env in a realtime session. The image bundles a pinned `rlmesh`
 //! wheel (selected for the base image's Python version and libc) alongside the
 //! env's own dependencies. Runtime-only options (`gym.make` kwargs, env count,
 //! vectorization mode) ride in a run-time bootstrap payload rather than the

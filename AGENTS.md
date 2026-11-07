@@ -3,8 +3,7 @@
 RLMesh connects models to environments for evaluation. This repo is the OSS
 framework: Rust crates in `crates/` (the `rlmesh` facade, the v2 session
 `rlmesh-session` and its sans-IO core `rlmesh-session-core`, the cockpit,
-adapters, spaces, CLI, C API, and the v1 bridge `rlmesh-grpc` and
-`rlmesh-proto`) and the `rlmesh` Python package in
+adapters, spaces, CLI, C API, and the internal driver data/editions crate `rlmesh-proto`) and the `rlmesh` Python package in
 `python/rlmesh/` (a maturin build whose extension crate is
 `python/rlmesh/rust`). The Python package is the supported surface. The
 managed platform consumes this repo as pinned releases; keep its contracts
@@ -36,13 +35,13 @@ refreshes it (`test` and `test:affected` do this themselves).
 
 ## Rules
 
-- Two wire contracts, both governed in `rlmesh.toml`: the eval wire
-  `crates/rlmesh-proto/proto/` (`[protocol]`, frozen per generation) and the
-  real-time session protocol `crates/rlmesh-session-core/proto/`
-  (`[protocols."rlmesh-realtime-v1"]`, provisional until 0.2.0 freezes it).
-  buf lints both; byte goldens (`crates/rlmesh-session-core/tests/vectors/wire`)
-  guard the session protocol's encodings; `protocol:baseline-verify` and
-  `protocol:breaking` enforce a frozen one.
+- The realtime session protocol `crates/rlmesh-session-core/proto/` is the
+  only governed wire contract (`[protocols."rlmesh-realtime-v1"]` in
+  `rlmesh.toml`, provisional until 0.2.0 freezes it). buf lints it; byte
+  goldens (`crates/rlmesh-session-core/tests/vectors/wire`) guard encodings;
+  `protocol:baseline-verify` and `protocol:breaking` enforce a frozen one.
+  `rlmesh-proto` contains internal driver data and editions, with no wire
+  compatibility promise and no published 0.2 artifact.
 - Never hand-edit generated files: regenerate native stubs with
   `mise run stubs:generate`, and update the Python API surface snapshot
   (`python/rlmesh/tests/api_surface/snapshots/`) with the change it records.

@@ -1489,16 +1489,15 @@ spans (Spaces SPC-31); an engine-specific bridge belongs to its integration
   implementations required by R-10) are translation, not extras.
 - Trait impls cannot be crate-private: an impl is public wherever both types
   are nameable. Each public `From` impl from a plumbing type becomes a
-  `pub(crate) fn` and call sites use `.map_err(Error::from_grpc)` and the
+  `pub(crate) fn` and call sites use `.map_err(Error::from_data)` and the
   like:
 
   | Today                                                                                                                | Becomes                                     |
   | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-  | `From<rlmesh_grpc::error::Error> for Error` (`rs/error.rs:219`)                                                      | `pub(crate) fn Error::from_grpc`            |
-  | `From<rlmesh_grpc::error::ProtocolError> for Error` (`:205`)                                                         | `pub(crate) fn Error::from_protocol`        |
+  | `From<data::Error> for Error`                                                                                        | `pub(crate) fn Error::from_data`            |
+  | `From<data::ProtocolError> for Error` (`:205`)                                                                       | `pub(crate) fn Error::from_protocol`        |
   | `From<rlmesh_adapters::v1::ApplyError> for Error` (`:211`)                                                           | `pub(crate) fn Error::from_apply`           |
   | `From<EnvError> for EnvironmentError` (`:195`)                                                                       | `pub(crate) fn EnvironmentError::from_wire` |
-  | `From<ServeOptions> for rlmesh_grpc::ServeOptions` (`rs/serve_options.rs:91`)                                        | `pub(crate) fn ServeOptions::to_grpc`       |
   | `From<&ModelRouteContext> for AdapterContext` (`rs/model/wire.rs:200`)                                               | moves with `ModelRouteContext` to `binding` |
   | `From<ConnectAddress> for RunLocalOptions`, `From<BindAddress> for ServeModelOptions` (`rs/model/worker.rs:203,257`) | removed with their types                    |
 

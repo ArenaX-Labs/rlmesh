@@ -1599,40 +1599,16 @@ namespace RLMesh.Interop
     {
     }
 
-    [NativeTypeName("unsigned int")]
-    internal enum RLMeshTransport : uint
-    {
-        RLMESH_TRANSPORT_INVALID = 0,
-        RLMESH_TRANSPORT_TCP = 1,
-        RLMESH_TRANSPORT_UNIX = 2,
-    }
-
     internal unsafe partial struct RLMeshServeOptions
     {
         [NativeTypeName("size_t")]
         public UIntPtr struct_size;
 
         [NativeTypeName("_Bool")]
-        public byte allow_remote_shutdown;
-
-        [NativeTypeName("_Bool")]
-        public byte has_idle_timeout_seconds;
-
-        [NativeTypeName("_Bool")]
-        public byte has_drain_timeout_seconds;
-
-        [NativeTypeName("_Bool")]
         public byte has_close_timeout_seconds;
 
-        [NativeTypeName("_Bool")]
-        public byte compress_responses;
-
-        [NativeTypeName("uint8_t[3]")]
-        public fixed byte _reserved[3];
-
-        public double idle_timeout_seconds;
-
-        public double drain_timeout_seconds;
+        [NativeTypeName("uint8_t[7]")]
+        public fixed byte _reserved[7];
 
         public double close_timeout_seconds;
 
@@ -1644,12 +1620,6 @@ namespace RLMesh.Interop
     {
         [NativeTypeName("size_t")]
         public UIntPtr struct_size;
-
-        [NativeTypeName("const char *")]
-        public sbyte* token;
-
-        [NativeTypeName("const RLMeshValue *")]
-        public RLMeshValue* peer_info_extra;
 
         [NativeTypeName("const char *")]
         public sbyte* host_runtime_json;
@@ -1669,12 +1639,6 @@ namespace RLMesh.Interop
         [NativeTypeName("const char *")]
         public sbyte* address;
 
-        [NativeTypeName("const char *")]
-        public sbyte* host;
-
-        [NativeTypeName("const char *")]
-        public sbyte* path;
-
         [NativeTypeName("const RLMeshServeOptions *")]
         public RLMeshServeOptions* options;
 
@@ -1683,17 +1647,6 @@ namespace RLMesh.Interop
 
         [NativeTypeName("const RLMeshExtEnvServerOptions *")]
         public RLMeshExtEnvServerOptions* ext;
-
-        [NativeTypeName("uint16_t")]
-        public ushort port;
-
-        [NativeTypeName("_Bool")]
-        public byte has_port;
-
-        [NativeTypeName("_Bool")]
-        public byte has_transport;
-
-        public RLMeshTransport transport;
 
         [NativeTypeName("_Bool")]
         public byte close_env_on_shutdown;
@@ -2083,9 +2036,6 @@ namespace RLMesh.Interop
     {
         [NativeTypeName("size_t")]
         public UIntPtr struct_size;
-
-        [NativeTypeName("const char *")]
-        public sbyte* token;
 
         [NativeTypeName("size_t")]
         public UIntPtr predict_concurrency;
@@ -2588,23 +2538,6 @@ namespace RLMesh.Interop
         [NativeTypeName("const char *")]
         public sbyte* address;
 
-        [NativeTypeName("const char *")]
-        public sbyte* host;
-
-        [NativeTypeName("_Bool")]
-        public byte has_port;
-
-        [NativeTypeName("uint16_t")]
-        public ushort port;
-
-        [NativeTypeName("const char *")]
-        public sbyte* path;
-
-        [NativeTypeName("_Bool")]
-        public byte has_transport;
-
-        public RLMeshTransport transport;
-
         [NativeTypeName("_Bool")]
         public byte has_connect_timeout_seconds;
 
@@ -2617,15 +2550,6 @@ namespace RLMesh.Interop
 
         [NativeTypeName("const char *")]
         public sbyte* workflow_edition;
-
-        [NativeTypeName("uint64_t")]
-        public ulong _reserved;
-
-        [NativeTypeName("const char *")]
-        public sbyte* api_key;
-
-        [NativeTypeName("const char *")]
-        public sbyte* tls_ca_file;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -3575,10 +3499,6 @@ namespace RLMesh.Interop
         public static extern RLMeshStatus rlmesh_ext_register_entrypoint([NativeTypeName("const char *")] sbyte* entrypoint, [NativeTypeName("const RLMeshObsTransform *")] RLMeshObsTransform* transform);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        [return: NativeTypeName("const char *")]
-        public static extern sbyte* rlmesh_transport_str(RLMeshTransport transport);
-
-        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern RLMeshStatus rlmesh_env_new([NativeTypeName("const RLMeshEnvVtable *")] RLMeshEnvVtable* env_vtable, void* user_data, [NativeTypeName("const RLMeshEnvAttributes *")] RLMeshEnvAttributes* env_attributes, RLMeshEnv** @out);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -4092,9 +4012,6 @@ namespace RLMesh.Interop
         public static extern RLMeshStatus rlmesh_remote_env_render(RLMeshRemoteEnv* remote_env, [NativeTypeName("uint64_t")] ulong env_index, RLMeshValue** out_frame);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        public static extern RLMeshStatus rlmesh_remote_env_shutdown(RLMeshRemoteEnv* remote_env, [NativeTypeName("const char *")] sbyte* reason, [NativeTypeName("_Bool *")] bool* out_accepted);
-
-        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern RLMeshStatus rlmesh_remote_env_close(RLMeshRemoteEnv* remote_env);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -4141,9 +4058,6 @@ namespace RLMesh.Interop
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern RLMeshStatus rlmesh_remote_vector_env_render(RLMeshRemoteVectorEnv* remote_vector_env, [NativeTypeName("uint64_t")] ulong env_index, RLMeshValue** out_frame);
-
-        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        public static extern RLMeshStatus rlmesh_remote_vector_env_shutdown(RLMeshRemoteVectorEnv* remote_vector_env, [NativeTypeName("const char *")] sbyte* reason, [NativeTypeName("_Bool *")] bool* out_accepted);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern RLMeshStatus rlmesh_remote_vector_env_close(RLMeshRemoteVectorEnv* remote_vector_env);

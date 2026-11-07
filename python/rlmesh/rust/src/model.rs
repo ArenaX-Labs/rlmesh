@@ -791,7 +791,7 @@ pub struct PyModel {
 #[derive(Default)]
 struct Serving {
     stopped: bool,
-    triggers: Vec<rlmesh_grpc::lifecycle::ShutdownTrigger>,
+    triggers: Vec<rlmesh::binding::lifecycle::ShutdownTrigger>,
 }
 
 impl PyModel {
@@ -980,7 +980,7 @@ impl PyModel {
                 .map_err(to_py_err)?,
         );
         let serving = Arc::clone(&self.serving);
-        let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
+        let shutdown = rlmesh::binding::lifecycle::ShutdownTrigger::new();
         // SIGTERM stops the serve gracefully, as an env server's (`docker
         // stop`); restored when the serve returns. SIGINT stays Python's.
         let _sigterm = rlmesh::binding::foreground_sigterm_scope(shutdown.clone());
@@ -1577,7 +1577,6 @@ impl PyModel {
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.serve.total");
         let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
-        rlmesh::binding::check_session_model_serve(&options).map_err(to_py_err)?;
         let close = options.close_timeout.unwrap_or(Duration::from_secs(30));
         self.serve_on_session(
             py,

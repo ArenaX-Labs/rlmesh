@@ -196,7 +196,7 @@ static int occupied(char* address, size_t cap) {
   CHECK(bind(fd, (struct sockaddr*)&sa, sizeof(sa)) == 0 && listen(fd, 1) == 0);
   socklen_t len = sizeof(sa);
   CHECK(getsockname(fd, (struct sockaddr*)&sa, &len) == 0);
-  snprintf(address, cap, "tcp://127.0.0.1:%u", (unsigned)ntohs(sa.sin_port));
+  snprintf(address, cap, "127.0.0.1:%u/env", (unsigned)ntohs(sa.sin_port));
   return fd;
 }
 /* The real old allocation, rather than a new struct with a shorter size. */
@@ -209,7 +209,6 @@ typedef struct OldFactoryOptions {
 } OldFactoryOptions;
 typedef struct OldModelOptions {
   size_t struct_size;
-  const char* token;
   size_t predict_concurrency;
   bool has_predict_concurrency;
   uint8_t reserved[sizeof(size_t) - 1];
@@ -217,7 +216,7 @@ typedef struct OldModelOptions {
 _Static_assert(RLMESH_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE == sizeof(OldFactoryOptions),
                "factory ABI5 minimum");
 _Static_assert(RLMESH_EXT_MODEL_SERVE_OPTIONS_MIN_SIZE == sizeof(OldModelOptions),
-               "model ABI5 minimum");
+               "model pre-signal-options minimum");
 _Static_assert(RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE ==
                    sizeof(RLMeshExtEnvFactoryServeOptions),
                "new ext minimum");
@@ -237,7 +236,7 @@ _Static_assert(sizeof(RLMeshExtModelServeOptions) == sizeof(OldModelOptions) + s
 #if SIZE_MAX == UINT64_MAX
 _Static_assert(sizeof(OldFactoryOptions) == 40 && sizeof(RLMeshEnvFactoryServeOptions) == 56,
                "factory 64-bit layout");
-_Static_assert(sizeof(OldModelOptions) == 32 && sizeof(RLMeshExtModelServeOptions) == 40,
+_Static_assert(sizeof(OldModelOptions) == 24 && sizeof(RLMeshExtModelServeOptions) == 32,
                "model 64-bit layout");
 _Static_assert(sizeof(RLMeshExtEnvFactoryServeOptions) == 16, "host ext 64-bit layout");
 #endif
@@ -647,7 +646,7 @@ int main(int argc, char** argv) {
       RLMeshModelServeOptions opts = RLMESH_MODEL_SERVE_OPTIONS_INIT;
       RLMeshExtModelServeOptions ext = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;
       ext.no_signal_handlers = c.no_handlers;
-      OldModelOptions old = {sizeof(old), NULL, 0, false, {0}};
+      OldModelOptions old = {sizeof(old), 0, false, {0}};
       opts.ext = !strcmp(argv[1], "old-signals") ? (const RLMeshExtModelServeOptions*)&old : &ext;
       opts.cancel = state.cancel;
       RLMeshExtModelServeOptions invalid = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;

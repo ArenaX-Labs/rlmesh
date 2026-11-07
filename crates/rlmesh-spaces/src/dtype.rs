@@ -2,7 +2,7 @@
 ///
 /// Discriminants are kept byte-identical to the `rlmesh.spaces.v1.DType` proto
 /// enum. The equality is enforced at compile time by a cross-check in
-/// `rlmesh-grpc` (`wire::spaces`); `rlmesh-spaces` stays free of a
+/// `rlmesh` (`data::spaces`); `rlmesh-spaces` stays free of a
 /// `rlmesh-proto` dependency, so the assert cannot live here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(i32)]

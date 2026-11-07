@@ -25,19 +25,10 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
     caller at a time, so dial one client per thread.
 
     Args:
-        address: Endpoint address such as ``"tcp://127.0.0.1:5555"``.
-        host: TCP host helper used when ``address`` is omitted.
-        port: TCP port helper used when ``address`` is omitted.
-        path: Unix socket path helper used when ``address`` is omitted.
-        transport: Explicit transport selector.
+        address: Endpoint address such as ``"localhost:5555/env"``.
         connect_timeout_seconds: Optional dial timeout in seconds.
         request_timeout_seconds: Optional per-request timeout in seconds.
         workflow_edition: The workflow edition this client declares.
-        api_key: Key sent as ``authorization: Bearer <key>`` on every request.
-            ``None`` (default) reads ``RLMESH_API_KEY`` for an ``https://``
-            address only; ``""`` sends none. Never shown in errors or repr.
-        tls_ca_file: PEM bundle an ``https://`` dial trusts instead of the
-            system roots.
     """
 
     _observation_space: Space[ValueT] | None = None
@@ -50,7 +41,6 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None,
         workflow_edition: str | None,
-        **credentials: str,
     ) -> Any:
         from .._load_native import load_native
 
@@ -59,7 +49,6 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
             workflow_edition=workflow_edition,
-            **credentials,
             # A Gymnasium face's info is the env's own, exactly.
             **({"runtime_info": False} if self._gym_active else {}),
         )

@@ -42,7 +42,6 @@ fleet = ["rlmesh-cli?/fleet", "rlmesh-session/fleet"]
 rlmesh = { workspace = true, default-features = false, features = ["viewer"] }
 rlmesh-adapters = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
-rlmesh-grpc = { workspace = true }
 rlmesh-proto = { workspace = true }
 rlmesh-session = { workspace = true, features = ["record"] }
 rlmesh-spaces = { workspace = true }
@@ -65,9 +64,7 @@ tokio = { workspace = true, features = [
   "sync",
   "time",
 ] }
-tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
-tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["v4"] }

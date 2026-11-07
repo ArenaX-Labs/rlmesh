@@ -1,5 +1,5 @@
+use crate::data::{EnvError, EnvErrorCode};
 use crate::*;
-use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 
 /// Session address used by env tests.
 pub(crate) const ENV_ADDRESS: &str = ":0/env";
@@ -31,38 +31,8 @@ fn reexports_space_types() {
 }
 
 #[test]
-fn parses_facade_addresses() {
-    assert_eq!(
-        ConnectAddress::parse("localhost:50051").unwrap(),
-        ConnectAddress::Tcp("tcp://localhost:50051".to_string())
-    );
-    #[cfg(unix)]
-    assert_eq!(
-        ConnectAddress::parse("unix:///tmp/rlmesh.sock").unwrap(),
-        ConnectAddress::Unix("/tmp/rlmesh.sock".into())
-    );
-    assert_eq!(
-        BindAddress::parse("7000").unwrap(),
-        BindAddress::Tcp {
-            host: "127.0.0.1".to_string(),
-            port: 7000,
-        }
-    );
-}
-
-#[cfg(not(unix))]
-#[test]
-fn rejects_unix_facade_addresses_on_windows() {
-    let err = ConnectAddress::parse("unix:///tmp/rlmesh.sock").unwrap_err();
-    assert!(err.to_string().contains("use tcp://host:port instead"));
-
-    let err = BindAddress::parse("unix:///tmp/rlmesh.sock").unwrap_err();
-    assert!(err.to_string().contains("use tcp://host:port instead"));
-}
-
-#[test]
 fn facade_error_mapping_hides_core_error_types() {
-    let err = Error::from_grpc(rlmesh_grpc::error::Error::Environment(EnvError::new(
+    let err = Error::Environment(EnvironmentError::from_wire(EnvError::new(
         EnvErrorCode::InvalidAction,
         "bad action",
     )));
