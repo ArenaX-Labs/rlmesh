@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use rlmesh_session::auth::Credential;
 use rlmesh_session::edge::{EdgeConfig, Robot};
 use rlmesh_session::record::{
-    Episode, Recorded, Recorder, Rolling, collect, decode_samples, keep, read,
-    samples as samples_of, summarize,
+    Episode, RECORDING_METADATA, RecordError, Recorded, Recorder, Rolling, collect, decode_samples,
+    keep, read, samples as samples_of, summarize,
 };
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
@@ -152,6 +152,26 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     let recorder = Recorder::start(Arc::new(observer), &path)
         .await
         .expect("recorder");
+    // The host's health, about once a second: what the recorder takes too.
+    let watcher = world
+        .join("watcher", Role::Observer, PriorityClass::Scripted)
+        .await;
+    let healths = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let _health = watcher
+        .host_health({
+            let healths = healths.clone();
+            move |health| {
+                if health.links.iter().any(|l| {
+                    l.participant
+                        .as_ref()
+                        .is_some_and(|p| p.as_str() == "ur10e")
+                }) {
+                    healths.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        })
+        .await
+        .expect("health");
 
     let robot = Robot::declare(
         world
@@ -207,6 +227,10 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     run.join().expect("run thread").expect("clean stop");
     stop.store(true, Ordering::Relaxed);
     spin.join().expect("robot loop");
+    wait_until("two health messages with the robot", || {
+        healths.load(Ordering::Relaxed) >= 2
+    })
+    .await;
 
     let stats = recorder.finish().await.expect("finish");
     assert!(stats.messages > 100, "{stats:?}");
@@ -225,6 +249,7 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
         "/ur10e/arm/_chunks",
         "/_session/authority",
         "/_session/bindings",
+        "/_session/health",
     ] {
         let t = topic(name);
         assert!(t.messages > 0, "{t:?}");
@@ -242,6 +267,32 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
         "model and operator"
     );
     assert!(summary.metadata.iter().any(|m| m == "rlmesh.robot.ur10e"));
+    // Marked with its format, and its chunks zstd-compressed.
+    assert!(summary.metadata.iter().any(|m| m == RECORDING_METADATA));
+    let bytes = std::fs::read(&path).expect("read");
+    let file = mcap::Summary::read(&bytes)
+        .expect("summary")
+        .expect("a finished file");
+    assert!(!file.chunk_indexes.is_empty());
+    assert!(file.chunk_indexes.iter().all(|c| c.compression == "zstd"));
+
+    // A recording in a newer format is refused, by name.
+    let newer = dir.path().join("newer.mcap");
+    let mut writer = mcap::Writer::new(std::io::BufWriter::new(
+        std::fs::File::create(&newer).expect("create"),
+    ))
+    .expect("writer");
+    writer
+        .write_metadata(&mcap::records::Metadata {
+            name: RECORDING_METADATA.into(),
+            metadata: [("format".to_string(), "2".to_string())].into(),
+        })
+        .expect("metadata");
+    writer.finish().expect("finish");
+    drop(writer);
+    let err = read(&newer).expect_err("a newer format");
+    assert!(matches!(err, RecordError::Format { .. }), "{err}");
+    assert!(err.to_string().contains("upgrade rlmesh"), "{err}");
 
     // model, then the operator (preemption), then the model under a fresh token.
     let arm: Vec<_> = summary
@@ -403,7 +454,7 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     );
 
     // Both incidents outlive the purge, the e-stop's with the segments
-    // written after it, the host's health included.
+    // written after it.
     let incidents = files_in(&dir.path().join("incidents").join(world.session.to_string()));
     assert_eq!(incidents.len(), 2, "{incidents:?}");
     assert!(incidents.contains(&kept));
@@ -417,7 +468,7 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     assert!(
         messages
             .iter()
-            .any(|m| matches!(m.message, Recorded::Health(_)))
+            .any(|m| matches!(m.message, Recorded::Sample(_)))
     );
 
     // The episode keeps its segments, decoded into the declared fields.

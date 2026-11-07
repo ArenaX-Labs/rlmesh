@@ -500,6 +500,25 @@ pub struct HostArgs {
     /// Do not record.
     #[arg(long, conflicts_with = "record_dir")]
     pub no_record: bool,
+    /// How much of each session to keep recorded (`30m`, `2h`; default
+    /// 30m): older segments go.
+    #[arg(long, value_name = "SPAN", value_parser = span, conflicts_with = "no_record")]
+    pub record_keep: Option<std::time::Duration>,
+    /// How much disk the rolling recordings may use in all (`20GB`,
+    /// `500MB`; default 20GB): the oldest segments go first.
+    #[arg(long, value_name = "SIZE", value_parser = size, conflicts_with = "no_record")]
+    pub record_max_size: Option<u64>,
+    /// Pause recording while the disk has less free than this (default
+    /// 2GB).
+    #[arg(long, value_name = "SIZE", value_parser = size, conflicts_with = "no_record")]
+    pub record_min_free: Option<u64>,
+    /// How long kept incidents stay (`14d`, `48h`; default 14d).
+    #[arg(long, value_name = "SPAN", value_parser = span, conflicts_with = "no_record")]
+    pub incidents_keep: Option<std::time::Duration>,
+    /// How much disk kept incidents may use in all (default 10GB): the
+    /// oldest go first.
+    #[arg(long, value_name = "SIZE", value_parser = size, conflicts_with = "no_record")]
+    pub incidents_max_size: Option<u64>,
     /// How long a participant's heartbeats may stop before it is lost
     /// (`3s`, `1500ms`; default 1 s). Raise it for robots on Wi-Fi.
     #[arg(long, value_name = "DURATION", value_parser = duration)]
@@ -546,6 +565,54 @@ fn duration(text: &str) -> Result<std::time::Duration, String> {
         return Err(format!("{text:?}: between 1ms and 1 hour"));
     }
     Ok(std::time::Duration::from_secs_f64(value * scale))
+}
+
+/// A span flag: a number with `s`, `m`, `h` or `d` (`30m`, `14d`).
+fn span(text: &str) -> Result<std::time::Duration, String> {
+    let wrong = || format!("{text:?}: a span with its unit, 90s, 30m, 2h or 14d");
+    let unit = text.chars().last().ok_or_else(wrong)?;
+    let scale = match unit {
+        's' => 1.0,
+        'm' => 60.0,
+        'h' => 3600.0,
+        'd' => 86_400.0,
+        _ => return Err(wrong()),
+    };
+    let value: f64 = text[..text.len() - 1].trim().parse().map_err(|_| wrong())?;
+    if !value.is_finite() || value <= 0.0 || value * scale > 366.0 * 86_400.0 {
+        return Err(format!("{text:?}: between 1s and a year"));
+    }
+    Ok(std::time::Duration::from_secs_f64(value * scale))
+}
+
+/// A size flag: a number with `B`, `KB`, `MB`, `GB` or `TB` (powers of
+/// 1000; `KiB` to `TiB` for powers of 1024).
+fn size(text: &str) -> Result<u64, String> {
+    let wrong = || format!("{text:?}: a size with its unit, 500MB or 20GB");
+    let upper = text.trim().to_ascii_uppercase();
+    let digits = upper
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .ok_or_else(wrong)?;
+    let (number, unit) = upper.split_at(digits);
+    let scale: f64 = match unit.trim() {
+        "B" => 1.0,
+        "KB" => 1e3,
+        "MB" => 1e6,
+        "GB" => 1e9,
+        "TB" => 1e12,
+        "KIB" => 1024.0,
+        "MIB" => 1024.0 * 1024.0,
+        "GIB" => 1024.0 * 1024.0 * 1024.0,
+        "TIB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => return Err(wrong()),
+    };
+    let value: f64 = number.parse().map_err(|_| wrong())?;
+    let bytes = value * scale;
+    if !bytes.is_finite() || bytes < 1.0 || bytes > 1e18 {
+        return Err(format!("{text:?}: between 1B and 1000PB"));
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(bytes as u64)
 }
 
 /// Flags for `rlmesh devices`.
@@ -736,4 +803,28 @@ pub struct DescribeArgs {
     /// the platform fails a label generated off linux.
     #[arg(long)]
     pub label: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{size, span};
+
+    #[test]
+    fn spans_and_sizes_read_with_their_units() {
+        assert_eq!(span("30m"), Ok(Duration::from_secs(1800)));
+        assert_eq!(span("14d"), Ok(Duration::from_secs(14 * 86_400)));
+        assert_eq!(span("1.5h"), Ok(Duration::from_secs(5400)));
+        for bad in ["", "30", "m", "0s", "-1h", "400d", "1w"] {
+            assert!(span(bad).is_err(), "{bad}");
+        }
+        assert_eq!(size("20GB"), Ok(20_000_000_000));
+        assert_eq!(size("500 mb"), Ok(500_000_000));
+        assert_eq!(size("1.5GiB"), Ok(1_610_612_736));
+        assert_eq!(size("512B"), Ok(512));
+        for bad in ["", "20", "GB", "0GB", "1XB", "1e30TB"] {
+            assert!(size(bad).is_err(), "{bad}");
+        }
+    }
 }
