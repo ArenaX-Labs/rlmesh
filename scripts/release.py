@@ -46,6 +46,7 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
 # crates.io publish order: dependencies before dependents.
 CRATE_ORDER = [
     "rlmesh-spaces",
+    "rlmesh-proto",
     "rlmesh-tether",
     "rlmesh-session-core",
     "rlmesh-adapters",

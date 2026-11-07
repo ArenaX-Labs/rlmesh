@@ -130,7 +130,7 @@ name = "rlmesh-proto"
 manifest = "crates/rlmesh-proto/Cargo.toml"
 version = "0.2.0-alpha.0"
 role = "internal"
-publish = false
+publish = true
 
 [[artifact]]
 id = "cargo:rlmesh-session-core"

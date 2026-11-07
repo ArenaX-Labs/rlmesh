@@ -12,7 +12,8 @@ readme = "README.md"
 license = { workspace = true }
 categories = { workspace = true }
 keywords = { workspace = true }
-publish = false
+# Published as an internal dependency of `rlmesh` and `rlmesh-cli`.
+publish = { workspace = true }
 
 [package.metadata.cargo-machete]
 ignored = ["prost", "tonic-prost-build"]
