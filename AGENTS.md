@@ -41,7 +41,8 @@ refreshes it (`test` and `test:affected` do this themselves).
   goldens (`crates/rlmesh-session-core/tests/vectors/wire`) guard encodings;
   `protocol:baseline-verify` and `protocol:breaking` enforce a frozen one.
   `rlmesh-proto` contains internal driver data and editions, with no wire
-  compatibility promise and no published 0.2 artifact.
+  compatibility promise; it is published only as an internal dependency of
+  `rlmesh` and `rlmesh-cli`.
 - Never hand-edit generated files: regenerate native stubs with
   `mise run stubs:generate`, and update the Python API surface snapshot
   (`python/rlmesh/tests/api_surface/snapshots/`) with the change it records.
