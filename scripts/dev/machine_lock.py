@@ -43,7 +43,10 @@ def main() -> None:
             # it rather than trusting an environment marker alone.
             fcntl.flock(inherited_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             os.set_inheritable(inherited_fd, True)
-            os.execvp(command[0], command)
+            try:
+                os.execvp(command[0], command)
+            except OSError as error:
+                sys.exit(f"machine_lock.py: cannot run {command[0]}: {error}")
     except (ValueError, OSError):
         pass
 
