@@ -23,6 +23,10 @@ What RLMesh's real-time sessions (`rlmesh.realtime`, protocol `rlmesh-realtime-v
 
 A part's stream key `k_stream` is shared by its publisher and every reader. In `mac` mode (what was called `sign`) a sample is MAC'd under that key, so **any reader of a part can forge its samples and its `_applied` entries**. Sealing encrypts too, but the forgery problem stays: treat a part's readers as able to write its stream, and give a part's `parts` globs only to devices you trust with it. A chunk's key `k_cmd` is the lease holder's and its robot's alone, so commands are not forgeable by other readers. Per-publisher signatures are future work.
 
+## Host broadcasts are signed, not sealed
+
+`host/state` (the authority: roster, leases, mode and why), `host/tick` and `host/health` (each participant's link timing, edge queue and refused chunks, and its observer counters) are signed by the host, so no one can forge them, but anyone on the LAN can read them. Heartbeats and observer reports are sealed to the host; the host relays what observers need in `host/health`. Treat a session's membership and health as visible to the LAN.
+
 ## Robots fail safe on their own
 
 An edge holds or goes safe when its lease lapses, its queue runs dry or it loses the host. This needs no message from the network, so cutting a link stops motion rather than freezing the last command. An e-stop latches on the robot, and a reboot keeps the latch (**0.2:** the ESP32 latch persists in NVS).
