@@ -33,9 +33,9 @@ follows it in the shared Rust core, so C, C++, C#, Unity and Unreal do too:
 - Arrays in metadata (info, reset options) travel as arrays in every
   language: a NumPy array, an `rlmesh.Tensor` and a native `Tensor` alike
   (COR-P10, COR-26).
-- Still v1 in the native languages, until v1 is deleted: a `tcp://` or
-  `unix://` bind or dial, and the options only that wire has (remote
-  shutdown, idle and drain timeouts, endpoint tokens, TLS and API keys).
+- V1 endpoint addresses and their options are removed in every language:
+  remote shutdown, idle and drain timeouts, endpoint tokens, TLS CA files
+  and endpoint API keys. The platform HTTP client retains its own key.
 - C ABI 6 takes Python 0.2's names: a model bound to one env is a `Binding`
   (`rlmesh_model_bind`, `rlmesh_bind` for `RANDOM_SAMPLE`, C++
   `Model::bind`), stepped with `reset(seed, options)` and `step(action)` (no
@@ -159,36 +159,36 @@ binding](../node.md)).
 On 2026-10-15 the user accepted every default below as implemented. They are
 settled; reversing one is a spec change.
 
-| ID     | Question                                                                                                                  | Default                                    |
-| ------ | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| D-9    | Is `sanitize_metadata` relabelled Bridge, with no native counterpart?                                                     | Yes (P-7)                                  |
-| COR-2  | Does `Metadata` keep insertion order like a Python `dict`, rather than sorting keys?                                      | Insertion order                            |
-| COR-4  | Is `is_recoverable` false for every class but Environment and Model (no transport retry flag)?                            | Yes                                        |
-| COR-14 | Keep `kind` on native describe as a cross-check, and make Python refuse a contradicting `kind`?                           | Yes (COR-P1)                               |
-| SPC-6  | Does `Box.contains` check the shape exactly?                                                                              | Yes (SPC-P7)                               |
-| SPC-7  | Are non-integral bounds on integer or bool Box dtypes refused instead of truncated?                                       | Refused (SPC-P6)                           |
-| SPC-8  | Does a typed-uniform Box read `low` / `high` back as one number?                                                          | Yes (SPC-P5)                               |
-| SPC-18 | Keep identity equality for `SpaceSpec` and `Tensor` (no native `==` except Rust `Tensor`), deferring structural `__eq__`? | Yes                                        |
-| SPC-21 | Does `RANDOM_SAMPLE` seed its sampler with each episode's reset seed?                                                     | Yes (SPC-P8)                               |
-| SPC-22 | Defer per-element Box construction to fenced `ext` builders?                                                              | Yes                                        |
-| SPC-23 | Keep Experimental space constructors, deferring their attribute accessors?                                                | Yes                                        |
-| ENV-13 | Does only `EnvFactory.serve` publish the describe envelope, not a bare `EnvServer`?                                       | Yes; C keeps it via `ext.publish_describe` |
-| ENV-15 | Do native factories declare `TagParam { name, default_, choices }` for the branch table?                                  | Yes                                        |
-| ENV-23 | Serve `!Send` Rust envs through a fenced foreground-only `ext::LocalEnvServer`?                                           | Yes                                        |
-| MDL-7  | Serialize corner and hook calls on one Model across all sessions, Python's local sessions included?                       | Yes (MDL-P3)                               |
-| MDL-8  | Drop env-tagged episode entries silently on evict-all and release?                                                        | Yes (MDL-P4)                               |
-| MDL-11 | Keep `trust_entrypoints` natively, backed by a fenced entrypoint registry?                                                | Yes (ADP-11)                               |
-| RUN-4  | Keep `Model.run` without a viewer (a set `view` with a local `Model` is TypeError)?                                       | Yes                                        |
-| RUN-17 | Promote `FrameSources` and the recorder records to Stable in Python?                                                      | Yes (RUN-P5)                               |
-| RMT-2  | Keep the client `address` in the options struct rather than adding it to R-7 as a positional?                             | Options field                              |
-| RMT-4  | Does a zero client timeout mean "no timeout", as Python reads it?                                                         | Yes                                        |
-| RMT-5  | Keep endpoint tokens off the shared surface, in fenced `ext` constructors?                                                | Yes; superseded by RMT-22, removed         |
-| RMT-22 | Share `api_key` and `tls_ca_file` client options and dial `https://` over TLS in every language?                          | Yes                                        |
-| RMT-23 | Let a served model drive a plain local env with no `EnvServer`?                                                           | Yes (local vector env refused)             |
-| RMT-13 | Does I/O on a closed remote client raise `RuntimeError` instead of `ConnectionError`?                                     | `RuntimeError` (RMT-P2)                    |
-| ADP-15 | Give unexported Literal types native names derived from their annotation?                                                 | Yes                                        |
-| ADP-16 | Relabel `Adapter.__init__` / `serve_route` Internal and the `*_value` transforms Bridge?                                  | Yes (ADP-P4)                               |
-| ADP-17 | Keep the core resolution code in `binding`, exposing only the message on `AdapterResolutionError`?                        | Yes                                        |
+| ID     | Question                                                                                                                  | Default                                                       |
+| ------ | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| D-9    | Is `sanitize_metadata` relabelled Bridge, with no native counterpart?                                                     | Yes (P-7)                                                     |
+| COR-2  | Does `Metadata` keep insertion order like a Python `dict`, rather than sorting keys?                                      | Insertion order                                               |
+| COR-4  | Is `is_recoverable` false for every class but Environment and Model (no transport retry flag)?                            | Yes                                                           |
+| COR-14 | Keep `kind` on native describe as a cross-check, and make Python refuse a contradicting `kind`?                           | Yes (COR-P1)                                                  |
+| SPC-6  | Does `Box.contains` check the shape exactly?                                                                              | Yes (SPC-P7)                                                  |
+| SPC-7  | Are non-integral bounds on integer or bool Box dtypes refused instead of truncated?                                       | Refused (SPC-P6)                                              |
+| SPC-8  | Does a typed-uniform Box read `low` / `high` back as one number?                                                          | Yes (SPC-P5)                                                  |
+| SPC-18 | Keep identity equality for `SpaceSpec` and `Tensor` (no native `==` except Rust `Tensor`), deferring structural `__eq__`? | Yes                                                           |
+| SPC-21 | Does `RANDOM_SAMPLE` seed its sampler with each episode's reset seed?                                                     | Yes (SPC-P8)                                                  |
+| SPC-22 | Defer per-element Box construction to fenced `ext` builders?                                                              | Yes                                                           |
+| SPC-23 | Keep Experimental space constructors, deferring their attribute accessors?                                                | Yes                                                           |
+| ENV-13 | Does only `EnvFactory.serve` publish the describe envelope, not a bare `EnvServer`?                                       | Yes; C keeps it via `ext.publish_describe`                    |
+| ENV-15 | Do native factories declare `TagParam { name, default_, choices }` for the branch table?                                  | Yes                                                           |
+| ENV-23 | Serve `!Send` Rust envs through a fenced foreground-only `ext::LocalEnvServer`?                                           | Yes                                                           |
+| MDL-7  | Serialize corner and hook calls on one Model across all sessions, Python's local sessions included?                       | Yes (MDL-P3)                                                  |
+| MDL-8  | Drop env-tagged episode entries silently on evict-all and release?                                                        | Yes (MDL-P4)                                                  |
+| MDL-11 | Keep `trust_entrypoints` natively, backed by a fenced entrypoint registry?                                                | Yes (ADP-11)                                                  |
+| RUN-4  | Keep `Model.run` without a viewer (a set `view` with a local `Model` is TypeError)?                                       | Yes                                                           |
+| RUN-17 | Promote `FrameSources` and the recorder records to Stable in Python?                                                      | Yes (RUN-P5)                                                  |
+| RMT-2  | Keep the client `address` in the options struct rather than adding it to R-7 as a positional?                             | Options field                                                 |
+| RMT-4  | Does a zero client timeout mean "no timeout", as Python reads it?                                                         | Yes                                                           |
+| RMT-5  | Keep endpoint tokens off the shared surface, in fenced `ext` constructors?                                                | Retired: endpoint tokens removed in 0.2                       |
+| RMT-22 | Share v1 API key and TLS CA options?                                                                                      | Retired: removed in 0.2; remote clients use session addresses |
+| RMT-23 | Let a served model drive a plain local env with no `EnvServer`?                                                           | Yes (local vector env refused)                                |
+| RMT-13 | Does I/O on a closed remote client raise `RuntimeError` instead of `ConnectionError`?                                     | `RuntimeError` (RMT-P2)                                       |
+| ADP-15 | Give unexported Literal types native names derived from their annotation?                                                 | Yes                                                           |
+| ADP-16 | Relabel `Adapter.__init__` / `serve_route` Internal and the `*_value` transforms Bridge?                                  | Yes (ADP-P4)                                                  |
+| ADP-17 | Keep the core resolution code in `binding`, exposing only the message on `AdapterResolutionError`?                        | Yes                                                           |
 
 ## C# decisions pending user review
 
@@ -281,7 +281,7 @@ Recommended defaults for the v1-shaped C# surface that v0.2 does not build
 | RUN-36 | Hooks and `Recorder.Capture`'s return?                                        | `abstract class RunHooks : IRunHooks, IDisposable`; options take `IRunHooks`; `Capture` returns `RunHooks`                                                                                                                                                | `using var capture = rec.Capture(...)` with no cast                                                                                               |
 | RMT-24 | Async construction of remote clients?                                         | Sync constructor connects; `static Task<RemoteEnv> ConnectAsync(options, ct)`                                                                                                                                                                             | Constructors cannot be async; matches Rust's `new_async`                                                                                          |
 | RMT-25 | Client accessors?                                                             | Properties captured at construction over owned copies; only `SelectedWorkflowEdition` reads C each time                                                                                                                                                   | C's borrowed pointers die at `_free`                                                                                                              |
-| RMT-26 | Re-implement the `RLMESH_API_KEY` lookup in C#?                               | No; C reads it; an in-process key goes in `ApiKey`                                                                                                                                                                                                        | CoreCLR on Unix does not propagate `Environment.SetEnvironmentVariable` to C; one resolution path                                                 |
+| RMT-26 | Resolve RLMESH_API_KEY for remote C# clients?                                 | Retired: only the platform HTTP client uses this key                                                                                                                                                                                                      | No endpoint credentials in 0.2                                                                                                                    |
 | ADP-30 | Python's union-valued adapter fields?                                         | Small immutable types with Rust's names (`Normalize`, `AxisValue`, `StateEncoding`, …), factories and implicit conversions                                                                                                                                | Compile-time checks; object initializers read like Python's keywords                                                                              |
 | ADP-31 | Keep colliding leaf names (`Action`, `Image`, `Text`)?                        | Keep; docs show `using Action = RLMesh.Adapters.Action;`                                                                                                                                                                                                  | R-4: one name per symbol in every language                                                                                                        |
 | ADP-32 | Custom adapter shape?                                                         | `IAdapterBase` plus optional `IReset`/`IObserve`/`IExplain`; `abstract class AdapterBase`; explain text from `GetType().Name`                                                                                                                             | Python's explain text; metadata-only, AOT-safe                                                                                                    |
@@ -302,10 +302,9 @@ so their consumers are external C and C++ hosts, a future Unreal host and,
 for X-12, the C# foundation's internal cancellation bridge and its tests.
 X-14 fixes a live misreport (a C++ factory serve reports language `"c"`),
 and X-16 lets an unloading plugin or C# domain remove only its own
-registrations. ABI 5 is
-unreleased, so each lands in the ABI 5 generation with no bump; struct
-fields are appended under R-19, after the ABI-5 `sizeof`, as
-`RLMeshRemoteEnvOptions.api_key` was. All five are
+registrations. The original approvals below referred to the unreleased ABI 5
+layout. The 0.2 C ABI is fenced and will ship later as ABI 7; its development
+structs now omit the v1 endpoint fields. All five additions remain
 **Approved by the user, 2026-10-19** ([table](#c-decisions-pending-user-review)); C++ gains each one
 in the same release, and Rust gains what it lacks (X-16 only). A rejected
 addition drops the feature that needs it from v0.2 (R-16), not its safety.
