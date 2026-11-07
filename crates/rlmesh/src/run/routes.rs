@@ -178,7 +178,6 @@ fn fan_out(model: Driven<'_>, routes: usize) -> Result<Vec<Driven<'_>>> {
                 "run_routes: an in-process Model drives one route at a time, got {routes}; \
                  serve it and pass its address to share it across routes"
             ))),
-            #[cfg(feature = "lockstep")]
             Driven::Served(model) => Ok(Driven::Served(model)),
             Driven::Random => Ok(Driven::Random),
             Driven::Prepared(_) => Err(Error::Internal(

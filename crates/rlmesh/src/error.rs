@@ -624,7 +624,6 @@ impl EnvironmentError {
     }
 
     /// The inverse of [`Self::from_wire`].
-    #[cfg(feature = "lockstep")]
     pub(crate) fn to_wire(&self) -> EnvError {
         let code = match self.code {
             ErrorCode::Unspecified => EnvErrorCode::Unspecified,

@@ -15,7 +15,6 @@ use rlmesh_grpc::lifecycle::ShutdownTrigger;
 use super::context::{BatchPredictContext, EpisodeStore, OwnedContext, PredictContext};
 use super::policy::{Corners, LoadKey, Policy, SpecArg};
 use super::types::EpisodeInfo;
-#[cfg(feature = "lockstep")]
 use crate::editions::EditionSources;
 use crate::{Error, Kwargs, Metadata, Result, ServeOptions, Value};
 
@@ -635,7 +634,6 @@ enum Phase {
 struct LifeState {
     phase: Phase,
     serves: std::collections::HashMap<u64, ShutdownTrigger>,
-    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     next_serve: u64,
 }
 
@@ -853,7 +851,6 @@ impl Shared {
         Ok(())
     }
 
-    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     fn register_serve(&self, trigger: ShutdownTrigger) -> Result<u64> {
         let mut state = self.life.lock();
         if state.phase != Phase::Open {
@@ -865,7 +862,6 @@ impl Shared {
         Ok(id)
     }
 
-    #[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
     fn deregister_serve(&self, id: u64) {
         self.life.lock().serves.remove(&id);
         self.life.changed.notify_all();
@@ -1178,14 +1174,12 @@ impl Drop for DropCancels {
 }
 
 /// Watches cancel tokens and stops a server when one fires.
-#[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
 pub(crate) struct CancelWatcher {
     stop: Arc<AtomicBool>,
     fired: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-#[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
 impl CancelWatcher {
     pub(crate) fn start(
         tokens: Vec<crate::ext::CancelToken>,
@@ -1274,14 +1268,6 @@ fn serve_blocking(
         ));
     }
     let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
-    #[cfg(not(feature = "lockstep"))]
-    {
-        let _ = (serve, ext, batching, foreground, tokens);
-        Err(Error::invalid_argument(
-            "serve: a session model needs rlmesh's `lockstep` feature",
-        ))
-    }
-    #[cfg(feature = "lockstep")]
     {
         crate::binding::check_session_model_serve(&serve)?;
         crate::serve_options::check_session_token(
@@ -1312,12 +1298,10 @@ fn serve_blocking(
 
 /// How long a session model's join and close may take when the options set
 /// no `close_timeout`, as Python's serve.
-#[cfg(feature = "lockstep")]
 const SESSION_JOIN: Duration = Duration::from_secs(30);
 
 /// Joins the session of the participant address `address` as the model and
 /// answers whoever drives it there, until stopped.
-#[cfg(feature = "lockstep")]
 fn serve_session(
     shared: &Arc<Shared>,
     address: &str,
@@ -1363,7 +1347,6 @@ fn serve_session(
 /// Serves until `trigger` fires (a signal, a cancel token, the model's
 /// close), then closes the model: the cancellation class when a token or
 /// SIGINT stopped it.
-#[cfg_attr(not(feature = "lockstep"), allow(dead_code))]
 fn serve_until_stopped(
     shared: &Arc<Shared>,
     trigger: ShutdownTrigger,

@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-#[cfg(feature = "lockstep")]
 pub use crate::model::bind::{Binding, BoundStep};
 pub use crate::model::engine::AdaptedModelHandler;
 pub use crate::model::handler::{
@@ -13,7 +12,6 @@ pub use crate::model::handler::{
     ResolveOptions, RouteNeeds,
 };
 pub use crate::model::local::EnvClientRuntimeEnv;
-#[cfg(feature = "lockstep")]
 pub use crate::model::local::LockstepEnv;
 pub use crate::model::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 pub use crate::model::random::RandomSampleHandler;
@@ -54,7 +52,6 @@ pub fn new_model(
 /// A model served elsewhere, reached by its participant address
 /// (`"lab:7447/openpi"`), as Python's `Model(address)` takes it: a v1
 /// endpoint or an address naming no model is the ValueError class.
-#[cfg(feature = "lockstep")]
 pub fn served_model(address: &str) -> Result<crate::RemoteModel> {
     if !crate::address::is_v2(address) {
         return Err(Error::invalid_argument(format!(
@@ -178,7 +175,6 @@ pub fn run_prepared(
 }
 
 /// Bind an already-loaded language handler through the shared facade.
-#[cfg(feature = "lockstep")]
 pub fn bind_prepared<'a>(
     model: PreparedModel,
     env: crate::EnvTarget<'a>,
@@ -270,7 +266,6 @@ pub(crate) fn caller_port(port: crate::run::drive::CallerPort) -> CallerJobs {
 }
 
 /// Attach an owned host observer to a manual binding.
-#[cfg(feature = "lockstep")]
 pub fn observe_binding(
     binding: &mut crate::Binding<'_>,
     hooks: Box<dyn crate::RunHooks>,
@@ -280,7 +275,6 @@ pub fn observe_binding(
 }
 
 /// The next manual operation's signal cancellation.
-#[cfg(feature = "lockstep")]
 pub fn binding_cancellation(
     binding: &mut crate::Binding<'_>,
 ) -> tokio_util::sync::CancellationToken {
@@ -288,13 +282,11 @@ pub fn binding_cancellation(
 }
 
 /// Read episode status from callbacks without borrowing the mutable binding.
-#[cfg(feature = "lockstep")]
 pub fn binding_done_flag(binding: &crate::Binding<'_>) -> Arc<std::sync::atomic::AtomicBool> {
     binding.done_flag()
 }
 
 /// A render callback usable while a manual binding is dispatching a hook.
-#[cfg(feature = "lockstep")]
 pub fn binding_renderer(
     binding: &crate::Binding<'_>,
 ) -> Result<Arc<dyn Fn() -> Result<crate::Value> + Send + Sync>> {

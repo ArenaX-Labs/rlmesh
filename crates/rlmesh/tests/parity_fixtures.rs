@@ -2,7 +2,6 @@
 //!
 //! They run on the C API's build, with `lockstep` (`mise run
 //! parity:fixtures`): its runs dial sessions, not v1 endpoints.
-#![cfg(feature = "lockstep")]
 // Fixture setup and synchronization panic on unexpected state.
 #![allow(clippy::unwrap_used)]
 use std::path::PathBuf;

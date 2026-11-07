@@ -1,4 +1,3 @@
-#![cfg(feature = "lockstep")]
 //! v1 and v2 trace equivalence (§12.4, the wave 5 release gate's
 //! "semantically equivalent" half).
 //!

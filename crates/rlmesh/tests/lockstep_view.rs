@@ -1,4 +1,3 @@
-#![cfg(feature = "lockstep")]
 //! The Gym view over a v2-native robot that serves lockstep (§12.6).
 
 #![allow(clippy::unwrap_used)]

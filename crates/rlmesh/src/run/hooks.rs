@@ -170,7 +170,6 @@ impl LibraryContext {
         *self.contract.lock().unwrap_or_else(|err| err.into_inner()) = Some(contract);
     }
 
-    #[cfg(feature = "lockstep")]
     pub(crate) fn close(&self) {
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
     }

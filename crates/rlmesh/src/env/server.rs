@@ -152,7 +152,6 @@ enum Served {
 /// feature) a v2 lockstep robot in a session (its participant address, §12).
 enum Listener {
     Grpc(BoundListener),
-    #[cfg(feature = "lockstep")]
     Lockstep(Box<crate::lockstep::LockstepBinding>),
 }
 
@@ -163,7 +162,6 @@ impl Listener {
         contract: &crate::EnvContract,
     ) -> Result<(Self, String)> {
         if crate::address::is_v2(address) {
-            #[cfg(feature = "lockstep")]
             {
                 crate::lockstep::check(contract.to_wire()?)
                     .map_err(|err| Error::invalid_argument(err.to_string()))?;
@@ -182,13 +180,6 @@ impl Listener {
                 let bound = binding.address();
                 return Ok((Self::Lockstep(Box::new(binding)), bound));
             }
-            #[cfg(not(feature = "lockstep"))]
-            {
-                let _ = contract;
-                return Err(Error::invalid_argument(format!(
-                    "{address}: this build has no v2 lockstep transport (the `lockstep` feature)"
-                )));
-            }
         }
         rlmesh_grpc::wire::check_proto_contract(&contract.to_wire()?)
             .map_err(|err| Error::invalid_argument(err.to_string()))?;
@@ -200,7 +191,6 @@ impl Listener {
     fn release(self, runtime: &tokio::runtime::Runtime) {
         match self {
             Self::Grpc(listener) => listener.release(),
-            #[cfg(feature = "lockstep")]
             // Off this thread: a failed serve_async start releases from
             // inside an executor.
             Self::Lockstep(binding) => std::thread::scope(|scope| {
@@ -234,8 +224,6 @@ struct Shared {
     address: String,
     contract: EnvContract,
     binding_description: Mutex<Option<String>>,
-    #[cfg(not(feature = "lockstep"))]
-    token: Option<String>,
     shutdown: ShutdownTrigger,
     background_cancel: Mutex<std::sync::Weak<CancelProbe>>,
     state: Mutex<State>,
@@ -472,7 +460,6 @@ impl EnvServer {
             // In-process on the v2 lockstep path when the build has it, in a
             // session of this process's shared host: the run's driver then
             // calls the env directly.
-            #[cfg(feature = "lockstep")]
             address: Some(format!(
                 "{}/env",
                 crate::lockstep::local_run_session()
@@ -481,8 +468,6 @@ impl EnvServer {
             options: Some(ServeOptions {
                 workflow_edition: edition,
                 // A session server has nothing to drain.
-                #[cfg(not(feature = "lockstep"))]
-                drain_timeout: Some(Duration::from_millis(100)),
                 ..Default::default()
             }),
             close_env_on_shutdown: false,
@@ -493,12 +478,6 @@ impl EnvServer {
             crate::run::LoopbackEnv::Vector(env) => Served::Vector(env),
         };
         Self::build(served, options, None, true)
-    }
-
-    /// The endpoint token this server checks, if any.
-    #[cfg(not(feature = "lockstep"))]
-    pub(crate) fn token(&self) -> Option<&str> {
-        self.shared.token.as_deref()
     }
 
     /// `factory`: a factory serve's publication, whose edition the caller
@@ -620,8 +599,6 @@ impl EnvServer {
             )?;
         }
         let token = env_endpoint_token(ext.token.clone())?;
-        #[cfg(not(feature = "lockstep"))]
-        let checked_token = token.clone().filter(|token| !token.is_empty());
         let mut peer_info_extra: BTreeMap<String, String> = ext.peer_info_extra.clone();
         match &factory {
             // A factory serve's describe is best-effort (step 5).
@@ -682,8 +659,6 @@ impl EnvServer {
                 address,
                 contract,
                 binding_description: Mutex::new(binding_description),
-                #[cfg(not(feature = "lockstep"))]
-                token: checked_token,
                 shutdown: ShutdownTrigger::new(),
                 background_cancel: Mutex::new(std::sync::Weak::new()),
                 state: Mutex::new(State::Ready(Box::new(Resources {
@@ -1174,7 +1149,6 @@ fn normalize_bind_address(options: &EnvServerOptions) -> Result<String> {
         return Ok(address.clone());
     }
     // In a session of its own on an OS-assigned local port, as Python's.
-    #[cfg(feature = "lockstep")]
     if !helpers {
         return Ok(":0/env".to_string());
     }
@@ -1548,14 +1522,8 @@ struct ServeParts {
 
 /// What [`drive`] serves: a transport env, natively too with the `lockstep`
 /// feature.
-#[cfg(feature = "lockstep")]
 trait Driven: Environment + crate::lockstep::Served {}
-#[cfg(feature = "lockstep")]
 impl<E: Environment + crate::lockstep::Served> Driven for E {}
-#[cfg(not(feature = "lockstep"))]
-trait Driven: Environment {}
-#[cfg(not(feature = "lockstep"))]
-impl<E: Environment> Driven for E {}
 
 /// Serve `environment`; with a foreground runner, the transport runs on a
 /// helper thread while this thread runs the runner's jobs.
@@ -1595,7 +1563,6 @@ fn drive<E: Driven + Send + Sync + 'static>(
                         .serve(router, shutdown.clone(), Some(drain_timeout))
                         .await
                 }
-                #[cfg(feature = "lockstep")]
                 Listener::Lockstep(binding) => {
                     let _ = (idle_timeout, drain_timeout);
                     let cancel = tokio_util::sync::CancellationToken::new();
