@@ -9,7 +9,9 @@ def refuse_v1_address(where: str, address: str) -> None:
     """Refuse ``address`` when it is a v1 endpoint (0.2 uses session addresses)."""
     from ._rlmesh import is_v2_address
 
-    if is_v2_address(address):
+    scheme, separator, _ = address.strip().partition("://")
+    legacy_scheme = bool(separator) and scheme not in {"rlmesh", "lockstep"}
+    if not legacy_scheme and is_v2_address(address):
         return
     raise ValueError(
         f"{where}({address!r}): v1 endpoints need RLMesh 0.1; "

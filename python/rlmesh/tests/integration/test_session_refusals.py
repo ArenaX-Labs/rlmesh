@@ -49,3 +49,18 @@ def test_a_second_env_under_a_live_name_is_refused_at_construction() -> None:
             rlmesh.EnvServer(Env(), server.address)
     finally:
         server.shutdown()
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "https://host:443#key/env",
+        "tcp://host:1#key/env",
+        "unix:///tmp/env.sock#key/env",
+    ],
+)
+def test_keyed_v1_env_addresses_are_refused_before_connect(address: str) -> None:
+    with pytest.raises(ValueError, match=r"v1 endpoints need RLMesh 0\.1"):
+        rlmesh.RemoteEnv(address)
+    with pytest.raises(ValueError, match=r"v1 endpoints need RLMesh 0\.1"):
+        rlmesh.EnvServer(Env(), address)
