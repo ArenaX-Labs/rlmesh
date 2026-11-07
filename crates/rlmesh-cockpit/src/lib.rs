@@ -31,11 +31,15 @@
 //! [`replay`] feeds a recorded session (MCAP) through the same model, with
 //! a play, pause, scrub and step bar instead of the verbs.
 //!
-//! The counters only the measuring side knows (a publisher's produced
-//! count, a controller's starts and skips) come from observer reports
-//! (`rlmesh_session::report`); everything else is measured here.
+//! What only the measuring side knows (a publisher's produced count, a
+//! controller's starts and skips, each link's heartbeats and each edge's
+//! refused chunks) comes from the host's signed health, which relays the
+//! participants' reports and heartbeats; everything else is measured here.
+//!
+//! [`cli`] is `rlmesh cockpit` (and the `rlmesh-cockpit` binary).
 
 pub mod app;
+pub mod cli;
 pub mod feed;
 pub mod meter;
 pub mod model;
@@ -46,6 +50,7 @@ pub mod values;
 pub mod view;
 
 pub use app::CockpitApp;
+pub use cli::CockpitArgs;
 pub use feed::Feed;
 pub use model::{Input, Model, ModelConfig, Verb};
 pub use replay::Replay;

@@ -90,6 +90,7 @@ pub async fn run_cli_in(
         | Command::CheckImage(_)
         | Command::Describe(_)
         | Command::Host(_)
+        | Command::Cockpit(_)
         | Command::Devices(_)
         | Command::Pair(_)
         | Command::Eval(cli::EvalArgs {
@@ -201,6 +202,20 @@ pub async fn run_cli_in(
         Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),
         Command::Describe(args) => check::describe(&args, stdout, stderr),
         Command::Host(args) => host::host(&args, stdout, stderr).await.map(|()| 0),
+        #[cfg(feature = "cockpit")]
+        Command::Cockpit(args) => rlmesh_cockpit::cli::run(*args)
+            .await
+            .map(|()| 0)
+            .map_err(|err| anyhow::anyhow!(err)),
+        #[cfg(not(feature = "cockpit"))]
+        Command::Cockpit(_) => {
+            writeln!(
+                stderr,
+                "this rlmesh build has no cockpit (the Linux ARM wheel leaves it out): \
+                 run `rlmesh cockpit` on a desktop machine, or `cargo install rlmesh-cockpit`"
+            )?;
+            Ok(2)
+        }
         Command::Devices(args) => devices::devices(&args, stdout).map(|()| 0),
         #[cfg(feature = "fleet")]
         Command::Scene(args) => scene::scene(&args, stdout),

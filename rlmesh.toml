@@ -124,6 +124,15 @@ role = "core"
 publish = true
 
 [[artifact]]
+id = "cargo:rlmesh-cockpit"
+ecosystem = "cargo"
+name = "rlmesh-cockpit"
+manifest = "crates/rlmesh-cockpit/Cargo.toml"
+version = "0.2.0-alpha.0"
+role = "internal"
+publish = true
+
+[[artifact]]
 id = "cargo:rlmesh-proto"
 ecosystem = "cargo"
 name = "rlmesh-proto"

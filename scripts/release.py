@@ -51,6 +51,7 @@ CRATE_ORDER = [
     "rlmesh-session-core",
     "rlmesh-adapters",
     "rlmesh-session",
+    "rlmesh-cockpit",
     "rlmesh-cli",
     "rlmesh",
 ]
