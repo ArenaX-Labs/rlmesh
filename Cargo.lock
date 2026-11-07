@@ -5490,6 +5490,7 @@ dependencies = [
  "libc",
  "reqwest",
  "rlmesh",
+ "rlmesh-cockpit",
  "rlmesh-proto",
  "rlmesh-session",
  "rlmesh-tether",

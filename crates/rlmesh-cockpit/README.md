@@ -17,13 +17,18 @@ uv run python examples/python/v2/ur10e_mujoco/demo.py policy --address ADDR
 Then open the cockpit on the printed address:
 
 ```sh
-mise run cockpit -- 127.0.0.1:41000/local/01a15b0a-...
+rlmesh cockpit 127.0.0.1:41000/local/01a15b0a-...   # from `pip install rlmesh` on a desktop
+mise run cockpit -- 127.0.0.1:41000/local/01a15b0a-...   # from this repo
 # or: cargo run -p rlmesh-cockpit -- ADDRESS [--id cockpit] [--timeout 10] [--record-dir DIR]
 ```
 
+`rlmesh cockpit` is in the desktop wheels (Linux x86_64, macOS, Windows); the Linux ARM wheel, for a Pi or a robot's computer, leaves the window out.
+
 `RUST_LOG=rlmesh_cockpit=debug` logs the feed.
 
-The header says whether the host records the session (`REC`, or "recording paused: disk low"). **Pause** scrubs the last minute (up to 512 MB of samples) while the session keeps running underneath; only E-STOP stays on until **Back to live**. **Keep** keeps the host's recording of the last 2 minutes as an incident; it needs the host on this machine, recording into `--record-dir` (default: the host's default).
+The header says whether the host records the session (`REC`, or "recording paused: disk low"). **Pause** scrubs the last minute (up to 512 MB of samples) while the session keeps running underneath; only E-STOP stays on until **Back to live**. **Keep** asks the host to keep its recording of the last 2 minutes as an incident (a host verb, so the cockpit can be on another machine; at most every 5 s).
+
+The **Edges** table says why each robot is or isn't moving: its edge mode and the reason its newest tick gives (`QUEUE_DRY`, `ESTOP_LOCAL`, ...), and the chunks it refused since it attached, by reason (hover for the breakdown; each new refusal is on the timeline too). The header gives the session's mode reason, and **Participants** each link's heartbeat age, jitter and largest gap as the host measures them. All of it comes from the host's signed health message (`host/health`, about once a second).
 
 ## Replay a recording
 

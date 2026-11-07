@@ -32,6 +32,7 @@ publish = true
 rlmesh = { version = "=0.2.0-alpha.0", path = "crates/rlmesh" }
 rlmesh-adapters = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-adapters" }
 rlmesh-cli = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-cli" }
+rlmesh-cockpit = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-cockpit" }
 rlmesh-proto = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-proto" }
 rlmesh-session = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-session", default-features = false }
 rlmesh-session-core = { version = "=0.2.0-alpha.0", path = "crates/rlmesh-session-core" }

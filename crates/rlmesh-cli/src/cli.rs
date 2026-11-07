@@ -12,6 +12,14 @@ pub struct Cli {
     pub command: Command,
 }
 
+/// `rlmesh cockpit` in a build without the window.
+#[cfg(not(feature = "cockpit"))]
+#[derive(Args, Debug)]
+pub struct NoCockpitArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+    pub args: Vec<String>,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Print RLMesh CLI version and distribution details
@@ -48,6 +56,15 @@ pub enum Command {
     /// kept in its state directory, admitting the devices of its device
     /// table.
     Host(HostArgs),
+    /// Open the cockpit on a live session (`rlmesh cockpit ADDRESS`) or a
+    /// recording (`--replay FILE`): live channels, rates, why each robot is
+    /// or isn't moving, the timeline, and arm and e-stop.
+    #[cfg(feature = "cockpit")]
+    Cockpit(Box<rlmesh_cockpit::CockpitArgs>),
+    /// Open the cockpit (not in this build: install `rlmesh` on a desktop
+    /// machine).
+    #[cfg(not(feature = "cockpit"))]
+    Cockpit(NoCockpitArgs),
     /// List and change the devices and robot pins of this machine's
     /// rlmeshd, and provision boards over USB; it applies a change at once.
     #[command(visible_alias = "device")]

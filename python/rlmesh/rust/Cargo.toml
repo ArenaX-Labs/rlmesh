@@ -36,6 +36,11 @@ stub-gen = ["dep:pyo3-stub-gen"]
 # release wheel; CI builds it.
 fleet = ["rlmesh-cli?/fleet", "rlmesh-session/fleet"]
 
+# `rlmesh cockpit` in every desktop wheel; the Linux ARM wheel (a Pi, a
+# robot's computer) leaves the window out.
+[target.'cfg(not(all(target_os = "linux", target_arch = "aarch64")))'.dependencies]
+rlmesh-cli = { workspace = true, optional = true, features = ["cockpit"] }
+
 [dependencies]
 # No `managed`: the package has its own platform client (`rlmesh.managed`);
 # the bundled CLI (feature `cli`) brings it in for itself.
