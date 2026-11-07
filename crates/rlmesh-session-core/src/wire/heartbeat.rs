@@ -92,6 +92,8 @@ pub struct Heartbeat {
     pub queue_depth: u32,
     /// Self-reported health.
     pub health: Health,
+    /// Edges: chunks refused since attach, by reason (nonzero only).
+    pub rejected: Vec<(crate::edge::Rejection, u64)>,
 }
 
 /// Host to participant, on the control class.

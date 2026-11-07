@@ -47,9 +47,9 @@ use crate::wire::version::{PROTOCOL_MINOR, SPEC_VERSION, VIEW_DEVICE};
 use crate::wire::{
     ActionChunk, AuthoritySnapshot, ChannelId, ChunkRef, ClockMode, Command, CtlError, CtlReply,
     CtlStatus, EdgeMode, Epoch, EstopSignal, Fingerprint, Health, Heartbeat, HeartbeatEcho,
-    HistoryQuery, KeysAck, Lease, LeaseToken, LockstepRequest, LockstepResponse, Mode, PartSpec,
-    ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample, SampleBatch, SessionId,
-    SessionKeys, StreamSpec, TenantId, TimingSample, ViewReply, VirtualTick, Watermark,
+    HistoryQuery, HostHealth, KeysAck, Lease, LeaseToken, LockstepRequest, LockstepResponse, Mode,
+    PartSpec, ParticipantId, PriorityClass, Reason, ReasonCode, Role, Sample, SampleBatch,
+    SessionId, SessionKeys, StreamSpec, TenantId, TimingSample, ViewReply, VirtualTick, Watermark,
 };
 use rlmesh_session_core::auth::{self, Credential, KeyError, StreamWindows};
 use rlmesh_session_core::auth::{Link, LinkError, ReplyOutcome};
@@ -166,12 +166,17 @@ impl std::fmt::Debug for ParticipantConfig {
     }
 }
 
+use crate::edge::Rejection;
+
 /// What an edge reports in its participant's heartbeats.
 #[derive(Debug, Default)]
 pub struct EdgeReport {
     last_accepted: AtomicU64,
     last_applied: AtomicU64,
     queue_depth: AtomicU32,
+    /// Chunks refused, by reason in [`Rejection::ALL`] order, over every
+    /// edge of the robot.
+    rejected: [AtomicU64; Rejection::ALL.len()],
 }
 
 impl EdgeReport {
@@ -189,6 +194,20 @@ impl EdgeReport {
     pub fn set_queue_depth(&self, depth: usize) {
         self.queue_depth
             .store(u32::try_from(depth).unwrap_or(u32::MAX), Ordering::Relaxed);
+    }
+
+    /// One chunk refused for `reason`.
+    pub fn count_rejection(&self, reason: Rejection) {
+        self.rejected[reason.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Chunks refused so far, by reason (nonzero only).
+    pub fn rejected(&self) -> Vec<(Rejection, u64)> {
+        Rejection::ALL
+            .iter()
+            .map(|r| (*r, self.rejected[r.index()].load(Ordering::Relaxed)))
+            .filter(|(_, n)| *n > 0)
+            .collect()
     }
 
     /// `(last accepted, last applied, queue depth)`.
@@ -2128,6 +2147,36 @@ impl Participant {
         })
     }
 
+    /// Calls `on_health` with each of the host's health messages
+    /// (`host/health`, about once a second) on the transport's callback
+    /// thread: every attached participant's link, clock mapping, edge
+    /// counters and latest observer report, as the host sees them. A message
+    /// not signed by the host, or not newer than the last one taken, is
+    /// dropped. The subscription lasts as long as the returned handle.
+    pub async fn host_health(
+        &self,
+        on_health: impl Fn(HostHealth) + Send + Sync + 'static,
+    ) -> Result<HealthSubscription, SessionError> {
+        let verifier = Mutex::new(self.host_verifier().ok_or(SessionError::Closed)?);
+        let key = self.shared.keys.host_health();
+        let subscriber = self
+            .shared
+            .transport
+            .control()
+            .declare_subscriber(key.clone())
+            .callback(move |sample| {
+                let bytes = sample.payload().to_bytes();
+                match auth::open_health(&mut lock(&verifier), &key, &bytes) {
+                    Ok(health) => on_health(health),
+                    Err(err) => debug!(%err, "host health dropped"),
+                }
+            })
+            .await?;
+        Ok(HealthSubscription {
+            _subscriber: subscriber,
+        })
+    }
+
     /// The report an edge on this participant updates; heartbeats carry it.
     pub fn edge_report(&self) -> Arc<EdgeReport> {
         self.shared.edge.clone()
@@ -2412,6 +2461,7 @@ async fn heartbeat_loop(shared: Arc<Shared>, period: Duration, cancel: Cancellat
             last_chunk_applied,
             queue_depth,
             health: health_of(shared.health.load(Ordering::Relaxed)),
+            rejected: shared.edge.rejected(),
         };
         if let Err(err) = shared.send_heartbeat(heartbeat, true).await {
             warn!(participant = %shared.id, %err, "heartbeat failed");
@@ -2489,6 +2539,16 @@ async fn report_streams(shared: Arc<Shared>, cancel: CancellationToken) {
         clock: shared.clock.clone(),
         epoch: shared.epoch.clone(),
         run: shared.run.clone(),
+        seal: Box::new({
+            let link = shared.link.clone();
+            move |key, report| {
+                let link = link.get()?;
+                lock(link)
+                    .report(key, report)
+                    .map_err(|err| debug!(%err, "report not sealed"))
+                    .ok()
+            }
+        }),
     };
     let streams = move || {
         let Ok(outlets) = shared.outlets.lock() else {
@@ -2586,6 +2646,12 @@ async fn send_stop(shared: &Shared, report: &Report, cancel: &CancellationToken)
             }
         }
     }
+}
+
+/// A subscription to the host's health ([`Participant::host_health`]);
+/// dropping it ends the subscription.
+pub struct HealthSubscription {
+    _subscriber: zenoh::pubsub::Subscriber<()>,
 }
 
 /// The host's virtual-mode ticks, as they arrive.

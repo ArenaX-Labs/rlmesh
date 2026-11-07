@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use rlmesh_session::wire::{AuthoritySnapshot, Lease, Mode};
+use rlmesh_session::wire::{AuthoritySnapshot, Lease, Mode, Reason, ReasonCode};
 
 /// What an entry is about, for filtering and colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -108,6 +108,15 @@ fn class(lease: &Lease) -> &'static str {
 
 /// What changed from `old` to `new`, as `(kind, tone, text)`. With no
 /// `old` (the cockpit just attached), the state found.
+/// ` (reason)`, or nothing when none was given.
+fn why(reason: &Reason) -> String {
+    if reason.code == ReasonCode::Unspecified {
+        String::new()
+    } else {
+        format!(" ({reason})")
+    }
+}
+
 pub fn diff(old: Option<&AuthoritySnapshot>, new: &AuthoritySnapshot) -> Vec<(Kind, Tone, String)> {
     let mut out = Vec::new();
     let Some(old) = old else {
@@ -152,7 +161,7 @@ pub fn diff(old: Option<&AuthoritySnapshot>, new: &AuthoritySnapshot) -> Vec<(Ki
         out.push((
             Kind::Mode,
             mode_tone(new.mode),
-            format!("{} -> {}", old.mode, new.mode),
+            format!("{} -> {}{}", old.mode, new.mode, why(&new.mode_reason)),
         ));
     }
     match (old.estop_latched, new.estop_latched) {

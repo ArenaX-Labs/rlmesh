@@ -3,7 +3,8 @@
 //!
 //! A [`Recorder`] is an observer participant: it subscribes to every stream
 //! of every robot (parts and their `_applied` streams), to every commandable
-//! part's action chunks and to the host's authority snapshots, and writes
+//! part's action chunks and to the host's signed authority snapshots and
+//! health messages, and writes
 //! each envelope unchanged into an MCAP file:
 //!
 //! | Topic | Schema | One message per |
@@ -13,7 +14,7 @@
 //! | `/{robot}/{path}/_chunks` | `rlmesh.session.v2.ActionChunk` | chunk sent to the edge |
 //! | `/_session/authority` | `rlmesh.session.v2.AuthorityState` | authority change |
 //! | `/_session/bindings` | `rlmesh.session.v2.BindingRecord` | new or changed binding |
-//! | `/_session/reports` | `rlmesh.session.v2.ParticipantReport` | observer report |
+//! | `/_session/health` | `rlmesh.session.v2.HostHealth` | host health message (about 1 Hz) |
 //!
 //! Schemas are the `rlmesh.session.v2` protobuf descriptors. A new MCAP
 //! channel opens for every session channel id. `publish_time` is the
@@ -50,10 +51,10 @@ use std::time::Duration;
 use crate::transport::{TrafficClass, payload_bytes};
 use crate::wire::codec::{self, schema};
 use crate::wire::{
-    ActionChunk, AuthoritySnapshot, ChannelId, DType, Encoding, Fingerprint, Health, Mode,
-    PartSpec, ParticipantId, ParticipantReport, Sample, SessionId, StreamSpec,
+    ActionChunk, AuthoritySnapshot, ChannelId, DType, Encoding, Fingerprint, Health, HostHealth,
+    Mode, PartSpec, ParticipantId, Sample, SessionId, StreamSpec,
 };
-use crate::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
+use crate::{HealthSubscription, Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use bytes::Bytes;
 use rlmesh_session_core::crypto::sealed::unverified_body;
 use tracing::{debug, info, warn};
@@ -122,7 +123,7 @@ enum TopicKey {
     Chunks(ChannelId),
     Authority,
     Bindings,
-    Reports,
+    Health,
 }
 
 enum Entry {
@@ -233,44 +234,6 @@ struct Misses {
     recent: std::collections::VecDeque<i64>,
 }
 
-/// Subscribes to a `_session` topic of every participant's envelopes
-/// (reports), `publish_time` its log time (the send time, on
-/// the sender's clock, is in the envelope): `sequence` decodes one into
-/// its sequence, or `None` to skip it.
-async fn subscribe_envelopes(
-    participant: &Arc<Participant>,
-    tx: &Tx,
-    stamp: &Stamp,
-    class: TrafficClass,
-    key: String,
-    topic: Topic,
-    sequence: fn(&[u8]) -> Option<u64>,
-) -> Result<zenoh::pubsub::Subscriber<()>, RecordError> {
-    let topic = Arc::new(topic);
-    let (tx, stamp) = (tx.clone(), stamp.clone());
-    Ok(participant
-        .transport()
-        .session(class)
-        .declare_subscriber(key)
-        .callback(move |sample| {
-            let log_time = stamp.now();
-            let data = sample.payload().to_bytes().into_owned();
-            let Some(sequence) = sequence(&data) else {
-                debug!(topic = topic.name, "undecodable envelope");
-                return;
-            };
-            let _ = tx.send(Entry::Message {
-                topic: topic.clone(),
-                log_time,
-                publish_time: log_time,
-                sequence,
-                data,
-            });
-        })
-        .await
-        .map_err(SessionError::from)?)
-}
-
 /// A session recording in progress: see the crate docs.
 pub struct Recorder {
     participant: Arc<Participant>,
@@ -278,8 +241,9 @@ pub struct Recorder {
     writer: Option<JoinHandle<Result<RecordStats, RecordError>>>,
     watcher: Option<tokio::task::JoinHandle<Subscriptions>>,
     cancel: tokio::sync::watch::Sender<bool>,
-    /// Authority and reports.
+    /// Authority.
     subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
+    _health: HealthSubscription,
     /// Every robot declared while recording, as metadata records.
     robots: Arc<Mutex<Metadata>>,
 }
@@ -473,21 +437,28 @@ impl Recorder {
             }
             subscriber
         };
-        let reports = subscribe_envelopes(
-            &participant,
-            &tx,
-            &stamp,
-            TrafficClass::Data,
-            participant.keys().reports(),
-            Topic {
-                key: TopicKey::Reports,
-                name: "/_session/reports".into(),
-                schema: schema::PARTICIPANT_REPORT,
+        // Health: what the host relays of every link and edge, verified.
+        let health = {
+            let topic = Arc::new(Topic {
+                key: TopicKey::Health,
+                name: "/_session/health".into(),
+                schema: schema::HOST_HEALTH,
                 metadata: BTreeMap::new(),
-            },
-            |data| codec::decode_report(data).ok().map(|_| 0),
-        )
-        .await?;
+            });
+            let (tx, stamp) = (tx.clone(), stamp.clone());
+            let sequence = AtomicU64::new(0);
+            participant
+                .host_health(move |health| {
+                    let _ = tx.send(Entry::Message {
+                        topic: topic.clone(),
+                        log_time: stamp.now(),
+                        publish_time: health.host_ns,
+                        sequence: sequence.fetch_add(1, Ordering::Relaxed),
+                        data: codec::encode_health(&health),
+                    });
+                })
+                .await?
+        };
 
         let (cancel, cancelled) = tokio::sync::watch::channel(false);
         let watcher = tokio::spawn(watch_parts(
@@ -502,7 +473,8 @@ impl Recorder {
             writer: Some(writer),
             watcher: Some(watcher),
             cancel,
-            subscribers: vec![authority, reports],
+            subscribers: vec![authority],
+            _health: health,
             robots,
         })
     }
@@ -1591,7 +1563,7 @@ pub fn summarize(path: impl AsRef<Path>) -> Result<Summary, RecordError> {
             schema::SAMPLE => codec::decode_sample(data).is_ok(),
             schema::ACTION_CHUNK => codec::decode_chunk(data).is_ok(),
             schema::BINDING_RECORD => codec::decode_binding(&data).is_ok(),
-            schema::PARTICIPANT_REPORT => codec::decode_report(&data).is_ok(),
+            schema::HOST_HEALTH => codec::decode_health(&data).is_ok(),
             schema::AUTHORITY_STATE => match codec::decode_state(&data) {
                 Ok(state) => {
                     lease_changes(&state, message.log_time, &mut held, &mut summary.leases);
@@ -1623,8 +1595,8 @@ pub enum Recorded {
     Chunk(ActionChunk),
     /// An authority snapshot (it carries the bindings too).
     Authority(Box<AuthoritySnapshot>),
-    /// A participant's observer report.
-    Report(ParticipantReport),
+    /// The host's health message: every link, edge and observer report.
+    Health(Box<HostHealth>),
 }
 
 /// One recorded message with its MCAP times, both session time.
@@ -1638,7 +1610,7 @@ pub struct RecordedMessage {
     pub message: Recorded,
 }
 
-/// Every sample, chunk, authority snapshot and report of a
+/// Every sample, chunk, authority snapshot and health message of a
 /// recording (one MCAP file, or a directory of them: rolling segments, an
 /// incident, an episode), ordered by
 /// log time (stable, so each channel keeps its recorded order). Binding
@@ -1704,9 +1676,9 @@ fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
             Some(schema::AUTHORITY_STATE) => codec::decode_state(&data)
                 .ok()
                 .map(|s| Recorded::Authority(Box::new(s))),
-            Some(schema::PARTICIPANT_REPORT) => {
-                codec::decode_report(&data).ok().map(Recorded::Report)
-            }
+            Some(schema::HOST_HEALTH) => codec::decode_health(&data)
+                .ok()
+                .map(|h| Recorded::Health(Box::new(h))),
             _ => None,
         };
         if let Some(decoded) = decoded {

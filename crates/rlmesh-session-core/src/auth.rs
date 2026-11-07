@@ -59,9 +59,9 @@ use crate::wire::heartbeat::{Heartbeat, HeartbeatEcho};
 use crate::wire::tick::VirtualTick;
 use crate::wire::{
     ActionChunk, AuthoritySnapshot, AuthorityView, Command, CtlError, CtlReply, CtlStatus,
-    DeviceView, Epoch, EstopSignal, HandshakeAccept, HandshakeRequest, HistoryQuery, KeysAck,
-    LeaseToken, LockstepRequest, LockstepResponse, ParticipantId, Request, Sample, SampleBatch,
-    SampleMeta, ViewReply,
+    DeviceView, Epoch, EstopSignal, HandshakeAccept, HandshakeRequest, HistoryQuery, HostHealth,
+    KeysAck, LeaseToken, LockstepRequest, LockstepResponse, ParticipantId, Request, Sample,
+    SampleBatch, SampleMeta, ViewReply,
 };
 
 /// The device of every process holding an embedded host's address.
@@ -298,6 +298,24 @@ pub fn open_tick(
     msg: &[u8],
 ) -> Result<VirtualTick, LinkError> {
     Ok(codec::decode_tick(host.verify(keyexpr, msg)?.body)?)
+}
+
+/// Verifies the host's `host/health` broadcast received on `keyexpr` under
+/// `host`: signed by the host instance, newer than the last one taken, and a
+/// health message (kind 23).
+///
+/// # Errors
+/// [`LinkError`].
+pub fn open_health(
+    host: &mut SignedReceiver,
+    keyexpr: &str,
+    msg: &[u8],
+) -> Result<HostHealth, LinkError> {
+    let verified = host.verify(keyexpr, msg)?;
+    if verified.header.kind != SignedKind::HostHealth {
+        return Err(SignedError::UnknownKind(verified.header.kind.as_u8()).into());
+    }
+    Ok(codec::decode_health(verified.body)?)
 }
 
 /// A participant generation's link to the host (design §8.2, §8.6, §8.7):
@@ -749,6 +767,23 @@ impl Link {
             Kind::Heartbeat,
             keyexpr,
             &codec::encode_heartbeat(heartbeat),
+        )?)
+    }
+
+    /// Seals an observer report on `keyexpr` (the participant's `report`)
+    /// for the host, which relays it in its signed health.
+    ///
+    /// # Errors
+    /// [`LinkError::Seal`].
+    pub fn report(
+        &mut self,
+        keyexpr: &str,
+        report: &crate::wire::ParticipantReport,
+    ) -> Result<Vec<u8>, LinkError> {
+        Ok(self.up.seal(
+            Kind::ParticipantReport,
+            keyexpr,
+            &codec::encode_report(report),
         )?)
     }
 
@@ -1380,6 +1415,7 @@ mod tests {
             last_chunk_applied: 0,
             queue_depth: 0,
             health: crate::wire::heartbeat::Health::Ok,
+            rejected: Vec::new(),
         };
         let mut hb = link.heartbeat("hb", &heartbeat).expect("seal");
         assert_eq!(

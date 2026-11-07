@@ -59,6 +59,7 @@ pub mod authority;
 pub mod codec;
 pub mod contract;
 pub mod error;
+pub mod health;
 pub mod heartbeat;
 pub mod ids;
 pub mod key;
@@ -85,6 +86,7 @@ pub use authority::{
 pub use codec::Encoded;
 pub use contract::{ActionGrid, ContractMode, Demand, Plan, StreamContract};
 pub use error::WireError;
+pub use health::{HostHealth, LinkHealth};
 pub use heartbeat::{Health, Heartbeat, HeartbeatEcho, TimingSample};
 pub use ids::{
     ChannelId, Epoch, Fingerprint, IdError, LeaseToken, ParticipantId, SessionId, TenantId,

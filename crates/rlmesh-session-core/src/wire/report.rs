@@ -4,11 +4,13 @@
 //! heartbeats and authority. Two §8.10 counters never travel on their own:
 //! how many samples a publisher produced before its plan coalesced some, and
 //! a controller runtime's starts, completions and skipped slots. A
-//! participant publishes them as a [`ParticipantReport`] on
-//! `p/{participant}/report` ([`crate::wire::SessionKeys::report`]) a few times per
-//! second. The counters are cumulative since the participant attached, so a
-//! lost report loses nothing; observers take rates from their deltas on the
-//! sender's clock. Nothing in the session acts on a report.
+//! participant seals them to the host as a [`ParticipantReport`] on
+//! `p/{participant}/report` ([`crate::wire::SessionKeys::report`]) a few
+//! times per second, and the host relays each participant's newest one in
+//! its signed `host/health` ([`crate::wire::HostHealth`]). The counters are
+//! cumulative since the participant attached, so a lost report loses
+//! nothing; observers take rates from their deltas on the sender's clock.
+//! Nothing in the session acts on a report.
 
 #[allow(unused_imports)]
 use crate::prelude::*;

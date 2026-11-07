@@ -457,6 +457,9 @@ fn header(ui: &mut egui::Ui, view: &View, state: &mut UiState, verbs: &mut Vec<V
             }
         });
     });
+    if let Some(reason) = &h.mode_reason {
+        ui.label(format!("why: {reason}"));
+    }
     if let Some(note) = &h.estop_note {
         ui.label(RichText::new(note).strong().color(tone_color(Tone::Bad)));
     }
@@ -625,7 +628,7 @@ fn measured(ui: &mut egui::Ui, view: &View) {
         &format!(
             "Hz, each on its own clock: declared ({}), produced and published ({}), \
              admitted delivery (contract), unique received ({}), per capture second ({}), \
-             and each subscriber's seq advance (its heartbeats).",
+             and each subscriber's seq advance (its heartbeats, as the host relays them).",
             clocks::DECLARED,
             clocks::PUBLISHER,
             clocks::COCKPIT,
@@ -803,6 +806,8 @@ fn measured(ui: &mut egui::Ui, view: &View) {
             "recent",
             "longest gap ms",
             "mode",
+            "why",
+            "refused",
             "dispatched",
             "lease",
             "coverage ms",
@@ -829,6 +834,15 @@ fn measured(ui: &mut egui::Ui, view: &View) {
                 ),
                 None => ui.label("—"),
             };
+            ui.label(r.reason.as_deref().unwrap_or("—"));
+            if r.rejected.is_empty() {
+                ui.label("0");
+            } else {
+                let total: u64 = r.rejected.iter().map(|(_, n)| n).sum();
+                let by: Vec<String> = r.rejected.iter().map(|(w, n)| format!("{n} {w}")).collect();
+                ui.label(RichText::new(total.to_string()).color(tone_color(Tone::Warn)))
+                    .on_hover_text(by.join(", "));
+            }
             ui.label(format!("{}/{}", r.present.0, r.present.1));
             ui.label(r.holder.as_deref().unwrap_or("free"))
                 .on_hover_text(r.last_chunk.as_deref().map_or_else(
@@ -846,7 +860,8 @@ fn measured(ui: &mut egui::Ui, view: &View) {
     section(
         ui,
         "Participants",
-        "clock mapping (session = participant + offset, ± error) and heartbeats",
+        "clock mapping (session = participant + offset, ± error) and heartbeats, \
+         as the host measures them",
     );
     Grid::new("participants").striped(true).show(ui, |ui| {
         for h in [
@@ -858,6 +873,8 @@ fn measured(ui: &mut egui::Ui, view: &View) {
             "rtt ms",
             "health",
             "heartbeat ms ago",
+            "jitter ms",
+            "max gap ms",
         ] {
             ui.label(RichText::new(h).strong());
         }
@@ -871,6 +888,11 @@ fn measured(ui: &mut egui::Ui, view: &View) {
             ui.label(r.rtt_ms.map_or_else(|| "—".into(), |v| format!("{v:.3}")));
             ui.label(r.health.as_deref().unwrap_or("—"));
             ui.label(ms(r.heartbeat_age_ms));
+            ui.label(
+                r.jitter_ms
+                    .map_or_else(|| "—".into(), |v| format!("{v:.3}")),
+            );
+            ui.label(ms(r.heartbeat_gap_max_ms));
             ui.end_row();
         }
     });

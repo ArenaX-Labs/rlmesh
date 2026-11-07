@@ -8,6 +8,7 @@ use rlmesh_cockpit::model::Verb;
 use rlmesh_cockpit::timeline::Tone;
 use rlmesh_cockpit::values::Value;
 use rlmesh_cockpit::{Input, View};
+use rlmesh_session::edge::Rejection;
 use rlmesh_session::wire::{Command, EdgeMode, LeaseToken, Mode, ReasonCode};
 
 fn close(a: Option<f64>, b: f64, tol: f64) -> bool {
@@ -230,6 +231,50 @@ fn a_slow_policy_and_a_stalled_edge_show_as_drift_skips_and_deadline_misses() {
     assert_eq!(states, ["driving", "hold", "safe"]);
     assert_eq!(lane.segments[2].3, Tone::Bad);
     assert_eq!(view.edges[0].mode.map(|(m, _)| m), Some(EdgeMode::Safe));
+}
+
+#[test]
+fn an_edge_says_why_it_is_not_moving_and_what_it_refused() {
+    let mut w = World::ur10e();
+    w.run(500);
+    let view = w.model.view(w.now);
+    assert_eq!(view.edges[0].reason, None);
+    assert!(view.edges[0].rejected.is_empty());
+    let link = view
+        .participants
+        .iter()
+        .find(|p| p.id == "ur10e")
+        .expect("ur10e");
+    assert!(link.heartbeat_age_ms.is_some() && link.jitter_ms.is_some());
+
+    // The robot refuses chunks under an old token, then its queue runs dry.
+    w.rejected = vec![(Rejection::StaleToken, 3)];
+    w.edge_mode = EdgeMode::Safe;
+    w.edge_reason = ReasonCode::QueueDry;
+    w.run(300);
+    w.rejected = vec![(Rejection::StaleToken, 5), (Rejection::NoLease, 1)];
+    w.run(300);
+    let view = w.model.view(w.now);
+    let edge = &view.edges[0];
+    assert_eq!(edge.reason.as_deref(), Some("QUEUE_DRY"));
+    assert_eq!(
+        edge.rejected,
+        [("stale_token".to_string(), 5), ("no_lease".to_string(), 1)]
+    );
+    let events: Vec<&str> = view
+        .timeline
+        .iter()
+        .filter(|r| r.kind == "edge")
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(
+        events[..3],
+        [
+            "edge ur10e refused chunks: 2 stale_token, 1 no_lease",
+            "edge ur10e refused chunks: 3 stale_token",
+            "edge ur10e/arm: driving -> safe (QUEUE_DRY)",
+        ]
+    );
 }
 
 #[test]

@@ -1600,16 +1600,33 @@ async fn publishers_and_controllers_report_their_counters_to_observers() {
     let observer = world
         .join("cockpit", vec![Role::Observer], PriorityClass::Scripted, 0)
         .await;
-    let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let _sub = observer
+    // Reports are sealed to the host: nothing an observer reads off the
+    // wire decodes as one.
+    let plaintext = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let _raw = observer
         .transport()
         .session(TrafficClass::Data)
         .declare_subscriber(observer.keys().reports())
         .callback({
-            let reports = reports.clone();
+            let plaintext = plaintext.clone();
             move |sample| {
-                let report = codec::decode_report(&sample.payload().to_bytes()).expect("decode");
-                reports.lock().expect("reports").push(report);
+                if codec::decode_report(&sample.payload().to_bytes())
+                    .is_ok_and(|r| !r.participant.as_str().is_empty())
+                {
+                    plaintext.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        })
+        .await
+        .expect("subscribe");
+    // The host relays each participant's newest one in its signed health.
+    let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _health = observer
+        .host_health({
+            let reports = reports.clone();
+            move |health| {
+                let mut reports = reports.lock().expect("reports");
+                reports.extend(health.links.into_iter().filter_map(|l| l.report));
             }
         })
         .await
@@ -1649,6 +1666,7 @@ async fn publishers_and_controllers_report_their_counters_to_observers() {
             .iter()
             .any(|r| r.participant.as_str() == "cockpit")
     );
+    assert_eq!(plaintext.load(std::sync::atomic::Ordering::Relaxed), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
