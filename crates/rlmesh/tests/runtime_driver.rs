@@ -2626,9 +2626,10 @@ impl RuntimeHooks for PerturbationLikeHooks {
             return Ok(None);
         }
         let fail = |err: &dyn std::fmt::Display| HookError::Message(err.to_string());
-        let space =
-            rlmesh_grpc::wire::space_spec_from_proto(SpaceSpec::clone(&event.observation_space))
-                .map_err(|err| fail(&err))?;
+        let space = rlmesh::binding::data::space_spec_from_proto(SpaceSpec::clone(
+            &event.observation_space,
+        ))
+        .map_err(|err| fail(&err))?;
         let rows = event.episode_ids.len();
         let leaves = event.observation.as_deref().unwrap_or_default();
         let values = rlmesh_spaces::leaves::decode_leaf_slab(leaves, &space, rows)
@@ -2661,8 +2662,9 @@ async fn transforms_apply_per_lane_inside_a_fused_predict() {
     // in flight: they reach the model as one fused predict.
     let lanes = 4;
     let mut spec = lane_spec(lanes, lanes as u64, Vec::new());
-    let space =
-        rlmesh_grpc::wire::space_spec_to_proto(contract(&spec).observation_space.as_ref().unwrap());
+    let space = rlmesh::binding::data::space_spec_to_proto(
+        contract(&spec).observation_space.as_ref().unwrap(),
+    );
     let env_spec = spec.env_contract.spec.as_mut().unwrap();
     env_spec.observation_space = Some(space.clone());
     env_spec.action_space = Some(space);
@@ -2829,7 +2831,7 @@ async fn the_instruction_transform_rewrites_each_episode_from_its_start() {
     .unwrap();
     native.metadata =
         Some(rlmesh::binding::metadata_to_wire(&tags.to_metadata().unwrap()).unwrap());
-    spec.env_contract = rlmesh_grpc::wire::env_contract_to_proto(&native);
+    spec.env_contract = rlmesh::binding::data::env_contract_to_proto(&native);
     let env = InstructionEnv {
         space: space.clone(),
         steps: Arc::default(),

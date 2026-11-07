@@ -138,6 +138,7 @@ pub mod binding;
 mod bound;
 mod build_info;
 mod credentials;
+mod data;
 mod describe;
 mod dlpack;
 mod doctor;

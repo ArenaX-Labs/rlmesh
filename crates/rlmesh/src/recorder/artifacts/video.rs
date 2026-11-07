@@ -106,7 +106,7 @@ impl Video {
             stride: spec.stride.max(1),
             ..Self::default()
         };
-        let contract = rlmesh_grpc::wire::env_contract_from_proto(contract.clone()).map_err(os)?;
+        let contract = crate::data::env_contract_from_proto(contract.clone()).map_err(os)?;
         let Some(observation_space) = contract.observation_space.clone() else {
             return Ok(video);
         };

@@ -355,7 +355,7 @@ async fn drive_managed(
         env_component_id: "catalog-env".into(),
         model_component_id: "served-model".into(),
         workflow_edition: rlmesh_proto::parse_retained_edition("2026.10").unwrap(),
-        env_contract: rlmesh_grpc::wire::env_contract_to_proto(&contract),
+        env_contract: rlmesh::binding::data::env_contract_to_proto(&contract),
         num_envs: contract.num_envs as usize,
         base_seed: Some(5),
         seed_key: "catalog".into(),

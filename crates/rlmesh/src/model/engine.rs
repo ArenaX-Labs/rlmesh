@@ -2238,7 +2238,7 @@ mod fused_route_tests {
                 )]))
             })
             .collect();
-        let wire = rlmesh_grpc::wire::encode_batched_partial_values(&lanes, &obs_space()).unwrap();
+        let wire = crate::data::encode_batched_partial_values(&lanes, &obs_space()).unwrap();
         ModelObservation {
             history: Vec::new(),
             step: None,
@@ -2270,7 +2270,7 @@ mod fused_route_tests {
         env_contract: &Arc<spaces::EnvContract>,
     ) -> ModelObservation {
         let lane = SpaceValue::Dict(BTreeMap::from([("state".to_string(), box_f32(value))]));
-        let wire = rlmesh_grpc::wire::encode_batched_partial_values(&[lane], &obs_space()).unwrap();
+        let wire = crate::data::encode_batched_partial_values(&[lane], &obs_space()).unwrap();
         ModelObservation {
             history: Vec::new(),
             step: None,
@@ -2637,8 +2637,7 @@ mod fused_route_tests {
             ),
             ("state".to_string(), box_f32(value)),
         ]));
-        let wire =
-            rlmesh_grpc::wire::encode_batched_partial_values(&[lane], &image_obs_space()).unwrap();
+        let wire = crate::data::encode_batched_partial_values(&[lane], &image_obs_space()).unwrap();
         ModelObservation {
             history: Vec::new(),
             step: None,
@@ -3153,12 +3152,12 @@ mod fused_route_tests {
     }
 
     /// The wire leaves of a one-lane camera frame whose every byte is `tag`.
-    fn cam_leaves(tag: u8) -> Vec<rlmesh_grpc::wire::Bytes> {
+    fn cam_leaves(tag: u8) -> Vec<bytes::Bytes> {
         let lane = SpaceValue::Dict(BTreeMap::from([(
             "cam".to_string(),
             SpaceValue::Box(Tensor::from_vec(vec![tag; 3], vec![1, 1, 3], DType::Uint8).unwrap()),
         )]));
-        rlmesh_grpc::wire::encode_batched_partial_values(&[lane], &cam_obs_space())
+        crate::data::encode_batched_partial_values(&[lane], &cam_obs_space())
             .unwrap()
             .leaves
     }
@@ -3494,14 +3493,14 @@ mod fused_route_tests {
         })
     }
 
-    fn g_leaves(g: f32) -> Vec<rlmesh_grpc::wire::Bytes> {
+    fn g_leaves(g: f32) -> Vec<bytes::Bytes> {
         let lane = SpaceValue::Dict(BTreeMap::from([(
             "g".to_string(),
             SpaceValue::Box(
                 Tensor::from_vec(g.to_le_bytes().to_vec(), vec![1], DType::Float32).unwrap(),
             ),
         )]));
-        rlmesh_grpc::wire::encode_batched_partial_values(&[lane], &g_obs_space())
+        crate::data::encode_batched_partial_values(&[lane], &g_obs_space())
             .unwrap()
             .leaves
     }
@@ -3830,7 +3829,7 @@ mod fused_route_tests {
             .collect();
         ModelObservation {
             observation: Some(
-                rlmesh_grpc::wire::encode_batched_partial_values(&lanes, &cam_obs_space())
+                crate::data::encode_batched_partial_values(&lanes, &cam_obs_space())
                     .unwrap()
                     .leaves,
             ),

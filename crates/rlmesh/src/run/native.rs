@@ -3,6 +3,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::data::{
+    decode_batched_partial_values, leaves_value, meta_map_from_proto, space_spec_from_proto,
+};
 use crate::recorder::artifacts::{ArtifactTap, EpisodeArtifacts};
 use crate::run::runtime::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
@@ -10,9 +13,6 @@ use crate::run::runtime::{
     StepCompletedEvent, TelemetrySnapshotEvent,
 };
 use async_trait::async_trait;
-use rlmesh_grpc::wire::{
-    decode_batched_partial_values, leaves_value, meta_map_from_proto, space_spec_from_proto,
-};
 use tokio_util::sync::CancellationToken;
 
 use super::drive::{
@@ -649,7 +649,7 @@ struct Episode {
 fn encode_lanes(
     values: &[Value],
     space: &rlmesh_proto::spaces::v1::SpaceSpec,
-) -> Result<Vec<rlmesh_grpc::wire::Bytes>> {
+) -> Result<Vec<bytes::Bytes>> {
     let space =
         space_spec_from_proto(space.clone()).map_err(|err| Error::Protocol(err.to_string()))?;
     let values = values
@@ -698,7 +698,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// One facade value per lane from a group's wire leaves.
 fn decode_lanes(
-    leaves: Vec<rlmesh_grpc::wire::Bytes>,
+    leaves: Vec<bytes::Bytes>,
     space: &rlmesh_proto::spaces::v1::SpaceSpec,
     lanes: usize,
 ) -> Result<Vec<Value>> {
@@ -808,11 +808,10 @@ impl HookRelay {
     async fn transform_lanes(
         &self,
         episode_ids: &[String],
-        leaves: &[rlmesh_grpc::wire::Bytes],
+        leaves: &[bytes::Bytes],
         space: &rlmesh_proto::spaces::v1::SpaceSpec,
         call: fn(&mut dyn RunHooks, i64, i64, &Value) -> Result<Option<Value>>,
-    ) -> std::result::Result<Option<(Vec<Value>, Option<Vec<rlmesh_grpc::wire::Bytes>>)>, HookError>
-    {
+    ) -> std::result::Result<Option<(Vec<Value>, Option<Vec<bytes::Bytes>>)>, HookError> {
         let values = decode_lanes(leaves.to_vec(), space, episode_ids.len())
             .map_err(|err| self.fatal(err))?;
         let lanes = self.lanes(episode_ids);
@@ -999,7 +998,7 @@ impl RuntimeHooks for HookRelay {
     async fn transform_observation(
         &self,
         event: &ObservationEmittedEvent,
-    ) -> std::result::Result<Option<Vec<rlmesh_grpc::wire::Bytes>>, HookError> {
+    ) -> std::result::Result<Option<Vec<bytes::Bytes>>, HookError> {
         let Some(leaves) = &event.observation else {
             return Ok(None);
         };
@@ -1020,7 +1019,7 @@ impl RuntimeHooks for HookRelay {
     async fn transform_action(
         &self,
         event: &ActionReceivedEvent,
-    ) -> std::result::Result<Option<Vec<rlmesh_grpc::wire::Bytes>>, HookError> {
+    ) -> std::result::Result<Option<Vec<bytes::Bytes>>, HookError> {
         let Some(leaves) = &event.action else {
             return Ok(None);
         };
