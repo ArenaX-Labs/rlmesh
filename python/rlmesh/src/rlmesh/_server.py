@@ -285,12 +285,7 @@ class EnvServer:
         else:
             env = prepare(env)
 
-        normalized_address = normalize_bind_address(
-            address,
-        )
-        if normalized_address is None:
-            # In a session of its own, on an OS-assigned local port.
-            normalized_address = ":0/env"
+        normalized_address = normalize_bind_address(address)
         refuse_v1_address("EnvServer", normalized_address)
         server_cls = load_native("PyVectorEnvServer" if is_vector else "PyEnvServer")
         if options is None or options.workflow_edition is None:

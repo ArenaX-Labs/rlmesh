@@ -81,7 +81,7 @@ int main(void) {
   CHECK(rlmesh_model_from_address(NULL, &served) == RLMESH_ERR_INVALID_ARGUMENT && !served);
   /* A served model is reached by its participant address, never a v1 one. */
   CHECK(rlmesh_model_from_address("127.0.0.1:1", &served) == RLMESH_ERR_INVALID_ARGUMENT &&
-        !served && strstr(rlmesh_last_error_message(), "v1 endpoints need RLMesh 0.1") != NULL);
+        !served && strstr(rlmesh_last_error_message(), "participant address") != NULL);
   RLMeshRemoteEnvOptions eo = RLMESH_REMOTE_ENV_OPTIONS_INIT;
   eo.address = "tcp://127.0.0.1:1";
   eo.has_connect_timeout_seconds = true;

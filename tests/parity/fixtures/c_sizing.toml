@@ -60,11 +60,11 @@ why = "Tests C ABI struct_size and unknown-tail rules; other APIs hide the raw A
 expect = { unknown_default = true, library_size = true }
 
 [[scenario]]
-id = "c_sizing_abi5_remote"
+id = "c_sizing_remote_undersized"
 family = "C sizing"
 rules = ["R-19"]
 operation = "sizing"
-variant = "abi5_remote"
+variant = "remote_undersized"
 languages = ["c"]
-why = "Tests C ABI struct_size for fields appended after ABI 5; other APIs hide the raw ABI structs."
-expect = { error = "ValueError", text = "RLMeshRemoteEnvOptions.struct_size MIN_SIZE+1 ends inside a field" }
+why = "Tests the current fenced C ABI minimum struct_size before any I/O; other APIs hide the raw ABI structs."
+expect = { error = "ValueError", text = "RLMeshRemoteEnvOptions.struct_size MIN_SIZE-1 is below its minimum MIN_SIZE" }

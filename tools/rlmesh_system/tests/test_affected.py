@@ -45,9 +45,9 @@ def test_change_reaches_every_dependent_and_the_extension() -> None:
         rust=[
             "rlmesh",
             "rlmesh-capi",
-            "rlmesh-session",
             "rlmesh-python",
             "rlmesh-runtime",
+            "rlmesh-session",
             "rlmesh-spaces",
         ],
         python=True,
