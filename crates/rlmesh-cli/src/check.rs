@@ -434,7 +434,7 @@ mod tests {
                 "no dev.rlmesh.describe label: the platform reads describe off the handshake"
                     .to_owned(),
             ],
-            passed: vec!["dev.rlmesh.describe runtime: rlmesh-wire-v1".to_owned()],
+            passed: vec!["dev.rlmesh.describe runtime: rlmesh-realtime-v1".to_owned()],
         };
         merge_deep(&mut report, deep);
         assert_eq!(

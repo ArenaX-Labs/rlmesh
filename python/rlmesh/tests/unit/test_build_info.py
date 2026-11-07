@@ -34,7 +34,7 @@ def test_version_and_generation() -> None:
     info = rlmesh.build_info()
 
     assert info.version == rlmesh._rlmesh.__version__
-    assert info.protocol_generation == "rlmesh-wire-v1"
+    assert info.protocol_generation == "rlmesh-realtime-v1"
 
 
 def test_base_is_year_month_and_prefixes_edition() -> None:

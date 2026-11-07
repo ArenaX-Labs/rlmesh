@@ -110,7 +110,7 @@ impl PyBuildInfo {
         rlmesh::build_info().version
     }
 
-    /// The wire protocol generation this build speaks (`rlmesh-wire-v1`).
+    /// The wire protocol generation this build speaks (`rlmesh-realtime-v1`).
     #[getter]
     fn protocol_generation(&self) -> &'static str {
         rlmesh::build_info().protocol_generation
