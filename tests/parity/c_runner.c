@@ -723,17 +723,21 @@ int main(int argc, char **argv) {
       OK(rlmesh_model_run(model, rlmesh_env_target(env), &opts, &result));
       printf("\"episodes\":%llu",
              (unsigned long long)rlmesh_run_result_num_episodes(result));
-    } else if (!strcmp(variant, "abi5_remote")) {
+    } else if (!strcmp(variant, "remote_undersized")) {
       /* A partial session options allocation is refused before I/O. */
       RLMeshRemoteEnvOptions eo = RLMESH_REMOTE_ENV_OPTIONS_INIT;
       eo.struct_size = RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE - 1;
       RLMeshRemoteEnv *renv = NULL;
       REQUIRE(rlmesh_remote_env_new(&eo, &renv) != RLMESH_OK);
       /* The size differs per target; the text masks it. */
-      char inside[32];
-      snprintf(inside, sizeof inside, "%zu",
-               (size_t)(RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE - 1));
-      error_fields_masked(inside, "MIN_SIZE-1");
+      char sizes[160];
+      snprintf(
+          sizes, sizeof sizes,
+          "RLMeshRemoteEnvOptions.struct_size %zu is below its minimum %zu",
+          (size_t)(RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE - 1),
+          (size_t)RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE);
+      error_fields_masked(sizes, "RLMeshRemoteEnvOptions.struct_size "
+                                 "MIN_SIZE-1 is below its minimum MIN_SIZE");
     } else if (!strcmp(variant, "out")) {
       OK(rlmesh_model_run(model, rlmesh_env_target(env), NULL, &result));
       struct ExtendedOut {
