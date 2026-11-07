@@ -796,6 +796,7 @@ message CtlRequest {
     StopScene stop_scene = 32;
     HostStarted host_started = 33;
     ArmScene arm_scene = 34;
+    Keep keep = 35;
   }
 }
 
@@ -921,6 +922,14 @@ message KeysAck {
 // Participant -> host: every key issued to the caller's generation, in the
 // reply's `keys`.
 message GetKeys {}
+
+// Keep the host's recent recording as an incident, out of the rolling
+// purge's reach (the cockpit's Keep). Refused UNSUPPORTED by a host that
+// records nothing.
+message Keep {
+  // Names the incident.
+  string label = 1;
+}
 
 // The handshake (`hs`, the only unsealed request): Noise IK, the
 // participant as initiator. msg 1 has an empty payload.

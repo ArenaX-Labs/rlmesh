@@ -2466,6 +2466,9 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
         Command::StopScene { run } => Verb::StopScene(pb::StopScene { run: run.clone() }),
         Command::HostStarted(started) => Verb::HostStarted(host_started_to_pb(started)),
         Command::ArmScene { run } => Verb::ArmScene(pb::ArmScene { run: run.clone() }),
+        Command::Keep { label } => Verb::Keep(pb::Keep {
+            label: label.clone(),
+        }),
     };
     pb::CtlRequest {
         participant: r.from.to_string(),
@@ -2574,6 +2577,7 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
         Verb::StopScene(s) => Command::StopScene { run: s.run },
         Verb::HostStarted(h) => Command::HostStarted(host_started_from_pb(h)?),
         Verb::ArmScene(a) => Command::ArmScene { run: a.run },
+        Verb::Keep(k) => Command::Keep { label: k.label },
     };
     Ok(Request {
         from: ParticipantId::new(r.participant)?,
@@ -3454,6 +3458,9 @@ mod tests {
                 run: "r-7k2m".into(),
                 result: Err(CtlError::new(CtlStatus::NotPresent, "no GPU")),
             }),
+            Command::Keep {
+                label: "eye-2 froze".into(),
+            },
         ];
         for command in requests {
             let request = Request {

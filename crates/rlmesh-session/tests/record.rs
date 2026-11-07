@@ -329,6 +329,15 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
         .await;
     robot.declare_parts(FT).await.expect("declare");
     publish_ft(&robot, 700).await;
+    // Any member that may arm asks the host to keep what it recorded.
+    robot.keep("keep me").await.expect("kept");
+    let incidents = files_in(&dir.path().join("incidents").join(session.to_string()));
+    assert_eq!(incidents.len(), 1, "{incidents:?}");
+    assert!(
+        incidents[0].to_string_lossy().ends_with("-keep_me"),
+        "{incidents:?}"
+    );
+    assert!(!files_in(&incidents[0]).is_empty());
     robot.detach().await.expect("detach");
     wait_until_async("the session to stop", || async {
         !server.sessions().await.contains(&session)

@@ -698,6 +698,14 @@ impl NativeRobot {
         Ok(())
     }
 
+    /// Asks the host to keep its recent recording as an incident named
+    /// `label` (the cockpit's Keep).
+    #[napi]
+    pub async fn keep(&self, label: String) -> Result<()> {
+        let robot = self.robot()?;
+        robot.participant().keep(&label).await.map_err(session_err)
+    }
+
     /// Emergency stop, latched locally with no network (any thread): the
     /// next `due` purges every queue and returns `estop`, and the host is
     /// told in the background. Latched until `clearEstop`, then disarm and

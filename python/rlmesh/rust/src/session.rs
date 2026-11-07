@@ -704,6 +704,15 @@ impl PyRobot {
         })
     }
 
+    /// Asks the host to keep its recent recording as an incident named
+    /// `label` (the cockpit's Keep).
+    fn keep(&self, py: Python<'_>, label: String) -> PyResult<()> {
+        let robot = self.robot()?;
+        block_on(py, async move {
+            robot.participant().keep(&label).await.map_err(session_err)
+        })
+    }
+
     /// Emergency stop, latched locally with no network (any thread): the
     /// next `due` purges every queue and returns `estop`, and the host is
     /// told in the background. Latched until `clear_estop`, then disarm and

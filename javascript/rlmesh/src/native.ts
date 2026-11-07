@@ -128,7 +128,8 @@ interface NativeRobot {
   publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
   due(path: string): NativeDue | null;
   handoverDone(path: string): void;
-  arm(): Promise<void>; disarm(): Promise<void>; estop(reason: string): void; clearEstop(): void;
+  arm(): Promise<void>; disarm(): Promise<void>; keep(label: string): Promise<void>;
+  estop(reason: string): void; clearEstop(): void;
   reportSafe(reason: string): void;
   nowNs(): bigint;
   edgeStats(path: string): NativeEdgeStats;
@@ -564,6 +565,11 @@ export class Robot implements AsyncDisposable {
   /** Back to DISARMED. */
   disarm(): Promise<void> {
     return wait(() => this.native.disarm());
+  }
+
+  /** Ask the host to keep its recording of the last minutes as an incident named `label` (at most every 5 s). */
+  keep(label = 'keep'): Promise<void> {
+    return wait(() => this.native.keep(label));
   }
 
   /**

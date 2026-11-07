@@ -506,6 +506,14 @@ class Robot:
         """Back to DISARMED."""
         self._native.disarm()
 
+    def keep(self, label: str = "keep") -> None:
+        """Ask the host to keep its recording of the last minutes as an incident named ``label``.
+
+        Kept out of the rolling purge's reach, like the cockpit's Keep. At
+        most every 5 s; a host that records nothing refuses it.
+        """
+        self._native.keep(label)
+
     def estop(self, reason: str = "estop") -> None:
         """Emergency stop, latched here with no network (any thread, a button handler too).
 

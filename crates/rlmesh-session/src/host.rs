@@ -232,7 +232,23 @@ pub struct HostConfig {
     /// refuses them.
     #[cfg(feature = "fleet")]
     pub lobby: Option<Arc<dyn LobbyService>>,
+    /// Answers `Keep` (the cockpit's Keep): keeps the session's recent
+    /// recording, and says where. `None` by default: refused UNSUPPORTED. A
+    /// recording [`crate::server::SessionServer`] sets it.
+    pub keep: Option<KeepRecording>,
 }
+
+/// Keeps `session`'s recent recording as an incident named `label`: where
+/// it went, or why not.
+pub type KeepRecording = Arc<dyn Fn(SessionId, &str) -> Result<String, String> + Send + Sync>;
+
+/// The least time between two Keeps of one session: each links the last
+/// minutes of segments out of the purge's reach, so a flood would hold the
+/// disk.
+const KEEP_EVERY: Duration = Duration::from_secs(5);
+
+/// The longest label a Keep may carry.
+const KEEP_LABEL_MAX: usize = 64;
 
 impl HostConfig {
     /// Defaults for `session` in `tenant`: wall mode, a 250 ms lease grace,
@@ -271,6 +287,7 @@ impl HostConfig {
             scene: None,
             #[cfg(feature = "fleet")]
             lobby: None,
+            keep: None,
         }
     }
 
@@ -523,6 +540,7 @@ impl SessionHost {
             host_keys,
             waiting: HashMap::new(),
             failed: Vec::new(),
+            last_keep: None,
             #[cfg(feature = "fleet")]
             lobby: HashMap::new(),
             #[cfg(feature = "fleet")]
@@ -1178,6 +1196,8 @@ struct HostActor {
     waiting: HashMap<GrantId, Waiting>,
     /// Grants a participant's end failed, still to answer.
     failed: Vec<GrantId>,
+    /// Host clock at the last Keep.
+    last_keep: Option<i64>,
     /// Lobby verbs waiting for their answer (a long poll), by sender
     /// generation and request id.
     #[cfg(feature = "fleet")]
@@ -1696,6 +1716,7 @@ impl HostActor {
             Command::GrantLease { .. } | Command::DeclareBinding { .. } => {
                 return self.mint(peer, request).await;
             }
+            Command::Keep { .. } => return self.keep(peer, request, now),
             Command::DeclareParts { board_id, .. } => {
                 if let Err(err) = self.auth.check_board(
                     &peer.participant,
@@ -1728,6 +1749,51 @@ impl HostActor {
             Err(err) => {
                 info!(status = ?err.status, "ctl refused: {}", err.message);
                 Outcome::refused(err)
+            }
+        }
+    }
+
+    /// `Keep`: the authority checks the sender, then the recording is kept.
+    fn keep(&mut self, peer: &Arc<Peer>, request: crate::wire::Request, now: i64) -> Outcome {
+        let Command::Keep { label } = &request.command else {
+            return Outcome::Drop;
+        };
+        let Some(keep) = self.config.keep.clone() else {
+            return Outcome::refused(CtlError::new(
+                CtlStatus::Unsupported,
+                "this host records nothing to keep",
+            ));
+        };
+        if label.len() > KEEP_LABEL_MAX {
+            return Outcome::refused(CtlError::new(
+                CtlStatus::InvalidRequest,
+                format!("a Keep label has at most {KEEP_LABEL_MAX} bytes"),
+            ));
+        }
+        let every = i64::try_from(KEEP_EVERY.as_nanos()).unwrap_or(i64::MAX);
+        if self
+            .last_keep
+            .is_some_and(|t| now.saturating_sub(t) < every)
+        {
+            return Outcome::refused(CtlError::new(
+                CtlStatus::NotReady,
+                format!("kept less than {} s ago", KEEP_EVERY.as_secs()),
+            ));
+        }
+        let label = label.clone();
+        if let Err(err) = self.authority.apply_from(request, &peer.identity, now) {
+            info!(status = ?err.status, "ctl refused: {}", err.message);
+            return Outcome::refused(err);
+        }
+        self.last_keep = Some(now);
+        match keep(self.config.session, &label) {
+            Ok(dir) => {
+                info!(by = %peer.participant, %dir, "recording kept");
+                Outcome::Reply(Ok(()), Vec::new(), Vec::new())
+            }
+            Err(why) => {
+                warn!(by = %peer.participant, %why, "recording not kept");
+                Outcome::refused(CtlError::new(CtlStatus::NotReady, why))
             }
         }
     }

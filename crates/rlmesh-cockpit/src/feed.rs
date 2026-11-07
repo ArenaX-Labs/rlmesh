@@ -121,6 +121,7 @@ impl Feed {
                                 .estop(format!("cockpit {}", participant.id()))
                                 .await
                                 .map(drop),
+                            Verb::Keep => participant.keep("keep").await,
                         };
                         if let Err(err) = &result {
                             warn!(verb = verb.name(), %err, "verb refused");

@@ -176,8 +176,8 @@ pub enum LiveAction {
 pub struct LiveBar {
     /// Showing the recent history, not the session now.
     pub paused: bool,
-    /// The host records into this machine's recordings directory, so Keep
-    /// and episodes work.
+    /// The host records into this machine's recordings directory, so
+    /// episodes work.
     pub local: bool,
     /// The next or running episode's task.
     #[cfg(feature = "collect")]
@@ -247,11 +247,12 @@ fn episode_controls(
     }
 }
 
-/// A live session's bar: pause or resume, Keep, and, with `collect`
+/// A live session's bar: pause or resume, Keep (a host verb), and, with `collect`
 /// (unreleased), the episode controls (start with a task; success, fail or
 /// discard).
 pub fn live_bar(ui: &mut egui::Ui, bar: &mut LiveBar) -> Option<LiveAction> {
     let mut action = None;
+    #[cfg(feature = "collect")]
     let local_only = "The host does not record into this machine's recordings";
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -277,9 +278,10 @@ pub fn live_bar(ui: &mut egui::Ui, bar: &mut LiveBar) -> Option<LiveAction> {
             action = Some(LiveAction::Pause);
         }
         if ui
-            .add_enabled(bar.local, Button::new("Keep"))
-            .on_hover_text("Keep the host's recording of the last 2 minutes as an incident")
-            .on_disabled_hover_text(local_only)
+            .button("Keep")
+            .on_hover_text(
+                "Ask the host to keep its recording of the last 2 minutes as an incident",
+            )
             .clicked()
         {
             action = Some(LiveAction::Keep);

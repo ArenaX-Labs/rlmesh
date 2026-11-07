@@ -32,7 +32,7 @@ struct Args {
     #[arg(long, default_value_t = 10.0)]
     timeout: f64,
     /// The recordings directory of a host on this machine (`rlmesh host
-    /// --record-dir`), for Keep; the host's default when absent.
+    /// --record-dir`), for episodes; the host's default when absent.
     #[arg(long, value_name = "DIR")]
     record_dir: Option<PathBuf>,
     /// The dataset episodes are collected into (`collected/{dataset}/`

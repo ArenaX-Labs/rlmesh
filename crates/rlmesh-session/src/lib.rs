@@ -120,7 +120,7 @@ pub use controller::{
     Controller, ControllerConfig, ControllerError, Predictor, RunError, SendError, Sent,
 };
 pub use error::SessionError;
-pub use host::{HistoryConfig, HostConfig, SessionHost};
+pub use host::{HistoryConfig, HostConfig, KeepRecording, SessionHost};
 pub use media::{ImagePublisher, MediaStats, Offer};
 pub use metrics::ParticipantHealth;
 pub use participant::{
