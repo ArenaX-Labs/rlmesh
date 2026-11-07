@@ -58,22 +58,24 @@ Most development never touches the edition:
 
 ## Lifecycle: Provisional, Then Sealed
 
-An edition is **provisional** while no stable release has shipped it: prerelease builds use exact release-cohort names (`YYYY.MM-X.Y.Z-beta.N`), and local source builds use exact `dev.<git>` cohort names. This prevents accidental interoperability between moving builds that have not had stable-release scrutiny. The first stable release that ships an edition **seals** the bare `YYYY.MM` name permanently: the spec document becomes immutable (enforced by checksum), and any later semantic change mints a new edition.
+An edition is **provisional** while no stable release has shipped it: prerelease builds use exact release-cohort names (`YYYY.MM-X.Y.Z-beta.N`), and local source builds use exact `dev.<git>` cohort names. This prevents accidental interoperability between moving builds that have not had stable-release scrutiny. The first stable release that ships an edition **seals** the bare `YYYY.MM` name: the spec document becomes immutable (enforced by checksum), and any later semantic change mints a new edition.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Provisional: prerelease / local cohort
     Provisional --> Sealed: first stable release seals the bare YYYY.MM name
-    Sealed --> Sealed: spec immutable, valid indefinitely
+    Sealed --> Sealed: spec immutable, offered through its release line
 ```
 
-`2026.06` used provisional cohorts through the 0.1 prerelease series and sealed at v0.1.0. After sealing, it remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on a schedule. `2026.10` is the 0.2 redesign: it uses `2026.10-0.2.0-<prerelease>` cohorts and seals at v0.2.0.
+`2026.06` used provisional cohorts through the 0.1 prerelease series and sealed at v0.1.0. Its spec never changes after sealing; every 0.1.x release offers it. A new edition is minted only by a deliberate semantic redesign, never on a schedule. `2026.10` is the 0.2 redesign: it uses `2026.10-0.2.0-<prerelease>` cohorts and seals at v0.2.0.
 
 ## Support Window
 
-Sealing freezes an edition's spec by checksum. Sealed editions are retained within a major line: every later release of the line keeps offering and accepting a sealed edition, including betas for a later edition. `rlmesh.toml` is the retained list, the crates generate their offer from it, and `mise run policy:check` fails if a sealed edition leaves it or if the list lost an edition the last release tag had sealed. The 0.1 wire remains available in the published 0.1 crates; 0.2 uses sessions only; broader API stabilization remains on the roadmap (see [compatibility](../compatibility.md)). A provisional cohort, which no stable release has sealed, may change or be dropped and interoperates only with the same cohort unless both sides advertise an older sealed edition. A prerelease or dev build never offers the official current edition (the first line of `crates/rlmesh-proto/supported_editions.txt`), so it does not meet a stable release of the edition it builds on.
+Sealing freezes an edition's spec by checksum. Sealed editions are retained within a release line: every later release of the line keeps offering and accepting a sealed edition, including betas for a later edition. `rlmesh.toml` is the retained list, the crates generate their offer from it, and `mise run policy:check` fails if a sealed edition leaves it or if the list lost an edition the last release tag had sealed. The 0.1 wire remains available in the published 0.1 crates; 0.2 uses sessions only; broader API stabilization remains on the roadmap (see [compatibility](../compatibility.md)). A provisional cohort, which no stable release has sealed, may change or be dropped and interoperates only with the same cohort unless both sides advertise an older sealed edition. A prerelease or dev build never offers the official current edition (the first line of `crates/rlmesh-proto/supported_editions.txt`), so it does not meet a stable release of the edition it builds on.
 
-Only a new major line (each 0.x minor, before 1.0) may drop one. `[workflow.dropped_editions]` in `rlmesh.toml` names each sealed edition a release stops offering, with the reason; `policy:check` exempts exactly those from the retention rule, and requires that each keeps its sealed record (so its spec checksum is still verified) and is not also offered. 0.2 uses it once: 0.2 is a major break; the managed platform keeps 2026.06 through its 0.1 stack. A 0.2 build therefore offers only `2026.10`; managed users who stay on `2026.06` keep it through the platform's 0.1 runner.
+Only a new major line (each 0.x minor, before 1.0) may drop one. `[workflow.dropped_editions]` in `rlmesh.toml` names each sealed edition a release stops offering, with the reason; `policy:check` exempts exactly those from the retention rule, and requires that each keeps its sealed record (so its spec checksum is still verified) and is not also offered. 0.2 uses it once: 0.2 is a major break; the managed platform keeps 2026.06 through its 0.1 stack. A 0.2 build therefore offers only `2026.10`; managed users who stay on `2026.06` keep it through the platform's 0.1 runner. Whether 0.2 should keep offering `2026.06` instead is still an open decision.
+
+Before 1.0, then, an edition protects a participant across releases of one line, not across every future release; keeping editions across lines is the goal for 1.0.
 
 ## Enforcement
 
