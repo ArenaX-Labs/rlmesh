@@ -5,6 +5,12 @@ pub(crate) const V1_REFUSAL: &str =
     "v1 endpoints need RLMesh 0.1; serve with rlmesh.serve / pass the session address";
 
 pub(crate) fn is_v2(text: &str) -> bool {
+    let text = text.trim();
+    if let Some((scheme, _)) = text.split_once("://")
+        && !matches!(scheme, "rlmesh" | "lockstep")
+    {
+        return false;
+    }
     rlmesh_session::address::is_v2_address(text)
 }
 
@@ -51,6 +57,9 @@ mod tests {
             "tcp://host:1",
             "unix:///tmp/env.sock",
             "https://host",
+            "https://host:443#key/env",
+            "tcp://host:1#key/env",
+            "unix:///tmp/env.sock#key/env",
             "host:1",
             "50051",
         ] {
