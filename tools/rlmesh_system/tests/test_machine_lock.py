@@ -90,3 +90,24 @@ def test_stale_inherited_descriptor_still_acquires_the_lock(tmp_path: Path) -> N
     assert job.communicate(timeout=10)[0].strip() == "acquired"
     assert job.returncode == 0
     assert (tmp_path / "heavy.holder").exists()
+
+
+def test_missing_nested_command_fails_without_waiting(tmp_path: Path) -> None:
+    env = dict(os.environ, RLMESH_LOCK_DIR=str(tmp_path))
+    command = [sys.executable, str(LOCK), "heavy", str(tmp_path / "missing")]
+    job = locked(
+        "heavy",
+        f"import os; os.execv({sys.executable!r}, {command!r})",
+        env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        _, error = job.communicate(timeout=10)
+    finally:
+        if job.poll() is None:
+            job.kill()
+            job.communicate()
+    assert job.returncode == 1
+    assert "cannot run" in error
+    assert "waiting" not in error
