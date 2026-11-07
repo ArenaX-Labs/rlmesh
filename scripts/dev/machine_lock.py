@@ -29,8 +29,26 @@ def main() -> None:
 
     locks = lock_dir()
     locks.mkdir(parents=True, exist_ok=True)
+    lock_path = locks / f"{name}.lock"
+    inherited_key = f"RLMESH_MACHINE_LOCK_{name.upper()}_FD"
+    try:
+        inherited_fd = int(os.environ.get(inherited_key, ""))
+        inherited_stat = os.fstat(inherited_fd)
+        lock_stat = lock_path.stat()
+        if (inherited_stat.st_dev, inherited_stat.st_ino) == (
+            lock_stat.st_dev,
+            lock_stat.st_ino,
+        ):
+            # The same open file description owns the lock across exec. Check
+            # it rather than trusting an environment marker alone.
+            fcntl.flock(inherited_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.set_inheritable(inherited_fd, True)
+            os.execvp(command[0], command)
+    except (ValueError, OSError):
+        pass
+
     holder = locks / f"{name}.holder"
-    fd = os.open(locks / f"{name}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
 
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -39,13 +57,18 @@ def main() -> None:
             current = holder.read_text().strip() or "another job"
         except OSError:
             current = "another job"
-        print(f"waiting for the {name} lock, held by: {current}", file=sys.stderr, flush=True)
+        print(
+            f"waiting for the {name} lock, held by: {current}",
+            file=sys.stderr,
+            flush=True,
+        )
         fcntl.flock(fd, fcntl.LOCK_EX)
 
     holder.write_text(f"{' '.join(command)} (in {os.getcwd()}, pid {os.getpid()})\n")
     # flock belongs to the open file description; keeping the fd across exec
     # hands the lock to the command for its whole lifetime.
     os.set_inheritable(fd, True)
+    os.environ[inherited_key] = str(fd)
     try:
         os.execvp(command[0], command)
     except OSError as error:
