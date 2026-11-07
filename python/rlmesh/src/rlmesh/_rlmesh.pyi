@@ -85,6 +85,7 @@ __all__ = [
     "V2Rate",
     "V2Recorder",
     "V2Robot",
+    "V2Samples",
     "Value",
     "adapters_join_check",
     "adapters_render_size",
@@ -1096,13 +1097,17 @@ class V2Recorder:
         timeline: `log_ns`, `part`, `holder`, `priority`, `token`).
         """
     @staticmethod
-    def samples(path: builtins.str) -> builtins.list[tuple[builtins.str, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]]:
+    def samples(path: builtins.str, images: builtins.bool = ...) -> V2Samples:
         r"""
         Every sample of a recording (an MCAP file, or a directory of them)
-        split into its declared fields, in log-time order: `(topic, log_ns,
-        fields)`, each field `(name, dtype, shape, bytes)`. Topics are
-        `{robot}/{path}` and `{robot}/{path}/_applied`; camera frames come
-        as raw RGB.
+        split into its declared fields, one at a time (one file's messages
+        held, each camera frame decoded as it is taken): `(topic, log_ns,
+        capture_ns, fields)`, each field `(name, dtype, shape, bytes)`, in
+        log-time order within a file. `capture_ns` is the capture time in
+        session time. Topics are `{robot}/{path}` and `{robot}/{path}/_applied`
+        (no fields: the edge dispatched nothing); camera frames come as raw
+        RGB, or with no bytes under `images=False` (a pass that only needs
+        each stream's shape).
         """
 
 @typing.final
@@ -1222,6 +1227,17 @@ class V2Robot:
     def close(self) -> None:
         r"""
         Detaches: the edges and publishers go, the host drops the parts.
+        """
+
+@typing.final
+class V2Samples:
+    r"""
+    [`PyRecorder::samples`]: a recording's samples, decoded as they are taken.
+    """
+    def __iter__(self) -> V2Samples: ...
+    def __next__(self) -> tuple[builtins.str, builtins.int, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]:
+        r"""
+        The next `(topic, log_ns, capture_ns, fields)`.
         """
 
 def _set_python_peer_info(*, language: str | None = None, language_version: str | None = None, package_version: str | None = None, os: str | None = None, os_version: str | None = None, arch: str | None = None, framework_versions: dict[str, str] | None = None, extra: dict[str, str] | None = None) -> None: ...

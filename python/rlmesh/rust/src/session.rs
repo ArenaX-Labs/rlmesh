@@ -18,7 +18,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_session::address::Address;
@@ -91,6 +91,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyObservation>()?;
     m.add_class::<PyRate>()?;
     m.add_class::<PyRecorder>()?;
+    m.add_class::<PySamples>()?;
     #[cfg(feature = "fleet")]
     m.add_class::<PyScene>()?;
     m.add_function(wrap_pyfunction!(parse_address, m)?)?;
@@ -1641,32 +1642,72 @@ impl PyRecorder {
     }
 
     /// Every sample of a recording (an MCAP file, or a directory of them)
-    /// split into its declared fields, in log-time order: `(topic, log_ns,
-    /// fields)`, each field `(name, dtype, shape, bytes)`. Topics are
-    /// `{robot}/{path}` and `{robot}/{path}/_applied`; camera frames come
-    /// as raw RGB.
+    /// split into its declared fields, one at a time (one file's messages
+    /// held, each camera frame decoded as it is taken): `(topic, log_ns,
+    /// capture_ns, fields)`, each field `(name, dtype, shape, bytes)`, in
+    /// log-time order within a file. `capture_ns` is the capture time in
+    /// session time. Topics are `{robot}/{path}` and `{robot}/{path}/_applied`
+    /// (no fields: the edge dispatched nothing); camera frames come as raw
+    /// RGB, or with no bytes under `images=False` (a pass that only needs
+    /// each stream's shape).
     #[staticmethod]
-    #[gen_stub(override_return_type(type_repr = "builtins.list[tuple[builtins.str, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]]", imports = ("builtins",)))]
-    fn samples<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyList>> {
-        let samples = py
-            .detach(|| {
-                rlmesh_session::record::read(&path)
-                    .map(|messages| rlmesh_session::record::decode_samples(&messages))
-            })
-            .map_err(record_err)?;
-        let out = PyList::empty(py);
-        for sample in samples {
-            let fields = PyList::empty(py);
-            for f in sample.fields {
-                fields.append((
-                    f.name,
-                    f.dtype.name(),
-                    f.shape,
-                    pyo3::types::PyBytes::new(py, &f.bytes),
-                ))?;
-            }
-            out.append((sample.topic, sample.log_ns, fields))?;
+    #[pyo3(signature = (path, images = true))]
+    fn samples(path: String, images: bool) -> PyResult<PySamples> {
+        let samples = rlmesh_session::record::samples(&path).map_err(record_err)?;
+        Ok(PySamples {
+            inner: Mutex::new(if images {
+                samples
+            } else {
+                samples.skip_images()
+            }),
+        })
+    }
+}
+
+/// [`PyRecorder::samples`]: a recording's samples, decoded as they are taken.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Samples", frozen)]
+pub struct PySamples {
+    inner: Mutex<rlmesh_session::record::Samples>,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PySamples {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// The next `(topic, log_ns, capture_ns, fields)`.
+    #[gen_stub(override_return_type(type_repr = "tuple[builtins.str, builtins.int, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]", imports = ("builtins",)))]
+    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyTuple>>> {
+        let next = py.detach(|| {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next()
+        });
+        let Some(sample) = next.transpose().map_err(record_err)? else {
+            return Ok(None);
+        };
+        let fields = PyList::empty(py);
+        for f in sample.fields {
+            fields.append((
+                f.name,
+                f.dtype.name(),
+                f.shape,
+                pyo3::types::PyBytes::new(py, &f.bytes),
+            ))?;
         }
-        Ok(out)
+        Ok(Some(PyTuple::new(
+            py,
+            [
+                sample.topic.into_pyobject(py)?.into_any(),
+                sample.log_ns.into_pyobject(py)?.into_any(),
+                sample.capture_ns.into_pyobject(py)?.into_any(),
+                fields.into_any(),
+            ],
+        )?))
     }
 }

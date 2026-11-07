@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use rlmesh_session::auth::Credential;
 use rlmesh_session::edge::{EdgeConfig, Robot};
 use rlmesh_session::record::{
-    Episode, Recorded, Recorder, Rolling, collect, decode_samples, keep, read, summarize,
+    Episode, Recorded, Recorder, Rolling, collect, decode_samples, keep, read,
+    samples as samples_of, summarize,
 };
 use rlmesh_session::spec::apply::{Tensor, Value};
 use rlmesh_session::spec::{Policy, RunOptions};
@@ -434,6 +435,17 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
         .map(|f| (f.name.as_str(), f.bytes.len()))
         .collect();
     assert_eq!(fields, [("force", 12), ("torque", 12)]);
+    // Streamed segment by segment, the same samples, each with its capture
+    // time in session time.
+    let mut streamed: Vec<_> = samples_of(&collected)
+        .expect("stream the episode")
+        .collect::<Result<_, _>>()
+        .expect("every segment reads");
+    let mut whole = samples.clone();
+    streamed.sort_by_key(|s| (s.topic.clone(), s.capture_ns, s.log_ns));
+    whole.sort_by_key(|s| (s.topic.clone(), s.capture_ns, s.log_ns));
+    assert_eq!(streamed, whole);
+    assert!(streamed.iter().all(|s| s.capture_ns <= s.log_ns));
 
     // A disk below the floor gets nothing written.
     let full = tempfile::tempdir().expect("tempdir");
