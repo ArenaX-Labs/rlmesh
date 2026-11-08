@@ -662,7 +662,7 @@ impl NativeRobot {
             }
             return Ok(None);
         }
-        let sent = sdk::publish(&robot, &path, capture, owned).map_err(session_err)?;
+        let sent = sdk::publish(robot.published(), &path, capture, owned).map_err(session_err)?;
         Ok(sent.map(seq))
     }
 
@@ -1139,6 +1139,9 @@ pub struct BindOptions {
     pub allow: Option<Vec<String>>,
     pub captures: Option<HashMap<String, String>>,
     pub timeout_s: Option<f64>,
+    /// Parts of the policy's own to publish annotations on (an authored
+    /// map, none commandable).
+    pub publishes_json: Option<String>,
 }
 
 fn run_options(
@@ -1291,6 +1294,7 @@ impl Predictor for JsPredictor {
 pub struct NativePolicy {
     name: String,
     controller: Mutex<Option<Arc<Controller>>>,
+    published: Option<Arc<rlmesh_session::edge::Published>>,
     replies: Mutex<Option<SyncSender<Reply>>>,
     closing: Arc<AtomicBool>,
 }
@@ -1312,12 +1316,27 @@ pub async fn bind_policy(
     let class = priority(options.priority.as_deref().unwrap_or("model"))?;
     let run_options = run_options(&name, robot.as_deref(), &options)
         .map_err(|why| binding_refused(format!("binding refused: {why}")))?;
-    let controller = sdk::bind_policy(&address, &name, &policy_json, &run_options, class, wait)
+    let (controller, published) = match options.publishes_json.as_deref() {
+        Some(publishes) => sdk::bind_policy_publishing(
+            &address,
+            &name,
+            &policy_json,
+            publishes,
+            &run_options,
+            class,
+            wait,
+        )
         .await
-        .map_err(bind_policy_err)?;
+        .map(|(controller, published)| (controller, Some(Arc::new(published)))),
+        None => sdk::bind_policy(&address, &name, &policy_json, &run_options, class, wait)
+            .await
+            .map(|controller| (controller, None)),
+    }
+    .map_err(bind_policy_err)?;
     Ok(NativePolicy {
         name,
         controller: Mutex::new(Some(Arc::new(controller))),
+        published,
         replies: Mutex::new(None),
         closing: Arc::new(AtomicBool::new(false)),
     })
@@ -1339,6 +1358,49 @@ impl NativePolicy {
     #[napi(getter)]
     pub fn name(&self) -> String {
         self.name.clone()
+    }
+
+    /// The parts this policy publishes, as the host normalised them, in
+    /// authored order (none without `publishesJson`).
+    #[napi]
+    pub fn published_parts(&self) -> Vec<PartInfo> {
+        self.published
+            .iter()
+            .flat_map(|p| p.parts())
+            .map(part_info)
+            .collect()
+    }
+
+    /// Publishes one sample of one of this policy's own parts from its
+    /// fields in declaration order (packed bytes; a string for text),
+    /// captured at `capture_ns` (now by default). Returns the sample's seq,
+    /// or `null` when coalesced.
+    #[napi]
+    pub fn publish(
+        &self,
+        path: String,
+        fields: Vec<Either<String, Uint8Array>>,
+        capture_ns: Option<BigInt>,
+    ) -> Result<Option<i64>> {
+        let published = self.published.as_ref().ok_or_else(|| {
+            invalid(format!(
+                "policy {} publishes nothing: pass publishes to Policy",
+                self.name
+            ))
+        })?;
+        let owned: Vec<Vec<u8>> = fields
+            .into_iter()
+            .map(|field| match field {
+                Either::A(text) => text.into_bytes(),
+                Either::B(bytes) => bytes.to_vec(),
+            })
+            .collect();
+        let capture = match capture_ns {
+            Some(at) => ns(&at, "captureNs")?,
+            None => self.controller()?.participant().clock().now_ns(),
+        };
+        let sent = sdk::publish(published, &path, capture, owned).map_err(session_err)?;
+        Ok(sent.map(seq))
     }
 
     /// The binding table, as the cockpit shows it (§6.8).

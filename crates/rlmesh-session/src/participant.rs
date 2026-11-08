@@ -1778,7 +1778,27 @@ impl Participant {
     pub fn bind(&self, policy: &Policy, options: &RunOptions) -> Result<Binding, BindError> {
         let view = self.shared.view.borrow();
         match view.as_ref() {
-            Some(state) => crate::spec::bind_in(policy, &Target::of(state), options),
+            Some(state) => {
+                // A policy's own parts (its annotations) are never bound to
+                // it: they neither make a session several robots nor stand
+                // in for the one it drives.
+                let me = &self.shared.id;
+                if state.parts.iter().any(|p| &p.owner == me) {
+                    let others: Vec<PartSpec> = state
+                        .parts
+                        .iter()
+                        .filter(|p| &p.owner != me)
+                        .cloned()
+                        .collect();
+                    let target = Target {
+                        parts: &others,
+                        places: &state.places,
+                    };
+                    crate::spec::bind_in(policy, &target, options)
+                } else {
+                    crate::spec::bind_in(policy, &Target::of(state), options)
+                }
+            }
             None => crate::spec::bind(policy, &[], options),
         }
     }

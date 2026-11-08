@@ -309,6 +309,43 @@ test('a recorder writes the session to MCAP and reads it back', async () => {
   }
 });
 
+test('a policy publishes annotations under its name and never binds them', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rlmesh-annotate-'));
+  try {
+    const path = join(dir, 'tracked.mcap');
+    const recorder = await rlmesh.Recorder.start(path, { session: host });
+    {
+      await using eye = await rlmesh.Robot.connect(
+        'eye-1',
+        { eyes: { kind: 'joints', names: ['pan', 'tilt'], fields: ['pos'], hz: 200, command: 'position' } },
+        { session: host },
+      );
+      await using tracker = new rlmesh.Policy(
+        { hz: 25, actions: { gaze: { kind: 'joints', at: 'eyes', command: 'position', hz: 50 } } },
+        { session: host, name: 'tracker', publishes: { target: { kind: 'x/target', hz: 25, fields: { xy: ['float32', [2]] } } } },
+      );
+      // One robot besides the tracker's own parts: bound with no robot named, the eye alone.
+      const binding = await tracker.bind();
+      assert.match(binding.toString(), /binding tracker on eye-1/);
+      assert.throws(() => tracker.publish('boxes', Float32Array.of(0, 0)), /no part 'boxes'/);
+      // For half a second: the recorder subscribes to a new part once it sees it.
+      for (let i = 0; i < 25; i++) {
+        tracker.publish('target', Float32Array.of(0.01 * i, 0.5));
+        await sleep(20);
+      }
+      void eye;
+    }
+    await recorder.close();
+    const summary = await rlmesh.readRecording(path);
+    const target = summary.topics.find((t) => t.topic === '/tracker/target');
+    assert.ok(target, summary.topics.map((t) => t.topic).join(', '));
+    assert.ok(target.messages >= 1);
+    assert.equal(target.undecodable, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a throwing predict releases the leases and the run rejects with its error', async () => {
   let calls = 0;
   await using _ur = await FakeUR10e.start(host);

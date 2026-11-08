@@ -445,12 +445,13 @@ impl Controller {
         config: ControllerConfig,
     ) -> Result<Self, ControllerError> {
         let robot: Option<ParticipantId> = options.robot.clone();
+        let me = participant.id().clone();
         let deadline = tokio::time::Instant::now() + config.bind_timeout;
         participant
             .wait_for("the robot's parts", config.bind_timeout, |view| {
                 view.parts
                     .iter()
-                    .any(|p| robot.as_ref().is_none_or(|r| &p.owner == r))
+                    .any(|p| p.owner != me && robot.as_ref().is_none_or(|r| &p.owner == r))
             })
             .await?;
         // Robots declare one by one: a binding that names robots not

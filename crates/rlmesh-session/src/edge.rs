@@ -39,5 +39,5 @@ pub use crate::wire::EdgeMode;
 pub use error::EdgeError;
 pub use fallback::{ModeStats, SafeCause};
 pub use queue::{Delivery, QueueStats, QueuedAction};
-pub use robot::{Due, Handover, Robot};
+pub use robot::{Due, Handover, Published, Robot};
 pub use runtime::{Edge, OnAccept};
