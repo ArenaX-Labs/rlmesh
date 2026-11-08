@@ -4293,6 +4293,10 @@
             "kind": "function",
             "signature": "observe() -> Observation"
           },
+          "publish": {
+            "kind": "function",
+            "signature": "publish(path: str, value: object = None, /, *, capture_ns: int | None = None, **fields: object) -> int | None"
+          },
           "release": {
             "kind": "function",
             "signature": "release() -> None"
@@ -4314,7 +4318,7 @@
             "signature": "stop() -> None"
           }
         },
-        "signature": "Policy(policy: Mapping[str, Any], *, session: Host | str, name: str = 'policy', priority: str = 'model', timeout: float = 10.0)",
+        "signature": "Policy(policy: Mapping[str, Any], *, session: Host | str, name: str = 'policy', priority: str = 'model', timeout: float = 10.0, publishes: Mapping[str, Any] | None = None)",
         "stability": "Experimental"
       },
       "Rate": {

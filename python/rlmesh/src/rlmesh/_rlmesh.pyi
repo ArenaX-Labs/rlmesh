@@ -809,12 +809,26 @@ class V2Controller:
         r"""
         The replan rate R.
         """
-    def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: typing.Optional[builtins.str], *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ...) -> V2Controller:
+    def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: typing.Optional[builtins.str], *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ..., publishes_json: typing.Optional[builtins.str] = None) -> V2Controller:
         r"""
         Attaches as `name` at `priority`, waits for `robot`'s parts, binds
         `policy_json` (the policy map, §6) with the run-time options, and
-        declares the binding. Raises `BindingRefused` with the binder's
-        refuse-and-explain text.
+        declares the binding. With `publishes_json` (an authored map of
+        parts, none commandable) it also declares those parts under its own
+        name, to publish annotations. Raises `BindingRefused` with the
+        binder's refuse-and-explain text.
+        """
+    def published_parts(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        The parts this policy publishes, as the host normalised them, in
+        authored order (none without `publishes_json`).
+        """
+    def publish(self, path: builtins.str, fields: collections.abc.Sequence[builtins.str | builtins.bytes | memoryview], capture_ns: typing.Optional[builtins.int] = None) -> typing.Optional[builtins.int]:
+        r"""
+        Publishes one sample of one of this policy's own parts from its
+        fields in declaration order (C-contiguous bytes-likes; a `str` for
+        text), captured at `capture_ns` (`time.monotonic_ns()`; now by
+        default). Returns the sample's seq, or `None` when coalesced.
         """
     def actions(self) -> builtins.list[tuple[builtins.str, typing.Optional[builtins.str], builtins.int]]:
         r"""

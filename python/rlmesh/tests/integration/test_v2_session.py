@@ -548,6 +548,55 @@ def fake_lerobot(monkeypatch: pytest.MonkeyPatch) -> list[FakeDataset]:
     return created
 
 
+def test_a_policy_publishes_annotations_under_its_name_and_never_binds_them(
+    host: rlmesh.Host, tmp_path: Path
+) -> None:
+    gaze = {
+        "hz": 25,
+        "actions": {
+            "gaze": {"kind": "joints", "at": "eyes", "command": "position", "hz": 50}
+        },
+    }
+    target = {
+        "target": {"kind": "x/target", "hz": 25, "fields": {"xy": ["float32", [2]]}}
+    }
+    path = tmp_path / "tracked.mcap"
+    eye = rlmesh.Robot("eye-1", EYE, session=host)
+    try:
+        eye.arm()
+        with (
+            rlmesh.Recorder(path, session=host),
+            rlmesh.Policy(
+                gaze, session=host, name="tracker", publishes=target
+            ) as tracker,
+        ):
+            # One robot besides the tracker's own parts: bound with no robot
+            # named, the eye alone, at its path.
+            binding = tracker.bind()
+            assert "binding tracker on eye-1" in str(binding), str(binding)
+            with pytest.raises(ValueError, match="no part 'boxes'"):
+                tracker.publish("boxes", np.zeros(2, np.float32))
+            # For half a second: the recorder subscribes to a new part once
+            # it sees it.
+            sent = []
+            for i in range(25):
+                sent.append(
+                    tracker.publish("target", np.array([0.01 * i, 0.5], np.float32))
+                )
+                time.sleep(0.02)
+            assert any(seq is not None for seq in sent)
+        with pytest.raises(ValueError, match="publishes nothing"):
+            plain = rlmesh.Policy(gaze, session=host, name="plain")
+            with plain:
+                plain.bind("eye-1")
+                plain.publish("target", np.zeros(2, np.float32))
+    finally:
+        eye.close()
+    topics = rlmesh.read_recording(path)["topics"]
+    assert topics["/tracker/target"]["messages"] >= 1
+    assert topics["/tracker/target"]["undecodable"] == 0
+
+
 def test_eyes_with_no_state_export_and_an_idle_eye_keeps_its_last_action(
     host: rlmesh.Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -394,6 +394,25 @@ impl PyHost {
     }
 }
 
+/// A sample's fields as owned bytes: UTF-8 for a `str`, else a
+/// C-contiguous buffer's bytes.
+fn field_bytes(py: Python<'_>, path: &str, fields: &[Bound<'_, PyAny>]) -> PyResult<Vec<Vec<u8>>> {
+    let mut owned: Vec<Vec<u8>> = Vec::with_capacity(fields.len());
+    for field in fields {
+        if let Ok(text) = field.extract::<String>() {
+            owned.push(text.into_bytes());
+        } else {
+            let buffer = PyBuffer::<u8>::get(field).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "{path}: a field must be a C-contiguous bytes-like or a str"
+                ))
+            })?;
+            owned.push(buffer.to_vec(py)?);
+        }
+    }
+    Ok(owned)
+}
+
 /// One field of a part, for the Python layer: `(name, dtype, shape)`.
 type FieldInfo = (String, String, Vec<u32>);
 
@@ -647,21 +666,9 @@ impl PyRobot {
         capture_ns: Option<i64>,
     ) -> PyResult<Option<u64>> {
         let robot = self.robot()?;
-        let mut owned: Vec<Vec<u8>> = Vec::with_capacity(fields.len());
-        for field in &fields {
-            if let Ok(text) = field.extract::<String>() {
-                owned.push(text.into_bytes());
-            } else {
-                let buffer = PyBuffer::<u8>::get(field).map_err(|_| {
-                    PyValueError::new_err(format!(
-                        "{path}: a field must be a C-contiguous bytes-like or a str"
-                    ))
-                })?;
-                owned.push(buffer.to_vec(py)?);
-            }
-        }
+        let owned = field_bytes(py, path, &fields)?;
         let capture = capture_ns.unwrap_or_else(|| robot.participant().clock().now_ns());
-        py.detach(move || sdk::publish(&robot, path, capture, owned))
+        py.detach(move || sdk::publish(robot.published(), path, capture, owned))
             .map_err(session_err)
     }
 
@@ -1184,6 +1191,8 @@ impl Predictor for PyPredictor<'_> {
 pub struct PyController {
     name: String,
     controller: Mutex<Option<Arc<Controller>>>,
+    /// The parts it publishes (annotations), when it declared any.
+    published: Option<Arc<rlmesh_session::edge::Published>>,
     session: EmbeddedHost,
 }
 
@@ -1203,13 +1212,15 @@ impl PyController {
 impl PyController {
     /// Attaches as `name` at `priority`, waits for `robot`'s parts, binds
     /// `policy_json` (the policy map, §6) with the run-time options, and
-    /// declares the binding. Raises `BindingRefused` with the binder's
-    /// refuse-and-explain text.
+    /// declares the binding. With `publishes_json` (an authored map of
+    /// parts, none commandable) it also declares those parts under its own
+    /// name, to publish annotations. Raises `BindingRefused` with the
+    /// binder's refuse-and-explain text.
     #[new]
     #[pyo3(signature = (
         address, name, policy_json, robot, *, priority="model", under=None,
         at=BTreeMap::new(), positional=Vec::new(), allow=Vec::new(),
-        captures=BTreeMap::new(), timeout_s=10.0
+        captures=BTreeMap::new(), timeout_s=10.0, publishes_json=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1225,6 +1236,7 @@ impl PyController {
         allow: Vec<String>,
         captures: BTreeMap<String, String>,
         timeout_s: f64,
+        publishes_json: Option<&str>,
     ) -> PyResult<Self> {
         let session = place(py, address, LEASE_GRACE, false)?;
         let address = session.address().clone();
@@ -1241,16 +1253,73 @@ impl PyController {
         }
         .run_options()
         .map_err(|why| BindingRefused::new_err(format!("binding refused: {why}")))?;
-        let controller = block_on(py, async move {
-            sdk::bind_policy(&address, name, policy_json, &options, class, wait)
+        let (controller, published) = block_on(py, async move {
+            match publishes_json {
+                Some(publishes) => sdk::bind_policy_publishing(
+                    &address,
+                    name,
+                    policy_json,
+                    publishes,
+                    &options,
+                    class,
+                    wait,
+                )
                 .await
-                .map_err(bind_policy_err)
+                .map(|(controller, published)| (controller, Some(Arc::new(published)))),
+                None => sdk::bind_policy(&address, name, policy_json, &options, class, wait)
+                    .await
+                    .map(|controller| (controller, None)),
+            }
+            .map_err(bind_policy_err)
         })?;
         Ok(Self {
             name: name.to_string(),
             controller: Mutex::new(Some(Arc::new(controller))),
+            published,
             session,
         })
+    }
+
+    /// The parts this policy publishes, as the host normalised them, in
+    /// authored order (none without `publishes_json`).
+    #[gen_stub(override_return_type(type_repr = "builtins.list[builtins.dict[builtins.str, typing.Any]]", imports = ("builtins", "typing")))]
+    fn published_parts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let parts = self
+            .published
+            .iter()
+            .flat_map(|p| p.parts())
+            .map(|p| part_dict(py, p))
+            .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, parts)
+    }
+
+    /// Publishes one sample of one of this policy's own parts from its
+    /// fields in declaration order (C-contiguous bytes-likes; a `str` for
+    /// text), captured at `capture_ns` (`time.monotonic_ns()`; now by
+    /// default). Returns the sample's seq, or `None` when coalesced.
+    #[pyo3(signature = (path, fields, capture_ns=None))]
+    fn publish(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        #[gen_stub(override_type(
+            type_repr = "collections.abc.Sequence[builtins.str | builtins.bytes | memoryview]",
+            imports = ("collections.abc", "builtins")
+        ))]
+        fields: Vec<Bound<'_, PyAny>>,
+        capture_ns: Option<i64>,
+    ) -> PyResult<Option<u64>> {
+        let published = self.published.clone().ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "policy {} publishes nothing: pass publishes= to Policy",
+                self.name
+            ))
+        })?;
+        let owned = field_bytes(py, path, &fields)?;
+        let controller = self.controller()?;
+        let capture = capture_ns.unwrap_or_else(|| controller.participant().clock().now_ns());
+        py.detach(move || sdk::publish(&published, path, capture, owned))
+            .map_err(session_err)
     }
 
     /// The policy's participant id.

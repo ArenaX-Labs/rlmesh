@@ -298,6 +298,51 @@ class Due:
         return f"Due(path={self.path!r}, mode={self.mode!r}, value={self.value!r}, safe={self.safe!r})"
 
 
+def _sample(
+    owner: str,
+    parts: Mapping[str, tuple[_Field, ...]],
+    path: str,
+    value: object,
+    fields: Mapping[str, object],
+) -> list[str | memoryview]:
+    """One sample of ``owner``'s part ``path`` as its fields' buffers, in declaration order."""
+    declared = parts.get(path)
+    if declared is None:
+        raise ValueError(
+            f"{owner} has no part {path!r} (its parts: {', '.join(parts)})"
+        )
+    if value is not None and fields:
+        raise TypeError(f"{path}: pass the value or keyword fields, not both")
+    if isinstance(value, Mapping):
+        values = dict(cast("Mapping[str, object]", value))
+    elif value is not None:
+        if len(declared) != 1:
+            names = ", ".join(f.name for f in declared)
+            raise TypeError(
+                f"{path} has fields {names}: publish({path!r}, {declared[0].name}=...)"
+            )
+        values = {declared[0].name: value}
+    else:
+        values = dict(fields)
+    unknown = set(values) - {f.name for f in declared}
+    missing = [f.name for f in declared if f.name not in values]
+    if unknown or missing:
+        raise TypeError(
+            f"{path}: fields {', '.join(f.name for f in declared)} "
+            f"(missing {missing or 'none'}, unknown {sorted(unknown) or 'none'})"
+        )
+    buffers: list[str | memoryview] = []
+    for field in declared:
+        item = values[field.name]
+        if field.dtype is None:
+            if not isinstance(item, str):
+                raise TypeError(f"{path} is text: publish a str")
+            buffers.append(item)
+        else:
+            buffers.append(_bytes(path, field, item))
+    return buffers
+
+
 class Robot:
     """One robot: its map declared, its parts published, its commands served.
 
@@ -393,40 +438,7 @@ class Robot:
         default). Returns the sample's seq, or ``None`` when it was
         coalesced or handed to the image encoder.
         """
-        declared = self._fields.get(path)
-        if declared is None:
-            raise ValueError(
-                f"{self.name} has no part {path!r} (its parts: {', '.join(self._fields)})"
-            )
-        if value is not None and fields:
-            raise TypeError(f"{path}: pass the value or keyword fields, not both")
-        if isinstance(value, Mapping):
-            values = dict(cast("Mapping[str, object]", value))
-        elif value is not None:
-            if len(declared) != 1:
-                names = ", ".join(f.name for f in declared)
-                raise TypeError(
-                    f"{path} has fields {names}: publish({path!r}, {declared[0].name}=...)"
-                )
-            values = {declared[0].name: value}
-        else:
-            values = dict(fields)
-        unknown = set(values) - {f.name for f in declared}
-        missing = [f.name for f in declared if f.name not in values]
-        if unknown or missing:
-            raise TypeError(
-                f"{path}: fields {', '.join(f.name for f in declared)} "
-                f"(missing {missing or 'none'}, unknown {sorted(unknown) or 'none'})"
-            )
-        buffers: list[str | memoryview] = []
-        for field in declared:
-            item = values[field.name]
-            if field.dtype is None:
-                if not isinstance(item, str):
-                    raise TypeError(f"{path} is text: publish a str")
-                buffers.append(item)
-            else:
-                buffers.append(_bytes(path, field, item))
+        buffers = _sample(self.name, self._fields, path, value, fields)
         if self._lockstep is not None:
             self._lockstep.publish(path, buffers)
             return None
@@ -645,6 +657,13 @@ class Policy:
 
     ``priority`` is the lease class it attaches with: ``model`` (default),
     ``operator`` (preempts models: teleop), ``safety`` or ``scripted``.
+
+    ``publishes`` declares parts of the policy's own to :meth:`publish`
+    annotations on (a detector's boxes, a tracker's target), in the robot
+    map's form (§3), none commandable: ``{"target": {"kind": "x/target",
+    "hz": 30, "fields": {"xy": ["float32", [2]]}}}``. They appear under the policy's name
+    (``tracker/target``): recorded, shown in the cockpit, readable by other
+    policies, and never bound to this one.
     """
 
     def __init__(
@@ -655,14 +674,17 @@ class Policy:
         name: str = "policy",
         priority: str = "model",
         timeout: float = 10.0,
+        publishes: Mapping[str, Any] | None = None,
     ) -> None:
         self._policy_json = json.dumps(policy)
+        self._publishes_json = json.dumps(publishes) if publishes else None
         self._address = _address(session)
         self._name = name
         self._priority = priority
         self._timeout = timeout
         self._native: V2Controller | None = None
         self._binding: Binding | None = None
+        self._fields: dict[str, tuple[_Field, ...]] = {}
 
     @property
     def name(self) -> str:
@@ -712,9 +734,37 @@ class Policy:
             allow=list(allow or ()),
             captures=dict(captures),
             timeout_s=self._timeout,
+            publishes_json=self._publishes_json,
         )
+        self._fields = {
+            cast("str", part["path"]): _fields(
+                cast("list[tuple[str, str, list[int]]]", part["fields"])
+            )
+            for part in self._native.published_parts()
+        }
         self._binding = Binding(self._native)
         return self._binding
+
+    def publish(
+        self,
+        path: str,
+        value: object = None,
+        /,
+        *,
+        capture_ns: int | None = None,
+        **fields: object,
+    ) -> int | None:
+        """Publish one sample of one of the policy's own parts (``publishes``), after :meth:`bind`.
+
+        Takes values the way :meth:`Robot.publish` does, and never blocks
+        on the network. Returns the sample's seq, or ``None`` when it was
+        coalesced.
+        """
+        native = self._bound()
+        if not self._fields:
+            raise ValueError(f"policy {self._name} publishes nothing: pass publishes=")
+        buffers = _sample(self._name, self._fields, path, value, fields)
+        return native.publish(path, buffers, capture_ns)
 
     def _bound(self) -> V2Controller:
         if self._native is None:

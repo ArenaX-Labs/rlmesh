@@ -137,6 +137,8 @@ interface NativeRobot {
 }
 interface NativePolicy {
   readonly name: string; readonly table: string; readonly tableJson: string; readonly fingerprint: string;
+  publishedParts(): NativePart[];
+  publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
   readonly warnings: string[]; readonly replanHz: number;
   observe(): NativeObservation;
   send(values: NativeEntry[], observation: NativeObservation): { entry: string; seq?: number | null }[];
@@ -415,6 +417,43 @@ export interface EdgeStats {
 
 type PublishValue = TypedArray | ArrayLike<number> | number | boolean | string;
 
+/** One sample of `owner`'s part `path` as its fields' buffers, in declaration order. */
+function sample(
+  owner: string,
+  parts: Map<string, NativeField[]>,
+  path: string,
+  value: PublishValue | Record<string, PublishValue>,
+): (string | Uint8Array)[] {
+  const declared = parts.get(path);
+  if (!declared) throw new RangeError(`${owner} has no part '${path}' (its parts: ${[...parts.keys()].join(', ')})`);
+  let values: Record<string, PublishValue>;
+  if (value !== null && typeof value === 'object' && !isTyped(value) && !Array.isArray(value)) {
+    values = value as Record<string, PublishValue>;
+  } else {
+    if (declared.length !== 1) {
+      throw new TypeError(`${path} has fields ${declared.map((f) => f.name).join(', ')}: publish('${path}', { ${declared[0]!.name}: ... })`);
+    }
+    values = { [declared[0]!.name]: value as PublishValue };
+  }
+  const unknown = Object.keys(values).filter((k) => !declared.some((f) => f.name === k));
+  const missing = declared.filter((f) => !(f.name in values)).map((f) => f.name);
+  if (unknown.length || missing.length) {
+    throw new TypeError(
+      `${path}: fields ${declared.map((f) => f.name).join(', ')} (missing ${missing.join(', ') || 'none'}, unknown ${unknown.join(', ') || 'none'})`,
+    );
+  }
+  return declared.map((field) => {
+    const item = values[field.name];
+    if (field.dtype === 'utf8') {
+      if (typeof item !== 'string') throw new TypeError(`${path} is text: publish a string`);
+      return item;
+    }
+    if (typeof item === 'string') throw new TypeError(`${path}.${field.name}: publish numbers, not a string`);
+    const elements = field.shape.reduce((n, d) => n * d, 1);
+    return bytes(cast(`${path}.${field.name}`, item, field.dtype as DType, elements));
+  });
+}
+
 /**
  * One robot: its map declared, its parts published, its commands served. The robot's control loop
  * publishes its sensors and asks `due` what to dispatch on each control tick. `onHandover(group,
@@ -498,34 +537,7 @@ export class Robot implements AsyncDisposable {
    * sample's seq, or null when it was coalesced or handed to the image encoder.
    */
   publish(path: string, value: PublishValue | Record<string, PublishValue>, opts: { captureNs?: bigint } = {}): number | null {
-    const declared = this.fields.get(path);
-    if (!declared) throw new RangeError(`${this.name} has no part '${path}' (its parts: ${[...this.fields.keys()].join(', ')})`);
-    let values: Record<string, PublishValue>;
-    if (value !== null && typeof value === 'object' && !isTyped(value) && !Array.isArray(value)) {
-      values = value as Record<string, PublishValue>;
-    } else {
-      if (declared.length !== 1) {
-        throw new TypeError(`${path} has fields ${declared.map((f) => f.name).join(', ')}: publish('${path}', { ${declared[0]!.name}: ... })`);
-      }
-      values = { [declared[0]!.name]: value as PublishValue };
-    }
-    const unknown = Object.keys(values).filter((k) => !declared.some((f) => f.name === k));
-    const missing = declared.filter((f) => !(f.name in values)).map((f) => f.name);
-    if (unknown.length || missing.length) {
-      throw new TypeError(
-        `${path}: fields ${declared.map((f) => f.name).join(', ')} (missing ${missing.join(', ') || 'none'}, unknown ${unknown.join(', ') || 'none'})`,
-      );
-    }
-    const buffers = declared.map((field) => {
-      const item = values[field.name];
-      if (field.dtype === 'utf8') {
-        if (typeof item !== 'string') throw new TypeError(`${path} is text: publish a string`);
-        return item;
-      }
-      if (typeof item === 'string') throw new TypeError(`${path}.${field.name}: publish numbers, not a string`);
-      const elements = field.shape.reduce((n, d) => n * d, 1);
-      return bytes(cast(`${path}.${field.name}`, item, field.dtype as DType, elements));
-    });
+    const buffers = sample(this.name, this.fields, path, value);
     return call(() => this.native.publish(path, buffers, opts.captureNs ?? null));
   }
 
@@ -744,12 +756,27 @@ export class Policy implements AsyncDisposable {
   readonly name: string;
   private readonly priority: Priority;
   private readonly timeout: number;
+  private readonly publishesJson: string | undefined;
+  private fields = new Map<string, NativeField[]>();
 
+  /**
+   * `publishes` declares parts of the policy's own to `publish` annotations on, in the robot map's
+   * form (§3), none commandable: `{ target: { kind: 'x/target', hz: 30, fields: { xy: ['float32',
+   * [2]] } } }`. They appear under the policy's name (`tracker/target`): recorded, shown in the
+   * cockpit, readable by other policies, and never bound to this one.
+   */
   constructor(
     policy: Record<string, unknown>,
-    opts: { session: Host | string; name?: string; priority?: Priority; timeout?: number },
+    opts: {
+      session: Host | string;
+      name?: string;
+      priority?: Priority;
+      timeout?: number;
+      publishes?: Record<string, unknown>;
+    },
   ) {
     this.policyJson = JSON.stringify(policy);
+    this.publishesJson = opts.publishes ? JSON.stringify(opts.publishes) : undefined;
     this.#address = address(opts.session);
     this.name = opts.name ?? 'policy';
     this.priority = opts.priority ?? 'model';
@@ -778,10 +805,24 @@ export class Policy implements AsyncDisposable {
         allow: opts.allow,
         captures: opts.captures,
         timeoutS: this.timeout,
+        publishesJson: this.publishesJson,
       }),
     );
+    for (const part of this.native.publishedParts()) this.fields.set(part.path, part.fields);
     this.bound = new Binding(this.native);
     return this.bound;
+  }
+
+  /**
+   * Publish one sample of one of the policy's own parts (`publishes`), after `bind`. Takes values
+   * the way `Robot.publish` does, and never blocks on the network. Returns the sample's seq, or
+   * null when it was coalesced.
+   */
+  publish(path: string, value: PublishValue | Record<string, PublishValue>, opts: { captureNs?: bigint } = {}): number | null {
+    const native = this.nat();
+    if (this.fields.size === 0) throw new RangeError(`policy ${this.name} publishes nothing: pass publishes`);
+    const buffers = sample(this.name, this.fields, path, value);
+    return call(() => native.publish(path, buffers, opts.captureNs ?? null));
   }
 
   private nat(): NativePolicy {

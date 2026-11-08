@@ -13,7 +13,7 @@ use bytes::Bytes;
 
 use crate::address::{Address, Placed, SessionAddress, place};
 use crate::controller::{Controller, ControllerConfig, ControllerError};
-use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Rejection, Robot};
+use crate::edge::{Due, EdgeConfig, EdgeError, EdgeMode, Published, Rejection, Robot};
 use crate::error::SessionError;
 #[cfg(feature = "fleet")]
 use crate::lobby::{Leave, Lobby, LobbyClient, find_home, leave, run_address, wait_for_join};
@@ -645,7 +645,7 @@ impl SceneRun {
 /// lone field already packed (a multiple of 8 bytes) is sent without a
 /// further copy.
 pub fn publish(
-    robot: &Robot,
+    robot: &Published,
     path: &str,
     capture_ns: i64,
     mut fields: Vec<Vec<u8>>,
@@ -736,20 +736,92 @@ pub async fn bind_policy(
     priority: PriorityClass,
     timeout: Duration,
 ) -> Result<Controller, BindPolicyError> {
+    bind_policy_with(address, name, policy_json, None, options, priority, timeout)
+        .await
+        .map(|(controller, _)| controller)
+}
+
+/// [`bind_policy`] for a policy that also publishes annotations: it joins
+/// as a controller and an embodiment, declares `publishes_json` (an
+/// authored map of parts, none commandable) under its own name, and
+/// returns their publishers. Its own parts are never bound to it; other
+/// policies may read them.
+pub async fn bind_policy_publishing(
+    address: &SessionAddress,
+    name: &str,
+    policy_json: &str,
+    publishes_json: &str,
+    options: &RunOptions,
+    priority: PriorityClass,
+    timeout: Duration,
+) -> Result<(Controller, Published), BindPolicyError> {
+    let (controller, published) = bind_policy_with(
+        address,
+        name,
+        policy_json,
+        Some(publishes_json),
+        options,
+        priority,
+        timeout,
+    )
+    .await?;
+    let published =
+        published.ok_or_else(|| BindPolicyError::Policy(format!("{name}: no parts")))?;
+    Ok((controller, published))
+}
+
+async fn bind_policy_with(
+    address: &SessionAddress,
+    name: &str,
+    policy_json: &str,
+    publishes_json: Option<&str>,
+    options: &RunOptions,
+    priority: PriorityClass,
+    timeout: Duration,
+) -> Result<(Controller, Option<Published>), BindPolicyError> {
     let policy = Policy::parse(policy_json)
         .map_err(|why| BindPolicyError::Policy(format!("{name}: {why}")))?;
+    if let Some(json) = publishes_json {
+        let commandable = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+            .map_err(|why| BindPolicyError::Policy(format!("{name}: publishes: {why}")))?
+            .into_iter()
+            .filter(|(_, part)| part.get("command").is_some())
+            .map(|(path, _)| path)
+            .collect::<Vec<_>>();
+        if !commandable.is_empty() {
+            return Err(BindPolicyError::Policy(format!(
+                "{name}: a policy publishes, never takes commands: {} declare `command`",
+                commandable.join(", ")
+            )));
+        }
+    }
+    let roles = match publishes_json {
+        Some(_) => vec![Role::Controller, Role::Embodiment],
+        None => vec![Role::Controller],
+    };
     let participant = address
-        .join(name, vec![Role::Controller], priority, timeout)
+        .join(name, roles, priority, timeout)
         .await
         .map_err(ControllerError::from)?;
+    let published = match publishes_json {
+        Some(json) => match Published::declare(&participant, json).await {
+            Ok(published) => Some(published),
+            Err(err) => {
+                let _ = participant.detach().await;
+                return Err(ControllerError::from(err).into());
+            }
+        },
+        None => None,
+    };
     let config = ControllerConfig {
         bind_timeout: timeout,
         ..ControllerConfig::default()
     };
     let participant = Arc::new(participant);
     match Controller::bind(participant.clone(), &policy, options, config).await {
-        Ok(controller) => Ok(controller),
+        Ok(controller) => Ok((controller, published)),
         Err(err) => {
+            drop(published);
             if let Ok(participant) = Arc::try_unwrap(participant) {
                 let _ = participant.detach().await;
             }
