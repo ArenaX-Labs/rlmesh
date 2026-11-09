@@ -1,0 +1,207 @@
+# Real-time sessions: robots on a LAN
+
+`rlmesh.realtime` (Experimental) connects robots and policies on one
+network. A **robot** declares its parts (joints, cameras, ...), publishes
+what it senses and plays the commands its edge says are due. A **policy**
+declares what it needs by kind and path, binds to the robots that have
+it, and sends short timed action chunks. A **host** (`rlmesh host`) runs
+the session: who may join, who holds which part, and what is recorded.
+
+This guide builds one setup end to end: two ESP32 "eyes" with a pan and a
+tilt servo each, a camera, and a policy on a PC that runs a detector on
+the camera and points both eyes. The same pieces fit any robot.
+
+```text
+  camera ──frames──▶  host (PC)  ◀──joins── eye-1 (ESP32)
+                          ▲                 eye-2 (ESP32)
+  policy (PC): camera in, eye targets out
+```
+
+## 1. Install
+
+On the PC (and on a Pi, if the camera hangs off one):
+
+```sh
+pip install "rlmesh[robot]"
+```
+
+That brings `rlmesh.realtime`, the `rlmesh` command with `rlmesh host`,
+and, on desktop platforms, `rlmesh cockpit`.
+
+## 2. Host the session
+
+On the PC:
+
+```sh
+rlmesh host --presence-grace 2s --lease-grace 500ms --rearm-robots
+```
+
+It listens on every interface at port 7447 and keeps its identity (its
+key, and the devices it admits in `devices.toml`) in its state directory,
+so boards provisioned once stay valid across restarts. The two graces
+are raised for Wi-Fi, where a board can go quiet for a moment.
+`--rearm-robots` drives a robot again as soon as it rejoins; without it a
+returning robot waits for the next arm. See the [CLI
+reference](reference/cli.md) for every flag.
+
+Programs on the PC join it by name: `session=""` is this machine's host,
+default session.
+
+## 3. Flash and provision the eyes
+
+Every eye runs the same firmware, the RLMesh library's **Robot** example,
+whose map is a `joints` part `eyes` (`pan`, `tilt`) commanded by position
+at 50 Hz. Follow the [ESP32 board quickstart](../integrations/esp32/README.md#board-quickstart),
+then, with `rlmesh host` running and each board on USB in turn:
+
+```sh
+rlmesh devices provision --port /dev/ttyUSB0 --name eye-1
+rlmesh devices provision --port /dev/ttyUSB0 --name eye-2
+```
+
+Provisioning writes the robot's name and the host's key and addresses to
+the board, and enrolls the board's own key, so it joins on its own after
+every reboot and nothing else can join as `eye-1`. `rlmesh devices ls`
+lists what the host admits.
+
+## 4. Publish the camera
+
+A camera is a robot with one part. On the PC:
+
+```python
+import cv2  # any capture library
+from rlmesh import realtime
+from rlmesh.realtime import parts
+
+CAMERA = {"cam": parts.camera(640, 480, hz=15, encoding="jpeg", quality=80)}
+
+with realtime.Robot("webcam", CAMERA, session="") as camera:
+    capture = cv2.VideoCapture(0)
+    rate = realtime.Rate(15)
+    while True:
+        ok, bgr = capture.read()
+        if ok:
+            camera.publish("cam", cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        rate.sleep()
+```
+
+`publish` takes an RGB `uint8 [480, 640, 3]` frame and encodes it as
+JPEG (with the GIL released). A camera that already gives you JPEG (a Pi
+camera, a USB webcam in MJPEG mode) can skip the decode and re-encode
+with `camera.publish_jpeg("cam", jpeg_bytes)`. Frames never queue up
+behind a slow link: the newest frame replaces one not yet sent.
+
+**On a Pi instead.** Pair the Pi with the PC once, so the host admits it:
+run `rlmesh pair pc.local` on the Pi, then `rlmesh pair approve` on the PC
+and type the code it shows. Then join with `session="pc.local"` (or the
+PC's address).
+
+## 5. Drive both eyes from one policy
+
+The policy reads the camera and sends each eye a pan/tilt target. It
+names each part by robot: `webcam:cam`, `eye-1:eyes`, `eye-2:eyes`.
+
+```python
+import numpy as np
+from rlmesh import realtime
+from rlmesh.realtime import parts
+
+TRACKER = {
+    "hz": 15,
+    "inputs": {"cam": {"kind": "camera", "at": "webcam:cam"}},
+    "actions": {
+        "left": {"kind": "joints", "at": "eye-1:eyes", "command": "position",
+                 "hz": 50, "horizon": 4},
+        "right": {"kind": "joints", "at": "eye-2:eyes", "command": "position",
+                  "hz": 50, "horizon": 4},
+    },
+}
+# What the detector saw, recorded and shown in the cockpit beside the eyes.
+HAND = {"hand": parts.custom("yolo/hand", hz=15, fields={"xy": ["float32", [2]]})}
+
+center = np.zeros(2, np.float32)
+
+def predict(obs):
+    xy = detect(obs["cam"])  # your model: the hand's (x, y) in 0..1, or None
+    target = center if xy is None else np.array(
+        [(xy[0] - 0.5) * 1.2, (0.5 - xy[1]) * 0.8], np.float32
+    )
+    if xy is not None:
+        policy.publish("hand", xy=np.asarray(xy, np.float32))
+    chunk = np.tile(target, (4, 1))  # [horizon, (pan, tilt)] in radians
+    return {"left": chunk, "right": chunk}
+
+with realtime.Policy(TRACKER, session="", name="tracker", publishes=HAND) as policy:
+    print(policy.bind())  # the binding table: what is bound, and how
+    policy.run(predict)
+```
+
+`bind()` with no robot binds the whole session's view, so one policy
+drives every eye it names. Each call of `predict` gets the newest camera
+frame as an RGB `uint8 [480, 640, 3]` array and returns a chunk of 4
+targets 20 ms apart, more than one replan period at 15 Hz, so an eye
+never runs dry between calls. The eye's edge plays the chunk, clamps it to
+the limits the board declared, and holds the last target when no new
+chunk comes.
+
+The eyes move only while the session is armed: press **Arm** in the
+cockpit (next section), or call `camera.arm()` from a robot's program.
+
+**When an eye drops off** (Wi-Fi, a brown-out, a reboot), the host stops
+that eye alone: its lease ends, the other eye keeps tracking, and the
+policy keeps running. When the board is back it rejoins with its key and,
+under `--rearm-robots`, is driven again at once.
+
+## 6. Watch it: the cockpit
+
+```sh
+rlmesh cockpit default        # on the PC
+rlmesh cockpit pc.local       # on a paired laptop
+```
+
+The cockpit joins as an observer and shows every part's declared and
+measured rate, the lease and mode timeline, and **why each robot is or
+isn't moving**: its edge mode with the reason (`queue_dry`: no valid chunk
+within its hold time), the chunks it refused and why (`too_old`,
+`no_lease`, ...), and each link's heartbeat age and jitter. It
+has Arm, Disarm, E-stop and Keep.
+
+## 7. Record and export
+
+The host records every session, always: one-minute MCAP segments under
+`rolling/default/` in its recordings directory (on Linux
+`~/.local/share/rlmesh/recordings`), the newest 30 minutes. An e-stop,
+safe mode, or the cockpit's **Keep** button saves the 2 minutes before
+and 30 s after under `incidents/default/{time}-{label}/`, for 14 days.
+
+Export one as a LeRobot dataset (`pip install lerobot`):
+
+```sh
+python -m rlmesh.realtime.lerobot \
+    ~/.local/share/rlmesh/recordings/incidents/default/<time>-keep eyes-dataset \
+    --repo-id me/halloween-eyes --task "follow the hand" --fps 15
+```
+
+Each frame holds the camera image, and as the action what each eye's edge
+actually dispatched (`eye-1/eyes/_applied`, `eye-2/eyes/_applied`); an eye
+that held keeps its last action. `rlmesh cockpit --replay DIR` plays a
+recording back.
+
+## Safety
+
+- The session starts disarmed; nothing moves until it is armed.
+- **E-stop** (the cockpit, a robot's `estop()`, or a board's button)
+  latches: every edge purges its queue and runs its safe behaviour, here
+  `hold`. It stays latched until the robot that set it, or a process on
+  the host's machine, clears it; then disarm and arm again.
+- Every part's limits are enforced on the robot's side, by its edge,
+  whatever a policy sends.
+- Beyond loopback the host encrypts every sample and command; see the
+  [threat model](threat-model.md) for what it does and doesn't defend.
+
+## Next
+
+- The [Python API](https://rlmesh.dev/docs/) (`rlmesh.realtime`, and
+  `rlmesh.realtime.parts` for every part kind) and its [Node twin](node.md).
+- [The CLI reference](reference/cli.md): `rlmesh host`, `devices`,
+  `pair`, `cockpit`.

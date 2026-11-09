@@ -29,6 +29,8 @@ or `-DZENOH_*` flags are needed.
    (`Policy.bind()` with no robot drives every eye at once); `Robot` applies
    pan/tilt targets at 50 Hz.
 
+[Real-time sessions](../../docs/realtime.md) walks through the whole setup: the host, two eyes, a camera and one policy driving both.
+
 Every eye runs the same firmware. USB provisioning assigns its robot name
 (`eye-3`, `eye-4`, …), stored with the home's key, id and addresses in NVS.
 Names are 1–128 bytes of `[A-Za-z0-9._-]`; the whole record must fit 252 bytes.
