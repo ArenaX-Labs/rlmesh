@@ -46,16 +46,20 @@ from ._models import (
     TelemetryRow,
     View,
     run,
-    session,  # noqa: F401 -- a 0.1 name, kept only to raise
+)
+from ._models import (
+    session as session,  # a 0.1 name, kept only to raise
 )
 from ._native import (
     Model,
     RemoteEnv,
-    RemoteModel,  # noqa: F401 -- a 0.1 name, kept only to raise
     RemoteVectorEnv,
     SandboxEnv,
     SandboxModel,
     SandboxVectorEnv,
+)
+from ._native import (
+    RemoteModel as RemoteModel,  # a 0.1 name, kept only to raise
 )
 from ._peer_info import register_python_peer_info as _register_python_peer_info
 from ._rlmesh import (
@@ -75,7 +79,7 @@ from ._rlmesh import (
 )
 from ._sandbox import SandboxBuild, SandboxRuntime
 from ._server import EnvServer
-from ._upgrade import Session  # noqa: F401 -- a 0.1 name, kept only to raise
+from ._upgrade import Session as Session  # a 0.1 name, kept only to raise
 from ._variants import Variant
 from .params import Param, ParamSpec, Vector
 from .recorder import Recorder
