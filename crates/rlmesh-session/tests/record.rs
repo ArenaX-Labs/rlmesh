@@ -18,7 +18,8 @@ use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::wire::{DType, PriorityClass, Role, SessionId, TenantId};
 use rlmesh_session::{
     Controller, ControllerConfig, HostConfig, Observation, Participant, ParticipantConfig,
-    Predictor, SessionHost, SessionServer, SystemMonotonicClock, Transport, TransportConfig,
+    Predictor, SamplePublisher, SessionHost, SessionServer, SystemMonotonicClock, Transport,
+    TransportConfig,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -337,9 +338,10 @@ fn files_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// A robot publishing `ft` every 10 ms for `ms`.
-async fn publish_ft(robot: &Participant, ms: u64) {
-    let ft = robot.publisher("ft").await.expect("publisher");
+/// A robot publishing `ft` every 10 ms for `ms`. A test publishes through
+/// one `ft` publisher throughout: a new one numbers its samples from 1
+/// again, which a subscriber that saw the first drops as out of order.
+async fn publish_ft(robot: &Participant, ft: &SamplePublisher, ms: u64) {
     for _ in 0..ms / 10 {
         ft.publish(robot.clock().now_ns(), bytes::Bytes::from(vec![0_u8; 32]))
             .expect("publish");
@@ -380,7 +382,8 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
         .join("robot", Role::Embodiment, PriorityClass::Scripted)
         .await;
     robot.declare_parts(FT).await.expect("declare");
-    publish_ft(&robot, 700).await;
+    let publisher = robot.publisher("ft").await.expect("publisher");
+    publish_ft(&robot, &publisher, 700).await;
     // Any member that may arm asks the host to keep what it recorded.
     robot.keep("keep me").await.expect("kept");
     let incidents = files_in(&dir.path().join("incidents").join(session.to_string()));
@@ -428,8 +431,9 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
         .join("robot", Role::Embodiment, PriorityClass::Scripted)
         .await;
     robot.declare_parts(FT).await.expect("declare");
+    let publisher = robot.publisher("ft").await.expect("publisher");
     let started = std::time::SystemTime::now();
-    publish_ft(&robot, 500).await;
+    publish_ft(&robot, &publisher, 500).await;
     let kept = keep(&rolling, world.session, "keep").expect("kept on request");
     let episode = Episode {
         task: "hold".into(),
@@ -442,7 +446,7 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     // Collecting it again keeps the same links, never copying over them.
     collect(&rolling, world.session, "test set", &episode, started).expect("again");
     robot.estop("test").await.expect("estop");
-    publish_ft(&robot, 500).await;
+    publish_ft(&robot, &publisher, 500).await;
     let stats = recorder.finish().await.expect("finish");
     assert!(stats.segments >= 3, "{stats:?}");
     // The purge spares the open segment and the one just closed (another
@@ -496,7 +500,18 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     streamed.sort_by_key(|s| (s.topic.clone(), s.capture_ns, s.log_ns));
     whole.sort_by_key(|s| (s.topic.clone(), s.capture_ns, s.log_ns));
     assert_eq!(streamed, whole);
-    assert!(streamed.iter().all(|s| s.capture_ns <= s.log_ns));
+    // Capture and receipt are session time through two clock mappings, the
+    // robot's and the recorder's. Just after the robot joins they can
+    // disagree by a few ms on a loaded host (5 ms seen on one core), so a
+    // sample can read as captured slightly after it arrived; anything mapped
+    // from the wrong clock or unit is off by far more.
+    let skew_ns: i64 = 25_000_000;
+    let late: Vec<_> = streamed
+        .iter()
+        .filter(|s| s.capture_ns > s.log_ns.saturating_add(skew_ns))
+        .map(|s| s.capture_ns - s.log_ns)
+        .collect();
+    assert!(late.is_empty(), "captured after receipt by {late:?} ns");
 
     // A disk below the floor gets nothing written.
     let full = tempfile::tempdir().expect("tempdir");
@@ -508,7 +523,7 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     let recorder = Recorder::start_rolling(Arc::new(observer), rolling, world.session)
         .await
         .expect("recorder");
-    publish_ft(&robot, 200).await;
+    publish_ft(&robot, &publisher, 200).await;
     let stats = recorder.finish().await.expect("finish");
     assert_eq!((stats.segments, stats.messages), (0, 0), "{stats:?}");
     assert!(stats.paused_drops > 0, "{stats:?}");
