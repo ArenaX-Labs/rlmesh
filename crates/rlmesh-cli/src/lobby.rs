@@ -412,7 +412,7 @@ impl Home {
                 .unwrap_or_default();
             return Err(refused(
                 CtlStatus::RobotBusy,
-                format!("{robot} is in run {other} ({scene}); rlmesh stop {other}"),
+                format!("{robot} is in run {other} ({scene}); rlmesh scene stop {other}"),
             ));
         }
         let id = run_id(&rooms.runs);

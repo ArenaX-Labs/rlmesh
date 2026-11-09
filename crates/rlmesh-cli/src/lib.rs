@@ -100,11 +100,7 @@ pub async fn run_cli_in(
             command: cli::RegistryCommand::Publish(_),
         }) => None,
         #[cfg(feature = "fleet")]
-        Command::Scene(_)
-        | Command::Run(_)
-        | Command::Lobby(_)
-        | Command::Stop(_)
-        | Command::Arm(_) => None,
+        Command::Scene(_) | Command::Lobby(_) => None,
         _ => match ProfileStore::load(&settings) {
             Ok(profiles) => Some(profiles),
             Err(error) => {
@@ -218,15 +214,9 @@ pub async fn run_cli_in(
         }
         Command::Devices(args) => devices::devices(&args, stdout).map(|()| 0),
         #[cfg(feature = "fleet")]
-        Command::Scene(args) => scene::scene(&args, stdout),
-        #[cfg(feature = "fleet")]
-        Command::Run(args) => scene::run(&args, stdout).await,
+        Command::Scene(args) => scene::scene(&args, stdout).await,
         #[cfg(feature = "fleet")]
         Command::Lobby(args) => scene::lobby(&args, stdout).await.map(|()| 0),
-        #[cfg(feature = "fleet")]
-        Command::Stop(args) => scene::stop(&args, stdout).await,
-        #[cfg(feature = "fleet")]
-        Command::Arm(args) => scene::arm(&args, stdout).await.map(|()| 0),
         Command::Pair(args) => pair::pair(&args, stdout).await.map(|()| 0),
         Command::Doctor(args) => doctor::doctor(&args, stdout, stdout_style),
         Command::Bench(args) => doctor::bench(&args, stdout, stdout_style),

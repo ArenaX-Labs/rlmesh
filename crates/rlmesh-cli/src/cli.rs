@@ -69,24 +69,12 @@ pub enum Command {
     /// rlmeshd, and provision boards over USB; it applies a change at once.
     #[command(visible_alias = "device")]
     Devices(DevicesArgs),
-    /// Check scene files against this machine's rlmeshd: its devices and
-    /// robot pins.
+    /// Check, run, stop and arm scenes on their robots' home rlmeshd.
     #[cfg(feature = "fleet")]
     Scene(SceneArgs),
-    /// Run a scene on its robots' home rlmeshd and follow its stages until
-    /// it ends; Ctrl-C stops it.
-    #[cfg(feature = "fleet")]
-    Run(RunArgs),
     /// List the robots waiting in the home rlmeshd's lobby.
     #[cfg(feature = "fleet")]
     Lobby(HomeArgs),
-    /// Stop a run.
-    #[cfg(feature = "fleet")]
-    Stop(RunIdArgs),
-    /// Arm a run that waits for an explicit arm (`--arm manual`, or after a
-    /// lost member rejoined).
-    #[cfg(feature = "fleet")]
-    Arm(RunIdArgs),
     /// Pair this machine with a robot's rlmeshd (shows a code to type on
     /// the robot), or, on the robot, approve a machine by its code.
     Pair(PairArgs),
@@ -717,6 +705,14 @@ pub enum SceneCommand {
         #[arg(value_name = "SCENE.TOML")]
         file: std::path::PathBuf,
     },
+    /// Run a scene on its robots' home rlmeshd and follow its stages until
+    /// it ends; Ctrl-C stops it.
+    Run(RunArgs),
+    /// Stop a run.
+    Stop(RunIdArgs),
+    /// Arm a run that waits for an explicit arm (`--arm manual`, or after a
+    /// lost member rejoined).
+    Arm(RunIdArgs),
 }
 
 #[cfg(feature = "fleet")]
@@ -731,13 +727,13 @@ pub struct HomeArgs {
 }
 
 #[cfg(feature = "fleet")]
-/// Flags for `rlmesh run`.
+/// Flags for `rlmesh scene run`.
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// The scene file.
     #[arg(value_name = "SCENE.TOML")]
     pub file: std::path::PathBuf,
-    /// `manual`: wait for `rlmesh arm` even when the scene arms itself.
+    /// `manual`: wait for `rlmesh scene arm` even when the scene arms itself.
     #[arg(long, value_name = "auto|manual", default_value = "auto")]
     pub arm: String,
     #[command(flatten)]
@@ -745,10 +741,10 @@ pub struct RunArgs {
 }
 
 #[cfg(feature = "fleet")]
-/// Flags for `rlmesh stop` and `rlmesh arm`.
+/// Flags for `rlmesh scene stop` and `rlmesh scene arm`.
 #[derive(Args, Debug)]
 pub struct RunIdArgs {
-    /// The run (`r-7k2m`), as `rlmesh run` printed it.
+    /// The run (`r-7k2m`), as `rlmesh scene run` printed it.
     pub run: String,
     #[command(flatten)]
     pub home: HomeArgs,

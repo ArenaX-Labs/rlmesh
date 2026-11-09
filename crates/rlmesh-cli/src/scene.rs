@@ -15,7 +15,7 @@
 //!
 //! Whether the machines are attached to the lobby is known only at run.
 //!
-//! `rlmesh run`, `rlmesh lobby`, `rlmesh stop` and `rlmesh arm` are clients
+//! `rlmesh scene run`, `scene stop`, `scene arm` and `rlmesh lobby` are clients
 //! of the home daemon's lobby ([`crate::lobby`]).
 
 use std::io::Write;
@@ -166,10 +166,13 @@ pub fn check(scene: &Scene, table: &Table) -> Vec<Problem> {
     problems
 }
 
-/// `rlmesh scene`: 0 for a scene that would pass stage 1, 1 with every
-/// problem printed otherwise.
-pub fn scene(args: &SceneArgs, stdout: &mut impl Write) -> Result<i32> {
+/// `rlmesh scene`. `check`: 0 for a scene that would pass stage 1, 1 with
+/// every problem printed otherwise.
+pub async fn scene(args: &SceneArgs, stdout: &mut impl Write) -> Result<i32> {
     match &args.command {
+        SceneCommand::Run(run_args) => run(run_args, stdout).await,
+        SceneCommand::Stop(id) => stop(id, stdout).await,
+        SceneCommand::Arm(id) => arm(id, stdout).await.map(|()| 0),
         SceneCommand::Check { file } => {
             let text = std::fs::read_to_string(file)
                 .with_context(|| format!("reading {}", file.display()))?;
@@ -286,7 +289,7 @@ async fn follow(lobby: &LobbyClient, mut state: RunState, stdout: &mut impl Writ
     Ok(i32::from(state.stage == RunStage::Failed))
 }
 
-/// `rlmesh run`: starts the scene and follows it until it ends.
+/// `rlmesh scene run`: starts the scene and follows it until it ends.
 pub async fn run(args: &RunArgs, stdout: &mut impl Write) -> Result<i32> {
     let manual = match args.arm.as_str() {
         "auto" => false,
@@ -330,7 +333,7 @@ pub async fn lobby(args: &HomeArgs, stdout: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-/// `rlmesh stop`: stops a run and waits until it ended.
+/// `rlmesh scene stop`: stops a run and waits until it ended.
 pub async fn stop(args: &RunIdArgs, stdout: &mut impl Write) -> Result<i32> {
     let lobby = connect(&args.home).await?;
     let state = lobby.stop(&args.run).await?;
@@ -356,7 +359,7 @@ pub async fn stop(args: &RunIdArgs, stdout: &mut impl Write) -> Result<i32> {
     Ok(0)
 }
 
-/// `rlmesh arm`: arms a run waiting for it.
+/// `rlmesh scene arm`: arms a run waiting for it.
 pub async fn arm(args: &RunIdArgs, stdout: &mut impl Write) -> Result<()> {
     let lobby = connect(&args.home).await?;
     let state = lobby.arm(&args.run).await?;
