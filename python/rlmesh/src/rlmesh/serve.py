@@ -423,8 +423,9 @@ def _warn_without_spec(model: object) -> None:
     if isinstance(getattr(model, "spec", None), ModelSpec):
         return
     print(
-        "RLMesh: the served model declares no spec; the managed probe cannot "
-        "synthesize inputs for it. Set `spec = ModelSpec(...)` on the class.",
+        "RLMesh: the served model declares no spec; the managed platform cannot "
+        "test it with generated inputs when you onboard it. Set "
+        "`spec = ModelSpec(...)` on the class.",
         file=sys.stderr,
         flush=True,
     )
