@@ -99,7 +99,7 @@ void Robot::persistLatch() {
 }
 
 // Every stored home address failed: ask mDNS for `_rlmesh._tcp`, and keep only
-// the instance whose TXT id is the stored host id (scene design §3.1). At most
+// the instance whose TXT id is the stored host id. At most
 // every 30 s: a query blocks for about a second.
 void Robot::discover() {
   const char* id = rlmesh_device_robot_home_id(robot_);

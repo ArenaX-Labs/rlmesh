@@ -1,4 +1,4 @@
-// The messages (spec §4): typed views over a frame's payload, and their
+// The messages: typed views over a frame's payload, and their
 // encoding. Lengths are exact; reserved bits must be zero.
 //
 // `STATE` and `COMMAND` carry a part's dense value, whose length only the
@@ -27,7 +27,7 @@ const uint8_t kEveryPart = 0xFF;
 // whole frame.
 const uint16_t kRxMaxMin = 16;
 const uint16_t kRxMaxMax = 256;
-// `HELLO.watchdog_ms` bounds (§6.2).
+// `HELLO.watchdog_ms` bounds.
 const uint16_t kWatchdogMsMin = 20;
 const uint16_t kWatchdogMsMax = 5000;
 
@@ -214,7 +214,7 @@ enum class Error : uint8_t {
   Range,
   // `STATE` or `COMMAND` for a part the receiver doesn't know.
   UnknownPart,
-  // A type that travels the other way (§3.2).
+  // A type that travels the other way.
   Direction,
   // `HELLO.name` isn't UTF-8.
   Utf8,

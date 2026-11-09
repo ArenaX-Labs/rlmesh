@@ -39,7 +39,7 @@ inline int timing(rlmesh_device_timing_t& out) {
 
 }  // namespace esp32
 
-// The board's identity and its home host (tether spec §14), kept in NVS:
+// The board's identity and its home host, kept in NVS:
 // a device key it makes on first boot, and the record `rlmesh devices
 // provision` writes over USB.
 class Provisioning {

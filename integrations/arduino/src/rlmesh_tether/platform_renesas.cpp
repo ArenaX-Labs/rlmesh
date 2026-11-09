@@ -4,7 +4,7 @@
 // bootloader that runs at each reset reuses all of the sketch's RAM).
 //
 // Erased data flash on the RA reads back undefined, so "clear" is the
-// flash's blank check, not a value read (§6.4). The core's data-flash
+// flash's blank check, not a value read. The core's data-flash
 // driver (EEPROM.h's emulation, KVStore, a filesystem) manages all 8 KB and
 // may erase the block, so with it linked the latch reads as set and can't
 // be cleared.

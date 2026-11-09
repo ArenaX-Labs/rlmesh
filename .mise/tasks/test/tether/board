@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Flash integrations/arduino's Eyes example to a plugged-in board and check it against the board's half of the tether spec (crates/rlmesh-tether/examples/board_check.rs). Local only: needs the board, arduino-cli with its core, and the Servo library"
+#MISE description="Flash integrations/arduino's Eyes example to a plugged-in board and check its serial-link behavior (crates/rlmesh-tether/examples/board_check.rs). Local only: needs the board, arduino-cli with its core, and the Servo library"
 #MISE dir="{{ config_root }}"
 #USAGE arg "[port]" default="/dev/ttyACM0" help="The board's serial port"
 #USAGE flag "--fqbn <fqbn>" default="arduino:renesas_uno:minima" help="The board (arduino-cli board listall): arduino:avr:nano, arduino:avr:uno, arduino:renesas_uno:minima, ..."

@@ -7,8 +7,8 @@ computer is the RLMesh robot for it. This library is the board's side.
 > **Use `tether.print()`, never `Serial.print()`.** On a Nano the tether
 > and `Serial` share one UART, and printed text corrupts frames.
 
-The board runtime, `RLMeshTether<Map>`, does the board's half of the spec
-(§5–6), with no switch to turn any of it off:
+The board runtime, `RLMeshTether<Map>`, provides the following behavior,
+with no switch to turn any of it off:
 
 - **Discovery:** `HELLO` at boot and every 500 ms until attached; the map
   is served from flash on request.

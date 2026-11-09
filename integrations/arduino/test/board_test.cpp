@@ -1,7 +1,6 @@
 // Runs the board runtime (`board.h`) against a fake clock, serial port,
 // watchdog and e-stop storage, as the bridge would drive it: attach, drive,
-// permits, the link watchdog, the generation fence and the pin e-stop
-// (spec §5–6).
+// permits, the link watchdog, the generation fence and the pin e-stop.
 //
 //   board_test
 
