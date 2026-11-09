@@ -308,8 +308,12 @@ def assert_connect_rejected_with_value_error(address: str, pattern: str) -> None
     last_error: BaseException | None = None
     while time.monotonic() < deadline:
         try:
-            with pytest.raises(ValueError, match=pattern):
+            with pytest.raises(ValueError, match=pattern) as raised:
                 rlmesh.RemoteEnv(address)
+            # An invite's key is a credential: no error repeats it.
+            _, _, key = address.partition("#")
+            if key:
+                assert key.split("/")[0] not in str(raised.value)
             return
         except Exception as exc:
             last_error = exc
@@ -609,11 +613,13 @@ def test_client_constructor_default_timeout_applies() -> None:
     server = env_server(env)
     server.start()
     try:
-        client = PyEnvClient(server.address, request_timeout_seconds=0.2)
+        # Short against the 3 s step, long enough for the reset's round trip
+        # on a loaded machine.
+        client = PyEnvClient(server.address, request_timeout_seconds=0.9)
         try:
             client.reset()
             with pytest.raises(
-                TimeoutError, match=r"^operation timed out after 200ms$"
+                TimeoutError, match=r"^operation timed out after 900ms$"
             ):
                 client.step(0)
         finally:
@@ -1159,6 +1165,105 @@ def test_server_client_lifecycle_process_exits_promptly() -> None:
         pytest.skip("local tcp bind is not permitted in this environment")
     assert result.returncode == 0, result.stderr
     assert "CLEAN-EXIT" in result.stdout
+
+
+_STALLED_DRIVER = """
+import sys
+
+import rlmesh
+from rlmesh import spaces
+
+
+class TinyEnv:
+    def __init__(self):
+        self.observation_space = spaces.Discrete(2)
+        self.action_space = spaces.Discrete(2)
+
+    def reset(self, *, seed=None, options=None):
+        return 0, {}
+
+    def step(self, action):
+        return 1, 1.0, True, False, {}
+
+    def close(self):
+        pass
+
+
+server = None
+address = sys.argv[1]
+if not address:
+    server = rlmesh.EnvServer(TinyEnv(), ":0/env")
+    server.start()
+    address = server.address
+remote = rlmesh.RemoteEnv(address)
+print("CONNECTED", flush=True)
+sys.stdin.readline()
+remote.reset(seed=1)
+remote.step(1)
+remote.close()
+if server is not None:
+    server.shutdown()
+print("DROVE", flush=True)
+"""
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs SIGSTOP (POSIX)")
+@pytest.mark.parametrize(
+    ("own_server", "stall_seconds"),
+    # The env's session host frozen with its driver, for longer than any
+    # lease or presence grace; and a driver alone, for longer than a
+    # real-time lease's deadman while its host keeps running.
+    [(True, 1.5), (False, 0.6)],
+    ids=["host_and_driver", "driver_alone"],
+)
+def test_a_driver_keeps_its_env_through_a_process_stall(
+    own_server: bool, stall_seconds: float
+) -> None:
+    """A connected RemoteEnv still drives its env after its process stalls.
+
+    A loaded machine deschedules a process for a moment. That must not end
+    the driver's lease: the env would re-arm into a new epoch and refuse
+    every later request of a client that did nothing wrong.
+    """
+    import signal
+    import subprocess
+    import sys
+
+    import rlmesh
+
+    server = None
+    address = ""
+    if not own_server:
+        server = rlmesh.EnvServer(TinyEnv(), ":0/env")
+        server.start()
+        address = server.address
+    child = subprocess.Popen(
+        [sys.executable, "-c", _STALLED_DRIVER, address],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        connected = child.stdout.readline()
+        if "CONNECTED" not in connected:
+            _out, err = child.communicate(timeout=30)
+            if "Operation not permitted" in err:
+                pytest.skip("local tcp bind is not permitted in this environment")
+            raise AssertionError(f"the driver did not connect: {err}")
+        os.kill(child.pid, signal.SIGSTOP)
+        time.sleep(stall_seconds)
+        os.kill(child.pid, signal.SIGCONT)
+        out, err = child.communicate("go\n", timeout=30)
+        assert child.returncode == 0, err
+        assert "DROVE" in out
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        if server is not None:
+            server.shutdown()
 
 
 @pytest.mark.skipif(not os.path.isdir("/dev/fd"), reason="needs /dev/fd (POSIX)")
