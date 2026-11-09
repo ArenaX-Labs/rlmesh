@@ -1284,6 +1284,11 @@ impl Heard {
         }
     }
 
+    /// Whether the host is listening after a stall.
+    fn listening(&self) -> bool {
+        self.listening_until.is_some()
+    }
+
     /// Whether the tick at `now` judges leases and presence.
     fn judge(&mut self, now: tokio::time::Instant) -> bool {
         let gap = now.saturating_duration_since(self.last);
@@ -1389,7 +1394,11 @@ impl HostActor {
                         self.record(events).await;
                     }
                     self.publish_ticks().await;
-                    self.publish_renewals().await;
+                    // Back from a stall, every edge's copy of its lease has
+                    // run out by its own clock: each renewal the returning
+                    // heartbeats bring goes out on the tick it arrives,
+                    // not a quarter grace later.
+                    self.publish_renewals(heard.listening()).await;
                 }
                 _ = republish.tick() => self.publish().await,
                 _ = health_out.tick() => self.publish_health().await,
@@ -2696,12 +2705,12 @@ impl HostActor {
     /// Heartbeats renew leases without a structural change; while any lease
     /// is held, republish often enough that an edge's local expiry never
     /// runs ahead of the host's renewals.
-    async fn publish_renewals(&mut self) {
+    async fn publish_renewals(&mut self, every_tick: bool) {
         if self.authority.lease_count() == 0 {
             return;
         }
         let quarter = i64::try_from(self.config.lease_grace.as_nanos() / 4).unwrap_or(i64::MAX);
-        if self.now().saturating_sub(self.last_publish_ns) >= quarter {
+        if every_tick || self.now().saturating_sub(self.last_publish_ns) >= quarter {
             self.publish().await;
         }
     }

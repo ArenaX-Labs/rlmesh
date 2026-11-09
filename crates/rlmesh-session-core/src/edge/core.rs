@@ -617,6 +617,17 @@ impl EdgeCore {
         ))
     }
 
+    /// Whether the runtime is catching up after its own stall
+    /// ([`Fallback::set_listening`]).
+    pub fn set_listening(&mut self, listening: bool) {
+        self.fallback.set_listening(listening);
+    }
+
+    /// How long the group waits for a valid action before it goes Safe.
+    pub fn hold_max_ns(&self) -> i64 {
+        self.fallback.hold_max_ns()
+    }
+
     /// One control tick at edge time `now_ns`: what to dispatch, hold, or
     /// the safe behaviour to run, and one applied sample per member.
     pub fn tick<V: AuthorityView + ?Sized>(

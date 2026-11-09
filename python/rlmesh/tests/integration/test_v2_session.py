@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import shutil
 import socket
@@ -994,3 +995,101 @@ def test_one_policy_bound_with_no_robot_drives_two_robots(host: rlmesh.Host) -> 
     finally:
         for eye in eyes:
             eye.close()
+
+
+_STALLED_ROBOT = """
+import threading
+
+import numpy as np
+from rlmesh import realtime
+
+ARM = {
+    "arm": {
+        "kind": "joints", "names": ["a", "b"], "fields": ["pos"], "hz": 200,
+        "command": "position", "safe": "stop", "hold_max_ms": 100,
+        "max_action_age_ms": 1000,
+    },
+}
+POLICY = {
+    "hz": 20,
+    "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": ["a", "b"]}},
+    "actions": {
+        "arm": {"kind": "joints", "at": "arm", "command": "position",
+                "names": ["a", "b"], "hz": 100, "horizon": 10},
+    },
+}
+
+with realtime.Host() as host:
+    robot = realtime.Robot("arm", ARM, session=host)
+    robot.arm()
+    stop = threading.Event()
+    driven = threading.Event()
+
+    def loop():
+        q = np.zeros(2)
+        rate = realtime.Rate(200)
+        while not stop.is_set():
+            robot.publish("arm", pos=q)
+            due = robot.due("arm")
+            if due is not None and isinstance(due.value, np.ndarray):
+                driven.set()
+            rate.sleep()
+
+    thread = threading.Thread(target=loop)
+    thread.start()
+
+    def predict(obs):
+        if driven.is_set() and not predict.said:
+            predict.said = True
+            print("DRIVING", flush=True)
+        return {"arm": np.repeat(obs["q"][None], 10, axis=0)}
+
+    predict.said = False
+    with realtime.Policy(POLICY, session=host, name="hold") as policy:
+        policy.bind("arm")
+        policy.run(predict, duration=3.0)
+    stop.set()
+    thread.join()
+    modes = robot.edge_stats("arm")["modes"]
+    robot.close()
+print("SAFE", modes["safe"][1], "DRIVING", modes["driving"][1], flush=True)
+"""
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs SIGSTOP (POSIX)")
+def test_a_driven_robot_is_driven_again_after_its_process_stalls() -> None:
+    """A robot, its policy and their host frozen together never latch SAFE.
+
+    A loaded machine deschedules a process for longer than a lease or the
+    robot's hold_max. Frozen, it received nothing: back, the edge holds while
+    the chunks and renewals sent meanwhile come in, instead of latching SAFE
+    on its first tick and waiting for a person to arm it again.
+    """
+    import signal
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", _STALLED_ROBOT],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        if "DRIVING" not in child.stdout.readline():
+            _out, err = child.communicate(timeout=30)
+            if "Operation not permitted" in err:
+                pytest.skip("local tcp bind is not permitted in this environment")
+            raise AssertionError(f"the robot was never driven: {err}")
+        os.kill(child.pid, signal.SIGSTOP)
+        time.sleep(0.5)
+        os.kill(child.pid, signal.SIGCONT)
+        out, err = child.communicate(timeout=60)
+        assert child.returncode == 0, err
+        report = out.split()
+        assert report[:2] == ["SAFE", "0"], f"{out!r}: {err}"
+        # Driven before the stall and again after it.
+        assert int(report[3]) >= 2, out
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
