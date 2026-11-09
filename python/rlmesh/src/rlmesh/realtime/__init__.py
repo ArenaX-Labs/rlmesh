@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 try:
     import numpy as np
 except ImportError as exc:  # pragma: no cover - import guard
-    raise ImportError("rlmesh.realtime requires numpy. Install rlmesh[numpy].") from exc
+    raise ImportError("rlmesh.realtime requires numpy. Install rlmesh[robot].") from exc
 
 from .._client._endpoint import redact_address
 from .._rlmesh import (

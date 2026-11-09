@@ -19,9 +19,10 @@ pip install "rlmesh[gymnasium]"
 pip install "rlmesh[torch]"
 pip install "rlmesh[jax]"
 pip install "rlmesh[hf]"
+pip install "rlmesh[robot]"
 ```
 
-Pick `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. `torch` decodes client-side values as Torch tensors; `jax` decodes them as JAX arrays; `numpy` decodes them as arrays. `hf` adds host-side, container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container fetches them for you. See [backends](https://rlmesh.dev/docs/guides/value-backends/) for how the backend extras change value decoding.
+Pick `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. `torch` decodes client-side values as Torch tensors; `jax` decodes them as JAX arrays; `numpy` decodes them as arrays. `hf` adds host-side, container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container fetches them for you. `robot` is what real-time sessions (`rlmesh.realtime`: robots, policies, recordings) need, on a robot's computer and a policy's alike. The `rlmesh host` and `rlmesh cockpit` commands come with every install (the cockpit on desktop platforms). See [backends](https://rlmesh.dev/docs/guides/value-backends/) for how the backend extras change value decoding.
 
 ## Repository Examples
 
