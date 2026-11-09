@@ -4,7 +4,7 @@
 //!
 //! The host publishes snapshots, not its events, so the cockpit derives
 //! the events by diffing them. A lease that disappeared is classed by what
-//! else changed in the same revision (§11.1): revoked when the mode left
+//! else changed in the same revision: revoked when the mode left
 //! ARMED/ACTIVE or the epoch moved, expired when the snapshot is past its
 //! expiry, voided when the session went SAFE (an edge fell back), released
 //! otherwise. That inference is the cockpit's: the snapshot carries no

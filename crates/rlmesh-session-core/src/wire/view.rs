@@ -1,4 +1,4 @@
-//! One robot's device view (scene design §3.4), and the authority state an
+//! One robot's device view, and the authority state an
 //! edge, its fallback and a keyring read ([`AuthorityView`]): a board that
 //! takes the view decodes it without the full state's decoder.
 

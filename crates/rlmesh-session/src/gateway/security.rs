@@ -1,7 +1,7 @@
 //! Who may open a gateway WebSocket, and what one connection may do.
 //!
 //! - **Bind:** loopback (127.0.0.1) by default.
-//! - **Token:** every socket needs one (design §5: no tokenless loopback), carried in the WebSocket
+//! - **Token:** every socket needs one (no tokenless loopback), carried in the WebSocket
 //!   subprotocol list, as `rlmesh.token.<token>`, next to `rlmesh.v2`. Browsers cannot set headers
 //!   on a WebSocket, so the choice was the subprotocol or a `?token=` query. The subprotocol wins:
 //!   URLs end up in access logs, proxy logs, tracing spans and devtools/resource-timing entries,
@@ -11,7 +11,7 @@
 //!   - this machine's page token (`RLMESH_GATEWAY_TOKEN` or `--token-file`, which the page gets in
 //!     its URL fragment, `/#t=…`, never sent to a server): its browser attaches with the gateway's
 //!     own credential, at `--max-priority` at most; or
-//!   - a browser token paired with the host (`rlmesh pair HOST --browser`, design §5): a device of
+//!   - a browser token paired with the host (`rlmesh pair HOST --browser`): a device of
 //!     its own, whose key the gateway attaches its browser with, so the host applies that device's
 //!     cap, parts and verbs, and revoking it detaches exactly that browser.
 //! - **Origin:** an allowlist. The default is the origin(s) this gateway serves its own page from,

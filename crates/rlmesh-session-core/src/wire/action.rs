@@ -1,5 +1,4 @@
-//! Timed action chunks: a controller's commands for one commandable part
-//! (§9.2, §10.6).
+//! Timed action chunks: a controller's commands for one commandable part.
 //!
 //! All times are **session time** (the host's clock domain, or ticks ×
 //! `tick_ns` in virtual and lockstep modes); the edge converts them into its
@@ -36,7 +35,7 @@ impl InputRange {
     }
 }
 
-/// A chunk, by identity `(channel, lease_token, seq)` (§10.4).
+/// A chunk, by identity `(channel, lease_token, seq)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChunkRef {
     /// The commandable part.
@@ -77,7 +76,7 @@ pub struct ActionChunk {
     pub valid_until_ns: i64,
     /// The number of actions.
     pub count: u32,
-    /// `count` actions at the command stride (§10.6). Decoded chunks slice
+    /// `count` actions at the command stride. Decoded chunks slice
     /// the received buffer.
     pub actions: Bytes,
     /// Sender clock at publish.

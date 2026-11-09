@@ -1,4 +1,4 @@
-//! The board's half of USB provisioning (tether spec §14), sans-IO: bytes
+//! The board's half of USB provisioning, sans-IO: bytes
 //! from the serial port go in, and out come replies to write back, or a
 //! record for the platform to store before the board confirms it. The
 //! messages are `rlmesh-tether`'s, so the board and the daemon share one
@@ -114,7 +114,7 @@ impl Responder {
 
     /// One byte from the serial port: what to do about it, if anything.
     /// Everything that isn't a valid `GET_DEVICE` or `PROVISION` is
-    /// ignored (§14.4), the sketch's own text included.
+    /// ignored, the sketch's own text included.
     pub fn push(&mut self, byte: u8) -> Option<Step> {
         let decoded = match self.decoder.push(byte) {
             Some(Ok(decoded)) => decoded.to_vec(),

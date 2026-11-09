@@ -10,7 +10,7 @@
 //!
 //! - **Unknown FIELD on a recognized kind.** A *bare* (unprefixed) unknown field
 //!   is "must-understand": fail-closed, because an old core silently applying its
-//!   own default for a modifier it never parsed is worse than failing (§8). A
+//!   own default for a modifier it never parsed is worse than failing. A
 //!   field in the reserved [`x-`/`ext.`](is_reserved_ext) namespace is the
 //!   producer's opt-in "safe to ignore" and passes. This rule runs at **both**
 //!   doors: PUBLISH (a typo dies at the trust boundary) and READ (a newer peer's
@@ -526,7 +526,7 @@ mod tests {
     fn inner_leaf_unknown_field_fails_the_gate() {
         // The growable *inner* leaves: a split layout's `Field` and a state
         // input's `ConcatPart`. Both parse leniently (this is where `frame`
-        // landed before PR-11 typed it) and both are named by the publish gate.
+        // was previously untyped) and both are named by the publish gate.
         let dirty: EnvTags = serde_json::from_str(
             r#"{"observation": {"s": {"type": "split",
                     "fields": [{"role": "r", "dim": 1, "wobble": 1}]}},

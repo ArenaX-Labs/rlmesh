@@ -2,8 +2,8 @@
 //! `env_spec.observation_space` / `env_spec.action_space`.
 //!
 //! `{"kind", "shape", "dtype", "details": {...}}`, the same structure the Python
-//! `SpaceSpec._to_dict()` returns (the managed platform reads it from either
-//! producer). The envelope is strict JSON, so a non-finite bound renders as
+//! `SpaceSpec._to_dict()` returns. The envelope is strict JSON, so a non-finite bound
+//! renders as
 //! `null` (serde_json's own rendering of a non-finite `f64`): unbounded on that
 //! edge, exactly as the Python gatherer maps it.
 

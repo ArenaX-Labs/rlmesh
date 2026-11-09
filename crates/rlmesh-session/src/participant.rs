@@ -2,14 +2,14 @@
 //!
 //! [`Participant::attach`] announces presence (a liveliness token), waits
 //! for the host, subscribes to authority updates, runs the handshake with
-//! its [`Credential`] (design §8.3), attaches through `ctl` and starts
+//! its [`Credential`], attaches through `ctl` and starts
 //! heartbeating on the control class. Every verb and heartbeat it sends is
 //! sealed under its `k_up`, every reply and echo it takes is opened under
 //! its `k_down`, and every `host/state` and `host/tick` it takes is
 //! verified against the host's signing key: anything else is dropped.
 //! Verbs carry rising request ids, so a retry is answered once.
 //!
-//! **Keys** (design §8.4, §8.5): the host delivers the participant's other
+//! **Keys**: the host delivers the participant's other
 //! keys on `p/{id}/keys` (subscribed before the handshake), and a grant's
 //! reply carries the holder's. The participant installs them in its link
 //! and acknowledges each delivery (`KeysAck`); a message under a key it
@@ -26,13 +26,13 @@
 //! the local e-stop latch).
 //!
 //! A robot process tells the host about its own stops through **one ordered
-//! queue** (DESIGN §6): `EnterSafe`, a local `Estop` and its `Clear` are
+//! queue**: `EnterSafe`, a local `Estop` and its `Clear` are
 //! sent in the order they happened, each retried until the host answers, so
 //! a host that comes back after a partition sees `Estop` before `Clear` and
 //! ends in ESTOP (unlatched), which still needs disarm and arm.
 //!
-//! An embodiment's publishers follow their streams' publication plans
-//! (§8.2): a background task installs each `Demand` the host publishes on
+//! An embodiment's publishers follow their streams' publication plans: a background
+//! task installs each `Demand` the host publishes on
 //! the stream's publishers and acknowledges its revision (`DemandAck`), so
 //! controllers bound to the stream can be granted leases.
 
@@ -108,11 +108,11 @@ pub struct ParticipantConfig {
     pub workflow_editions: Vec<String>,
     /// An embodiment's e-stop latch carried from its previous session
     /// ([`Participant::local_estop`]): it attaches latched, and the session
-    /// starts in ESTOP (design §6).
+    /// starts in ESTOP.
     pub estop: Option<Reason>,
     /// The robot process's latch, when it outlives this participant (a
     /// robot from the lobby, one run after another): it attaches latched
-    /// while it is (design §6), and its edges read the same latch.
+    /// while it is, and its edges read the same latch.
     pub(crate) latch: Option<Arc<LocalLatch>>,
     /// What it attaches with: its device's key and the host's static key
     /// (`SessionHost::credential` in-process; a session address's key
@@ -384,7 +384,7 @@ impl Report {
     }
 }
 
-/// Keeps a robot process's stop reports in DESIGN §6's order whatever order
+/// Keeps a robot process's stop reports in order whatever order
 /// its threads queued them in: a `Clear` goes out only after an `Estop` for
 /// every latch before it, and an `Estop` a clear already covered goes
 /// nowhere.
@@ -493,7 +493,7 @@ enum KeyWork {
     Unanswered(u64, Command, watch::Sender<Option<CtlReply>>),
 }
 
-/// A request the host did not answer before its call timed out (§8.6): its
+/// A request the host did not answer before its call timed out: its
 /// outcome is unknown. The participant keeps sending it under its id, which
 /// the host answers from its reply cache without applying the verb twice,
 /// until the answer comes or this generation ends.
@@ -524,7 +524,7 @@ impl Pending {
 type SharedLink = Arc<std::sync::OnceLock<Mutex<Link>>>;
 
 /// A participant's delivered keys, for its publishers, subscribers, edges
-/// and lockstep links: seals and opens under what its link holds (§8.4).
+/// and lockstep links: seals and opens under what its link holds.
 /// A message under a key it doesn't hold makes the participant recover its
 /// keys (`GetKeys`). Cheap to clone.
 #[derive(Clone)]
@@ -875,7 +875,7 @@ impl Shared {
     /// [`Self::ctl`], with a refusal left in the reply. A request left
     /// unanswered is retried in the background under its id until the
     /// host's answer (its cached reply, keys included) arrives or this
-    /// generation ends (§8.6); a caller that timed out gets
+    /// generation ends; a caller that timed out gets
     /// [`SessionError::Pending`], whose handle resolves with that answer.
     async fn ctl_reply(&self, command: Command) -> Result<CtlReply, SessionError> {
         let (id, reply) = self.call(None, &command).await;
@@ -901,7 +901,7 @@ impl Shared {
 
     /// Sends `command` as a new request (`None`) or again as request `id`
     /// (a retry, which the host answers from its reply cache, never
-    /// applying the verb twice, §8.6), and takes the first reply that
+    /// applying the verb twice), and takes the first reply that
     /// answers it. An unsealed refusal is only a hint (anyone can answer
     /// `ctl`): it is returned, as [`SessionError::Unverified`], when no
     /// sealed reply came. Returns the id.
@@ -1305,7 +1305,7 @@ impl Participant {
             run: Arc::default(),
         });
 
-        // Subscriptions first (§8.5): nothing the host sends after the
+        // Subscriptions first: nothing the host sends after the
         // handshake can be missed. Until it completes, nothing verifies.
         let state = control
             .declare_subscriber(keys.host_state())
@@ -1515,8 +1515,8 @@ impl Participant {
             .map(|link| lock(link).accept().generation)
     }
 
-    /// The host instance this process's handshake authenticated (scene
-    /// design §4.4: a restarted host is another instance).
+    /// The host instance this process's handshake authenticated (a restarted host is
+    /// another instance).
     pub fn host_instance(&self) -> Option<u64> {
         self.shared
             .link
@@ -1643,7 +1643,7 @@ impl Participant {
         Ok(self.shared.ctl(Command::Disarm).await?.0)
     }
 
-    /// Emergency stop (design §6): publishes this member's e-stop signal,
+    /// Emergency stop: publishes this member's e-stop signal,
     /// which every robot edge latches directly (`ESTOP_SIGNAL`), and tells
     /// the host (`Estop`) in the background. Returns once the signal is
     /// out; a missing host reply is only a warning. The confirmation is
@@ -1739,7 +1739,7 @@ impl Participant {
             .map(|_| ())
     }
 
-    /// Declares this embodiment's robot map (the authored JSON, §3): the
+    /// Declares this embodiment's robot map (the authored JSON): the
     /// host normalises it and assigns channel ids. Re-declaring identically
     /// is a no-op; the parts are part of the authority snapshot.
     ///
@@ -1791,7 +1791,7 @@ impl Participant {
 
     /// Declares an identity binding for this controller: the parts it will
     /// command, a table and a fingerprint, without delivery contracts or
-    /// action grids (a controller that commands paths directly, §6.5). A new
+    /// action grids (a controller that commands paths directly). A new
     /// fingerprint re-issues this controller's leases under a fresh token.
     /// [`Self::declare_bound`] declares what the binder produced.
     pub async fn declare_binding(
@@ -1817,9 +1817,9 @@ impl Participant {
             .0)
     }
 
-    /// Binds `policy` against every part in this participant's view (§6.5),
+    /// Binds `policy` against every part in this participant's view,
     /// or its scene's view when it carries places and `options` names no
-    /// robot (scene design §5): the binding table, or the refusal listing
+    /// robot: the binding table, or the refusal listing
     /// every problem.
     pub fn bind(&self, policy: &Policy, options: &RunOptions) -> Result<Binding, BindError> {
         let view = self.shared.view.borrow();
@@ -2092,7 +2092,7 @@ impl Participant {
     }
 
     /// Subscribes to what the edge dispatched to a commandable part of
-    /// `robot` (its `_applied` stream, §9.4).
+    /// `robot` (its `_applied` stream).
     pub async fn subscribe_applied(
         &self,
         robot: &ParticipantId,
@@ -2134,7 +2134,7 @@ impl Participant {
     }
 
     /// Queries the host's history store for a stream (attach, swap and
-    /// recovery only, §8.8): every page of the reply, in seq order.
+    /// recovery only): every page of the reply, in seq order.
     pub async fn query_history(
         &self,
         stream: &StreamSpec,
@@ -2271,7 +2271,7 @@ impl Participant {
         self.safe_reporter().report(epoch, code, reason);
     }
 
-    /// Latches this robot process's local e-stop (DESIGN §6): an atomic
+    /// Latches this robot process's local e-stop: an atomic
     /// store, safe from any thread (a hardware button's handler too), that
     /// needs no network. Every edge of this process refuses chunks and runs
     /// Estop from its next tick; a background task reports
@@ -2296,8 +2296,7 @@ impl Participant {
     /// Clears the local e-stop latch: the only way to, since no wire path
     /// clears it. `Clear` is queued behind any unsent `Estop`, so the host
     /// ends in ESTOP, unlatched, and leaving it still needs disarm and arm.
-    /// It also clears a host latch this process did not set (the local
-    /// clear of §11.1).
+    /// It also clears a host latch this process did not set.
     pub fn clear_estop(&self) {
         let (after, reason) = self.shared.estop.clear();
         let _ = self.shared.reports.send(Report::Clear { after, reason });
@@ -2320,8 +2319,8 @@ impl Participant {
         }
     }
 
-    /// Reports a bound controller's run counters to observers (§8.10,
-    /// [`crate::report`]); the [`Controller`](crate::Controller) installs
+    /// Reports a bound controller's run counters to observers ([`crate::report`]); the
+    /// [`Controller`](crate::Controller) installs
     /// its own. `None` stops them.
     pub fn set_run_source(&self, source: Option<RunSource>) {
         if let Ok(mut run) = self.shared.run.lock() {
@@ -2549,7 +2548,7 @@ async fn heartbeat_loop(shared: Arc<Shared>, period: Duration, cancel: Cancellat
 }
 
 /// Installs the host's demands on this embodiment's publishers and
-/// acknowledges each revision once installed (§8.2), on every new view and
+/// acknowledges each revision once installed, on every new view and
 /// every newly declared publisher.
 async fn install_demands(shared: Arc<Shared>, cancel: CancellationToken) {
     let mut view = shared.view.subscribe();
@@ -2608,7 +2607,7 @@ async fn sync_demands(shared: &Shared) {
     }
 }
 
-/// Publishes this participant's observer report (§8.10): its publishers'
+/// Publishes this participant's observer report: its publishers'
 /// counters and a bound controller's run counters.
 async fn report_streams(shared: Arc<Shared>, cancel: CancellationToken) {
     let inputs = ReportInputs {
@@ -2792,7 +2791,7 @@ pub async fn wait_for_host(
 /// Queries a session host for its authority snapshot, without attaching:
 /// how anyone gets state at once. **Unverified**: without a handshake there
 /// is no host key to check its signature against (authority state is
-/// public, §8.7), so act only on what [`Participant::fetch_authority`]
+/// public), so act only on what [`Participant::fetch_authority`]
 /// returns.
 pub async fn query_authority(
     transport: &Transport,

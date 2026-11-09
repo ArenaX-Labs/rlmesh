@@ -747,7 +747,7 @@ mod geometry_rule_tests {
 
     #[test]
     fn a_disagreement_is_a_hard_frame_mismatch() {
-        // Case 4: the pairing the whole PR exists to catch.
+        // Case 4: reject an incompatible pairing.
         let (result, _) = check(Attr::Frame, Some("world"), Some("robot_base"));
         let error = result.expect_err("mismatch");
         assert_eq!(error.code, ErrorCode::FrameMismatch);

@@ -20,7 +20,7 @@ use rlmesh_session::{
 
 const WAIT: Duration = Duration::from_secs(10);
 
-/// The §14.1 UR10e's arm and wrist F/T, at 500 Hz.
+/// The UR10e's arm and wrist F/T, at 500 Hz.
 const UR10E: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 500,
             "command": "position", "hold_max_ms": 100, "max_action_age_ms": 1000},

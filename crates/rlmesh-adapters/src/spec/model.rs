@@ -293,9 +293,8 @@ impl Timing {
 /// order — dict keys by their sorted names, tuple entries by position — so two
 /// walks of the same spec always agree entry for entry.
 ///
-/// This is the platform's side of the `render` contract: it feeds the requests
-/// into the environment package's `renderParams` camera dial (surfaced as
-/// `observed.renderRequests`) before the run. [`resolve`](crate::v1::resolve)
+/// Callers can feed these requests into the environment package's
+/// `renderParams` camera dial before the run. [`resolve`](crate::v1::resolve)
 /// then asserts each one against the camera it actually bound.
 pub fn render_requests(spec: &ModelSpec) -> Vec<(String, (u32, u32))> {
     fn walk(node: &InputNode, out: &mut Vec<(String, (u32, u32))>) {
@@ -427,8 +426,7 @@ mod tests {
     #[test]
     fn render_requests_walks_the_tree_in_document_order() {
         // Dict keys walk sorted, tuple entries walk by position, and the two
-        // nest: the order is the spec's own document order, and is what the
-        // platform's camera-dial binding sees. `wrist` declares no render, so it
+        // nest: the order is the spec's own document order. `wrist` declares no render, so it
         // contributes nothing; `zzz` sorts after `obs` despite being written
         // first.
         let requests = render_requests(&spec(

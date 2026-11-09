@@ -1,4 +1,4 @@
-//! Samples, batches and history queries (§9.4, §10.6, §8.8).
+//! Samples, batches and history queries.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -48,7 +48,7 @@ impl fmt::Display for EdgeMode {
     }
 }
 
-/// The envelope metadata of an applied sample (§9.4): what the edge
+/// The envelope metadata of an applied sample: what the edge
 /// dispatched on one tick, after clamping, and on whose authority. It is the
 /// dispatched command, not confirmed physical motion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -193,7 +193,7 @@ impl SampleBatch {
     }
 }
 
-/// A query of the host's history store (§8.8): samples with
+/// A query of the host's history store: samples with
 /// `after_seq < seq <= until_seq` in `epoch`, at most `limit` of them (the
 /// newest of the range).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -207,7 +207,7 @@ pub struct HistoryQuery {
     pub until_seq: Option<u64>,
     /// At most this many samples; `None` takes the store's cap.
     pub limit: Option<u32>,
-    /// Rising per participant generation; the host's pages echo it (§8.6).
+    /// Rising per participant generation; the host's pages echo it.
     pub request_id: u64,
 }
 

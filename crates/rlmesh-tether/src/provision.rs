@@ -1,4 +1,4 @@
-//! USB provisioning of a networked board (spec §14): the tether's framing
+//! USB provisioning of a networked board: the tether's framing
 //! carries a device key one way and the home host's details the other.
 //!
 //! Errors and receivers are the tether's ([`MsgError`], [`Receiver`]): the

@@ -1,5 +1,5 @@
 //! Checks a board running `integrations/arduino/examples/Eyes` over its
-//! serial port, for the board's half of the spec (§5–6), until the bridge
+//! serial port, for the board protocol, until the bridge
 //! lands: `mise run test:tether:board [port] [--clear-estop]`.
 //!
 //! It reads the `HELLO`s and the map, attaches, drives the eyes, and checks
@@ -294,7 +294,7 @@ fn read_map(link: &mut Link, board: &Board) -> Option<Vec<u8>> {
     while map.len() < usize::from(board.map_len) {
         let offset = u16::try_from(map.len()).ok()?;
         let mut slice = None;
-        // Retried every 200 ms, up to 5 times (§5.1 step 3).
+        // Retried every 200 ms, up to 5 times.
         for _ in 0..6 {
             link.send(&Msg::GetMap {
                 boot: board.boot,
@@ -421,7 +421,7 @@ fn run(path: &str, clear_estop: bool) -> Result<Report, String> {
     }
 
     println!("drive (2 s at 50 Hz)");
-    // ttl_ms per §6.1 for a 20 ms control period.
+    // ttl_ms for a 20 ms control period.
     let ttl_ms = 60.min(board.watchdog_ms);
     let start = Instant::now();
     let mut tick = start;

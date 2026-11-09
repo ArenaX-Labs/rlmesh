@@ -6,7 +6,7 @@
 //! the guard against silently reordering leaves), Tuple by index, a fundamental
 //! space is exactly one leaf. Decode pairs [`leaf_specs`] with the wire leaves;
 //! encode pairs [`flatten_leaves`] with them; [`assemble_value`] rebuilds the
-//! typed tree. See `value-transport-redesign.md` §3/§6 (WP1).
+//! typed tree.
 
 use std::collections::BTreeMap;
 
@@ -84,7 +84,7 @@ fn flatten_into<'v>(
 }
 
 /// Rebuild a typed [`SpaceValue`] tree from per-leaf values in canonical order.
-/// Errors if `leaves.len()` doesn't match the spec's leaf count (§3 hard
+/// Errors if `leaves.len()` doesn't match the spec's leaf count (hard
 /// invariant — a wrong count must never silently truncate through `zip`).
 pub fn assemble_value(spec: &SpaceSpec, leaves: Vec<SpaceValue>) -> Result<SpaceValue, SpaceError> {
     let mut it = leaves.into_iter();

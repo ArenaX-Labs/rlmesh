@@ -1,5 +1,5 @@
-//! Conformance fixtures (Appendix B, wave 2): every §15 policy bound against
-//! the §14 reference robots, and every §6.7 refusal, as golden binding
+//! Conformance fixtures: every policy bound against
+//! the reference robots, and every refusal, as golden binding
 //! tables and refusal messages under `tests/golden/`.
 //!
 //! `RLMESH_BLESS=1 cargo test -p rlmesh-session-core --test bind` rewrites the
@@ -262,7 +262,7 @@ fn force_policy_on_ur10e() {
         [
             ("ft".into(), ContractMode::History, 50.0),
             ("q".into(), ContractMode::Latest, 50.0),
-            // D = 50 is at or above the camera's S = 30: every (§8.2).
+            // D = 50 is at or above the camera's S = 30: deliver every sample.
             ("wrist".into(), ContractMode::Every, 50.0),
             ("last".into(), ContractMode::Latest, 50.0),
         ]
@@ -790,7 +790,7 @@ fn fingerprints_follow_the_table() {
     );
 }
 
-/// The scene design's eyeball rig: two eyes, a skull and a fixed camera,
+/// The eyeball rig: two eyes, a skull and a fixed camera,
 /// each its own robot with channel ids unique across the session, placed
 /// in one view; `extra` robots join unplaced.
 fn eyeball_rig(extra: &[(&str, &str)]) -> (Vec<PartSpec>, Vec<Place>) {

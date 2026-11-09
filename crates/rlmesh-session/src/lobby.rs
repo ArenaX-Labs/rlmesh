@@ -1,4 +1,4 @@
-//! The lobby (scene design §3, §4): the session `_lobby` on a robot's home
+//! The lobby: the session `_lobby` on a robot's home
 //! daemon, where idle robots wait for a run and clients run scenes.
 //!
 //! - [`LobbyService`]: what the `_lobby` host hands the lobby verbs to
@@ -129,7 +129,7 @@ pub async fn find_home(home: Option<&str>) -> Result<SessionAddress, SessionErro
 }
 
 /// Where a run's session is, for a member of the home daemon whose lobby
-/// is `lobby` (scene design §3.3, §4.4): at the lobby's own host when its
+/// is `lobby`: at the lobby's own host when its
 /// static key is `host_key` (the home daemon hosts the run), else at the
 /// first of `addresses` that resolves (a satellite's), attached with the
 /// same device key against `host_key`, which this process keeps for the
@@ -185,8 +185,8 @@ pub fn run_address(
 }
 
 /// `command`'s reply, however long the host keeps it pending: past the
-/// participant's ctl timeout the request goes on being re-sent under its id
-/// (§8.6), and the retry joins the pending verb. A refusal is an error.
+/// participant's ctl timeout the request goes on being re-sent under its id, and the
+/// retry joins the pending verb. A refusal is an error.
 async fn long_poll(
     participant: &Participant,
     command: Command,
@@ -218,7 +218,7 @@ fn run_of(reply: CtlReply) -> Result<RunState, SessionError> {
 }
 
 /// The runs this process stopped: their policies' runs return rather than
-/// raise when the run closes (scene design §4.2).
+/// raise when the run closes.
 fn stopped() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
     static STOPPED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
         std::sync::OnceLock::new();
@@ -297,8 +297,8 @@ impl LobbyClient {
         run_of(long_poll(&self.participant, command, timeout).await?)
     }
 
-    /// Follows run `run` until it is at `stage` (scene design §4.3:
-    /// `RUNNING` again after a rejoin), or [`SessionError::Timeout`] after
+    /// Follows run `run` until it is at `stage` (`RUNNING` again after a rejoin), or
+    /// [`SessionError::Timeout`] after
     /// `timeout`. A run that ended or failed first is
     /// [`SessionError::Rejected`] with its error.
     ///
@@ -386,13 +386,12 @@ impl LobbyClient {
     }
 }
 
-/// A satellite daemon's id in its home's lobby: `rlmeshd.` and its device
-/// (scene design §3.2).
+/// A satellite daemon's id in its home's lobby: `rlmeshd.` and its device.
 pub const SATELLITE_PREFIX: &str = "rlmeshd.";
 
 /// How long a satellite goes without its home authenticating itself (a
 /// heartbeat echo) before it takes the home as lost, whatever the home's
-/// unsigned liveliness token says (scene design §4.4).
+/// unsigned liveliness token says.
 pub const HOME_SILENT: Duration = Duration::from_secs(3);
 
 /// Resolves once `participant`'s host has gone [`HOME_SILENT`] without an
@@ -414,7 +413,7 @@ async fn home_gone(participant: &Participant) {
     }
 }
 
-/// A satellite daemon in its home daemon's lobby (scene design §4.4):
+/// A satellite daemon in its home daemon's lobby:
 /// `rlmeshd.<device>`, an observer that takes its home's orders one at a
 /// time and answers a host order.
 pub struct SatelliteClient {

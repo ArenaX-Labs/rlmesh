@@ -1,17 +1,17 @@
-//! The safety layer's cryptography (design §3, §8): byte encodings, the
+//! The safety layer's cryptography: byte encodings, the
 //! `Sealed` and `Signed` envelopes, replay windows, the participant's IK
 //! handshake and the machine-pairing exchange. Sans-IO like the rest of the
 //! crate: randomness comes from the caller ([`Rng`]), and nothing here knows
 //! about Zenoh, protobuf or a clock. Payloads are opaque bytes.
 //!
-//! - [`mod@lp`]: `lp` (§8.1).
-//! - [`sealed`]: the `Sealed` envelope (§8.2), with a sender's per-kind `seq`
+//! - [`mod@lp`][]: `lp`.
+//! - [`sealed`]: the `Sealed` envelope, with a sender's per-kind `seq`
 //!   counters and a receiver's replay windows ([`replay`]).
-//! - [`signed`]: the host's `Signed` broadcasts (§8.7).
-//! - [`handshake`]: `Noise_IK_25519_ChaChaPoly_BLAKE2s` (§8.3).
-//! - [`pairing`]: Noise XX, then commit-reveal and the SAS (§3).
+//! - [`signed`]: the host's `Signed` broadcasts.
+//! - [`handshake`][]: `Noise_IK_25519_ChaChaPoly_BLAKE2s`.
+//! - [`pairing`]: Noise XX, then commit-reveal and the SAS.
 //!
-//! Interop vectors (§8.8) are in `tests/vectors/crypto.json`.
+//! Interop vectors are in `tests/vectors/crypto.json`.
 
 use zeroize::Zeroize;
 
@@ -56,7 +56,7 @@ pub struct RngError;
 pub struct Key([u8; 32]);
 
 impl Key {
-    /// The key with these bytes: a delivered key (§8.5) or a stored one.
+    /// The key with these bytes: a delivered key or a stored one.
     ///
     /// The type can't stop bytes from being duplicated: the host holds every
     /// key it delivers, so keeping one sender per key and never restarting a
@@ -66,7 +66,7 @@ impl Key {
         Self(bytes)
     }
 
-    /// The key's bytes, to deliver it (§8.5).
+    /// The key's bytes, to deliver it.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }

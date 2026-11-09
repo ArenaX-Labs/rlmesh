@@ -1,4 +1,4 @@
-//! The kind table (§4): what each core kind publishes and accepts.
+//! The kind table: what each core kind publishes and accepts.
 //!
 //! | Kind | Published fields | Command modes → command fields | Default send | Class |
 //! |---|---|---|---|---|
@@ -124,7 +124,7 @@ impl Kind {
         }
     }
 
-    /// An event kind: a bounded queue, reliable, never decimated (§8.5).
+    /// An event kind: a bounded queue, reliable, never decimated.
     pub fn is_event(self) -> bool {
         matches!(self, Self::Text | Self::Reward | Self::Success)
     }
@@ -153,7 +153,7 @@ impl Kind {
     }
 
     /// Whether Hold may repeat the last dispatched target in `mode`
-    /// (position-type modes, §9.5).
+    /// (position-type modes).
     pub fn holds_target(self, mode: &str) -> bool {
         matches!(
             (self, mode),

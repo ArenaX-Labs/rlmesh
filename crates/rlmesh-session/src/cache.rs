@@ -1,4 +1,4 @@
-//! The controller's input cache and history windows (§8.8), built into the
+//! The controller's input cache and history windows, built into the
 //! controller runtime so users write no cache code.
 //!
 //! [`InputCache`] is sans-IO (it lives in `rlmesh-session-core` and is
@@ -7,7 +7,7 @@
 //! fed sample by sample and snapshotted at each policy start:
 //!
 //! - **Snapshot.** Every input's newest sample, its seq and its
-//!   **conservative age** `now − capture + ε_pub + ε_self` (§9.1), taken
+//!   **conservative age** `now − capture + ε_pub + ε_self`, taken
 //!   together but captured independently: the snapshot exposes each capture
 //!   time and the skew between them.
 //! - **Fresh** means a conservative age within the entry's bound. A sample
@@ -23,7 +23,7 @@
 //!   [`Inputs::recover`]) or a complete new window exists. An incomplete
 //!   window is never delivered: at episode start the start waits for a full
 //!   one, unless `allow: warmup` pads it by repeating the first sample.
-//! - **Epochs** (§11.1). When the session's epoch advances (an `arm`),
+//! - **Epochs**. When the session's epoch advances (an `arm`),
 //!   every state stream is cleared ([`InputCache::advance`]) and a sample
 //!   from an older epoch is dropped, so nothing seeds the new epoch from the
 //!   old one. Episodic text and the other event streams keep their last
@@ -32,7 +32,7 @@
 //! - **Provenance.** Each snapshot records, per stream, the seq range used
 //!   (`based_on` for the chunks computed from it).
 //!
-//! On an applied stream (§9.4) a tick that dispatched nothing carries no
+//! On an applied stream a tick that dispatched nothing carries no
 //! value: the input keeps the previous dispatched value.
 //!
 //! [`Inputs`] is the network end: one subscription per bound stream,
@@ -78,7 +78,7 @@ impl Observation {
 /// Why a start produced no observation.
 #[derive(Debug, thiserror::Error)]
 pub enum ObserveError {
-    /// The start is skipped (§8.8).
+    /// The start is skipped.
     #[error("start skipped: {0:?}")]
     Skipped(Skip),
     /// A sample did not decode (`decode_mismatch`).
@@ -253,8 +253,8 @@ impl Inputs {
         }
     }
 
-    /// Fills each window's first gap from the host's history store (§8.8:
-    /// attach, swap and recovery only). Returns how many samples arrived.
+    /// Fills each window's first gap from the host's history store (attach, swap and
+    /// recovery only). Returns how many samples arrived.
     pub async fn recover(&self, participant: &Participant) -> Result<usize, SessionError> {
         let gaps: Vec<(StreamSpec, Epoch, u64, u64)> = {
             let Ok(cache) = self.cache.lock() else {

@@ -33,7 +33,7 @@ pub struct RlmeshDeviceRobotConfig {
     pub address: *const c_char,
     /// A provisioned board's device key (32 bytes), with `address` null.
     pub device_key: *const u8,
-    /// Its stored provisioning record (tether spec §14).
+    /// Its stored provisioning record.
     pub record: *const u8,
     /// The record's length.
     pub record_len: usize,

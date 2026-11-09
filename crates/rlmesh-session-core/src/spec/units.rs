@@ -1,4 +1,4 @@
-//! Units (§5.1): SI and REP-103 by default, with the alternatives a source
+//! Units: SI and REP-103 by default, with the alternatives a source
 //! may declare per field.
 //!
 //! Every field of a core kind has one [`Quantity`], so every field has one
@@ -168,7 +168,7 @@ impl Quantity {
     }
 
     /// Whether conversions between this quantity's units are automatic
-    /// (§7.1: angles in floating point).
+    /// (angles in floating point).
     pub fn converts_automatically(self) -> bool {
         matches!(self, Self::Angle | Self::AngularVelocity)
     }

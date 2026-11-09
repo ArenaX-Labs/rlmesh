@@ -14,7 +14,7 @@ fn ns(d: Duration) -> i64 {
     i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)
 }
 
-/// The §8.10 monitoring window for a stream expected at `hz`:
+/// The monitoring window for a stream expected at `hz`:
 /// `max(1 s, 4 / hz)`.
 pub fn window_for(hz: f64) -> Duration {
     let slow = if hz.is_finite() && hz > 0.0 {

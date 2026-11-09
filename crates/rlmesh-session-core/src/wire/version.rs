@@ -1,4 +1,4 @@
-//! Protocol identity and the compatibility rule (§10.7).
+//! Protocol identity and the compatibility rule.
 //!
 //! | Layer | Identifier | Rule |
 //! |---|---|---|
@@ -21,19 +21,19 @@ pub const PROTOCOL_MINOR: u32 = 0;
 pub const SPEC_VERSION: u32 = 1;
 
 /// A robot's `Attach.supports` asks for its device view, which a host
-/// listing it publishes on `host/view/{robot}` (scene design §3.4).
+/// listing it publishes on `host/view/{robot}`.
 pub const VIEW_DEVICE: &str = "view.device";
 
 /// A host listing it may carry a scene's places in its authority state,
-/// and policies that name no robot bind against their view (scene design
-/// §5, [`crate::spec::view`]). A binder that lacks it refuses to bind in a
+/// and policies that name no robot bind against their view ([`crate::spec::view`]). A
+/// binder that lacks it refuses to bind in a
 /// session whose state carries places, unless given `robot=`: binding robot
 /// by robot there would read the wrong paths.
 pub const SCENE_PLACES: &str = "scene.places";
 
 /// Features this build implements as a host: behaviour added in later
 /// minors. `auth.sealed`: participants attach through the handshake and
-/// seal their control traffic (design §8.8); [`VIEW_DEVICE`];
+/// seal their control traffic; [`VIEW_DEVICE`];
 /// [`SCENE_PLACES`].
 pub const FEATURES: &[&str] = &["auth.sealed", VIEW_DEVICE, SCENE_PLACES];
 

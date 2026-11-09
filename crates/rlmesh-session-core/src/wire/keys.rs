@@ -1,10 +1,10 @@
-//! The Zenoh key layout of one session (§10.3).
+//! The Zenoh key layout of one session.
 //!
 //! ```text
 //! rlmesh/v2/{tenant}/server                                    multi-session host (queryable)
 //! rlmesh/v2/{tenant}/s/{session}/host                          host liveliness
 //! rlmesh/v2/{tenant}/s/{session}/host/state                    authority snapshot (queryable) + updates, signed
-//! rlmesh/v2/{tenant}/s/{session}/host/tick                     virtual-mode ticks (§11.3), signed
+//! rlmesh/v2/{tenant}/s/{session}/host/tick                     virtual-mode ticks, signed
 //! rlmesh/v2/{tenant}/s/{session}/host/view/{robot}             a robot's device view (queryable) + updates, signed
 //! rlmesh/v2/{tenant}/s/{session}/host/health                   every link's health, relayed to observers, signed
 //! rlmesh/v2/{tenant}/s/{session}/hs                            the attach handshake (query/reply)
@@ -12,14 +12,14 @@
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}               participant liveliness
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb            heartbeats (participant -> host, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb/echo       heartbeat echoes (host -> participant, sealed)
-//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/report        observer telemetry (participant -> host, sealed, §8.10)
+//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/report        observer telemetry (participant -> host, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/keys          key deliveries (host -> participant, sealed)
 //! rlmesh/v2/{tenant}/s/{session}/estop/{participant}           e-stop signals (member -> every edge, signed)
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}           samples
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}/_applied  applied samples
 //! rlmesh/v2/{tenant}/s/{session}/c/{robot}/{path...}           action chunks
 //! rlmesh/v2/{tenant}/s/{session}/h/{robot}/{path...}           history store (queryable, host)
-//! rlmesh/v2/{tenant}/s/{session}/l/{robot}                     lockstep step (queryable, §12)
+//! rlmesh/v2/{tenant}/s/{session}/l/{robot}                     lockstep step (queryable)
 //! rlmesh/v2/{tenant}/s/{session}/m/{model}                     served model requests (queryable)
 //! ```
 //!
@@ -153,7 +153,7 @@ impl SessionKeys {
         format!("{}/p/{id}/hb/echo", self.prefix)
     }
 
-    /// Key deliveries from the host to one participant (§8.5).
+    /// Key deliveries from the host to one participant.
     pub fn participant_keys(&self, id: &ParticipantId) -> String {
         format!("{}/p/{id}/keys", self.prefix)
     }

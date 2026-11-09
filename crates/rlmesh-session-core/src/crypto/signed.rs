@@ -1,4 +1,4 @@
-//! The host's `Signed` broadcasts (§8.7): authority state, virtual ticks and
+//! The host's `Signed` broadcasts: authority state, virtual ticks and
 //! device views, in clear, signed with the host's Ed25519 key.
 //!
 //! | Offset | Size | Field |
@@ -32,7 +32,7 @@ pub enum SignedKind {
     AuthorityState = 20,
     /// `VirtualTick` on `host/tick`.
     VirtualTick = 21,
-    /// `DeviceView` on `host/view/{robot}` (scene design §3.4).
+    /// `DeviceView` on `host/view/{robot}`.
     DeviceView = 22,
     /// `HostHealth` on `host/health`.
     HostHealth = 23,
@@ -142,7 +142,7 @@ pub enum SignedError {
 }
 
 /// A broadcast's header and body, **unverified**: for a participant's
-/// bootstrap read of `host_instance` before its handshake (§8.3), and for
+/// bootstrap read of `host_instance` before its handshake, and for
 /// readers that hold no host key. Never a basis for acting.
 ///
 /// # Errors

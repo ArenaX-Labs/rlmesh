@@ -20,12 +20,12 @@ use crate::view::{Recording, View, clocks};
 /// The central panel's tabs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
-    /// Declared vs measured (§8.10).
+    /// Declared vs measured.
     #[default]
     Measured,
     /// Every mode, lease, binding and roster change.
     Timeline,
-    /// The binding tables (§6.8).
+    /// The binding tables.
     Bindings,
 }
 
@@ -794,7 +794,7 @@ fn measured(ui: &mut egui::Ui, view: &View) {
         "Edges",
         &format!(
             "control rate ({}); a deadline miss is a tick more than two control periods \
-             after the previous one (§9.1), seq gaps excluded.",
+             after the previous one, seq gaps excluded.",
             clocks::EDGE
         ),
     );

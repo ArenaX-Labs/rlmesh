@@ -4,7 +4,7 @@
 //! its [`Link`], the command edge its [`EdgeCore`]; the host normalises the
 //! map. This only puts them in the participant's order.
 //!
-//! The order (design §8.3): subscribe to the host's state, ticks, this
+//! The order: subscribe to the host's state, ticks, this
 //! robot's heartbeat echo and key deliveries; read the host instance from
 //! the state; handshake on `hs`; `Attach` and `DeclareParts` sealed on
 //! `ctl`; then build an edge per command group, subscribe to each part's
@@ -40,7 +40,7 @@ pub const QUERY_MS: u32 = 2000;
 /// The pause before starting over after a failure.
 pub const RETRY_MS: u32 = 1000;
 /// With no heartbeat echo and no valid signed state for this long, the host
-/// counts as lost (scene design §3.5).
+/// counts as lost.
 pub const HOST_LOST_MS: u32 = 5000;
 /// The longest pause between rounds of home addresses.
 const MAX_BACKOFF_MS: u32 = 30_000;
@@ -53,7 +53,7 @@ const GET_KEYS_MS: u64 = 250;
 pub const CLASS_CONTROL: u8 = 0;
 
 /// Subscription ids, for [`Robot::sample`]: `host/view/{id}`, this robot's
-/// signed device view (scene design §3.4).
+/// signed device view.
 pub const SUB_VIEW: u8 = 0;
 /// `host/tick`.
 pub const SUB_TICK: u8 = 1;
@@ -76,13 +76,13 @@ pub struct Config {
     /// This robot's participant id and display name.
     pub name: ParticipantId,
     /// Its device key and the host's static key: from the address's key
-    /// (device `local`), or provisioned (tether spec §14).
+    /// (device `local`), or provisioned.
     pub credential: Credential,
     /// The robot's map, as authored JSON.
     pub robot_json: String,
     /// The heartbeat period.
     pub heartbeat_ms: u32,
-    /// Wait in the home's lobby for runs (scene design §3): `tenant` and
+    /// Wait in the home's lobby for runs: `tenant` and
     /// `session` are then the lobby's, and each run's come with its join.
     pub lobby: bool,
     /// The home's base addresses (`host`, first port), tried in order: the
@@ -93,7 +93,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// A board provisioned for its home (tether spec §14): its device key,
+    /// A board provisioned for its home: its device key,
     /// and the robot name, home's static key, host id and addresses from the stored
     /// `record`. It joins the home's default session directly, so every
     /// board runs the same firmware and only its provisioning differs; a
@@ -281,7 +281,7 @@ pub struct Robot {
     tenant: TenantId,
     session: SessionId,
     keys: SessionKeys,
-    /// Between runs (scene design §3): what its next wait reports.
+    /// Between runs: what its next wait reports.
     lobby: Option<Lobby>,
     /// The run it joined, while in one.
     run: Option<Join>,
@@ -352,7 +352,7 @@ pub struct Robot {
     last_get_keys: Option<u64>,
     accepted: u64,
     applied: u64,
-    /// This robot's e-stop latch (DESIGN §6): its own stop (`ESTOP_LOCAL`)
+    /// This robot's e-stop latch: its own stop (`ESTOP_LOCAL`)
     /// or a member's signal (`ESTOP_SIGNAL`). It outlives a session, and the
     /// next attach carries it.
     estop: Option<Reason>,
@@ -1374,7 +1374,7 @@ impl Robot {
         if let Some(join) = self.run.take() {
             // A run's join that failed is reported in the next wait; a run
             // whose host went quiet is left. Either way, back to the lobby
-            // at once (scene design §3.5).
+            // at once.
             if joining && let Some(lobby) = self.lobby.as_mut() {
                 lobby.failed(&join.run, fault_error(&fault));
             }
@@ -1533,7 +1533,7 @@ impl Robot {
         }
     }
 
-    /// Leaves the run it is in when the view says so (scene design §3.5).
+    /// Leaves the run it is in when the view says so.
     fn check_leave(&mut self, now_us: u64) {
         if self.run.is_none() || self.phase != Phase::Running {
             return;

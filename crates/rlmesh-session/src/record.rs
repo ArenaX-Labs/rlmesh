@@ -1,5 +1,4 @@
-//! MCAP recording of a real-time RLMesh session (protocol v2, the v0.2
-//! spec §13).
+//! MCAP recording of a real-time RLMesh session.
 //!
 //! A [`Recorder`] is an observer participant: it subscribes to every stream
 //! of every robot (parts and their `_applied` streams), to every commandable
@@ -23,8 +22,8 @@
 //! seq (the full u64 stays in the envelope).
 //!
 //! The recorder records what the session publishes: it declares no delivery
-//! contract, so a stream a policy reads at `latest@R` is recorded at R
-//! (§8.2), while `_applied` and chunks are recorded in full.
+//! contract, so a stream a policy reads at `latest@R` is recorded at R, while
+//! `_applied` and chunks are recorded in full.
 //!
 //! Always-on capture ([`Recorder::start_rolling`]) also keeps incidents:
 //! an e-stop, safe mode, a lease preemption or a burst of missed edge
@@ -531,7 +530,7 @@ impl Recorder {
 
     /// A handle that writes samples into this recording from inside the
     /// process: the lockstep path publishes no streams, so its env tees
-    /// each step's slabs here, per lane (§13).
+    /// each step's slabs here, per lane.
     pub fn tee(&self) -> SampleTee {
         SampleTee {
             tx: self.tx.clone(),
@@ -664,7 +663,7 @@ async fn watch_parts(
                             // a signed chunk's body as sent, unverified, and
                             // can't read a sealed one. Read permission
                             // doesn't change that: `k_cmd` goes only to the
-                            // robot and the host (design §8.4).
+                            // robot and the host.
                             // TODO: record verified chunks when the host
                             // relays what its edges accepted (the heartbeat
                             // relay above would carry it).

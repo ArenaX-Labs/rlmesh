@@ -1,4 +1,4 @@
-//! Part paths (§2): the only address of a part.
+//! Part paths: the only address of a part.
 //!
 //! A path is 1-6 `/`-separated segments of `[a-z][a-z0-9_]*`, each 1-32
 //! characters, at most 96 bytes in all, with no leading `/`. Every path is
@@ -22,8 +22,7 @@ pub const MAX_DEPTH: usize = 6;
 pub const MAX_SEGMENT_LEN: usize = 32;
 /// The longest path, in bytes.
 pub const MAX_PATH_LEN: usize = 96;
-/// The segment the edge's applied stream adds to a commandable part's path
-/// (§9.4).
+/// The segment the edge's applied stream adds to a commandable part's path.
 pub const APPLIED: &str = "_applied";
 
 /// Whether `segment` is `[a-z][a-z0-9_]*` of 1 to `max` characters.
@@ -42,7 +41,7 @@ pub fn is_identifier(segment: &str, max: usize) -> bool {
 pub struct PartPath(String);
 
 impl PartPath {
-    /// Validates `path` against §2.1.
+    /// Validates the length, depth and segments of `path`.
     pub fn new(path: impl Into<String>) -> Result<Self, IdError> {
         let path = path.into();
         let refuse = |reason: &str| Err(IdError::new("path", &path, reason));

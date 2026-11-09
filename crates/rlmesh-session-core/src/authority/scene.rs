@@ -1,4 +1,4 @@
-//! A scene's session (scene design §3.6, §4.2, §5): its member table, its
+//! A scene's session: its member table, its
 //! rejoin window and its closing. Fenced behind the `fleet` feature; its
 //! places are an ordinary session's ([`super::AuthorityConfig::places`]).
 //!
@@ -6,7 +6,7 @@
 //!   robot from its pinned device (`board_id` is checked at declare), a
 //!   controller from its member's device up to its cap. Anyone else
 //!   attaches only as an observer (`NOT_AUTHORIZED`).
-//! - **Rejoin** (scene design §4.3): a member lost from the run is waited
+//! - **Rejoin**: a member lost from the run is waited
 //!   for until `rejoin_until_ns` ([`SceneConfig::rejoin_ns`] after the
 //!   loss); a robot is back once it declared again, the same map as before
 //!   (`INCOMPATIBLE` otherwise), and the run arms only once every member is
@@ -32,8 +32,8 @@ pub enum Member {
         /// Its pinned device (`None`: unpinned, so the name binds to its
         /// first embodiment's device).
         device: Option<String>,
-        /// While unpinned, the devices whose first embodiment may pin it
-        /// (scene design §3.2): `local`, a board provisioned under its
+        /// While unpinned, the devices whose first embodiment may pin it: `local`, a
+        /// board provisioned under its
         /// name, a device with the `arm` verb. Anyone else is refused.
         may_pin: Vec<String>,
     },
@@ -178,7 +178,7 @@ impl Authority {
         })
     }
 
-    /// A closing scene is over (scene design §4.2): nothing arms it or
+    /// A closing scene is over: nothing arms it or
     /// takes a lease in it again, a grant waiting for its keys included.
     pub(super) fn scene_refuses(&self, command: &Command) -> Result<(), CtlError> {
         match &self.scene.closing {
@@ -252,7 +252,7 @@ impl Authority {
     }
 
     /// A scene's robot keeps its map for the run: bindings were made
-    /// against it (scene design §4.3).
+    /// against it.
     pub(super) fn scene_keeps_map(
         &self,
         from: &ParticipantId,
@@ -270,7 +270,7 @@ impl Authority {
         }
     }
 
-    /// Closes the scene this session runs (scene design §4.2) with `code`
+    /// Closes the scene this session runs with `code`
     /// (`SCENE_ENDED`, or `SCENE_FAILED` with the stage's error in
     /// `detail`), `by` whoever stopped it, in one revision: the mode goes
     /// DISARMED (ESTOP stays), every lease ends with the reason, and

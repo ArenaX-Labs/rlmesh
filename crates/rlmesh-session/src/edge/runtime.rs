@@ -5,12 +5,12 @@
 //! class and splices every chunk on the transport's callback thread, against
 //! the participant's live authority view, and it declares each member's
 //! `_applied` publisher. The control loop calls [`Edge::tick`]: the edge
-//! decides, publishes one applied sample per member (§9.4), and when it falls
+//! decides, publishes one applied sample per member, and when it falls
 //! back on its own account it tells the host through the participant
 //! (`EnterSafe`, retried in the background); the heartbeat reports its
 //! queue. Every chunk and tick reads the robot process's local e-stop latch
 //! first ([`Participant::latch_estop`]). A chunk counts only when it opens
-//! under the lease's `k_cmd` (design §8.4), which only its holder has.
+//! under the lease's `k_cmd`, which only its holder has.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};

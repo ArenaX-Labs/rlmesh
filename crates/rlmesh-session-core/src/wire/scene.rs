@@ -1,4 +1,4 @@
-//! The lobby and scenes (scene design §3, §4, §5): a waiting participant's
+//! The lobby and scenes: a waiting participant's
 //! assignment, the orders a home daemon sends satellites, a run's state, and
 //! the places and scene a session's authority state carries.
 
@@ -106,11 +106,11 @@ pub struct RobotPin {
     pub robot: ParticipantId,
     /// Its device.
     pub device: String,
-    /// The tethered board's id (tether spec §7).
+    /// The tethered board's id.
     pub board_id: Option<[u8; 8]>,
 }
 
-/// Where a run is (scene design §4.1).
+/// Where a run is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RunStage {
     /// Checking the scene against devices and pins.
@@ -133,7 +133,7 @@ pub enum RunStage {
     Ended,
     /// Failed.
     Failed,
-    /// Waiting for a lost member (§4.3).
+    /// Waiting for a lost member.
     Rejoining,
 }
 
@@ -191,7 +191,7 @@ pub struct RunState {
     pub scene_fingerprint: Option<Fingerprint>,
 }
 
-/// One robot's place in a scene's view (§5).
+/// One robot's place in a scene's view.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Place {
     /// The robot.

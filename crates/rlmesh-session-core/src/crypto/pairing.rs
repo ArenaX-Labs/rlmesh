@@ -1,4 +1,4 @@
-//! Machine pairing (§3): a Noise XX handshake between the laptop
+//! Machine pairing: a Noise XX handshake between the laptop
 //! (initiator) and rlmeshd (responder), then commit-reveal inside it, as in
 //! Bluetooth numeric comparison:
 //!
@@ -14,7 +14,7 @@
 //! rlmeshd, key 2 rlmeshd → laptop.
 //!
 //! A message that fails its Noise check leaves a side's pending state as it
-//! was (§3): each side keeps its inputs and replays its part of the
+//! was: each side keeps its inputs and replays its part of the
 //! handshake from them, so a forged `xx2` or `xx3` can be followed by the
 //! real one.
 
@@ -291,7 +291,7 @@ impl PairResponder {
     ///
     /// # Errors
     /// The unchanged state and the [`HandshakeError`]: a packet that fails
-    /// its Noise check leaves the pending exchange untouched (§3).
+    /// its Noise check leaves the pending exchange untouched.
     pub fn finish(self, xx3: &[u8]) -> Result<PairLink, (Self, HandshakeError)> {
         match self.try_finish(xx3) {
             Ok(link) => Ok(link),

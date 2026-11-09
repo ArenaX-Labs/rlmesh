@@ -9,7 +9,7 @@
 //! inflate the measured round trip. Their publishers are declared when a
 //! participant attaches, so the echo path never resolves a key per message.
 //!
-//! **Who is speaking** (design §8.3): a participant attaches through the
+//! **Who is speaking**: a participant attaches through the
 //! Noise IK handshake on `hs`, which gives each process (a generation) its
 //! own `k_up` and `k_down`. Every `ctl` request and heartbeat must be
 //! sealed under the `k_up` of the generation in effect, and every reply and
@@ -17,11 +17,10 @@
 //! A handshake makes a candidate, which takes effect when the host accepts
 //! its sealed `Attach`; a newer generation of a participant supersedes the
 //! older one. Request ids and a per-generation reply cache make a retried
-//! verb idempotent (§8.6). `host/state` and `host/tick` are signed with the
-//! host's Ed25519 key, under the host instance and one publication counter
-//! (§8.7).
+//! verb idempotent. `host/state` and `host/tick` are signed with the
+//! host's Ed25519 key, under the host instance and one publication counter.
 //!
-//! **Keys** (§8.4, §8.5): the host draws every other key, delivers it on
+//! **Keys**: the host draws every other key, delivers it on
 //! `p/{participant}/keys` sealed under the recipient's `k_down`, and
 //! retries until the recipient's `KeysAck` (its
 //! [`KeyIssuer`](crate::auth::KeyIssuer)). Each part's
@@ -33,7 +32,7 @@
 //! its keys in the reply. Meanwhile the host keeps dispatching; a retry of
 //! the pending request joins it.
 //!
-//! The host also keeps the session's **history store** (§8.8): for every
+//! The host also keeps the session's **history store**: for every
 //! declared stream (bulk streams only when configured) it subscribes to the
 //! samples and keeps a bounded ring per stream, in the current epoch only,
 //! served on `h/{robot}/{path}`. A controller queries it on attach, on a
@@ -44,10 +43,10 @@
 //! first carrying `truncated` (retention ran out before the range) and the
 //! gaps the store knows of. A query must be sealed under the requester's
 //! `k_up`, and its pages are sealed under its `k_down` with the query's
-//! request id (§8.6); the store opens every sample under its stream's key
+//! request id; the store opens every sample under its stream's key
 //! and keeps only the session's current epoch.
 //!
-//! In a virtual-clock session the host also runs the tick barrier (§11.3)
+//! In a virtual-clock session the host also runs the tick barrier
 //! and publishes its ticks on `host/tick`.
 //!
 //! The host is a library ([`SessionHost::start`] on any [`Transport`]);
@@ -148,7 +147,7 @@ pub struct HistoryConfig {
     /// Keep bulk streams (cameras) too. Off by default: a raw camera ring is
     /// large, and windows on bulk streams are rare.
     pub bulk: bool,
-    /// Samples kept per stream: the policy-side history cap (§3.4).
+    /// Samples kept per stream: the policy-side history cap.
     pub depth: usize,
 }
 
@@ -190,24 +189,24 @@ pub struct HostConfig {
     pub supports: Vec<String>,
     /// The history store.
     pub history: HistoryConfig,
-    /// Virtual clock mode (§11.3); `None` is wall mode.
+    /// Virtual clock mode; `None` is wall mode.
     pub virtual_clock: Option<VirtualConfig>,
     /// The parts whose streams, chunks and lockstep traffic are encrypted
-    /// rather than signed (§8.2): none by default.
+    /// rather than signed: none by default.
     pub seal: SealPolicy,
     /// The host's keys, shared by every session a multi-session host runs:
     /// participants handshake with its static key, and it signs its
     /// broadcasts with its Ed25519 key. Holders of its local secret (the
     /// address's key) attach as device `local`.
     pub identity: Arc<HostIdentity>,
-    /// The devices besides `local` it accepts, each with its entry (design
-    /// §4); none by default. One listed as `local` is another key of that
-    /// device, its entry unused: the home machine's on a satellite's run
-    /// (scene design §4.4). Change them at runtime with
+    /// The devices besides `local` it accepts, each with its entry; none by default.
+    /// One listed as `local` is another key of that
+    /// device, its entry unused: the home machine's on a satellite's run. Change them
+    /// at runtime with
     /// [`SessionHost::set_access`], [`SessionHost::admit`] and
     /// [`SessionHost::revoke`].
     pub devices: Vec<Device>,
-    /// Robot name → its pin (rlmeshd's `[robots.*]`, design §4): the
+    /// Robot name → its pin (rlmeshd's `[robots.*]`): the
     /// device, checked at the handshake, and a tethered board, checked at
     /// `DeclareParts`. None by default, so a name binds to its first
     /// embodiment's device for the host instance. Change one at runtime with
@@ -218,16 +217,16 @@ pub struct HostConfig {
     /// Off by default: it waits for the next arm. Other robots never stop
     /// for it either way.
     pub rearm_robots: bool,
-    /// Where each placed robot's parts appear in the session's view (scene
-    /// design §5): one binding drives every placed robot. Empty by default:
+    /// Where each placed robot's parts appear in the session's view: one binding drives
+    /// every placed robot. Empty by default:
     /// no view.
     pub places: Vec<crate::wire::Place>,
-    /// The scene this session runs (scene design §4): its member table and
+    /// The scene this session runs: its member table and
     /// its identity. `None` by default: an ordinary session.
     /// `crate::scene::Scene::host` builds one from a scene file.
     #[cfg(feature = "fleet")]
     pub scene: Option<SceneConfig>,
-    /// The home daemon's lobby (scene design §3), on its `_lobby` session
+    /// The home daemon's lobby, on its `_lobby` session
     /// only: the lobby verbs go to it. `None` by default: the session
     /// refuses them.
     #[cfg(feature = "fleet")]
@@ -362,7 +361,7 @@ pub struct SessionHost {
 /// A runtime change of the device table, and who is told it applied.
 type AccessChange = (Change, oneshot::Sender<Result<(), SessionError>>);
 
-/// One change of the device table (design §4, §8.5).
+/// One change of the device table.
 #[derive(Debug)]
 enum Change {
     /// A device's new entry.
@@ -585,7 +584,7 @@ impl SessionHost {
         })
     }
 
-    /// Changes `device`'s entry at runtime (design §4, §8.5): its
+    /// Changes `device`'s entry at runtime: its
     /// participants that embody a robot lose every lease they hold, the
     /// others are detached (`ACCESS_CHANGED`) and re-attach under the new
     /// entry, and every stream key it can no longer read rotates.
@@ -610,7 +609,7 @@ impl SessionHost {
         self.change(Change::Admit(device)).await
     }
 
-    /// Revokes `device` (design §4, §8.5): its handshakes are refused from
+    /// Revokes `device`: its handshakes are refused from
     /// now on, every participant of it is detached (`REVOKED`), robots it
     /// embodies too, and every stream key it could read rotates. The names
     /// it is bound to stay bound.
@@ -622,8 +621,8 @@ impl SessionHost {
     }
 
     /// Pins robot name `robot`, or unpins it (`None`): its device is checked
-    /// at every handshake and its board at every declare (design §4, tether
-    /// spec §7). A moved or removed pin detaches the robot's current
+    /// at every handshake and its board at every declare. A moved or removed pin
+    /// detaches the robot's current
     /// embodiment as lost (`ROBOT_LOST`: an ACTIVE session goes SAFE); a
     /// first pin to the device that embodies it changes nothing.
     ///
@@ -634,7 +633,7 @@ impl SessionHost {
     }
 
     #[cfg(feature = "fleet")]
-    /// Closes the scene this session runs (scene design §4.2), in one
+    /// Closes the scene this session runs, in one
     /// revision: DISARMED (ESTOP stays) with `code` (`SCENE_ENDED`, or
     /// `SCENE_FAILED` with the error in `detail`) and `by`, every lease
     /// ended with it, and `scene.closing` set in the state and every device
@@ -868,7 +867,7 @@ struct RingState {
 struct Ring {
     spec: StreamSpec,
     state: Mutex<RingState>,
-    /// The session's epoch: the only one a sample is kept in (§8.5).
+    /// The session's epoch: the only one a sample is kept in.
     epoch: Arc<AtomicU64>,
     /// Samples kept.
     depth: usize,
@@ -1038,7 +1037,7 @@ struct HistoryStore {
 impl HistoryStore {
     /// Replies to an `h/{robot}/{path}` query, sealed under the `k_up` of a
     /// generation in effect, with its pages sealed under that generation's
-    /// `k_down` (§8.6). Anything else is dropped unanswered.
+    /// `k_down`. Anything else is dropped unanswered.
     fn serve(&self, keys: &SessionKeys, query: &Query) {
         let key = query.key_expr().as_str();
         let Some((robot, path)) = keys.history_of(key) else {
@@ -1351,7 +1350,7 @@ impl HostActor {
                     }
                     self.health_tx.send_replace(rows);
                     // A missed acknowledgement never detaches anyone: the
-                    // step waits, and says for whom (§8.5).
+                    // step waits, and says for whom.
                     for step in self.auth.issuer().pending() {
                         info!(
                             robot = %step.robot,
@@ -1800,8 +1799,7 @@ impl HostActor {
 
     /// A verb that may mint a lease token (a grant, a rebind): tried on a
     /// copy of the authority with a reserved token. Minting nothing, it is
-    /// applied at once; otherwise its keys go to its robots and it waits
-    /// (§8.5 Grant).
+    /// applied at once; otherwise its keys go to its robots and it waits.
     async fn mint(&mut self, peer: &Arc<Peer>, request: crate::wire::Request) -> Outcome {
         let now = self.now();
         let token = self.authority.reserve_token();
@@ -2003,7 +2001,7 @@ impl HostActor {
         }
     }
 
-    /// Keeps one stream key slot per declared part (§8.4).
+    /// Keeps one stream key slot per declared part.
     fn sync_streams(&mut self) {
         let streams: Vec<StreamSlot> = self
             .authority
@@ -2254,8 +2252,8 @@ impl HostActor {
         ),
     ) -> Vec<u8> {
         let state = self.snapshot();
-        // A robot that takes its device view gets it in place of the state
-        // (scene design §3.4): a board never decodes the state.
+        // A robot that takes its device view gets it in place of the state: a board
+        // never decodes the state.
         if asks_for_view(&state, to) {
             return codec::encode_view_reply(&ViewReply {
                 result,
@@ -2279,7 +2277,7 @@ impl HostActor {
     }
 
     /// Hands a lobby verb to the lobby: `RunScene`, `StopScene` and
-    /// `ArmScene` need the `arm` verb (scene design §3.2).
+    /// `ArmScene` need the `arm` verb.
     #[cfg(feature = "fleet")]
     fn lobby_verb(&self, peer: &Peer, lobby: &dyn LobbyService, command: Command) -> Outcome {
         if matches!(
@@ -2387,7 +2385,7 @@ impl HostActor {
         due
     }
 
-    /// The snapshot as a `Signed` broadcast (§8.7).
+    /// The snapshot as a `Signed` broadcast.
     fn sign_state(&mut self, snapshot: &AuthoritySnapshot) -> Option<Vec<u8>> {
         self.signer
             .sign(

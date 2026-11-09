@@ -1,17 +1,17 @@
 //! The edge runtime of a real-time RLMesh session: what runs next to an
 //! embodiment and turns controllers' timed action chunks into one command
-//! per control tick, safely, whatever the network does (the v0.2 spec §9).
+//! per control tick, safely, whatever the network does.
 //!
 //! - [`queue`]: the timed action queue, splicing new chunks at their
 //!   `replace_from` (validated before anything is removed), with
-//!   [`Delivery::Once`] for delta commands (§9.3).
-//! - [`command`]: command validation and limits (§9.6): finite values, valid
+//!   [`Delivery::Once`] for delta commands.
+//! - [`command`]: command validation and limits: finite values, valid
 //!   rotations, clamping, norm bounds and the binary snap.
 //! - [`fallback`]: the per-tick mode ladder of one command group (Idle,
-//!   Driving, Hold, Safe, Estop) on edge-local deadlines (§9.5), with
-//!   dispatch gated to the leased member and the handover rule (§9.7).
+//!   Driving, Hold, Safe, Estop) on edge-local deadlines, with
+//!   dispatch gated to the leased member and the handover rule.
 //! - [`core`]: [`EdgeCore`], the sans-IO edge of one group: chunk fencing
-//!   (epoch, lease token, source, binding, seq, the §9.1 clock rules and the
+//!   (epoch, lease token, source, binding, seq, the clock rules and the
 //!   transit check), validation, the queues, the ladder, the applied stream
 //!   and the applied-action log with source attribution.
 //! - [`runtime`]: [`Edge`], an [`EdgeCore`] attached to a
@@ -25,7 +25,7 @@
 //! The fallback never waits for the host: it works with the host gone. A
 //! full process stall, though, cannot be bounded from inside the process:
 //! pair the edge with an external or device watchdog. The `blend` and
-//! `rtc_prefix` merge policies are Later (§19) and refused at declaration.
+//! `rtc_prefix` merge policies are Later and refused at declaration.
 
 pub use rlmesh_session_core::edge::{command, core, fallback, queue};
 pub mod error;

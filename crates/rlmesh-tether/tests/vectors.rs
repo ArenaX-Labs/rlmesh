@@ -1,4 +1,4 @@
-//! The conformance vectors of spec §10 (`tests/vectors.json`, schema in
+//! The conformance vectors (`tests/vectors.json`, schema in
 //! `tests/README.md`): this crate must reproduce them byte for byte, and
 //! every implementation of the tether (the Arduino library's host runner
 //! too) runs the same file.
@@ -588,7 +588,7 @@ fn frame_cases() -> Vec<Value> {
             cat(&[&[0, 0, 0x37, 0x42, 0, 0], &ping]),
         ),
         (
-            "a sketch's text, then a provisioning frame with its leading delimiter (§14.2)",
+            "a sketch's text, then a provisioning frame with its leading delimiter",
             256,
             cat(&[b"booted\r\n", &prov_wire(&Prov::GetDevice, 0)]),
         ),
@@ -865,7 +865,7 @@ fn rejection_cases() -> Vec<Value> {
     let mut long_name = h.clone();
     long_name.push(b'x');
     let mut cases: Vec<Rejection<'_>> = vec![
-        // Direction (§3.2).
+        // Direction.
         (
             "COMMAND heard by the bridge (an echoing adapter)",
             Bridge,
@@ -1682,7 +1682,7 @@ fn generate() -> Value {
     })
 }
 
-// ── Provisioning (spec §14) ──────────────────────────────────────────────
+// ── Provisioning ──────────────────────────────────────────────
 
 /// Writes `msg`, or panics with its error: a leading delimiter, then the
 /// frame.
@@ -2496,7 +2496,7 @@ fn literal_values_not_from_the_crate() {
         encode(&[0x11, 0x22, 0x00, 0x33]),
         [0x03, 0x11, 0x22, 0x02, 0x33]
     );
-    // One whole HELLO frame, field by field (spec §4.1), CRC and COBS
+    // One whole HELLO frame, field by field, CRC and COBS
     // computed by a separate implementation.
     let decoded: &[u8] = &[
         0x01, 0x00, // type HELLO, seq 0
@@ -2527,7 +2527,7 @@ fn literal_values_not_from_the_crate() {
         .find(|v| v["name"] == "HELLO")
         .expect("the HELLO vector");
     assert_eq!(unhex(&hello["wire"]), wire);
-    // A GET_DEVICE (spec §14.3) with its leading delimiter, CRC-16 0x6C52
+    // A GET_DEVICE with its leading delimiter, CRC-16 0x6C52
     // and COBS computed by a separate implementation.
     let get_device: &[u8] = &[
         0x00, 0x02, 0x90, 0x08, b'R', b'L', b'M', b'P', 0x02, 0x52, 0x6C, 0x00,

@@ -1,4 +1,4 @@
-//! The messages (spec §4): the errors and receivers every tether frame
+//! The messages: the errors and receivers every tether frame
 //! shares, and, with the `board` feature (unreleased), typed views over a
 //! board link's payloads and their encoding. Lengths are exact; reserved
 //! bits must be zero.
@@ -29,7 +29,7 @@ pub enum MsgError {
     Range,
     /// `STATE` or `COMMAND` for a part the receiver doesn't know.
     UnknownPart,
-    /// A message type that travels the other way (§3.2): a bridge hearing a
+    /// A message type that travels the other way: a bridge hearing a
     /// bridge message (an echoing adapter), or a board hearing a board one.
     Direction,
     /// `HELLO.name` isn't UTF-8.

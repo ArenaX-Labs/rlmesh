@@ -57,7 +57,7 @@ pub fn resolve(
     model_spec: &ModelSpec,
     trust_entrypoints: bool,
 ) -> Result<ResolvedAdapter> {
-    // READ-door taint (§8): a *bare* (non-`x-`) unknown field on a recognized
+    // READ-door taint: a *bare* (non-`x-`) unknown field on a recognized
     // kind is must-understand — an old core silently applying its own default
     // for a modifier it never parsed is worse than failing. Fail closed, on both
     // sides, before any plan is built. Unknown *kinds* are tolerated here (the

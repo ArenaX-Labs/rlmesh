@@ -1,6 +1,6 @@
 //! Authority state and control verbs: roles, the session mode, leases bound
 //! to bindings, clock mappings, the host's snapshot, and the `ctl`
-//! request/reply pair (§10.5).
+//! request/reply pair.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -75,13 +75,13 @@ pub enum PriorityClass {
     Safety,
 }
 
-/// How session time advances (§11.2).
+/// How session time advances.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ClockMode {
     /// The host's monotonic clock plus per-participant mappings.
     #[default]
     Wall,
-    /// `tick × tick_ns`, advanced by the host tick by tick (§11.3).
+    /// `tick × tick_ns`, advanced by the host tick by tick.
     Virtual,
 }
 
@@ -319,7 +319,7 @@ pub struct Lease {
     pub expires_ns: i64,
     /// The binding every chunk under it must carry.
     pub binding: Fingerprint,
-    /// The id of its `k_cmd` (§8.4): never the key itself.
+    /// The id of its `k_cmd`: never the key itself.
     pub key_id: u32,
 }
 
@@ -349,7 +349,7 @@ impl ClockMapping {
     }
 }
 
-/// A controller's binding, as the host recorded it (§6.8, §9.7). The binder
+/// A controller's binding, as the host recorded it. The binder
 /// (`rlmesh_session_core::spec`) produces the table and its fingerprint; the host keeps
 /// what fencing and scheduling need.
 #[derive(Clone, Debug, PartialEq)]
@@ -367,9 +367,9 @@ pub struct BindingRecord {
     /// Its replan rate R; in virtual mode, the ticks it is due on (0: never
     /// due).
     pub replan_hz: f64,
-    /// Its delivery contracts, one per bound input stream (§8.2).
+    /// Its delivery contracts, one per bound input stream.
     pub contracts: Vec<StreamContract>,
-    /// Its action grids, one per commanded part (§9.2).
+    /// Its action grids, one per commanded part.
     pub grids: Vec<ActionGrid>,
 }
 
@@ -451,7 +451,7 @@ pub struct AuthoritySnapshot {
     pub tick_ns: u64,
     /// Every controller's binding.
     pub bindings: Vec<BindingRecord>,
-    /// Each robot's declaration fingerprint (§3.3).
+    /// Each robot's declaration fingerprint.
     pub contract: BTreeMap<ParticipantId, Fingerprint>,
     /// The publication plan of every stream some binding has a contract on.
     pub demands: Vec<Demand>,
@@ -585,7 +585,7 @@ pub struct Watermark {
     pub seq: u64,
 }
 
-/// A member's e-stop signal (design §6), published on
+/// A member's e-stop signal, published on
 /// `estop/{participant}` under its `k_estop`: every robot edge latches it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EstopSignal {
@@ -617,8 +617,8 @@ pub enum Command {
         workflow_edition: String,
         /// Every workflow edition it runs.
         workflow_editions: Vec<String>,
-        /// An embodiment's e-stop latch from its previous session (design
-        /// §6): the session starts in ESTOP with this reason.
+        /// An embodiment's e-stop latch from its previous session: the session starts
+        /// in ESTOP with this reason.
         estop: Option<Reason>,
     },
     /// Leave, releasing leases and removing owned parts.
@@ -633,9 +633,9 @@ pub enum Command {
         spec_version: u32,
         /// The authored map.
         robot_json: String,
-        /// The part paths this robot process can seal (§8.8).
+        /// The part paths this robot process can seal.
         seal: Vec<String>,
-        /// A tethered board's id (tether spec §7), checked against the
+        /// A tethered board's id, checked against the
         /// robot's pin.
         board_id: Option<[u8; 8]>,
     },
@@ -720,12 +720,12 @@ pub enum Command {
         /// The chunks it sent for it (none: no action).
         chunks: Vec<ChunkRef>,
     },
-    /// What a key delivery changed at the sender (§8.5).
+    /// What a key delivery changed at the sender.
     KeysAck(KeysAck),
-    /// Every key issued to the sender's generation, in the reply (§8.5).
+    /// Every key issued to the sender's generation, in the reply.
     GetKeys,
     /// A waiting robot or satellite asks the home daemon for its next
-    /// order (scene design §3.3); answered with [`CtlReply::assignment`].
+    /// order; answered with [`CtlReply::assignment`].
     LobbyWait(LobbyWait),
     /// Run a scene; answered with [`CtlReply::run`].
     RunScene {

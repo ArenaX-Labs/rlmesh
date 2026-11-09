@@ -1,4 +1,4 @@
-//! Delivery contracts (§8.2), freshness (§8.7) and publication plans: the
+//! Delivery contracts, freshness and publication plans: the
 //! rules the binder applies when it states a contract and the host applies
 //! again when it admits one, so neither trusts the other.
 //!
@@ -26,11 +26,11 @@ use core::time::Duration;
 use crate::wire::part::{PartSpec, SendPolicy};
 use crate::wire::{ContractMode, Plan, StreamContract};
 
-/// The longest window, in samples (§3.4).
+/// The longest window, in samples.
 pub const MAX_HISTORY: u32 = 1024;
 /// The longest window, in time.
 pub const MAX_HISTORY_SPAN: Duration = Duration::from_secs(10);
-/// The most ring memory one controller's windows hold (§3.4).
+/// The most ring memory one controller's windows hold.
 pub const MAX_RING_BYTES: u64 = 512 << 20;
 /// How long beyond its window a publisher retains samples, for recovery.
 pub const RECOVERY: Duration = Duration::from_secs(1);
@@ -64,7 +64,7 @@ pub fn sample_interval(source_hz: f64, delivery_hz: f64) -> Duration {
     }
 }
 
-/// An input's freshness bound and whether it was declared (§8.7). Events
+/// An input's freshness bound and whether it was declared. Events
 /// have none.
 pub fn freshness(
     part: &PartSpec,

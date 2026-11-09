@@ -1,4 +1,4 @@
-//! Observer telemetry (§8.10): what a participant publishes so an observer
+//! Observer telemetry: what a participant publishes so an observer
 //! (the cockpit) can show the counters only the measuring side knows.
 //!
 //! Every [`REPORT_PERIOD`] a participant that publishes streams or runs a

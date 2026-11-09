@@ -418,7 +418,7 @@ impl SessionServer {
     }
 
     /// Replaces the devices and pins every session accepts, now and from
-    /// now on (rlmeshd's `devices.toml`, design §4): a device gone is
+    /// now on (rlmeshd's `devices.toml`): a device gone is
     /// revoked, a new one admitted, a changed entry or pin applied (see
     /// [`SessionHost`]'s `set_access`, `admit`, `revoke` and `pin`).
     pub async fn set_devices(&self, devices: Vec<Device>, pins: BTreeMap<ParticipantId, Pin>) {
@@ -458,7 +458,7 @@ impl SessionServer {
 
     /// [`Self::start_session`] with `config`'s own devices and pins, which
     /// the server's table never changes: a satellite's run, whose table is
-    /// its home daemon's (scene design §4.4).
+    /// its home daemon's.
     ///
     /// # Errors
     /// As [`Self::start_session`].

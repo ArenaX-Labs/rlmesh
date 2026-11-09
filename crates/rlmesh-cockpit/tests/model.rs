@@ -68,7 +68,7 @@ fn live_channels_show_the_path_tree_values_ages_and_losses() {
     assert_eq!((thumb.width, thumb.height), (64, 48));
 
     // Silence ages the value and goes stale past its bound; the joints'
-    // contract bound is derived (§8.7).
+    // contract bound is derived.
     let quiet = w.now + 900 * MS;
     let view = w.model.view(quiet);
     let q = stream(&view, "ur10e/arm");

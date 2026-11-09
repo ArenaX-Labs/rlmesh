@@ -1,4 +1,4 @@
-//! Command validation and limits (§9.6), on packed actions (§10.6).
+//! Command validation and limits, on packed actions.
 //!
 //! Every action of a chunk is checked before anything is spliced:
 //!

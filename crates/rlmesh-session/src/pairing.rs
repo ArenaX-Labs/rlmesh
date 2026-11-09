@@ -1,7 +1,7 @@
-//! Pairing over the network (design §3): a machine's (the laptop's side,
+//! Pairing over the network: a machine's (the laptop's side,
 //! [`pair`]; the host's pairing endpoint, [`PairService`]; the host file a
 //! paired machine keeps, [`HostFile`], which its participants attach with,
-//! [`paired_credential`]), and a browser token's (design §5), whose key
+//! [`paired_credential`]), and a browser token's, whose key
 //! stays on the machine whose gateway serves the browser, beside a hash of
 //! the token ([`BrowserToken`]).
 
@@ -31,7 +31,7 @@ pub struct Paired {
 }
 
 /// Where a paired machine keeps its host files: `rlmesh/hosts` in
-/// `$XDG_CONFIG_HOME`, else in `~/.config` (design §9, on every OS).
+/// `$XDG_CONFIG_HOME`, else in `~/.config` (on every OS).
 pub fn hosts_dir() -> Option<PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|dir| !dir.is_empty())
@@ -69,7 +69,7 @@ pub fn new_token() -> Result<String, SessionError> {
 /// browser keeps it (`[browsers.{device}]` in [`browsers_path`], 0600):
 /// the device rlmeshd enrolled it as, the host's id and static key, the
 /// token's hash ([`token_hash`]), never the token, and the device's key,
-/// which the gateway attaches the browser with (design §5).
+/// which the gateway attaches the browser with.
 ///
 /// ```toml
 /// [browsers.web-josh]

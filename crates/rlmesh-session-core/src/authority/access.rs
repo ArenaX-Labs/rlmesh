@@ -1,4 +1,4 @@
-//! Per-device authorization (design §4, §12 decisions 7, 8 and 14): what
+//! Per-device authorization: what
 //! each device may do, by its entry (`max_priority`, part globs, verbs).
 //!
 //! - An attach above the device's cap is refused (`NOT_AUTHORIZED`), never

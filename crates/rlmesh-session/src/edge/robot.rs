@@ -1,16 +1,16 @@
 //! The embodiment runtime language bindings wrap: one robot map declared,
 //! every part published, every commandable part served by an edge.
 //!
-//! [`Robot::declare`] sends the authored map (the host normalises it, §3.3),
+//! [`Robot::declare`] sends the authored map (the host normalises it),
 //! then declares a publisher for every part (an image publisher, with its
 //! bitrate budget and JPEG encoder, for `u8 [H, W, 3]` images) and one
 //! [`Edge`] per command group (or per ungrouped commandable part).
 //! Publishers exist from the start, so the host's publication plans are
 //! installed and acknowledged before any controller asks for a lease
-//! (§8.2, install before authority).
+//! (install before authority).
 //!
 //! The robot's control loop calls [`Robot::due`] once per control tick per
-//! command group: that call *is* the edge tick (§9), so what it returns is
+//! command group: that call *is* the edge tick, so what it returns is
 //! exactly what the `_applied` stream records. Nothing here calls back into
 //! the robot's code from another thread: a group handover is returned with
 //! the tick, the robot switches its control mode, then calls
@@ -36,7 +36,7 @@ enum Outlet {
     Image(ImagePublisher),
 }
 
-/// A handover between two members of a command group (§9.7), by path.
+/// A handover between two members of a command group, by path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Handover {
     /// The group.
@@ -141,7 +141,7 @@ impl Published {
     /// Publishes one sample of the part at `path`, captured at `capture_ns`
     /// (this participant's clock), from each field's bytes in declaration
     /// order (one for a single-field part; UTF-8 for text). Copies the
-    /// values, so the caller may reuse its buffers at once (§8.11). Returns
+    /// values, so the caller may reuse its buffers at once. Returns
     /// the sample's seq, or `None` when the plan coalesced it or an image
     /// went to its encoder (which assigns the seq when it sends).
     pub fn publish(
@@ -174,7 +174,7 @@ impl Published {
         }
     }
 
-    /// Publishes one value of the part at `path` already packed (§10.6):
+    /// Publishes one value of the part at `path` already packed:
     /// for a single-field part whose size is a multiple of 8, the field's
     /// bytes. Sent without a further copy; an image goes to its encoder.
     pub fn publish_packed(

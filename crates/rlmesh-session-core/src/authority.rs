@@ -1,4 +1,4 @@
-//! Authority state (§9.7, §10.5, §11): epoch, roster, mode, e-stop latch,
+//! Authority state: epoch, roster, mode, e-stop latch,
 //! the part table, bindings and the lease table, with the session host as
 //! its single writer.
 //!
@@ -18,7 +18,7 @@
 //!   **binding**: chunks must carry its fingerprint, and a rebinding
 //!   re-issues the holder's leases under a fresh token, so in-flight chunks
 //!   of the old binding are fenced (Codex finding 2).
-//! - **Delivery contracts** (§8.2) come with a binding, one per bound input
+//! - **Delivery contracts** come with a binding, one per bound input
 //!   stream. The host admits them ([`crate::spec::contract::admit`]), derives
 //!   one publication plan per stream from every attached controller's
 //!   contracts and publishes it as a [`Demand`]; the stream's publisher
@@ -37,7 +37,7 @@
 //!   atomically (Codex finding 3).
 //! - Leases have a TTL, renewed by every heartbeat from the holder on the
 //!   current epoch; a lapse while ACTIVE takes the session SAFE.
-//! - **Presence** is heartbeats only (DESIGN §7): a participant silent for
+//! - **Presence** is heartbeats only: a participant silent for
 //!   `presence_grace` is lost. A liveliness put never makes anyone present;
 //!   a delete is only a hint ([`Authority::presence_hint`]) that loses the
 //!   participant unless a heartbeat arrives within `lease_grace` of it. A
@@ -47,7 +47,7 @@
 //! - ESTOP is accepted from anyone (refusing an e-stop is never safer) and
 //!   latches; only an embodiment's local clear releases the latch, and then a
 //!   disarm and an arm (a fresh epoch) are needed.
-//! - **Reasons** (DESIGN §7): every mode change records a structured
+//! - **Reasons**: every mode change records a structured
 //!   [`Reason`] (`mode_reason`), every lease ending goes into a bounded ring
 //!   of [`LeaseEnd`]s, and `last_stop` marks the last entry into SAFE,
 //!   DISARMED or ESTOP, so clients never infer why. An embodiment's
@@ -317,27 +317,27 @@ pub struct AuthorityConfig {
     pub presence_grace_ns: u64,
     /// The features the session implements (see [`crate::wire::version`]).
     pub supports: Vec<String>,
-    /// Virtual clock mode (§11.3); `None` is wall mode.
+    /// Virtual clock mode; `None` is wall mode.
     pub virtual_clock: Option<VirtualConfig>,
-    /// The parts whose streams, chunks and lockstep traffic are encrypted
-    /// (design §8.2); every other part is signed.
+    /// The parts whose streams, chunks and lockstep traffic are encrypted; every other
+    /// part is signed.
     pub seal: SealPolicy,
-    /// What each device may do (design §4); `local` may do everything.
+    /// What each device may do; `local` may do everything.
     pub access: Access,
     /// Whether a robot that went safe, restarted or came back from a loss
     /// may be leased again at once. Off by default: its leases ended and it
     /// waits for the next `Arm`, which re-arms it alone in an ARMED or
     /// ACTIVE session. Other robots never stop for it either way.
     pub rearm_robots: bool,
-    /// Where each placed robot's parts appear in the view (scene design
-    /// §5): one binding drives several robots through it. Empty: no view.
+    /// Where each placed robot's parts appear in the view: one binding drives several
+    /// robots through it. Empty: no view.
     pub places: Vec<Place>,
     /// The scene this session runs, when a daemon started it for one.
     #[cfg(feature = "fleet")]
     pub scene: Option<SceneConfig>,
 }
 
-/// Which parts a session seals (encrypts) rather than signs (§8.2, §8.8).
+/// Which parts a session seals (encrypts) rather than signs.
 /// A robot that declares a part it can't seal (`DeclareParts.seal`) is
 /// refused; a level is never lowered silently.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -386,7 +386,7 @@ impl Default for AuthorityConfig {
     }
 }
 
-/// Who sent a verb, as the host's handshake authenticated it (§8.3).
+/// Who sent a verb, as the host's handshake authenticated it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Identity {
     /// The sender's device.
@@ -432,7 +432,7 @@ pub struct Authority {
     /// The last channel id assigned; ids only grow.
     last_channel: u32,
     bindings: BTreeMap<ParticipantId, BindingRecord>,
-    /// Each robot's declaration fingerprint (§3.3).
+    /// Each robot's declaration fingerprint.
     contract: BTreeMap<ParticipantId, Fingerprint>,
     /// The publication plan per stream some attached binding contracts.
     demands: BTreeMap<ChannelId, Demand>,
@@ -444,7 +444,7 @@ pub struct Authority {
     needed: BTreeMap<(ParticipantId, ChannelId), u64>,
     last_token: u64,
     /// The token the verb being applied mints, reserved before its keys
-    /// were delivered (§8.5).
+    /// were delivered.
     minting: Option<LeaseToken>,
     /// The streams (parts and their applied streams) that are sealed.
     sealed: BTreeSet<ChannelId>,
@@ -689,8 +689,8 @@ impl Authority {
                     .get(&from)
                     .is_some_and(|p| p.generation != sender.generation)
                 {
-                    // A scene member's restart is its loss and rejoin
-                    // (scene design §4.3), seen or not: SAFE, waited for
+                    // A scene member's restart is its loss and rejoin, seen or not:
+                    // SAFE, waited for
                     // until it declared again, and armed only when asked.
                     if self.scene_member(&from) {
                         // The old generation ends as any replaced one does,
@@ -743,7 +743,7 @@ impl Authority {
                         hint_ns: None,
                     },
                 );
-                // A robot carries its latch into a new session (§6): it
+                // A robot carries its latch into a new session: it
                 // starts in ESTOP.
                 if let Some(latch) = estop.filter(|_| roles.contains(&Role::Embodiment)) {
                     let code = match latch.code {
@@ -994,7 +994,7 @@ impl Authority {
                 }
             }
             // Key verbs change no authority state: the host's key schedule
-            // answers them (§8.5).
+            // answers them.
             Command::KeysAck(_) | Command::GetKeys => {
                 self.require_attached(&from)?;
             }
@@ -1165,8 +1165,8 @@ impl Authority {
                 self.enter_safe(held, events);
             }
         }
-        // In a scene's run an ARMED session goes SAFE too (scene design
-        // §4.3): once the member is back, leases would otherwise take it
+        // In a scene's run an ARMED session goes SAFE too: once the member is back,
+        // leases would otherwise take it
         // ACTIVE with no explicit arm.
         if in_scene && self.mode == Mode::Armed {
             let code = if robot {
@@ -1245,7 +1245,7 @@ impl Authority {
         self.barrier_gone(id, self.now_ns);
     }
 
-    /// The owner changed `device`'s entry (design §4, §8.5, decision 17):
+    /// The owner changed `device`'s entry:
     /// its participants that embody a robot keep attached and lose every
     /// lease they hold; the others are detached, to re-attach under the new
     /// entry. Both with `ACCESS_CHANGED`. Returns what it caused and who it
@@ -1287,7 +1287,7 @@ impl Authority {
         (events, detached)
     }
 
-    /// The owner revoked `device` (design §4, §8.5): its entry goes, and
+    /// The owner revoked `device`: its entry goes, and
     /// every participant of it is detached (`REVOKED`), robots it embodies
     /// too. Returns what it caused and who it detached.
     pub fn revoke(
@@ -1313,7 +1313,7 @@ impl Authority {
         (events, members)
     }
 
-    /// A new process attached as `id` (a new generation, §8.3): the old one
+    /// A new process attached as `id` (a new generation): the old one
     /// ends. A robot's restart is the identity half of an embodiment swap: a
     /// new epoch voids every lease, and ACTIVE becomes ARMED; no other mode
     /// changes, so a restart never stands in for an arm or a clear. Anyone
@@ -1730,7 +1730,7 @@ impl Authority {
         })
     }
 
-    /// Admission (§8.2): every contract names a stream once and is one the
+    /// Admission: every contract names a stream once and is one the
     /// stream can meet, the rings fit the cap, and every grid is on a
     /// commanded part.
     fn admit_contracts(&self, record: &BindingRecord) -> Result<(), CtlError> {
@@ -1987,7 +1987,7 @@ impl Authority {
                 format!("{outside} is outside binding {}", record.fingerprint),
             ));
         }
-        // Install before authority (§8.2).
+        // Install before authority.
         for c in &record.contracts {
             let needed = self.needed.get(&(from.clone(), c.channel)).copied();
             let installed = self
@@ -2642,7 +2642,7 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), 7 + 6, "every stream id is distinct");
 
-        // The snapshot carries the declaration fingerprint (§3.3).
+        // The snapshot carries the declaration fingerprint.
         let contract = |f: &Fixture| {
             f.auth
                 .snapshot(Vec::new(), 0)

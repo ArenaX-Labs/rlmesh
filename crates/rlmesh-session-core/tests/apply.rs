@@ -1,4 +1,4 @@
-//! Bound plans applied to samples and chunks (§7.4), on the conformance
+//! Bound plans applied to samples and chunks, on the conformance
 //! robots and policies.
 
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
-//! Length-prefixed bytes and `kdf` (§8.1).
+//! Length-prefixed bytes and `kdf`.
 
 use crate::prelude::*;
 
@@ -41,7 +41,7 @@ pub fn push_lp(out: &mut Vec<u8>, x: &[u8]) -> Result<(), LpTooLong> {
 }
 
 /// BLAKE2s-256 (unkeyed) over `lp(label) ‖ fields`: the pairing commitment
-/// and SAS (§3).
+/// and SAS.
 pub(crate) fn hash_labelled(label: &[u8], fields: &[&[u8]]) -> Result<[u8; 32], LpTooLong> {
     use blake2::Digest;
     let prefix = lp_prefix(label)?;
@@ -56,7 +56,7 @@ pub(crate) fn hash_labelled(label: &[u8], fields: &[&[u8]]) -> Result<[u8; 32], 
 
 /// `kdf(key, label, fields…)`: BLAKE2s-256 keyed with `key`, over
 /// `lp(label) ‖ fields`. Only for the embedded `local` key (and later the
-/// loopback password, §5).
+/// loopback password).
 ///
 /// # Errors
 /// [`LpTooLong`] if `label` is over 65,535 bytes.

@@ -18,9 +18,9 @@
 //! | [`TrafficClass::Data`] | Data | best effort; reliable for events | DROP; BLOCK for events | no | small custom kinds, events, history replies |
 //! | [`TrafficClass::Bulk`] | DataLow | best effort | DROP | no | cameras, depth, large custom kinds |
 //!
-//! That is the v0.2 spec's §10.2 table, applied per publisher by
+//! These settings are applied per publisher by
 //! [`stream_qos`]. Two refinements: in a virtual-clock session every data
-//! stream is reliable with BLOCK (the tick barrier counts on seqs, §11.3);
+//! stream is reliable with BLOCK (the tick barrier counts on seqs);
 //! and heartbeats and their echoes are DROP rather than BLOCK, because a
 //! stale timing sample is worthless and the echo is sent from a transport
 //! callback, which must never block. Zenoh 1.10 treats reliability as a
@@ -36,7 +36,7 @@
 //! use the same layout. Priorities are still set on every message, so the
 //! shared layout keeps Zenoh's own ordering.
 //!
-//! The lockstep class (§10.2, §12.3) arrives with the Gym view (wave 5).
+//! The lockstep class arrives with the Gym view (wave 5).
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -92,7 +92,7 @@ impl TrafficClass {
         }
     }
 
-    /// The class's QoS (§10.2).
+    /// The class's QoS.
     pub fn qos(self) -> ClassQos {
         let (priority, reliability, congestion, express) = match self {
             Self::Control => (
@@ -224,11 +224,11 @@ pub struct TransportTuning {
     /// yet before it fails; `None` fails at once, as Zenoh clients do.
     /// Peers always keep dialing in the background.
     pub connect_timeout: Option<Duration>,
-    /// The embedded host's link gate (Zenoh `usrpwd`, design §5).
+    /// The embedded host's link gate (Zenoh `usrpwd`).
     pub link: Option<LinkAuth>,
 }
 
-/// The `usrpwd` gate of an embedded host's links (design §5): the password
+/// The `usrpwd` gate of an embedded host's links: the password
 /// comes from the session's key ([`crate::auth::address::link_password`]),
 /// so only its holders link to the host at all.
 #[derive(Clone, PartialEq, Eq)]
