@@ -81,8 +81,8 @@ class ModelSpec:
         """Return a JSON-compatible dict form of this spec.
 
         A ``CustomEncoding`` field serializes to a describe/validate schema
-        (``{base, ...}``): the platform validates its base against an env and
-        shows it, but never runs the arm. An entrypoint arm travels as its
+        (``{base, ...}``): its base can be validated against an env
+        without running the arm. An entrypoint arm travels as its
         ``module:callable`` string; an in-process callable arm has no wire form,
         so it travels as a non-portable ``<local>`` marker.
 
@@ -121,8 +121,8 @@ class ModelSpec:
         would have to import code from the contract; resolve such a spec locally
         instead. A custom *encoding* is different: it publishes as a
         describe/validate schema (``{base, ...}``, in-process arms as a
-        ``<local>`` marker) that the platform shows and validates against an env
-        but never runs -- execution stays where the callable was defined.
+        ``<local>`` marker) for validation against an env; execution stays
+        where the callable was defined.
 
         Raises:
             ValueError: If any input is a custom transform (in-process callable

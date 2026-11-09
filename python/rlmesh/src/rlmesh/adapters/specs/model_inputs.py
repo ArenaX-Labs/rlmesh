@@ -148,10 +148,9 @@ class Image:
         render: The camera resolution this model was trained against, as a
             square ``int`` or an ``(height, width)`` pair (each axis 1-4096).
             An *assertion*, not a request: the adapter never resizes a camera
-            to reach it. The platform binds the environment's camera dial from
-            it before the run; resolution then fails with ``RenderMismatch`` if
-            the camera it bound does not actually render at this size. Declare
-            it instead of pinning the env's camera width/height by hand.
+            to reach it. Configure the environment to render at this size
+            before the run; resolution fails with ``RenderMismatch`` if the
+            camera does not actually render at this size.
         part: The body part the wanted camera sits on, when the role repeats
             across a body (``"head"``, ``"left_arm"``, ...): an identity key
             the resolver matches on. Naming one binds only that camera; naming

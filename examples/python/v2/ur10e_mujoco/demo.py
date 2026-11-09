@@ -19,7 +19,7 @@ The v0.2 milestone demo (protocol v2), three processes over one session:
   back (the policy re-requests and resumes under a fresh lease token), ``q``
   quits. Keys come from the terminal (``--keys interactive``) or from a
   script of ``seconds:key`` events (the default). ``--operator haptic``
-  makes it the §15.6 shape: 1 kHz, reading the wrench every sample,
+  makes it 1 kHz, reading the wrench every sample,
   one-action chunks with a 5 ms life.
 
 ``all`` (the default) runs the robot here and the policy and the operator
@@ -85,7 +85,7 @@ JOG_RAD = 0.1
 MAX_SPEED = 1.0  # rad/s, policy and operator alike
 
 
-# --- maps (§14.1 ur10e_sim, §15.3, §15.6) ---------------------------------------
+# --- maps: UR10e simulation, policy and operator -----------------------------
 
 
 def robot_map(args: argparse.Namespace) -> dict[str, Any]:
@@ -113,7 +113,7 @@ def policy_map(args: argparse.Namespace) -> dict[str, Any]:
         "q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
     }
     if args.policy == "force":
-        # §15.3 at 100 Hz: the newest 10 ms of the wrench, every sample.
+        # At 100 Hz: the newest 10 ms of the wrench, every sample.
         inputs["ft"] = {"kind": "wrench", "at": "wrist/ft", "frame": "tool0",
                         "history": FT_WINDOW}  # fmt: skip
         for i in range(args.extra_streams):
@@ -137,7 +137,7 @@ def policy_map(args: argparse.Namespace) -> dict[str, Any]:
 
 def operator_map(args: argparse.Namespace) -> dict[str, Any]:
     if args.operator == "haptic":
-        # §15.6: 1 kHz, the wrench every sample, one-action chunks, 5 ms life.
+        # 1 kHz, the wrench every sample, one-action chunks, 5 ms life.
         return {
             "hz": CONTROL_HZ,
             "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"], "names": UR_JOINTS},
@@ -948,7 +948,7 @@ def main() -> None:
         "--operator",
         choices=["keys", "haptic"],
         default="keys",
-        help="haptic: the §15.6 1 kHz operator",
+        help="haptic: the 1 kHz operator",
     )
     parser.add_argument(
         "--extra-streams",
@@ -960,7 +960,7 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--replan-hz", type=float, default=100.0)
     parser.add_argument(
-        "--horizon", type=int, default=12, help="1 ms actions per chunk (§9.2)"
+        "--horizon", type=int, default=12, help="1 ms actions per chunk"
     )
     parser.add_argument(
         "--keys",

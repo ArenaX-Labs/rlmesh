@@ -1552,7 +1552,7 @@ def test_wrap_predict_round_trip():
 
 
 def test_unreferenced_unencodable_obs_key_is_ignored():
-    """An unused, unencodable observation key must not abort a step (#8)."""
+    """An unused, unencodable observation key must not abort a step."""
     adapter = resolve(LIBERO_ENV, OPENVLA)
     obs = make_obs()
     obs["debug_handle"] = object()  # not bridge-encodable, but OpenVLA never reads it
@@ -3111,7 +3111,7 @@ def test_referenced_unknown_obs_kind_is_unsupported_through_contract():
 
 
 def test_bare_unknown_field_on_contract_taints_resolve():
-    # §8 central asymmetry through the consume path: a bare additive field on a
+    # Central asymmetry through the consume path: a bare additive field on a
     # recognized kind fails closed (must-understand), while the same field marked
     # `x-` is tolerated. A peer's raw contract is the only way to inject it (the
     # frozen authoring dataclasses reject the kwarg outright).

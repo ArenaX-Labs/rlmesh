@@ -16,7 +16,7 @@ behaviour::
         # robot loop: robot.publish("arm", pos=q, vel=dq); due = robot.due("arm")
         policy.run(lambda obs: {"arm": obs["q"][None]}, duration=5.0)
 
-A robot can also run in lockstep (``Robot(..., clock="lockstep")``, §12):
+A robot can also run in lockstep (``Robot(..., clock="lockstep")``):
 each step is one call of its ``step(commands)``, and ``RemoteEnv`` at its
 participant address (``robot.address``) drives it as a Gymnasium env.
 Existing Gym envs and v1 models reach lockstep through their own servers
@@ -348,7 +348,7 @@ def _sample(
 class Robot:
     """One robot: its map declared, its parts published, its commands served.
 
-    ``parts`` is the robot map (§3): ``{path: {"kind": ..., ...}}``. The
+    ``parts`` is the robot map: ``{path: {"kind": ..., ...}}``. The
     host normalises it; every commandable part gets an edge. The robot's
     control loop publishes its sensors and asks :meth:`due` what to dispatch
     on each control tick. ``on_handover(group, from_path, to_path)`` runs
@@ -474,7 +474,7 @@ class Robot:
         background: bool = False,
         timeout: float = 10.0,
     ) -> None:
-        """Serve the lockstep exchange (§12): one ``step(commands)`` per step.
+        """Serve the lockstep exchange: one ``step(commands)`` per step.
 
         ``commands`` maps each commanded part to its command (the array of a
         single-field command, else a dict of fields). Inside ``step`` and
@@ -624,7 +624,7 @@ class Observation(Mapping[str, Any]):
 
     Arrays are read-only and stay valid while the observation lives; text
     inputs are ``str``; several fields that are not one concatenable array
-    arrive as a dict (§6.1).
+    arrive as a dict.
     """
 
     __slots__ = ("_native", "_values", "meta")
@@ -649,7 +649,7 @@ class Observation(Mapping[str, Any]):
 
 
 class BindingTable:
-    """A binding table (§6.8): what each entry is bound to and how it is delivered."""
+    """A binding table: what each entry is bound to and how it is delivered."""
 
     __slots__ = ("fingerprint", "json", "replan_hz", "table", "warnings")
 
@@ -675,14 +675,14 @@ class BindingTable:
 
 
 class Policy:
-    """A policy map (§6) and, once bound, the controller that runs it.
+    """A policy map and, once bound, the controller that runs it.
 
     ``priority`` is the lease class it attaches with: ``model`` (default),
     ``operator`` (preempts models: teleop), ``safety`` or ``scripted``.
 
     ``publishes`` declares parts of the policy's own to :meth:`publish`
     annotations on (a detector's boxes, a tracker's target), in the robot
-    map's form (§3), none commandable: ``{"target": {"kind": "x/target",
+    map's form, none commandable: ``{"target": {"kind": "x/target",
     "hz": 30, "fields": {"xy": ["float32", [2]]}}}``. They appear under the policy's name
     (``tracker/target``): recorded, shown in the cockpit, readable by other
     policies, and never bound to this one.
@@ -731,8 +731,8 @@ class Policy:
         ``under`` scopes relative selectors, ``at`` overrides an entry's
         path, ``names={"entry": "positional"}`` binds joints by index,
         ``allow`` adds conversions for every entry, and keyword captures
-        fill ``{name}`` segments (§6.4). Raises :class:`BindingRefused`
-        with the binder's explanation (§6.7).
+        fill ``{name}`` segments. Raises :class:`BindingRefused`
+        with the binder's explanation.
         """
         if self._native is not None:
             raise SessionException(f"policy {self._name} is already bound")
@@ -802,7 +802,7 @@ class Policy:
         return cast("BindingTable", self._binding)
 
     def observe(self) -> Observation:
-        """A policy start now; raises :class:`StartSkipped` when one is skipped (§8.8)."""
+        """A policy start now; raises :class:`StartSkipped` when one is skipped."""
         return Observation(self._bound().observe())
 
     def send(
@@ -836,7 +836,7 @@ class Policy:
         return self._bound().holds()
 
     def run(self, predict: Predict, *, duration: float | None = None) -> dict[str, Any]:
-        """Run the policy loop (§8.9) on this thread; returns the run's counters.
+        """Run the policy loop on this thread; returns the run's counters.
 
         ``predict(obs)`` is called at most at the replan rate, one inference
         in flight; a start that falls while it runs is skipped, never
@@ -861,7 +861,7 @@ class Policy:
         self._bound().stop()
 
     def stats(self) -> dict[str, Any]:
-        """Starts, completions, skips by reason, chunks sent and latency (§8.10).
+        """Starts, completions, skips by reason, chunks sent and latency.
 
         ``aligned_to`` names the input whose publication the starts are
         phased just after (wall clock), ``phase_offset_ms`` how far.
@@ -890,7 +890,7 @@ class Policy:
 
 
 class SessionRecorder:
-    """An MCAP recording of the session (§13), attached as an observer.
+    """An MCAP recording of the session, attached as an observer.
 
     Records every robot's streams (``/{robot}/{path}``, with the edge's
     ``/{robot}/{path}/_applied``), every action chunk sent to an edge

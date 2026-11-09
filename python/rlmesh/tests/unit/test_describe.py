@@ -467,7 +467,7 @@ def test_importing_the_describe_module_path_no_longer_shadows_the_function() -> 
 
 
 class _SpeccedModel(rlmesh.Model):
-    """A model the managed probe can drive: it declares a ModelSpec."""
+    """A model with a ModelSpec for automated input synthesis."""
 
     @staticmethod
     def _spec() -> Any:
@@ -1023,7 +1023,7 @@ class _BadBranchFactory(_BranchedFactory):
 
 
 class _UntaggedBranchFactory(_BranchedFactory):
-    """Generic on every branch: authoring allows it, the platform probe does not."""
+    """Generic on every branch: authoring allows it, image validation does not."""
 
     tags = None
 

@@ -1,14 +1,9 @@
 """The ``rlmesh.result.v1`` document model.
 
-Plain dataclasses that mirror the SDK's own :class:`~rlmesh.EpisodeResult`
-vocabulary (``reward``/``steps``/``duration_s``/``success``), *not* the managed
-platform's camelCase ``episode.v1`` names. The closed-side mapper renames on
-upload (``reward -> cumulativeReward``, ``steps -> stepCount``,
-``duration_s * 1000 -> durationMs``) and mints the platform join ids; keeping this
-document in SDK vocabulary is what lets the open-source repo stay decoupled.
-
-Every ``to_dict`` emits JSON-native values only (str/int/float/bool/None/list/dict)
-so :func:`json.dump` needs no custom encoder.
+Plain dataclasses use :class:`~rlmesh.EpisodeResult` vocabulary
+(``reward``/``steps``/``duration_s``/``success``). Every ``to_dict`` emits
+JSON-native values only (str/int/float/bool/None/list/dict), so
+:func:`json.dump` needs no custom encoder.
 """
 
 from __future__ import annotations
@@ -67,8 +62,8 @@ class EpisodeRecord:
     """One episode's outcome plus any media captured for it.
 
     Fields mirror :class:`rlmesh.EpisodeResult`. ``included_in_metrics`` (default
-    ``True``) lets a caller mark warmup/discarded episodes so aggregates and the
-    dashboard skip them -- it maps to the platform's ``includedInMetrics``.
+    ``True``) lets a caller mark warmup/discarded episodes so aggregates and
+    viewers skip them.
     """
 
     index: int
@@ -95,8 +90,7 @@ class EpisodeRecord:
 
         ``index`` overrides the per-run episode index with a workload-stable one, so
         episodes from several ``run`` calls into one workload stay uniquely keyed
-        (the platform dedupes on ``resultSetId`` + task + index). Defaults to the
-        result's own index.
+        within the bundle. Defaults to the result's own index.
         """
         return cls(
             index=result.index if index is None else index,
@@ -191,9 +185,8 @@ class WorkloadRecord:
 class ResultSet:
     """The whole exported bundle: an id plus every recorded workload.
 
-    ``result_set_id`` is a locally minted anchor so a re-upload of the same bundle
-    is idempotent on the platform (the mapper derives deterministic episode ids from
-    it). ``recorded_at`` is stamped at export time, not construction.
+    ``result_set_id`` is a locally minted identifier preserved across exports
+    of the same bundle. ``recorded_at`` is stamped at export time, not construction.
     """
 
     result_set_id: str

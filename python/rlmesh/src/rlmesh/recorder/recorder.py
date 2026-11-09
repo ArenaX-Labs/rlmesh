@@ -6,7 +6,7 @@ Path-agnostic by design: every OSS execution path (``rlmesh.run`` or a
 with no runtime changes. :meth:`Recorder.capture` returns a
 :class:`~rlmesh.RunHooks` for live per-episode capture (and media) on the
 Python-driven paths. Either way, :meth:`Recorder.export` writes an
-``rlmesh.result.v1`` bundle the managed platform's upload path can ingest.
+portable ``rlmesh.result.v1`` bundle.
 """
 
 from __future__ import annotations
@@ -232,13 +232,13 @@ class Recorder:
     ) -> RunHooks:
         """A :class:`~rlmesh.RunHooks` that records a run's artifact tree (Experimental).
 
-        Writes the managed platform's layout under
+        Writes the artifact tree under
         ``workloads/cNNNN/attempts/a001/`` in the bundle: per episode
         ``episodes/epNNNNNN/episode.json`` (seed, trial, verdict, timing,
         invariant flags), ``trajectory.parquet`` and
         ``video/{camera}.{stream}.mp4``, and the run's
         ``telemetry/windows.jsonl``; the document carries the machine's
-        hardware stamp. ``spec`` is the platform's ``record`` block
+        hardware stamp. ``spec`` configures recording
         (``{"video": {...}, "trajectory": {...}}``); the default records no
         video, and a trajectory of reward, info and step timing (no
         observations or actions) for every episode. Raw and perturbed streams

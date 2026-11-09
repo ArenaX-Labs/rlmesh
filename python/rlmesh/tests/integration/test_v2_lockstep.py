@@ -1,4 +1,4 @@
-"""The v2 lockstep path (§12) from Python.
+"""The v2 lockstep path from Python.
 
 - Existing Gymnasium envs and v1 models run unchanged at participant
   addresses: the same env and model over v2 (lockstep) leave the traces the
