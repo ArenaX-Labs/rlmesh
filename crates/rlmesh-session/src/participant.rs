@@ -1040,25 +1040,71 @@ impl Shared {
 const NO_CREDENTIAL: &str = "no credential for this session: join with the address its host \
                              printed (it ends in #key), or set ParticipantConfig.credential";
 
-/// Runs the handshake (§8.3): reads the host instance from the public
-/// snapshot (a hint: a wrong one only fails the handshake), sends msg 1 on
-/// `hs` and reads msg 2.
+/// How long a refused handshake waits for the host's state to name another
+/// instance: an on-demand session restarting as this participant joins.
+const RESTART_WAIT: Duration = Duration::from_secs(1);
+
+/// Runs the handshake: reads the host instance from the public snapshot (a
+/// hint: a wrong one only fails the handshake), sends msg 1 on `hs` and
+/// reads msg 2. A session a host starts on demand stops when its last
+/// participant leaves and starts again, under a new instance, for the next
+/// one; a participant joining just then can read the old instance. So a
+/// refusal is retried once the state names another instance, within
+/// [`RESTART_WAIT`]; the same instance refusing again is final.
 async fn handshake(
     control: &zenoh::Session,
     keys: &SessionKeys,
     config: &ParticipantConfig,
+) -> Result<auth::Attached, SessionError> {
+    let instance = host_instance(control, keys, config.ctl_timeout).await?;
+    match handshake_with(control, keys, config, instance).await {
+        Err(SessionError::Rejected(refusal)) if refusal.status == CtlStatus::Unauthenticated => {
+            let deadline = tokio::time::Instant::now() + RESTART_WAIT;
+            loop {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                match host_instance(control, keys, config.ctl_timeout).await {
+                    Ok(next) if next != instance => {
+                        debug!(participant = %config.id, "the session restarted; joining it again");
+                        return handshake_with(control, keys, config, next).await;
+                    }
+                    _ if tokio::time::Instant::now() >= deadline => {
+                        return Err(SessionError::Rejected(refusal));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        result => result,
+    }
+}
+
+/// The host instance the session's public state names.
+async fn host_instance(
+    control: &zenoh::Session,
+    keys: &SessionKeys,
+    timeout: Duration,
+) -> Result<u64, SessionError> {
+    let state = ask(control, &keys.host_state(), None, timeout).await?;
+    let header = signed::peek(&state).map_err(|err| {
+        SessionError::Rejected(CtlError::new(
+            CtlStatus::Unauthenticated,
+            format!("the host's state is not signed ({err})"),
+        ))
+    })?;
+    Ok(header.header.host_instance)
+}
+
+async fn handshake_with(
+    control: &zenoh::Session,
+    keys: &SessionKeys,
+    config: &ParticipantConfig,
+    host_instance: u64,
 ) -> Result<auth::Attached, SessionError> {
     let credential = config.credential.as_ref().ok_or_else(|| {
         SessionError::Rejected(CtlError::new(CtlStatus::Unauthenticated, NO_CREDENTIAL))
     })?;
     let unauthenticated =
         |why: String| SessionError::Rejected(CtlError::new(CtlStatus::Unauthenticated, why));
-    let timeout = config.ctl_timeout;
-    let state = ask(control, &keys.host_state(), None, timeout).await?;
-    let host_instance = signed::peek(&state)
-        .map_err(|err| unauthenticated(format!("the host's state is not signed ({err})")))?
-        .header
-        .host_instance;
     let (initiator, hello) = credential
         .start(
             &mut OsRng,
@@ -1072,7 +1118,7 @@ async fn handshake(
         control,
         &keys.handshake(),
         Some(codec::encode_handshake_request(&hello)),
-        timeout,
+        config.ctl_timeout,
     )
     .await?;
     let msg2 = codec::decode_handshake_reply(&reply)??;
