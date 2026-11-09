@@ -20,7 +20,7 @@ constexpr size_t cobsMaxEncoded(size_t len) { return len + len / 254 + 1; }
 // Writes the COBS encoding of `pieces` (read as one sequence) to `out`,
 // without the trailing 0x00.
 //
-// The form is pinned (spec §3.1): no code byte follows a final 254-byte
+// The form is pinned: no code byte follows a final 254-byte
 // block. `CobsDecoder` also accepts the variant that appends 0x01 there.
 void cobsEncode(const Bytes* pieces, uint8_t count, Sink out);
 

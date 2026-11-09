@@ -1,4 +1,4 @@
-// The ESP32's C++/Rust boundary against the shared tether §14 vectors.
+// The ESP32's C++/Rust boundary against the shared USB provisioning vectors.
 #include <stdio.h>
 
 #include <string>

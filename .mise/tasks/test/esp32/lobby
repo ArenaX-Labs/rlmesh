@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Rehearse a board's lobby (scene design §3) against a real rlmesh host --lobby on loopback: the device robot (rlmesh-device's examples/lobby_board) waits in the lobby, is assigned a run, joins and declares, comes back when the run stops, and rejoins through the lobby after a reboot mid-run"
+#MISE description="Rehearse a board's lobby against a real rlmesh host --lobby on loopback: the device robot (rlmesh-device's examples/lobby_board) waits in the lobby, is assigned a run, joins and declares, comes back when the run stops, and rejoins through the lobby after a reboot mid-run"
 #MISE dir="{{ config_root }}"
 # Local only: it runs the daemon and the CLI.
 set -euo pipefail

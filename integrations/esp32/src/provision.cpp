@@ -1,5 +1,5 @@
 // rlmesh::Provisioning: the device key and the provisioning record in NVS
-// (Preferences), and the tether spec §14 responder on a serial port.
+// (Preferences), and the USB provisioning responder on a serial port.
 
 #include <Preferences.h>
 #include <string.h>

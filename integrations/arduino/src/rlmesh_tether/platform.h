@@ -1,5 +1,5 @@
 // What the board runtime needs from the MCU: its watchdog, the e-stop
-// latch's raw storage, a per-boot value and the reset cause (spec §6.3–6.4).
+// latch's raw storage, a per-boot value and the reset cause.
 // One implementation per architecture (`platform_avr.cpp`,
 // `platform_renesas.cpp`); any other fails to build instead of running
 // without a watchdog.
@@ -26,7 +26,7 @@ void watchdogArm();
 void watchdogFeed();
 
 // The stored pin latch: set, or unreadable. Raw program-only writes, never
-// the core's EEPROM API (§6.4).
+// the core's EEPROM API.
 bool latchLoad();
 void latchStore();
 void latchClear();

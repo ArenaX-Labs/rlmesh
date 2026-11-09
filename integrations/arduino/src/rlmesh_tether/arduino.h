@@ -1,5 +1,5 @@
 // `RLMeshTether<Map>`: the board runtime on an Arduino `Stream`, typed by
-// the header `rlmesh tether gen` writes (spec §9.2).
+// the header `rlmesh tether gen` writes.
 //
 // The generated `Map` provides:
 //

@@ -70,8 +70,8 @@ typedef struct rlmesh_device_robot_config_t {
    * provisioned board, which waits in its home's lobby (record's first
    * address) as its own device, and joins the runs it is assigned. */
   const char* address;
-  /* A provisioned board's device key (32 bytes) and stored record (tether spec
-   * §14), with address NULL. */
+  /* A provisioned board's device key (32 bytes) and stored record,
+   * with address NULL. */
   const uint8_t* device_key;
   const uint8_t* record;
   size_t record_len;
@@ -238,7 +238,7 @@ int rlmesh_device_robot_publish(rlmesh_device_robot_t* robot, uint8_t part, uint
 int rlmesh_device_robot_status(const rlmesh_device_robot_t* robot,
                                rlmesh_device_robot_status_t* out);
 
-/* USB provisioning (tether spec §14): the board keeps a device key it makes on
+/* USB provisioning: the board keeps a device key it makes on
  * first boot (32 random bytes from a cryptographic RNG) and the record the
  * daemon sends; the responder answers the daemon over the serial port. */
 typedef struct rlmesh_device_provision rlmesh_device_provision_t;

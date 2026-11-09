@@ -535,7 +535,7 @@ int main(int argc, char** argv) {
   messageVectors(all);
   rejectionVectors(all);
   // Dense <-> aligned conversion happens on the bridge, never on the board;
-  // provisioning (spec §14) is a networked board's, in Rust.
+  // provisioning is a networked board's, in Rust.
   const size_t skipped = all["pack"].items.size();
   const size_t provision = all["provision"].items.size() +
                            all["provision_rejections"].items.size() +

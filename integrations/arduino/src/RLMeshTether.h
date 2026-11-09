@@ -1,6 +1,5 @@
 // RLMeshTether: a board without a network speaks framed messages over a
-// serial link to a computer, and the computer is the RLMesh robot for it
-// (spec `tether-spec.md`).
+// serial link to a computer, and the computer is the RLMesh robot for it.
 //
 // The codec both ends share (CRC, COBS, frames, messages) and the board
 // runtime (`board.h`) need no Arduino header, no heap and no transmit

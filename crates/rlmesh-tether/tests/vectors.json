@@ -435,7 +435,7 @@
       "wire": "00003742000006850103641f00"
     },
     {
-      "name": "a sketch's text, then a provisioning frame with its leading delimiter (§14.2)",
+      "name": "a sketch's text, then a provisioning frame with its leading delimiter",
       "results": [
         {
           "error": "truncated"
