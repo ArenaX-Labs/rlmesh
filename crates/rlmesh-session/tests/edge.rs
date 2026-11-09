@@ -946,10 +946,12 @@ async fn the_applied_stream_reaches_an_observer_in_another_process() {
     driven.stop();
     // One sample per 1 kHz tick reached the other process: absent ones
     // (Idle, then Hold) carry no value, present ones the dispatched action
-    // under the lease's token, in chunk order.
+    // under the lease's token, in chunk order. 600 ms of streaming drives
+    // about 600 ticks; a loaded CI runner has delivered as few as 262, so
+    // the counts only check that driving reached the other process.
     assert!(report["samples"].as_u64().expect("n") > 500, "{report}");
-    assert!(report["present"].as_u64().expect("n") > 300, "{report}");
-    assert!(report["driving"].as_u64().expect("n") > 300, "{report}");
+    assert!(report["present"].as_u64().expect("n") > 100, "{report}");
+    assert!(report["driving"].as_u64().expect("n") > 100, "{report}");
     assert_eq!(report["tokens"], json!([lease.token.0]), "{report}");
     assert_eq!(report["tags"], json!([5]), "{report}");
     assert_eq!(report["seq_ordered"], json!(true), "{report}");
