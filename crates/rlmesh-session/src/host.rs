@@ -1259,6 +1259,51 @@ impl Outcome {
     }
 }
 
+/// Whether the expiry tick may judge silence. A host that did not run for a
+/// while (its process was descheduled or frozen) was not listening in that
+/// time: heartbeats sent meanwhile are still on their way to it, and
+/// participants in its own process stalled with it. Judging on the first
+/// tick back would lapse the leases of healthy holders, so that tick starts
+/// one lease grace of listening instead. The judgement after it always
+/// runs, so a host that keeps stalling still expires what is silent.
+struct Heard {
+    last: tokio::time::Instant,
+    listening_until: Option<tokio::time::Instant>,
+    stall: Duration,
+    grace: Duration,
+}
+
+impl Heard {
+    fn new(now: tokio::time::Instant, tick: Duration, grace: Duration) -> Self {
+        Self {
+            last: now,
+            listening_until: None,
+            // Well past a late tick, well short of a lapse.
+            stall: (grace / 2).max(tick * 4),
+            grace,
+        }
+    }
+
+    /// Whether the tick at `now` judges leases and presence.
+    fn judge(&mut self, now: tokio::time::Instant) -> bool {
+        let gap = now.saturating_duration_since(self.last);
+        self.last = now;
+        match self.listening_until {
+            Some(until) if now < until => false,
+            Some(_) => {
+                self.listening_until = None;
+                true
+            }
+            None if gap > self.stall => {
+                debug!(?gap, "host stalled: listening before judging leases");
+                self.listening_until = Some(now + self.grace);
+                false
+            }
+            None => true,
+        }
+    }
+}
+
 impl HostActor {
     async fn run(
         &mut self,
@@ -1275,6 +1320,11 @@ impl HostActor {
             interval
         };
         let mut tick = interval(self.config.tick);
+        let mut heard = Heard::new(
+            tokio::time::Instant::now(),
+            self.config.tick,
+            self.config.lease_grace,
+        );
         let mut republish = interval(self.config.republish);
         let health_log = self.config.health_log;
         let mut health = interval(health_log.unwrap_or(Duration::from_secs(1)));
@@ -1334,8 +1384,10 @@ impl HostActor {
                     while let Ok((id, heartbeat, t2)) = heartbeats.try_recv() {
                         self.on_heartbeat(id, heartbeat, t2);
                     }
-                    let events = self.authority.expire(self.now());
-                    self.record(events).await;
+                    if heard.judge(tokio::time::Instant::now()) {
+                        let events = self.authority.expire(self.now());
+                        self.record(events).await;
+                    }
                     self.publish_ticks().await;
                     self.publish_renewals().await;
                 }
@@ -2712,6 +2764,26 @@ pub(crate) async fn token_declared(
 mod tests {
     use super::*;
     use crate::wire::{Encoding, FieldSpec, Layout, Sample};
+
+    #[test]
+    fn a_stalled_host_listens_for_a_lease_grace_before_it_judges() {
+        let ms = Duration::from_millis;
+        let start = tokio::time::Instant::now();
+        let mut heard = Heard::new(start, ms(10), ms(250));
+        // On-time and merely late ticks judge.
+        assert!(heard.judge(start + ms(10)));
+        assert!(heard.judge(start + ms(100)));
+        // The first tick after a stall does not, nor any within the grace.
+        let back = start + ms(700);
+        assert!(!heard.judge(back));
+        assert!(!heard.judge(back + ms(10)));
+        assert!(!heard.judge(back + ms(240)));
+        // The judgement after the grace runs however late its tick is, so
+        // a host that keeps stalling still expires what is silent.
+        assert!(heard.judge(back + ms(900)));
+        assert!(!heard.judge(back + ms(1500)));
+        assert!(heard.judge(back + ms(1760)));
+    }
 
     fn ring(fields: Vec<FieldSpec>) -> Ring {
         Ring {

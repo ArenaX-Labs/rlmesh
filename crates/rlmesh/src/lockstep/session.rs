@@ -662,6 +662,14 @@ async fn attach_driver(
 /// long enough for a dropped driver's background detach to land.
 const LEASE_BUSY_GRACE: Duration = Duration::from_secs(1);
 
+/// The time-to-live a lockstep driver asks for its lease. Lockstep has no
+/// deadline to guard: nothing moves between steps, so the lease only has to
+/// end when its driver is gone, which the host's presence check decides
+/// (lost heartbeats end a lost driver's leases). A real-time lease's short
+/// deadman would instead void a healthy run whenever the driver's process
+/// stalls for a moment (a loaded machine), leaving it in a stale epoch.
+const LOCKSTEP_LEASE_TTL: Duration = Duration::from_secs(10);
+
 impl Attached {
     /// Declares a binding over `channels` (identity, no delivery contracts:
     /// lockstep publishes no streams), takes one lease on them and opens
@@ -704,7 +712,7 @@ impl Attached {
                     .await?;
                 let request = group.request(
                     participant.binding_fingerprint(),
-                    None,
+                    u64::try_from(LOCKSTEP_LEASE_TTL.as_nanos()).ok(),
                     participant.clock().now_ns(),
                 );
                 let reply = participant.command(request).await?;

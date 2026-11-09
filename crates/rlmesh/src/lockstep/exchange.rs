@@ -172,9 +172,18 @@ impl Gate {
         }
         let epoch = self.epoch.load(Ordering::Acquire);
         let (asked, token) = (request.epoch().0, request.lease_token().0);
+        if asked < epoch {
+            // The env re-armed since this driver took its lease: the lease
+            // ended (its driver was not heard from) and went with the epoch.
+            return Err(GymError::Refused(format!(
+                "epoch {asked} is stale; the session is in epoch {epoch}: this driver's lease \
+                 ended (the host stopped hearing from it) and the env re-armed, so reconnect to \
+                 drive it again"
+            )));
+        }
         if asked != epoch {
             return Err(GymError::Refused(format!(
-                "epoch {asked} is stale; the session is in epoch {epoch}"
+                "epoch {asked} is ahead of the env's view, epoch {epoch}"
             )));
         }
         let held = self.token.load(Ordering::Acquire);
