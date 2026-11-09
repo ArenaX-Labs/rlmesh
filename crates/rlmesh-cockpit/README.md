@@ -57,14 +57,14 @@ A replay of a file or directory also offers **Open in Rerun** (`rerun` on the PA
 ## What it shows
 
 - **Live channels** (left): the robot path tree, each part's kind, latest value (numbers with a 10 s plot, or a camera thumbnail), age since capture and seq gaps. Commandable parts list their `_applied` stream: what the edge dispatched on each tick.
-- **Declared vs measured** (§8.10), each counter kept separate and labelled with its clock:
+- **Declared vs measured**, each counter kept separate and labelled with its clock:
   - per stream: declared source rate; produced and published (the publisher's own count, from its observer reports); the admitted delivery contracts and the publication plan; unique received here; per second of capture time; each subscriber's seq advance (from its heartbeats); age, freshness bound and losses; `rate_drift` outside `[0.8, 1.25]`.
-  - per controller: starts, completions and busy skips per second, other skipped slots by reason (`waiting_for`, `stale_input`, `window_gap`, `no_lease`), inference pending, latency p50/p99, chunks per second, chunk age at receipt and valid coverage remaining (an observer's estimate, §9.2).
-  - per edge: declared and measured control rate (the edge's own tick stamps), deadline misses (a tick more than two control periods late, §9.1), longest tick gap, edge mode, lease holder, fenced chunks, queue depth, hold and safe behaviour.
+  - per controller: starts, completions and busy skips per second, other skipped slots by reason (`waiting_for`, `stale_input`, `window_gap`, `no_lease`), inference pending, latency p50/p99, chunks per second, chunk age at receipt and valid coverage remaining (an observer's estimate).
+  - per edge: declared and measured control rate (the edge's own tick stamps), deadline misses (a tick more than two control periods late), longest tick gap, edge mode, lease holder, fenced chunks, queue depth, hold and safe behaviour.
   - per participant: clock offset, error bound and RTT, health, heartbeat age.
 - **Lease and mode timeline**: lanes of session mode, lease holder and edge mode, and every change derived from consecutive authority snapshots: epochs, mode transitions, leases granted, preempted, rebound, expired, revoked or released, e-stop, bindings and roster.
-- **Bindings**: each controller's binding table in the §6.8 layout (entries, input contracts, action grids).
-- **Arm / e-stop**: E-STOP is one click and always visible. Arm asks for confirmation. Disarm is offered whenever the protocol allows it. A latched e-stop is cleared at the robot (a local clear, §11.1); the cockpit says so and then offers disarm and arm.
+- **Bindings**: each controller's binding table in its declared layout (entries, input contracts, action grids).
+- **Arm / e-stop**: E-STOP is one click and always visible. Arm asks for confirmation. Disarm is offered whenever the protocol allows it. A latched e-stop is cleared at the robot (a local clear); the cockpit says so and then offers disarm and arm.
 
 In a sim slower than real time, "per second" means two things: rates on the cockpit's or publisher's clock are per wall second, "per capture s" is per second of capture time, and in virtual and lockstep modes the header shows session seconds per cockpit second.
 

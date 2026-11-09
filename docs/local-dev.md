@@ -115,7 +115,7 @@ So two dev artifacts interoperate only when they were built from the identical t
 
 ## Docs
 
-The user docs and the Python API reference are published at [rlmesh.dev/docs](https://rlmesh.dev/docs/) and built from the managed platform repo, which snapshots this package's API surface (`rlmesh-api-surface docs-api-surface`) on each release. This `docs/` directory keeps the maintainer docs and the specs the tooling reads: the workflow editions, compatibility and versioning policy, and the describe envelope.
+The user docs and the Python API reference are published at [rlmesh.dev/docs](https://rlmesh.dev/docs/). Generate an API reference from this checkout with `uv run rlmesh-api-surface docs-api-surface --output-dir <dir>`. This `docs/` directory keeps the maintainer docs and the specs the tooling reads: the workflow editions, compatibility and versioning policy, and the describe envelope.
 
 ## Release Gate
 

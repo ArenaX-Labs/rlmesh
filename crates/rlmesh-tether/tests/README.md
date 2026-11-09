@@ -1,6 +1,6 @@
 # Tether conformance vectors
 
-`vectors.json` holds the byte-exact cases of spec §10. Every implementation of
+`vectors.json` holds the byte-exact conformance cases. Every implementation of
 the tether runs it: this crate (`cargo nextest run -p rlmesh-tether --features board --test
 vectors`) and the Arduino library's host runner (`mise run test:tether:cpp`).
 
@@ -29,7 +29,7 @@ Bytes are lowercase hex strings. Integers are JSON numbers. Every case has a
 | `rejections`                 | `receiver`, `type`, `payload`, `error`, optional `version`, `dense_len` | Decoding a frame of `type` with `payload` at `receiver` (`"bridge"` or `"board"`) fails with `error`; a `version` error also reports the version byte. |
 | `write_rejections`           | `msg`, `error`                                                          | Writing `msg` fails with `error` and writes nothing.                                                                                                   |
 | `pack`                       | `fields`, `offsets`, `lens`, `aligned`, `dense`                         | `to_dense(aligned) == dense` and `to_aligned(dense) == aligned` (padding zeroed). Bridge only: a board never sees the aligned form.                    |
-| `provision`                  | `seq`, `msg`, `wire`                                                    | As `messages`, for spec §14's provisioning (`provision::write`/`decode`): `wire` starts with its leading `00`. A networked board and the daemon only.  |
+| `provision`                  | `seq`, `msg`, `wire`                                                    | As `messages`, for USB provisioning (`provision::write`/`decode`): `wire` starts with its leading `00`. A networked board and the daemon only.         |
 | `provision_rejections`       | `receiver`, `type`, `payload`, `error`, optional `version`              | As `rejections`; the daemon receives as `"bridge"`.                                                                                                    |
 | `provision_write_rejections` | `msg`, `error`                                                          | As `write_rejections`.                                                                                                                                 |
 
@@ -45,13 +45,13 @@ Delimiters with nothing before them yield no result.
 value length; a part not listed is unknown. It is the sample length for
 `STATE` at the bridge and the command length for `COMMAND` at the board.
 
-`msg` is an object with `type` (the spec's name: `HELLO`, `MAP`, `STATE`,
+`msg` is an object with `type` (the message name: `HELLO`, `MAP`, `STATE`,
 `STATUS`, `NOTE`, `GET_MAP`, `ATTACH`, `COMMAND`, `SAFE`, `PING`, `DETACH`)
-and the spec's field names. `board_id`, `name`, `data`, `text` and `value` are
+and the message field names. `board_id`, `name`, `data`, `text` and `value` are
 hex.
 
 A provisioning `msg` has `type` `GET_DEVICE`, `DEVICE_INFO`, `PROVISION` or
-`PROVISIONED` and §14.3's field names. `device_key`, `host_key`, `host_id`,
+`PROVISIONED` and the provisioning field names. `device_key`, `host_key`, `host_id`,
 `name` and each of `addresses` are hex.
 
 `error` is one of `unknown_type`, `magic`, `version`, `length`, `reserved`,

@@ -33,7 +33,7 @@ The package version and the workflow edition answer different questions. The ver
 
 Frozen container images reproduce their results on their matching runner. An
 edition locks defaults within its release line; it does not make a 0.1 image
-compatible with 0.2. The 0.1-to-0.2 managed-platform bridge is roadmap work.
+compatible with 0.2. Interoperation between the 0.1 and 0.2 protocols is not implemented.
 
 ## How changes ship
 

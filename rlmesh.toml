@@ -13,7 +13,7 @@ supported_editions = ["2026.10-0.2.0-alpha.0"]
 # Sealed editions this release deliberately stops offering, each with its
 # reason; policy:check exempts only these from the retention rule
 # (docs/editions/index.md, "Support Window").
-"2026.06" = "0.2 is a major break; the managed platform keeps 2026.06 through its 0.1 stack"
+"2026.06" = "0.2 replaces the 0.1 gRPC protocol with realtime sessions"
 
 [workflow.editions."2026.06"]
 status = "sealed"

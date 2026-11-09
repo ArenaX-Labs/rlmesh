@@ -239,14 +239,7 @@ python -m venv /tmp/rlmesh-smoke
 
 ## Publish the docs
 
-rlmesh.dev/docs is built from the platform repo, which keeps a frozen copy of the docs for the latest release at `/docs/` and the working copy for `main` at `/docs/dev/`. After a final `X.Y.Z` release, cut the docs there with this checkout at the tag:
-
-```bash
-RLMESH_OSS_DIR=/path/to/rlmesh mise run docs:cut -- X.Y.Z   # OSS checkout at vX.Y.Z
-RLMESH_OSS_DIR=/path/to/rlmesh mise run gen:api-snapshot:dev   # OSS checkout back on main
-```
-
-Open the result as a `docs: cut X.Y.Z` PR in the platform repo. It goes live on the next platform promote. Skip this for pre-releases.
+The published user documentation is at [rlmesh.dev/docs](https://rlmesh.dev/docs/). Generate the Python API reference from the release tag with `uv run rlmesh-api-surface docs-api-surface --output-dir <dir>` so it describes the released package.
 
 The Rust, C, and C++ API references are early access and come from the same extractor: `uv run rlmesh-api-surface docs-api-surface --language rust|c|cpp --output-dir <dir>`. Rust documents the `rlmesh` facade crate from rustdoc JSON (it runs `cargo rustdoc` itself); C and C++ parse `rlmesh.h` and `rlmesh.hpp` with libclang, one page per `---- section ----` divider. Each snapshot carries the `access` label and summary from `[api_surface.<language>]` in `rlmesh.toml`, and the extractor warns about every undocumented item.
 
