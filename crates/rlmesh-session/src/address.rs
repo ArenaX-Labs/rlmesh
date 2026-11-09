@@ -186,7 +186,7 @@ fn invalid(text: &str, why: impl fmt::Display) -> SessionError {
 
 /// `text` with its key, if any, left out: what logs and errors show. The
 /// key is a credential (it attaches as device `local`).
-fn redact(text: &str) -> String {
+pub fn redact(text: &str) -> String {
     match text.split_once('#') {
         Some((before, rest)) => {
             let after = &rest[rest.find('/').unwrap_or(rest.len())..];

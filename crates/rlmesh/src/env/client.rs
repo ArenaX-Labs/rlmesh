@@ -539,7 +539,7 @@ pub struct EnvClientCore {
 impl std::fmt::Debug for EnvClientCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EnvClientCore")
-            .field("address", &self.address())
+            .field("address", &self.shown_address())
             .field("num_envs", &self.num_envs)
             .field("closed", &self.closed)
             .finish_non_exhaustive()
@@ -656,7 +656,7 @@ impl EnvClientCore {
         if self.num_envs != 1 {
             return Err(Error::invalid_argument(format!(
                 "Endpoint {:?} serves {} environments. Use RemoteVectorEnv instead.",
-                self.address(),
+                self.shown_address(),
                 self.num_envs
             )));
         }
@@ -677,6 +677,12 @@ impl EnvClientCore {
     /// The canonical connect string of the dialed endpoint.
     pub fn address(&self) -> &str {
         self.inner.address()
+    }
+
+    /// The address as errors and logs show it: an invite's key, a
+    /// credential, left out.
+    fn shown_address(&self) -> String {
+        rlmesh_session::address::redact(self.address())
     }
 
     /// The session the env is in (its address), on the v2 path.
@@ -796,7 +802,7 @@ impl EnvClientCore {
         if !self.warned_shadowed_info_key {
             self.warned_shadowed_info_key = true;
             tracing::warn!(
-                address = %self.address(),
+                address = %self.shown_address(),
                 "env info key {key:?} shadows the runtime-reserved info key of the same \
                  name; keeping the env's value (reserved keys: {RUNTIME_INFO_KEYS:?}). \
                  Rename the env's key to read the runtime's value. Logged once per client."

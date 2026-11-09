@@ -455,6 +455,8 @@ impl Error {
 /// `could not connect to {peer} at '{address}': {cause}` when the server
 /// rejected the key (serving is not in doubt then). Other classes pass through.
 pub(crate) fn dial_failure(err: Error, peer: &str, address: &str, hint: &str) -> Error {
+    // An invite's key is a credential: errors show the address without it.
+    let address = rlmesh_session::address::redact(address);
     match err {
         Error::Connection(cause) => Error::Connection(format!(
             "could not connect to {peer} at '{address}'; {hint} ({cause})"
