@@ -6,9 +6,13 @@ RLMesh aims to feel familiar in whichever language you use it from. Python, Rust
 
 The header requires C++17 and exceptions (it stops with `#error` otherwise), and is tested at C++17 and C++20. Every RLMesh entity has one token-identical definition in C++17 and C++20, so translation units built at either standard can share wrapper types (ODR). Standard or feature macros never select RLMesh definitions or members. Apart from the top-level version/exceptions guards, the sole exception is `std::ranges::enable_borrowed_range` and `std::ranges::enable_view` specializations for `rlmesh::Span<T>`, guarded by `#if defined(__cpp_lib_ranges)`; these add no RLMesh members. RTTI is not needed.
 
+> **Fenced for 0.2.** C/C++ remains built and tested in CI, but no native
+> package ships in 0.2. Use a source build for experiments; ABI 7 is cut only
+> when these bindings ship.
+
 ## Install
 
-`rlmesh.hpp` ships next to `rlmesh.h` in the same package and links the same library, so installation is the same as for C. The short version, with CMake and a prebuilt release (Linux x86_64, glibc 2.34 or newer):
+`rlmesh.hpp` is packaged next to `rlmesh.h` and links the same library. Installation is the same as for C. The retained CMake download recipe below applies only to a release that published native packages, not to 0.2 (Linux x86_64, glibc 2.34 or newer):
 
 ```cmake
 set(CMAKE_CXX_STANDARD 17)
@@ -23,7 +27,7 @@ FetchContent_MakeAvailable(rlmesh)
 target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 ```
 
-`find_package(rlmesh 5 CONFIG REQUIRED)` against an unpacked package and pkg-config (`c++ -std=c++17 sim.cpp $(pkg-config --cflags --libs rlmesh)`) work too. A Windows (MSVC) package ships with each release as well; compile with `/std:c++17 /EHsc`. See [Install in the C guide](README.md#install) for every option, including [Windows](README.md#windows-msvc) and building from source.
+`find_package(rlmesh 6 CONFIG REQUIRED)` against an unpacked package and pkg-config (`c++ -std=c++17 sim.cpp $(pkg-config --cflags --libs rlmesh)`) work too. The retained Windows (MSVC) packaging task is also available for local builds; compile with `/std:c++17 /EHsc`. See [Install in the C guide](README.md#install) for every option, including [Windows](README.md#windows-msvc) and building from source.
 
 ## Quickstart
 
@@ -115,7 +119,7 @@ Neither side cares what language the other is written in: the same model can dri
 
 **Duck-typed authoring.** You do not inherit from a base class to write an env or a policy. The header detects the members a class or lambda has: `predict`, `predict_batch`, `predict_chunk` and `predict_chunk_batch` for a policy, with or without a context parameter; `reset`, `step`, optional `render`, `close`, `id`, `render_mode` and `metadata` for an env. A class without the required members does not compile.
 
-**`rlmesh::ext`** holds native-only extras: `ext::CancelToken` for cancellation, `ext::CancelledError`, server describe publication and model concurrency options, DLPack ownership (`ext::DlpackPtr`), `ext::env_server_describe_json` and `ext::register_entrypoint`.
+**`rlmesh::ext`** holds native-only extras: `ext::CancelToken` for cancellation, `ext::CancelledError`, server describe publication and host signal options, DLPack ownership (`ext::DlpackPtr`), `ext::env_server_describe_json` and `ext::register_entrypoint`.
 
 ## Core concepts
 
@@ -172,7 +176,7 @@ struct Alternate {
 };
 
 rlmesh::Model model{Alternate{}};
-model.serve("127.0.0.1:50051");  // a model endpoint any RLMesh run can use (blocks)
+model.serve("127.0.0.1:7447/policy");  // a model endpoint any RLMesh run can use (blocks)
 ```
 
 Optional members cover `load(const rlmesh::Kwargs&)` (with `rlmesh::Model::from_config<Policy>(config)` to build from a config map), `on_episode_end`, `close`, and static declarations for an adapter `spec`, `load_keys`, `native_chunk` and `workflow_edition`. `rlmesh::ModelOptions` adds hooks and a spec for a lambda.
@@ -219,7 +223,7 @@ binding.close();
 
 ### Remote clients
 
-`rlmesh::RemoteEnv` and `RemoteVectorEnv` connect at construction and step a served env directly, Gymnasium style. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an `EnvServer` with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. The v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`, and `host`, `port`, `path` and `transport` set separately) still serve and connect remote clients until v1 is removed; a run refuses them.
+`rlmesh::RemoteEnv` and `RemoteVectorEnv` connect at construction and step a served env directly, Gymnasium style. Addresses are session participant addresses, as in Python: `host:port/name`, `host:port/session/name`, or `:0/name` for a session of its own on an OS-assigned local port (an `EnvServer` with no address is `:0/env`). An env or model joins the session there, hosting it in its own process when nothing listens on that port. 0.2 rejects the removed v1 forms (`host:port`, `tcp://host:port`, `unix:///path/to.sock`) and separate `host`, `port`, `path` or `transport` options. Remote clients use session credentials; the v1 API-key/TLS options and remote shutdown are removed.
 
 ```cpp
 rlmesh::RemoteEnvOptions connection;
@@ -270,7 +274,7 @@ try {
 
 ## Workflow editions
 
-Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (a static `workflow_edition` on a policy or factory, `ServeOptions::workflow_edition`, the `workflow_edition` member of the run and session options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. See the [documentation](https://rlmesh.dev/docs/).
+Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (a static `workflow_edition` on a policy or factory, `ServeOptions::workflow_edition`, the `workflow_edition` member of the run and binding options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. See the [documentation](https://rlmesh.dev/docs/).
 
 ## Compatibility
 

@@ -218,6 +218,20 @@ status = "provisional"
     assert _check_dropped_editions({"2026.07": "typo"}, sealed, ["2026.09"])
     assert _check_dropped_editions(reason, sealed, ["2026.09", "2026.06"])
 
+    # Changing the spec and its current checksum together cannot rewrite a seal.
+    assert not _changed_sealed_records(previous, sealed)
+    for field, value in {
+        "status": "provisional",
+        "spec": "replacement.md",
+        "sealed_in": "0.2.0",
+        "spec_sha256": "rewritten checksum",
+    }.items():
+        changed = {name: dict(entry) for name, entry in sealed.items()}
+        changed["2026.06"][field] = value
+        assert _changed_sealed_records(previous, changed) == ["2026.06"]
+    assert _changed_sealed_records(previous, {}) == ["2026.06"]
+    assert not _changed_sealed_records("", {})
+
     # build.rs scans the manifest without a TOML parser: its reading of the
     # retained list must equal tomllib's for both array spellings, or the build
     # would silently offer fewer editions than the manifest retains.
@@ -901,6 +915,25 @@ def _dropped_sealed_editions(
     return sorted(_sealed_editions(previous_manifest_text) - set(supported) - dropped)
 
 
+def _changed_sealed_records(
+    previous_manifest_text: str, editions: dict[str, Any]
+) -> list[str]:
+    """Find released seal records changed alongside a spec or its checksum."""
+    previous = (
+        tomllib.loads(previous_manifest_text).get("workflow", {}).get("editions", {})
+    )
+    fields = ("status", "spec", "sealed_in", "spec_sha256")
+    return sorted(
+        edition
+        for edition in _sealed_editions(previous_manifest_text)
+        if not isinstance(editions.get(edition), dict)
+        or any(
+            editions[edition].get(field) != previous[edition].get(field)
+            for field in fields
+        )
+    )
+
+
 def _dropped_editions(workflow: dict[str, Any]) -> set[str]:
     """Sealed editions ``[workflow.dropped_editions]`` deliberately stops offering."""
     dropped = workflow.get("dropped_editions")
@@ -939,13 +972,15 @@ def _check_dropped_editions(
 def _validate_sealed_edition_retention(
     repo_root: Path, manifest_path: Path, workflow: dict[str, Any]
 ) -> list[str]:
-    """No edition sealed by the previous release may leave ``supported_editions``.
+    """Retain released seal records and their offers unless explicitly dropped.
 
     A sealed edition is retained within a major line: a peer pinned to it must keep
     finding it in every later build's offer until a major break drops it by name. The intra-manifest rule in ``_validate_workflow_editions``
     only sees editions this manifest still declares, so deleting a whole
     ``[workflow.editions."…"]`` table slips past it — this compares against the previous
-    release tag instead. Skipped when there is no tag yet (or no git).
+    release tag instead. The same tag anchors the sealed spec metadata so a
+    spec and its checksum cannot both be rewritten. Skipped when there is no
+    tag yet (or no git).
     """
     supported = workflow.get("supported_editions")
     if not isinstance(supported, list) or not all(
@@ -963,13 +998,21 @@ def _validate_sealed_edition_retention(
     previous = _git_output(repo_root, ["show", f"{tag}:{tracked}"])
     if previous is None:
         return []
-    return [
+    errors = [
         f"[workflow].supported_editions dropped sealed edition {edition!r}, retained in "
         f"{tag}; a sealed edition stays within a major line unless [workflow.dropped_editions] names it"
         for edition in _dropped_sealed_editions(
             previous, supported, _dropped_editions(workflow)
         )
     ]
+    editions = workflow.get("editions")
+    if isinstance(editions, dict):
+        errors.extend(
+            f"sealed edition {edition!r} record differs from {tag}; "
+            "status, spec, sealed_in and spec_sha256 must remain unchanged, even when dropped"
+            for edition in _changed_sealed_records(previous, editions)
+        )
+    return errors
 
 
 def _int_expr(expr: str) -> int | None:

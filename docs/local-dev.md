@@ -111,7 +111,7 @@ A build from this checkout is a **dev build**: `crates/rlmesh-proto/build.rs` st
 So two dev artifacts interoperate only when they were built from the identical tree state. This bites when the two sides of a session come from separate builds, for example a C or C++ env linked against `rlmesh-capi` and the editable Python extension, or an env server built before you edited a file and a runtime built after. The build script reruns only when HEAD, `rlmesh.toml`, the protos, or `RLMESH_RELEASE_BUILD` change, so even an artifact that cargo considers fresh can carry an older dirty fingerprint. The session then fails at the runtime's floor with `no mutual workflow edition`, and the message ends with a hint naming the remedy:
 
 - Rebuild both sides from the same tree state (commit or stash first, then rebuild each artifact).
-- Or build both with `RLMESH_RELEASE_BUILD=1`, which stamps the release cohort instead, so both sides speak the sealed edition however dirty the checkout is. Set it for every build that takes part, for example `RLMESH_RELEASE_BUILD=1 cargo build -p rlmesh-capi --release` and `RLMESH_RELEASE_BUILD=1 mise run build:python:develop`. `examples/chrono/demo.sh` does this.
+- Or build both with `RLMESH_RELEASE_BUILD=1`, which stamps the release cohort instead, so both sides use the same official cohort however dirty the checkout is (a prerelease cohort until the edition seals). Set it for every build that takes part, for example `RLMESH_RELEASE_BUILD=1 cargo build -p rlmesh-capi --release` and `RLMESH_RELEASE_BUILD=1 mise run build:python:develop`. `examples/chrono/demo.sh` does this.
 
 ## Docs
 
