@@ -658,6 +658,10 @@ async fn attach_driver(
     })
 }
 
+/// How long a driver keeps asking for an env's lease another driver holds:
+/// long enough for a dropped driver's background detach to land.
+const LEASE_BUSY_GRACE: Duration = Duration::from_secs(1);
+
 impl Attached {
     /// Declares a binding over `channels` (identity, no delivery contracts:
     /// lockstep publishes no streams), takes one lease on them and opens
@@ -684,6 +688,10 @@ impl Attached {
         // then a fresh epoch): wait for an armed session and retry a verb
         // that raced the new epoch.
         let deadline = tokio::time::Instant::now() + timeout;
+        // A driver dropped without closing detaches in the background (a
+        // binding left, a run ended, a client garbage-collected): its lease
+        // may still be held for a moment when the next driver asks.
+        let busy_until = tokio::time::Instant::now() + LEASE_BUSY_GRACE.min(timeout);
         let leases = loop {
             participant
                 .wait_for("an armed lockstep session", timeout, |s| {
@@ -718,6 +726,12 @@ impl Attached {
                     ) && tokio::time::Instant::now() < deadline =>
                 {
                     participant.fetch_authority().await?;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(SessionError::Rejected(err))
+                    if err.status == CtlStatus::LeaseBusy
+                        && tokio::time::Instant::now() < busy_until =>
+                {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
                 Err(err) => return Err(err.into()),
