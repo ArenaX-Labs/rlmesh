@@ -274,7 +274,7 @@ test('a recorder writes the session to MCAP and reads it back', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rlmesh-record-'));
   try {
     const path = join(dir, 'session.mcap');
-    const recorder = await rlmesh.Recorder.start(path, { session: host });
+    const recorder = await rlmesh.SessionRecorder.start(path, { session: host });
     {
       await using ur = await FakeUR10e.start(host);
       await using model = new rlmesh.Policy(HOLD, { session: host, name: 'model' });
@@ -313,7 +313,7 @@ test('a policy publishes annotations under its name and never binds them', async
   const dir = mkdtempSync(join(tmpdir(), 'rlmesh-annotate-'));
   try {
     const path = join(dir, 'tracked.mcap');
-    const recorder = await rlmesh.Recorder.start(path, { session: host });
+    const recorder = await rlmesh.SessionRecorder.start(path, { session: host });
     {
       await using eye = await rlmesh.Robot.connect(
         'eye-1',

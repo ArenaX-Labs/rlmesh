@@ -671,7 +671,7 @@ export class Observation {
 }
 
 /** A binding table (§6.8): what each entry is bound to and how it is delivered. */
-export class Binding {
+export class BindingTable {
   /** The human table, as the cockpit shows it. */
   readonly table: string;
   /** The binding fingerprint (16 hex digits). */
@@ -749,7 +749,7 @@ export interface BindOptions {
  */
 export class Policy implements AsyncDisposable {
   private native: NativePolicy | null = null;
-  private bound: Binding | null = null;
+  private bound: BindingTable | null = null;
   private readonly policyJson: string;
   // A true private field: the address carries the session's key, which an inspected Policy must not show.
   readonly #address: string;
@@ -788,7 +788,7 @@ export class Policy implements AsyncDisposable {
    * With no robot it binds the session's view of every robot, each under its name, so one policy
    * drives several: its actions name their robot (`eye-1:eyes`).
    */
-  async bind(robot?: string | null, opts: BindOptions = {}): Promise<Binding> {
+  async bind(robot?: string | null, opts: BindOptions = {}): Promise<BindingTable> {
     if (this.native) throw new SessionException(`policy ${this.name} is already bound`);
     const positional = Object.entries(opts.names ?? {}).map(([entry, mode]) => {
       if (mode !== 'positional') {
@@ -809,7 +809,7 @@ export class Policy implements AsyncDisposable {
       }),
     );
     for (const part of this.native.publishedParts()) this.fields.set(part.path, part.fields);
-    this.bound = new Binding(this.native);
+    this.bound = new BindingTable(this.native);
     return this.bound;
   }
 
@@ -831,7 +831,7 @@ export class Policy implements AsyncDisposable {
   }
 
   /** The binding table (after `bind`). */
-  get binding(): Binding {
+  get binding(): BindingTable {
     this.nat();
     return this.bound!;
   }
@@ -983,14 +983,14 @@ export interface RecordingSummary {
  * edge (`/{robot}/{path}/_chunks`), and the authority and binding changes (`/_session/authority`,
  * `/_session/bindings`), each envelope as it travelled. `close()` finishes the file.
  */
-export class Recorder implements AsyncDisposable {
+export class SessionRecorder implements AsyncDisposable {
   /** The finished file's counters, once closed. */
   stats: RecordStats | null = null;
 
   private constructor(private native: NativeRecorder) {}
 
-  static async start(path: string, opts: { session: Host | string; name?: string; timeout?: number }): Promise<Recorder> {
-    return new Recorder(await wait(() => native().startRecorder(address(opts.session), path, opts.name ?? 'recorder', opts.timeout ?? 10)));
+  static async start(path: string, opts: { session: Host | string; name?: string; timeout?: number }): Promise<SessionRecorder> {
+    return new SessionRecorder(await wait(() => native().startRecorder(address(opts.session), path, opts.name ?? 'recorder', opts.timeout ?? 10)));
   }
 
   /** The MCAP file. */
@@ -1037,7 +1037,7 @@ function runState(s: RunState): RunState {
 export class Scene implements AsyncDisposable {
   constructor(private native: NativeScene) {}
 
-  /** The run's id (`r-7k2m`), as `rlmesh stop` takes it. */
+  /** The run's id (`r-7k2m`), as `rlmesh scene stop` takes it. */
   get run(): string {
     return this.native.run;
   }
@@ -1112,12 +1112,19 @@ export function readRecording(path: string): Promise<RecordingSummary> {
   });
 }
 
-/** Bind `policy` to `robot` (`null`: every robot's view) and run `predict` until `duration` (§6.4 options). Shorthand for `Policy` + `bind` + `run`. */
-export async function run(
+/** Bind `policy` to `robot` (`null`: every robot's view) and drive it with `predict` until `duration` (§6.4 options). Shorthand for `Policy` + `bind` + `run`. */
+export async function drive(
   policy: Record<string, unknown>,
   robot: string | null,
   predict: Predict,
-  opts: BindOptions & { session: Host | string; name?: string; priority?: Priority; duration?: number; timeout?: number },
+  opts: BindOptions & {
+    session: Host | string;
+    name?: string;
+    priority?: Priority;
+    duration?: number;
+    timeout?: number;
+    publishes?: Record<string, unknown>;
+  },
 ): Promise<RunStats> {
   await using p = new Policy(policy, opts);
   await p.bind(robot, opts);

@@ -26,7 +26,6 @@
       "Recorder",
       "RecoverableEnvironmentException",
       "RemoteEnv",
-      "RemoteModel",
       "RemoteVectorEnv",
       "RunContext",
       "RunHooks",
@@ -37,7 +36,6 @@
       "SandboxRuntime",
       "SandboxVectorEnv",
       "ServeOptions",
-      "Session",
       "StepEvent",
       "TelemetryRow",
       "Tensor",
@@ -45,7 +43,6 @@
       "Vector",
       "View",
       "WorkflowEditionWarning",
-      "__build__",
       "__version__",
       "adapters",
       "build_info",
@@ -56,7 +53,6 @@
       "predict_seed",
       "run",
       "sanitize_metadata",
-      "session",
       "spaces",
       "specs",
       "trial_index",
@@ -708,11 +704,6 @@
         "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
-      "RemoteModel": {
-        "kind": "function",
-        "signature": "RemoteModel(*args: object, **kwargs: object)",
-        "stability": "Stable"
-      },
       "RemoteVectorEnv": {
         "kind": "class",
         "members": {
@@ -1184,11 +1175,6 @@
         "signature": "ServeOptions(*, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None) -> ServeOptions",
         "stability": "Stable"
       },
-      "Session": {
-        "kind": "function",
-        "signature": "Session(*args: object, **kwargs: object) -> NoReturn",
-        "stability": "Stable"
-      },
       "StepEvent": {
         "kind": "class",
         "members": {
@@ -1423,11 +1409,6 @@
         "kind": "class",
         "stability": "Stable"
       },
-      "__build__": {
-        "kind": "type alias",
-        "signature": "__build__ = build_info().workflow_edition",
-        "stability": "Stable"
-      },
       "__version__": {
         "kind": "type alias",
         "signature": "__version__ = _package_version('rlmesh')",
@@ -1475,11 +1456,6 @@
         "kind": "function",
         "signature": "sanitize_metadata(info: Mapping[str, Any]) -> dict[str, Any]",
         "stability": "Bridge"
-      },
-      "session": {
-        "kind": "function",
-        "signature": "session(*args: object, **kwargs: object)",
-        "stability": "Stable"
       },
       "spaces": {
         "kind": "module",
@@ -4090,26 +4066,36 @@
   },
   "rlmesh.realtime": {
     "exports": [
-      "Binding",
       "BindingRefused",
+      "BindingTable",
       "Due",
       "Host",
       "Meta",
       "Observation",
       "Policy",
       "Rate",
-      "Recorder",
       "Robot",
       "SessionException",
       "SessionLost",
+      "SessionRecorder",
       "SessionRefused",
       "StartSkipped",
+      "drive",
       "parse_address",
-      "read_recording",
-      "run"
+      "read_recording"
     ],
     "objects": {
-      "Binding": {
+      "BindingRefused": {
+        "kind": "class",
+        "members": {
+          "problems": {
+            "kind": "attribute",
+            "signature": "problems: list[tuple[str, str, str]]"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "BindingTable": {
         "kind": "class",
         "members": {
           "fingerprint": {
@@ -4133,17 +4119,7 @@
             "signature": "warnings: list[str]"
           }
         },
-        "signature": "Binding(native: V2Controller)",
-        "stability": "Experimental"
-      },
-      "BindingRefused": {
-        "kind": "class",
-        "members": {
-          "problems": {
-            "kind": "attribute",
-            "signature": "problems: list[tuple[str, str, str]]"
-          }
-        },
+        "signature": "BindingTable(native: V2Controller)",
         "stability": "Experimental"
       },
       "Due": {
@@ -4267,11 +4243,11 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, **captures: str) -> Binding"
+            "signature": "bind(robot: str | None = None, *, under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, **captures: str) -> BindingTable"
           },
           "binding": {
             "kind": "property",
-            "signature": "property binding: Binding"
+            "signature": "property binding: BindingTable"
           },
           "close": {
             "kind": "function",
@@ -4334,25 +4310,6 @@
           }
         },
         "signature": "Rate(hz: float)",
-        "stability": "Experimental"
-      },
-      "Recorder": {
-        "kind": "class",
-        "members": {
-          "close": {
-            "kind": "function",
-            "signature": "close() -> dict[str, Any] | None"
-          },
-          "path": {
-            "kind": "property",
-            "signature": "property path: str"
-          },
-          "stats": {
-            "kind": "attribute",
-            "signature": "stats: dict[str, Any] | None"
-          }
-        },
-        "signature": "Recorder(path: str | os.PathLike[str], *, session: Host | str, name: str = 'recorder', timeout: float = 10.0)",
         "stability": "Experimental"
       },
       "Robot": {
@@ -4444,6 +4401,25 @@
         },
         "stability": "Experimental"
       },
+      "SessionRecorder": {
+        "kind": "class",
+        "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close() -> dict[str, Any] | None"
+          },
+          "path": {
+            "kind": "property",
+            "signature": "property path: str"
+          },
+          "stats": {
+            "kind": "attribute",
+            "signature": "stats: dict[str, Any] | None"
+          }
+        },
+        "signature": "SessionRecorder(path: str | os.PathLike[str], *, session: Host | str, name: str = 'recorder', timeout: float = 10.0)",
+        "stability": "Experimental"
+      },
       "SessionRefused": {
         "kind": "class",
         "members": {
@@ -4476,6 +4452,11 @@
         },
         "stability": "Experimental"
       },
+      "drive": {
+        "kind": "function",
+        "signature": "drive(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, timeout: float = 10.0, publishes: Mapping[str, Any] | None = None, **captures: str) -> dict[str, Any]",
+        "stability": "Experimental"
+      },
       "parse_address": {
         "kind": "function",
         "signature": "parse_address(text: str, session: bool = False) -> dict[str, Any]",
@@ -4484,11 +4465,6 @@
       "read_recording": {
         "kind": "function",
         "signature": "read_recording(path: str | os.PathLike[str]) -> dict[str, Any]",
-        "stability": "Experimental"
-      },
-      "run": {
-        "kind": "function",
-        "signature": "run(policy: Mapping[str, Any], robot: str | None, predict: Predict, *, session: Host | str, name: str = 'policy', priority: str = 'model', under: str | None = None, at: Mapping[str, str] | None = None, names: Mapping[str, str] | None = None, allow: Sequence[str] | None = None, duration: float | None = None, timeout: float = 10.0, **captures: str) -> dict[str, Any]",
         "stability": "Experimental"
       }
     }

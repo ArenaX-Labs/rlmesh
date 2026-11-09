@@ -627,7 +627,7 @@ def run_robot(args: argparse.Namespace) -> int:
     )
     cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
     with realtime.Host() as host:
-        recorder = realtime.Recorder(record, session=host)
+        recorder = realtime.SessionRecorder(record, session=host)
         sim = Sim(args, host)
         sim.start()
         children: dict[str, Any] = {}
