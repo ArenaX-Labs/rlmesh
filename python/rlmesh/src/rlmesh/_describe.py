@@ -979,8 +979,8 @@ def _check_envelope(
             report.warnings.append(
                 f"{where}model_spec: {name} declares no class-level spec. Set in "
                 "load()? Fine for a label-less image (the handshake carries it); "
-                "a baked label will not carry it, and the managed probe cannot "
-                "synthesize inputs without a ModelSpec"
+                "a baked label will not carry it, and the managed platform cannot "
+                "test a model without a ModelSpec when you onboard it"
             )
         elif isinstance(spec, Mapping) and "error" in spec:
             badge = cast("Mapping[str, object]", spec)["error"]
@@ -993,8 +993,8 @@ def _check_envelope(
         if tags is None and branched:
             report.failed.append(
                 f"{where}env_tags: {name} declares tag_params but its default "
-                "branch has no tags; the platform probe fails a contract branch "
-                "without EnvTags"
+                "branch has no tags; the managed platform rejects a contract branch "
+                "without EnvTags when you onboard the image"
             )
         elif tags is None:
             report.warnings.append(
@@ -1022,8 +1022,8 @@ def _check_envelope(
             elif _needs_local_resources(error_type, badge):
                 report.not_checked.append(
                     f"{where}env_spec: could not build the env on this machine "
-                    f"({error_type}: {badge}); the platform probe builds it in the "
-                    "container. Do not bake a describe label from this machine: it "
+                    f"({error_type}: {badge}); the managed platform builds it in the "
+                    "container when you onboard the image. Do not bake a describe label from this machine: it "
                     "would carry this badge and fail admission"
                 )
             else:
@@ -1107,14 +1107,15 @@ def _check_branches(
         tags = branch_map.get("env_tags")
         if tags is None:
             report.failed.append(
-                f"{where}{key}: this contract branch has no tags; the platform "
-                "probe fails a branch without EnvTags"
+                f"{where}{key}: this contract branch has no tags; the managed "
+                "platform rejects a branch without EnvTags when you onboard the image"
             )
         elif isinstance(tags, Mapping) and "error" in tags:
             badge = cast("Mapping[str, object]", tags)["error"]
             report.failed.append(
                 f"{where}{key}: this contract branch's tags could not be read "
-                f"({badge}); the platform probe fails a branch without EnvTags"
+                f"({badge}); the managed platform rejects a branch without EnvTags when "
+                "you onboard the image"
             )
         elif isinstance(tags, Mapping):
             _check_join(
@@ -1161,7 +1162,8 @@ def _check_runtime(
     if not runtime.get("supported_workflow_editions"):
         report.not_checked.append(
             f"{where}runtime: describe carries no workflow editions (built with an "
-            "older rlmesh); the runtime probe verifies the handshake"
+            "older rlmesh); the managed platform checks the handshake when you "
+            "onboard the image"
         )
         return
     error = runtime.get("workflow_edition_error")

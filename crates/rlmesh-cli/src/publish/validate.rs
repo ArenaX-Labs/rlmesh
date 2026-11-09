@@ -165,7 +165,7 @@ fn unknown_kind(source: &str, kind: Option<Kind>) -> Option<String> {
     kind.is_none().then(|| {
         format!(
             "{source}: kind unknown (no {DESCRIBE_LABEL} label and the command does not \
-             run -m rlmesh.serve); the platform's probe decides it"
+             run -m rlmesh.serve); the managed platform checks it when you onboard the image"
         )
     })
 }

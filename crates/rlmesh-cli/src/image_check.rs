@@ -445,7 +445,7 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     let Some(serve) = command.serve else {
         report.not_checked.push(format!(
             "entrypoint: command `{}` does not run -m rlmesh.serve (custom entrypoint, e.g. \
-             a native C/C++ host); the runtime probe verifies serving",
+             a native C/C++ host); the managed platform checks it when you onboard the image",
             command.argv.join(" ")
         ));
         return report;
@@ -546,7 +546,8 @@ pub struct RuntimeOffer {
 
 impl RuntimeOffer {
     /// The image's bind-time offer, or `None` when the envelope advertises no
-    /// editions (an older rlmesh); the runtime probe decides then.
+    /// editions (an older rlmesh); the managed platform checks the handshake
+    /// when the image is onboarded.
     pub fn session_offer(&self) -> Option<SessionOffer> {
         if self.supported_workflow_editions.is_empty() {
             return None;
@@ -808,7 +809,8 @@ pub fn negotiate_image(
 
 /// Check that the image's rlmesh speaks the platform's protocol generation and
 /// shares a workflow edition with it. An envelope without the fields is
-/// `not_checked`: the runtime probe verifies the handshake.
+/// `not_checked`: the managed platform checks the handshake when the image is
+/// onboarded.
 pub fn check_editions(
     runtime: &RuntimeOffer,
     kind: Option<Kind>,
@@ -818,7 +820,7 @@ pub fn check_editions(
     match runtime.protocol_generation.as_deref().map(str::trim) {
         None | Some("") => report.not_checked.push(
             "editions: describe carries no protocol_generation (built with an rlmesh before \
-             the field); the runtime probe verifies the handshake"
+             the field); the managed platform checks the handshake when you onboard it"
                 .to_owned(),
         ),
         Some("rlmesh-wire-v1") => report.failed.push(
@@ -847,7 +849,7 @@ pub fn check_editions(
     let Some(image) = runtime.session_offer() else {
         report.not_checked.push(
             "editions: describe carries no supported_workflow_editions (built with an rlmesh \
-             before the field); the runtime probe verifies the handshake"
+             before the field); the managed platform checks the handshake when you onboard it"
                 .to_owned(),
         );
         return report;
@@ -936,8 +938,8 @@ pub fn check_image(config: &ImageConfig, platform: Option<&SessionOffer>) -> Che
             }
         }
         None => report.not_checked.push(
-            "editions: not checked without a describe label; the runtime probe negotiates \
-             the handshake"
+            "editions: not checked without a describe label; the managed platform checks \
+             the handshake when you onboard the image"
                 .to_owned(),
         ),
     }
