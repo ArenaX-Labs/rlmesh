@@ -629,11 +629,8 @@ rules are Python's (`py/_models/base.py:1475-1500`,
   ends.
   `max_in_flight_batches` (2) lets the next batch assemble while one runs.
   `max_batch_size = 1` turns it off; a model that does not fuse is never
-  batched. The defaults are the managed platform's (its request compiler's
-  `defaultMaxBatchSize` and `defaultBatchWindowMs`, its runner's
-  `BATCH_BYTE_BUDGET` and `maxInFlightBatches` default). Each group keeps
-  its own outcome. `batch_records` appends one JSON line per batch in the
-  platform runner's `telemetry/batches.jsonl` shape (`at`, `componentId`,
+  batched. These defaults are defined by Rust's `BatchOptions::default()`. Each group keeps
+  its own outcome. `batch_records` appends one JSON line per batch with fields (`at`, `componentId`,
   `endpoint`, `size`, `maxSize`, `fill`, `inFlightAtDispatch`,
   `queueWaitMs.{p50,max}`, `forwardWallMs`, `endpointTotalMs`, `ok`); here
   `forwardWallMs` is the batch's call to settle and `endpointTotalMs` the

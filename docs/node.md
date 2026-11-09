@@ -93,7 +93,7 @@ are encoded on a thread of the robot's own (encoding a 1280x720 frame takes
 about 6 ms, which on the JS thread would cost a 1 kHz loop one tick in four),
 so `publish` returns `null` for them at once.
 
-`policy.run` runs the run loop (§8.9) on a native thread of its own. At each
+`policy.run` runs the run loop on a native thread of its own. At each
 start it hands the observation to `predict` on the JS thread and waits for
 the answer; `predict` may be `async` (a model on another thread, a GPU
 call), and one inference is in flight at a time. If it throws or rejects, the

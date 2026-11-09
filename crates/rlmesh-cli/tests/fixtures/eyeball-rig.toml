@@ -2,11 +2,11 @@
 format = 1
 name = "eyeball-rig"
 home = "rig-pi.local"          # the daemon whose lobby the robots wait in (default: the one paired host)
-host = "gpu-desktop"           # "home" or a paired machine running rlmeshd (default: §8 open 1)
+host = "gpu-desktop"           # "home" or a paired machine running rlmeshd (default: first open host)
 security = "mac"               # session-wide default for data and chunks: "mac" | "seal"
 wait = "30s"                   # how long each stage may wait for robots, declares and bindings
 arm = "auto"                   # "auto": arm once everyone declared and bound | "manual"
-rejoin = "60s"                 # how long a run waits for a lost member before it fails (§4.3)
+rejoin = "60s"                 # how long a run waits for a lost member before it fails
 
 [members.eye-l]                # ESP32 on Wi-Fi, provisioned as eye-l; map: gaze (joints pan, tilt)
 role = "robot"

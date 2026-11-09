@@ -148,7 +148,7 @@ by default (`crates/rlmesh-session/src/gateway/security.rs`):
     `--max-priority` at most;
   - **a paired browser token**: `rlmesh pair HOST --browser [--name NAME]`
     on the machine whose gateway serves the browser pairs it with the
-    robot's rlmeshd as machines pair (design §3, §5): it shows a code, the
+    robot's rlmeshd as machines pair: it shows a code, the
     owner types `rlmesh pair approve CODE [--max CLASS]` on the robot, and
     rlmeshd enrolls a device of `kind = "browser"` (default cap `model`,
     or `observer`), with its own `parts` and `verbs` (`rlmesh devices
