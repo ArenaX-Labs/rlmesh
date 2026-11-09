@@ -1,4 +1,4 @@
-//! PyO3 bindings for real-time sessions (protocol v2, the v0.2 spec): an
+//! PyO3 bindings for real-time sessions (protocol v2): an
 //! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound
 //! policy ([`rlmesh_session::Controller`]) and an MCAP recorder
 //! ([`rlmesh_session::record::Recorder`]). The `rlmesh.realtime` package wraps
@@ -56,7 +56,7 @@ create_exception!(
     _rlmesh,
     BindingRefused,
     SessionException,
-    "The binder refused a policy: the message is the refuse-and-explain text (§6.7); \
+    "The binder refused a policy: the message is the refuse-and-explain text; \
      `problems` lists `(code, \"input\" | \"action\", entry)` per problem."
 );
 
@@ -72,7 +72,7 @@ create_exception!(
     _rlmesh,
     StartSkipped,
     SessionException,
-    "A policy start was skipped (§8.8): `reason` is `waiting_for`, `stale_input` or \
+    "A policy start was skipped: `reason` is `waiting_for`, `stale_input` or \
      `window_gap`; `waiting`, `stale` and `gaps` name the entries."
 );
 
@@ -151,7 +151,7 @@ fn is_v2_address(text: &str) -> bool {
 }
 
 /// The static rigid transform from pose `a` to pose `b`, both in the scene
-/// frame `world` (scene design §5): `(xyz, quat_xyzw)` of `T_b←a`.
+/// frame `world`: `(xyz, quat_xyzw)` of `T_b←a`.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
@@ -447,7 +447,7 @@ pub(crate) fn part_dict<'py>(py: Python<'py>, part: &PartSpec) -> PyResult<Bound
 }
 
 /// An `rlmesh_session::spec` tensor as a native `Tensor` (zero-copy when its buffer
-/// is 8-byte aligned, §8.11; one copy otherwise).
+/// is 8-byte aligned; one copy otherwise).
 pub(crate) fn tensor_to_py<'py>(py: Python<'py>, tensor: Tensor) -> PyResult<Bound<'py, PyAny>> {
     let dtype = rlmesh_spaces::DType::from_name(tensor.dtype.name()).ok_or_else(|| {
         SessionException::new_err(format!("no tensor dtype for {}", tensor.dtype.name()))
@@ -544,7 +544,7 @@ impl PyRobot {
 #[pymethods]
 impl PyRobot {
     /// Attaches as `name` (the robot's participant id), declares
-    /// `robot_json` (the authored map, §3) and starts its publishers and
+    /// `robot_json` (the authored map) and starts its publishers and
     /// edges. When the host drops it (a network gap past its presence
     /// grace) it joins again on its own.
     #[new]
@@ -1234,7 +1234,7 @@ impl PyController {
 #[pymethods]
 impl PyController {
     /// Attaches as `name` at `priority`, waits for `robot`'s parts, binds
-    /// `policy_json` (the policy map, §6) with the run-time options, and
+    /// `policy_json` (the policy map) with the run-time options, and
     /// declares the binding. With `publishes_json` (an authored map of
     /// parts, none commandable) it also declares those parts under its own
     /// name, to publish annotations. Raises `BindingRefused` with the
@@ -1351,7 +1351,7 @@ impl PyController {
         &self.name
     }
 
-    /// The binding table, as the cockpit shows it (§6.8).
+    /// The binding table, as the cockpit shows it.
     #[getter]
     fn table(&self) -> PyResult<String> {
         Ok(self.controller()?.binding().table())
@@ -1471,7 +1471,7 @@ impl PyController {
         Ok(self.controller()?.holds())
     }
 
-    /// Runs the policy loop (§8.9) on this thread until `stop()`,
+    /// Runs the policy loop on this thread until `stop()`,
     /// `duration_s`, or a failure, calling `predict(observation)` at the
     /// replan rate with one inference in flight. If `predict` raises, the
     /// leases are released and the exception propagates; if the robot or
@@ -1507,7 +1507,7 @@ impl PyController {
         Ok(())
     }
 
-    /// The start, skip and completion counters (§8.10), and the input the
+    /// The start, skip and completion counters, and the input the
     /// starts are phased after (`aligned_to`, `phase_offset_ms`).
     #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -1623,7 +1623,7 @@ fn record_err(err: RecordError) -> PyErr {
     }
 }
 
-/// An MCAP recording of a session (§13), as an observer participant.
+/// An MCAP recording of a session, as an observer participant.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Recorder", frozen)]
 pub struct PyRecorder {

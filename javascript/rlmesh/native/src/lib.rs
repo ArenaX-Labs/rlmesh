@@ -1,4 +1,4 @@
-//! Node-API bindings for real-time sessions (protocol v2, the v0.2 spec): an
+//! Node-API bindings for real-time sessions (protocol v2): an
 //! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound policy
 //! ([`rlmesh_session::Controller`]) and an MCAP recorder
 //! ([`rlmesh_session::record::Recorder`]), the Node and Electron twin of the PyO3
@@ -530,7 +530,7 @@ impl Encoder {
 }
 
 /// Attaches as `name` (the robot's participant id), declares `robot_json`
-/// (the authored map, §3) and starts its publishers and edges. When the
+/// (the authored map) and starts its publishers and edges. When the
 /// host drops it (a network gap past its presence grace) it joins again on
 /// its own.
 #[napi]
@@ -1151,7 +1151,7 @@ impl NativeObservation {
     }
 }
 
-/// The run-time options of a binding (§6.4).
+/// The run-time options of a binding.
 #[napi(object)]
 pub struct BindOptions {
     pub priority: Option<String>,
@@ -1216,7 +1216,7 @@ pub struct SkipCount {
     pub count: i64,
 }
 
-/// The start, skip and completion counters (§8.10), and the input the
+/// The start, skip and completion counters, and the input the
 /// starts are phased after.
 #[napi(object)]
 pub struct RunStats {
@@ -1323,7 +1323,7 @@ pub struct NativePolicy {
 
 /// Attaches as `name` at `options.priority`, waits for `robot`'s parts
 /// (`null`: the session's view of every robot, each under its name), binds
-/// `policy_json` (the policy map, §6) with the run-time options, and
+/// `policy_json` (the policy map) with the run-time options, and
 /// declares the binding.
 #[napi]
 pub async fn bind_policy(
@@ -1425,7 +1425,7 @@ impl NativePolicy {
         Ok(sent.map(seq))
     }
 
-    /// The binding table, as the cockpit shows it (§6.8).
+    /// The binding table, as the cockpit shows it.
     #[napi(getter)]
     pub fn table(&self) -> Result<String> {
         Ok(self.controller()?.binding().table())
@@ -1536,7 +1536,7 @@ impl NativePolicy {
         Ok(self.controller()?.holds())
     }
 
-    /// Runs the policy loop (§8.9) on a thread of its own until `stop()`,
+    /// Runs the policy loop on a thread of its own until `stop()`,
     /// `duration_s`, or a failure, calling `predict(observation)` on the JS
     /// thread at the replan rate with one inference in flight; each call is
     /// answered with `reply`. If a reply is an error, the leases are
@@ -1612,7 +1612,7 @@ impl NativePolicy {
         Ok(())
     }
 
-    /// The start, skip and completion counters (§8.10).
+    /// The start, skip and completion counters.
     #[napi]
     pub fn stats(&self) -> Result<RunStats> {
         let controller = self.controller()?;
@@ -1726,7 +1726,7 @@ pub struct RecordStats {
     pub log_time_clamped: i64,
 }
 
-/// An MCAP recording of a session (§13), as an observer participant.
+/// An MCAP recording of a session, as an observer participant.
 #[napi]
 pub struct NativeRecorder {
     path: String,
