@@ -1,7 +1,7 @@
 //! The environment probe: handshake, describe and contract validation,
 //! reproducibility, step conformance and latency, and the preview clip.
 //!
-//! Ported from the managed probe's env checks. The env is reached through a
+//! The env is reached through a
 //! binding with the random baseline as its model, and every step carries the
 //! probe's own action, so the binding is only the 0.2 transport.
 

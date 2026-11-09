@@ -1,7 +1,7 @@
 //! The model probe: handshake and describe, resolution against a stand-in env,
 //! action conformance, batched rows, determinism, seeding and statefulness.
 //!
-//! Ported from the managed probe's model checks. A model is bound with the
+//! A model is bound with the
 //! 0.2 binder to a [`StandIn`] env whose observations the probe scripts, so
 //! every check compares the model's answers to inputs it chose. The 0.1-wire
 //! legs (`chunk_horizon`, `native_chunk_contract`, `grouped`,

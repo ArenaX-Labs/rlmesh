@@ -2336,7 +2336,7 @@ async fn a_leftover_chunk_frame_never_crosses_a_next_step_autoreset() {
 async fn the_driver_sends_the_shared_reset_options_encoding_on_the_wire() {
     // The literal encoding, not a restatement of the fn the driver calls: a
     // single-lane reset carries the bare integer and a multi-lane reset the
-    // list in lane order, so the managed prober can be held to the same bytes.
+    // list in lane order.
     let env = TestEnv::default();
     let hooks = Arc::new(RecordingHooks::default());
     let mut spec = trial_spec(2, &["trial_index"]);
