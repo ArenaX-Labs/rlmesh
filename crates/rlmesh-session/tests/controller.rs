@@ -641,10 +641,30 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     })
     .await;
     let lost = Instant::now();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Eye 1 keeps being driven. On a loaded machine a late chunk may hold it
+    // for a moment (its queue runs dry), so wait for driving rather than
+    // sample a fixed window; but losing eye 2 must never take it safe.
+    let modes = |since: Instant| {
+        let log = log_one.lock().expect("log");
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for (_, mode, ..) in log.iter().filter(|(at, ..)| *at >= since) {
+            *counts.entry(format!("{mode:?}")).or_default() += 1;
+        }
+        counts
+    };
+    let settled = lost + Duration::from_millis(300);
+    while Instant::now() < settled || !driven_since(&log_one, 0.25, settled) {
+        assert!(
+            lost.elapsed() < WAIT,
+            "eye 1 keeps moving after eye 2 is lost: {:?}",
+            modes(lost)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let since_lost = modes(lost);
     assert!(
-        driven_since(&log_one, 0.25, lost + Duration::from_millis(300)),
-        "eye 1 keeps moving after eye 2 is lost"
+        !since_lost.contains_key("Safe") && !since_lost.contains_key("Estop"),
+        "losing eye 2 took eye 1 safe: {since_lost:?}"
     );
     let snapshot = world.host.snapshot();
     assert_ne!(
