@@ -1,6 +1,6 @@
 // The native binding's costs on loopback, the twin of bench/session.py (run both: `mise run bench:js:native`).
 //
-// One process: a host, the §14.1 UR10e and a policy. The robot's control loop runs at 1 kHz
+// One process: a host, the UR10e and a policy. The robot's control loop runs at 1 kHz
 // (publish the arm, the wrench and the gripper, tick both edges, sleep); its cameras publish
 // 640x480 and 1280x720 frames at 30 Hz. The policy reads the joints, the wrench, the wrist camera
 // (resized to 96x96) and the task at 50 Hz and holds the arm. Prints one JSON line:
