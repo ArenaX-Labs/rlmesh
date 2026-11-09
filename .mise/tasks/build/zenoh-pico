@@ -6,7 +6,10 @@ set -euo pipefail
 # The host's zenoh is pinned in Cargo.toml; zenoh-pico follows its version.
 version=1.10.1
 src="${CARGO_TARGET_DIR:-target}/zenoh-pico/src-$version"
-if [ ! -d "$src" ]; then
+# A directory without the sources is not a checkout: an interrupted clone,
+# or a CI cache that restored target/ with the tree pruned. Fetch it again.
+if [ ! -f "$src/CMakeLists.txt" ]; then
+  rm -rf "$src"
   git clone -q -c advice.detachedHead=false --depth 1 --branch "$version" \
     https://github.com/eclipse-zenoh/zenoh-pico.git "$src" >&2
 fi
