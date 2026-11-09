@@ -95,7 +95,7 @@ class Scene:
 
     @property
     def run(self) -> str:
-        """The run's id (``r-7k2m``), as ``rlmesh stop`` takes it."""
+        """The run's id (``r-7k2m``), as ``rlmesh scene stop`` takes it."""
         return self._native.run
 
     @property
