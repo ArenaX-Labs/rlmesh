@@ -60,6 +60,7 @@ from .._rlmesh import (
     V2Robot,
     parse_address,
 )
+from . import parts as parts
 
 if TYPE_CHECKING:
     from typing import TypeAlias
@@ -87,6 +88,7 @@ __all__ = [
     "StartSkipped",
     "drive",
     "parse_address",
+    "parts",
     "read_recording",
 ]
 
