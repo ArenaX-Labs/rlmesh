@@ -26,8 +26,12 @@ import rlmesh.adapters as adapt
 CHUNK = 8
 
 SPEC = adapt.ModelSpec(
+    # This study deliberately permits the projections described in README.md.
+    allow=("select_state", "drop_action"),
     input={
-        "observation.images.image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
+        "observation.images.image": adapt.Image(
+            adapt.IMAGE_PRIMARY, size=224, fit="stretch"
+        ),
         "observation.state": adapt.Concat(
             adapt.State(adapt.EEF_POS, dim=3),
             adapt.State(adapt.EEF_ROT, encoding="axis_angle"),

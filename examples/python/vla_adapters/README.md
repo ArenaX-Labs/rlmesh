@@ -27,8 +27,16 @@ vla_adapters/
 
 This works because every env and model here is single-arm tabletop manipulation, and they meet on **registered** roles: cameras, the instruction, end-effector pose and gripper state, and end-effector and gripper actions. Two limits to keep in mind:
 
-- State and action roles bind only on the identical string (a required camera may fall back to an env's only camera, with a caution). An env that publishes its own `x/` roles (a navigation goal, an object pose) binds only to models written against those same `x/` names; the resolver error lists what the env offers and suggests near matches.
+- State and action roles bind only on the identical string (a model may explicitly allow rebinding a required camera to an env's only camera). An env that publishes its own `x/` roles (a navigation goal, an object pose) binds only to models written against those same `x/` names; the resolver error lists what the env offers and suggests near matches.
 - Binding checks shape and encoding, and checks frames where both sides declare one; when only the model declares a frame, it resolves with a caution that the env cannot confirm it. None of this makes a checkpoint good at a task it was not trained for: a LIBERO fine-tune still needs evaluating on MetaWorld.
+
+0.2 requires explicit consent to lossy projections. For this synthetic study,
+the specs allow `drop_action` because MetaWorld consumes no rotation command;
+ACT and X-VLA also allow `select_state` to read one of LIBERO's two finger
+positions. SmolVLA allows `rebind_camera` to use Bridge's sole camera for its
+wrist input. These are example assumptions to review for a real checkpoint,
+not guarantees about task quality. Image inputs explicitly use `fit="stretch"`
+when resizing non-square camera frames; a real checkpoint may need crop or pad. `adapter.explain()` reports them.
 
 There are two custom-adapter escape hatches, used at different scopes:
 
@@ -52,11 +60,22 @@ Each run starts by printing `adapter.explain()` — the exact transformations th
 
 X-VLA's checkpoint layout is a unified single/bimanual convention (dims 11-20 are a second arm). This example is a single-arm spec; a bimanual pairing names both arms with `part=` on the model and the env.
 
-Against a live endpoint, pass `--address`. Serve the env with its tags published (`rlmesh.EnvServer(env, tags=TAGS)`); the harness then resolves the adapter straight from the handshake — for a plain pairing it just hands `Model(spec=...)` the env and the adapter is built from the contract:
+Against a live endpoint, pass `--address`. Serve the env with its tags published (`rlmesh.EnvServer(env, "127.0.0.1:7447/libero", tags=TAGS)`); the harness then resolves the adapter straight from the session contract — for a plain pairing it just hands `Model(spec=...)` the env and the adapter is built from the contract:
 
 ```sh
-uv run python -m vla_adapters.eval --model smolvla --env libero --address 127.0.0.1:5555
+uv run python -m vla_adapters.eval --model smolvla --env libero --address '127.0.0.1:7447#<key>/libero'
 ```
+
+Use the participant address announced by the server, including its session key
+(the `#<key>` above is a placeholder). 0.2 no longer accepts a bare `host:port`
+as a remote env address. Both peers must use compatible 0.2 builds; prerelease
+cohorts must match. `RemoteEnv`, `Model.run` and adapter resolution remain
+available in 0.2. The harness closes the inspection client before calling
+`model.run(address)`, since an open `RemoteEnv` holds the env lease; this example does not use the removed `Session` API or gRPC.
+
+The CI examples task does not execute this study. The dry run can be checked
+locally without weights or simulators (the model loaders return stub actions);
+live evaluations need a served environment and real checkpoint integration.
 
 ## Adding a model
 
@@ -70,7 +89,7 @@ It can now be evaluated on every registered env. A different fine-tune of the sa
 1. Create `envs/<name>.py` declaring `TAGS` (an `EnvTags`: obs paths with semantic roles and encodings, plus the action layout), the `OBSERVATION_SPACE`/`ACTION_SPACE` gymnasium spaces, and a `sample_obs()` for dry runs.
 2. Register it with one line in `envs/__init__.py`.
 
-Better still, serve the env with `rlmesh.EnvServer(env, tags=TAGS)` so remote clients discover the tags from the handshake (via `resolve_from_contract`) and need no registry entry at all.
+Better still, serve the env with `rlmesh.EnvServer(env, "127.0.0.1:7447/libero", tags=TAGS)` so remote clients discover the tags from the session contract (via `resolve_from_contract`) and need no registry entry at all.
 
 ### Flat (non-Dict) observations
 
