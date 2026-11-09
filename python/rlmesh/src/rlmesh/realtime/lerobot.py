@@ -2,7 +2,7 @@
 
 :func:`export` takes either
 
-- a recording: an MCAP file (:class:`rlmesh.realtime.Recorder`'s), or a
+- a recording: an MCAP file (:class:`rlmesh.realtime.SessionRecorder`'s), or a
   directory of segments (what ``rlmesh host`` records under
   ``rolling/{session}/``, or an incident it kept), written as one episode of
   ``task``; or

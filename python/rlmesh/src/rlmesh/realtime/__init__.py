@@ -71,23 +71,23 @@ else:
     Array = object
 
 __all__ = [
-    "Binding",
     "BindingRefused",
+    "BindingTable",
     "Due",
     "Host",
     "Meta",
     "Observation",
     "Policy",
     "Rate",
-    "Recorder",
     "Robot",
     "SessionException",
     "SessionLost",
+    "SessionRecorder",
     "SessionRefused",
     "StartSkipped",
+    "drive",
     "parse_address",
     "read_recording",
-    "run",
 ]
 
 #: A predict function: an observation in, one ``[horizon, ...]`` array (or a
@@ -626,7 +626,7 @@ class Observation(Mapping[str, Any]):
         return f"Observation({', '.join(self._values)})"
 
 
-class Binding:
+class BindingTable:
     """A binding table (§6.8): what each entry is bound to and how it is delivered."""
 
     __slots__ = ("fingerprint", "json", "replan_hz", "table", "warnings")
@@ -649,7 +649,7 @@ class Binding:
         return self.table
 
     def __repr__(self) -> str:
-        return f"Binding({self.json['policy']!r} on {self.json['robot']!r}, {self.fingerprint})"
+        return f"BindingTable({self.json['policy']!r} on {self.json['robot']!r}, {self.fingerprint})"
 
 
 class Policy:
@@ -683,7 +683,7 @@ class Policy:
         self._priority = priority
         self._timeout = timeout
         self._native: V2Controller | None = None
-        self._binding: Binding | None = None
+        self._binding: BindingTable | None = None
         self._fields: dict[str, tuple[_Field, ...]] = {}
 
     @property
@@ -700,7 +700,7 @@ class Policy:
         names: Mapping[str, str] | None = None,
         allow: Sequence[str] | None = None,
         **captures: str,
-    ) -> Binding:
+    ) -> BindingTable:
         """Attach, bind to ``robot``'s parts and declare the binding.
 
         With no ``robot`` it binds the session's view of every robot, each
@@ -742,7 +742,7 @@ class Policy:
             )
             for part in self._native.published_parts()
         }
-        self._binding = Binding(self._native)
+        self._binding = BindingTable(self._native)
         return self._binding
 
     def publish(
@@ -774,10 +774,10 @@ class Policy:
         return self._native
 
     @property
-    def binding(self) -> Binding:
+    def binding(self) -> BindingTable:
         """The binding table (after :meth:`bind`)."""
         self._bound()
-        return cast("Binding", self._binding)
+        return cast("BindingTable", self._binding)
 
     def observe(self) -> Observation:
         """A policy start now; raises :class:`StartSkipped` when one is skipped (§8.8)."""
@@ -867,7 +867,7 @@ class Policy:
         self.close()
 
 
-class Recorder:
+class SessionRecorder:
     """An MCAP recording of the session (§13), attached as an observer.
 
     Records every robot's streams (``/{robot}/{path}``, with the edge's
@@ -948,7 +948,7 @@ class Rate:
         return self._native.missed
 
 
-def run(
+def drive(
     policy: Mapping[str, Any],
     robot: str | None,
     predict: Predict,
@@ -962,14 +962,20 @@ def run(
     allow: Sequence[str] | None = None,
     duration: float | None = None,
     timeout: float = 10.0,
+    publishes: Mapping[str, Any] | None = None,
     **captures: str,
 ) -> dict[str, Any]:
-    """Bind ``policy`` to ``robot`` (``None``: every robot's view) and run ``predict`` until ``duration``.
+    """Bind ``policy`` to ``robot`` (``None``: every robot's view) and drive it with ``predict`` until ``duration``.
 
     Shorthand for :class:`Policy` + :meth:`Policy.bind` + :meth:`Policy.run`.
     """
     with Policy(
-        policy, session=session, name=name, priority=priority, timeout=timeout
+        policy,
+        session=session,
+        name=name,
+        priority=priority,
+        timeout=timeout,
+        publishes=publishes,
     ) as p:
         p.bind(robot, under=under, at=at, names=names, allow=allow, **captures)
         return p.run(predict, duration=duration)

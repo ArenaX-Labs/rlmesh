@@ -395,7 +395,7 @@ def test_a_recorder_writes_the_session_to_mcap_and_reads_it_back(
     host: rlmesh.Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "session.mcap"
-    with rlmesh.Recorder(path, session=host) as recorder:
+    with rlmesh.SessionRecorder(path, session=host) as recorder:
         with (
             FakeUR10e(host) as ur,
             rlmesh.Policy(HOLD, session=host, name="model") as model,
@@ -565,7 +565,7 @@ def test_a_policy_publishes_annotations_under_its_name_and_never_binds_them(
     try:
         eye.arm()
         with (
-            rlmesh.Recorder(path, session=host),
+            rlmesh.SessionRecorder(path, session=host),
             rlmesh.Policy(
                 gaze, session=host, name="tracker", publishes=target
             ) as tracker,
@@ -633,7 +633,7 @@ def test_eyes_with_no_state_export_and_an_idle_eye_keeps_its_last_action(
 
     try:
         eyes[0].arm()
-        with rlmesh.Recorder(path, session=host):
+        with rlmesh.SessionRecorder(path, session=host):
             ticker = threading.Thread(target=loop, daemon=True)
             ticker.start()
             with (

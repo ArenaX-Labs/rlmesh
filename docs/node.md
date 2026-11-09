@@ -55,28 +55,28 @@ try {
 ```
 
 On Node 24 and later, `await using host = await Host.open()` (and the same
-for `Robot`, `Policy` and `Recorder`) closes each one at the end of the
+for `Robot`, `Policy` and `SessionRecorder`) closes each one at the end of the
 block instead of the `finally`.
 
 ## How it maps to Python
 
-| Python (`rlmesh.realtime`)                         | Node (`rlmesh`)                                               |
-| -------------------------------------------------- | ------------------------------------------------------------- |
-| `with Host() as host`                              | `const host = await Host.open()` … `await host.close()`       |
-| `Robot(name, parts, session=host)`                 | `await Robot.connect(name, parts, { session: host })`         |
-| `robot.publish("arm", pos=q, vel=dq)`              | `robot.publish('arm', { pos: q, vel: dq })`                   |
-| `robot.due("arm").value` (NumPy array)             | `robot.due('arm').value` (`{ dtype, shape, data }`)           |
-| `robot.arm()`, `estop(reason)`, `clear_estop()`    | `await robot.arm()`, `estop(reason)`, `clearEstop()`          |
-| `robot.now_ns()` (`time.monotonic_ns()`)           | `robot.nowNs()` (`process.hrtime.bigint()`)                   |
-| `Policy(map, session=host).bind(robot, **opts)`    | `await new Policy(map, { session: host }).bind(robot, opts)`  |
-| `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                             |
-| `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }` |
-| `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                  |
-| `policy.acquire()` → `{"arm": token}`              | `await policy.acquire()` → `{ arm: token }` (`bigint`)        |
-| `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                 |
-| `with Recorder(path, session=host)`                | `const rec = await Recorder.start(path, { session: host })`   |
-| `read_recording(path)`                             | `await readRecording(path)`                                   |
-| `SessionRefused`, `BindingRefused`, `StartSkipped` | the same classes; `ValueError` is `RangeError`                |
+| Python (`rlmesh.realtime`)                         | Node (`rlmesh`)                                                    |
+| -------------------------------------------------- | ------------------------------------------------------------------ |
+| `with Host() as host`                              | `const host = await Host.open()` … `await host.close()`            |
+| `Robot(name, parts, session=host)`                 | `await Robot.connect(name, parts, { session: host })`              |
+| `robot.publish("arm", pos=q, vel=dq)`              | `robot.publish('arm', { pos: q, vel: dq })`                        |
+| `robot.due("arm").value` (NumPy array)             | `robot.due('arm').value` (`{ dtype, shape, data }`)                |
+| `robot.arm()`, `estop(reason)`, `clear_estop()`    | `await robot.arm()`, `estop(reason)`, `clearEstop()`               |
+| `robot.now_ns()` (`time.monotonic_ns()`)           | `robot.nowNs()` (`process.hrtime.bigint()`)                        |
+| `Policy(map, session=host).bind(robot, **opts)`    | `await new Policy(map, { session: host }).bind(robot, opts)`       |
+| `obs["q"]`, `obs.meta.time_ns`                     | `obs.inputs.q`, `obs.meta.timeNs`                                  |
+| `predict` returns `{"arm": array}`                 | `predict` returns (or resolves to) `{ arm: { data, shape } }`      |
+| `policy.run(predict, duration=5)`                  | `await policy.run(predict, { duration: 5 })`                       |
+| `policy.acquire()` → `{"arm": token}`              | `await policy.acquire()` → `{ arm: token }` (`bigint`)             |
+| `Rate(500).sleep()`                                | `await new Rate(500).sleep()`                                      |
+| `with SessionRecorder(path, session=host)`         | `const rec = await SessionRecorder.start(path, { session: host })` |
+| `read_recording(path)`                             | `await readRecording(path)`                                        |
+| `SessionRefused`, `BindingRefused`, `StartSkipped` | the same classes; `ValueError` is `RangeError`                     |
 
 The rules are R-30 in the [parity spec](specs/language-parity/rules.md).
 
