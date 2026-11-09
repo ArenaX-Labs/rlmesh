@@ -186,7 +186,8 @@ jobs:
         if: steps.changes.outputs.esp32 == 'true'
         env:
           RLMESH_ESP32_REQUIRE_XTENSA: "1"
-        run: mise exec arduino-cli@1.5.1 -- mise run --skip-tools build:esp32
+        # `mise run --skip-tools` drops the exec'd arduino-cli from PATH: pass its path.
+        run: ARDUINO_CLI="$(mise exec arduino-cli@1.5.1 -- which arduino-cli)" mise run --skip-tools build:esp32
 
       - name: Board transport command path on loopback
         if: steps.changes.outputs.esp32 == 'true'
