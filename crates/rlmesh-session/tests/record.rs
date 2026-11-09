@@ -449,12 +449,15 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     publish_ft(&robot, &publisher, 500).await;
     let stats = recorder.finish().await.expect("finish");
     assert!(stats.segments >= 3, "{stats:?}");
-    // The purge spares the open segment and the one just closed (another
-    // session's could still be open).
+    // The purge spares the open segment and any written within the last
+    // period (another session's could still be open): the one just closed,
+    // and on a loaded runner the one before it too. About ten rolled.
     let rolling_kept = segments(dir.path(), world.session);
     assert!(
-        rolling_kept.len() <= 2 && rolling_kept.last() == Some(&stats.path),
-        "{rolling_kept:?}"
+        rolling_kept.len() <= 3
+            && rolling_kept.len() < stats.segments as usize
+            && rolling_kept.last() == Some(&stats.path),
+        "{rolling_kept:?} of {stats:?}"
     );
 
     // Both incidents outlive the purge, the e-stop's with the segments
