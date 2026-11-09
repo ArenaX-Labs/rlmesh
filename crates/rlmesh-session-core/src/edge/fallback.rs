@@ -44,6 +44,15 @@
 //! edge acts on the real elapsed time at its next tick. Behaviour *during* a
 //! full process stall cannot be bounded by the edge itself: that needs an
 //! external or device watchdog.
+//!
+//! **Listening.** A process that stalled was not receiving either: the
+//! chunks and lease renewals sent meanwhile reach it only after its first
+//! tick back. A runtime that sees its own ticks stall may say so
+//! ([`Fallback::set_listening`]): while it does, a dry queue or a lapsed
+//! lease holds without latching Safe. What the robot is given is exactly
+//! what `Hold` gives it (the last position target, or the safe behaviour);
+//! only the latch waits, and nothing drives under a lease the edge cannot
+//! see as live.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -232,6 +241,8 @@ pub struct Fallback {
     /// A handover in progress: since when, and whether it was announced.
     handover: Option<(Handover, i64, bool)>,
     last_tick_ns: Option<i64>,
+    /// The runtime is catching up after its own stall: hold, do not latch.
+    listening: bool,
     modes: [ModeStats; 5],
 }
 
@@ -257,6 +268,7 @@ impl Fallback {
             active: None,
             handover: None,
             last_tick_ns: None,
+            listening: false,
             modes: [ModeStats::default(); 5],
         }
     }
@@ -299,6 +311,18 @@ impl Fallback {
     /// when none is in progress (or it already timed out).
     pub fn handover_done(&mut self) {
         self.handover = None;
+    }
+
+    /// Whether the runtime is catching up after its own stall (see the
+    /// module docs): a dry queue or a lapsed lease then holds instead of
+    /// latching Safe. The caller bounds how long it says so.
+    pub fn set_listening(&mut self, listening: bool) {
+        self.listening = listening;
+    }
+
+    /// How long the group waits for a valid action before it goes Safe.
+    pub fn hold_max_ns(&self) -> i64 {
+        self.hold_max_ns
     }
 
     /// Runs one tick at edge time `now_ns`: purges inactive members, fences
@@ -422,6 +446,11 @@ impl Fallback {
             return self.hold(now_ns, view, None, queues);
         };
         match lease.expires_ns {
+            // Lapsed, but its renewal may be among what a stalled runtime
+            // has yet to take in: nothing drives, and the latch waits.
+            Some(expires) if now_ns > expires && self.listening && self.last.is_some() => {
+                return self.hold(now_ns, view, Some(lease), queues);
+            }
             Some(expires) if now_ns > expires => {
                 return self.go_safe(view, SafeCause::LeaseLapsed, queues);
             }
@@ -493,7 +522,7 @@ impl Fallback {
         let dry_since = *self.dry_since_ns.get_or_insert(covered_until.min(now_ns));
         // A new holder that sent nothing yet: no timeout from the old one's.
         let new_holder = lease.is_some_and(|l| self.awaiting == Some(l.token));
-        if !new_holder && now_ns.saturating_sub(dry_since) >= self.hold_max_ns {
+        if !new_holder && !self.listening && now_ns.saturating_sub(dry_since) >= self.hold_max_ns {
             if lease.is_some() {
                 return self.go_safe(view, SafeCause::QueueDry, queues);
             }
@@ -782,6 +811,48 @@ mod tests {
         assert_eq!(
             (d.mode, d.went_safe),
             (EdgeMode::Safe, Some(SafeCause::QueueDry))
+        );
+    }
+
+    #[test]
+    fn a_listening_edge_holds_through_what_it_has_not_taken_in_yet() {
+        // Back from the same stall, but the runtime says it is listening:
+        // the edge holds the last target and does not latch.
+        let (mut f, mut q) = ladder(100 * MS, true);
+        q[0].splice(splice(1, 0, 2, i64::MAX), 0);
+        assert_eq!(f.tick(MS, held(1), &mut q).mode, EdgeMode::Driving);
+        f.set_listening(true);
+        let d = f.tick(500 * MS, held(1), &mut q);
+        assert_eq!((d.mode, d.went_safe), (EdgeMode::Hold, None));
+        assert!(
+            d.action.is_some(),
+            "the last position target, as Hold gives"
+        );
+        // Nothing arrived by the time the listening ends: SAFE as before.
+        f.set_listening(false);
+        let d = f.tick(600 * MS, held(1), &mut q);
+        assert_eq!(
+            (d.mode, d.went_safe),
+            (EdgeMode::Safe, Some(SafeCause::QueueDry))
+        );
+
+        // A lease that lapsed by the edge's clock while its renewal was on
+        // the way: held, not latched, and driven again once renewed.
+        let (mut f, mut q) = ladder(50 * MS, true);
+        q[0].splice(splice(1, 0, 100, i64::MAX), 0);
+        let expiring = view(Some(lease(0, 1, 20 * MS)));
+        assert_eq!(f.tick(MS, expiring, &mut q).mode, EdgeMode::Driving);
+        f.set_listening(true);
+        let d = f.tick(21 * MS, expiring, &mut q);
+        assert_eq!((d.mode, d.went_safe), (EdgeMode::Hold, None));
+        let renewed = view(Some(lease(0, 1, 500 * MS)));
+        assert_eq!(f.tick(22 * MS, renewed, &mut q).mode, EdgeMode::Driving);
+        // Never renewed: SAFE when the listening ends.
+        f.set_listening(false);
+        let d = f.tick(501 * MS, renewed, &mut q);
+        assert_eq!(
+            (d.mode, d.went_safe),
+            (EdgeMode::Safe, Some(SafeCause::LeaseLapsed))
         );
     }
 

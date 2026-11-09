@@ -42,7 +42,43 @@ struct Shared {
     on_accept: Option<OnAccept>,
     /// The time of the last tick: the edge's clock in virtual mode.
     tick_ns: AtomicI64,
+    /// Whether this process's own ticks stalled, and until when it listens.
+    stall: Mutex<Stall>,
     sealer: Sealer,
+}
+
+/// Notices when the control loop itself stalled (the process was
+/// descheduled or frozen). The transport was stalled with it, so the chunks
+/// and lease renewals sent meanwhile arrive only after the first tick back:
+/// that tick starts one `hold_max` of listening, in which the ladder holds
+/// instead of latching Safe on what it has not taken in yet. The tick after
+/// the listening always judges, so a loop that keeps stalling, or one slower
+/// than `hold_max`, still goes Safe, at most one `hold_max` and a tick late.
+#[derive(Default)]
+struct Stall {
+    last_ns: Option<i64>,
+    listening_until_ns: Option<i64>,
+}
+
+impl Stall {
+    /// Whether the tick at `now_ns` listens rather than judges.
+    fn listening(&mut self, now_ns: i64, hold_max_ns: i64) -> bool {
+        let gap = self.last_ns.map_or(0, |last| now_ns.saturating_sub(last));
+        self.last_ns = Some(now_ns);
+        match self.listening_until_ns {
+            Some(until) if now_ns < until => true,
+            Some(_) => {
+                self.listening_until_ns = None;
+                false
+            }
+            None if hold_max_ns > 0 && gap > hold_max_ns / 2 => {
+                debug!(gap_ns = gap, "edge loop stalled: listening before judging");
+                self.listening_until_ns = Some(now_ns.saturating_add(hold_max_ns));
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 impl Shared {
@@ -145,6 +181,7 @@ impl Edge {
             latches_seen: AtomicU64::new(0),
             on_accept,
             tick_ns: AtomicI64::new(0),
+            stall: Mutex::default(),
             sealer: participant.sealer(),
         });
         let mut subscribers = Vec::with_capacity(parts.len());
@@ -194,17 +231,37 @@ impl Edge {
     /// to run. Call it at the embodiment's control rate; every timer runs on
     /// this edge's clock alone.
     pub fn tick(&self) -> EdgeTick {
-        self.tick_at(self.shared.clock.now_ns())
+        let shared = &self.shared;
+        let now_ns = shared.clock.now_ns();
+        // Only wall time stalls: a virtual session's ticks are the clock.
+        let wall = shared
+            .view
+            .with(|view| view.is_none_or(|v| v.clock_mode == ClockMode::Wall));
+        let listening = wall && {
+            let hold_max_ns = shared.core().hold_max_ns();
+            shared
+                .stall
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .listening(now_ns, hold_max_ns)
+        };
+        self.run(now_ns, listening)
     }
 
     /// [`Self::tick`] at an explicit edge time (session time in virtual
-    /// mode: the tick × `tick_ns`).
+    /// mode: the tick × `tick_ns`). The caller owns the clock, so a gap
+    /// between times is never taken for a stall.
     pub fn tick_at(&self, now_ns: i64) -> EdgeTick {
+        self.run(now_ns, false)
+    }
+
+    fn run(&self, now_ns: i64, listening: bool) -> EdgeTick {
         let shared = &self.shared;
         shared.tick_ns.store(now_ns, Ordering::Relaxed);
         let (tick, tick_number) = shared.view.with(|view| {
             let observed = shared.view.observed_local_ns();
             let mut core = shared.core();
+            core.set_listening(listening);
             let tick = core.tick(now_ns, view, observed);
             shared.report.set_queue_depth(core.queue_depth());
             let tick_ns = view.map_or(0, |v| v.tick_ns);
@@ -239,5 +296,33 @@ impl Edge {
     /// dispatch again.
     pub fn handover_done(&self) {
         self.shared.core().handover_done();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Stall;
+
+    const MS: i64 = 1_000_000;
+
+    #[test]
+    fn a_stalled_loop_listens_for_one_hold_max_and_then_judges() {
+        let hold_max = 100 * MS;
+        let mut stall = Stall::default();
+        // The first tick and on-time ticks judge.
+        assert!(!stall.listening(0, hold_max));
+        assert!(!stall.listening(MS, hold_max));
+        assert!(!stall.listening(40 * MS, hold_max));
+        // Back from a stall: this tick and those within hold_max listen.
+        let back = 400 * MS;
+        assert!(stall.listening(back, hold_max));
+        assert!(stall.listening(back + MS, hold_max));
+        assert!(stall.listening(back + 99 * MS, hold_max));
+        // The tick after the listening judges, however late it is itself.
+        assert!(!stall.listening(back + 500 * MS, hold_max));
+        // A part that may not hold at all never listens.
+        let mut none = Stall::default();
+        assert!(!none.listening(0, 0));
+        assert!(!none.listening(400 * MS, 0));
     }
 }
