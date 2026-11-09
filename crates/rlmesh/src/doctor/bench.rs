@@ -1,9 +1,8 @@
 //! The batch sweep: how a served model's throughput grows with the number of
 //! sessions predicting at once, and the `max_batch_size` it recommends.
 //!
-//! Ported from the managed probe's `batch_sweep`. The 0.1 probe sent one
-//! grouped predict of N lanes; on 0.2 a served model's batcher groups the
-//! predicts of concurrent sessions itself, so a sweep point is N routes
+//! A served model's batcher groups the predicts of concurrent sessions
+//! itself, so a sweep point is N routes
 //! driven at once ([`run_routes`]), each a one-lane stand-in env, and its
 //! latency the per-step predict time the routes see.
 
