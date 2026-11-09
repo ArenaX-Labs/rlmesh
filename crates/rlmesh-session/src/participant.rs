@@ -1051,7 +1051,27 @@ const RESTART_WAIT: Duration = Duration::from_secs(1);
 /// one; a participant joining just then can read the old instance. So a
 /// refusal is retried once the state names another instance, within
 /// [`RESTART_WAIT`]; the same instance refusing again is final.
+///
+/// A host too busy to answer one of them within `ctl_timeout` (a loaded
+/// machine, a session just starting) is asked again while the join's own
+/// `host_timeout` lasts: nothing is attached yet, so asking twice is safe.
 async fn handshake(
+    control: &zenoh::Session,
+    keys: &SessionKeys,
+    config: &ParticipantConfig,
+) -> Result<auth::Attached, SessionError> {
+    let deadline = tokio::time::Instant::now() + config.host_timeout;
+    loop {
+        match handshake_once(control, keys, config).await {
+            Err(SessionError::NoReply(waited)) if tokio::time::Instant::now() < deadline => {
+                debug!(participant = %config.id, ?waited, "no handshake reply; asking again");
+            }
+            result => return result,
+        }
+    }
+}
+
+async fn handshake_once(
     control: &zenoh::Session,
     keys: &SessionKeys,
     config: &ParticipantConfig,
