@@ -17,7 +17,7 @@
 //!   ([`Command::GrantLease`]) and bound to the holder's current
 //!   **binding**: chunks must carry its fingerprint, and a rebinding
 //!   re-issues the holder's leases under a fresh token, so in-flight chunks
-//!   of the old binding are fenced (Codex finding 2).
+//!   of the old binding are fenced.
 //! - **Delivery contracts** come with a binding, one per bound input
 //!   stream. The host admits them ([`crate::spec::contract::admit`]), derives
 //!   one publication plan per stream from every attached controller's
@@ -34,7 +34,7 @@
 //!   leased at a time. A member held by an equal or higher class, or by the
 //!   requester without releasing it in the same request, is `GROUP_BUSY`; a
 //!   lower class's member is preempted. `release` switches members
-//!   atomically (Codex finding 3).
+//!   atomically.
 //! - Leases have a TTL, renewed by every heartbeat from the holder on the
 //!   current epoch; a lapse while ACTIVE takes the session SAFE.
 //! - **Presence** is heartbeats only: a participant silent for
