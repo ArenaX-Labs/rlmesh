@@ -67,7 +67,7 @@ Grab the [`rlmesh`](crates/rlmesh/README.md) crate. You'll need `protoc` install
 
 ## C and C++
 
-The [C API](crates/rlmesh-capi/README.md) (`rlmesh.h`) and the header-only [C++ API](crates/rlmesh-capi/README-cpp.md) (`rlmesh.hpp`, C++17, with RAII handles and exceptions) ship as a prebuilt package on each GitHub Release, with CMake and pkg-config support.
+The [C API](crates/rlmesh-capi/README.md) (`rlmesh.h`) and the header-only [C++ API](crates/rlmesh-capi/README-cpp.md) (`rlmesh.hpp`, C++17, with RAII handles and exceptions) are fenced for 0.2: they stay built and tested in CI, but no prebuilt C/C++ package is published. Source builds retain CMake and pkg-config support. 0.2 publishes the Python wheels and Rust crates; C#, Unity, Unreal and npm publication is also fenced.
 
 ```cpp
 rlmesh::Model model([](const rlmesh::Value&) { return rlmesh::Value(0); });

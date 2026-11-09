@@ -1,7 +1,9 @@
 # The browser binding and its gateway
 
 Status: Experimental (protocol v2). The `rlmesh` npm package
-(`javascript/rlmesh`) ships with each release; the API may change.
+(`javascript/rlmesh`) is fenced for 0.2: CI builds and tests it, but the release
+workflow does not publish npm packages. Build from source to experiment; the API
+may change.
 
 A browser page cannot open a v2 session's own transport: it has no raw TCP
 or UDP, so neither Zenoh nor gRPC can run there. The browser binding is

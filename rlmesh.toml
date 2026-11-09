@@ -19,7 +19,9 @@ supported_editions = ["2026.10-0.2.0-alpha.0"]
 status = "sealed"
 spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
-spec_sha256 = "f05f788382a5b4cfaa482811d52a24ade9ee5d9ed9f9544bc39b291d84b2c8c5"
+# Canonical spec hash sealed at v0.1.0; policy:check also pins this record
+# against the previous reachable release tag, even though 0.2 drops the offer.
+spec_sha256 = "a3dcf2195f6b35819c91192396e94a445c039278d99e20db81fa2a2fe43664a2"
 
 [workflow.editions."2026.10-0.2.0-alpha.0"]
 status = "provisional"

@@ -1,5 +1,9 @@
 # C# maintenance
 
+C#, Unity and Unreal distributions are fenced for 0.2. Their existing CI build
+and test coverage remains; release publishing is disabled. Packaging commands
+below produce local artifacts for development and future release gates.
+
 C# tools are scoped in `csharp/mise.toml` with a separate lock. Root `check`
 does not install dotnet or execute C# tasks. `test:affected` selects C#
 when its files or the C ABI header change, or reverse dependencies reach

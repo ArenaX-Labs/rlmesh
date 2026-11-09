@@ -1,6 +1,7 @@
 # rlmesh-proto
 
-Unpublished internal data types and workflow edition logic for the RLMesh run driver.
+Internal data types and workflow edition logic for the RLMesh run driver,
+published only as a dependency of `rlmesh` and `rlmesh-cli`.
 
 The driver still uses these protobuf messages in memory. Remote envs and models use
 `rlmesh-realtime-v1` sessions; this crate defines no services or governed wire.
