@@ -672,6 +672,29 @@ impl PyRobot {
             .map_err(session_err)
     }
 
+    /// Publishes one frame of the camera `path` already encoded as JPEG
+    /// (a C-contiguous bytes-like), sent as it is: for a part declared
+    /// `encoding: jpeg`, at its declared size. Captured at `capture_ns`
+    /// (now by default); copied before this returns.
+    #[pyo3(signature = (path, jpeg, capture_ns=None))]
+    fn publish_jpeg(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        #[gen_stub(override_type(type_repr = "builtins.bytes | builtins.bytearray | memoryview", imports = ("builtins")))]
+        jpeg: Bound<'_, PyAny>,
+        capture_ns: Option<i64>,
+    ) -> PyResult<()> {
+        let robot = self.robot()?;
+        let buffer = PyBuffer::<u8>::get(&jpeg).map_err(|_| {
+            PyValueError::new_err(format!("{path}: a JPEG frame is a C-contiguous bytes-like"))
+        })?;
+        let owned = bytes::Bytes::from(buffer.to_vec(py)?);
+        let capture = capture_ns.unwrap_or_else(|| robot.participant().clock().now_ns());
+        py.detach(move || robot.published().publish_jpeg(path, capture, owned))
+            .map_err(session_err)
+    }
+
     /// One control tick of the edge serving `path` and its command group:
     /// what to dispatch now, or `None`. Call it once per tick per group.
     fn due(&self, py: Python<'_>, path: &str) -> PyResult<Option<PyDue>> {

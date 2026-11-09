@@ -189,6 +189,24 @@ impl Published {
         }
     }
 
+    /// Publishes one frame of the camera at `path` already encoded as JPEG
+    /// (a camera's MJPEG output), sent without decoding: for a part declared
+    /// `encoding: jpeg`, at its declared size ([`ImagePublisher::offer_jpeg`]).
+    pub fn publish_jpeg(
+        &self,
+        path: &str,
+        capture_ns: i64,
+        jpeg: Bytes,
+    ) -> Result<(), SessionError> {
+        match self.outlet(path)? {
+            Outlet::Image(publisher) => publisher.offer_jpeg(capture_ns, jpeg).map(|_| ()),
+            Outlet::Sample(publisher) => Err(SessionError::WrongChannel {
+                channel: publisher.spec().channel,
+                reason: format!("{path} is not a camera"),
+            }),
+        }
+    }
+
     fn outlet(&self, path: &str) -> Result<&Outlet, SessionError> {
         self.outlets
             .get(path)
@@ -281,6 +299,16 @@ impl Robot {
         value: Bytes,
     ) -> Result<Option<u64>, SessionError> {
         self.published.publish_packed(path, capture_ns, value)
+    }
+
+    /// [`Published::publish_jpeg`].
+    pub fn publish_jpeg(
+        &self,
+        path: &str,
+        capture_ns: i64,
+        jpeg: Bytes,
+    ) -> Result<(), SessionError> {
+        self.published.publish_jpeg(path, capture_ns, jpeg)
     }
 
     fn edge_index(&self, path: &str) -> Result<usize, SessionError> {

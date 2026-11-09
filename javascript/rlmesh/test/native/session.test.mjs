@@ -309,6 +309,37 @@ test('a recorder writes the session to MCAP and reads it back', async () => {
   }
 });
 
+test('a camera publishes frames it already encoded', async () => {
+  // A 16x8 JPEG, as a webcam in MJPEG mode hands it out.
+  const frame = Buffer.from(
+    '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAAIABADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDHooorhPqD/9k=',
+    'base64',
+  );
+  const dir = mkdtempSync(join(tmpdir(), 'rlmesh-jpeg-'));
+  try {
+    const path = join(dir, 'jpeg.mcap');
+    const recorder = await rlmesh.SessionRecorder.start(path, { session: host });
+    {
+      await using camera = await rlmesh.Robot.connect(
+        'webcam',
+        { cam: { kind: 'camera', width: 16, height: 8, hz: 20, encoding: 'jpeg' } },
+        { session: host },
+      );
+      for (let i = 0; i < 10; i++) {
+        camera.publishJpeg('cam', frame);
+        await sleep(60);
+      }
+      assert.throws(() => camera.publishJpeg('cam', Buffer.from('not a jpeg')), /not a JPEG/);
+    }
+    await recorder.close();
+    const topics = Object.fromEntries((await rlmesh.readRecording(path)).topics.map((t) => [t.topic, t]));
+    assert.ok(topics['/webcam/cam']?.messages > 0);
+    assert.equal(topics['/webcam/cam'].undecodable, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a policy publishes annotations under its name and never binds them', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rlmesh-annotate-'));
   try {
