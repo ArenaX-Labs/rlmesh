@@ -787,7 +787,7 @@ class V2Controller:
     @property
     def table(self) -> builtins.str:
         r"""
-        The binding table, as the cockpit shows it (§6.8).
+        The binding table, as the cockpit shows it.
         """
     @property
     def table_json(self) -> builtins.str:
@@ -812,7 +812,7 @@ class V2Controller:
     def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: typing.Optional[builtins.str], *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ..., publishes_json: typing.Optional[builtins.str] = None) -> V2Controller:
         r"""
         Attaches as `name` at `priority`, waits for `robot`'s parts, binds
-        `policy_json` (the policy map, §6) with the run-time options, and
+        `policy_json` (the policy map) with the run-time options, and
         declares the binding. With `publishes_json` (an authored map of
         parts, none commandable) it also declares those parts under its own
         name, to publish annotations. Raises `BindingRefused` with the
@@ -863,7 +863,7 @@ class V2Controller:
         """
     def run(self, predict: collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]], duration_s: typing.Optional[builtins.float] = None) -> None:
         r"""
-        Runs the policy loop (§8.9) on this thread until `stop()`,
+        Runs the policy loop on this thread until `stop()`,
         `duration_s`, or a failure, calling `predict(observation)` at the
         replan rate with one inference in flight. If `predict` raises, the
         leases are released and the exception propagates; if the robot or
@@ -875,7 +875,7 @@ class V2Controller:
         """
     def stats(self) -> builtins.dict[builtins.str, typing.Any]:
         r"""
-        The start, skip and completion counters (§8.10), and the input the
+        The start, skip and completion counters, and the input the
         starts are phased after (`aligned_to`, `phase_offset_ms`).
         """
     def events(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
@@ -974,7 +974,7 @@ class V2Host:
 @typing.final
 class V2LockstepRobot:
     r"""
-    A v2 robot that serves the lockstep exchange (§12): every step is one
+    A v2 robot that serves the lockstep exchange: every step is one
     call of its Python `step(commands)`, which publishes the robot's parts.
     """
     @property
@@ -1083,7 +1083,7 @@ class V2Rate:
 @typing.final
 class V2Recorder:
     r"""
-    An MCAP recording of a session (§13), as an observer participant.
+    An MCAP recording of a session, as an observer participant.
     """
     @property
     def path(self) -> builtins.str:
@@ -1164,7 +1164,7 @@ class V2Robot:
     def __new__(cls, address: builtins.str, name: builtins.str, robot_json: builtins.str, timeout_s: builtins.float = ...) -> V2Robot:
         r"""
         Attaches as `name` (the robot's participant id), declares
-        `robot_json` (the authored map, §3) and starts its publishers and
+        `robot_json` (the authored map) and starts its publishers and
         edges. When the host drops it (a network gap past its presence
         grace) it joins again on its own.
         """

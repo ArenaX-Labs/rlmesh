@@ -1,4 +1,4 @@
-//! PyO3 bindings for the lockstep clock (protocol v2 §12): a v2 robot that
+//! PyO3 bindings for the lockstep clock: a v2 robot that
 //! serves the lockstep exchange from Python callbacks
 //! (`rlmesh.realtime.Robot(..., clock="lockstep")` wraps it). Gym envs, models and
 //! `RemoteEnv` (a Gym env, or any robot through its Gym view) reach lockstep
@@ -130,7 +130,7 @@ impl LockstepHandler for PyHandler {
     }
 }
 
-/// A v2 robot that serves the lockstep exchange (§12): every step is one
+/// A v2 robot that serves the lockstep exchange: every step is one
 /// call of its Python `step(commands)`, which publishes the robot's parts.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2LockstepRobot", frozen)]
