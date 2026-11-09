@@ -222,9 +222,11 @@ impl Leases {
     }
 
     /// Whether the host has mapped this controller's clock and the clock of
-    /// every robot it commands. An edge rejects a chunk until both are
-    /// mapped (`NoClockMapping`), so leases taken earlier only produce
-    /// rejected chunks; a ticked session needs no mapping.
+    /// every present robot it commands. An edge rejects a chunk until both
+    /// are mapped (`NoClockMapping`), so leases taken earlier only produce
+    /// rejected chunks; a ticked session needs no mapping. A robot that is
+    /// gone has no mapping and is asked for no lease, so it never keeps the
+    /// others waiting.
     fn clocks_mapped(&self, participant: &Participant) -> bool {
         let me = participant.id();
         let channels = self.group().channels();
@@ -237,8 +239,10 @@ impl Leases {
             }
             view.clock(me).is_some()
                 && channels.iter().all(|c| {
-                    view.part(*c)
-                        .is_some_and(|part| view.clock(&part.owner).is_some())
+                    view.part(*c).is_some_and(|part| {
+                        view.clock(&part.owner).is_some()
+                            || !view.participant(&part.owner).is_some_and(|p| p.present)
+                    })
                 })
         })
     }
