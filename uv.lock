@@ -1315,6 +1315,10 @@ numpy = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
+robot = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
 torch = [
     { name = "torch", version = "2.12.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.12.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
@@ -1328,9 +1332,10 @@ requires-dist = [
     { name = "jax", marker = "extra == 'jax'", specifier = ">=0.4.24" },
     { name = "jaxlib", marker = "extra == 'jax'", specifier = ">=0.4.24" },
     { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.22" },
+    { name = "numpy", marker = "extra == 'robot'", specifier = ">=1.22" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=1.11", index = "https://download.pytorch.org/whl/cpu" },
 ]
-provides-extras = ["gymnasium", "gym", "numpy", "torch", "jax", "hf"]
+provides-extras = ["gymnasium", "gym", "numpy", "torch", "jax", "robot", "hf"]
 
 [[package]]
 name = "rlmesh-api-surface"
