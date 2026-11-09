@@ -4376,6 +4376,10 @@
             "kind": "function",
             "signature": "publish(path: str, value: object = None, /, *, capture_ns: int | None = None, **fields: object) -> int | None"
           },
+          "publish_jpeg": {
+            "kind": "function",
+            "signature": "publish_jpeg(path: str, jpeg: bytes | bytearray | memoryview, /, *, capture_ns: int | None = None) -> None"
+          },
           "report_safe": {
             "kind": "function",
             "signature": "report_safe(reason: str) -> None"
