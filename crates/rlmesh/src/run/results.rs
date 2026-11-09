@@ -153,7 +153,7 @@ impl Default for RunResultSaveOptions {
     }
 }
 
-/// The success rate, by the managed platform's rule: successes over counted
+/// The success rate: successes over counted
 /// episodes, an episode whose env reported no outcome (`unknown`) counting as
 /// a failure. `None` when no episode reported an outcome, so an env without
 /// the signal reads as unknown rather than 0%. Errored episodes are not
@@ -234,7 +234,7 @@ impl RunResult {
     }
 
     /// The fraction of episodes the env reported a success, by the managed
-    /// platform's rule: an episode without the signal counts as a failure,
+    /// success rule: an episode without the signal counts as a failure,
     /// and the rate is `None` when no episode reported one.
     pub fn success_rate(&self) -> Option<f64> {
         success_rate_of(self.episodes.iter().map(|e| e.success))

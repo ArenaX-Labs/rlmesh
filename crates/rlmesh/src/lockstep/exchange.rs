@@ -1,4 +1,4 @@
-//! The lockstep exchange (§12.1-§12.3): one request, one reply, per step.
+//! The lockstep exchange: one request, one reply, per step.
 //!
 //! ```text
 //! driver ──LockstepStep{epoch, step, lanes, commands}──▶ env
@@ -16,7 +16,7 @@
 //! | same host or remote | [`ZenohLink`]: a query on `l/{robot}` over the lockstep class session, answered by [`serve_zenoh`] |
 //!
 //! Over Zenoh every request is a `LockstepRequest` sealed under the lease's
-//! `k_cmd` (design §8.6): a step, a reset, a render (a lane's frame) or a
+//! `k_cmd`: a step, a reset, a render (a lane's frame) or a
 //! probe, with a request id. The env answers a `LockstepResponse` with that
 //! id, sealed under the lease's `k_obs`: the observation, the frame's PNG
 //! bytes (empty for none), the probe, or the env's failure as JSON

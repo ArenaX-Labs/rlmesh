@@ -1,4 +1,4 @@
-//! rlmeshd as a satellite (scene design §1, §4.4): on a machine paired with
+//! rlmeshd as a satellite: on a machine paired with
 //! another rlmeshd, it waits in that home daemon's lobby as
 //! `rlmeshd.<device>` and takes its orders, one at a time:
 //! - `HostOrder`: host the run's session here, under host keys made here

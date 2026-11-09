@@ -190,7 +190,7 @@ pub struct ObservationEmittedEvent {
 
 /// A live telemetry snapshot tagged with the route/session it belongs to.
 ///
-/// The managed runner shares one `RuntimeHooks` across concurrent routes, so —
+/// One `RuntimeHooks` can be shared across concurrent routes, so —
 /// like every other event — the snapshot carries identity inline. Identity
 /// lives on the event, not on the `Snapshot` itself, which stays a pure metrics
 /// payload (it is also the durable `RuntimeReport.telemetry`). Use

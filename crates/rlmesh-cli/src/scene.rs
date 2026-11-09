@@ -1,4 +1,4 @@
-//! `rlmesh scene check scene.toml` (scene design §2, §4.1 stage 1): a scene
+//! `rlmesh scene check scene.toml` (stage 1): a scene
 //! file checked offline against this machine's rlmeshd, its device table
 //! and robot pins ([`crate::devices`]), as `RunScene` will check it.
 //!
@@ -373,7 +373,7 @@ mod tests {
     use super::*;
     use rlmesh_session::auth::address::base32;
 
-    /// The scene design's §2 example, without its unbuilt `record` and
+    /// A scene with two eyes, a skull and a fixed camera, without `record` and
     /// served member.
     const EYEBALL_RIG: &str = include_str!("../tests/fixtures/eyeball-rig.toml");
 

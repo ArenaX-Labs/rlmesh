@@ -1,4 +1,4 @@
-//! rlmeshd: `rlmesh host` under its own name, for a service (design §3).
+//! rlmeshd: `rlmesh host` under its own name, for a service.
 
 #[tokio::main]
 async fn main() {

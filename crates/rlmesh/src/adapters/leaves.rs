@@ -92,7 +92,8 @@ pub struct Image {
     pub channel_order: Tolerant<ChannelOrder>,
     /// The camera resolution this model was trained against, as a square `int` or an `(height,
     /// width)` pair (each axis 1-4096). An *assertion*, not a request: the adapter never resizes a
-    /// camera to reach it. The platform binds the environment's camera dial from it before the run;
+    /// camera to reach it. Callers can set the environment's camera dial from it before
+    /// the run;
     /// resolution then fails with `RenderMismatch` if the camera it bound does not actually render
     /// at this size. Declare it instead of pinning the env's camera width/height by hand.
     pub render: Option<(u32, u32)>,

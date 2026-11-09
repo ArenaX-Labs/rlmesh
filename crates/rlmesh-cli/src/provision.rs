@@ -1,5 +1,5 @@
-//! `rlmesh devices provision`: a networked board's USB provisioning
-//! (tether spec §14, design §3 item 3). The board answers `GET_DEVICE` with
+//! `rlmesh devices provision`: a networked board's USB provisioning.
+//! The board answers `GET_DEVICE` with
 //! its device key; it stores the assigned robot name and home host's key,
 //! id and base addresses from `PROVISION`, and confirms with the record's
 //! CRC. Only then is its key enrolled in `devices.toml`, as a board
@@ -9,8 +9,8 @@
 //!
 //! It runs on the robot's machine, with rlmeshd running: rlmeshd gives the
 //! host's details over its local channel ([`crate::pair::host_details`]).
-// TODO: provisioning from a machine paired with the robot (design §3 item
-// 3) needs an enroll verb on rlmeshd's pairing or ctl endpoint; add it when
+// TODO: provisioning from a machine paired with the robot needs an enroll verb on
+// rlmeshd's pairing or ctl endpoint; add it when
 // boards are flashed away from the robot.
 
 use std::io::{self, Write};
@@ -28,11 +28,11 @@ use rlmesh_tether::provision::{
 
 use crate::devices::{DEVICES, Entry, Pin, edit};
 
-/// How long one try waits for the board's answer (§14.4).
+/// How long one try waits for the board's answer.
 const TRY: Duration = Duration::from_millis(200);
-/// Tries before giving up (§14.4).
+/// Tries before giving up.
 const TRIES: u32 = 10;
-/// A board's default cap (design §12 decision 6).
+/// A board's default cap.
 const BOARD_CAP: &str = "model";
 
 /// A byte link to a board: its serial port, or a test's fake.
@@ -83,7 +83,7 @@ fn ask<T>(
             }
             for &byte in &buf[..n] {
                 // A frame that fails a check (the sketch's text before a
-                // delimiter, noise) is dropped, as §3.1 does.
+                // delimiter, noise) is dropped.
                 let Some(Ok(decoded)) = decoder.push(byte) else {
                     continue;
                 };
@@ -107,7 +107,7 @@ fn frame(msg: &Prov<'_>) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The tether §14.4 exchange, assigning robot `name` to the board behind `port`.
+/// The tether exchange, assigning robot `name` to the board behind `port`.
 fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
     if !valid_name(name.as_bytes()) {
         bail!("robot name must be 1–128 bytes of [A-Za-z0-9._-]");
@@ -298,7 +298,7 @@ mod tests {
     use super::*;
     use crate::devices::Table;
 
-    /// The tether §14 vectors (`rlmesh-tether/tests/vectors.json`).
+    /// The tether vectors (`rlmesh-tether/tests/vectors.json`).
     fn vector(name: &str) -> Vec<u8> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),

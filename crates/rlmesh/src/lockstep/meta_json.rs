@@ -2,7 +2,7 @@
 //! losslessly.
 //!
 //! The lockstep messages carry `info` and `options` as JSON (`info_json`,
-//! `options_json`, §12.2). Plain values map to plain JSON, so a v2-native
+//! `options_json`). Plain values map to plain JSON, so a v2-native
 //! reader sees the dict it expects; the three things JSON cannot say are
 //! tagged, so the compatibility path round-trips a `MetaMap` bit for bit:
 //!

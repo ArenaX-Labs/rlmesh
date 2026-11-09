@@ -1,13 +1,13 @@
-//! The §12 acceptance bench: bench2's T1 shape in a realtime session.
+//! The acceptance bench: a teleoperation loop in a realtime session.
 //!
-//! T1 (bench2-spec.md): the env is the embodiment, observation
+//! T1: the env is the embodiment, observation
 //! `Dict(ft: Box(18) f32, stamp: Box(4) i64)`, action `Box(6) f32`; the
 //! model copies `ft` into the command and tags it with the step seq. No
 //! camera, no pacing: one step as fast as env and model allow. Two
 //! processes: the env server (a child) and `Model::run` with the model in
 //! process.
 //!
-//! Loop latency is bench2's `cmd_age`: the time the env receives an action
+//! Loop latency is `cmd_age`: the time the env receives an action
 //! minus the capture time of the observation it was computed from.
 //!
 //! `--lanes N` (N > 1) is the vectorised case: a vector env of N lanes, one

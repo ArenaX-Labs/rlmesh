@@ -149,9 +149,8 @@ pub mod report {
     pub use crate::run::report::*;
 }
 
-/// Evaluation plans: a request compiled into workloads under the managed
-/// platform's rules, so it draws the same episodes locally as on the
-/// platform. Drives the CLI's `eval run` (R-25); the request file is the
+/// Evaluation plans: a request compiled into local workloads. Drives the CLI's `eval
+/// run` (R-25); the request file is the
 /// surface, the plan types are not.
 pub mod plan {
     pub use crate::run::plan::*;
@@ -167,15 +166,15 @@ pub mod routes {
 }
 
 /// The per-episode artifact tree (`episodes/epNNNNNN/`, the managed
-/// platform's evaluation-artifacts layout), its records, invariants and the
+/// evaluation-artifacts layout), its records, invariants and the
 /// hardware stamp: [`crate::Recorder`]'s `record` capture and the managed
 /// runner write through it (R-25). C and C++ are deferred.
 pub mod artifacts {
     pub use crate::recorder::artifacts::*;
 }
 
-/// `rlmesh doctor` and `rlmesh bench`: the platform's probe on one machine,
-/// against a served env or model, reporting in the platform's
+/// `rlmesh doctor` and `rlmesh bench`: checks and benchmarks on one machine,
+/// against a served env or model, reporting in the
 /// `probe-report.json` shape. Drives the CLI (R-25); no language binding
 /// reaches it in 0.2.
 pub mod doctor {
@@ -226,7 +225,7 @@ pub mod managed {
     }
 }
 
-/// The runtime driver itself, for in-repo tests and the managed runner.
+/// The runtime driver itself, for tests and custom runners.
 #[doc(hidden)]
 pub use crate::run::runtime;
 

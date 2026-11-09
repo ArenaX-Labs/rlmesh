@@ -1,4 +1,4 @@
-//! The Gym view over a v2-native robot in lockstep (§12.6).
+//! The Gym view over a v2-native robot in lockstep.
 //!
 //! [`GymView`] drives a robot that serves the lockstep exchange (a
 //! [`LockstepHandler`](crate::lockstep::LockstepHandler) behind [`serve_robot`](crate::lockstep::LockstepBinding::serve_robot))

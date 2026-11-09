@@ -240,8 +240,7 @@ fn read_config(
     .with_context(|| format!("reading the image config of {source}"))
 }
 
-/// The platform schedules a child by its descriptor and the runtime runs the
-/// config, so the two must name the same platform: eligibility (and the
+/// The index descriptor and image config must name the same platform: eligibility (and the
 /// default row) is decided from it. Returns the descriptor's platform, else
 /// the config's.
 fn checked_platform(
@@ -276,7 +275,7 @@ fn checked_platform(
     Ok(declared)
 }
 
-/// The platform runs linux images only.
+/// Only linux images are eligible for deployment.
 fn require_linux(source: &str, config: &ImageConfig, platform: &str) -> Result<()> {
     if config.os != "linux" {
         bail!(

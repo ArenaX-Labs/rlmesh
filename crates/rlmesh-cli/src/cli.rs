@@ -45,7 +45,7 @@ pub enum Command {
     /// Check an env or model class for packaging and contract mistakes before
     /// building its image (runs the Python describe; exits 1 on a failure).
     Check(CheckArgs),
-    /// Check a built image's config the way the platform's admission will,
+    /// Check a built image's config for packaging and contract mistakes,
     /// before pushing (docker image inspect; exits 1 on a failure).
     CheckImage(CheckImageArgs),
     /// Print a class's describe envelope, or its `dev.rlmesh.describe` label
@@ -78,9 +78,8 @@ pub enum Command {
     /// Pair this machine with a robot's rlmeshd (shows a code to type on
     /// the robot), or, on the robot, approve a machine by its code.
     Pair(PairArgs),
-    /// Run an env or model image and check it the way the platform's probe
-    /// does: handshake, describe, conformance, reproducibility, and an env's
-    /// preview clip (exits 1 on a failed check).
+    /// Run an env or model image and check its handshake, describe,
+    /// conformance, reproducibility, and preview clip (exits 1 on a failed check).
     Doctor(DoctorArgs),
     /// Run a model image and sweep how many concurrent sessions it serves,
     /// recommending `max_batch_size` (exits 1 when no size runs).
@@ -424,7 +423,7 @@ pub struct ProbeImageArgs {
     /// Seconds the image gets to start serving and to answer each call.
     #[arg(long, value_name = "SECONDS", default_value_t = 120)]
     pub timeout: u64,
-    /// Print the report as JSON, in the platform's `probe-report.json` shape.
+    /// Print the report as JSON, in the `probe-report.json` shape.
     #[arg(long)]
     pub json: bool,
 }
@@ -796,7 +795,7 @@ pub struct DescribeArgs {
     /// Print `dev.rlmesh.describe=<envelope>`, ready for `docker build --label`.
     /// Run it inside the built image (`docker run --rm --entrypoint rlmesh IMAGE
     /// describe ... --label`): the envelope records the machine it ran on, and
-    /// the platform fails a label generated off linux.
+    /// labels generated off linux fail validation.
     #[arg(long)]
     pub label: bool,
 }

@@ -720,7 +720,7 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             let mine = outcomes.by_ref().take(count).collect();
             let queued = ns(waited).unwrap_or(0) + timing.queue_ns.unwrap_or(0);
             // The batch's work is shared: each request is charged its groups'
-            // share, as the platform's middleman amortises a grouped reply.
+            // share of a grouped reply.
             // Waits are each request's own and pass through whole.
             let share = |ns: Option<u64>| {
                 ns.map(|ns| (u128::from(ns) * count as u128 / size.max(1) as u128) as u64)
@@ -865,7 +865,7 @@ impl Batching {
         }
     }
 
-    /// Appends `batch` to the record file, in the shape of the platform
+    /// Appends `batch` to the record file, in the shape of the
     /// runner's `telemetry/batches.jsonl` so one reader reads both:
     /// `forwardWallMs` is the batch's call to settle (decode, the handler
     /// lock, the forward, encode) and `endpointTotalMs` the handler call.

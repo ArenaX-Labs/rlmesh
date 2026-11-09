@@ -1,5 +1,5 @@
 //! The OS calls the CLI makes through libc (Unix): a board's serial port,
-//! opened as tether spec §5.1 step 2 and §14.2 say, and the machine's host
+//! configured for provisioning, and the machine's host
 //! name. Neither std nor the workspace's crates set termios or the modem
 //! lines.
 #![allow(unsafe_code)] // libc: termios, modem-line ioctls, poll, gethostname.
@@ -56,7 +56,7 @@ fn usb_vendor(path: &Path) -> Option<String> {
 
 impl Tty {
     /// Opens `path` exclusively at 115200 baud, never 1200 (the bootloader
-    /// touch), with the modem lines §5.1 gives its adapter: RTS low
+    /// touch), with these modem lines: RTS low
     /// always, DTR high only for Espressif's native USB. A USB-UART bridge
     /// (CP210x, CH340, CH9102) or an unknown adapter gets both low, since
     /// asserting either resets the board behind it. Stale input is
@@ -79,7 +79,7 @@ impl Tty {
         let fd = file.as_raw_fd();
         // The lock keeps out other rlmesh processes; TIOCEXCL keeps out
         // every other open of the tty (an IDE's serial monitor), until
-        // this one ends (tether spec §7).
+        // this one ends.
         // SAFETY: `fd` is open for the life of `file`.
         check(unsafe { libc::ioctl(fd, libc::TIOCEXCL as _) }).map_err(|err| {
             io::Error::new(

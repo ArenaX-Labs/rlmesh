@@ -92,8 +92,7 @@ enum Encoder {
 impl VideoWriter {
     /// Open `path` for `width` x `height` frames at `fps`.
     ///
-    /// AV1 4:2:0 crops an odd side by one pixel; H.264 pads it by one, as the
-    /// managed runner does. Every [`push`](Self::push) must then hand the same
+    /// AV1 4:2:0 crops an odd side by one pixel; H.264 pads it by one. Every [`push`](Self::push) must then hand the same
     /// original `width`/`height`.
     pub fn create(
         path: &Path,
@@ -744,7 +743,7 @@ mod tests {
 
     #[test]
     fn each_codec_writes_an_mp4_ffprobe_decodes() {
-        // An odd width: AV1 crops it, H.264 pads it as the managed runner does.
+        // An odd width: AV1 crops it, H.264 pads it.
         for (codec, expected) in [
             (VideoCodec::Av1, ("av1", 64)),
             (VideoCodec::H264, ("h264", 66)),

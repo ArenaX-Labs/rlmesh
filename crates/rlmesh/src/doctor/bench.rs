@@ -18,7 +18,7 @@ use crate::binding::routes::{Route, merge_results, run_routes};
 use crate::{RemoteModel, RemoteModelOptions, RunHooks, RunOptions, StepEvent, TelemetryRow};
 
 const BENCH_CHECK_NAMES: &[&str] = &["handshake", "batch_sweep"];
-/// The sweep's batch sizes: the platform's.
+/// The sweep's batch sizes.
 pub const SWEEP_SIZES: [u32; 6] = [1, 2, 4, 8, 16, 32];
 const SWEEP_WARMUP: u32 = 3;
 const SWEEP_ITERATIONS: u32 = 20;

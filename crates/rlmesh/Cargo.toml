@@ -37,7 +37,7 @@ thiserror = { workspace = true }
 zenoh = { workspace = true }
 rlmesh-spaces = { workspace = true }
 rlmesh-adapters = { workspace = true }
-# The v2 lockstep transport (`lockstep://` env addresses, protocol v2 §12).
+# The v2 lockstep transport (`lockstep://` env addresses).
 rlmesh-session = { workspace = true, features = ["record"] }
 rlmesh-proto = { workspace = true }
 prost = { workspace = true }

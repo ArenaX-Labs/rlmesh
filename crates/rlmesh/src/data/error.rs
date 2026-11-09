@@ -13,11 +13,11 @@ pub enum ProtocolError {
     #[error("decode error: {0}")]
     DecodeError(String),
 
-    /// An integer value did not fit its declared dtype on encode (§4 range-check).
+    /// An integer value did not fit its declared dtype on encode.
     #[error("out of range: {0}")]
     OutOfRange(String),
 
-    /// A leaf or batch-slab byte length did not match the spec (§4/§5 exact-length).
+    /// A leaf or batch-slab byte length did not match the spec.
     #[error("length mismatch: {0}")]
     LengthMismatch(String),
 

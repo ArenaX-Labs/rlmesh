@@ -322,7 +322,7 @@ async fn a_terminated_host_shuts_down_cleanly_with_its_session_recorded() {
     assert_eq!(samples, 5);
 }
 
-/// The conformance fixtures of `rlmesh_session::spec` (§14, §15).
+/// The conformance fixtures of `rlmesh_session::spec`.
 fn fixture(kind: &str, name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../rlmesh-session-core/tests/fixtures")
@@ -350,7 +350,7 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
     let view = robot
         .declare_parts(&map)
         .await
-        .expect("declare the §14.1 map");
+        .expect("declare the robot map");
     let robot_id = robot.id().clone();
     // The other process normalised the authored map with the kind table, and
     // fingerprints the declaration as this one would.
@@ -383,7 +383,7 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
             &Policy::parse(&fixture("policies", "pi0_single")).expect("policy"),
             &RunOptions::named("pi0_single"),
         )
-        .expect("binds as §15.1 says");
+        .expect("binds the policy");
     let bound = policy.declare_bound(&binding).await.expect("declare");
     let record = bound.binding(policy.id()).expect("recorded");
     assert_eq!(record.fingerprint, binding.fingerprint);

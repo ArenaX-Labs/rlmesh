@@ -2491,7 +2491,7 @@ impl RuntimeEnv for ActionLog {
 }
 
 /// The latency ops a perturbation plugin runs on actions, per episode: each
-/// keeps the model's actions and the ones it sent, as middleman's do.
+/// keeps the model's actions and the ones it sent.
 #[derive(Clone, Copy)]
 enum ActionOp {
     /// Send the model's action from `n` steps ago (the first, until there is one).
@@ -2605,7 +2605,7 @@ async fn an_action_transform_expresses_delay_drop_and_freeze() {
     }
 }
 
-/// What middleman's perturbation hook does with the 0.2 seam: bail before any
+/// A perturbation hook using the runtime events: bail before any
 /// decode on a route with no engine, decode the group's lanes from the
 /// event's own space, transform each lane under its (episode, lane, step)
 /// identity, and encode the lanes back.

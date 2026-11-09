@@ -1,4 +1,4 @@
-//! The env side of the Gym path (§12.4): a served env behind the lockstep
+//! The env side of the Gym path: a served env behind the lockstep
 //! exchange, on native values.
 //!
 //! `Served` is what the env server's adapters answer (their checks,
@@ -7,7 +7,7 @@
 //! (bit-exact), with the lane checks a request needs before it reaches the
 //! env.
 //!
-//! Three readings of §12.2 the Gym path needs:
+//! Three rules the Gym path needs:
 //!
 //! - **Reward width.** Gym rewards are `f64`; the Gym path sends `f64 [N]`
 //!   so they stay bit-exact. Readers take `f32 [N]` or `f64 [N]` by length.
@@ -155,7 +155,7 @@ impl GymEnv {
         }
     }
 
-    /// Tees every request and reply into a recording (§13).
+    /// Tees every request and reply into a recording.
     #[must_use]
     pub fn with_tee(mut self, tee: Tee) -> Self {
         self.tee = Some(tee);

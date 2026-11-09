@@ -1,5 +1,5 @@
 //! A lockstep robot in a session: the host is involved only at attach,
-//! declare, arm and one lease grant (§12.1); every step after that is the
+//! declare, arm and one lease grant; every step after that is the
 //! lockstep exchange alone.
 //!
 //! A robot or a driver names the robot by its participant address
@@ -8,7 +8,7 @@
 //! own process. [`LockstepBinding::address`] is the robot's address with the
 //! host's real port, what drivers in other processes connect to.
 //!
-//! The lockstep class (§10.2) is its own Zenoh session per participant
+//! The lockstep class is its own Zenoh session per participant
 //! (RealTime, reliable, BLOCK, express), opened only when lockstep is
 //! used: it listens on any port and meets its peers through the host's
 //! control endpoint. A driver and an env in one process skip it: the
@@ -43,7 +43,7 @@ use crate::lockstep::served::{GymEnv, Served};
 use crate::lockstep::view::{self, GymView};
 
 /// The notional rate of a Gym robot's parts: lockstep never paces, and
-/// `tick_ns` defaults to 1 ms (§11.2).
+/// `tick_ns` defaults to 1 ms.
 pub const GYM_HZ: f64 = 1000.0;
 
 /// A lockstep robot's map with what lockstep lets it leave out filled in: a
@@ -214,9 +214,9 @@ pub(crate) fn owns_links(transport: &Transport) -> bool {
 }
 
 /// The lockstep class session of a participant of the session at
-/// `address` (§10.2): the transport's own when it opens no links of its own
+/// `address`: the transport's own when it opens no links of its own
 /// (close it only when it does), else a link of its own to the host,
-/// presenting what the participant's links did (design §5).
+/// presenting what the participant's links did.
 pub async fn lockstep_session(
     transport: &Transport,
     address: &SessionAddress,
@@ -252,11 +252,11 @@ pub async fn lockstep_session(
 pub struct ServeOptions {
     /// The workflow edition the env declares (`None`: this build's current).
     pub workflow_edition: Option<String>,
-    /// Record the session to this MCAP file (the lockstep tee, §13).
+    /// Record the session to this MCAP file (the lockstep tee).
     pub record: Option<PathBuf>,
 }
 
-/// Checks that an env with `contract` maps to a robot (§12.5) before
+/// Checks that an env with `contract` maps to a robot before
 /// anything is served, so a refusal (a Text action, a space with no part
 /// layout) reaches the caller at once instead of surfacing later from the
 /// serve task.
@@ -348,7 +348,7 @@ impl LockstepBinding {
         let _ = placed.close().await;
     }
 
-    /// Attaches as the robot, declares the env's robot map (§12.5), arms
+    /// Attaches as the robot, declares the env's robot map, arms
     /// and serves the env over the lockstep exchange until `shutdown`
     /// fires.
     pub async fn serve(
@@ -379,7 +379,7 @@ impl LockstepBinding {
         .await
     }
 
-    /// Attaches as the robot, declares `robot_json` (a v2 robot map, §3),
+    /// Attaches as the robot, declares `robot_json` (a v2 robot map),
     /// arms, and serves the handler `build` makes from the declared parts
     /// over the lockstep exchange until `shutdown` fires. Every step is
     /// checked against the robot's own authority view first.
@@ -550,11 +550,11 @@ async fn serve_robot(
 pub struct Declared {
     /// The robot's parts.
     pub parts: Vec<PartSpec>,
-    /// The in-process recorder (§13), when recording.
+    /// The in-process recorder, when recording.
     pub tee: Option<rlmesh_session::record::SampleTee>,
 }
 
-/// The notional lockstep tick (§11.2: 1 ms unless the env declares one).
+/// The notional lockstep tick (1 ms unless the env declares one).
 pub const TICK_NS: u64 = 1_000_000;
 
 fn own_parts(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> Vec<PartSpec> {
@@ -604,7 +604,7 @@ pub struct ConnectOptions {
     pub id: Option<String>,
     /// How long to wait for the host and the robot.
     pub timeout: Duration,
-    /// Call an env served in this process directly (no serialisation, §12.3);
+    /// Call an env served in this process directly (no serialisation);
     /// `false` takes the lockstep session even then.
     pub direct: bool,
 }
@@ -878,7 +878,7 @@ async fn gym_client(
     )
 }
 
-/// Connects a Gym view (§12.6) to the v2-native lockstep robot at
+/// Connects a Gym view to the v2-native lockstep robot at
 /// `address`, through `policy` (a v2 policy map, JSON; `None`: every part
 /// by path).
 pub async fn connect_view(
