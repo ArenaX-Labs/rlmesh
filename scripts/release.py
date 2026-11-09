@@ -178,7 +178,12 @@ def publish_crates(version: str) -> None:
 
 
 def distribution_assets(version: str, root: Path = ROOT) -> list[Path]:
-    """Require all release distributions before creating or updating a Release."""
+    """0.2 publishes wheels to PyPI and crates to crates.io, without native assets."""
+    return []
+
+
+def fenced_distribution_assets(version: str, root: Path = ROOT) -> list[Path]:
+    """Retain native packaging validation for a future release; not a publish path."""
     paths = [
         root / "target/capi-pkg" / f"rlmesh-{version}-{triple}.tar.gz"
         for triple in (
@@ -241,7 +246,9 @@ def distribution_uploads(
     if has_tarball:
         return [_write_checksum(tarball, _sha256(fetch_published(tarball.name)))]
     if has_checksum:
-        published = fetch_published(checksum.name).read_text(encoding="utf-8").split()[0]
+        published = (
+            fetch_published(checksum.name).read_text(encoding="utf-8").split()[0]
+        )
         if published != _sha256(tarball):
             # Nobody can have fetched a tarball that was never published, so the
             # orphan checksum is safe to delete.
@@ -271,7 +278,16 @@ def github_release(version: str) -> None:
         with tempfile.TemporaryDirectory(dir=release_scratch()) as downloads:
 
             def fetch_published(name: str) -> Path:
-                run("gh", "release", "download", tag, "--pattern", name, "--dir", downloads)
+                run(
+                    "gh",
+                    "release",
+                    "download",
+                    tag,
+                    "--pattern",
+                    name,
+                    "--dir",
+                    downloads,
+                )
                 return Path(downloads) / name
 
             missing = [
@@ -350,7 +366,7 @@ def selfcheck() -> None:
     with tempfile.TemporaryDirectory(dir=release_scratch()) as tmp:
         root = Path(tmp)
         try:
-            distribution_assets("1.0.0", root)
+            fenced_distribution_assets("1.0.0", root)
         except SystemExit:
             pass
         else:
@@ -374,7 +390,10 @@ def selfcheck() -> None:
             path.mkdir(parents=True)
             for name in names:
                 (path / name).write_bytes(b"release fixture")
-        assets = distribution_assets("1.0.0", root)
+        assert distribution_assets("0.2.0", root) == [], (
+            "0.2 must not attach native assets"
+        )
+        assets = fenced_distribution_assets("1.0.0", root)
         assert len(assets) == 6
         for asset in assets:
             uploads = distribution_uploads(asset, set(), lambda _: asset)
@@ -395,7 +414,9 @@ def _selfcheck_distribution_uploads() -> None:
         published = root / "published"
         published.mkdir()
         (published / tarball.name).write_bytes(b"published bytes")
-        (published / f"{tarball.name}.sha256").write_text(f"{'0' * 64}  {tarball.name}\n")
+        (published / f"{tarball.name}.sha256").write_text(
+            f"{'0' * 64}  {tarball.name}\n"
+        )
 
         def fetch(name: str) -> Path:
             return published / name
@@ -404,7 +425,10 @@ def _selfcheck_distribution_uploads() -> None:
         assert distribution_uploads(tarball, {name, checksum}, fetch) == []
         # Tarball published, checksum lost: the checksum describes the published bytes.
         (uploaded,) = distribution_uploads(tarball, {name}, fetch)
-        assert uploaded.read_text().split()[0] == hashlib.sha256(b"published bytes").hexdigest()
+        assert (
+            uploaded.read_text().split()[0]
+            == hashlib.sha256(b"published bytes").hexdigest()
+        )
         # Checksum published for other bytes: refuse rather than pair it with a rebuild.
         try:
             distribution_uploads(tarball, {checksum}, fetch)
@@ -414,7 +438,10 @@ def _selfcheck_distribution_uploads() -> None:
             raise AssertionError("a mismatched published checksum must be refused")
         both = distribution_uploads(tarball, set(), fetch)
         assert both[0] == tarball
-        assert both[1].read_text().split()[0] == hashlib.sha256(b"rebuilt bytes").hexdigest()
+        assert (
+            both[1].read_text().split()[0]
+            == hashlib.sha256(b"rebuilt bytes").hexdigest()
+        )
 
 
 def main() -> None:
