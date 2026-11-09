@@ -23,7 +23,7 @@ use crate::meter::{CounterRate, RateMeter, window_for};
 use crate::timeline::{Entry, Kind, Timeline, Tone};
 use crate::values::{self, Value};
 
-/// A verb the cockpit sends through the host (§11.1). A latched e-stop is
+/// A verb the cockpit sends through the host. A latched e-stop is
 /// cleared only by the embodiment (a local clear), so there is no clear
 /// here: after it, disarm and arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -173,7 +173,7 @@ pub(crate) struct EdgeState {
     pub(crate) last: Option<(u64, i64)>,
     /// Cockpit clock when the newest tick arrived.
     pub(crate) last_receive_ns: i64,
-    /// Ticks later than two control periods (§9.1).
+    /// Ticks later than two control periods.
     pub(crate) misses: u64,
     /// Cockpit clock of each recent miss.
     pub(crate) recent_misses: VecDeque<i64>,

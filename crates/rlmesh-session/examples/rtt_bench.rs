@@ -14,7 +14,7 @@
 //!   `LockstepReply` with one T1 observation (`f32[18]`), the reward and the
 //!   done flags back, on publish/subscribe like `sample`;
 //! - `lockstep-query`: the same messages as a Zenoh query and its reply on
-//!   `l/{robot}` (the §12.3 same-host transport).
+//!   `l/{robot}` (the same-host transport).
 //!
 //! It spawns its own `pong` child, prints one JSON line with the round-trip
 //! percentiles (µs) and the rate, and exits.

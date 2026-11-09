@@ -1,15 +1,15 @@
-// RLMesh real-time session wire, generation 2 (the v0.2 spec, §10).
+// RLMesh real-time session wire, generation 2.
 //
 // Every message is plain protobuf, one message per Zenoh payload; the key
 // says which message it is. Samples, batches and action chunks carry their
 // values as one raw `bytes` payload, packed in the layout the host derived
-// from the part's declaration (§10.6).
+// from the part's declaration.
 //
 // Compatibility: additive only. New fields, verbs and enum values; never
 // renumber or retype. A feature added in a protocol minor is a feature
 // string (Attach.supports/requires, AuthorityState.supports,
-// PartSpec.requires). Field numbers the spec reserves for messages not built
-// yet (episodes) are left unused.
+// PartSpec.requires). Field numbers reserved for messages not built yet
+// (episodes) are left unused.
 syntax = "proto3";
 
 package rlmesh.session.v2;
@@ -45,7 +45,7 @@ enum PriorityClass {
   PRIORITY_CLASS_SAFETY = 4;
 }
 
-// How session time advances (§11.2).
+// How session time advances.
 enum ClockMode {
   CLOCK_MODE_UNSPECIFIED = 0;
   CLOCK_MODE_WALL = 1;
@@ -109,7 +109,7 @@ message ClockMapping {
   int64 sample_ns = 6;
 }
 
-// How a subscriber is delivered one stream (§8.2).
+// How a subscriber is delivered one stream.
 enum ContractMode {
   CONTRACT_MODE_UNSPECIFIED = 0;
   // The newest sample, at most delivery_hz times per second.
@@ -129,7 +129,7 @@ message StreamContract {
   double delivery_hz = 3;
   // The deepest window on the stream; 1 is none.
   uint32 history = 4;
-  // The effective freshness bound after precedence (§8.7); 0 for events.
+  // The effective freshness bound after precedence; 0 for events.
   uint64 max_age_ns = 5;
   bool max_age_explicit = 6;
 }
@@ -227,7 +227,7 @@ enum ReasonCode {
   // The owner changed the device's entry.
   REASON_CODE_ACCESS_CHANGED = 30;
   // A scene's run ended (a stop) or failed: its mode change, its lease
-  // endings and its closing (scene design §4.2).
+  // endings and its closing.
   REASON_CODE_SCENE_ENDED = 31;
   REASON_CODE_SCENE_FAILED = 32;
 }
@@ -283,7 +283,7 @@ message AuthorityState {
   uint64 tick_ns = 14;
   repeated BindingRecord bindings = 16;
   // Robot -> its declaration fingerprint (8 bytes): BLAKE3 over the
-  // canonical form of its normalised map (§3.3).
+  // canonical form of its normalised map.
   map<string, bytes> contract = 17;
   // The publication plan of every stream some binding has a contract on.
   repeated Demand demands = 18;
@@ -294,7 +294,7 @@ message AuthorityState {
   repeated LeaseEnd ended = 20;
   LastStop last_stop = 21;
   // Where each placed robot's parts appear in the scene's view, with its
-  // static pose (scene design §5).
+  // static pose.
   repeated Place places = 22;
   // The scene this session runs, when a daemon started it.
   SceneInfo scene = 23;
@@ -330,7 +330,7 @@ message SceneInfo {
   int64 rejoin_until_ns = 5;
 }
 
-// One robot's slice of the authority state (scene design §3.4): what its
+// One robot's slice of the authority state: what its
 // edge reads, on `host/view/{robot}` (Signed kind 22), for a robot that
 // asked for it in `Attach.supports` ("view.device").
 message DeviceView {
@@ -341,7 +341,7 @@ message DeviceView {
   Mode mode = 4;
   // The code only; the full Reason stays in AuthorityState.
   ReasonCode mode_reason = 5;
-  // The tether latch-release anchor (safety design §7).
+  // The tether latch-release anchor.
   LastStop last_stop = 6;
   int64 host_ns = 7;
   ClockMode clock_mode = 8;
@@ -495,7 +495,7 @@ message HeartbeatEcho {
   uint64 epoch = 5;
 }
 
-// Observer telemetry (§8.10): what only the measuring side knows, published
+// Observer telemetry: what only the measuring side knows, published
 // on p/{participant}/report, data class, a few times per second. Counters
 // are cumulative since the participant attached; observers derive rates
 // from their deltas on the sender's clock (sent_ns). Nothing acts on them.
@@ -519,7 +519,7 @@ message PublisherCounters {
   uint64 coalesced = 3;
 }
 
-// A controller runtime's start and completion counters (§8.9, §8.10).
+// A controller runtime's start and completion counters.
 message RunCounters {
   uint64 starts = 1;
   uint64 completions = 2;
@@ -539,7 +539,7 @@ message RunCounters {
   bool drifting = 13;
 }
 
-// Parts (§3, §10.5).
+// Parts.
 
 enum ChannelPriority {
   CHANNEL_PRIORITY_UNSPECIFIED = 0;
@@ -590,7 +590,7 @@ message Command {
   string group = 9;
   bool binary = 10;
   // During Hold, may the edge repeat the last dispatched target? Set for
-  // position-type modes (§9.5); otherwise it runs the safe behaviour.
+  // position-type modes; otherwise it runs the safe behaviour.
   bool hold_last = 11;
 }
 
@@ -667,7 +667,7 @@ message DeclareParts {
   // The part paths this robot process can seal (default none): what its
   // runtime can do, so it stays out of the map and its fingerprint.
   repeated string seal = 3;
-  // A tethered board's id (8 bytes, tether spec §7); empty for none. The
+  // A tethered board's id (8 bytes); empty for none. The
   // host refuses a declare whose board isn't the one the robot's pin names.
   bytes board_id = 4;
 }
@@ -750,7 +750,7 @@ message ChunkRef {
   uint64 seq = 3;
 }
 
-// Virtual mode (§11.3), embodiment -> host: tick k's samples are published.
+// Virtual mode, embodiment -> host: tick k's samples are published.
 message Ready {
   uint64 tick = 1;
   // The last seq per stream.
@@ -789,7 +789,7 @@ message CtlRequest {
     Decided decided = 26;
     KeysAck keys_ack = 27;
     GetKeys get_keys = 28;
-    // The lobby and scenes (scene design §3.3, §4).
+    // The lobby and scenes.
     LobbyWait lobby_wait = 29;
     RunScene run_scene = 30;
     SceneStatus scene_status = 31;
@@ -964,7 +964,7 @@ message HandshakeAccept {
   uint32 down_key_id = 7;
 }
 
-// Machine pairing (safety design §3): every packet is a query on
+// Machine pairing: every packet is a query on
 // `rlmeshd/pair`. `exchange` is 16 random bytes the laptop draws per
 // attempt. After Noise XX, `sealed` carries a `Sealed` under the XX raw
 // split (laptop -> rlmeshd key 1, rlmeshd -> laptop key 2).
@@ -1024,7 +1024,7 @@ message PairInfo {
   repeated string addresses = 4;
 }
 
-// The lobby and scenes (scene design §3, §4): verbs in the home daemon's
+// The lobby and scenes: verbs in the home daemon's
 // `_lobby` session, sealed like any other.
 
 // A waiting robot or satellite -> the home daemon: answered with an
@@ -1166,7 +1166,7 @@ message RunState {
   bytes scene_fingerprint = 9;
 }
 
-// Virtual mode, host -> participants on `host/tick` (§11.3).
+// Virtual mode, host -> participants on `host/tick`.
 message TickState {
   uint64 epoch = 1;
   uint64 tick = 2;
@@ -1189,7 +1189,7 @@ message VirtualTick {
   }
 }
 
-// Data (§10.6).
+// Data.
 
 // What the edge did on one control tick (the `_applied` streams).
 enum EdgeMode {
@@ -1306,7 +1306,7 @@ message ActionChunk {
   string source = 15;
 }
 
-// Lockstep fast path (§12): one request/reply per step on l/{robot}.
+// Lockstep fast path: one request/reply per step on l/{robot}.
 
 // An N-lane slab of one part: lanes x stride.
 message PartValues {

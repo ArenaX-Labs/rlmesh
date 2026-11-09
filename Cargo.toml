@@ -62,11 +62,11 @@ eframe = { version = "0.37", default-features = false, features = [
 egui = "0.37"
 # Test-only: headless rendering of the cockpit (wgpu; lavapipe without a GPU).
 egui_kittest = "0.37"
-# rlmeshd's mDNS advertisement and the lookup by host id (scene design §3.1):
+# rlmeshd's mDNS advertisement and the lookup by host id:
 # pure Rust, both sides, Linux, macOS and Windows, and no async runtime. No
 # default features: no flume async or log.
 mdns-sd = { version = "0.21", default-features = false }
-# Session recordings (protocol v2, §13). No default features: no compression.
+# Session recordings. No default features: no compression.
 # `zstd`: recordings compress their chunks (numbers shrink; JPEG frames
 # pass through at level 1's speed).
 mcap = { version = "0.26", default-features = false, features = ["zstd"] }
@@ -97,7 +97,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Utilities
-# Declaration and binding fingerprints (protocol v2, §3.3).
+# Declaration and binding fingerprints.
 blake3 = "1"
 chacha20 = { version = "0.10", features = ["rng"] }
 half = "2"

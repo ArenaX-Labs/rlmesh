@@ -1,4 +1,4 @@
-//! The `Sealed` envelope (§8.2): a 15-byte header, the body (encrypted or
+//! The `Sealed` envelope: a 15-byte header, the body (encrypted or
 //! not) and a Poly1305 tag, under ChaCha20-Poly1305.
 //!
 //! | Offset | Size | Field |
@@ -42,7 +42,7 @@ pub const OVERHEAD: usize = HEADER_LEN + TAG_LEN;
 /// `flags` bit 0: the body is encrypted.
 pub const FLAG_ENCRYPTED: u8 = 1;
 
-/// What a `Sealed` carries (§8.2). Unknown kinds are rejected.
+/// What a `Sealed` carries. Unknown kinds are rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Kind {
@@ -74,13 +74,13 @@ pub enum Kind {
     EstopSignal = 13,
     /// A history query.
     HistoryQuery = 15,
-    /// Pairing: `PairCommit` (§3).
+    /// Pairing: `PairCommit`.
     PairCommit = 16,
-    /// Pairing: `PairNonce` (§3).
+    /// Pairing: `PairNonce`.
     PairNonce = 17,
-    /// Pairing: `PairReveal` (§3).
+    /// Pairing: `PairReveal`.
     PairReveal = 18,
-    /// Pairing: `PairWait` and its `PairResult` reply (§3).
+    /// Pairing: `PairWait` and its `PairResult` reply.
     PairWait = 19,
 }
 
@@ -95,7 +95,7 @@ pub enum Protection {
     Configured,
 }
 
-/// The level of a key's configured kinds (`Key.security`, §8.2, §8.5):
+/// The level of a key's configured kinds (`Key.security`):
 /// `sign` (integrity only) or `seal` (encrypted). The level is per key: the
 /// host issues `Seal` when any part the key's scope covers is `seal`, and
 /// `Sign` otherwise. So a `k_cmd` or `k_obs` for a lease mixing `sign` and
@@ -176,7 +176,7 @@ impl Kind {
 
 const KINDS: usize = 19;
 
-/// The kinds a key may carry (its purpose and scope, §8.5). A message of
+/// The kinds a key may carry (its purpose and scope). A message of
 /// any other kind under that key is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KindSet(u32);
@@ -379,7 +379,7 @@ pub enum OpenError {
 }
 
 /// The sending side of one key: a dense `seq` counter per kind, from 1.
-/// One sender per key (§8.2); callers sharing it across tasks hold one lock
+/// One sender per key; callers sharing it across tasks hold one lock
 /// per (key, kind) across sealing and enqueuing.
 pub struct SealSender {
     aead: ChaCha20Poly1305,

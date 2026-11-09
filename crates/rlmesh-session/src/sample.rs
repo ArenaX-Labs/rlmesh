@@ -3,8 +3,8 @@
 //!
 //! A [`SamplePublisher`] numbers its samples per stream (`seq`), stamps the
 //! epoch, the capture time and the publish time, checks the payload against
-//! the stream's packed layout (§10.6) and sends it without copying, as its
-//! stream's **publication plan** says (§8.2). The host derives the plan from
+//! the stream's packed layout and sends it without copying, as its
+//! stream's **publication plan** says. The host derives the plan from
 //! every admitted delivery contract on the stream and publishes it as a
 //! `Demand`; the participant installs it here and acknowledges it:
 //!
@@ -28,7 +28,7 @@
 //! Late joiners warm their window from the host's history store
 //! ([`SubscribeOptions::warm_from_history`]): the live subscription starts
 //! first and buffers, the store is queried up to the first live seq, and the
-//! two are merged by seq (§8.8). The publisher keeps no retransmission
+//! two are merged by seq. The publisher keeps no retransmission
 //! (which would hold newer samples behind missing ones, the head-of-line
 //! blocking a real-time stream must not have), with one exception: an event
 //! stream's publisher keeps its last sample and answers history queries for
@@ -36,7 +36,7 @@
 //! publication (the task text) still sees it, even when the store's
 //! subscription had not reached the publisher yet.
 //!
-//! Every sample is sealed under its stream's key (`k_stream`, §8.4): signed
+//! Every sample is sealed under its stream's key (`k_stream`): signed
 //! by default, encrypted when the session seals the part. A publisher
 //! without the key yet (a robot's first moments) drops samples unsent; a
 //! subscriber drops anything that doesn't open under a key it holds.
@@ -122,7 +122,7 @@ pub(crate) struct Outlet {
     key: String,
     sealer: Sealer,
     /// Held across a sample's seq, seal and send, so a stream leaves in
-    /// order (§8.2).
+    /// order.
     sending: Mutex<()>,
     seq: AtomicU64,
     epoch: Arc<AtomicU64>,
@@ -249,7 +249,7 @@ impl SamplePublisher {
         let fixed = spec.event || clock_mode != ClockMode::Wall;
         let ceiling_hz = ceiling_hz.filter(|_| !fixed);
         // Before any demand the default plan applies: every sample within
-        // the `send` ceiling (§8.2).
+        // the `send` ceiling.
         let gate = ceiling_hz.map(Gate::new);
         let outlet = Arc::new(Outlet {
             fixed,
@@ -464,7 +464,7 @@ struct SubState {
     /// The data key samples are sealed to.
     key: String,
     sealer: Sealer,
-    /// This subscription's replay windows (§8.2).
+    /// This subscription's replay windows.
     windows: Mutex<StreamWindows>,
     me: ParticipantId,
     clock: Arc<dyn Clock>,
@@ -557,8 +557,8 @@ impl SubState {
         }
     }
 
-    /// The robot restarted under a newer stream key, its `seq`s from 1
-    /// (§8.5): the high-water and what was kept from before go.
+    /// The robot restarted under a newer stream key, its `seq`s from 1: the high-water
+    /// and what was kept from before go.
     fn restart(&self) {
         self.bump(|s| s.last_seq = 0);
         if let Ok(mut latest) = self.latest.lock() {
@@ -775,7 +775,7 @@ impl Drop for SampleSubscriber {
 }
 
 /// Queries the host's history store for `stream`, sealed under this
-/// participant's `k_up` (§8.6): every page of the reply that opens (under
+/// participant's `k_up`: every page of the reply that opens (under
 /// its `k_down`, or an event stream's last sample under the stream's key)
 /// and falls in the query's range, in order.
 pub(crate) async fn fetch_history(

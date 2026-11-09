@@ -1,4 +1,4 @@
-//! A scene's view (scene design §5): its placed robots' parts in one path
+//! A scene's view: its placed robots' parts in one path
 //! tree, which a policy binds against when the session carries places and
 //! the run names no robot.
 //!
@@ -10,7 +10,7 @@
 //!   a transform the binder applies.
 //! - v0.2 refuses a second place for one robot, a place on another robot's
 //!   frame (every pose's parent is `world`), and, once maps are declared,
-//!   two parts at one view path or one over §2.1's limits.
+//!   two parts at one view path or one exceeding the path length or depth limits.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -24,7 +24,7 @@ pub const VIEW: &str = "scene";
 /// How far a place's quaternion may sit from unit length.
 const UNIT_TOLERANCE: f64 = 1e-6;
 
-/// Whether `place` is well formed (scene design §2): `at` a path with no
+/// Whether `place` is well formed: `at` a path with no
 /// `_` segment, `from` empty or a path, `frame` empty or a frame name, and
 /// its pose finite metres and a unit quaternion.
 ///
@@ -122,7 +122,7 @@ pub fn check(places: &[Place]) -> Result<(), String> {
 ///
 /// # Errors
 /// A malformed table ([`check`]), two parts at one view path, or a view
-/// path over §2.1's limits, naming both parts.
+/// path exceeding the length or depth limits, naming both parts.
 pub fn parts(parts: &[PartSpec], places: &[Place]) -> Result<Vec<PartSpec>, String> {
     check(places)?;
     let mut view: Vec<PartSpec> = Vec::new();
@@ -145,7 +145,7 @@ pub fn parts(parts: &[PartSpec], places: &[Place]) -> Result<Vec<PartSpec>, Stri
             };
             let renamed = PartPath::new(placed.as_str()).map_err(|e| {
                 format!(
-                    "{}:{path} placed at {:?} is {placed}: {} (spec §2.1); place it higher \
+                    "{}:{path} placed at {:?} is {placed}: {}; place it higher \
                      or under a shorter path",
                     part.owner, place.at, e.reason
                 )

@@ -12,20 +12,20 @@
 //! - [`lease`]: the holder's side of a lease: the local deadline (a
 //!   conservative lower bound of the host's expiry that never outlives
 //!   it), renewal and loss from authority snapshots, and fenced chunks.
-//! - [`virtual_clock`]: the virtual-mode tick barrier (§11.3).
+//! - [`virtual_clock`]: the virtual-mode tick barrier.
 //! - [`clock`]: NTP-style offset estimation with an error bound.
 //! - [`crypto`]: the safety layer's envelopes and handshakes (`Sealed`,
 //!   `Signed`, replay windows, the IK handshake and pairing), with the
 //!   caller's randomness.
-//! - [`cache`]: a controller's input cache and history windows (§8.8).
-//! - [`schedule`]: policy starts and slowdown reporting (§8.9, §8.10), and
+//! - [`cache`]: a controller's input cache and history windows.
+//! - [`schedule`]: policy starts and slowdown reporting, and
 //!   the start grid's phase alignment.
-//! - [`spec`]: the physical-AI layer (§2-§8): the kind table, robot and
+//! - [`spec`]: the physical-AI layer: the kind table, robot and
 //!   policy maps, binding with refuse-and-explain, conversions and delivery
 //!   contracts.
 //! - [`stream`]: a subscriber's receive rules: epochs, seq gaps as losses,
 //!   layout checks and freshness against `max_age`.
-//! - [`wire`]: the session wire (§10): ids, paths, the key layout, the
+//! - [`wire`]: the session wire: ids, paths, the key layout, the
 //!   versioning rule, the message types and the one byte codec.
 //!
 //! `rlmesh-session` runs these over Zenoh and re-exports them under the same

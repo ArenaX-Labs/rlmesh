@@ -1,4 +1,4 @@
-//! Scene files (scene design §2): a TOML file naming a run's members, their
+//! Scene files: a TOML file naming a run's members, their
 //! caps, places, security and where its host runs.
 //!
 //! ```toml
@@ -22,7 +22,7 @@
 //! file, a clock or the network: the daemon and every SDK share it.
 //!
 //! Every refusal names its line, its key and the fix, in the style of the
-//! binder's (spec §6.7):
+//! binder's:
 //!
 //! ```text
 //! scene refused: eyeball-rig (1 problem)
@@ -441,7 +441,7 @@ impl Reader<'_> {
                 table,
                 "place",
                 why,
-                "at is a path (spec §2.1) with no _ segment; frame one of the robot's own frames",
+                "at is a path with no _ segment; frame one of the robot's own frames",
             );
         }
         (self.problems.len() == before).then_some(place)
@@ -602,7 +602,7 @@ impl Scene {
                 line: err.span().map(|s| line_at(text, s.start)),
                 key: String::new(),
                 what: format!("not TOML: {}", err.message()),
-                fix: "write it as TOML, as in the scene design's §2".into(),
+                fix: "write it as TOML".into(),
             }],
         })?;
         let mut r = Reader {

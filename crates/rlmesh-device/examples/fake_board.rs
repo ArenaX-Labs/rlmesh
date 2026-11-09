@@ -1,4 +1,4 @@
-//! A board's provisioning responder (tether spec §14) on a serial device,
+//! A board's provisioning responder on a serial device,
 //! with a file for its NVS: rehearses `rlmesh devices provision` without a
 //! board, over a pseudo-terminal pair (`socat`).
 //!

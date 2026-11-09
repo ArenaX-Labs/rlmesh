@@ -24,7 +24,7 @@ crate-type = ["staticlib", "rlib"]
 rlmesh-session-core = { version = "=0.2.0-alpha.0", path = "../rlmesh-session-core", default-features = false, features = [
   "fleet",
 ] }
-# USB provisioning's messages (tether spec §14), shared with the daemon.
+# USB provisioning's messages, shared with the daemon.
 rlmesh-tether = { version = "=0.2.0-alpha.0", path = "../rlmesh-tether" }
 # Wiping a device key's copies.
 zeroize = { version = "1", default-features = false }

@@ -510,7 +510,7 @@ async fn a_board_with_another_hosts_key_is_refused() {
     );
 }
 
-/// A board provisioned for the host (tether spec §14) joins with its own
+/// A board provisioned for the host joins with its own
 /// device key, under the access the daemon enrolled it with; an unenrolled
 /// key may do nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

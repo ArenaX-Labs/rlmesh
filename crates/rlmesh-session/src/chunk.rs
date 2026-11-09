@@ -3,8 +3,8 @@
 //! A controller holding a lease sends timed chunks through a
 //! [`ChunkPublisher`], which stamps its lease token, the lease's binding,
 //! the epoch, its own id as the source and a seq (increasing per token), and
-//! checks the actions against the part's command layout (§10.6), and seals
-//! it under the lease's `k_cmd` (design §8.4), which only the holder and the
+//! checks the actions against the part's command layout, and seals
+//! it under the lease's `k_cmd`, which only the holder and the
 //! robot have. The embodiment's edge ([`edge`](crate::edge)) opens, fences,
 //! validates, splices and applies them.
 

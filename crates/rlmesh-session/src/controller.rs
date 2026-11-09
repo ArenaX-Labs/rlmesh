@@ -1,9 +1,9 @@
 //! The controller runtime: a bound policy's inputs, leases, chunks and run
-//! loop (§6.5, §8.8-§8.10, §9.7). Language bindings wrap it; users write
+//! loop. Language bindings wrap it; users write
 //! `predict` and nothing else.
 //!
 //! - [`Controller::bind`] waits for the robot's parts, binds the policy
-//!   (refuse-and-explain, §6.7), declares the binding and opens its inputs
+//!   (refuse-and-explain), declares the binding and opens its inputs
 //!   ([`Inputs`]).
 //! - **Leases.** A background keeper holds the binding's leases while they
 //!   are wanted, as one [`LeaseGroup`] (the holder state machine the
@@ -19,11 +19,11 @@
 //!   `t0` at the snapshot (or at send, `t0: "send"`), the binding's action
 //!   grid, `valid_until = t0 + min(horizon × dt, ttl)`, `replace_from = t0`
 //!   and the snapshot's `based_on`.
-//! - [`Controller::run`] is the policy loop of §8.9: starts on the replan
+//! - [`Controller::run`] runs the policy loop: starts on the replan
 //!   grid, one inference in flight, skipped starts with their reasons, warm
 //!   before authority (leases are requested only once a first snapshot of
 //!   the required inputs is complete), window gaps recovered from the
-//!   host's history store, and §8.10 reporting through [`StartSchedule`].
+//!   host's history store, and reporting through [`StartSchedule`].
 //!   On the wall clock the grid is phased just after the publication of
 //!   one sampled input ([`PhaseAlign`]), so a snapshot reads a sample about
 //!   a millisecond old rather than up to a full replan period old.
@@ -81,7 +81,7 @@ pub struct ControllerConfig {
     /// How often a wanted lease is re-requested while it is refused (it is
     /// also re-requested on every authority change).
     pub lease_retry: Duration,
-    /// An inference running this long is reported (§8.10).
+    /// An inference running this long is reported.
     pub pending_after: Duration,
 }
 
@@ -99,7 +99,7 @@ impl Default for ControllerConfig {
 /// Why a controller could not bind.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerError {
-    /// The binder refused (every problem, §6.7) or the options do not fit.
+    /// The binder refused (every problem) or the options do not fit.
     #[error(transparent)]
     Bind(#[from] BindError),
     /// The session failed.
@@ -157,7 +157,7 @@ pub trait Predictor {
     type Error;
 
     /// One start: the observation (snapshotted at `snapshot_ns`, session
-    /// time) in, one value per action entry out (`[horizon, ...]`, §6.1).
+    /// time) in, one value per action entry out (`[horizon, ...]`).
     fn predict(
         &mut self,
         observation: Observation,
@@ -370,7 +370,7 @@ async fn keep_leases(
     }
 }
 
-/// Reports an inference pending past the configured bound (§8.10: a timer,
+/// Reports an inference pending past the configured bound (a timer,
 /// not an average over completions).
 async fn watch_pending(
     participant: Arc<Participant>,
@@ -681,7 +681,7 @@ impl Controller {
         }
     }
 
-    /// Runs the policy loop (§8.9) until [`Self::stop`], `duration`, or a
+    /// Runs the policy loop until [`Self::stop`], `duration`, or a
     /// failure, then gives the leases back. Blocks the calling thread,
     /// which is where `predict` runs.
     pub fn run<P: Predictor>(
@@ -743,7 +743,7 @@ impl Controller {
                     let reason = skip.reason();
                     self.skip(t - off, reason);
                     // A gap inside a window: ask the host's store to fill it
-                    // (§8.8 recovery), at most every 100 ms.
+                    // (recovery), at most every 100 ms.
                     if reason == SkipReason::WindowGap
                         && recovered_at.is_none_or(|at| t - at >= RECOVER_GAP_NS)
                     {
@@ -820,7 +820,7 @@ impl Controller {
 
     /// Why the session is gone for this controller: the host, or its
     /// robot's roster entry left absent. In a scene's run a lost robot may
-    /// rejoin (scene design §4.3): only the run closing ends it.
+    /// rejoin: only the run closing ends it.
     pub fn lost(&self) -> Option<Reason> {
         self.participant.host_lost().or_else(|| {
             self.participant.authority_view().with(|view| {

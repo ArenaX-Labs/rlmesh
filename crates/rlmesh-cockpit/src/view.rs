@@ -2,8 +2,8 @@
 //! ([`Model::view`]): plain data, so tests check it without a GUI and the UI
 //! never touches live state (one snapshot per frame).
 //!
-//! Every rate names the clock it is counted on ([`clocks`]): the §8.10
-//! counters are measured in different places, and a sim slower than real
+//! Every rate names the clock it is counted on ([`clocks`]): the counters are measured
+//! in different places, and a sim slower than real
 //! time makes "per second" mean two things.
 
 use std::collections::BTreeSet;
@@ -58,7 +58,7 @@ pub struct View {
     pub lanes: Vec<LaneView>,
     /// How far back the lanes reach, in seconds.
     pub lane_window_s: f64,
-    /// One per controller binding (§6.8).
+    /// One per controller binding.
     pub bindings: Vec<BindingView>,
 }
 
@@ -134,7 +134,7 @@ pub struct TreeRow {
     pub plot: Vec<Vec<[f64; 2]>>,
 }
 
-/// Declared vs measured for one stream (§8.10).
+/// Declared vs measured for one stream.
 #[derive(Clone, Debug, Default)]
 pub struct StreamRow {
     /// `robot/path`.
@@ -174,7 +174,7 @@ pub struct StreamRow {
     pub drift: Option<String>,
 }
 
-/// One controller (§8.9, §8.10).
+/// One controller.
 #[derive(Clone, Debug, Default)]
 pub struct ControllerRow {
     /// Its id.
@@ -213,7 +213,7 @@ pub struct ControllerRow {
     pub leases: Vec<String>,
 }
 
-/// One edge (§9.1, §9.5).
+/// One edge.
 #[derive(Clone, Debug, Default)]
 pub struct EdgeRow {
     /// `robot/path`.
@@ -305,7 +305,7 @@ pub struct LaneView {
     pub segments: Vec<(f64, f64, String, Tone)>,
 }
 
-/// One controller's binding table (§6.8).
+/// One controller's binding table.
 #[derive(Clone, Debug, Default)]
 pub struct BindingView {
     /// The first line: `binding {policy} on {robot}: …, fingerprint …`.
@@ -466,7 +466,7 @@ impl Model {
         (t1 - t0 > 500_000_000).then(|| (c1 - c0) as f64 / (t1 - t0) as f64)
     }
 
-    /// The freshness bound of a stream (§8.7): its contracts' effective
+    /// The freshness bound of a stream: its contracts' effective
     /// bound, else the robot's declared one.
     fn bound(&self, channel: ChannelId, part: &PartSpec) -> Option<(f64, &'static str)> {
         let s = self.snapshot.as_ref()?;
@@ -699,7 +699,7 @@ impl Model {
         rows
     }
 
-    /// Valid coverage remaining on a commandable part (§9.2), as an
+    /// Valid coverage remaining on a commandable part, as an
     /// observer estimates it: `min(t0 + horizon·dt, valid_until, receipt +
     /// max_action_age, lease expiry) − now`, in session time, with the
     /// cockpit's receipt standing in for the edge's.
@@ -981,7 +981,7 @@ impl Model {
         };
         let (inputs, actions) = (rows("inputs"), rows("actions"));
         if table.get("inputs").is_none() && table.get("actions").is_none() {
-            // An identity binding (§6.5): parts commanded by path, no plan.
+            // An identity binding: parts commanded by path, no plan.
             let parts: Vec<String> = b
                 .channels
                 .iter()

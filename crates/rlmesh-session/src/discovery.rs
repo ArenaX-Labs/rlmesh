@@ -1,4 +1,4 @@
-//! Finding rlmeshd on the LAN (scene design §3.1). rlmeshd advertises
+//! Finding rlmeshd on the LAN. rlmeshd advertises
 //! itself over mDNS as `_rlmesh._tcp.local` ([`advertise`]), with only its
 //! host id (TXT `id`) and its base port: a machine or board that knows the
 //! host's id and static key from pairing or provisioning finds its current

@@ -1,4 +1,4 @@
-//! A robot's side of the lobby (scene design §3.3, §3.5), sans-IO: what it
+//! A robot's side of the lobby, sans-IO: what it
 //! asks the home daemon while it waits, the one order it takes, and when it
 //! leaves a run. An SDK robot process and a board run the same rules; the
 //! caller does the networking.
@@ -11,7 +11,7 @@
 //!
 //! - **The wait** is a long poll: a [`LobbyWait`] the host keeps pending
 //!   until there is an order. The robot re-sends the same request id every
-//!   [`WAIT_RETRY`]; the retry joins the pending operation (safety §8.6).
+//!   [`WAIT_RETRY`]; the retry joins the pending operation.
 //! - **The order** is a [`Join`] naming this robot ([`Lobby::take`]); any
 //!   other order is refused.
 //! - **A failed join** (refused handshake or declare, host unreachable) is

@@ -477,7 +477,7 @@ pub(super) fn plan_state(
         // A custom encoding shadows to its `base` for the structural
         // negotiation; the host-side arm is never imported or run here (only a
         // trusted in-process resolve does). Validate the obs-side invariants the
-        // platform can check without running the arm.
+        // resolver can check without running the arm.
         let model_set = match component.encoding.as_ref() {
             Some(encoding) => {
                 if let (Some(custom), Some(base)) = (component.custom, encoding.first_known()) {

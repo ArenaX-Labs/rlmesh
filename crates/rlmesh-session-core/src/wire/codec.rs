@@ -87,7 +87,7 @@ mod pb {
 
 /// The `rlmesh.session.v2` protobuf descriptors (a serialized
 /// `google.protobuf.FileDescriptorSet`): the schema a recording names for
-/// each envelope it stores (§13).
+/// each envelope it stores.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/session_descriptor.bin"));
 
@@ -240,7 +240,7 @@ pub fn decode_reply(buf: &[u8]) -> Result<CtlReply, WireError> {
     })
 }
 
-/// Encodes a key delivery (§8.5).
+/// Encodes a key delivery.
 pub fn encode_key_delivery(delivery: &KeyDelivery) -> Vec<u8> {
     pb::KeyDelivery {
         keys: delivery.keys.iter().map(key_to_pb).collect(),
@@ -1373,7 +1373,7 @@ fn lockstep_reply_from_pb(r: pb::LockstepReply) -> LockstepReply {
     }
 }
 
-/// Encodes a lockstep request (§8.6).
+/// Encodes a lockstep request.
 pub fn encode_lockstep_request(request: &LockstepRequest) -> Vec<u8> {
     use pb::lockstep_request::Op;
     let op = match &request.op {

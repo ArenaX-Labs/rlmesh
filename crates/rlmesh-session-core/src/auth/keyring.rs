@@ -1,4 +1,4 @@
-//! The keys a process holds besides its pairwise ones (design §8.4, §8.5),
+//! The keys a process holds besides its pairwise ones,
 //! sans-IO: what the host delivered to a participant, or what the host
 //! keeps to open its members' streams. One [`Keyring`] per participant
 //! generation (inside its [`Link`](super::Link)), one in the host.
@@ -40,7 +40,7 @@ use crate::wire::{
 };
 
 /// How long a fixed key waits for its token to appear in authority state
-/// before it is discarded (§8.5).
+/// before it is discarded.
 pub const UNSEEN_TTL_NS: i64 = 4_000_000_000;
 
 /// The kinds a key of `purpose` carries.
@@ -135,7 +135,7 @@ struct Held {
 }
 
 /// One subscription's replay windows over a stream, by key and kind, and
-/// the newest key version it accepted (design §8.5: the first valid
+/// the newest key version it accepted (the first valid
 /// message under a newer version restarts the stream's sample high-water).
 #[derive(Debug, Default)]
 pub struct StreamWindows {
@@ -725,7 +725,7 @@ impl Keyring {
     /// Opens `msg` (which must be `kind`) and returns its body, sliced from
     /// the buffer without a copy, and its key's scope.
     /// Seals this participant's e-stop signal on `keyexpr`
-    /// (`estop/{me}`) under its generation's `k_estop` (§6, §8.4).
+    /// (`estop/{me}`) under its generation's `k_estop`.
     ///
     /// # Errors
     /// [`KeyError::NoKey`] without it: this generation isn't attached.

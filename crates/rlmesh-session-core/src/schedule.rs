@@ -1,4 +1,4 @@
-//! Policy starts (§8.9) and slowdown reporting (§8.10), sans-IO: every
+//! Policy starts and slowdown reporting, sans-IO: every
 //! time is passed in (`now_ns`), nothing sleeps or spawns.
 //!
 //! [`StartSchedule`] decides when a controller's policy starts:
@@ -107,7 +107,7 @@ impl fmt::Display for SkipReason {
     }
 }
 
-/// Something a controller runtime reports (§8.10).
+/// Something a controller runtime reports.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunEvent {
     /// The completion rate left (`drifting`) or re-entered `[0.8, 1.25] ×`
@@ -117,8 +117,7 @@ pub enum RunEvent {
         measured_hz: f64,
         /// The replan rate R.
         expected_hz: f64,
-        /// The dominant skip reason in the window (`busy`, `stale_input`,
-        /// ...), or `unknown`.
+        /// The dominant skip reason in the window (`busy`, `stale_input`,...), or `unknown`.
         cause: &'static str,
         /// Entered drift (`true`) or recovered (`false`).
         drifting: bool,

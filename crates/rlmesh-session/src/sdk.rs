@@ -169,7 +169,7 @@ pub fn tensor(entry: &str, dtype: &str, shape: Vec<u32>, data: Vec<u8>) -> Resul
     Ok(Tensor { dtype, shape, data })
 }
 
-/// A policy's run-time options (§6.4). Maps are applied sorted, so errors
+/// A policy's run-time options. Maps are applied sorted, so errors
 /// come in a stable order.
 pub struct BindOptions<'a> {
     /// The policy's participant id.
@@ -263,7 +263,7 @@ impl EmbeddedHost {
     }
 }
 
-/// Joins as robot `name` and declares `robot_json` (the authored map, §3).
+/// Joins as robot `name` and declares `robot_json` (the authored map).
 /// Every robot `name` this process joins to one host shares its e-stop
 /// latch, so a stop outlives a rejoin until it is cleared locally.
 pub async fn connect_robot(
@@ -405,7 +405,7 @@ pub async fn robot_from_lobby(
 }
 
 /// The e-stop latch of robot `name` in this process, for the host whose
-/// key is `home`: one per robot process (design §6), so it outlives each
+/// key is `home`: one per robot process, so it outlives each
 /// participant (a rejoin, a lobby's run) until cleared locally.
 fn process_latch(home: [u8; 32], name: &str) -> Arc<crate::participant::LocalLatch> {
     type Latches =
@@ -464,8 +464,8 @@ pub async fn robot_from_lobby_at(
 }
 
 #[cfg(feature = "fleet")]
-/// Why `participant`, a robot in a scene's run, should leave it (scene
-/// design §3.5): the run is closing, the host lost it (it waits in the lobby
+/// Why `participant`, a robot in a scene's run, should leave it: the run is closing,
+/// the host lost it (it waits in the lobby
 /// again, where its run re-sends its join), or another process took its
 /// name over (it stops). `None` while it is in the run, or outside a scene.
 pub fn leaving(participant: &Participant) -> Option<Leave> {
@@ -726,7 +726,7 @@ pub enum BindPolicyError {
 }
 
 /// Joins as policy `name` at `priority`, waits for the robot's parts, binds
-/// `policy_json` (§6) with `options` and declares the binding. A refused
+/// `policy_json` with `options` and declares the binding. A refused
 /// policy leaves the session.
 pub async fn bind_policy(
     address: &SessionAddress,

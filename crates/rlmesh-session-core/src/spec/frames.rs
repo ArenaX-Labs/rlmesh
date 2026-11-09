@@ -1,6 +1,6 @@
-//! Cross-robot geometry (scene design §5): each place's pose is data, the
+//! Cross-robot geometry: each place's pose is data, the
 //! static pose of one of its robot's frames in the scene frame `world`
-//! (REP-103, z up). The binder never transforms a value (§5.2); a policy
+//! (REP-103, z up). The binder never transforms a value; a policy
 //! that needs another robot's frame composes two poses with [`between`].
 
 #[allow(unused_imports)]
@@ -32,7 +32,7 @@ fn rotate(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
 /// The static rigid transform from place `a`'s frame to place `b`'s:
 /// `T_b←a = T_world←b⁻¹ · T_world←a`, in 64 bits. A point `p` in `a`'s
 /// frame is `rotate(q, p) + xyz` in `b`'s. The quaternion is unit length
-/// with w ≥ 0, as every quaternion a conversion produces (§5.3).
+/// with w ≥ 0, as every quaternion a conversion produces.
 pub fn between(a: &Pose, b: &Pose) -> Pose {
     let unit = |q: [f64; 4]| {
         let n = libm::sqrt(q.iter().map(|c| c * c).sum());
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn between_composes_two_world_poses() {
-        // The scene design's §2 rig: eye-l unrotated, the arm turned 90°
+        // The rig: eye-l unrotated, the arm turned 90°
         // about z. In the arm's frame eye-l's frame is turned -90°, and
         // its origin, (-0.365, 0.2, 0.3) from the arm in world, reads
         // (0.2, 0.365, 0.3).

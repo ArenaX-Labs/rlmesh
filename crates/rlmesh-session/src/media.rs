@@ -6,7 +6,7 @@
 //!
 //! 1. is skipped outright when the stream's publication plan (or its `send`
 //!    rate ceiling) would coalesce it, or while the bitrate budget (`send:
-//!    latest(max_mbps=…)`, §8.5) is spent, before any encoding work. The
+//!    latest(max_mbps=…)`) is spent, before any encoding work. The
 //!    bucket refills at the budget; its capacity is the larger of 100 ms of
 //!    budget and one maximum-size frame, a frame is admitted while the
 //!    bucket is positive, and its actual bytes are then subtracted (debt);

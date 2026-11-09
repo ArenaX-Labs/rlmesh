@@ -1,5 +1,5 @@
 //! The board link's messages (feature `board`, unreleased): `HELLO`,
-//! `STATE`, `COMMAND` and the rest of spec §4.
+//! `STATE`, `COMMAND` and the other board messages.
 
 use super::{MsgError, Receiver};
 use crate::frame::{self, Frame};
@@ -215,7 +215,7 @@ pub enum Msg<'a> {
 /// `HELLO.rx_max` bounds: room for `ATTACH` (16 bytes decoded), at most a
 /// whole frame.
 pub const RX_MAX: core::ops::RangeInclusive<u16> = 16..=256;
-/// `HELLO.watchdog_ms` bounds (§6.2).
+/// `HELLO.watchdog_ms` bounds.
 pub const WATCHDOG_MS: core::ops::RangeInclusive<u16> = 20..=5000;
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn the_spec_lengths_hold() {
-        // §4: HELLO 31 + name, STATUS 13, ATTACH 12, GET_MAP 5, SAFE 2,
+        // Encoded sizes: HELLO 31 + name, STATUS 13, ATTACH 12, GET_MAP 5, SAFE 2,
         // PING/DETACH 1; COMMAND and STATE frames are dense + 9.
         let len = |msg: Msg<'_>| {
             let mut n = 0;

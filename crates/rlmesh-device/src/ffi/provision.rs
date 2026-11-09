@@ -1,4 +1,4 @@
-//! USB provisioning's C ABI (tether spec §14): `rlmesh_device_key_public`
+//! USB provisioning's C ABI: `rlmesh_device_key_public`
 //! and `rlmesh_device_provision_*`.
 
 use alloc::boxed::Box;

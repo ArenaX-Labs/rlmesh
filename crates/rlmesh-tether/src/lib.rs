@@ -1,4 +1,4 @@
-//! The serial tether (spec `tether-spec.md`, frozen at v6): a board without a
+//! The serial tether: a board without a
 //! network speaks framed messages over a byte link to a computer, and the
 //! computer is the RLMesh robot for it.
 //!
@@ -13,7 +13,7 @@
 //!   (a board link's only with `board`);
 //! - `pack` (feature `board`): a part's dense cable form against the
 //!   session's 8-byte aligned layout;
-//! - [`provision`]: a networked board's USB provisioning (spec §14), on the
+//! - [`provision`]: a networked board's USB provisioning, on the
 //!   same framing.
 
 #![no_std]

@@ -1,4 +1,4 @@
-//! The v1/v2 latency benchmark (Haply/UR10 teleop shape, `bench2-spec.md`)
+//! The v1/v2 latency benchmark (Haply/UR10 teleop shape)
 //! on the production crates: an embodiment process (the session host,
 //! force/torque at 1 kHz, an optional camera, and the edge with its action
 //! queue and fallback) and a controller process that re-plans action chunks

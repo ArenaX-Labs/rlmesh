@@ -1,5 +1,5 @@
-//! The key an embedded host's address carries (`…/{session}#{secret}.{host}`,
-//! design §12 decision 2): what a script, a sandbox or a board parses out of
+//! The key an embedded host's address carries (`…/{session}#{secret}.{host}`): what a
+//! script, a sandbox or a board parses out of
 //! the address it was given, to attach as device `local`.
 
 use core::fmt;
@@ -96,7 +96,7 @@ impl AddressKey {
 /// The `kdf` label of an embedded host's link password.
 pub const LINK_LABEL: &[u8] = b"rlmesh/v2 link";
 
-/// The Zenoh `usrpwd` password of an embedded host's links (design §5):
+/// The Zenoh `usrpwd` password of an embedded host's links:
 /// `kdf(local secret, "rlmesh/v2 link")`, base32. Only holders of the
 /// address's key (and the host) have it, so other local users can't link
 /// to the host's router.

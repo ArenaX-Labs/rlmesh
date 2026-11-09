@@ -1,4 +1,4 @@
-//! The interop vectors of design §8.8 (`tests/vectors/crypto.json`): this
+//! The interop vectors (`tests/vectors/crypto.json`): this
 //! build must reproduce them byte for byte, and each is cross-checked
 //! against the primitives directly, from the documented byte layouts.
 //!
@@ -136,7 +136,7 @@ mod direct {
     }
 }
 
-const ABOUT: &str = "RLMesh v2 crypto interop vectors (design §8.8, DESIGN.md f3197f0). All byte \
+const ABOUT: &str = "RLMesh v2 crypto interop vectors. All byte \
 strings are hex. Every fixed input (static and ephemeral private keys, the Ed25519 secret, Sealed keys, \
 Ni, Nr) is BLAKE2s-256 of the UTF-8 string 'rlmesh/v2 vector: <name>' with the name given in `inputs`; \
 pairing's 16-byte exchange id is the first 16 bytes of that hash for its name. Handshake ephemerals are \
@@ -146,8 +146,7 @@ rlmesh_session_core::crypto, except k_up/k_down and the XX split, which come fro
 with snow's own primitives; the same test cross-checks every vector with chacha20poly1305, ed25519-dalek, \
 blake2 and snow directly. Sealed: nonce = kind || 3 zero bytes || seq u64 LE; AAD encrypted = header || \
 lp(keyexpr), integrity-only = header || lp(keyexpr) || body with an empty plaintext. Signed: signature over \
-lp(\"rlmesh/v2 signed\") || header || lp(keyexpr) || body; signed_view is a DeviceView (kind 22, scene \
-design §3.4) whose body is the protobuf rlmesh.session.v2.DeviceView. IK: Noise_IK_25519_ChaChaPoly_BLAKE2s; k_up and \
+lp(\"rlmesh/v2 signed\") || header || lp(keyexpr) || body; signed_view is a DeviceView (kind 22) whose body is the protobuf rlmesh.session.v2.DeviceView. IK: Noise_IK_25519_ChaChaPoly_BLAKE2s; k_up and \
 k_down are the raw split (first = initiator to responder); sealed_up and sealed_down are one Sealed each way \
 under them, sealed by the crate. Pairing: Noise_XX_25519_ChaChaPoly_BLAKE2s with prologue \
 lp(\"rlmesh/v2 pair\") || exchange and empty payloads; key 1 = laptop to daemon (first split output).";

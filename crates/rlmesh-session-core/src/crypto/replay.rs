@@ -1,4 +1,4 @@
-//! A receiver's replay window for one (`key_id`, `kind`) flow (§8.2).
+//! A receiver's replay window for one (`key_id`, `kind`) flow.
 
 /// The highest `seq` seen and a 64-entry bitmap of the 64 `seq`s below it.
 /// A `seq` that was seen, or is more than 64 below the highest, is a replay.

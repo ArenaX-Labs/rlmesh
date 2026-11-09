@@ -1,5 +1,5 @@
 //! The fallback ladder of one command group, run once per control tick on
-//! edge-local time (§9.5, §9.7).
+//! edge-local time.
 //!
 //! A group is one or more commandable parts that drive the same actuators
 //! (an ungrouped part is a group of one). The host leases at most one member
@@ -28,7 +28,7 @@
 //!   (not lapsed), the ladder still holds and then runs the safe behaviour,
 //!   but unlatched: the next lease on the group resumes it.
 //! - `Estop`: the robot process latched a local e-stop
-//!   ([`Fallback::set_latch`], DESIGN §6), or the session is in ESTOP. The
+//!   ([`Fallback::set_latch`]), or the session is in ESTOP. The
 //!   local latch comes first, ahead of having no host view at all: it works
 //!   with no network. Clearing it leaves the ladder to the host's view (an
 //!   edge with none stays Idle).

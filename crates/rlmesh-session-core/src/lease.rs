@@ -1,4 +1,4 @@
-//! The holder's side of a lease (§9.7), sans-IO: every participant that
+//! The holder's side of a lease, sans-IO: every participant that
 //! commands a part tracks its lease here. The browser binding holds one
 //! [`LeaseClient`] per part; the native controller and the lockstep driver
 //! hold their parts together as a [`LeaseGroup`] (one all-or-none request,
@@ -15,7 +15,7 @@
 //!   lower bound of the host's expiry in the holder's clock: the request's
 //!   send time plus the ttl (the grant came after the request left), and the
 //!   host's `expires_ns` converted conservatively, `expires − θ − ε`, so an
-//!   offset error can only shorten it (the edge's rule, §9.1).
+//!   offset error can only shorten it (the edge's rule).
 //! - **Renewal.** A newer authority snapshot carrying the same token moves
 //!   the deadline forward. Once the deadline passes the lease is expired for
 //!   good: a late snapshot never resurrects it, and only a new request (a new
@@ -314,7 +314,7 @@ impl LeaseClient {
         if held && snapshot.epoch == epoch {
             return None;
         }
-        // The host says why (DESIGN §7); older hosts leave it to inference.
+        // The host says why; older hosts leave it to inference.
         if let Some(end) = snapshot
             .ended
             .iter()

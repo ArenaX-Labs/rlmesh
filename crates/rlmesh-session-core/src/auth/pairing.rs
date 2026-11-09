@@ -1,4 +1,4 @@
-//! Machine pairing's exchanges (design §3), sans-IO: rlmeshd's
+//! Machine pairing's exchanges, sans-IO: rlmeshd's
 //! [`Pairings`] (its pending exchanges, their limits and the owner's
 //! approval) and the laptop's [`Pairing`]. Both run
 //! [`crate::crypto::pairing`] and the messages of [`crate::wire::pair`];
@@ -32,8 +32,7 @@ pub const HANDSHAKES_PER_MINUTE: usize = 10;
 pub const WRONG_CODES: u32 = 5;
 /// The kind a laptop pairs as.
 pub const MACHINE: &str = "machine";
-/// The kind a browser token pairs as, for the gateway that holds its key
-/// (design §5).
+/// The kind a browser token pairs as, for the gateway that holds its key.
 pub const BROWSER: &str = "browser";
 /// The longest name a laptop may give.
 pub const MAX_NAME: usize = 64;
@@ -147,7 +146,7 @@ impl Exchange {
     }
 }
 
-/// rlmeshd's pairing exchanges (design §3): at most [`MAX_PENDING`]
+/// rlmeshd's pairing exchanges: at most [`MAX_PENDING`]
 /// pending, [`HANDSHAKES_PER_MINUTE`] completed XX handshakes a minute,
 /// each kept [`EXPIRY_NS`] (decided ones too, so a lost result can be
 /// fetched again), and [`WRONG_CODES`] wrong codes close the window.

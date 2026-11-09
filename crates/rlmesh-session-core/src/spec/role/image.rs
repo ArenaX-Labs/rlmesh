@@ -136,7 +136,7 @@ pub(super) fn plan_image(
         ));
     }
     // `render` is an assertion about the camera, not a request the core can
-    // satisfy: the platform binds the env's camera dial from it before the run,
+    // satisfy: a caller can set the env's camera dial from it before the run,
     // and this is the check that the dial actually moved. Checked against the
     // camera that was *bound* (a lone-camera rebind included), and only when the
     // env's resolution was derivable -- an undeclared camera size is not
@@ -965,7 +965,7 @@ mod image_resolve_tests {
     #[test]
     fn render_disagreeing_with_the_bound_camera_is_a_render_mismatch() {
         // The dial did not move (or moved somewhere else). Loud, and its own
-        // code so the platform can map it to a binding failure rather than a
+        // code so callers can distinguish a binding failure from a
         // generic unsupported-option error.
         let env = env_image(256, 256);
         let mut model = model_image(224, 224, false);

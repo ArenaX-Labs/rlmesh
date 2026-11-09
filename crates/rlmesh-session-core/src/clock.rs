@@ -1,4 +1,4 @@
-//! NTP-style clock offset estimation with an error bound (design §3.1-3.2),
+//! NTP-style clock offset estimation with an error bound,
 //! sans-IO.
 //!
 //! In wall mode the session clock is the host's monotonic clock, and the

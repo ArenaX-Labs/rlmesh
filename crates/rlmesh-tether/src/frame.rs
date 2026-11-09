@@ -1,5 +1,5 @@
 //! Frames: `type: u8 | seq: u8 | payload | crc: u16 LE`, COBS-encoded and
-//! ended by `0x00` (spec §3). The CRC covers `type | seq | payload`.
+//! ended by `0x00`. The CRC covers `type | seq | payload`.
 
 use crate::{cobs, crc};
 

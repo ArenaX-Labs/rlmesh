@@ -1,6 +1,6 @@
 //! A part's value on the cable is dense: its fields back to back, with no
-//! padding (spec §3.3). In the session each field starts on an 8-byte
-//! boundary and the stride is rounded up to 8 (session spec §10.6). The
+//! padding. In the session each field starts on an 8-byte
+//! boundary and the stride is rounded up to 8. The
 //! bridge converts between the two with the part's field offsets and
 //! lengths (`wire::Layout::Packed`); the board only ever sees dense bytes.
 

@@ -24,7 +24,7 @@
 //! Jupyter URL carries its token: `127.0.0.1:7447/bench-3#{local
 //! secret}.{host key}` (each 32 bytes, base32: [`AddressKey`]), and a
 //! participant address appends `/{participant}` after it. Holding the
-//! address is the invite (design §2): its holder attaches as device
+//! address is the invite: its holder attaches as device
 //! `local`. A process joining a host on this machine without the key uses
 //! rlmeshd's ([`LOCAL_KEY`] in [`daemon_dir`], 0600), so this user's
 //! scripts meet by name at the daemon.
@@ -102,7 +102,7 @@ impl fmt::Display for HostName {
 
 /// The environment variable a launcher passes the keys of the host it
 /// starts in (a sandbox container) through, as [`launch_identity`] makes
-/// them: the workload spec of design §10. [`host_at`] hosts under them.
+/// them. [`host_at`] hosts under them.
 pub const HOST_IDENTITY_VAR: &str = "RLMESH_HOST_IDENTITY";
 
 /// Fresh keys for a host another process will run (a container): the text
@@ -331,7 +331,7 @@ impl Address {
             ParticipantId::new(session)
                 .map_err(|_| invalid(text, "a session is a name of [A-Za-z0-9._-] or a UUID"))?;
         }
-        // `_lobby` and the like are the daemon's own (scene design §1).
+        // `_lobby` and the like are the daemon's own.
         if session.is_some_and(|s| s.starts_with('_')) {
             return Err(invalid(text, "session names starting with _ are reserved"));
         }
@@ -493,7 +493,7 @@ pub struct SessionAddress {
     pub key: Option<AddressKey>,
     /// What its participants attach with, ahead of the key and any found
     /// by `base`: a paired machine's device key against the host its host
-    /// file names, or against a satellite's run host (scene design §4.4).
+    /// file names, or against a satellite's run host.
     /// Never in its text.
     pub credential: Option<Credential>,
 }
@@ -841,7 +841,7 @@ pub fn credential(base: SocketAddr, key: Option<&AddressKey>) -> Result<Credenti
         })
 }
 
-/// What a link to the host at `base` presents (design §5): on loopback, the
+/// What a link to the host at `base` presents: on loopback, the
 /// password `key` derives, else the key of a host this process runs; on
 /// the LAN, and to rlmeshd (a LAN host), nothing.
 pub fn link_auth(base: SocketAddr, key: Option<&AddressKey>) -> Option<LinkAuth> {
@@ -869,11 +869,10 @@ pub const STATE_DIR_VAR: &str = "RLMESH_STATE_DIR";
 
 /// The file in [`daemon_dir`] that holds the key of rlmeshd's device
 /// `local`: its address key (`{local secret}.{host key}`, [`AddressKey`]),
-/// 0600. This user's processes on its machine attach as `local` with it
-/// (design §2).
+/// 0600. This user's processes on its machine attach as `local` with it.
 pub const LOCAL_KEY: &str = "local.key";
 
-/// Where rlmeshd keeps its identity and device table (design §3):
+/// Where rlmeshd keeps its identity and device table:
 /// [`STATE_DIR_VAR`], else `rlmesh/daemon` in the user's state directory
 /// (`$XDG_STATE_HOME`, `~/.local/state`), or their local data directory
 /// where there is none.
@@ -945,8 +944,8 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
 
 /// Joins the host at `base` as a Zenoh client by `deadline`, presenting
 /// `link`. A host bound beyond loopback (`insecure`, rlmeshd's LAN listener)
-/// gates no link, since Zenoh can't gate one listener and not another
-/// (design §5), and refuses a password it never asked for: when a gated
+/// gates no link, since Zenoh can't gate one listener and not another, and refuses a
+/// password it never asked for: when a gated
 /// link to a listening host fails, the join links without one, and the
 /// handshake alone admits it, as on any LAN link.
 async fn open_client(
@@ -988,11 +987,11 @@ async fn open_client(
 /// keys (or the ones its launcher passed in [`HOST_IDENTITY_VAR`]): the
 /// returned address carries them, the invite for other processes.
 ///
-/// It listens on loopback only (design §12 decision 9) unless `insecure`,
+/// It listens on loopback only unless `insecure`,
 /// or a launcher passed its keys (a sandbox's container, whose published
 /// ports its launcher dials with them): LAN sessions are rlmeshd's. On
 /// loopback, and in a launched container, every link must present the
-/// password the key derives (design §5). Beyond loopback no link does:
+/// password the key derives. Beyond loopback no link does:
 /// Zenoh gates every listener of a router or none, and a board's zenoh-pico
 /// has no `usrpwd`, so there the handshake alone admits, as on any LAN link.
 pub async fn host_at(
@@ -1075,7 +1074,7 @@ async fn serve_at(
 }
 
 /// Opens a host's per-class listeners on `base` (port 0: free local
-/// ports), every link gated by `password` (Zenoh `usrpwd`, design §5) when
+/// ports), every link gated by `password` (Zenoh `usrpwd`) when
 /// there is one.
 pub async fn open_listeners(
     base: SocketAddr,

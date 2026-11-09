@@ -1,8 +1,8 @@
-//! Binding (§6.5): a policy map against the robot maps in a session, to a
+//! Binding: a policy map against the robot maps in a session, to a
 //! binding table or the full list of refusals.
 //!
 //! 1. **Normalise** the policy ([`Policy::parse`]).
-//! 2. **Selectors** (§6.4), with run-time `at=` overrides.
+//! 2. **Selectors**, with run-time `at=` overrides.
 //! 3. **Structural candidates**: parts whose path matches and whose kind
 //!    equals the entry's (custom kinds by exact name); other parts of the
 //!    kind are kept for diagnostics.
@@ -14,16 +14,16 @@
 //! 5. **Optional entries** under the chosen assignment: absent binds `blank`
 //!    (inputs) or `drop` (actions) when allowed.
 //! 6. **Compatibility** against the one candidate: each difference is
-//!    automatic (§7.1), allowed (§7.2), or refused (`not_allowed`, naming the
+//!    automatic, allowed, or refused (`not_allowed`, naming the
 //!    conversion, or `incompatible`).
 //! 7. **Duplicate targets**: two actions on one part, or on two members of
 //!    one command group.
-//! 8. **Emit** the table, its delivery contracts (§8.2), its action grids and
+//! 8. **Emit** the table, its delivery contracts, its action grids and
 //!    its fingerprint (BLAKE3 over the canonical table).
 //!
 //! Lease availability is not part of binding.
 //!
-//! In a scene (scene design §5), a run that names no robot binds against the
+//! In a scene, a run that names no robot binds against the
 //! view ([`crate::spec::view`]): selectors resolve from the view root, a
 //! qualified selector (`eye-l:gaze`) in that robot's own map, and actions may
 //! target any placed robot, aligned by `t0` only. Lockstep sessions keep
@@ -116,7 +116,7 @@ impl Status {
 }
 
 /// A binder diagnostic code (lowercase; wire statuses are uppercase and
-/// never share a name, §6.5).
+/// never share a name).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Code {
     /// A required entry has no candidate.
@@ -165,7 +165,7 @@ pub(crate) struct NamesClash {
     pub(crate) robot: Vec<String>,
 }
 
-/// One refusal (§6.7).
+/// One refusal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Problem {
     /// Its code.
@@ -292,7 +292,7 @@ pub struct ActionRow {
     pub t0: ChunkStart,
 }
 
-/// A binding table (§6.8).
+/// A binding table.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Binding {
     /// The policy.
@@ -328,7 +328,7 @@ impl Binding {
             .collect()
     }
 
-    /// The action grid per commanded part (§9.2).
+    /// The action grid per commanded part.
     pub fn grids(&self) -> Vec<ActionGrid> {
         self.actions
             .iter()
@@ -685,7 +685,7 @@ struct Binder<'a> {
 }
 
 /// What a policy binds against: every robot's parts and, when the session
-/// runs a scene, its place table (scene design §5).
+/// runs a scene, its place table.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Target<'a> {
     /// Every declared part.
@@ -1330,7 +1330,7 @@ impl<'a> Binder<'a> {
             .push(problem(Code::Incompatible, slot, head, body));
     }
 
-    /// Frame identities (§5.2): `frame`, pose `child`, wrench `point`.
+    /// Frame identities: `frame`, pose `child`, wrench `point`.
     fn frames(&mut self, slot: &Slot<'_>, part: &PartSpec, point: Option<&String>) -> bool {
         let kind = Kind::parse(&part.kind).unwrap_or(Kind::Custom);
         let path = part.path.as_str();
@@ -1387,7 +1387,7 @@ impl<'a> Binder<'a> {
         ok
     }
 
-    /// Joint names (§6.2): the order the model's elements take from the
+    /// Joint names: the order the model's elements take from the
     /// robot's, or a refusal.
     fn names(&mut self, slot: &Slot<'_>, part: &PartSpec, n: u32, path: &str) -> Option<Order> {
         let entry = slot.entry;
@@ -1495,7 +1495,7 @@ impl<'a> Binder<'a> {
                                 index.len(),
                                 part.names.len()
                             ),
-                            vec!["    Commanding a subset of a part (scatter) is Later (§19); declare the subset as its own part.".into()],
+                            vec!["    Commanding a subset of a part (scatter) is Later; declare the subset as its own part.".into()],
                         );
                         return None;
                     }
@@ -1828,7 +1828,7 @@ impl<'a> Binder<'a> {
                             slot.name(),
                             part.kind
                         ),
-                        vec!["    A custom kind binds only by exact name and a matching fields schema (§4.2).".into()],
+                        vec!["    A custom kind binds only by exact name and a matching fields schema.".into()],
                     );
                     return None;
                 }
@@ -2071,7 +2071,7 @@ impl<'a> Binder<'a> {
                         hz(trained),
                         hz(source_hz)
                     ),
-                    vec!["    Resampling a window to another rate is Later (§19).".into()],
+                    vec!["    Resampling a window to another rate is Later.".into()],
                 );
                 return None;
             }
@@ -2112,7 +2112,7 @@ impl<'a> Binder<'a> {
         })
     }
 
-    /// The image pipeline (§7.4): decode → rotate180 → declared crop →
+    /// The image pipeline: decode → rotate180 → declared crop →
     /// aspect fit + resize → bgr → layout → dtype or range.
     #[allow(clippy::too_many_arguments)]
     fn image(
@@ -2175,7 +2175,7 @@ impl<'a> Binder<'a> {
                         source_format.name(),
                         input.format.name()
                     ),
-                    vec!["    Mono ↔ RGB conversion is Later (§19).".into()],
+                    vec!["    Mono ↔ RGB conversion is Later.".into()],
                 );
                 return None;
             }
@@ -2555,9 +2555,7 @@ impl<'a> Binder<'a> {
                     slot.robot,
                     self.robot
                 ),
-                vec![
-                    "    All of a policy's action entries target one robot in v0.2 (§6.6).".into(),
-                ],
+                vec!["    All of a policy's action entries target one robot in v0.2.".into()],
             );
             return None;
         }
@@ -2789,8 +2787,14 @@ impl<'a> Binder<'a> {
             if !matches {
                 self.incompatible(
                     slot,
-                    format!("{}: {path}'s command fields do not match the declared schema.", slot.name()),
-                    vec!["    A custom kind binds only by exact name and a matching fields schema (§4.2).".into()],
+                    format!(
+                        "{}: {path}'s command fields do not match the declared schema.",
+                        slot.name()
+                    ),
+                    vec![
+                        "    A custom kind binds only by exact name and a matching fields schema."
+                            .into(),
+                    ],
                 );
                 return None;
             }
@@ -2807,7 +2811,7 @@ impl<'a> Binder<'a> {
                     hz(grid_hz),
                     hz(part.control_hz)
                 ),
-                vec!["    At most one delta is dispatched per control tick (§9.3).".into()],
+                vec!["    At most one delta is dispatched per control tick.".into()],
             );
             return None;
         }

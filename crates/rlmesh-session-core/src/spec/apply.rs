@@ -1,4 +1,4 @@
-//! Applying a binding's plans (§7.4): a bound input's samples to what
+//! Applying a binding's plans: a bound input's samples to what
 //! `predict` receives, and what `predict` returns to a part's packed
 //! command values.
 //!
@@ -15,7 +15,7 @@
 //! Arithmetic runs in `f64`. A field no arithmetic step touches keeps its
 //! bytes, so integer fields of any width pass through exactly; casts to an
 //! integer round half away from zero and saturate, float narrowing rounds to
-//! nearest (§7.2 `dtype`).
+//! nearest (`dtype`).
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -58,7 +58,7 @@ impl Tensor {
     }
 }
 
-/// What `predict` receives for an input, or returns for an action (§6.1).
+/// What `predict` receives for an input, or returns for an action.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     /// One array.

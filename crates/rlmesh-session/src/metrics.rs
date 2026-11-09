@@ -1,4 +1,4 @@
-//! Link and lag metrics per participant (design §3.3), as the host sees them,
+//! Link and lag metrics per participant, as the host sees them,
 //! plus what each participant reports in its heartbeats.
 //!
 //! Edge-side lag metrics (`action_age_at_apply`, deadline misses, fallback

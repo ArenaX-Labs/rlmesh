@@ -531,7 +531,7 @@ mod opaque_actuator_contract {
     }
 }
 
-/// Rejected-design contract: actions have NO accept-set. An actuator's
+/// Actions have NO accept-set. An actuator's
 /// `encoding` is a single `RotationEncoding` (both action producers and
 /// consumers are rigid; flexibility is env-producer-only, so the obs-side
 /// `AcceptSet` list form must never parse here). These tests pin the rejection

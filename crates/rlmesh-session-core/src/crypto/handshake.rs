@@ -1,4 +1,4 @@
-//! The participant's handshake (§8.3): `Noise_IK_25519_ChaChaPoly_BLAKE2s`,
+//! The participant's handshake: `Noise_IK_25519_ChaChaPoly_BLAKE2s`,
 //! participant as initiator, host as responder. msg 1 carries no payload;
 //! msg 2 carries the `HandshakeAccept` bytes. `k_up` and `k_down` are the
 //! raw split: the first half is initiator → responder (`k_up`).
@@ -182,7 +182,7 @@ impl IkInitiator {
     /// Read msg 2: the `HandshakeAccept` bytes and the keys.
     ///
     /// Consumes the state: a forged or corrupted msg 2 ends this attempt,
-    /// and the participant starts a new handshake (§8.3 doesn't ask for
+    /// and the participant starts a new handshake (doesn't ask for
     /// more; the host's reply is a single query reply).
     ///
     /// # Errors

@@ -1,4 +1,4 @@
-//! Selectors (§6.4): which parts an entry's `at` names.
+//! Selectors: which parts an entry's `at` names.
 //!
 //! | Selector | Meaning |
 //! |---|---|

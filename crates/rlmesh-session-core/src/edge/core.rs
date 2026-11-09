@@ -2,7 +2,7 @@
 //! the fallback ladder and the applied stream.
 //!
 //! A group is the robot's commandable parts that drive the same actuators
-//! (`command.group`, §9.7); an ungrouped part is a group of one.
+//! (`command.group`); an ungrouped part is a group of one.
 //! [`EdgeCore::accept`] validates each chunk on arrival against the edge's
 //! last-known authority view and its own clock, and splices it into its
 //! part's queue; the embodiment's control loop calls [`EdgeCore::tick`] once
@@ -10,7 +10,7 @@
 //! its last-known lease until that lease expires by its own clock, then
 //! falls back.
 //!
-//! # Intake (§9.2)
+//! # Intake
 //!
 //! A chunk is rejected whole when: it is for another part; the robot
 //! process latched a local e-stop ([`EdgeCore::set_local_estop`]) or the
@@ -19,11 +19,11 @@
 //! the lease expired by the edge clock; it is past `valid_until`; it fails
 //! the transit check; its seq is not above the last accepted for its token;
 //! its payload does not match `count` × the command stride; or any value is
-//! invalid ([`crate::edge::command`], §9.6). Valid actions are clamped to the
+//! invalid ([`crate::edge::command`]). Valid actions are clamped to the
 //! part's limits before they are queued, so the clamped value is what the
 //! edge dispatches and what `_applied` shows.
 //!
-//! # Clock safety (§9.1)
+//! # Clock safety
 //!
 //! Chunk times are session time. With the edge's clock mapping
 //! `session = local + θ` within `± ε`:
@@ -72,8 +72,7 @@ pub struct EdgeConfig {
     /// times are read as edge time and a delayed snapshot can extend the
     /// lease.
     pub require_clock_mapping: bool,
-    /// Refuse chunks while a mapping's error bound exceeds this (§9.1,
-    /// `max_clock_error`).
+    /// Refuse chunks while a mapping's error bound exceeds this (`max_clock_error`).
     pub max_clock_error: Duration,
 }
 
@@ -123,7 +122,7 @@ pub enum Rejection {
     /// The clock error bound exceeds [`EdgeConfig::max_clock_error`].
     ClockUncertain,
     /// Not sealed under a command key this robot holds for the chunk's
-    /// part, token and source (design §8.4): not the lease holder's.
+    /// part, token and source: not the lease holder's.
     Unauthenticated,
 }
 
@@ -209,7 +208,7 @@ impl EdgeStats {
     }
 }
 
-/// One sample of a part's applied stream (§9.4).
+/// One sample of a part's applied stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppliedSample {
     /// The applied stream's id.
@@ -404,7 +403,7 @@ impl EdgeCore {
     }
 
     /// Latches (`Some`, with its code) or clears the robot process's local
-    /// e-stop (DESIGN §6): while latched every chunk is refused
+    /// e-stop: while latched every chunk is refused
     /// ([`Rejection::Estop`]) and every tick purges the queues and runs
     /// Estop, with or without a host.
     pub fn set_local_estop(&mut self, latch: Option<ReasonCode>) {
@@ -575,7 +574,7 @@ impl EdgeCore {
         if valid_until_ns <= receive_ns {
             return Err(Rejection::Expired);
         }
-        // dt = 0 takes the action grid the lease's binding declared (§9.2),
+        // dt = 0 takes the action grid the lease's binding declared,
         // else the part's control period.
         let dt_ns = match i64::try_from(chunk.dt_ns) {
             Ok(0) => view

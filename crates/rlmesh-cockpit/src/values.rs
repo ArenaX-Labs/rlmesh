@@ -1,7 +1,7 @@
 //! A sample's value as the cockpit shows it, decoded generically from the
 //! stream's declared layout: numbers (named by the part's `names` when they
 //! fit), a summary for large tensors, text, or a camera thumbnail. Nothing
-//! here knows what a robot is (§ "Scope rule").
+//! here knows what a robot is.
 
 use std::sync::Arc;
 
@@ -91,7 +91,7 @@ pub fn thumbnail(spec: &StreamSpec, payload: &[u8], seq: u64) -> Value {
     }))
 }
 
-/// Decodes a raw packed value (§10.6): every field, element by element.
+/// Decodes a raw packed value: every field, element by element.
 /// `names` label the elements of a single-field value when they match its
 /// length (joint names).
 pub fn decode(spec: &StreamSpec, names: &[String], payload: &[u8]) -> Value {
