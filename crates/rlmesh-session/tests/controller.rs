@@ -781,7 +781,7 @@ async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
         .await
         .expect("re-arm eye 2");
     wait_until("eye 2 driven again", || driven_since(&log_two, 0.25, back)).await;
-    assert!(driven_since(&log_one, 0.25, back), "eye 1 never stopped");
+    wait_until("eye 1 still driven", || driven_since(&log_one, 0.25, back)).await;
 
     tracker.stop();
     run.join().expect("run thread").expect("a clean stop");

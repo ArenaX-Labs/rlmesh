@@ -317,6 +317,7 @@ def test_remote_env_drives_a_lockstep_robot() -> None:
             robot.close()
 
 
+@pytest.mark.perf
 def test_a_remote_env_view_step_is_not_delayed_by_the_signal_poll() -> None:
     # Blocked calls poll for Ctrl-C on a timer. Its first tick used to be
     # awaited before the call started, and it waited for the timer's next

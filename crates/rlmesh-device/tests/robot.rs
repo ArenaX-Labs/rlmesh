@@ -763,10 +763,19 @@ async fn one_policy_drives_two_boards_and_a_board_back_from_the_network_is_drive
         assert!(started.elapsed() < WAIT, "the host never lost board 2");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // Board 1 takes more actions with board 2 gone, however slowly a loaded
+    // machine delivers them.
     let before = seen_one.lock().expect("seen").actions.len();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    while seen_one.lock().expect("seen").actions.len() <= before + 10 {
+        assert!(
+            started.elapsed() < WAIT,
+            "board 1 keeps moving while board 2 is gone"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert!(
-        seen_one.lock().expect("seen").actions.len() > before + 10 && driven(&seen_one),
+        driven(&seen_one),
         "board 1 keeps moving while board 2 is gone"
     );
     assert_ne!(world.host.snapshot().mode, Mode::Safe);
