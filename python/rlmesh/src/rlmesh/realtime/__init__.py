@@ -446,6 +446,26 @@ class Robot:
             return None
         return self._native.publish(path, buffers, capture_ns)
 
+    def publish_jpeg(
+        self,
+        path: str,
+        jpeg: bytes | bytearray | memoryview,
+        /,
+        *,
+        capture_ns: int | None = None,
+    ) -> None:
+        """Publish one camera frame already encoded as JPEG, sent as it is.
+
+        For a camera that hands out JPEG (a Pi camera, a USB webcam in MJPEG
+        mode): no decode, no re-encode. ``path`` is a camera declared
+        ``encoding="jpeg"``; the frame's header must give its declared width
+        and height. The same rate ceiling and bitrate budget apply as to
+        :meth:`publish`; never blocks on the network.
+        """
+        if self._lockstep is not None:
+            raise TypeError("publish_jpeg is for a wall-clock robot")
+        self._native.publish_jpeg(path, jpeg, capture_ns)
+
     def serve_lockstep(
         self,
         step: Callable[[dict[str, Any]], Any],

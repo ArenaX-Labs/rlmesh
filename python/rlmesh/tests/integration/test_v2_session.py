@@ -8,6 +8,7 @@ lease its parts and stream timed chunks.
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import shutil
@@ -595,6 +596,40 @@ def test_a_policy_publishes_annotations_under_its_name_and_never_binds_them(
     topics = rlmesh.read_recording(path)["topics"]
     assert topics["/tracker/target"]["messages"] >= 1
     assert topics["/tracker/target"]["undecodable"] == 0
+
+
+def test_a_camera_publishes_frames_it_already_encoded(
+    host: rlmesh.Host, tmp_path: Path
+) -> None:
+    pil = pytest.importorskip("PIL.Image")
+
+    def jpeg(width: int, height: int) -> bytes:
+        out = io.BytesIO()
+        pil.new("RGB", (width, height), (200, 30, 30)).save(out, "JPEG")
+        return out.getvalue()
+
+    cam = {"cam": rlmesh.parts.camera(64, 48, hz=20, encoding="jpeg")}
+    path = tmp_path / "jpeg.mcap"
+    with (
+        rlmesh.Robot("webcam", cam, session=host) as camera,
+        rlmesh.SessionRecorder(path, session=host),
+    ):
+        frame = jpeg(64, 48)
+        for _ in range(10):
+            camera.publish_jpeg("cam", frame)
+            time.sleep(0.06)
+        with pytest.raises(ValueError, match="32x24"):
+            camera.publish_jpeg("cam", jpeg(32, 24))
+        with pytest.raises(ValueError, match="not a JPEG"):
+            camera.publish_jpeg("cam", b"not a jpeg")
+    with rlmesh.Robot(
+        "raw", {"cam": rlmesh.parts.camera(64, 48, hz=20)}, session=host
+    ) as raw:
+        with pytest.raises(ValueError, match="encoding: jpeg"):
+            raw.publish_jpeg("cam", frame)
+    topics = rlmesh.read_recording(path)["topics"]
+    assert topics["/webcam/cam"]["messages"] >= 1
+    assert topics["/webcam/cam"]["undecodable"] == 0
 
 
 def test_eyes_with_no_state_export_and_an_idle_eye_keeps_its_last_action(

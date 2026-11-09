@@ -126,6 +126,7 @@ interface NativeRobot {
   readonly name: string; readonly mode: string; readonly modeReason: string; readonly leaving?: string | null;
   parts(): NativePart[];
   publish(path: string, fields: (string | Uint8Array)[], captureNs?: bigint | null): number | null;
+  publishJpeg(path: string, jpeg: Uint8Array, captureNs?: bigint | null): void;
   due(path: string): NativeDue | null;
   handoverDone(path: string): void;
   arm(): Promise<void>; disarm(): Promise<void>; keep(label: string): Promise<void>;
@@ -539,6 +540,15 @@ export class Robot implements AsyncDisposable {
   publish(path: string, value: PublishValue | Record<string, PublishValue>, opts: { captureNs?: bigint } = {}): number | null {
     const buffers = sample(this.name, this.fields, path, value);
     return call(() => this.native.publish(path, buffers, opts.captureNs ?? null));
+  }
+
+  /**
+   * Publish one camera frame already encoded as JPEG, sent as it is (a camera's MJPEG output: no
+   * decode, no re-encode). `path` is a camera declared `encoding: 'jpeg'`; the frame's header must
+   * give its declared width and height. Never blocks on the network.
+   */
+  publishJpeg(path: string, jpeg: Uint8Array, opts: { captureNs?: bigint } = {}): void {
+    call(() => this.native.publishJpeg(path, jpeg, opts.captureNs ?? null));
   }
 
   /**

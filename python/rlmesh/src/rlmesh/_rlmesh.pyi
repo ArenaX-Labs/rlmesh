@@ -1189,6 +1189,13 @@ class V2Robot:
         are copied before this returns. Returns the sample's seq, or `None`
         when coalesced (or handed to an image encoder).
         """
+    def publish_jpeg(self, path: builtins.str, jpeg: builtins.bytes | builtins.bytearray | memoryview, capture_ns: typing.Optional[builtins.int] = None) -> None:
+        r"""
+        Publishes one frame of the camera `path` already encoded as JPEG
+        (a C-contiguous bytes-like), sent as it is: for a part declared
+        `encoding: jpeg`, at its declared size. Captured at `capture_ns`
+        (now by default); copied before this returns.
+        """
     def due(self, path: builtins.str) -> typing.Optional[V2Due]:
         r"""
         One control tick of the edge serving `path` and its command group:

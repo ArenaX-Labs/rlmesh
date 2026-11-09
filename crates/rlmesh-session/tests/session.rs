@@ -15,7 +15,7 @@ use rlmesh_session::crypto::sealed::Header;
 use rlmesh_session::crypto::{
     Key, Kind, KindSet, Rng, RngError, SealSender, Security, StaticKeypair, signed,
 };
-use rlmesh_session::media::{decode_image, synthetic_frame};
+use rlmesh_session::media::{Offer, decode_image, encode_jpeg, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
 #[cfg(feature = "fleet")]
 use rlmesh_session::scene::Scene;
@@ -1473,6 +1473,42 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
         stats.coalesced > 0 && stats.encoded + stats.coalesced == 10,
         "{stats:?}"
     );
+
+    // A frame the camera already encoded goes out as it is, byte for byte.
+    synthetic_frame(64, 48, 11, &mut frame);
+    let jpeg = bytes::Bytes::from(encode_jpeg(&frame, 64, 48, 70).expect("encode"));
+    let before = frames.lock().map(|f| f.len()).unwrap_or(0);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(matches!(
+        images.offer_jpeg(robot.clock().now_ns(), jpeg.clone()),
+        Ok(Offer::Queued { .. })
+    ));
+    wait_until("the encoded frame arrives", || {
+        frames.lock().map(|f| f.len()).unwrap_or(0) > before
+    })
+    .await;
+    let passed = frames
+        .lock()
+        .expect("frames")
+        .last()
+        .cloned()
+        .expect("frame");
+    assert_eq!(passed.payload, jpeg);
+    assert_eq!(images.stats().passed_through, 1);
+    // One of another size is refused before it is sent.
+    synthetic_frame(32, 24, 0, &mut frame);
+    let small = bytes::Bytes::from(encode_jpeg(&frame, 32, 24, 70).expect("encode"));
+    let refused = images
+        .offer_jpeg(robot.clock().now_ns(), small)
+        .expect_err("another size");
+    assert!(refused.to_string().contains("32x24"), "{refused}");
+    let refused = images
+        .offer_jpeg(
+            robot.clock().now_ns(),
+            bytes::Bytes::from_static(b"not a jpeg"),
+        )
+        .expect_err("not a jpeg");
+    assert!(refused.to_string().contains("not a JPEG"), "{refused}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

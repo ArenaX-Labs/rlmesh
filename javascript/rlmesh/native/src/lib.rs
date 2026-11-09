@@ -666,6 +666,28 @@ impl NativeRobot {
         Ok(sent.map(seq))
     }
 
+    /// Publishes one frame of the camera `path` already encoded as JPEG,
+    /// sent as it is: for a part declared `encoding: jpeg`, at its declared
+    /// size. Captured at `capture_ns` (now by default); copied before this
+    /// returns.
+    #[napi]
+    pub fn publish_jpeg(
+        &self,
+        path: String,
+        jpeg: Uint8Array,
+        capture_ns: Option<BigInt>,
+    ) -> Result<()> {
+        let robot = self.robot()?;
+        let capture = match capture_ns {
+            Some(at) => ns(&at, "captureNs")?,
+            None => robot.participant().clock().now_ns(),
+        };
+        robot
+            .published()
+            .publish_jpeg(&path, capture, bytes::Bytes::copy_from_slice(&jpeg))
+            .map_err(session_err)
+    }
+
     /// One control tick of the edge serving `path` and its command group:
     /// what to dispatch now, or `null`. Call it once per tick per group.
     #[napi]
