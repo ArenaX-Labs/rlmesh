@@ -512,9 +512,13 @@ async fn a_controller_that_stops_sending_holds_then_the_edge_goes_safe_and_ends_
     assert_eq!(stats.safe_reports, 1, "{stats:?}");
     assert_eq!(stats.mode(EdgeMode::Safe).entries, 1);
     let hold = stats.mode(EdgeMode::Hold);
-    // hold_max is 100 ms.
+    // hold_max is 100 ms, timed from when the chunk's coverage ended. Mode
+    // time is charged per tick to the mode of the tick before, so a ticker
+    // stall across that boundary (a loaded CI runner: 87 ms seen) counts
+    // toward Driving, and one before the safe tick counts toward Hold. 40 ms
+    // either way still tells holding for hold_max from going safe at once.
     assert!(
-        (90_000_000..=130_000_000).contains(&hold.time_ns),
+        (60_000_000..=140_000_000).contains(&hold.time_ns),
         "held {} ms",
         hold.time_ns / 1_000_000
     );
