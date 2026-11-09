@@ -1,4 +1,4 @@
-"""Run-prebuilt source resolution (§7.5) and the binding injected as env vars.
+"""Run-prebuilt source resolution and the binding injected as env vars.
 
 These mock Docker (``subprocess``/image probes) so the resolution table and the
 ``RLMESH_MAKE_KWARGS`` injection are exercised without a daemon.

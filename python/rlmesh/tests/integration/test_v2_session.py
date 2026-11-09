@@ -1,6 +1,6 @@
 """rlmesh.realtime on loopback: a Python robot and Python policies in one session.
 
-The robot is the §14.1 UR10e (the conformance fixture), faked: its control
+The robot is the UR10e (the conformance fixture), faked: its control
 loop publishes joints, wrench, gripper and two JPEG cameras, and applies
 whatever its edge says is due. The policies bind to it by kind and path,
 lease its parts and stream timed chunks.
@@ -114,7 +114,7 @@ def wait_until(
 
 
 class FakeUR10e:
-    """The §14.1 UR10e without physics: commanded joints become measured ones."""
+    """The UR10e without physics: commanded joints become measured ones."""
 
     def __init__(self, host: rlmesh.Host, name: str = "ur10e") -> None:
         self.robot = rlmesh.Robot(name, fixture("robots", "ur10e"), session=host)
@@ -797,7 +797,7 @@ def test_publish_checks_fields_dtypes_and_sizes(host: rlmesh.Host) -> None:
 def test_frames_between_composes_two_placed_poses() -> None:
     from rlmesh.frames import between
 
-    # The scene design's §2 rig: in the arm's frame (turned 90° about z),
+    # The two-robot rig: in the arm's frame (turned 90° about z),
     # eye-l's frame is turned -90° and its origin reads (0.2, 0.365, 0.3).
     eye = {
         "at": "eyes/left",

@@ -141,7 +141,7 @@ def test_included_in_metrics_excludes_from_aggregates() -> None:
 
 
 def test_success_rate_counts_an_episode_with_no_reported_outcome_as_a_failure() -> None:
-    """success=None counts as a failure beside a reported outcome, as on the platform."""
+    """success=None counts as a failure beside a reported outcome."""
     rec = Recorder()
     rec.add(
         _run(

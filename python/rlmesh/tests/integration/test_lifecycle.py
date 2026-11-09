@@ -871,7 +871,7 @@ def test_env_server_serves_one_env_vector_shape_as_scalar() -> None:
 def test_env_server_asserts_the_expected_contract_branch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The platform pins the branch it resolved the pairing against; join()
+    # The caller pins the branch it resolved the pairing against; join()
     # reconciles widths and dim laws but never role names, so this is the check
     # that catches an image serving the wrong contract.
     import rlmesh

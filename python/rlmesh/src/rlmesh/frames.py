@@ -1,4 +1,4 @@
-"""Cross-robot geometry in a scene (scene design §5).
+"""Cross-robot geometry in a scene.
 
 Each place's pose is data: the static pose of one of its robot's frames in
 the scene frame ``world`` (z up). RLMesh never transforms a value between

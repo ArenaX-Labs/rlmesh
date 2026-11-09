@@ -73,8 +73,7 @@ def encoding_to_wire(encoding: Any) -> Any:
     A native encoding (a ``str``, or a ``tuple`` accept-set of strings) passes
     through (the tuple as a list); ``None`` stays ``None``. A
     :class:`~rlmesh.adapters.CustomEncoding` becomes a ``{base, ...}`` object the
-    Rust codec accepts: a *schema* the platform describes and validates against
-    an env but never runs. Entrypoint arms travel as their ``module:callable``
+    Rust codec accepts: a describe/validate *schema*, not executable code. Entrypoint arms travel as their ``module:callable``
     strings; in-process callable arms travel as the ``<local>`` marker (see
     :func:`_arm_to_wire`).
     """

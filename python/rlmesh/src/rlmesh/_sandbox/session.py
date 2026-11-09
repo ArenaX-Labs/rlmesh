@@ -559,7 +559,7 @@ def start_prebuilt_container(
             detail = f":\n{pull_stderr}" if pull_stderr else ""
             raise RuntimeError(f"could not pull prebuilt image {image!r}{detail}")
     # The container hosts its session under keys made here, so its address
-    # carries their key (design §10: the workload spec); the secret reaches
+    # carries their key (the workload spec); the secret reaches
     # docker through its environment, never argv.
     identity, key = _sandbox_host_identity()
     with _PORTS_LOCK:

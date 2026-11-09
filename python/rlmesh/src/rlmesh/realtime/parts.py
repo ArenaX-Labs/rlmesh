@@ -1,4 +1,4 @@
-"""Typed constructors for robot map parts (§3, §4) (Experimental).
+"""Typed constructors for robot map parts (Experimental).
 
 Each returns the plain dict the robot map takes, with only the keys given,
 so a map can mix them with dicts and the host still checks every rule::

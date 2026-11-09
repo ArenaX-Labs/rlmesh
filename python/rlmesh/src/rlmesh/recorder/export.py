@@ -3,8 +3,7 @@
 A bundle is ``result.json`` (the ``rlmesh.result.v1`` document) plus a ``media/``
 tree of the referenced assets. A folder is the working form (inspect/iterate
 locally); a zip is the shipping form (the single file a human uploads). Neither
-computes a manifest or per-file hashes -- that is the closed-side mapper's job, so
-the SDK stays decoupled from the platform's storage layout.
+computes a manifest or per-file hashes; asset paths remain bundle-relative.
 """
 
 from __future__ import annotations
