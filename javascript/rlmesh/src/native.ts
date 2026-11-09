@@ -61,13 +61,13 @@ export class SessionRefused extends SessionException {
   override name = 'SessionRefused';
   status = '';
 }
-/** The binder refused a policy: the message is the refuse-and-explain text (§6.7). */
+/** The binder refused a policy: the message is the refuse-and-explain text. */
 export class BindingRefused extends SessionException {
   override name = 'BindingRefused';
   /** `[code, 'input' | 'action', entry]` per problem. */
   problems: [string, string, string][] = [];
 }
-/** A policy start was skipped (§8.8). */
+/** A policy start was skipped. */
 export class StartSkipped extends SessionException {
   override name = 'StartSkipped';
   /** `waiting_for`, `stale_input` or `window_gap`. */
@@ -475,7 +475,7 @@ export class Robot implements AsyncDisposable {
     }
   }
 
-  /** Attach as `name`, declare `parts` (the robot map, §3) and start its publishers and edges. */
+  /** Attach as `name`, declare `parts` (the robot map) and start its publishers and edges. */
   static async connect(
     name: string,
     parts: Record<string, unknown>,
@@ -680,7 +680,7 @@ export class Observation {
   }
 }
 
-/** A binding table (§6.8): what each entry is bound to and how it is delivered. */
+/** A binding table: what each entry is bound to and how it is delivered. */
 export class BindingTable {
   /** The human table, as the cockpit shows it. */
   readonly table: string;
@@ -707,7 +707,7 @@ export class BindingTable {
   }
 }
 
-/** Starts, completions, skips by reason, chunks sent and latency (§8.10). */
+/** Starts, completions, skips by reason, chunks sent and latency. */
 export interface RunStats {
   /** The input whose publication the starts are phased just after (wall clock). */
   alignedTo: string | null;
@@ -749,12 +749,12 @@ export interface BindOptions {
   names?: Record<string, 'positional'>;
   /** Conversions allowed for every entry. */
   allow?: string[];
-  /** Fills `{name}` segments (§6.4). */
+  /** Fills `{name}` segments. */
   captures?: Record<string, string>;
 }
 
 /**
- * A policy map (§6) and, once bound, the controller that runs it. `priority` is the lease class it
+ * A policy map and, once bound, the controller that runs it. `priority` is the lease class it
  * attaches with: `model` (default), `operator` (preempts models: teleop), `safety` or `scripted`.
  */
 export class Policy implements AsyncDisposable {
@@ -771,7 +771,7 @@ export class Policy implements AsyncDisposable {
 
   /**
    * `publishes` declares parts of the policy's own to `publish` annotations on, in the robot map's
-   * form (§3), none commandable: `{ target: { kind: 'x/target', hz: 30, fields: { xy: ['float32',
+   * form, none commandable: `{ target: { kind: 'x/target', hz: 30, fields: { xy: ['float32',
    * [2]] } } }`. They appear under the policy's name (`tracker/target`): recorded, shown in the
    * cockpit, readable by other policies, and never bound to this one.
    */
@@ -794,7 +794,7 @@ export class Policy implements AsyncDisposable {
   }
 
   /**
-   * Attach, bind to `robot`'s parts and declare the binding. Rejects with `BindingRefused` (§6.7).
+   * Attach, bind to `robot`'s parts and declare the binding. Rejects with `BindingRefused`.
    * With no robot it binds the session's view of every robot, each under its name, so one policy
    * drives several: its actions name their robot (`eye-1:eyes`).
    */
@@ -846,7 +846,7 @@ export class Policy implements AsyncDisposable {
     return this.bound!;
   }
 
-  /** A policy start now; throws `StartSkipped` when one is skipped (§8.8). */
+  /** A policy start now; throws `StartSkipped` when one is skipped. */
   observe(): Observation {
     return new Observation(call(() => this.nat().observe()));
   }
@@ -877,7 +877,7 @@ export class Policy implements AsyncDisposable {
   }
 
   /**
-   * Run the policy loop (§8.9) until `duration` seconds or `stop()`; resolves to the run's counters.
+   * Run the policy loop until `duration` seconds or `stop()`; resolves to the run's counters.
    * The loop runs on a native thread; `predict(obs)` runs on this one, at most at the replan rate
    * with one inference in flight (a start that falls while it runs is skipped, never queued). If
    * `predict` throws or rejects, the policy stops sending, releases its leases (the robot holds,
@@ -914,7 +914,7 @@ export class Policy implements AsyncDisposable {
     call(() => this.nat().stop());
   }
 
-  /** Starts, completions, skips by reason, chunks sent and latency (§8.10). */
+  /** Starts, completions, skips by reason, chunks sent and latency. */
   stats(): RunStats {
     return runStats(call(() => this.nat().stats()));
   }
@@ -988,7 +988,7 @@ export interface RecordingSummary {
 }
 
 /**
- * An MCAP recording of the session (§13), attached as an observer. Records every robot's streams
+ * An MCAP recording of the session, attached as an observer. Records every robot's streams
  * (`/{robot}/{path}`, with the edge's `/{robot}/{path}/_applied`), every action chunk sent to an
  * edge (`/{robot}/{path}/_chunks`), and the authority and binding changes (`/_session/authority`,
  * `/_session/bindings`), each envelope as it travelled. `close()` finishes the file.
@@ -1122,7 +1122,7 @@ export function readRecording(path: string): Promise<RecordingSummary> {
   });
 }
 
-/** Bind `policy` to `robot` (`null`: every robot's view) and drive it with `predict` until `duration` (§6.4 options). Shorthand for `Policy` + `bind` + `run`. */
+/** Bind `policy` to `robot` (`null`: every robot's view) and drive it with `predict` until `duration`. Shorthand for `Policy` + `bind` + `run`. */
 export async function drive(
   policy: Record<string, unknown>,
   robot: string | null,

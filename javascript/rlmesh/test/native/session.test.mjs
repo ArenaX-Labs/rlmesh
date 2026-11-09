@@ -1,5 +1,5 @@
 // The native binding on loopback: a Node robot and Node policies in one session, the twin of
-// python/rlmesh/tests/integration/test_v2_session.py. The robot is the §14.1 UR10e (the conformance
+// python/rlmesh/tests/integration/test_v2_session.py. The robot is the UR10e (the conformance
 // fixture), faked: its control loop publishes joints, wrench, gripper and two cameras, and applies
 // whatever its edge says is due. The policies bind to it by kind and path, lease its parts and
 // stream timed chunks. Needs dist/node.js and the addon (`mise run test:js:native`).
@@ -68,7 +68,7 @@ function skipped(policy) {
 const hold = (target, horizon = 10) => ({ arm: { data: new Float32Array(horizon * 6).fill(target), shape: [horizon, 6] } });
 const first = (due) => due.value.data[0];
 
-/** The §14.1 UR10e without physics: commanded joints become measured ones. */
+/** The UR10e without physics: commanded joints become measured ones. */
 class FakeUR10e {
   q = HOME.slice();
   gripper = 1;
