@@ -35,7 +35,7 @@ impl ServeOptions {
 /// A model that cannot fuse (`allow_fusion = false`, or no batched corner)
 /// is not batched.
 ///
-/// The defaults are the platform's: `max_batch_size` and `batch_window_ms`
+/// The defaults are: `max_batch_size` and `batch_window_ms`
 /// as its request compiler sets them, the byte budget and in-flight cap as
 /// its runner reads them. Build one with `..Default::default()`.
 #[derive(Debug, Clone)]
@@ -52,7 +52,7 @@ pub struct BatchOptions {
     /// Batches past assembly at once: one on the model and the next
     /// assembling behind it at 2; 1 assembles only while the model is idle.
     pub max_in_flight_batches: usize,
-    /// Append one JSON line per batch here, in the platform's
+    /// Append one JSON line per batch here, in the
     /// `telemetry/batches.jsonl` shape. `None` records nothing.
     pub batch_records: Option<std::path::PathBuf>,
 }

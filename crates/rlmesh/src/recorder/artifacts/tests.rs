@@ -1,6 +1,4 @@
-//! Layout parity with the managed runner: the names, columns and record keys
-//! below are the ones `rlmesh-middleman` writes (`artifacts/layout.rs`,
-//! `trajectory.rs`, `artifacts/schema/records.rs`).
+//! Artifact layout checks: names, columns and record keys of saved episodes.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -237,7 +235,7 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
         .into(),
     );
 
-    // episode.json keys: middleman's `EpisodeJson` fields.
+    // episode.json keys: `EpisodeJson` fields.
     let episode = read_json(&root.join("episodes/ep000001/episode.json"));
     assert_eq!(
         keys(&episode),
@@ -303,7 +301,7 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
     assert_eq!(failed["files"][0]["kind"], "trajectory");
     assert_eq!(failed["recordings"], json!([]));
 
-    // trajectory.parquet: middleman's columns and types, in its order.
+    // trajectory.parquet: columns and types in the saved order.
     let trajectory =
         std::fs::File::open(root.join("episodes/ep000002/trajectory.parquet")).unwrap();
     let reader =
@@ -361,7 +359,7 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
     let action: Json = serde_json::from_slice(&column("action_raw")).unwrap();
     assert_eq!(action, json!({"shape": [1], "data": [0.0]}));
 
-    // windows.jsonl rows are middleman's snapshot payload.
+    // windows.jsonl rows carry telemetry snapshots.
     let windows = std::fs::read_to_string(root.join("telemetry/windows.jsonl")).unwrap();
     let session = windows
         .lines()

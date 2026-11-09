@@ -1346,7 +1346,7 @@ impl ModelHandler for AdaptedModelHandler {
 /// There is deliberately NO lane check here: `ResolveAdapterRequest` carries no
 /// `num_envs` (the served path decodes it as 0), so the engine cannot see lanes.
 /// The lane guards live where the count is real — `run_local`, `RemoteModel`,
-/// and the managed runner's route connect.
+/// and the runtime driver's route connect.
 fn check_horizon_doors(
     execution_horizon: u32,
     native_chunk: Option<u32>,

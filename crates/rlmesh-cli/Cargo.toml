@@ -48,7 +48,7 @@ rlmesh-proto = { workspace = true }
 rlmesh-cockpit = { workspace = true, optional = true }
 # `rlmesh host`: v2 sessions over Zenoh, recorded (`record`).
 rlmesh-session = { workspace = true, features = ["record"] }
-# `rlmesh devices provision`: the tether's provisioning codec (spec §14).
+# `rlmesh devices provision`: the tether's provisioning codec.
 rlmesh-tether = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

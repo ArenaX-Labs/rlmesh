@@ -563,7 +563,7 @@ async fn predicts_from_several_sessions_coalesce_into_one_handler_call() {
     for mut host in hosts {
         host.close().await.unwrap();
     }
-    // One record, in the platform's batches.jsonl shape.
+    // One record, in the batches.jsonl shape.
     let text = std::fs::read_to_string(&path).unwrap();
     let records: Vec<serde_json::Value> = text
         .lines()

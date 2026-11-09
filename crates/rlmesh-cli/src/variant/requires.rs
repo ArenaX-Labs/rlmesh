@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::constraint::{Clause, dotted, parse_constraint};
 use super::quantity::{QuantityError, format_quantity, parse_quantity};
 
-/// The `requires` keys the platform matches hardware against.
+/// The `requires` keys used for hardware matching.
 pub const REQUIRE_KEYS: [&str; 6] = [
     "accel.vendor",
     "accel.compute",
@@ -90,7 +90,7 @@ fn is_gfx_target(value: &str) -> bool {
     })
 }
 
-/// Parse one `requires` entry, in the platform's words when it is refused.
+/// Parse one `requires` entry, with a diagnostic when it is refused.
 pub fn parse_requirement(key: &str, value: &Value) -> Result<Requirement, String> {
     match key {
         "accel.vendor" => match value.as_str() {

@@ -1,4 +1,4 @@
-//! v1 and v2 trace equivalence (§12.4, the wave 5 release gate's
+//! v1 and v2 trace equivalence (the wave 5 release gate's
 //! "semantically equivalent" half).
 //!
 //! A catalog-style env and a model run over v2 (the env as a lockstep robot
@@ -321,7 +321,7 @@ use rlmesh::binding::model::{LockstepEnv, ResolveOptions};
 use rlmesh::binding::runtime::{NoopRuntimeHooks, RuntimeDriver, RuntimeSessionSpec};
 use rlmesh::lockstep::{ModelBinding, ModelService, ServedModel};
 
-/// The managed runner's route: the runtime drives the lockstep env at
+/// The runtime drives the lockstep env at
 /// `env_address` with the model served at `model_address`, under the
 /// session id, env id and base seed the v1 runtime ran it with. Its golden
 /// was re-recorded when base seeds became paired: the env's episodes follow

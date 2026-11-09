@@ -1,13 +1,12 @@
-//! Pure checks over a built image's OCI config, the way the managed platform's
-//! admission reads it: the serve command and the address it binds, the port it
+//! Pure checks over a built image's OCI config: the serve command and the address it
+//! binds, the port it
 //! exposes, its platform, its rlmesh labels (including the package label's
 //! `variant` / `profiles` blocks, see [`crate::variant`]), and whether the
 //! rlmesh it was built with can meet a platform's workflow editions.
 //!
 //! Nothing here touches docker, the network, or Python: the caller hands in an
 //! [`ImageConfig`] (parsed from `docker image inspect`, a registry manifest, ...)
-//! and reads a [`CheckReport`] back. The managed platform's tooling calls these
-//! functions too, so their names, the report's buckets, and the
+//! and reads a [`CheckReport`] back. Function names, report buckets and the
 //! [`RuntimeOffer`] field names (which are the describe envelope's
 //! `runtime.*` keys and the wire handshake's) are a contract.
 //!
@@ -30,15 +29,15 @@ pub const DESCRIBE_LABEL: &str = "dev.rlmesh.describe";
 pub const PACKAGE_LABEL: &str = "dev.rlmesh.package";
 /// The port the platform connects to a served peer on.
 pub const SERVE_PORT: &str = "50051";
-/// The env var `rlmesh.serve` binds; the platform assigns it per pod.
+/// The env var `rlmesh.serve` binds.
 pub const ADDRESS_ENV: &str = "RLMESH_ADDRESS";
 /// The env var that declares a served peer's workflow edition, above
 /// `--workflow-edition` and the class declaration; empty declares none.
 pub const WORKFLOW_EDITION_ENV: &str = "RLMESH_WORKFLOW_EDITION";
 
 /// What a check found, in the buckets the CLI prints. `failed` means the push
-/// would land as not-runnable or the platform would reject a claim; `warnings`
-/// are claims the platform trims or intent it cannot see; `not_checked` names
+/// contains an invalid or non-runnable image; `warnings` identify inconsistent
+/// or unverifiable claims; `not_checked` names
 /// what could not be decided here (a custom entrypoint, an envelope without
 /// editions) and who decides it instead; `passed` is informational.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,9 +249,8 @@ impl ServeCommand {
 }
 
 /// Read the serve command off an image config. This is how an image with no
-/// describe label is classified; the platform then learns the rest from the
-/// served peer's handshake. The platform's own parser applies these same
-/// rules, so an image reads the same on both sides:
+/// describe label is classified. The served peer's handshake supplies the
+/// rest of its contract. Parsing follows these rules:
 ///
 /// 1. The command is `Entrypoint` followed by `Cmd`, each element one word:
 ///    Docker's argument boundaries are kept, so an exec-form
@@ -436,7 +434,7 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     let mut report = CheckReport::default();
     let command = parse_serve_command(config);
     if command.argv.is_empty() {
-        // The platform warns (a workload can still supply a command); match it.
+        // A workload can still supply a command, so this is a warning.
         report.warnings.push(
             "entrypoint: image declares no Entrypoint/Cmd; the platform cannot see what it \
              serves"
@@ -453,7 +451,7 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
         return report;
     };
     if command.address.is_some() {
-        // A warning, as on the platform: it assigns the address per pod, and a
+        // A warning: the address can be assigned at launch, and a
         // baked flag that names the same port still serves.
         report.warnings.push(format!(
             "entrypoint: --address is baked into the command; it overrides the {ADDRESS_ENV} \
@@ -494,7 +492,7 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     report
 }
 
-/// Check the image's OS/architecture against what the platform runs.
+/// Check the image's OS/architecture against supported deployment targets.
 pub fn check_platform(config: &ImageConfig) -> CheckReport {
     let mut report = CheckReport::default();
     if config.os.is_empty() || config.architecture.is_empty() {
@@ -538,7 +536,7 @@ pub struct RuntimeOffer {
     #[serde(default)]
     pub workflow_edition_error: Option<String>,
     /// The OS the envelope was generated on (`linux`); a label baked on a
-    /// Mac carries `macos` and the platform fails it.
+    /// Mac carries `macos` and fails validation.
     #[serde(default)]
     pub os: Option<String>,
     /// The architecture the envelope was generated on (`x86_64` / `amd64`).
@@ -652,7 +650,7 @@ fn missing_describe_note(config: &ImageConfig) -> String {
 }
 
 /// Check the rlmesh labels' wrappers and read the describe label. A missing
-/// describe label is not a failure: the platform reads describe off the served
+/// describe label is not a failure: the parser reads describe off the served
 /// peer's handshake instead, which `rlmesh.serve` stamps, and a native (C/C++)
 /// env stamps through the C ABI when it binds.
 pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>) {
@@ -705,7 +703,7 @@ pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>
     (report, label)
 }
 
-/// Check where a describe label was generated: the platform fails a label
+/// Check where a describe label was generated: reject a label
 /// whose `runtime.os` is not `linux` (the host's spaces, versions, and
 /// editions are not the image's), and warns on an architecture other than
 /// `x86_64` / `amd64`. Absent fields are not checked.
@@ -1243,7 +1241,7 @@ mod tests {
                 .any(|m| m.contains("admits drivers older than the image's CUDA 12.4")),
             "{report:#?}"
         );
-        // An image without a variant block reports what the platform infers.
+        // An image without a variant block reports what inference supplies.
         config.labels.clear();
         let report = check_image(&config, None);
         assert!(

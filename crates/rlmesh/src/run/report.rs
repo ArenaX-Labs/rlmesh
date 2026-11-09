@@ -2,14 +2,12 @@
 //! per-suite and overall success with Wilson 95% intervals, episode length
 //! and wall time, and the run telemetry merged across workloads.
 //!
-//! The definitions match the managed platform. Success is the share of
-//! counted episodes (`includedInMetrics`) whose env reported a success; an
-//! episode without the signal counts as a failure and is reported as
-//! `unknown`. Telemetry rows merge as the platform rollup merges windows: per
-//! `(op, component, metric)`, counts add and `avg` and each percentile are
-//! count-weighted means (`weighted` in `rollup.go`). A bundle carries each
-//! run's session rows, nearest-rank percentiles over the whole run, so no
-//! warm-up window is discarded (the rollup's session-row fallback).
+//! Success is the share of counted episodes (`includedInMetrics`) whose env
+//! reported a success; an episode without the signal counts as a failure and
+//! is reported as `unknown`. Telemetry rows merge per `(op, component, metric)`:
+//! counts add, and `avg` and each percentile are count-weighted means. A bundle
+//! carries each run's session rows with nearest-rank percentiles over the whole
+//! run, so no warm-up window is discarded.
 
 use std::path::{Path, PathBuf};
 
@@ -197,8 +195,8 @@ pub fn merge(workloads: &[BundleWorkload]) -> Result<RunResult> {
     })
 }
 
-/// Rows of the same `(op, component, metric, unit)` merged as the platform
-/// rollup merges windows: counts add, `avg` and percentiles are
+/// Rows of the same `(op, component, metric, unit)` merge: counts add,
+/// `avg` and percentiles are
 /// count-weighted means. First-seen order.
 pub fn merge_telemetry<'a>(rows: impl IntoIterator<Item = &'a TelemetryRow>) -> Vec<TelemetryRow> {
     let mut merged: Vec<TelemetryRow> = Vec::new();
@@ -643,7 +641,7 @@ mod tests {
             "t1",
             &run(&[None, Some(true)], (0, 99.0)),
         );
-        // An errored episode the platform does not count.
+        // An errored episode excluded from metrics.
         let excluded = RecorderAddOptions {
             task: Some("t1".into()),
             included_in_metrics: false,

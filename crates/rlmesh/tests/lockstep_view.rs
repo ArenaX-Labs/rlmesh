@@ -1,4 +1,4 @@
-//! The Gym view over a v2-native robot that serves lockstep (§12.6).
+//! The Gym view over a v2-native robot that serves lockstep.
 
 #![allow(clippy::unwrap_used)]
 

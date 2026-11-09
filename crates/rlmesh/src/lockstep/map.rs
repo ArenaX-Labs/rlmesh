@@ -1,4 +1,4 @@
-//! A Gym env as a robot (§12.5): its spaces and v1 tags become a robot map,
+//! A Gym env as a robot: its spaces and v1 tags become a robot map,
 //! and its observation and action leaves become part slabs.
 //!
 //! Every leaf of the observation space lands in exactly one part, so the
@@ -24,8 +24,8 @@
 //!
 //! Actions keep the `action` part (`gym/box`, `command: "value"`; one part
 //! per leaf below `action/` for a `Dict` or `Tuple` action space), so the
-//! wrapper never has to reassemble or fill a flat vector: §12.5's "or
-//! `action`" branch; a `Text` action leaf is a `gym/text` part of one
+//! wrapper never has to reassemble or fill a flat vector; a `Text` action leaf is a
+//! `gym/text` part of one
 //! `utf8` field. Per-component action parts are deferred.
 //!
 //! Each part carries its original space (`gym_space`), keys (`gym_key`)
@@ -239,7 +239,7 @@ pub struct Side {
 /// A Gym env as a robot.
 #[derive(Clone, Debug)]
 pub struct GymMap {
-    /// The authored robot map (§3), JSON in declaration order.
+    /// The authored robot map, JSON in declaration order.
     pub robot_json: String,
     /// Observation leaves and parts.
     pub observation: Side,
@@ -437,7 +437,7 @@ fn custom_kind(leaf: &Leaf, hz: f64) -> Result<(String, DeclKeys), GymError> {
 
 impl GymMap {
     /// The robot map of a Gym env with `info`'s contract, at a notional
-    /// rate of `hz` (lockstep never paces: §11.2).
+    /// rate of `hz` (lockstep never paces).
     pub fn new(info: GymEnvInfo, hz: f64) -> Result<Self, GymError> {
         let obs_space = info
             .contract

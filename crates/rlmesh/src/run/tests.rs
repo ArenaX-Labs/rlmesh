@@ -822,7 +822,7 @@ fn results_print_as_python_does() {
     );
     assert_eq!(result.success_rate(), None);
     // An unknown outcome beside a reported one counts as a failure, as the
-    // platform and `rlmesh eval report` count it.
+    // report and `rlmesh eval report` count it.
     assert_eq!(crate::run::success_rate_of([Some(true), None]), Some(0.5));
     assert_eq!(crate::run::success_rate_of([]), None);
     assert_eq!(

@@ -1,4 +1,4 @@
-//! The virtual clock's run loop (§11.3) on a session host in virtual mode:
+//! The virtual clock's run loop on a session host in virtual mode:
 //! a seeded latency model gives the same schedule twice, and a stalled
 //! barrier ends the episode `interrupted: TIMEOUT`.
 

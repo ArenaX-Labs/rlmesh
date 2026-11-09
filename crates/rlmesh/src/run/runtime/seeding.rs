@@ -5,8 +5,7 @@
 //! model or a per-launch id) and the episode's global slot within that key. No
 //! session id: two models over the same base and environment draw the same
 //! episodes, and shards that split one total partition a single slot range, so
-//! re-sharding draws the same set. The managed platform derives its seeds with
-//! this same function; `conformance/episode_seeds.v1.json` pins it across
+//! re-sharding draws the same set. `conformance/episode_seeds.v1.json` pins it across
 //! languages.
 
 /// FNV-1a over (base seed, seed key, slot), masked to `[0, 2**32)` so every

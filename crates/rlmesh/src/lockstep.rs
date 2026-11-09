@@ -1,5 +1,5 @@
 //! Lockstep and virtual clock modes of a real-time RLMesh session
-//! (protocol v2, the v0.2 spec §11.2-§11.3 and §12), and the Gymnasium
+//! (protocol v2), and the Gymnasium
 //! compatibility path: existing Gym envs and v1 model servers run unchanged
 //! on v2, at v1 throughput.
 //!
@@ -7,7 +7,7 @@
 //!   the env-side `Gate` (epoch, lease token and e-stop
 //!   checked locally per step) and the links: a direct call in one process,
 //!   a Zenoh query on `l/{robot}` otherwise.
-//! - `map`: a Gym env as a robot (§12.5): spaces and v1 tags to a robot
+//! - `map`: a Gym env as a robot: spaces and v1 tags to a robot
 //!   map, leaf slabs to part slabs and back, bit-exact.
 //! - `served`: a served env behind the lockstep exchange (`GymEnv` over
 //!   a `Served` env, on native values).
@@ -17,9 +17,9 @@
 //!   (participant addresses).
 //! - `model`: a model served on a session (`m/{model}`) and the
 //!   driver's link to it.
-//! - `view`: the Gym view over a v2-native robot (§12.6).
-//! - `virtual_mode`: the virtual clock's run loop (§11.3).
-//! - `record`: the lockstep tee into the recorder (§13).
+//! - `view`: the Gym view over a v2-native robot.
+//! - `virtual_mode`: the virtual clock's run loop.
+//! - `record`: the lockstep tee into the recorder.
 //! - [`adapters`]: the v1 adapter engine (resolver and `join` lowering),
 //!   which a v1 `ModelSpec` resolves through on this path, unchanged.
 
@@ -39,7 +39,7 @@ pub mod view;
 pub mod virtual_mode;
 
 /// The v1 adapter engine the compatibility path resolves `ModelSpec`s
-/// with (§12.4): the `rlmesh-adapters` resolver and its `join` lowering,
+/// with: the `rlmesh-adapters` resolver and its `join` lowering,
 /// reused as they are while the catalog is ported to path trees.
 pub mod adapters {
     pub use rlmesh_adapters::v1::{

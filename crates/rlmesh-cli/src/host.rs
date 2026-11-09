@@ -1,7 +1,7 @@
 //! `rlmesh host` (installed as `rlmeshd` too): this machine's session host,
 //! in the foreground or as a service. It hosts real-time sessions on the
 //! LAN under one host identity that survives restarts, and admits only the
-//! devices of its device table (design §2, §3, §5).
+//! devices of its device table.
 //!
 //! There is no key file to pass: its state directory
 //! ([`address::daemon_dir`], `--state-dir`) holds
@@ -133,7 +133,7 @@ pub fn identity(dir: &Path) -> Result<HostIdentity> {
 /// or for every interface (`0.0.0.0`) the address of the interface its
 /// default route leaves by.
 // TODO: one address per host; list every interface's when a robot is on
-// more than one network (mDNS finds the others, scene design §3.1).
+// more than one network (mDNS finds the others).
 pub fn advertised(base: SocketAddr) -> Vec<String> {
     if !base.ip().is_unspecified() {
         return vec![base.to_string()];

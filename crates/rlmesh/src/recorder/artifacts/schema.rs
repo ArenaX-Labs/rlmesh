@@ -1,6 +1,5 @@
 //! The per-episode artifact contract: the tree layout and the JSON records.
-//! Names and field spellings are the managed platform's
-//! `docs/evaluation-artifacts.md`; a change here is a change to that layout.
+//! Names and field spellings define the saved artifact layout.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -57,7 +56,7 @@ pub fn is_safe_relative_path(path: &str) -> bool {
 }
 
 /// The kind an attempt-relative path is listed under in `episode.json`
-/// `files` (and the platform manifest).
+/// `files`.
 pub fn infer_artifact_kind(path: &str) -> &'static str {
     if path == "attempt.json" {
         return "attempt";
@@ -240,7 +239,7 @@ impl RecordStream {
     }
 }
 
-/// The platform's `record` block: which videos and trajectory columns an
+/// The `record` block: which videos and trajectory columns an
 /// episode writes, and for which episodes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]

@@ -1,16 +1,16 @@
-//! The home daemon's lobby and runs (scene design §3, §4): rlmeshd hosts
+//! The home daemon's lobby and runs: rlmeshd hosts
 //! the session `_lobby`, where robots wait and clients run scenes, and
 //! hosts each run's session in-process, or has a satellite host it
-//! (§4.4: a paired machine's rlmeshd waiting here as `rlmeshd.<device>`,
+//! (a paired machine's rlmeshd waiting here as `rlmeshd.<device>`,
 //! [`crate::satellite`]).
 //!
-//! A run goes through its stages (§4.1), each failing with its code:
+//! A run goes through its stages, each failing with its code:
 //! 1. **check** the scene file against `devices.toml` and its pins
 //!    ([`crate::scene::check`]): `INVALID_REQUEST`, `NOT_AUTHORIZED`;
 //! 2. **claim** its robots, all or none: `ROBOT_BUSY`, naming the run;
 //! 3. **host** its session, with the scene's places and member table: here,
 //!    or on the satellite `host =` names (by default the machine of the
-//!    first controller that runs rlmeshd, §4.1) through a `HostOrder`
+//!    first controller that runs rlmeshd) through a `HostOrder`
 //!    answered by `HostStarted`;
 //! 4. **assign**: a `Join` to each robot once it waits in the lobby,
 //!    `NOT_PRESENT` at `wait`;
@@ -147,7 +147,7 @@ fn over(stage: RunStage) -> bool {
     matches!(stage, RunStage::Ending | RunStage::Ended | RunStage::Failed)
 }
 
-/// Run `run`'s host order for a satellite (§4.4): the scene file, its
+/// Run `run`'s host order for a satellite: the scene file, its
 /// members' device records from `table` (the home machine's `local` key
 /// among them, so `safety` stays with the robots' own machine), and its
 /// robots' pins.
@@ -272,7 +272,7 @@ impl Home {
     }
 
     /// `devices.toml` is now `table`: a run on a satellite whose members'
-    /// device records or pins it changed fails (scene design §4.4), since
+    /// device records or pins it changed fails, since
     /// the satellite holds the ones its order carried. Runs hosted here
     /// take the table live.
     pub fn devices_changed(&self, table: &Table) {
@@ -326,7 +326,7 @@ impl Home {
     /// back from a finished run frees its claim, one its run still waits
     /// for gets its join again, and anyone else waits for an assignment.
     fn wait(&self, from: &ParticipantId, device: &str, wait: LobbyWait) -> LobbyAnswer {
-        // Only a device that may embody the name waits under it (§3.2): its
+        // Only a device that may embody the name waits under it: its
         // pinned device, or one that may pin it.
         let may = Table::read(&self.dir).is_ok_and(|table| match table.robots.get(from.as_str()) {
             Some(pin) => pin.device == device,
@@ -503,7 +503,7 @@ impl Home {
         Ok(LobbyReply::Run(state))
     }
 
-    /// Where run `scene` is hosted (§4.1): `None` here, or the satellite
+    /// Where run `scene` is hosted: `None` here, or the satellite
     /// `host =` names, else the machine of its first controller that runs
     /// rlmeshd, when every robot is pinned (only the home daemon pins at
     /// first embodiment).
@@ -823,7 +823,7 @@ impl Driver {
             if let Err(outcome) = self.rejoin(snapshots.clone()).await {
                 return outcome;
             }
-            // Back from a loss, the run arms only when asked (§4.3).
+            // Back from a loss, the run arms only when asked.
             manual = true;
         }
     }
@@ -1156,7 +1156,7 @@ impl Driver {
         }
     }
 
-    /// Stage 8a (§4.3): waits for every lost member to come back (a robot
+    /// Stage 8a: waits for every lost member to come back (a robot
     /// re-sent its join through the lobby, declaring its map again) until
     /// the session's rejoin window closes, which fails the run. Back means
     /// the host closed the window and every member is where it was: robots

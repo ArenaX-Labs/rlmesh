@@ -2,12 +2,12 @@
 //!
 //! rlmesh never bundles or links an H.264 encoder: `codec="h264"` runs the
 //! ffmpeg the user installed (on `PATH`, or an explicit path) as a subprocess
-//! and pipes raw RGB frames to its stdin. The arguments are the managed
-//! runner's (libx264 `ultrafast`/`zerolatency`, yuv420p, odd sides padded to
-//! even, `+faststart`), so its videos and these play the same in a browser.
+//! and pipes raw RGB frames to its stdin. The arguments use libx264
+//! `ultrafast`/`zerolatency`, yuv420p, odd sides padded to even, and
+//! `+faststart` for browser playback.
 //!
-//! Writes block: a slow encoder backpressures the caller through the pipe,
-//! where the managed runner drops frames instead. Every frame is kept.
+//! Writes block: a slow encoder backpressures the caller through the pipe.
+//! Every frame is kept.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};

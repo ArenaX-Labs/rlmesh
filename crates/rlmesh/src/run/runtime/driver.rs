@@ -748,8 +748,8 @@ where
         }
     }
 
-    /// Session/route-level span (enabling-only): lets a closed-side OTel
-    /// subscriber attach to `rlmesh.route` later; inert under the default
+    /// Session/route-level span: lets an OpenTelemetry subscriber attach
+    /// to `rlmesh.route`; inert under the default
     /// subscriber. Created once per session, not per step; `skip_all` records only
     /// the cheap ids. Any future per-step span MUST be trace-level + target-gated.
     #[tracing::instrument(

@@ -1,4 +1,4 @@
-//! `devices.toml`, rlmeshd's device table (design §4): the devices besides
+//! `devices.toml`, rlmeshd's device table: the devices besides
 //! `local` it admits, what each may do, and the device each robot name is
 //! pinned to; and the `rlmesh devices` commands that edit it. rlmeshd reads
 //! it again within a second of every change, so an edit takes effect live.
@@ -42,7 +42,7 @@ const LOCK: &str = "devices.lock";
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Table {
-    /// Every device id revoked: never given to another device (design §4),
+    /// Every device id revoked: never given to another device,
     /// so a later pairing under the same name inherits none of its pins.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub revoked: BTreeSet<String>,
@@ -85,7 +85,7 @@ pub struct Entry {
     pub expires: Option<String>,
 }
 
-/// A robot name's pin (design §4, tether spec §7).
+/// A robot name's pin.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pin {
@@ -294,8 +294,8 @@ impl Table {
         Ok((devices, pins))
     }
 
-    /// Whether `device`'s first embodiment of the unpinned `robot` pins it
-    /// (design §4): `local`, a board under its own provisioned name, or a
+    /// Whether `device`'s first embodiment of the unpinned `robot` pins it: `local`, a
+    /// board under its own provisioned name, or a
     /// device with the operator verb.
     pub fn may_pin(&self, robot: &str, device: &str) -> bool {
         if device == LOCAL_DEVICE {
@@ -308,7 +308,7 @@ impl Table {
         })
     }
 
-    /// Whether `device` may be a satellite (scene design §3.2, §4.4): a
+    /// Whether `device` may be a satellite: a
     /// paired machine (not a board or a browser) with the `arm` verb.
     #[cfg(feature = "fleet")]
     pub fn may_host(&self, device: &str) -> bool {

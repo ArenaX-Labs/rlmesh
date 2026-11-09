@@ -299,7 +299,7 @@ impl RuntimeEnv for DrivenEnv {
     }
 }
 
-/// A lockstep env (§12) as the driver's env: resets and steps on leaf slabs,
+/// A lockstep env as the driver's env: resets and steps on leaf slabs,
 /// the env's own timing reported beside each answer.
 #[derive(Clone)]
 pub struct LockstepEnv {
