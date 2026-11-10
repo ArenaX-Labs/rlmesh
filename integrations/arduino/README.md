@@ -4,6 +4,11 @@ A board without a network (an Arduino Nano, Uno, Mega or UNO R4, over a
 USB cable) speaks framed messages over a serial link to a computer, and the
 computer is the RLMesh robot for it. This library is the board's side.
 
+> **Unreleased.** The computer's side (the `rlmesh tether` commands this
+> page mentions) is not in the 0.2 alpha, so a board running this library
+> cannot join a session yet. The board runtime and its codec are complete
+> and tested against the shared conformance vectors.
+
 > **Use `tether.print()`, never `Serial.print()`.** On a Nano the tether
 > and `Serial` share one UART, and printed text corrupts frames.
 

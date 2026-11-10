@@ -8,7 +8,7 @@ RLMesh aims to feel familiar in whichever language you use it from. Python, Rust
 
 ```toml
 [dependencies]
-rlmesh = "0.1"
+rlmesh = "0.2.0-alpha.0"
 ```
 
 The build generates session protobuf messages, so it needs `protoc` on `PATH` (`apt install protobuf-compiler` or `brew install protobuf`). The minimum supported Rust version is the crate's `rust-version`.

@@ -67,8 +67,8 @@ typedef struct rlmesh_device_robot rlmesh_device_robot_t;
 typedef struct rlmesh_device_robot_config_t {
   /* The address the host printed, with its key:
    * "{host}:{port}[/{session}]#{secret}.{host key}[/{name}]". NULL for a
-   * provisioned board, which waits in its home's lobby (record's first
-   * address) as its own device, and joins the runs it is assigned. */
+   * provisioned board, which joins its home's default session (the
+   * record's first address) as its own device. */
   const char* address;
   /* A provisioned board's device key (32 bytes) and stored record,
    * with address NULL. */

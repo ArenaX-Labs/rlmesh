@@ -1,8 +1,8 @@
 # RLMesh
 
-RLMesh is a Python SDK for model-environment evaluation. It serves Gymnasium-style environments, connects clients over local or remote transports, and adapts values for plain Python, NumPy, Torch, and JAX users.
+RLMesh is a Python SDK that connects models to environments and robots. It serves Gymnasium-style environments and drives them from another process, runs real-time sessions between robots and policies on a network (`rlmesh.realtime`, Experimental), and adapts values for plain Python, NumPy, Torch, and JAX users.
 
-> Pre-1.0 (`0.x`): the stable API may change in a minor release, with a migration note, so pin a minor range for active projects.
+> **0.2 is an alpha.** It replaces the 0.1 gRPC protocol with real-time sessions; 0.1 and 0.2 do not talk to each other, and anything may change before 0.2.0. Install it with `pip install --pre rlmesh`, or pin `rlmesh==0.2.0a0`. A plain `pip install rlmesh` gives 0.1.
 
 ## Installation
 

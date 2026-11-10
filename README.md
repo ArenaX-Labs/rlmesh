@@ -12,10 +12,15 @@
 
 Serve an environment in one process, drive it from another. Same `reset` / `step` / `render` / `close` you already know, just over the wire. Python on top, Rust underneath.
 
+> **0.2 is an alpha.** It replaces the 0.1 gRPC protocol with real-time
+> sessions, and 0.1 and 0.2 do not talk to each other. This page describes
+> 0.2; a plain `pip install rlmesh` still gives 0.1, which is maintained on
+> the [`release/0.1`](https://github.com/ArenaX-Labs/rlmesh/tree/release/0.1) branch.
+
 ## Install
 
 ```bash
-pip install "rlmesh[gymnasium,numpy]"
+pip install --pre "rlmesh[gymnasium,numpy]"
 ```
 
 ## Quickstart
@@ -57,7 +62,7 @@ isn't moving and recordings that export to LeRobot. Start with
 [real-time sessions](docs/realtime.md).
 
 ```sh
-pip install "rlmesh[robot]"
+pip install --pre "rlmesh[robot]"
 rlmesh host
 ```
 
@@ -71,7 +76,8 @@ The [C API](crates/rlmesh-capi/README.md) (`rlmesh.h`) and the header-only [C++ 
 
 ```cpp
 rlmesh::Model model([](const rlmesh::Value&) { return rlmesh::Value(0); });
-auto result = model.run("127.0.0.1:7447/counter", {.episodes = 2, .seeds = {0, 1}});
+auto result = model.run("127.0.0.1:7447/counter",
+                        rlmesh::RunOptions{}.with_episodes(2).with_seeds({0, 1}));
 ```
 
 RLMesh aims to feel familiar in every language: the same nouns and constructs (`Env`, `Space`, `Model`, `run`, `Binding`, `RemoteEnv`), each in that language's own conventions and with its own helpers.
@@ -80,8 +86,8 @@ RLMesh aims to feel familiar in every language: the same nouns and constructs (`
 
 - [Unreal Engine](integrations/unreal/RLMesh): serve actors as RLMesh environments.
 - [Unity](integrations/unity): Experimental `com.rlmesh.unity` package with main-thread callbacks and reload preflight. Unity support is not yet verified on IL2CPP.
-- [Arduino](integrations/arduino): `RLMeshTether`, which makes a board without a network (Nano, Uno, Mega, UNO R4) an RLMesh robot over a USB cable to a computer.
-- [ESP32](integrations/esp32): `RLMesh`, an ESP32 on Wi-Fi as an RLMesh robot: one Arduino library, provisioned over USB, joining your host on its own.
+- [ESP32](integrations/esp32): `RLMesh`, an ESP32 on Wi-Fi as an RLMesh robot: one Arduino library, provisioned over USB, joining your host on its own. Built from source for now.
+- [Arduino](integrations/arduino): `RLMeshTether`, the board side of a USB tether for boards without a network (Nano, Uno, Mega, UNO R4). Unreleased: the computer side is not in this release.
 
 ## Status
 

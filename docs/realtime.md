@@ -22,11 +22,12 @@ the camera and points both eyes. The same pieces fit any robot.
 On the PC (and on a Pi, if the camera hangs off one):
 
 ```sh
-pip install "rlmesh[robot]"
+pip install --pre "rlmesh[robot]"
 ```
 
-That brings `rlmesh.realtime`, the `rlmesh` command with `rlmesh host`,
-and, on desktop platforms, `rlmesh cockpit`.
+0.2 is an alpha, so pip needs `--pre`. Every install has `rlmesh.realtime`
+and the `rlmesh` command with `rlmesh host` and, on desktop platforms,
+`rlmesh cockpit`; the `robot` extra adds NumPy for samples and frames.
 
 ## 2. Host the session
 
@@ -45,7 +46,14 @@ returning robot waits for the next arm. See the [CLI
 reference](reference/cli.md) for every flag.
 
 Programs on the PC join it by name: `session=""` is this machine's host,
-default session.
+default session. Start the host first: a program that finds no host on
+this machine hosts the session itself, on loopback only, where the boards
+can't reach it.
+
+A provisioned board remembers the address the host had when it was
+provisioned, so give the PC a fixed address on your network (a DHCP
+reservation is enough). If the address changes, provision the boards
+again.
 
 ## 3. Flash and provision the eyes
 
@@ -169,16 +177,18 @@ has Arm, Disarm, E-stop and Keep.
 ## 7. Record and export
 
 The host records every session, always: one-minute MCAP segments under
-`rolling/default/` in its recordings directory (on Linux
+`rolling/{session id}/` in its recordings directory (on Linux
 `~/.local/share/rlmesh/recordings`), the newest 30 minutes. An e-stop,
 safe mode, or the cockpit's **Keep** button saves the 2 minutes before
-and 30 s after under `incidents/default/{time}-{label}/`, for 14 days.
+and 30 s after under `incidents/{session id}/{time}-{label}/`, for 14
+days. The session id is a UUID; a host with one session has one
+directory there.
 
 Export one as a LeRobot dataset (`pip install lerobot`):
 
 ```sh
 python -m rlmesh.realtime.lerobot \
-    ~/.local/share/rlmesh/recordings/incidents/default/<time>-keep eyes-dataset \
+    ~/.local/share/rlmesh/recordings/incidents/<session-id>/<time>-keep eyes-dataset \
     --repo-id me/halloween-eyes --task "follow the hand" --fps 15
 ```
 
@@ -192,8 +202,13 @@ recording back.
 - The session starts disarmed; nothing moves until it is armed.
 - **E-stop** (the cockpit, a robot's `estop()`, or a board's button)
   latches: every edge purges its queue and runs its safe behaviour, here
-  `hold`. It stays latched until the robot that set it, or a process on
-  the host's machine, clears it; then disarm and arm again.
+  `hold`. Each robot keeps its own latch, and an ESP32 keeps it across a
+  reboot. To recover, in order:
+  1. on every board, hold BOOT for 2 s (with its e-stop button released);
+  2. clear the session's latch from the robot that set it, or, when the
+     cockpit or a policy set it, from a robot process on the host's
+     machine (`camera.clear_estop()` here);
+  3. disarm, then arm.
 - Every part's limits are enforced on the robot's side, by its edge,
   whatever a policy sends.
 - Beyond loopback the host encrypts every sample and command; see the

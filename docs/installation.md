@@ -1,9 +1,9 @@
 # Installation
 
-Install the Python package:
+Install the Python package. 0.2 is an alpha, so pip needs `--pre` to pick it; without it you get 0.1, which speaks a different protocol:
 
 ```bash
-pip install "rlmesh[gymnasium,numpy]"
+pip install --pre "rlmesh[gymnasium,numpy]"
 ```
 
 RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend for examples and notebooks, then follow the [quickstart](https://rlmesh.dev/docs/start/quickstart/).
@@ -22,7 +22,7 @@ pip install "rlmesh[hf]"
 pip install "rlmesh[robot]"
 ```
 
-Pick `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. `torch` decodes client-side values as Torch tensors; `jax` decodes them as JAX arrays; `numpy` decodes them as arrays. `hf` adds host-side, container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container fetches them for you. `robot` is what real-time sessions (`rlmesh.realtime`: robots, policies, recordings) need, on a robot's computer and a policy's alike. The `rlmesh host` and `rlmesh cockpit` commands come with every install (the cockpit on desktop platforms). See [backends](https://rlmesh.dev/docs/guides/value-backends/) for how the backend extras change value decoding.
+Pick `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. `torch` decodes client-side values as Torch tensors; `jax` decodes them as JAX arrays; `numpy` decodes them as arrays. `hf` adds host-side, container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container fetches them for you. `robot` adds NumPy, which real-time sessions (`rlmesh.realtime`: robots, policies, recordings) use for samples and frames, on a robot's computer and a policy's alike. `rlmesh.realtime` itself and the `rlmesh host` and `rlmesh cockpit` commands come with every install (the cockpit on desktop platforms). See [backends](https://rlmesh.dev/docs/guides/value-backends/) for how the backend extras change value decoding.
 
 ## Repository Examples
 

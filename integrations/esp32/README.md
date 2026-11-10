@@ -8,11 +8,14 @@ or `-DZENOH_*` flags are needed.
 
 ## Board quickstart
 
-1. Install Espressif's **esp32** Arduino core 3.3.12. Download the release ZIP
-   for your chip: `RLMesh-esp32.zip` (classic ESP32 / WROOM-32),
-   `RLMesh-esp32s3.zip`, or `RLMesh-esp32c6.zip`. In Arduino IDE, choose
-   **Sketch → Include Library → Add .ZIP Library**. Replace an older RLMesh
-   installation when changing chips.
+1. Install Espressif's **esp32** Arduino core 3.3.12 and build the library
+   ZIP for your chip. The 0.2 alpha publishes no prebuilt board library, so
+   it is built from this repository: `mise run setup:esp32`, then
+   `mise run build:esp32` writes, under `target/esp32/dist/`, `RLMesh-esp32.zip` (classic ESP32 /
+   WROOM-32), `RLMesh-esp32s3.zip` and `RLMesh-esp32c6.zip` (see
+   [Building and verifying from source](#building-and-verifying-from-source) for the toolchains it
+   needs). In Arduino IDE, choose **Sketch → Include Library → Add .ZIP
+   Library**. Replace an older RLMesh installation when changing chips.
 2. Open **File → Examples → RLMesh → Robot**. Set the Wi-Fi credentials,
    select your board and **Minimal SPIFFS** partition scheme, and upload.
    Connect pan to GPIO 18 and tilt to GPIO 19, adjusting pins for your board.
